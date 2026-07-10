@@ -1,15 +1,24 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::Deserialize;
+use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use super::cdp::{CdpClient, CdpError};
 use super::chrome::{
     ChromeProcess, check_chrome_health, detect_chrome, get_ws_url, launch_chrome_with_options,
 };
-use super::dom::{AxNode, find_interactive_elements, format_tree, parse_accessibility_tree};
+use super::dom::{
+    AxNode, DomNode, find_interactive_elements, format_tree, parse_accessibility_tree,
+    parse_dom_tree,
+};
 use super::mouse::{MouseEngine, Point};
 use super::profile::ProfileManager;
 
@@ -22,6 +31,13 @@ pub struct SessionOptions {
     pub profile: String,
     pub incognito: bool,
     pub headed: bool,
+    pub interaction_mode: InteractionMode,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum InteractionMode {
+    Human,
+    Fast,
 }
 
 impl Default for SessionOptions {
@@ -32,11 +48,12 @@ impl Default for SessionOptions {
             profile: "default".to_string(),
             incognito: false,
             headed: false,
+            interaction_mode: InteractionMode::Human,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageInfo {
     pub url: String,
     pub title: String,
@@ -44,7 +61,7 @@ pub struct PageInfo {
     pub ready_state: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InteractiveElement {
     pub reference: String,
     pub role: String,
@@ -53,11 +70,22 @@ pub struct InteractiveElement {
     pub backend_dom_node_id: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AccessibilitySnapshot {
     pub page: PageInfo,
     pub roots: Vec<AxNode>,
     pub interactive: Vec<InteractiveElement>,
+}
+
+/// The default agent observation: structured page state without a screenshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct PageContext {
+    pub page: PageInfo,
+    pub text: String,
+    pub dom: Option<DomNode>,
+    pub accessibility: AccessibilitySnapshot,
+    /// Base64 PNG data is populated only when visual context is explicitly requested.
+    pub screenshot: Option<String>,
 }
 
 impl AccessibilitySnapshot {
@@ -88,6 +116,16 @@ pub struct BrowserSession {
     chrome: Option<ChromeProcess>,
     profile_manager: ProfileManager,
     profile: String,
+    interaction_mode: InteractionMode,
+    mouse: MouseEngine,
+    pointer: Mutex<Option<Point>>,
+    page_revision: Arc<AtomicU64>,
+    observation_cache: Mutex<Option<CachedObservation>>,
+}
+
+struct CachedObservation {
+    revision: u64,
+    context: PageContext,
 }
 
 impl BrowserSession {
@@ -154,11 +192,27 @@ impl BrowserSession {
             return Err(Box::new(error));
         }
 
+        let page_revision = Arc::new(AtomicU64::new(1));
+        let mut events = cdp.subscribe_events();
+        let revision_for_events = Arc::clone(&page_revision);
+        tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if context_event_invalidates_observation(&event.method) {
+                    revision_for_events.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
         Ok(Self {
             cdp,
             chrome,
             profile_manager,
             profile: options.profile.clone(),
+            interaction_mode: options.interaction_mode,
+            mouse: MouseEngine::new(),
+            pointer: Mutex::new(None),
+            page_revision,
+            observation_cache: Mutex::new(None),
         })
     }
 
@@ -233,6 +287,74 @@ impl BrowserSession {
         Ok(value.as_str().unwrap_or_default().to_string())
     }
 
+    /// Collect DOM, accessibility, and visible text context. Screenshots are opt-in.
+    pub async fn observe(&self, include_screenshot: bool) -> BrowserResult<PageContext> {
+        self.observe_internal(include_screenshot, true).await
+    }
+
+    /// Collect a fresh context, bypassing the event-driven cache.
+    pub async fn observe_fresh(&self, include_screenshot: bool) -> BrowserResult<PageContext> {
+        self.observe_internal(include_screenshot, false).await
+    }
+
+    async fn observe_internal(
+        &self,
+        include_screenshot: bool,
+        use_cache: bool,
+    ) -> BrowserResult<PageContext> {
+        let revision = self.page_revision.load(Ordering::Relaxed);
+        if use_cache {
+            let cached_context = {
+                let cache = self.observation_cache.lock().await;
+                cache
+                    .as_ref()
+                    .filter(|cached| cached.revision == revision)
+                    .map(|cached| cached.context.clone())
+            };
+            if let Some(mut context) = cached_context {
+                if include_screenshot {
+                    context.screenshot = Some(STANDARD.encode(self.screenshot_png().await?));
+                }
+                return Ok(context);
+            }
+        }
+
+        let (page, text, accessibility, dom) = tokio::join!(
+            self.page_info(),
+            self.text(),
+            self.cdp.get_accessibility_tree(),
+            self.cdp.get_document(),
+        );
+        let page = page?;
+        let text = text?;
+        let accessibility_raw = accessibility?;
+        let dom_raw = dom?;
+        let roots = parse_accessibility_tree(&accessibility_raw);
+        let accessibility = AccessibilitySnapshot {
+            page: page.clone(),
+            interactive: interactive_elements(&roots),
+            roots,
+        };
+        let context = PageContext {
+            page,
+            text,
+            dom: parse_dom_tree(&dom_raw),
+            accessibility,
+            screenshot: None,
+        };
+        *self.observation_cache.lock().await = Some(CachedObservation {
+            revision,
+            context: context.clone(),
+        });
+        if include_screenshot {
+            let mut visual_context = context;
+            visual_context.screenshot = Some(STANDARD.encode(self.screenshot_png().await?));
+            Ok(visual_context)
+        } else {
+            Ok(context)
+        }
+    }
+
     pub async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
         let data = self.cdp.screenshot("png").await?;
         Ok(STANDARD.decode(data.as_bytes())?)
@@ -246,17 +368,7 @@ impl BrowserSession {
     pub async fn snapshot(&self) -> BrowserResult<AccessibilitySnapshot> {
         let raw = self.cdp.get_accessibility_tree().await?;
         let roots = parse_accessibility_tree(&raw);
-        let interactive = find_interactive_elements(&roots)
-            .into_iter()
-            .enumerate()
-            .map(|(index, node)| InteractiveElement {
-                reference: format!("e{}", index + 1),
-                role: node.role.clone(),
-                name: node.name.clone(),
-                description: node.description.clone(),
-                backend_dom_node_id: node.backend_dom_node_id,
-            })
-            .collect();
+        let interactive = interactive_elements(&roots);
         Ok(AccessibilitySnapshot {
             page: self.page_info().await?,
             roots,
@@ -275,7 +387,26 @@ impl BrowserSession {
         };
         let (x, y) = center_of_box_model(&model)?;
         let point = Point { x, y };
-        for event in MouseEngine::new().generate_click_events(point) {
+        let mut pointer = self.pointer.lock().await;
+        match self.interaction_mode {
+            InteractionMode::Human => {
+                let start = pointer.unwrap_or(Point { x: 640.0, y: 360.0 });
+                let path = self.mouse.generate_path(start, point);
+                for window in path.windows(2) {
+                    let next = window[1];
+                    self.cdp
+                        .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
+                        .await?;
+                    tokio::time::sleep(self.mouse.move_delay(window[0], next)).await;
+                }
+            }
+            InteractionMode::Fast => {
+                self.cdp
+                    .dispatch_mouse_event("mouseMoved", point.x, point.y, None, None)
+                    .await?;
+            }
+        }
+        for event in self.mouse.generate_click_events(point) {
             self.cdp
                 .dispatch_mouse_event(
                     &event.event_type,
@@ -286,6 +417,7 @@ impl BrowserSession {
                 )
                 .await?;
         }
+        *pointer = Some(point);
         Ok(element.label)
     }
 
@@ -337,6 +469,37 @@ impl BrowserSession {
         }
         Err(format!("element not found: {target}").into())
     }
+}
+
+fn interactive_elements(roots: &[AxNode]) -> Vec<InteractiveElement> {
+    find_interactive_elements(roots)
+        .into_iter()
+        .enumerate()
+        .map(|(index, node)| InteractiveElement {
+            reference: format!("e{}", index + 1),
+            role: node.role.clone(),
+            name: node.name.clone(),
+            description: node.description.clone(),
+            backend_dom_node_id: node.backend_dom_node_id,
+        })
+        .collect()
+}
+
+fn context_event_invalidates_observation(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.frameNavigated"
+            | "Page.loadEventFired"
+            | "Page.frameStartedLoading"
+            | "Page.frameStoppedLoading"
+            | "DOM.documentUpdated"
+            | "DOM.childNodeInserted"
+            | "DOM.childNodeRemoved"
+            | "DOM.attributeModified"
+            | "DOM.attributeRemoved"
+            | "DOM.characterDataModified"
+            | "DOM.setChildNodes"
+    )
 }
 
 struct ResolvedElement {
@@ -420,5 +583,16 @@ mod tests {
             "model": {"content": [10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0]}
         });
         assert_eq!(center_of_box_model(&raw).unwrap(), (20.0, 30.0));
+    }
+
+    #[test]
+    fn invalidates_context_only_for_page_or_dom_mutations() {
+        assert!(context_event_invalidates_observation(
+            "DOM.childNodeInserted"
+        ));
+        assert!(context_event_invalidates_observation("Page.frameNavigated"));
+        assert!(!context_event_invalidates_observation(
+            "Network.loadingFinished"
+        ));
     }
 }

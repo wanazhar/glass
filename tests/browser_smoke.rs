@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserSession, SessionOptions};
+use glass::browser::session::{BrowserSession, InteractionMode, SessionOptions};
 use tokio::net::TcpListener;
 
 #[tokio::test]
@@ -26,6 +26,7 @@ async fn browser_session_drives_a_local_fixture() {
         profile: "e2e".to_string(),
         incognito: true,
         headed: false,
+        interaction_mode: InteractionMode::Human,
     })
     .await
     .unwrap();
@@ -33,6 +34,25 @@ async fn browser_session_drives_a_local_fixture() {
     let page = session.navigate(&url).await.unwrap();
     assert_eq!(page.title, "Glass Fixture");
     assert!(session.text().await.unwrap().contains("Glass Fixture"));
+
+    let context = session.observe(false).await.unwrap();
+    assert!(context.dom.is_some());
+    assert!(!context.accessibility.interactive.is_empty());
+    assert!(context.screenshot.is_none());
+
+    session
+        .evaluate("document.querySelector('#result').textContent = 'Changed'")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        session
+            .observe(false)
+            .await
+            .unwrap()
+            .text
+            .contains("Changed")
+    );
 
     let snapshot = session.snapshot().await.unwrap();
     assert!(
@@ -57,6 +77,8 @@ async fn browser_session_drives_a_local_fixture() {
             .unwrap(),
         "Saved Ada"
     );
+    let visual_context = session.observe(true).await.unwrap();
+    assert!(visual_context.screenshot.is_some());
     assert!(session.screenshot_png().await.unwrap().len() > 100);
     session.close().await.unwrap();
 }

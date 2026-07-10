@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::browser::session::InteractionMode;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "glass",
@@ -23,6 +25,10 @@ pub struct Cli {
     /// Show the browser window instead of using headless mode.
     #[arg(long, global = true)]
     pub headed: bool,
+
+    /// Pointer behavior for click actions.
+    #[arg(long, global = true, value_enum, default_value_t = InteractionMode::Human)]
+    pub interaction: InteractionMode,
 
     /// Path to a Chrome/Chromium binary.
     #[arg(long = "chrome-path", alias = "chrome", global = true)]
@@ -78,6 +84,13 @@ pub enum Commands {
 
     /// Print the accessibility snapshot.
     Dom,
+
+    /// Print structured DOM, accessibility, and text context.
+    Observe {
+        /// Include a PNG screenshot in the structured context.
+        #[arg(long)]
+        screenshot: bool,
+    },
 
     /// Scroll the page by CSS pixels.
     Scroll {

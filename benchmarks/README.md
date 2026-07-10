@@ -18,5 +18,7 @@ and point both tools at the same Chrome binary:
 
 Compare the same operation names, Chrome binary, fixture, iteration count,
 machine, and warm/cold state. Report p50 and p95 rather than a single average.
+The Rust output distinguishes fresh context collection from cached observations;
+the latter represents repeated agent turns without a page mutation.
 Binary-size comparisons should use the stripped glass executable and clearly
 state whether Playwright's Node runtime and browser downloads are included.

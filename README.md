@@ -12,11 +12,14 @@ Install Chrome/Chromium, then run:
     cargo run -- text
     cargo run -- screenshot -o page.png
     cargo run -- dom
+    cargo run -- observe
 
 Run cargo run for the terminal UI or cargo run -- --mcp to expose the browser
 as an MCP stdio server. Use --incognito for a disposable profile,
 --profile NAME for persistent Chrome data, and --chrome-path PATH to select
-the browser executable.
+the browser executable. Observation is DOM/accessibility-first; screenshots
+are explicit through screenshot or observe --screenshot. Clicks use smooth
+pointer motion by default; pass --interaction fast for low-latency automation.
 
 ## Development
 

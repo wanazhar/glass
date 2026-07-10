@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use glass::browser::session::{BrowserResult, BrowserSession, InteractionMode, SessionOptions};
 use serde_json::json;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -28,6 +28,7 @@ async fn main() -> BrowserResult<()> {
         profile: "benchmark".to_string(),
         incognito: true,
         headed: false,
+        interaction_mode: InteractionMode::Fast,
     })
     .await?;
     let startup_ms = startup_started.elapsed().as_secs_f64() * 1000.0;
@@ -50,6 +51,16 @@ async fn main() -> BrowserResult<()> {
                 .await?,
                 measure("text", iterations, || async {
                     let _ = session.text().await?;
+                    Ok(())
+                })
+                .await?,
+                measure("observe_fresh", (iterations / 5).max(5), || async {
+                    let _ = session.observe_fresh(false).await?;
+                    Ok(())
+                })
+                .await?,
+                measure("observe_cached", iterations, || async {
+                    let _ = session.observe(false).await?;
                     Ok(())
                 })
                 .await?,

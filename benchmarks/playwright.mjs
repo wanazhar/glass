@@ -41,6 +41,13 @@ async function measure(name, count, operation) {
 const results = [
   await measure("evaluate", iterations, () => page.evaluate(() => 1 + 1)),
   await measure("text", iterations, () => page.locator("body").innerText()),
+  await measure("observe", Math.max(5, Math.floor(iterations / 5)), () =>
+    Promise.all([
+      page.locator("body").innerText(),
+      page.locator("body").ariaSnapshot(),
+      page.evaluate(() => document.documentElement.outerHTML),
+    ]),
+  ),
   await measure("dom_snapshot", Math.max(5, Math.floor(iterations / 5)), () =>
     page.locator("body").ariaSnapshot(),
   ),

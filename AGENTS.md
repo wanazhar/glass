@@ -18,8 +18,9 @@ Focused unit tests live beside the module under test; use `tests/` for end-to-en
 - `cargo build` compiles the debug binary.
 - `cargo run -- --help` lists the implemented CLI options and subcommands.
 - `cargo run -- install-chromium` downloads the managed Chromium build; browser flows otherwise require Chrome/Chromium and use CDP port `9222` by default.
-- `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `scroll`, and `evaluate`.
+- `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `observe`, `scroll`, and `evaluate`.
 - `cargo run -- profiles` and `cargo run -- delete-profile NAME` manage profiles; `cargo run -- --mcp` starts the real MCP server over stdio; `cargo run` starts the TUI.
+- `--interaction human` (default) sends bounded smooth pointer paths; `--interaction fast` sends direct pointer events for throughput tests.
 - `cargo test` runs the current unit tests; coverage has no enforced threshold.
 - `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.

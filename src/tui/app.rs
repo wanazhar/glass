@@ -212,6 +212,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         profile: cli.profile.clone(),
         incognito: cli.incognito,
         headed: cli.headed,
+        interaction_mode: cli.interaction,
     };
     let session = match BrowserSession::start(&options).await {
         Ok(session) => {
@@ -337,6 +338,12 @@ async fn execute_command(
             .map(String::from)
             .collect();
         app.add_thought("Accessibility snapshot refreshed.");
+    } else if lower == "observe" || lower == "context" {
+        let context = session.observe(false).await?;
+        app.url = context.page.url;
+        app.title = format!("Glass — {}", context.page.title);
+        app.page_content = context.text.lines().map(String::from).collect();
+        app.add_thought("DOM and accessibility context refreshed without a screenshot.");
     } else if let Some(rest) = command.strip_prefix("click ") {
         app.add_thought(format!("Clicked {}", session.click(rest.trim()).await?));
     } else if let Some(rest) = command.strip_prefix("type ") {

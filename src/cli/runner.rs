@@ -34,6 +34,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         profile: cli.profile.clone(),
         incognito: cli.incognito,
         headed: cli.headed,
+        interaction_mode: cli.interaction,
     };
     let session = BrowserSession::start(&options).await?;
     let result = if let Some(prompt) = &cli.prompt {
@@ -92,6 +93,12 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::Text => println!("{}", session.text().await?),
         Commands::Dom => println!("{}", session.snapshot().await?.format()),
+        Commands::Observe { screenshot } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&session.observe(*screenshot).await?)?
+            );
+        }
         Commands::Scroll { dx, dy } => {
             session.scroll(*dx, *dy).await?;
             println!("scrolled by ({dx}, {dy})");
@@ -153,6 +160,13 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
     }
     if matches!(lower.as_str(), "dom" | "snapshot" | "get dom") {
         println!("{}", session.snapshot().await?.format());
+        return Ok(());
+    }
+    if matches!(lower.as_str(), "observe" | "context") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&session.observe(false).await?)?
+        );
         return Ok(());
     }
 

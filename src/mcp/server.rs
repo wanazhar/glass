@@ -60,6 +60,7 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
         profile: cli.profile.clone(),
         incognito: cli.incognito,
         headed: cli.headed,
+        interaction_mode: cli.interaction,
     };
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -186,6 +187,21 @@ async fn call_tool(
                 }]
             }))
         }
+        "observe" => {
+            let include_screenshot = arguments["includeScreenshot"].as_bool().unwrap_or(false);
+            let mut context = session.observe(include_screenshot).await?;
+            let screenshot = context.screenshot.take();
+            let context_json = serde_json::to_string_pretty(&context)?;
+            let mut content = vec![json!({"type": "text", "text": context_json})];
+            if let Some(data) = screenshot {
+                content.push(json!({
+                    "type": "image",
+                    "data": data,
+                    "mimeType": "image/png"
+                }));
+            }
+            Ok(json!({"content": content}))
+        }
         "getDOM" | "dom" => Ok(text_result(session.snapshot().await?.format())),
         "getText" | "text" => Ok(text_result(session.text().await?)),
         "evaluate" => {
@@ -247,6 +263,14 @@ fn tools() -> Vec<Tool> {
             name: "screenshot",
             description: "Capture the current page as a PNG image.",
             input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "observe",
+            description: "Return DOM, accessibility, and visible text context; screenshots are opt-in.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"includeScreenshot": {"type": "boolean", "default": false}}
+            }),
         },
         Tool {
             name: "getDOM",
@@ -380,7 +404,7 @@ mod tests {
             .await
             .unwrap();
         let tools = result.result.unwrap()["tools"].as_array().unwrap().len();
-        assert_eq!(tools, 8);
+        assert_eq!(tools, 9);
         assert!(session.is_none());
     }
 }

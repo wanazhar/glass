@@ -1,28 +1,38 @@
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
 /// A 2D point for mouse path calculations.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
 }
 
-/// Bezier mouse engine for realistic cursor movement.
+/// A smooth pointer-motion generator.
+///
+/// The engine uses a bounded number of samples and small per-movement
+/// variations. This keeps the event stream realistic without turning a click
+/// into hundreds of unnecessary CDP round trips.
 pub struct MouseEngine {
-    /// Human-like speed variation (pixels per second range)
     pub min_speed: f64,
     pub max_speed: f64,
-    /// Steps per second for the movement curve
     pub steps_per_second: u32,
+    seed: AtomicU64,
 }
 
 impl Default for MouseEngine {
     fn default() -> Self {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+            | 1;
         Self {
             min_speed: 400.0,
             max_speed: 800.0,
             steps_per_second: 60,
+            seed: AtomicU64::new(seed),
         }
     }
 }
@@ -32,7 +42,25 @@ impl MouseEngine {
         Self::default()
     }
 
-    /// Generate a cubic Bezier curve between two points with control points.
+    fn next_unit(&self) -> f64 {
+        let mut current = self.seed.load(Ordering::Relaxed);
+        loop {
+            let next = current
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            match self.seed.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next as f64 / u64::MAX as f64,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Generate a cubic Bezier curve between two points.
     fn bezier_curve(&self, start: Point, end: Point, cp1: Point, cp2: Point, t: f64) -> Point {
         let t2 = t * t;
         let t3 = t2 * t;
@@ -46,63 +74,70 @@ impl MouseEngine {
         }
     }
 
-    /// Generate control points for a natural-looking curve between two points.
+    /// Generate slightly varied control points around a direct trajectory.
     fn generate_control_points(&self, start: Point, end: Point) -> (Point, Point) {
-        let distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        if distance < f64::EPSILON {
+            return (start, end);
+        }
 
-        // Control point offset proportional to distance, with some randomness
-        let offset = distance * 0.3;
-
-        // Add slight curvature (humans rarely move in perfectly straight lines)
-        let curvature = ((end.x - start.x) * 0.1 + (end.y - start.y) * 0.05).abs();
+        let direction = (dx / distance, dy / distance);
+        let normal = (-direction.1, direction.0);
+        let bend = (self.next_unit() * 2.0 - 1.0) * distance * 0.12;
+        let along = (self.next_unit() * 2.0 - 1.0) * distance * 0.04;
 
         let cp1 = Point {
-            x: start.x + (end.x - start.x) * 0.25 + curvature,
-            y: start.y + (end.y - start.y) * 0.25 + offset * 0.5,
+            x: start.x + dx * 0.28 + normal.0 * bend + direction.0 * along,
+            y: start.y + dy * 0.28 + normal.1 * bend + direction.1 * along,
         };
-
         let cp2 = Point {
-            x: start.x + (end.x - start.x) * 0.75 - curvature * 0.5,
-            y: start.y + (end.y - start.y) * 0.75 - offset * 0.3,
+            x: start.x + dx * 0.72 - normal.0 * bend * 0.7 + direction.0 * along * 0.4,
+            y: start.y + dy * 0.72 - normal.1 * bend * 0.7 + direction.1 * along * 0.4,
         };
-
         (cp1, cp2)
     }
 
-    /// Generate a list of points along a Bezier curve from start to end.
+    /// Generate a bounded list of points along a smooth path.
     pub fn generate_path(&self, start: Point, end: Point) -> Vec<Point> {
-        let distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        if distance < f64::EPSILON {
+            return vec![start];
+        }
 
-        // Number of steps proportional to distance
-        let steps = ((distance / self.steps_per_second as f64) * 60.0).max(10.0) as usize;
-
+        let nominal_speed = (self.min_speed + self.max_speed) / 2.0;
+        let duration = distance / nominal_speed;
+        let steps = (duration * self.steps_per_second as f64)
+            .round()
+            .clamp(8.0, 120.0) as usize;
         let (cp1, cp2) = self.generate_control_points(start, end);
-
         let mut points = Vec::with_capacity(steps + 1);
 
-        for i in 0..=steps {
-            let t = i as f64 / steps as f64;
-            // Ease-in-out timing
-            let t_eased = if t < 0.5 {
+        for index in 0..=steps {
+            let t = index as f64 / steps as f64;
+            let eased = if t < 0.5 {
                 2.0 * t * t
             } else {
                 1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
             };
-            points.push(self.bezier_curve(start, end, cp1, cp2, t_eased));
+            points.push(self.bezier_curve(start, end, cp1, cp2, eased));
         }
-
         points
     }
 
-    /// Calculate the delay between moves based on speed and distance.
-    fn move_delay(&self, start: Point, end: Point) -> Duration {
-        let distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
-        let speed = self.min_speed + (self.max_speed - self.min_speed) * 0.5; // Mid-range speed
-        let seconds = (distance / speed).max(0.005); // Minimum 5ms between moves
-        Duration::from_secs_f64(seconds)
+    /// Calculate the delay between two consecutive pointer samples.
+    pub fn move_delay(&self, start: Point, end: Point) -> Duration {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let speed = self.min_speed + (self.max_speed - self.min_speed) * self.next_unit();
+        Duration::from_secs_f64((distance / speed).max(0.005))
     }
 
-    /// Move the mouse along a Bezier curve from start to end, calling a callback for each step.
+    /// Move along a path, invoking the callback for each sample.
     pub async fn move_to<F>(
         &self,
         start: Point,
@@ -114,30 +149,22 @@ impl MouseEngine {
     {
         let path = self.generate_path(start, end);
         debug!(
-            "Mouse path: {} steps, {}px distance",
-            path.len(),
-            ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt() as u32
+            steps = path.len(),
+            distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt() as u32,
+            "moving pointer"
         );
-
-        for point in &path {
-            callback(*point).await;
-            tokio::time::sleep(self.move_delay(*point, *point)).await;
+        for window in path.windows(2) {
+            let point = window[1];
+            callback(point).await;
+            tokio::time::sleep(self.move_delay(window[0], point)).await;
         }
-
         Ok(())
     }
 
-    /// Generate the mouse events for a click at a given point.
+    /// Generate the press/release events after the pointer reaches a target.
     pub fn generate_click_events(&self, point: Point) -> Vec<MouseEvent> {
         vec![
             MouseEvent {
-                event_type: "mouseMoved".to_string(),
-                x: point.x,
-                y: point.y,
-                button: "none".to_string(),
-                click_count: 0,
-            },
-            MouseEvent {
                 event_type: "mousePressed".to_string(),
                 x: point.x,
                 y: point.y,
@@ -154,17 +181,9 @@ impl MouseEngine {
         ]
     }
 
-    /// Generate the mouse events for a double-click at a given point.
     pub fn generate_double_click_events(&self, point: Point) -> Vec<MouseEvent> {
         vec![
             MouseEvent {
-                event_type: "mouseMoved".to_string(),
-                x: point.x,
-                y: point.y,
-                button: "none".to_string(),
-                click_count: 0,
-            },
-            MouseEvent {
                 event_type: "mousePressed".to_string(),
                 x: point.x,
                 y: point.y,
@@ -195,22 +214,16 @@ impl MouseEngine {
         ]
     }
 
-    /// Generate mouse events for a drag from start to end.
     pub fn generate_drag_events(&self, start: Point, end: Point) -> Vec<MouseEvent> {
         let path = self.generate_path(start, end);
-        let mut events = Vec::new();
-
-        // Mouse down at start
-        events.push(MouseEvent {
+        let mut events = vec![MouseEvent {
             event_type: "mousePressed".to_string(),
             x: start.x,
             y: start.y,
             button: "left".to_string(),
             click_count: 1,
-        });
-
-        // Mouse moves along path
-        for point in &path[1..path.len() - 1] {
+        }];
+        for point in path.iter().skip(1).take(path.len().saturating_sub(2)) {
             events.push(MouseEvent {
                 event_type: "mouseMoved".to_string(),
                 x: point.x,
@@ -219,8 +232,6 @@ impl MouseEngine {
                 click_count: 1,
             });
         }
-
-        // Mouse up at end
         events.push(MouseEvent {
             event_type: "mouseReleased".to_string(),
             x: end.x,
@@ -228,12 +239,10 @@ impl MouseEngine {
             button: "left".to_string(),
             click_count: 1,
         });
-
         events
     }
 }
 
-/// A mouse event to be dispatched via CDP.
 #[derive(Debug, Clone)]
 pub struct MouseEvent {
     pub event_type: String,
@@ -248,34 +257,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bezier_curve_endpoint() {
+    fn path_preserves_endpoints_and_has_bounded_samples() {
         let engine = MouseEngine::new();
         let start = Point { x: 0.0, y: 0.0 };
-        let end = Point { x: 100.0, y: 100.0 };
-        let (cp1, cp2) = engine.generate_control_points(start, end);
-
-        let at_zero = engine.bezier_curve(start, end, cp1, cp2, 0.0);
-        let at_one = engine.bezier_curve(start, end, cp1, cp2, 1.0);
-
-        assert!((at_zero.x - start.x).abs() < 0.001);
-        assert!((at_zero.y - start.y).abs() < 0.001);
-        assert!((at_one.x - end.x).abs() < 0.001);
-        assert!((at_one.y - end.y).abs() < 0.001);
+        let end = Point {
+            x: 1_000.0,
+            y: 600.0,
+        };
+        let path = engine.generate_path(start, end);
+        assert_eq!(path.first(), Some(&start));
+        assert_eq!(path.last(), Some(&end));
+        assert!((8..=121).contains(&path.len()));
     }
 
     #[test]
-    fn test_path_generation() {
+    fn path_is_not_always_a_teleport() {
         let engine = MouseEngine::new();
-        let start = Point { x: 0.0, y: 0.0 };
-        let end = Point { x: 200.0, y: 100.0 };
-        let path = engine.generate_path(start, end);
+        let path = engine.generate_path(Point { x: 0.0, y: 0.0 }, Point { x: 400.0, y: 0.0 });
+        assert!(path.len() > 2);
+        assert!(path.iter().any(|point| point.y.abs() > f64::EPSILON));
+    }
 
-        assert!(path.len() >= 10);
-        // First point should be at start
-        assert!((path[0].x - start.x).abs() < 1.0);
-        assert!((path[0].y - start.y).abs() < 1.0);
-        // Last point should be at end
-        assert!((path.last().unwrap().x - end.x).abs() < 1.0);
-        assert!((path.last().unwrap().y - end.y).abs() < 1.0);
+    #[test]
+    fn click_events_only_press_and_release_after_motion() {
+        let events = MouseEngine::new().generate_click_events(Point { x: 2.0, y: 3.0 });
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "mousePressed");
+        assert_eq!(events[1].event_type, "mouseReleased");
     }
 }

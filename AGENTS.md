@@ -11,7 +11,7 @@ This is a Rust 2024 crate with a reusable library and `src/main.rs` binary entry
 - `tests/fixtures/` and `tests/browser_smoke.rs`: local browser fixture coverage; the smoke test is opt-in with `GLASS_E2E=1`.
 - `Cargo.toml` and `Cargo.lock`: dependency and reproducible-build metadata.
 
-There is currently no `tests/`, `examples/`, or `benches/` directory. Focused unit tests live beside the module under test; use `tests/` for end-to-end behavior.
+Focused unit tests live beside the module under test; use `tests/` for end-to-end behavior and `examples/` for repeatable local tools.
 
 ## Build, Test, and Development Commands
 
@@ -23,6 +23,8 @@ There is currently no `tests/`, `examples/`, or `benches/` directory. Focused un
 - `cargo test` runs the current unit tests; coverage has no enforced threshold.
 - `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
+- `cargo build --release` builds the performance-oriented release; `cargo build --profile release-size` builds the stripped size-oriented profile.
+- `GLASS_BENCH_ITERATIONS=50 cargo run --release --example benchmark` measures warm-session operations; see benchmarks/README.md for Playwright comparison.
 
 ## Coding Style & Naming Conventions
 

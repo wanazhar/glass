@@ -78,7 +78,7 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
         };
 
         let response = handle_request(&request, &mut session, &options).await;
-        if let Some((response, format)) = response {
+        if let Some(response) = response {
             write_response(&mut stdout, &response, format).await?;
         }
     }
@@ -93,14 +93,15 @@ async fn handle_request(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
-) -> Option<(JsonRpcResponse, FrameFormat)> {
+) -> Option<JsonRpcResponse> {
     if request.id.is_none() && request.method == "notifications/initialized" {
         return None;
     }
     if request.jsonrpc != "2.0" {
-        return Some((
-            error_response(request.id.clone(), -32600, "jsonrpc must be 2.0"),
-            FrameFormat::Newline,
+        return Some(error_response(
+            request.id.clone(),
+            -32600,
+            "jsonrpc must be 2.0",
         ));
     }
 
@@ -135,7 +136,7 @@ async fn handle_request(
             format!("method not found: {}", request.method),
         ),
     };
-    Some((response, FrameFormat::Newline))
+    Some(response)
 }
 
 async fn call_tool(
@@ -377,8 +378,7 @@ mod tests {
         let mut session = None;
         let result = handle_request(&request, &mut session, &SessionOptions::default())
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let tools = result.result.unwrap()["tools"].as_array().unwrap().len();
         assert_eq!(tools, 8);
         assert!(session.is_none());

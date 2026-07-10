@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Glass Fixture</title>
+  </head>
+  <body>
+    <main>
+      <h1>Glass Fixture</h1>
+      <label for="name">Name</label>
+      <input id="name" aria-label="Name">
+      <button id="save" type="button">Save</button>
+      <p id="result"></p>
+    </main>
+    <script>
+      document.querySelector("#save").addEventListener("click", () => {
+        document.querySelector("#result").textContent =
+          "Saved " + document.querySelector("#name").value;
+      });
+    </script>
+  </body>
+</html>

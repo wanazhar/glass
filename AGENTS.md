@@ -2,12 +2,13 @@
 
 ## Project Structure & Module Organization
 
-This is a Rust 2024 binary crate. `src/main.rs` initializes logging and dispatches the application. Runtime code is grouped by concern:
+This is a Rust 2024 crate with a reusable library and `src/main.rs` binary entrypoint. Runtime code is grouped by concern:
 
 - `src/browser/`: Chrome lifecycle, raw CDP/WebSocket calls, DOM/accessibility parsing, mouse events, and profiles.
 - `src/cli/`: Clap argument definitions in `args.rs` and shared dispatch/session orchestration in `runner.rs`.
 - `src/mcp/`: JSON-RPC/MCP stdio server.
 - `src/tui/`: Ratatui terminal interface.
+- `tests/fixtures/` and `tests/browser_smoke.rs`: local browser fixture coverage; the smoke test is opt-in with `GLASS_E2E=1`.
 - `Cargo.toml` and `Cargo.lock`: dependency and reproducible-build metadata.
 
 There is currently no `tests/`, `examples/`, or `benches/` directory. Focused unit tests live beside the module under test; use `tests/` for end-to-end behavior.
@@ -20,6 +21,7 @@ There is currently no `tests/`, `examples/`, or `benches/` directory. Focused un
 - `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `scroll`, and `evaluate`.
 - `cargo run -- profiles` and `cargo run -- delete-profile NAME` manage profiles; `cargo run -- --mcp` starts the real MCP server over stdio; `cargo run` starts the TUI.
 - `cargo test` runs the current unit tests; coverage has no enforced threshold.
+- `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
 
 ## Coding Style & Naming Conventions

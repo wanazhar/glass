@@ -18,11 +18,11 @@ impl ChromeProcess {
 
     /// Stop a Chrome process owned by this instance.
     pub async fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(mut child) = self.child.take() {
-            if child.try_wait()?.is_none() {
-                child.kill().await?;
-                let _ = child.wait().await;
-            }
+        if let Some(mut child) = self.child.take()
+            && child.try_wait()?.is_none()
+        {
+            child.kill().await?;
+            let _ = child.wait().await;
         }
         Ok(())
     }
@@ -57,14 +57,13 @@ pub fn detect_chrome() -> Option<PathBuf> {
         if path.is_file() {
             return Some(path.to_path_buf());
         }
-        if !candidate.contains('/') {
-            if let Ok(output) = std::process::Command::new("which").arg(candidate).output() {
-                if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !path.is_empty() {
-                        return Some(PathBuf::from(path));
-                    }
-                }
+        if !candidate.contains('/')
+            && let Ok(output) = std::process::Command::new("which").arg(candidate).output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
             }
         }
     }
@@ -170,10 +169,10 @@ fn find_file_named(root: &Path, name: &str) -> Result<Option<PathBuf>, Box<dyn s
         if path.file_name().and_then(|file| file.to_str()) == Some(name) && path.is_file() {
             return Ok(Some(path));
         }
-        if path.is_dir() {
-            if let Some(found) = find_file_named(&path, name)? {
-                return Ok(Some(found));
-            }
+        if path.is_dir()
+            && let Some(found) = find_file_named(&path, name)?
+        {
+            return Ok(Some(found));
         }
     }
     Ok(None)

@@ -3,3 +3,4 @@ pub mod chrome;
 pub mod dom;
 pub mod mouse;
 pub mod profile;
+pub mod session;

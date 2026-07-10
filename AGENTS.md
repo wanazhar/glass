@@ -5,20 +5,20 @@
 This is a Rust 2024 binary crate. `src/main.rs` initializes logging and dispatches the application. Runtime code is grouped by concern:
 
 - `src/browser/`: Chrome lifecycle, raw CDP/WebSocket calls, DOM/accessibility parsing, mouse events, and profiles.
-- `src/cli/`: Clap argument and command handling. `main.rs` is the active path; `args.rs` and `runner.rs` contain a richer CLI draft that is not currently wired into `src/cli/mod.rs`.
+- `src/cli/`: Clap argument definitions in `args.rs` and shared dispatch/session orchestration in `runner.rs`.
 - `src/mcp/`: JSON-RPC/MCP stdio server.
 - `src/tui/`: Ratatui terminal interface.
 - `Cargo.toml` and `Cargo.lock`: dependency and reproducible-build metadata.
 
-There is currently no `tests/`, `examples/`, or `benches/` directory. Add focused unit tests beside the module under test; use `tests/` for end-to-end behavior.
+There is currently no `tests/`, `examples/`, or `benches/` directory. Focused unit tests live beside the module under test; use `tests/` for end-to-end behavior.
 
 ## Build, Test, and Development Commands
 
 - `cargo build` compiles the debug binary.
 - `cargo run -- --help` lists the implemented CLI options and subcommands.
 - `cargo run -- install-chromium` downloads the managed Chromium build; browser flows otherwise require Chrome/Chromium and use CDP port `9222` by default.
-- `cargo run -- "navigate to https://example.com"` attempts a one-shot browser prompt; `cargo run -- profiles` and `cargo run -- delete-profile NAME` manage profiles.
-- `cargo run -- --mcp` starts the MCP server over stdio; `cargo run` starts the TUI.
+- `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `scroll`, and `evaluate`.
+- `cargo run -- profiles` and `cargo run -- delete-profile NAME` manage profiles; `cargo run -- --mcp` starts the real MCP server over stdio; `cargo run` starts the TUI.
 - `cargo test` runs the current unit tests; coverage has no enforced threshold.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
 

@@ -103,13 +103,21 @@ impl MouseEngine {
     }
 
     /// Move the mouse along a Bezier curve from start to end, calling a callback for each step.
-    pub async fn move_to<F>(&self, start: Point, end: Point, mut callback: F) -> Result<(), Box<dyn std::error::Error>>
+    pub async fn move_to<F>(
+        &self,
+        start: Point,
+        end: Point,
+        mut callback: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
     where
         F: FnMut(Point) -> futures_util::future::BoxFuture<'static, ()>,
     {
         let path = self.generate_path(start, end);
-        debug!("Mouse path: {} steps, {}px distance", path.len(),
-            ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt() as u32);
+        debug!(
+            "Mouse path: {} steps, {}px distance",
+            path.len(),
+            ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt() as u32
+        );
 
         for point in &path {
             callback(*point).await;

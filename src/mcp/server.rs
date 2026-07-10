@@ -1,28 +1,34 @@
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Read, Write};
-use tracing::{debug, error, info};
+use serde_json::{Value, json};
+use std::io;
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
+use tracing::{debug, info};
 
-/// JSON-RPC request for MCP.
+use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use crate::cli::args::Cli;
+
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
     method: String,
     #[serde(default)]
-    params: serde_json::Value,
+    params: Value,
     #[serde(default)]
-    id: Option<serde_json::Value>,
+    id: Option<Value>,
 }
 
-/// JSON-RPC response for MCP.
 #[derive(Debug, Serialize)]
 struct JsonRpcResponse {
-    jsonrpc: String,
+    jsonrpc: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
+    result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<serde_json::Value>,
+    id: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,369 +36,351 @@ struct JsonRpcError {
     code: i32,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<serde_json::Value>,
+    data: Option<Value>,
 }
 
-/// MCP tool definition.
 #[derive(Debug, Serialize)]
 struct Tool {
-    name: String,
-    description: String,
+    name: &'static str,
+    description: &'static str,
     #[serde(rename = "inputSchema")]
-    input_schema: serde_json::Value,
+    input_schema: Value,
 }
 
-/// Get the list of available MCP tools.
-fn get_tools() -> Vec<Tool> {
+enum FrameFormat {
+    ContentLength,
+    Newline,
+}
+
+pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
+    info!("MCP server starting on stdio");
+    let options = SessionOptions {
+        port: cli.port,
+        chrome_path: cli.chrome_path.clone(),
+        profile: cli.profile.clone(),
+        incognito: cli.incognito,
+        headed: cli.headed,
+    };
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
+    let mut stdout = tokio::io::stdout();
+    let mut session = None;
+
+    while let Some((body, format)) = read_message(&mut reader).await? {
+        debug!(%body, "MCP request received");
+        let request: JsonRpcRequest = match serde_json::from_str(&body) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = error_response(None, -32700, format!("parse error: {error}"));
+                write_response(&mut stdout, &response, format).await?;
+                continue;
+            }
+        };
+
+        let response = handle_request(&request, &mut session, &options).await;
+        if let Some((response, format)) = response {
+            write_response(&mut stdout, &response, format).await?;
+        }
+    }
+
+    if let Some(session) = session {
+        session.close().await?;
+    }
+    Ok(())
+}
+
+async fn handle_request(
+    request: &JsonRpcRequest,
+    session: &mut Option<BrowserSession>,
+    options: &SessionOptions,
+) -> Option<(JsonRpcResponse, FrameFormat)> {
+    if request.id.is_none() && request.method == "notifications/initialized" {
+        return None;
+    }
+    if request.jsonrpc != "2.0" {
+        return Some((
+            error_response(request.id.clone(), -32600, "jsonrpc must be 2.0"),
+            FrameFormat::Newline,
+        ));
+    }
+
+    let response = match request.method.as_str() {
+        "initialize" => success_response(
+            request.id.clone(),
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
+            }),
+        ),
+        "ping" => success_response(request.id.clone(), json!({})),
+        "tools/list" => success_response(request.id.clone(), json!({"tools": tools()})),
+        "tools/call" => match call_tool(request, session, options).await {
+            Ok(result) => success_response(request.id.clone(), result),
+            Err(error) => {
+                let mut response = success_response(
+                    request.id.clone(),
+                    json!({
+                        "content": [{"type": "text", "text": error.to_string()}],
+                        "isError": true
+                    }),
+                );
+                response.error = None;
+                response
+            }
+        },
+        _ => error_response(
+            request.id.clone(),
+            -32601,
+            format!("method not found: {}", request.method),
+        ),
+    };
+    Some((response, FrameFormat::Newline))
+}
+
+async fn call_tool(
+    request: &JsonRpcRequest,
+    session: &mut Option<BrowserSession>,
+    options: &SessionOptions,
+) -> BrowserResult<Value> {
+    let tool_name = request.params["name"]
+        .as_str()
+        .ok_or("tools/call requires a string name")?;
+    let arguments = &request.params["arguments"];
+    let session = ensure_session(session, options).await?;
+
+    match tool_name {
+        "navigate" => {
+            let url = required_string(arguments, "url")?;
+            let page = session.navigate(url).await?;
+            Ok(text_result(format!(
+                "navigated to {} — {}",
+                page.title, page.url
+            )))
+        }
+        "click" => {
+            let target = required_string(arguments, "target")
+                .or_else(|_| required_string(arguments, "selector"))?;
+            Ok(text_result(format!(
+                "clicked {}",
+                session.click(target).await?
+            )))
+        }
+        "type" => {
+            let text = required_string(arguments, "text")?;
+            let target = arguments["target"].as_str();
+            session.type_text(text, target).await?;
+            Ok(text_result(format!(
+                "typed {} characters",
+                text.chars().count()
+            )))
+        }
+        "screenshot" => {
+            let image = session.screenshot_png().await?;
+            Ok(json!({
+                "content": [{
+                    "type": "image",
+                    "data": STANDARD.encode(image),
+                    "mimeType": "image/png"
+                }]
+            }))
+        }
+        "getDOM" | "dom" => Ok(text_result(session.snapshot().await?.format())),
+        "getText" | "text" => Ok(text_result(session.text().await?)),
+        "evaluate" => {
+            let expression = required_string(arguments, "expression")?;
+            Ok(text_result(serde_json::to_string_pretty(
+                &session.evaluate(expression).await?,
+            )?))
+        }
+        "scroll" => {
+            let dx = arguments["dx"].as_f64().unwrap_or(0.0);
+            let dy = arguments["dy"].as_f64().unwrap_or(600.0);
+            session.scroll(dx, dy).await?;
+            Ok(text_result(format!("scrolled by ({dx}, {dy})")))
+        }
+        _ => Err(format!("unknown tool: {tool_name}").into()),
+    }
+}
+
+async fn ensure_session<'a>(
+    session: &'a mut Option<BrowserSession>,
+    options: &SessionOptions,
+) -> BrowserResult<&'a mut BrowserSession> {
+    if session.is_none() {
+        *session = Some(BrowserSession::start(options).await?);
+    }
+    Ok(session.as_mut().expect("session initialized"))
+}
+
+fn tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "navigate".to_string(),
-            description: "Navigate the browser to a URL".to_string(),
-            input_schema: serde_json::json!({
+            name: "navigate",
+            description: "Navigate the browser to a URL.",
+            input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to navigate to"
-                    }
-                },
+                "properties": {"url": {"type": "string"}},
                 "required": ["url"]
             }),
         },
         Tool {
-            name: "click".to_string(),
-            description: "Click on an element by CSS selector".to_string(),
-            input_schema: serde_json::json!({
+            name: "click",
+            description: "Click an accessibility reference, accessible name, or CSS selector.",
+            input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "selector": {
-                        "type": "string",
-                        "description": "CSS selector for the element to click"
-                    }
-                },
-                "required": ["selector"]
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
         Tool {
-            name: "type".to_string(),
-            description: "Type text into the currently focused element".to_string(),
-            input_schema: serde_json::json!({
+            name: "type",
+            description: "Insert text into the focused element, optionally clicking a target.",
+            input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type"
-                    }
-                },
+                "properties": {"text": {"type": "string"}, "target": {"type": "string"}},
                 "required": ["text"]
             }),
         },
         Tool {
-            name: "screenshot".to_string(),
-            description: "Take a screenshot of the current page".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "format": {
-                        "type": "string",
-                        "description": "Image format: png or jpeg",
-                        "enum": ["png", "jpeg"],
-                        "default": "png"
-                    }
-                }
-            }),
+            name: "screenshot",
+            description: "Capture the current page as a PNG image.",
+            input_schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
-            name: "getDOM".to_string(),
-            description: "Get the accessibility tree of the current page".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {}
-            }),
+            name: "getDOM",
+            description: "Return the current accessibility snapshot.",
+            input_schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
-            name: "evaluate".to_string(),
-            description: "Execute JavaScript in the page and return the result".to_string(),
-            input_schema: serde_json::json!({
+            name: "getText",
+            description: "Return visible text from the current page.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "evaluate",
+            description: "Evaluate JavaScript in the current page.",
+            input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "JavaScript expression to evaluate"
-                    }
-                },
+                "properties": {"expression": {"type": "string"}},
                 "required": ["expression"]
             }),
         },
         Tool {
-            name: "getText".to_string(),
-            description: "Get the text content of the current page".to_string(),
-            input_schema: serde_json::json!({
+            name: "scroll",
+            description: "Scroll the page by CSS pixel deltas.",
+            input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {"dx": {"type": "number"}, "dy": {"type": "number"}}
             }),
         },
     ]
 }
 
-/// Handle a JSON-RPC request.
-fn handle_request(request: &JsonRpcRequest) -> JsonRpcResponse {
-    let response = match request.method.as_str() {
-        "initialize" => {
-            info!("MCP: initialize");
-            JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                result: Some(serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {
-                            "listChanged": false
-                        }
-                    },
-                    "serverInfo": {
-                        "name": "glass",
-                        "version": "0.1.0"
-                    }
-                })),
-                error: None,
-                id: request.id.clone(),
-            }
-        }
-        "notifications/initialized" => {
-            // No response needed for notifications
-            return JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                result: None,
-                error: None,
-                id: None,
-            };
-        }
-        "tools/list" => {
-            info!("MCP: tools/list");
-            let tools = get_tools();
-            JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                result: Some(serde_json::json!({
-                    "tools": tools
-                })),
-                error: None,
-                id: request.id.clone(),
-            }
-        }
-        "tools/call" => {
-            let tool_name = request.params["name"].as_str().unwrap_or("");
-            let arguments = &request.params["arguments"];
-            info!("MCP: tools/call {tool_name}");
-
-            match tool_name {
-                "navigate" => {
-                    let url = arguments["url"].as_str().unwrap_or("");
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Navigated to: {url}")
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                "click" => {
-                    let selector = arguments["selector"].as_str().unwrap_or("");
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Clicked: {selector}")
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                "type" => {
-                    let text = arguments["text"].as_str().unwrap_or("");
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Typed: {text}")
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                "screenshot" => {
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": "Screenshot taken (base64 data)"
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                "getDOM" | "getText" => {
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": "Page content retrieved"
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                "evaluate" => {
-                    let expr = arguments["expression"].as_str().unwrap_or("");
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Evaluated: {expr}")
-                            }]
-                        })),
-                        error: None,
-                        id: request.id.clone(),
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32601,
-                        message: format!("Unknown tool: {tool_name}"),
-                        data: None,
-                    }),
-                    id: request.id.clone(),
-                },
-            }
-        }
-        "ping" => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            result: Some(serde_json::json!({})),
-            error: None,
-            id: request.id.clone(),
-        },
-        _ => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32601,
-                message: format!("Method not found: {}", request.method),
-                data: None,
-            }),
-            id: request.id.clone(),
-        },
-    };
-
-    response
+fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a str> {
+    arguments[name]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("missing string argument: {name}").into())
 }
 
-/// Run the MCP server over stdio.
-pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
-    info!("MCP server starting on stdio");
+fn text_result(text: impl Into<String>) -> Value {
+    json!({"content": [{"type": "text", "text": text.into()}]})
+}
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut stdout = io::stdout();
+fn success_response(id: Option<Value>, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        result: Some(result),
+        error: None,
+        id,
+    }
+}
 
+fn error_response(id: Option<Value>, code: i32, message: impl Into<String>) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: message.into(),
+            data: None,
+        }),
+        id,
+    }
+}
+
+async fn read_message<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<Option<(String, FrameFormat)>> {
+    let mut first_line = String::new();
     loop {
-        // Read Content-Length header
-        let mut header_line = String::new();
-        match reader.read_line(&mut header_line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
-            Err(e) => {
-                error!("Read error: {e}");
-                break;
-            }
+        first_line.clear();
+        if reader.read_line(&mut first_line).await? == 0 {
+            return Ok(None);
         }
-
-        let header_line = header_line.trim();
-        if header_line.is_empty() {
-            continue;
+        if !first_line.trim().is_empty() {
+            break;
         }
-
-        let content_length: usize = header_line
-            .strip_prefix("Content-Length: ")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        if content_length == 0 {
-            continue;
-        }
-
-        // Skip empty line after header
-        let mut empty = String::new();
-        reader.read_line(&mut empty)?;
-
-        // Read the JSON body
-        let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body)?;
-
-        let body_str = match String::from_utf8(body) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Invalid UTF-8: {e}");
-                continue;
-            }
-        };
-
-        debug!("MCP recv: {body_str}");
-
-        // Parse the JSON-RPC request
-        let request: JsonRpcRequest = match serde_json::from_str(&body_str) {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Invalid JSON-RPC: {e}");
-                let response = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                    id: None,
-                };
-                write_response(&mut stdout, &response)?;
-                continue;
-            }
-        };
-
-        // Handle the request
-        let response = handle_request(&request);
-
-        // Skip responses without id (notifications)
-        if response.id.is_none() {
-            continue;
-        }
-
-        write_response(&mut stdout, &response)?;
     }
 
-    Ok(())
+    if let Some(length) = first_line
+        .trim()
+        .strip_prefix("Content-Length:")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        let mut separator = String::new();
+        reader.read_line(&mut separator).await?;
+        let mut body = vec![0_u8; length];
+        reader.read_exact(&mut body).await?;
+        return Ok(Some((
+            String::from_utf8_lossy(&body).into_owned(),
+            FrameFormat::ContentLength,
+        )));
+    }
+
+    Ok(Some((first_line.trim().to_string(), FrameFormat::Newline)))
 }
 
-/// Write a JSON-RPC response to stdout with Content-Length header.
-fn write_response(
-    writer: &mut impl Write,
+async fn write_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
     response: &JsonRpcResponse,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let body = serde_json::to_string(response)?;
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
-    writer.flush()?;
-    Ok(())
+    format: FrameFormat,
+) -> io::Result<()> {
+    let body = serde_json::to_string(response).map_err(io::Error::other)?;
+    match format {
+        FrameFormat::ContentLength => {
+            writer
+                .write_all(format!("Content-Length: {}\r\n\r\n{}", body.len(), body).as_bytes())
+                .await?;
+        }
+        FrameFormat::Newline => {
+            writer.write_all(body.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+        }
+    }
+    writer.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn advertises_real_browser_tools_without_starting_chrome() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list"
+        }))
+        .unwrap();
+        let mut session = None;
+        let result = handle_request(&request, &mut session, &SessionOptions::default())
+            .await
+            .unwrap()
+            .0;
+        let tools = result.result.unwrap()["tools"].as_array().unwrap().len();
+        assert_eq!(tools, 8);
+        assert!(session.is_none());
+    }
 }

@@ -1,38 +1,38 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "glass",
     version,
-    about = "Glass — lightweight local-first browser agent (raw CDP)",
-    long_about = "Drive Chrome like a human via CDP. TUI by default, one-shot CLI prompts, or MCP server mode."
+    about = "Lightweight local-first browser agent using raw Chrome DevTools Protocol"
 )]
 pub struct Cli {
-    /// Named session profile (cookies + chromium user-data-dir)
-    #[arg(long, global = true)]
-    pub profile: Option<String>,
+    /// Named browser profile used for persistent cookies and storage.
+    #[arg(long, global = true, default_value = "default")]
+    pub profile: String,
 
-    /// No persistence (ephemeral profile)
-    #[arg(long, global = true, default_value_t = false)]
+    /// Use a temporary browser profile without persistence.
+    #[arg(long, global = true)]
     pub incognito: bool,
 
-    /// Chrome remote debugging port
+    /// Chrome remote debugging port.
     #[arg(long, global = true, default_value_t = 9222)]
     pub port: u16,
 
-    /// Run headed (show browser window). Default is headless.
-    #[arg(long, global = true, default_value_t = false)]
+    /// Show the browser window instead of using headless mode.
+    #[arg(long, global = true)]
     pub headed: bool,
 
-    /// Path to Chrome/Chromium binary
-    #[arg(long, global = true)]
-    pub chrome: Option<String>,
+    /// Path to a Chrome/Chromium binary.
+    #[arg(long = "chrome-path", alias = "chrome", global = true)]
+    pub chrome_path: Option<PathBuf>,
 
-    /// Run as MCP server (stdio)
-    #[arg(long, default_value_t = false)]
+    /// Run the MCP server over stdio.
+    #[arg(long)]
     pub mcp: bool,
 
-    /// One-shot natural language / command prompt (CLI mode)
+    /// One-shot prompt, for example: "navigate to https://example.com".
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
@@ -42,47 +42,44 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Download a managed Chromium build
+    /// Download and install a managed Chrome for Testing build.
     InstallChromium,
 
-    /// List saved profiles
+    /// List or manage saved profiles.
     Profiles {
         #[command(subcommand)]
-        action: Option<ProfileCmd>,
+        action: Option<ProfileCommand>,
     },
 
-    /// Navigate to a URL
-    Navigate {
-        url: String,
-    },
+    /// Delete a saved profile.
+    DeleteProfile { name: String },
 
-    /// Click an element by accessibility ref/index/name
-    Click {
-        /// Element index, or substring of accessible name
-        target: String,
-    },
+    /// Navigate to a URL.
+    Navigate { url: String },
 
-    /// Type text into the focused / targeted field
+    /// Click an element by accessibility reference, name, or CSS selector.
+    Click { target: String },
+
+    /// Type text into the focused element, optionally clicking a target first.
     Type {
         text: String,
-        /// Optional element ref to click first
         #[arg(long)]
         target: Option<String>,
     },
 
-    /// Capture a PNG screenshot
+    /// Capture a PNG screenshot.
     Screenshot {
         #[arg(short, long, default_value = "screenshot.png")]
         output: String,
     },
 
-    /// Print page text content
+    /// Print the visible page text.
     Text,
 
-    /// Dump interactive accessibility snapshot
+    /// Print the accessibility snapshot.
     Dom,
 
-    /// Scroll the page
+    /// Scroll the page by CSS pixels.
     Scroll {
         #[arg(long, default_value_t = 0.0)]
         dx: f64,
@@ -90,12 +87,15 @@ pub enum Commands {
         dy: f64,
     },
 
-    /// Launch interactive TUI
+    /// Evaluate JavaScript in the current page.
+    Evaluate { expression: String },
+
+    /// Launch the interactive TUI.
     Tui,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum ProfileCmd {
+pub enum ProfileCommand {
     List,
     Create { name: String },
     Delete { name: String },

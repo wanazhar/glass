@@ -1,0 +1,5 @@
+/target/
+/screenshot.png
+/screenshots/
+*.log
+.DS_Store

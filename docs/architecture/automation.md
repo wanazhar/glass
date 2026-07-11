@@ -1,0 +1,161 @@
+# Agent browser automation
+
+Status: Draft
+
+## Purpose
+
+Define the target contract for a browser control layer that is safe for agents,
+predictable for humans, and measurably smaller and faster than general-purpose
+automation stacks. This document extends the accepted browser data-plane
+contract; it does not replace its compact-observation or explicit-cost rules.
+
+## Product boundary
+
+Glass owns deterministic browser mechanics. It does not own planning or natural
+language reasoning.
+
+```text
+human / agent
+      │ intent + explicit policy
+      ▼
+CLI / MCP / TUI
+      │ typed operation
+      ▼
+BrowserSession ──► target/frame registry ──► CDP actor ──► Chrome
+      │                    │
+      ├─ observation cache ├─ wait engine
+      ├─ safety policy     └─ event-derived state
+      └─ bounded evidence (text, image, trace)
+```
+
+## Design priorities
+
+The priorities are ordered. A lower priority never justifies violating a
+higher one.
+
+1. **Correctness:** fail on ambiguity; never guess a destructive target.
+2. **Safety:** bound inputs and outputs; make powerful operations policy-aware.
+3. **Reliability:** expose explicit waits and state; avoid timing folklore.
+4. **Agent efficiency:** return stable references and compact structured
+   evidence by default.
+5. **Human control:** actions remain inspectable, cancellable where possible,
+   and usable in headed sessions.
+6. **Performance:** minimize CDP round trips, allocations, enabled domains,
+   retained state, binary size, and resident memory.
+7. **Coverage:** add capabilities only with the same contracts and budgets.
+
+## Non-negotiable resource rules
+
+- Every channel, retained collection, protocol frame, text field, image stream,
+  and diagnostic buffer has an explicit bound.
+- Default observation enables only the CDP domains it needs. Network, tracing,
+  screencast, downloads, and deep DOM are scoped subscriptions.
+- Large payloads are streamed or moved once. They are not cloned through
+  generic event broadcasts.
+- A cached object has an owner, invalidation rule, byte budget, and lifetime.
+- Performance reports separate Glass memory from Chrome memory and distinguish
+  fresh, cached, and opt-in operations.
+- New features must report their steady-state RSS, peak allocation, p50/p95
+  latency, payload size, and binary-size delta before merge.
+
+Initial release budgets are defined in
+[`best-in-class-browser.md`](../plan/analysis/best-in-class-browser.md) and may
+only change with recorded evidence.
+
+## Targeting contract
+
+Target resolution returns exactly one of:
+
+- `Unique(target)` with provenance and current revision;
+- `Ambiguous(candidates)` with bounded candidate summaries; or
+- `NotFound` with the attempted strategy.
+
+Accessible names, roles, text, CSS, and ordinal positions are separate locator
+strategies. Substring or role-only matching never silently selects the first
+candidate. Revisioned backend-node references remain the fastest preferred
+agent path.
+
+Before pointer dispatch, Glass verifies that the target is attached, visible,
+enabled when relevant, inside the viewport, and is the hit-test result at the
+chosen point. Layout movement triggers a bounded re-resolution or an explicit
+failure. Glass does not claim that smooth pointer motion defeats automation
+detection.
+
+## Wait contract
+
+Actions do not acquire hidden universal delays. Callers choose a typed
+condition and a deadline:
+
+- document lifecycle or URL condition;
+- target attached, visible, hidden, enabled, or stable;
+- text or JavaScript predicate;
+- download, dialog, popup, or navigation event; or
+- bounded network quiet when the Network domain is explicitly active.
+
+Waits use event-derived state when available and bounded polling otherwise.
+Timeout errors include the condition, deadline, last observed state, and a
+bounded diagnostic snapshot.
+
+## Browser topology
+
+A browser session owns a bounded registry of page targets and their frame
+trees. Target and frame identity is explicit in observations and actions.
+Popup creation, target closure, frame navigation, and process loss update that
+registry through CDP events. No command silently changes the active page.
+
+Cross-origin frames are controlled through CDP target/session routing, not DOM
+assumptions. Shadow roots remain part of locator traversal with explicit
+boundaries in diagnostics.
+
+## Interaction surface
+
+The complete intended primitive set is:
+
+- navigate, reload, back, and forward;
+- observe, screenshot, DOM, console, and scoped network evidence;
+- click, double-click, hover, drag, wheel, key, shortcut, type, and clear;
+- check/uncheck, select, and file upload;
+- list/create/select/close target and select frame;
+- accept/dismiss dialog and monitor downloads; and
+- evaluate JavaScript when policy permits.
+
+Each primitive returns a typed outcome containing target/frame identity,
+resulting revision, and only the evidence required to decide the next step.
+
+## Safety policy
+
+Policy is evaluated before browser or filesystem side effects. It can restrict:
+
+- allowed URL schemes, hosts, and private-network destinations;
+- JavaScript evaluation;
+- persistent profiles and attach mode;
+- downloads, uploads, and screenshot output paths;
+- destructive or credential-bearing actions; and
+- maximum protocol, DOM, image, and trace sizes.
+
+The default local policy remains useful for development but rejects unbounded
+inputs. A hardened preset is available for untrusted agent workloads. Policy
+denials are typed and distinguishable from browser failures.
+
+## Evidence and diagnostics
+
+Failures return bounded structured diagnostics rather than raw unbounded DOM or
+logs. Optional diagnostic subscriptions expose console errors, failed network
+requests, dialogs, downloads, and recent lifecycle events. Secret-bearing
+request bodies, cookies, headers, typed text, and evaluated source are redacted
+by default.
+
+## Extension rule
+
+Frontends call `BrowserSession`; they do not issue raw CDP. CDP domain adapters
+may be added behind typed session APIs. A new adapter must declare domain
+enable/disable lifecycle, retained state, bounds, failure behavior, and tests.
+
+## Required verification
+
+- deterministic contract tests for every locator, wait, and policy outcome;
+- real-Chrome integration tests for every frontend-to-session-to-CDP chain;
+- adversarial framing, parser, and page-state tests;
+- multi-platform browser smoke tests;
+- task-success comparisons against mature automation tools; and
+- resource regression gates for default and explicitly expensive paths.

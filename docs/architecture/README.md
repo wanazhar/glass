@@ -52,4 +52,5 @@ TUI ─────┘          │
 ## Module index
 
 - [Browser data plane](browser.md)
+- [Agent browser automation](automation.md)
 - [Terminal UI](tui.md)

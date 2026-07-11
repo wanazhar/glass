@@ -23,6 +23,9 @@
   observation, MCP, and TUI contracts.
 - [Browser data plane](architecture/browser.md) — CDP, observation, action,
   and profile rules.
+- [Agent browser automation](architecture/automation.md) — correctness,
+  waiting, targeting, safety, and resource-budget contracts for the next
+  generation.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
   lifecycle.
 

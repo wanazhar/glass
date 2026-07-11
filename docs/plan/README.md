@@ -1,25 +1,51 @@
-# Performance overhaul delivery plan
+# Glass delivery plans
+
+## Active plan: best-in-class agent browser
+
+Status: Draft — requires owner approval before implementation
+
+The active goal is to make Glass a deterministic, memory-efficient browser
+control layer that humans and agents prefer over mature alternatives for local
+Chrome automation.
+
+Analysis and scorecard:
+
+- [Best-in-class browser analysis](analysis/best-in-class-browser.md)
+- [Agent browser automation design](../architecture/automation.md)
+
+### Task order
+
+| Order | Task | Outcome |
+|---:|---|---|
+| 1 | [quality-007](tasks/quality-007.md) | Task-success and resource scorecard before feature work. |
+| 2 | [mcp-008](tasks/mcp-008.md) | Bounded, negotiated, cancellable MCP transport. |
+| 3 | [target-009](tasks/target-009.md) | Unique locator resolution and verified hit targets. |
+| 4 | [wait-010](tasks/wait-010.md) | Typed explicit wait engine. |
+| 5 | [topology-011](tasks/topology-011.md) | Tabs, popups, targets, and frames. |
+| 6 | [input-012](tasks/input-012.md) | Complete keyboard, pointer, form, and upload primitives. |
+| 7 | [observe-013](tasks/observe-013.md) | Consistent, frame-aware, bounded observations. |
+| 8 | [diagnostic-014](tasks/diagnostic-014.md) | Scoped console, network, dialog, and download evidence. |
+| 9 | [visual-015](tasks/visual-015.md) | Exact viewport/full-page capture and visual verification. |
+| 10 | [policy-016](tasks/policy-016.md) | Enforceable safety profiles and side-effect controls. |
+| 11 | [release-017](tasks/release-017.md) | Supply-chain, fuzz, crash, and multi-platform hardening. |
+| 12 | [compare-018](tasks/compare-018.md) | Final comparative task-success and efficiency gate. |
+
+Tasks are developed and independently reviewed in dependency order. A phase
+does not advance while correctness or safety gates from an earlier task fail.
+
+## Completed plan: performance overhaul
 
 Status: Complete
 
-This plan implements the agreed goal: make Glass the fastest and smallest practical local CDP automation client while correcting behavior that contradicts its public interface.
+The previous plan established compact observation, explicit expensive paths,
+browser ownership, stable references, persistent MCP, a responsive TUI, and
+baseline performance measurements. Its completed tasks remain below as the
+delivery record:
 
-## Task order
-
-1. [baseline-000](tasks/baseline-000.md) — audit and adopt the pre-existing observation/capture worktree changes.
-2. [perf-001](tasks/perf-001.md) — compact observation and CDP hot path.
-3. [lifecycle-002](tasks/lifecycle-002.md) — explicit attachment, profile ownership, managed Chromium, and real incognito.
-4. [action-003](tasks/action-003.md) — stable references and low-cost reliable input primitives.
-5. [mcp-004](tasks/mcp-004.md) — compact persistent MCP and deterministic CLI data flow.
-6. [tui-005](tasks/tui-005.md) — responsive worker-based TUI with the existing layout.
-7. [verify-006](tasks/verify-006.md) — benchmarks, memory checks, and end-to-end regression coverage.
-
-Each task is developed, tested, reviewed, merged, and locally committed before the next dependent task starts. Commit subjects use Conventional Commits.
-
-## Baseline
-
-The pre-overhaul release binary is 4.1 MB. Existing build, fmt, Clippy, unit, and Chromium smoke checks pass. The acceptance suite records deltas rather than claiming a performance win without a reproducible measurement.
-
-## Shared verification
-
-Every completed task runs its targeted tests plus `cargo fmt --all -- --check` and strict Clippy. After merge, run the full test suite and record any environment-limited checks.
+1. [baseline-000](tasks/baseline-000.md)
+2. [perf-001](tasks/perf-001.md)
+3. [lifecycle-002](tasks/lifecycle-002.md)
+4. [action-003](tasks/action-003.md)
+5. [mcp-004](tasks/mcp-004.md)
+6. [tui-005](tasks/tui-005.md)
+7. [verify-006](tasks/verify-006.md)

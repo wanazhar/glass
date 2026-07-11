@@ -20,7 +20,8 @@ Status: Accepted
 ├──────────────────────────── Status / keybindings ──────────────────────────┤
 ```
 
-The visual layout remains unchanged. "Agent Thoughts" is an activity stream: user commands, lifecycle events, action start/end, errors, and page updates.
+The visual layout remains unchanged. "Activity" is an auditable event stream:
+user commands, lifecycle events, action start/end, errors, and page updates.
 
 ## Ownership and flow
 
@@ -32,6 +33,16 @@ crossterm input task ──> UI loop ── BrowserCommand ──> BrowserWorker
 
 The UI loop owns terminal state and `App`. `BrowserWorker` owns the `BrowserSession`; it accepts one operation at a time and sends lifecycle/results events through bounded Tokio channels. Neither task owns the other's state.
 
+The worker runs on the TUI's Tokio `LocalSet`: its browser I/O remains fully
+asynchronous and yields to the UI loop, without forcing the existing browser
+error boundary across worker threads.
+
+A small dedicated Crossterm input worker forwards key events to the UI reducer.
+The reducer may enqueue at most one active browser operation and never awaits a
+browser future. `Esc` sends cancellation for that operation's ID. Cancellation
+is best effort: it drops Glass's in-flight operation future, but cannot roll
+back a CDP input event that Chrome already received.
+
 ## Interactions
 
 | Input | Scope | Behavior |
@@ -41,20 +52,27 @@ The UI loop owns terminal state and `App`. `BrowserWorker` owns the `BrowserSess
 | q / Ctrl-C | app | request worker shutdown and exit cleanly |
 | PgUp/PgDn | observation | scroll bounded page state |
 
+`observe`, `dom`, and `snapshot` in the TUI all refresh compact `PageContext`.
+The TUI is an operational dashboard, so full DOM inspection remains an explicit
+CLI/MCP capability rather than an unbounded right-panel payload.
+
 ## State variants
 
 - Loading: show connection status and activity entry while session starts.
 - Busy: retain previous page state, animate a small status indicator, accept cancellation.
 - Error: show the current error overlay and retain prior page state.
 - Empty: show no-page-loaded text.
-- Constrained: preserve command and status bars; panels may stack or truncate at small terminal dimensions.
+- Constrained: preserve command and status bars; panel content truncates to the available terminal viewport.
 
 ## Runtime rules
 
 - Render only when state changes, plus a bounded busy animation tick.
 - Input polling runs outside the async render loop using existing crossterm/Tokio facilities.
-- A terminal guard restores raw mode, alternate screen, and cursor on every error path.
 - Screenshots are written to files by the worker; base64 image data is not held in `App`.
+- The right-panel string, header values, activity history, and command input
+  each have explicit bounds before they enter `App` state.
+- A terminal guard restores raw mode, alternate screen, and cursor on every
+  normal error/exit path before waiting for browser-worker shutdown.
 
 ## Tests
 

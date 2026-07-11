@@ -1,5 +1,6 @@
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    cursor::{Hide, Show},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -11,57 +12,127 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
-use std::io;
+use std::{
+    collections::VecDeque,
+    future::Future,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+use tokio::{
+    sync::{mpsc, watch},
+    task::{JoinHandle, LocalSet},
+    time::{self, MissedTickBehavior},
+};
 
 use crate::browser::profile::ProfileManager;
-use crate::browser::session::{BrowserResult, BrowserSession, PageContext, SessionOptions};
+use crate::browser::session::{
+    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SessionOptions,
+};
 use crate::cli::args::Cli;
+
+const INPUT_CHANNEL_CAPACITY: usize = 64;
+const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
+const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 8;
+const ACTIVITY_LIMIT: usize = 100;
+const TUI_PAGE_MAX_BYTES: usize = 24 * 1024;
+const TUI_HEADER_MAX_BYTES: usize = 512;
+const TUI_ACTIVITY_MAX_BYTES: usize = 512;
+const TUI_INPUT_MAX_BYTES: usize = 4 * 1024;
+const BUSY_TICK: Duration = Duration::from_millis(120);
+const INPUT_POLL: Duration = Duration::from_millis(50);
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct App {
     url: String,
     title: String,
-    thoughts: Vec<String>,
-    page_content: Vec<String>,
+    activity: VecDeque<String>,
+    page_content: String,
     page_scroll: u16,
     input: String,
     cursor_pos: usize,
     should_quit: bool,
     error_msg: Option<String>,
     status: String,
+    browser_state: BrowserState,
+    busy: Option<BusyState>,
+    next_operation_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserState {
+    Connecting,
+    Ready,
+    Unavailable,
+    Stopped,
+}
+
+#[derive(Debug, Clone)]
+struct BusyState {
+    id: u64,
+    label: String,
+    cancelling: bool,
+    spinner: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UiIntent {
+    None,
+    Submit(String),
+    Cancel(u64),
+    Quit,
 }
 
 impl App {
     fn new() -> Self {
+        let mut activity = VecDeque::new();
+        activity.push_back("Glass started.".to_string());
+        activity.push_back("Connecting to Chrome…".to_string());
         Self {
             url: String::new(),
             title: "Glass — Browser Agent".to_string(),
-            thoughts: vec![
-                "Glass started.".to_string(),
-                "Waiting for instructions...".to_string(),
-            ],
-            page_content: vec!["No page loaded.".to_string()],
+            activity,
+            page_content: "No page loaded.".to_string(),
             page_scroll: 0,
             input: String::new(),
             cursor_pos: 0,
             should_quit: false,
             error_msg: None,
-            status: "Ready".to_string(),
+            status: "Connecting to Chrome…".to_string(),
+            browser_state: BrowserState::Connecting,
+            busy: None,
+            next_operation_id: 1,
         }
     }
 
-    fn add_thought(&mut self, message: impl Into<String>) {
-        self.thoughts.push(message.into());
-        if self.thoughts.len() > 100 {
-            self.thoughts.remove(0);
+    fn add_activity(&mut self, message: impl Into<String>) {
+        let message = bounded_text(&message.into(), TUI_ACTIVITY_MAX_BYTES);
+        if self.activity.len() == ACTIVITY_LIMIT {
+            self.activity.pop_front();
         }
+        self.activity.push_back(message);
     }
 
     fn set_error(&mut self, message: impl Into<String>) {
-        self.error_msg = Some(message.into());
+        self.error_msg = Some(bounded_text(&message.into(), TUI_ACTIVITY_MAX_BYTES));
+    }
+
+    fn report_error(&mut self, message: impl Into<String>) {
+        let message = bounded_text(&message.into(), TUI_ACTIVITY_MAX_BYTES);
+        self.set_error(message.clone());
+        self.add_activity(format!("Error: {message}"));
     }
 
     fn clear_error(&mut self) {
         self.error_msg = None;
+    }
+
+    fn set_status(&mut self, status: impl Into<String>) {
+        self.status = bounded_text(&status.into(), TUI_ACTIVITY_MAX_BYTES);
     }
 
     fn cursor_byte_index(&self) -> usize {
@@ -72,10 +143,14 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
-    fn insert_char(&mut self, character: char) {
+    fn insert_char(&mut self, character: char) -> bool {
+        if self.input.len().saturating_add(character.len_utf8()) > TUI_INPUT_MAX_BYTES {
+            return false;
+        }
         let index = self.cursor_byte_index();
         self.input.insert(index, character);
         self.cursor_pos += 1;
+        true
     }
 
     fn remove_before_cursor(&mut self) {
@@ -103,6 +178,900 @@ impl App {
             .unwrap_or(self.input.len());
         if start < end {
             self.input.drain(start..end);
+        }
+    }
+
+    fn reduce_key(&mut self, key: KeyEvent) -> UiIntent {
+        if key.kind != KeyEventKind::Press {
+            return UiIntent::None;
+        }
+
+        match key.code {
+            KeyCode::Char('q' | 'c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                UiIntent::Quit
+            }
+            KeyCode::Char('q') if self.input.is_empty() => UiIntent::Quit,
+            KeyCode::Esc => {
+                let cancellation = self.busy.as_mut().and_then(|busy| {
+                    if busy.cancelling {
+                        None
+                    } else {
+                        busy.cancelling = true;
+                        Some((busy.id, busy.label.clone()))
+                    }
+                });
+                if let Some((id, label)) = cancellation {
+                    self.set_status(format!("Cancelling: {label}"));
+                    self.add_activity(format!("Cancellation requested: {label}"));
+                    UiIntent::Cancel(id)
+                } else if self.busy.is_some() {
+                    UiIntent::None
+                } else if self.error_msg.is_some() {
+                    self.clear_error();
+                    UiIntent::None
+                } else {
+                    UiIntent::Quit
+                }
+            }
+            KeyCode::Enter if !self.input.trim().is_empty() => {
+                let command = std::mem::take(&mut self.input);
+                self.cursor_pos = 0;
+                UiIntent::Submit(command)
+            }
+            KeyCode::Backspace => {
+                self.remove_before_cursor();
+                UiIntent::None
+            }
+            KeyCode::Delete => {
+                self.remove_at_cursor();
+                UiIntent::None
+            }
+            KeyCode::Left => {
+                self.cursor_pos = self.cursor_pos.saturating_sub(1);
+                UiIntent::None
+            }
+            KeyCode::Right => {
+                self.cursor_pos = (self.cursor_pos + 1).min(self.input.chars().count());
+                UiIntent::None
+            }
+            KeyCode::Home => {
+                self.cursor_pos = 0;
+                UiIntent::None
+            }
+            KeyCode::End => {
+                self.cursor_pos = self.input.chars().count();
+                UiIntent::None
+            }
+            KeyCode::PageUp => {
+                self.page_scroll = self.page_scroll.saturating_sub(10);
+                UiIntent::None
+            }
+            KeyCode::PageDown => {
+                self.page_scroll = self.page_scroll.saturating_add(10);
+                UiIntent::None
+            }
+            KeyCode::Char(character) => {
+                if !self.insert_char(character) {
+                    self.report_error(format!(
+                        "Command input is limited to {TUI_INPUT_MAX_BYTES} bytes."
+                    ));
+                }
+                UiIntent::None
+            }
+            _ => UiIntent::None,
+        }
+    }
+
+    fn browser_ready(&self) -> bool {
+        self.browser_state == BrowserState::Ready
+    }
+
+    fn is_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    fn allocate_operation_id(&mut self) -> u64 {
+        let id = self.next_operation_id;
+        self.next_operation_id = self.next_operation_id.checked_add(1).unwrap_or(1);
+        id
+    }
+
+    fn begin_operation(&mut self, id: u64, label: impl Into<String>) {
+        let label = bounded_text(&label.into(), TUI_ACTIVITY_MAX_BYTES);
+        self.busy = Some(BusyState {
+            id,
+            label: label.clone(),
+            cancelling: false,
+            spinner: 0,
+        });
+        self.set_status(format!("Queued: {label}"));
+        self.add_activity(format!("Queued: {label}"));
+    }
+
+    fn finish_operation(&mut self, id: u64) {
+        if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
+            self.busy = None;
+            if self.browser_ready() {
+                self.set_status("Ready");
+            }
+        }
+    }
+
+    fn cancellation_enqueue_failed(&mut self, id: u64) {
+        let label = self.busy.as_mut().filter(|busy| busy.id == id).map(|busy| {
+            busy.cancelling = false;
+            busy.label.clone()
+        });
+        if let Some(label) = label {
+            self.set_status(format!("Working: {label}"));
+        }
+    }
+
+    fn tick_busy(&mut self) {
+        let status = self.busy.as_mut().map(|busy| {
+            busy.spinner = busy.spinner.wrapping_add(1);
+            if busy.cancelling {
+                format!("Cancelling: {}", busy.label)
+            } else {
+                let frame = ['|', '/', '-', '\\'][busy.spinner % 4];
+                format!("{frame} Working: {}", busy.label)
+            }
+        });
+        if let Some(status) = status {
+            self.set_status(status);
+        }
+    }
+
+    fn apply_browser_event(
+        &mut self,
+        event: BrowserEvent,
+    ) -> BrowserResult<Option<BrowserOperation>> {
+        match event {
+            BrowserEvent::Connecting => {
+                self.browser_state = BrowserState::Connecting;
+                self.set_status("Connecting to Chrome…");
+                self.add_activity("Browser worker is connecting.");
+            }
+            BrowserEvent::Ready { port } => {
+                self.browser_state = BrowserState::Ready;
+                self.set_status(format!("Connected on port {port}"));
+                self.add_activity("Connected to Chrome.");
+                return Ok(Some(BrowserOperation::Observe { fresh: false }));
+            }
+            BrowserEvent::StartupFailed { message } => {
+                self.browser_state = BrowserState::Unavailable;
+                self.busy = None;
+                self.set_status("Browser unavailable");
+                self.report_error(message);
+            }
+            BrowserEvent::OperationStarted { id, label } => {
+                if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
+                    self.set_status(format!("Working: {label}"));
+                    self.add_activity(format!("Started: {label}"));
+                }
+            }
+            BrowserEvent::OperationFinished { id, result } => {
+                self.finish_operation(id);
+                if let Some(update) = result.update {
+                    self.apply_page_update(update)?;
+                }
+                self.add_activity(result.activity);
+            }
+            BrowserEvent::OperationFailed { id, message } => {
+                if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
+                    self.finish_operation(id);
+                    self.report_error(message);
+                } else {
+                    self.add_activity(format!("Rejected operation {id}: {message}"));
+                }
+            }
+            BrowserEvent::OperationCancelled { id } => {
+                if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
+                    self.finish_operation(id);
+                    self.add_activity(format!("Cancelled operation {id}."));
+                }
+            }
+            BrowserEvent::WorkerFailed { message } => {
+                self.browser_state = BrowserState::Unavailable;
+                self.busy = None;
+                self.set_status("Browser worker failed");
+                self.report_error(message);
+            }
+            BrowserEvent::WorkerStopped => {
+                self.browser_state = BrowserState::Stopped;
+                self.busy = None;
+                self.set_status("Browser worker stopped");
+                self.add_activity("Browser worker stopped.");
+            }
+        }
+        Ok(None)
+    }
+
+    fn apply_page_update(&mut self, update: PageUpdate) -> BrowserResult<()> {
+        match update {
+            PageUpdate::Context(context) => self.apply_context(&context),
+            PageUpdate::Text { page, text } => {
+                self.apply_page_header(&page);
+                self.set_page_content(text);
+                Ok(())
+            }
+        }
+    }
+
+    fn apply_context(&mut self, context: &PageContext) -> BrowserResult<()> {
+        if context.screenshot.is_some() {
+            return Err("TUI worker must not retain screenshot data".into());
+        }
+        self.apply_page_header(&context.page);
+        self.set_page_content(serde_json::to_string_pretty(context)?);
+        Ok(())
+    }
+
+    fn apply_page_header(&mut self, page: &PageInfo) {
+        self.url = bounded_text(&page.url, TUI_HEADER_MAX_BYTES);
+        self.title = bounded_text(&format!("Glass — {}", page.title), TUI_HEADER_MAX_BYTES);
+    }
+
+    fn set_page_content(&mut self, content: impl Into<String>) {
+        self.page_content = bounded_text(&content.into(), TUI_PAGE_MAX_BYTES);
+        self.page_scroll = 0;
+    }
+}
+
+#[derive(Debug)]
+enum InputEvent {
+    Key(KeyEvent),
+    Redraw,
+    Error(String),
+}
+
+struct InputWorker {
+    shutdown: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl InputWorker {
+    fn spawn(events: mpsc::Sender<InputEvent>) -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
+        let join = thread::spawn(move || {
+            while !worker_shutdown.load(Ordering::Relaxed) {
+                match event::poll(INPUT_POLL) {
+                    Ok(false) => {}
+                    Ok(true) => match event::read() {
+                        Ok(Event::Key(key)) => {
+                            if events.blocking_send(InputEvent::Key(key)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(_) => {
+                            if events.blocking_send(InputEvent::Redraw).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = events.blocking_send(InputEvent::Error(error.to_string()));
+                            break;
+                        }
+                    },
+                    Err(error) => {
+                        let _ = events.blocking_send(InputEvent::Error(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            shutdown,
+            join: Some(join),
+        }
+    }
+
+    fn stop(&mut self) -> BrowserResult<()> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if self.join.take().is_some_and(|join| join.join().is_err()) {
+            return Err("TUI input worker panicked".into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for InputWorker {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalCommand {
+    Help,
+    Profiles,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum BrowserOperation {
+    Navigate(String),
+    Screenshot(String),
+    Text,
+    Dom,
+    Observe { fresh: bool },
+    Click(String),
+    DoubleClick(String),
+    Type(String),
+    Scroll { dx: f64, dy: f64 },
+    Evaluate(String),
+}
+
+impl BrowserOperation {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Navigate(_) => "Navigate",
+            Self::Screenshot(_) => "Screenshot",
+            Self::Text => "Text",
+            Self::Dom => "Compact DOM",
+            Self::Observe { .. } => "Observe",
+            Self::Click(_) => "Click",
+            Self::DoubleClick(_) => "Double-click",
+            Self::Type(_) => "Type",
+            Self::Scroll { .. } => "Scroll",
+            Self::Evaluate(_) => "Evaluate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ParsedCommand {
+    Local(LocalCommand),
+    Browser(BrowserOperation),
+}
+
+fn parse_command(input: &str) -> Result<ParsedCommand, String> {
+    let command = input.trim();
+    if command.is_empty() {
+        return Err("command cannot be empty".to_string());
+    }
+    if command.eq_ignore_ascii_case("help") {
+        return Ok(ParsedCommand::Local(LocalCommand::Help));
+    }
+    if command.eq_ignore_ascii_case("profiles") {
+        return Ok(ParsedCommand::Local(LocalCommand::Profiles));
+    }
+    for prefix in ["navigate ", "go to ", "go "] {
+        if let Some(url) = strip_ascii_prefix(command, prefix) {
+            return required_command_argument(url, "URL")
+                .map(BrowserOperation::Navigate)
+                .map(ParsedCommand::Browser);
+        }
+    }
+    if let Some(target) = strip_ascii_prefix(command, "double click ") {
+        return required_command_argument(target, "double-click target")
+            .map(BrowserOperation::DoubleClick)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(target) = strip_ascii_prefix(command, "click ") {
+        return required_command_argument(target, "click target")
+            .map(BrowserOperation::Click)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(text) = strip_ascii_prefix(command, "type ") {
+        return required_command_argument(text, "text")
+            .map(BrowserOperation::Type)
+            .map(ParsedCommand::Browser);
+    }
+    if command.eq_ignore_ascii_case("screenshot") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Screenshot(
+            "screenshot.png".to_string(),
+        )));
+    }
+    if let Some(output) = strip_ascii_prefix(command, "screenshot ") {
+        let output = output.trim();
+        return Ok(ParsedCommand::Browser(BrowserOperation::Screenshot(
+            if output.is_empty() {
+                "screenshot.png".to_string()
+            } else {
+                output.to_string()
+            },
+        )));
+    }
+    if ["text", "content", "get text", "page text"]
+        .iter()
+        .any(|candidate| command.eq_ignore_ascii_case(candidate))
+    {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Text));
+    }
+    if ["dom", "snapshot", "get dom"]
+        .iter()
+        .any(|candidate| command.eq_ignore_ascii_case(candidate))
+    {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Dom));
+    }
+    if ["observe", "context"]
+        .iter()
+        .any(|candidate| command.eq_ignore_ascii_case(candidate))
+    {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Observe {
+            fresh: false,
+        }));
+    }
+    if command.eq_ignore_ascii_case("scroll") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Scroll {
+            dx: 0.0,
+            dy: 600.0,
+        }));
+    }
+    if let Some(values) = strip_ascii_prefix(command, "scroll ") {
+        return parse_scroll(values).map(ParsedCommand::Browser);
+    }
+    Ok(ParsedCommand::Browser(BrowserOperation::Evaluate(
+        command.to_string(),
+    )))
+}
+
+fn strip_ascii_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))?;
+    Some(&value[prefix.len()..])
+}
+
+fn required_command_argument(value: &str, name: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(format!("{name} cannot be empty"))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn parse_scroll(values: &str) -> Result<BrowserOperation, String> {
+    let mut values = values.split_whitespace();
+    let dx = values
+        .next()
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .map_err(|_| "scroll dx must be a number")
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    let dy = values
+        .next()
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .map_err(|_| "scroll dy must be a number")
+        })
+        .transpose()?
+        .unwrap_or(600.0);
+    if values.next().is_some() {
+        return Err("scroll accepts at most dx and dy".to_string());
+    }
+    Ok(BrowserOperation::Scroll { dx, dy })
+}
+
+#[derive(Debug)]
+enum BrowserCommand {
+    Execute {
+        id: u64,
+        operation: BrowserOperation,
+    },
+    Cancel {
+        id: u64,
+    },
+    Shutdown,
+}
+
+#[derive(Debug)]
+enum BrowserEvent {
+    Connecting,
+    Ready {
+        port: u16,
+    },
+    StartupFailed {
+        message: String,
+    },
+    OperationStarted {
+        id: u64,
+        label: String,
+    },
+    OperationFinished {
+        id: u64,
+        result: Box<OperationResult>,
+    },
+    OperationFailed {
+        id: u64,
+        message: String,
+    },
+    OperationCancelled {
+        id: u64,
+    },
+    WorkerFailed {
+        message: String,
+    },
+    WorkerStopped,
+}
+
+#[derive(Debug)]
+enum PageUpdate {
+    Context(Box<PageContext>),
+    Text { page: PageInfo, text: String },
+}
+
+#[derive(Debug)]
+struct OperationResult {
+    activity: String,
+    update: Option<PageUpdate>,
+}
+
+enum ActiveOperationState {
+    Completed(BrowserResult<Box<OperationResult>>),
+    Cancelled,
+    Shutdown,
+}
+
+async fn browser_worker(
+    options: SessionOptions,
+    mut commands: mpsc::Receiver<BrowserCommand>,
+    events: mpsc::Sender<BrowserEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    if !send_browser_event(&events, BrowserEvent::Connecting).await {
+        return;
+    }
+
+    let Some(session) =
+        start_browser_session(&options, &mut commands, &events, &mut shutdown).await
+    else {
+        return;
+    };
+    if !send_browser_event(&events, BrowserEvent::Ready { port: options.port }).await {
+        let _ = session.close().await;
+        return;
+    }
+
+    worker_loop(session, &mut commands, &events, &mut shutdown).await;
+}
+
+async fn start_browser_session(
+    options: &SessionOptions,
+    commands: &mut mpsc::Receiver<BrowserCommand>,
+    events: &mpsc::Sender<BrowserEvent>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Option<BrowserSession> {
+    let start = BrowserSession::start(options);
+    tokio::pin!(start);
+
+    loop {
+        if *shutdown.borrow() {
+            let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+            return None;
+        }
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+                    return None;
+                }
+            }
+            command = commands.recv() => match command {
+                Some(BrowserCommand::Shutdown) | None => {
+                    let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+                    return None;
+                }
+                Some(BrowserCommand::Execute { id, .. }) => {
+                    if !send_browser_event(events, BrowserEvent::OperationFailed {
+                        id,
+                        message: "browser is still starting".to_string(),
+                    }).await {
+                        return None;
+                    }
+                }
+                Some(BrowserCommand::Cancel { id }) => {
+                    if !send_browser_event(events, BrowserEvent::OperationCancelled { id }).await {
+                        return None;
+                    }
+                }
+            },
+            result = &mut start => match result {
+                Ok(session) => return Some(session),
+                Err(error) => {
+                    let message = error.to_string();
+                    drop(error);
+                    let _ = send_browser_event(events, BrowserEvent::StartupFailed {
+                        message,
+                    }).await;
+                    return None;
+                }
+            },
+        }
+    }
+}
+
+async fn worker_loop(
+    session: BrowserSession,
+    commands: &mut mpsc::Receiver<BrowserCommand>,
+    events: &mpsc::Sender<BrowserEvent>,
+    shutdown: &mut watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            command = commands.recv() => match command {
+                Some(BrowserCommand::Shutdown) | None => break,
+                Some(BrowserCommand::Cancel { .. }) => {}
+                Some(BrowserCommand::Execute { id, operation }) => {
+                    let label = operation.label().to_string();
+                    if !send_browser_event(events, BrowserEvent::OperationStarted { id, label }).await {
+                        break;
+                    }
+                    match await_active_operation(
+                        execute_browser_operation(&session, operation),
+                        id,
+                        commands,
+                        shutdown,
+                        events,
+                    ).await {
+                        ActiveOperationState::Completed(Ok(result)) => {
+                            if !send_browser_event(events, BrowserEvent::OperationFinished { id, result }).await {
+                                break;
+                            }
+                        }
+                        ActiveOperationState::Completed(Err(error)) => {
+                            let message = error.to_string();
+                            drop(error);
+                            if !send_browser_event(events, BrowserEvent::OperationFailed {
+                                id,
+                                message,
+                            }).await {
+                                break;
+                            }
+                        }
+                        ActiveOperationState::Cancelled => {
+                            if !send_browser_event(events, BrowserEvent::OperationCancelled { id }).await {
+                                break;
+                            }
+                        }
+                        ActiveOperationState::Shutdown => break,
+                    }
+                }
+            },
+        }
+    }
+
+    let close_error = session.close().await.err().map(|error| error.to_string());
+    if let Some(message) = close_error {
+        let _ = send_browser_event(events, BrowserEvent::WorkerFailed { message }).await;
+    }
+    let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+}
+
+async fn await_active_operation<F>(
+    operation: F,
+    id: u64,
+    commands: &mut mpsc::Receiver<BrowserCommand>,
+    shutdown: &mut watch::Receiver<bool>,
+    events: &mpsc::Sender<BrowserEvent>,
+) -> ActiveOperationState
+where
+    F: Future<Output = BrowserResult<Box<OperationResult>>>,
+{
+    tokio::pin!(operation);
+    loop {
+        if *shutdown.borrow() {
+            return ActiveOperationState::Shutdown;
+        }
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return ActiveOperationState::Shutdown;
+                }
+            }
+            command = commands.recv() => match command {
+                Some(BrowserCommand::Shutdown) | None => return ActiveOperationState::Shutdown,
+                Some(BrowserCommand::Cancel { id: cancel_id }) if cancel_id == id => {
+                    return ActiveOperationState::Cancelled;
+                }
+                Some(BrowserCommand::Execute { id: queued_id, .. }) => {
+                    if !send_browser_event(events, BrowserEvent::OperationFailed {
+                        id: queued_id,
+                        message: "browser worker is already executing an operation".to_string(),
+                    }).await {
+                        return ActiveOperationState::Shutdown;
+                    }
+                }
+                Some(BrowserCommand::Cancel { .. }) => {}
+            },
+            result = &mut operation => return ActiveOperationState::Completed(result),
+        }
+    }
+}
+
+async fn execute_browser_operation(
+    session: &BrowserSession,
+    operation: BrowserOperation,
+) -> BrowserResult<Box<OperationResult>> {
+    match operation {
+        BrowserOperation::Navigate(url) => {
+            let page = session.navigate(&url).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Page loaded: {}", page.title),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Screenshot(output) => {
+            tokio::fs::write(&output, session.screenshot_png().await?).await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Screenshot saved to {output}"),
+                update: None,
+            }))
+        }
+        BrowserOperation::Text => {
+            let context = session.observe().await?;
+            Ok(Box::new(OperationResult {
+                activity: "Page text refreshed.".to_string(),
+                update: Some(PageUpdate::Text {
+                    page: context.page,
+                    text: context.text,
+                }),
+            }))
+        }
+        BrowserOperation::Dom => {
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: "Compact DOM and accessibility context refreshed.".to_string(),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Observe { fresh } => {
+            let context = if fresh {
+                session.observe_fresh().await?
+            } else {
+                session.observe().await?
+            };
+            Ok(Box::new(OperationResult {
+                activity: "Compact observation refreshed.".to_string(),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Click(target) => {
+            let outcome = session.click(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Clicked", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::DoubleClick(target) => {
+            let outcome = session.double_click(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Double-clicked", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Type(text) => {
+            let character_count = text.chars().count();
+            let outcome = session.type_text(&text, None).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!(
+                    "Typed {character_count} characters (revision {}).",
+                    outcome.revision
+                ),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Scroll { dx, dy } => {
+            let outcome = session.scroll(dx, dy).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Scrolled (revision {}).", outcome.revision),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Evaluate(expression) => {
+            let result = session.evaluate(&expression).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!(
+                    "Result: {}",
+                    bounded_text(&result.to_string(), TUI_ACTIVITY_MAX_BYTES)
+                ),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+    }
+}
+
+fn action_activity(verb: &str, outcome: &ActionOutcome) -> String {
+    let target = outcome
+        .target
+        .as_ref()
+        .map(|target| target.label.as_str())
+        .unwrap_or("page");
+    format!("{verb} {target} (revision {}).", outcome.revision)
+}
+
+async fn send_browser_event(events: &mpsc::Sender<BrowserEvent>, event: BrowserEvent) -> bool {
+    events.send(event).await.is_ok()
+}
+
+fn dispatch_ui_intent(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, intent: UiIntent) {
+    match intent {
+        UiIntent::None => {}
+        UiIntent::Submit(command) => handle_submission(app, commands, command),
+        UiIntent::Cancel(id) => {
+            if commands.try_send(BrowserCommand::Cancel { id }).is_err() {
+                app.cancellation_enqueue_failed(id);
+                app.report_error(
+                    "Browser worker is unavailable; cancellation could not be queued.",
+                );
+            }
+        }
+        UiIntent::Quit => app.should_quit = true,
+    }
+}
+
+fn handle_submission(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, command: String) {
+    app.add_activity(format!("> {command}"));
+    match parse_command(&command) {
+        Ok(ParsedCommand::Local(LocalCommand::Help)) => {
+            app.add_activity("navigate URL | click TARGET | double click TARGET | type TEXT");
+            app.add_activity(
+                "observe | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
+            );
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
+            match ProfileManager::new().list_profiles() {
+                Ok(profiles) if profiles.is_empty() => app.add_activity("No saved profiles."),
+                Ok(profiles) => {
+                    for profile in profiles {
+                        app.add_activity(format!("  - {profile}"));
+                    }
+                }
+                Err(error) => app.report_error(error.to_string()),
+            }
+        }
+        Ok(ParsedCommand::Browser(operation)) => queue_browser_operation(app, commands, operation),
+        Err(error) => app.report_error(error),
+    }
+}
+
+fn queue_browser_operation(
+    app: &mut App,
+    commands: &mpsc::Sender<BrowserCommand>,
+    operation: BrowserOperation,
+) {
+    if !app.browser_ready() {
+        app.report_error("Browser is not ready yet.");
+        return;
+    }
+    if app.is_busy() {
+        app.report_error("A browser operation is already running; press Esc to cancel it.");
+        return;
+    }
+
+    let id = app.allocate_operation_id();
+    let label = operation.label().to_string();
+    match commands.try_send(BrowserCommand::Execute { id, operation }) {
+        Ok(()) => app.begin_operation(id, label),
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            app.report_error("Browser command queue is full.");
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            app.browser_state = BrowserState::Unavailable;
+            app.report_error("Browser worker is unavailable.");
         }
     }
 }
@@ -142,25 +1111,20 @@ fn draw(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(chunks[1]);
 
-    let thoughts = app
-        .thoughts
+    let activity = app
+        .activity
         .iter()
-        .map(|thought| ListItem::new(Line::from(thought.as_str())))
+        .map(|entry| ListItem::new(Line::from(entry.as_str())))
         .collect::<Vec<_>>();
     frame.render_widget(
-        List::new(thoughts)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Agent Thoughts"),
-            )
+        List::new(activity)
+            .block(Block::default().borders(Borders::ALL).title("Activity"))
             .style(Style::default().fg(Color::Green)),
         content[0],
     );
 
-    let page = app.page_content.join("\n");
     frame.render_widget(
-        Paragraph::new(page)
+        Paragraph::new(app.page_content.as_str())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -176,9 +1140,14 @@ fn draw(frame: &mut Frame, app: &App) {
             .block(Block::default().borders(Borders::ALL).title("Command")),
         chunks[2],
     );
+    let escape_hint = if app.is_busy() {
+        "Esc: cancel"
+    } else {
+        "Esc: close error/quit"
+    };
     frame.render_widget(
         Paragraph::new(format!(
-            " {}   PgUp/PgDn: observation   q: quit   Enter: execute   Esc: close error/quit   {}",
+            " {}   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
             app.status,
             app.input.chars().count()
         ))
@@ -187,13 +1156,7 @@ fn draw(frame: &mut Frame, app: &App) {
     );
 
     if let Some(error) = &app.error_msg {
-        let area = frame.area();
-        let popup = Rect {
-            x: area.width / 6,
-            y: area.height / 2 - 2,
-            width: area.width * 2 / 3,
-            height: 5,
-        };
+        let popup = centered_popup(frame.area());
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(error.as_str())
@@ -205,13 +1168,63 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+fn centered_popup(area: Rect) -> Rect {
+    let width = (area.width.saturating_mul(2) / 3).max(1).min(area.width);
+    let height = 5.min(area.height);
+    Rect {
+        x: area.width.saturating_sub(width) / 2,
+        y: area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
+            let _ = disable_raw_mode();
+            return Err(error);
+        }
+        Ok(Self { active: true })
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        let raw_result = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let screen_result = execute!(stdout, LeaveAlternateScreen, Show);
+        match (raw_result, screen_result) {
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
 pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    let mut terminal_guard = TerminalGuard::enter()?;
+    let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new();
+
+    let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+    let (browser_commands, browser_command_rx) = mpsc::channel(BROWSER_COMMAND_CHANNEL_CAPACITY);
+    let (browser_event_tx, mut browser_events) = mpsc::channel(BROWSER_EVENT_CHANNEL_CAPACITY);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let options = SessionOptions {
         port: cli.port,
@@ -223,201 +1236,260 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
-    let session = match BrowserSession::start(&options).await {
-        Ok(session) => {
-            app.status = format!("Connected on port {}", cli.port);
-            app.add_thought("Connected to Chrome.");
-            if let Err(error) = refresh_observation(&session, &mut app, false).await {
-                app.add_thought(format!("Initial observation failed: {error}"));
-            }
-            Some(session)
-        }
-        Err(error) => {
-            app.status = "Browser unavailable".to_string();
-            app.add_thought(format!("Browser startup failed: {error}"));
-            app.set_error(error.to_string());
-            None
-        }
-    };
+    let local = LocalSet::new();
+    let browser_worker = local.spawn_local(browser_worker(
+        options,
+        browser_command_rx,
+        browser_event_tx,
+        shutdown_rx,
+    ));
+    let mut input_worker = InputWorker::spawn(input_tx);
+    let mut app = App::new();
+
+    let loop_result = local
+        .run_until(run_tui_loop(
+            &mut terminal,
+            &mut app,
+            &browser_commands,
+            &mut input_events,
+            &mut browser_events,
+        ))
+        .await;
+
+    drop(input_events);
+    drop(browser_events);
+    let _ = shutdown_tx.send(true);
+    let _ = browser_commands.try_send(BrowserCommand::Shutdown);
+    drop(browser_commands);
+    let input_result = input_worker.stop();
+    let cursor_result = terminal.show_cursor();
+    let terminal_result = terminal_guard.restore();
+    let worker_result = local.run_until(finish_browser_worker(browser_worker)).await;
+
+    loop_result?;
+    input_result?;
+    cursor_result?;
+    terminal_result?;
+    worker_result
+}
+
+async fn run_tui_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    commands: &mpsc::Sender<BrowserCommand>,
+    input_events: &mut mpsc::Receiver<InputEvent>,
+    browser_events: &mut mpsc::Receiver<BrowserEvent>,
+) -> BrowserResult<()> {
+    let mut redraw = true;
+    let mut browser_events_open = true;
+    let mut busy_tick = time::interval(BUSY_TICK);
+    busy_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while !app.should_quit {
-        terminal.draw(|frame| draw(frame, &app))?;
-        if !event::poll(std::time::Duration::from_millis(100))? {
-            continue;
-        }
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
+        if redraw {
+            terminal.draw(|frame| draw(frame, app))?;
         }
 
-        match key.code {
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.should_quit = true
-            }
-            KeyCode::Char('q') if app.input.is_empty() => app.should_quit = true,
-            KeyCode::Esc => {
-                if app.error_msg.is_some() {
-                    app.clear_error();
-                } else {
-                    app.should_quit = true;
+        redraw = tokio::select! {
+            biased;
+            input = input_events.recv() => match input {
+                Some(InputEvent::Key(key)) => {
+                    let intent = app.reduce_key(key);
+                    dispatch_ui_intent(app, commands, intent);
+                    true
                 }
-            }
-            KeyCode::Enter => {
-                if !app.input.trim().is_empty() {
-                    let command = app.input.clone();
-                    app.input.clear();
-                    app.cursor_pos = 0;
-                    app.add_thought(format!("> {command}"));
-                    if let Err(error) = execute_command(session.as_ref(), &command, &mut app).await
-                    {
-                        app.set_error(error.to_string());
-                        app.add_thought(format!("Error: {error}"));
+                Some(InputEvent::Redraw) => true,
+                Some(InputEvent::Error(error)) => return Err(error.into()),
+                None => return Err("TUI input worker stopped".into()),
+            },
+            event = browser_events.recv(), if browser_events_open => match event {
+                Some(event) => {
+                    if let Some(operation) = app.apply_browser_event(event)? {
+                        queue_browser_operation(app, commands, operation);
                     }
+                    true
                 }
-            }
-            KeyCode::Backspace => app.remove_before_cursor(),
-            KeyCode::Delete => app.remove_at_cursor(),
-            KeyCode::Left => app.cursor_pos = app.cursor_pos.saturating_sub(1),
-            KeyCode::Right => app.cursor_pos = (app.cursor_pos + 1).min(app.input.chars().count()),
-            KeyCode::Home => app.cursor_pos = 0,
-            KeyCode::End => app.cursor_pos = app.input.chars().count(),
-            KeyCode::PageUp => app.page_scroll = app.page_scroll.saturating_sub(10),
-            KeyCode::PageDown => app.page_scroll = app.page_scroll.saturating_add(10),
-            KeyCode::Char(character) => app.insert_char(character),
-            _ => {}
-        }
-    }
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    if let Some(session) = session {
-        session.close().await?;
+                None => {
+                    browser_events_open = false;
+                    app.busy = None;
+                    if !matches!(app.browser_state, BrowserState::Unavailable | BrowserState::Stopped) {
+                        app.browser_state = BrowserState::Unavailable;
+                        app.set_status("Browser worker unavailable");
+                        app.report_error("Browser worker stopped unexpectedly.");
+                    }
+                    true
+                }
+            },
+            _ = busy_tick.tick(), if app.is_busy() => {
+                app.tick_busy();
+                true
+            },
+        };
     }
     Ok(())
 }
 
-async fn execute_command(
-    session: Option<&BrowserSession>,
-    command: &str,
-    app: &mut App,
-) -> BrowserResult<()> {
-    let lower = command.trim().to_lowercase();
-    if lower == "help" {
-        app.add_thought("navigate URL | click TARGET | type TEXT | screenshot [FILE]");
-        app.add_thought("observe | text | dom | scroll DX DY | profiles | JavaScript");
-        return Ok(());
-    }
-    if lower == "profiles" {
-        let profiles = ProfileManager::new().list_profiles()?;
-        if profiles.is_empty() {
-            app.add_thought("No saved profiles.");
-        } else {
-            for profile in profiles {
-                app.add_thought(format!("  - {profile}"));
-            }
+async fn finish_browser_worker(mut worker: JoinHandle<()>) -> BrowserResult<()> {
+    match time::timeout(WORKER_SHUTDOWN_TIMEOUT, &mut worker).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("browser worker failed: {error}").into()),
+        Err(_) => {
+            worker.abort();
+            let _ = worker.await;
+            Err("timed out waiting for browser worker shutdown".into())
         }
-        return Ok(());
+    }
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
     }
 
-    let session = session.ok_or("browser session is unavailable")?;
-    if let Some(url) = command
-        .strip_prefix("navigate ")
-        .or_else(|| command.strip_prefix("go "))
-    {
-        session.navigate(url.trim()).await?;
-        refresh_observation(session, app, true).await?;
-        app.add_thought(format!("Page loaded: {}", app.title));
-    } else if lower.starts_with("screenshot") {
-        let output = command
-            .split_once(char::is_whitespace)
-            .map(|(_, value)| value.trim())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("screenshot.png");
-        std::fs::write(output, session.screenshot_png().await?)?;
-        app.add_thought(format!("Screenshot saved to {output}"));
-    } else if lower == "text" || lower == "content" {
-        app.page_content = session.text().await?.lines().map(String::from).collect();
-        app.page_scroll = 0;
-        app.add_thought("Page content refreshed.");
-    } else if lower == "dom" || lower == "snapshot" {
-        app.page_content = session
-            .snapshot()
-            .await?
-            .format()
-            .lines()
-            .map(String::from)
-            .collect();
-        app.page_scroll = 0;
-        app.add_thought("Accessibility snapshot refreshed.");
-    } else if lower == "observe" || lower == "context" {
-        refresh_observation(session, app, false).await?;
-        app.add_thought("DOM and accessibility context refreshed without a screenshot.");
-    } else if let Some(rest) = command.strip_prefix("double click ") {
-        let outcome = session.double_click(rest.trim()).await?;
-        refresh_observation(session, app, true).await?;
-        let label = outcome
-            .target
-            .as_ref()
-            .map(|target| target.label.as_str())
-            .unwrap_or("target");
-        app.add_thought(format!(
-            "Double-clicked {label} (revision {})",
-            outcome.revision
+    const MARKER: &str = "\n[truncated]";
+    if max_bytes <= MARKER.len() {
+        let mut end = max_bytes;
+        while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        return value[..end].to_string();
+    }
+
+    let mut end = max_bytes - MARKER.len();
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = value[..end].to_string();
+    truncated.push_str(MARKER);
+    truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn command_parser_preserves_browser_actions_and_rejects_bad_scroll() {
+        assert!(matches!(
+            parse_command("double click r7:b42"),
+            Ok(ParsedCommand::Browser(BrowserOperation::DoubleClick(target))) if target == "r7:b42"
         ));
-    } else if let Some(rest) = command.strip_prefix("click ") {
-        let outcome = session.click(rest.trim()).await?;
-        refresh_observation(session, app, true).await?;
-        let label = outcome
-            .target
-            .as_ref()
-            .map(|target| target.label.as_str())
-            .unwrap_or("target");
-        app.add_thought(format!("Clicked {label} (revision {})", outcome.revision));
-    } else if let Some(rest) = command.strip_prefix("type ") {
-        session.type_text(rest, None).await?;
-        refresh_observation(session, app, true).await?;
-        app.add_thought(format!("Typed {} characters.", rest.chars().count()));
-    } else if let Some(rest) = command.strip_prefix("scroll ") {
-        let mut values = rest
-            .split_whitespace()
-            .filter_map(|value| value.parse().ok());
-        let outcome = session
-            .scroll(values.next().unwrap_or(0.0), values.next().unwrap_or(600.0))
-            .await?;
-        refresh_observation(session, app, true).await?;
-        app.add_thought(format!("Scrolled (revision {}).", outcome.revision));
-    } else {
-        let result = session.evaluate(command).await?;
-        refresh_observation(session, app, true).await?;
-        app.add_thought(format!("Result: {result}"));
+        assert!(matches!(
+            parse_command("scroll -4 120"),
+            Ok(ParsedCommand::Browser(BrowserOperation::Scroll { dx, dy })) if dx == -4.0 && dy == 120.0
+        ));
+        assert!(parse_command("scroll nope").is_err());
+        assert!(matches!(
+            parse_command("profiles"),
+            Ok(ParsedCommand::Local(LocalCommand::Profiles))
+        ));
     }
-    Ok(())
-}
 
-async fn refresh_observation(
-    session: &BrowserSession,
-    app: &mut App,
-    fresh: bool,
-) -> BrowserResult<()> {
-    let context = if fresh {
-        session.observe_fresh().await?
-    } else {
-        session.observe().await?
-    };
-    apply_observation(app, &context)?;
-    Ok(())
-}
+    #[test]
+    fn reducer_edits_unicode_and_requests_matching_cancellation() {
+        let mut app = App::new();
+        assert_eq!(app.reduce_key(key(KeyCode::Char('日'))), UiIntent::None);
+        assert_eq!(app.reduce_key(key(KeyCode::Char('本'))), UiIntent::None);
+        app.reduce_key(key(KeyCode::Backspace));
+        assert_eq!(app.input, "日");
 
-fn apply_observation(app: &mut App, context: &PageContext) -> BrowserResult<()> {
-    app.url.clone_from(&context.page.url);
-    app.title = format!("Glass — {}", context.page.title);
-    app.page_content = serde_json::to_string_pretty(context)?
-        .lines()
-        .map(String::from)
-        .collect();
-    app.page_scroll = 0;
-    Ok(())
+        app.browser_state = BrowserState::Ready;
+        app.begin_operation(4, "Observe");
+        assert_eq!(app.reduce_key(key(KeyCode::Esc)), UiIntent::Cancel(4));
+        assert!(app.busy.as_ref().unwrap().cancelling);
+        assert_eq!(app.reduce_key(key(KeyCode::Esc)), UiIntent::None);
+    }
+
+    #[test]
+    fn app_bounds_retained_page_state() {
+        let mut app = App::new();
+        app.set_page_content("界".repeat(TUI_PAGE_MAX_BYTES));
+
+        assert!(app.page_content.len() <= TUI_PAGE_MAX_BYTES);
+        assert!(app.page_content.contains("[truncated]"));
+    }
+
+    #[tokio::test]
+    async fn matching_cancel_interrupts_an_active_operation() {
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (event_tx, _event_rx) = mpsc::channel(2);
+        command_tx
+            .send(BrowserCommand::Cancel { id: 9 })
+            .await
+            .unwrap();
+
+        let result = await_active_operation(
+            std::future::pending::<BrowserResult<Box<OperationResult>>>(),
+            9,
+            &mut command_rx,
+            &mut shutdown_rx,
+            &event_tx,
+        )
+        .await;
+
+        assert!(matches!(result, ActiveOperationState::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn delayed_worker_event_does_not_block_input_reducer() {
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        let (event_tx, mut event_rx) = mpsc::channel(4);
+        let worker = tokio::spawn(async move {
+            let Some(BrowserCommand::Execute { id, .. }) = command_rx.recv().await else {
+                return;
+            };
+            event_tx
+                .send(BrowserEvent::OperationStarted {
+                    id,
+                    label: "Observe".to_string(),
+                })
+                .await
+                .unwrap();
+            time::sleep(Duration::from_millis(100)).await;
+            event_tx
+                .send(BrowserEvent::OperationFinished {
+                    id,
+                    result: Box::new(OperationResult {
+                        activity: "Observation refreshed.".to_string(),
+                        update: None,
+                    }),
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut app = App::new();
+        app.browser_state = BrowserState::Ready;
+        app.begin_operation(1, "Observe");
+        command_tx
+            .send(BrowserCommand::Execute {
+                id: 1,
+                operation: BrowserOperation::Observe { fresh: false },
+            })
+            .await
+            .unwrap();
+        app.apply_browser_event(event_rx.recv().await.unwrap())
+            .unwrap();
+
+        assert_eq!(app.reduce_key(key(KeyCode::Char('x'))), UiIntent::None);
+        assert_eq!(app.input, "x");
+        assert!(
+            time::timeout(Duration::from_millis(20), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        app.apply_browser_event(event_rx.recv().await.unwrap())
+            .unwrap();
+        assert!(!app.is_busy());
+        worker.await.unwrap();
+    }
 }

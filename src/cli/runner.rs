@@ -83,11 +83,19 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             println!("navigated to {} — {}", page.title, page.url);
         }
         Commands::Click { target } => {
-            println!("clicked {}", session.click(target).await?);
+            println!("{}", serde_json::to_string(&session.click(target).await?)?);
+        }
+        Commands::DoubleClick { target } => {
+            println!(
+                "{}",
+                serde_json::to_string(&session.double_click(target).await?)?
+            );
         }
         Commands::Type { text, target } => {
-            session.type_text(text, target.as_deref()).await?;
-            println!("typed {} characters", text.chars().count());
+            println!(
+                "{}",
+                serde_json::to_string(&session.type_text(text, target.as_deref()).await?)?
+            );
         }
         Commands::Screenshot { output } => {
             std::fs::write(output, session.screenshot_png().await?)?;
@@ -108,8 +116,10 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             println!("{}", serde_json::to_string_pretty(&context)?);
         }
         Commands::Scroll { dx, dy } => {
-            session.scroll(*dx, *dy).await?;
-            println!("scrolled by ({dx}, {dy})");
+            println!(
+                "{}",
+                serde_json::to_string(&session.scroll(*dx, *dy).await?)?
+            );
         }
         Commands::Evaluate { expression } => {
             println!(
@@ -140,13 +150,26 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
     }
     if let Some(rest) = lower.strip_prefix("click ") {
         let target = &trimmed[trimmed.len() - rest.len()..];
-        println!("clicked {}", session.click(target.trim_matches('"')).await?);
+        println!(
+            "{}",
+            serde_json::to_string(&session.click(target.trim_matches('"')).await?)?
+        );
+        return Ok(());
+    }
+    if let Some(rest) = lower.strip_prefix("double click ") {
+        let target = &trimmed[trimmed.len() - rest.len()..];
+        println!(
+            "{}",
+            serde_json::to_string(&session.double_click(target.trim_matches('"')).await?)?
+        );
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("type ") {
         let text = &trimmed[trimmed.len() - rest.len()..];
-        session.type_text(text.trim_matches('"'), None).await?;
-        println!("typed {} characters", text.chars().count());
+        println!(
+            "{}",
+            serde_json::to_string(&session.type_text(text.trim_matches('"'), None).await?)?
+        );
         return Ok(());
     }
     if lower.starts_with("screenshot") {

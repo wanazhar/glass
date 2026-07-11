@@ -46,8 +46,7 @@ pub struct CompactInteractiveElement {
     pub role: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend_dom_node_id: Option<i64>,
+    pub backend_dom_node_id: i64,
 }
 
 /// Compact accessibility data with no unbounded text fields.
@@ -60,7 +59,6 @@ pub struct CompactAccessibilityProjection {
 
 struct CompactProjectionState {
     node_count: usize,
-    interactive_index: usize,
     interactive_text_remaining: usize,
     outline_text_remaining: usize,
     interactive: Vec<CompactInteractiveElement>,
@@ -71,7 +69,6 @@ impl CompactProjectionState {
     fn new() -> Self {
         Self {
             node_count: 0,
-            interactive_index: 0,
             interactive_text_remaining: COMPACT_AX_INTERACTIVE_TEXT_MAX_BYTES,
             outline_text_remaining: COMPACT_AX_OUTLINE_TEXT_MAX_BYTES,
             interactive: Vec::new(),
@@ -210,13 +207,16 @@ pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
 
 /// Project a full accessibility tree into bounded semantic context.
 ///
-/// References use the same preorder numbering as `find_interactive_elements`,
-/// so every included control can be resolved through a full snapshot.
-pub fn project_compact_accessibility(nodes: &[AxNode]) -> CompactAccessibilityProjection {
+/// Every published control has a backend DOM node and a revisioned reference,
+/// so it can be resolved without a fresh full accessibility snapshot.
+pub fn project_compact_accessibility(
+    nodes: &[AxNode],
+    revision: u64,
+) -> CompactAccessibilityProjection {
     let mut state = CompactProjectionState::new();
     let roots = nodes
         .iter()
-        .filter_map(|node| project_compact_node(node, &mut state))
+        .filter_map(|node| project_compact_node(node, revision, &mut state))
         .collect();
     CompactAccessibilityProjection {
         roots,
@@ -227,6 +227,7 @@ pub fn project_compact_accessibility(nodes: &[AxNode]) -> CompactAccessibilityPr
 
 fn project_compact_node(
     node: &AxNode,
+    revision: u64,
     state: &mut CompactProjectionState,
 ) -> Option<CompactAxNode> {
     if state.node_count >= COMPACT_AX_MAX_NODES {
@@ -239,19 +240,24 @@ fn project_compact_node(
     state.truncated |= role_truncated;
     let mut name = String::new();
     if node.interactive {
-        state.interactive_index += 1;
         if state.interactive.len() < COMPACT_AX_MAX_INTERACTIVE {
             let control_name = take_compact_text(
                 &node.name,
                 &mut state.interactive_text_remaining,
                 &mut state.truncated,
             );
-            state.interactive.push(CompactInteractiveElement {
-                reference: format!("e{}", state.interactive_index),
-                role: role.clone(),
-                name: control_name,
-                backend_dom_node_id: node.backend_dom_node_id,
-            });
+            if let Some(backend_dom_node_id) = node.backend_dom_node_id {
+                state.interactive.push(CompactInteractiveElement {
+                    reference: backend_node_reference(revision, backend_dom_node_id),
+                    role: role.clone(),
+                    name: control_name,
+                    backend_dom_node_id,
+                });
+            } else {
+                // A control without a backend node cannot be acted on through
+                // CDP, so do not publish a reference that would fail later.
+                state.truncated = true;
+            }
         } else {
             state.truncated = true;
         }
@@ -266,7 +272,7 @@ fn project_compact_node(
     let children = node
         .children
         .iter()
-        .filter_map(|child| project_compact_node(child, state))
+        .filter_map(|child| project_compact_node(child, revision, state))
         .collect();
     Some(CompactAxNode {
         role,
@@ -274,6 +280,13 @@ fn project_compact_node(
         children,
         interactive: node.interactive,
     })
+}
+
+/// Format a stable-in-one-revision element reference backed by Chrome's DOM
+/// node identifier. The revision makes stale references fail rather than
+/// silently selecting an element that inherited an ordinal position.
+pub fn backend_node_reference(revision: u64, backend_dom_node_id: i64) -> String {
+    format!("r{revision}:b{backend_dom_node_id}")
 }
 
 fn take_compact_text(text: &str, remaining: &mut usize, truncated: &mut bool) -> String {
@@ -425,5 +438,49 @@ mod tests {
             interactive: true,
         };
         assert!(format_tree(&[node], 0).contains("日本語"));
+    }
+
+    #[test]
+    fn compact_projection_publishes_revisioned_backend_references_only() {
+        let nodes = vec![AxNode {
+            ax_node_id: "root".to_string(),
+            backend_dom_node_id: None,
+            role: "RootWebArea".to_string(),
+            name: String::new(),
+            description: String::new(),
+            value: None,
+            children: vec![
+                AxNode {
+                    ax_node_id: "save".to_string(),
+                    backend_dom_node_id: Some(42),
+                    role: "button".to_string(),
+                    name: "Save".to_string(),
+                    description: String::new(),
+                    value: None,
+                    children: Vec::new(),
+                    bounds: None,
+                    interactive: true,
+                },
+                AxNode {
+                    ax_node_id: "unresolved".to_string(),
+                    backend_dom_node_id: None,
+                    role: "button".to_string(),
+                    name: "Unresolved".to_string(),
+                    description: String::new(),
+                    value: None,
+                    children: Vec::new(),
+                    bounds: None,
+                    interactive: true,
+                },
+            ],
+            bounds: None,
+            interactive: false,
+        }];
+
+        let projection = project_compact_accessibility(&nodes, 5);
+        assert_eq!(projection.interactive.len(), 1);
+        assert_eq!(projection.interactive[0].reference, "r5:b42");
+        assert_eq!(projection.interactive[0].backend_dom_node_id, 42);
+        assert!(projection.truncated);
     }
 }

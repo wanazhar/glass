@@ -76,6 +76,9 @@ pub enum Commands {
     /// Click an element by accessibility reference, name, or CSS selector.
     Click { target: String },
 
+    /// Double-click an element by accessibility reference, name, or CSS selector.
+    DoubleClick { target: String },
+
     /// Type text into the focused element, optionally clicking a target first.
     Type {
         text: String,
@@ -181,6 +184,16 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Screenshot { output }) if output == "page.png"
+        ));
+    }
+
+    #[test]
+    fn double_click_is_an_explicit_action_command() {
+        let cli = Cli::try_parse_from(["glass", "double-click", "r7:b42"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::DoubleClick { target }) if target == "r7:b42"
         ));
     }
 

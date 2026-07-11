@@ -1,5 +1,5 @@
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserSession, InteractionMode, SessionOptions};
+use glass::browser::session::{ActionKind, BrowserSession, InteractionMode, SessionOptions};
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -179,6 +179,32 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(context.screenshot.is_none());
     assert!(session.observe_with_dom().await.unwrap().dom.is_some());
 
+    let save_reference = context
+        .accessibility
+        .interactive
+        .iter()
+        .find(|element| element.name == "Save")
+        .expect("compact context should publish Save")
+        .reference
+        .clone();
+    assert!(save_reference.starts_with('r'));
+    let initial_click = session.click(&save_reference).await.unwrap();
+    assert_eq!(initial_click.action, ActionKind::Click);
+    assert_eq!(
+        initial_click
+            .target
+            .as_ref()
+            .and_then(|target| target.reference.as_deref()),
+        Some(save_reference.as_str())
+    );
+
+    session
+        .evaluate("document.body.dataset.glassRevision = 'changed'")
+        .await
+        .unwrap();
+    let stale_error = session.click(&save_reference).await.unwrap_err();
+    assert!(stale_error.to_string().contains("stale element reference"));
+
     session
         .evaluate("document.querySelector('#result').textContent = 'Changed'")
         .await
@@ -199,9 +225,11 @@ async fn browser_session_drives_a_local_fixture() {
             .any(|element| element.name == "Name")
     );
 
-    session.type_text("Ada", Some("Name")).await.unwrap();
+    let typed = session.type_text("Ada", Some("Name")).await.unwrap();
+    assert_eq!(typed.action, ActionKind::Type);
     session.evaluate("window.pointerEvents = []").await.unwrap();
-    session.click("Save").await.unwrap();
+    let saved = session.click("Save").await.unwrap();
+    assert_eq!(saved.action, ActionKind::Click);
     let pointer_events = session.evaluate("window.pointerEvents").await.unwrap();
     let pointer_events = pointer_events.as_array().unwrap();
     assert!(
@@ -222,6 +250,29 @@ async fn browser_session_drives_a_local_fixture() {
             .await
             .unwrap(),
         "Saved Ada"
+    );
+    let double_clicked = session.double_click("Double").await.unwrap();
+    assert_eq!(double_clicked.action, ActionKind::DoubleClick);
+    assert_eq!(session.evaluate("window.doubleClicks").await.unwrap(), 1);
+
+    session.evaluate("window.scrollTo(0, 0)").await.unwrap();
+    let offscreen = session.click("Offscreen Save").await.unwrap();
+    assert_eq!(offscreen.action, ActionKind::Click);
+    assert!(
+        session
+            .evaluate("window.scrollY")
+            .await
+            .unwrap()
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#result').textContent")
+            .await
+            .unwrap(),
+        "Offscreen saved"
     );
     session
         .evaluate("localStorage.setItem('glass-incognito', 'private')")

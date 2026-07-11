@@ -6,7 +6,7 @@ use tokio::io::{
 };
 use tracing::{debug, info};
 
-use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use crate::browser::session::{ActionOutcome, BrowserResult, BrowserSession, SessionOptions};
 use crate::cli::args::Cli;
 
 #[derive(Debug, Deserialize)]
@@ -197,19 +197,17 @@ async fn call_tool(
         "click" => {
             let target = required_string(arguments, "target")
                 .or_else(|_| required_string(arguments, "selector"))?;
-            Ok(text_result(format!(
-                "clicked {}",
-                session.click(target).await?
-            )))
+            action_result(session.click(target).await?)
+        }
+        "doubleClick" => {
+            let target = required_string(arguments, "target")
+                .or_else(|_| required_string(arguments, "selector"))?;
+            action_result(session.double_click(target).await?)
         }
         "type" => {
             let text = required_string(arguments, "text")?;
             let target = arguments["target"].as_str();
-            session.type_text(text, target).await?;
-            Ok(text_result(format!(
-                "typed {} characters",
-                text.chars().count()
-            )))
+            action_result(session.type_text(text, target).await?)
         }
         "screenshot" => {
             let image = session.screenshot_base64().await?;
@@ -251,8 +249,7 @@ async fn call_tool(
         "scroll" => {
             let dx = arguments["dx"].as_f64().unwrap_or(0.0);
             let dy = arguments["dy"].as_f64().unwrap_or(600.0);
-            session.scroll(dx, dy).await?;
-            Ok(text_result(format!("scrolled by ({dx}, {dy})")))
+            action_result(session.scroll(dx, dy).await?)
         }
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
@@ -282,6 +279,15 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "click",
             description: "Click an accessibility reference, accessible name, or CSS selector.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
+            }),
+        },
+        Tool {
+            name: "doubleClick",
+            description: "Double-click an accessibility reference, accessible name, or CSS selector.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
@@ -349,6 +355,10 @@ fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a st
 
 fn text_result(text: impl Into<String>) -> Value {
     json!({"content": [{"type": "text", "text": text.into()}]})
+}
+
+fn action_result(outcome: ActionOutcome) -> BrowserResult<Value> {
+    Ok(text_result(serde_json::to_string(&outcome)?))
 }
 
 fn success_response(id: Option<Value>, result: Value) -> JsonRpcResponse {
@@ -468,13 +478,14 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 10);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
             false
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
+        assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
         assert!(session.is_none());
     }
 }

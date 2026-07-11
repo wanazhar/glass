@@ -17,8 +17,9 @@ use super::chrome::{
     launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
-    AxNode, CompactAxNode, CompactInteractiveElement, DomNode, find_interactive_elements,
-    format_tree, parse_accessibility_tree, parse_dom_tree, project_compact_accessibility,
+    AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
+    find_interactive_elements, format_tree, parse_accessibility_tree, parse_dom_tree,
+    project_compact_accessibility,
 };
 use super::mouse::{MouseEngine, Point};
 use super::profile::ProfileManager;
@@ -118,7 +119,7 @@ pub struct InteractiveElement {
     pub role: String,
     pub name: String,
     pub description: String,
-    pub backend_dom_node_id: Option<i64>,
+    pub backend_dom_node_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +133,8 @@ pub struct AccessibilitySnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactAccessibilitySnapshot {
     pub page: PageInfo,
+    /// Page generation used by every published interactive reference.
+    pub revision: u64,
     pub roots: Vec<CompactAxNode>,
     pub interactive: Vec<CompactInteractiveElement>,
     #[serde(skip_serializing_if = "is_false")]
@@ -150,6 +153,36 @@ pub struct PageContext {
     /// Base64 PNG data is populated only when visual context is explicitly requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+}
+
+/// The completed browser operation represented by an [`ActionOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    Click,
+    DoubleClick,
+    Type,
+    Scroll,
+}
+
+/// A resolved browser target recorded in an action result.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionTarget {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+/// A compact, serializable result from an input action.
+///
+/// `revision` is the generation after the action invalidated page context. A
+/// caller should observe again before reusing a previous element reference.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionOutcome {
+    pub action: ActionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ActionTarget>,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -563,9 +596,10 @@ impl BrowserSession {
             ready_state: page_state.ready_state,
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
-        let compact_accessibility = project_compact_accessibility(&full_roots);
+        let compact_accessibility = project_compact_accessibility(&full_roots, revision);
         let accessibility = CompactAccessibilitySnapshot {
             page: page.clone(),
+            revision,
             roots: compact_accessibility.roots,
             interactive: compact_accessibility.interactive,
             truncated: compact_accessibility.truncated,
@@ -601,16 +635,20 @@ impl BrowserSession {
         Ok(self.cdp.screenshot("png").await?)
     }
 
-    pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<()> {
+    pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
         self.cdp.scroll_by(dx, dy).await?;
-        self.invalidate_observation();
-        Ok(())
+        Ok(ActionOutcome {
+            action: ActionKind::Scroll,
+            target: None,
+            revision: self.invalidate_observation(),
+        })
     }
 
     pub async fn snapshot(&self) -> BrowserResult<AccessibilitySnapshot> {
+        let revision = self.page_revision.load(Ordering::Relaxed);
         let raw = self.cdp.get_accessibility_tree().await?;
         let roots = parse_accessibility_tree(&raw);
-        let interactive = interactive_elements(&roots);
+        let interactive = interactive_elements(&roots, revision);
         Ok(AccessibilitySnapshot {
             page: self.page_info().await?,
             roots,
@@ -618,8 +656,26 @@ impl BrowserSession {
         })
     }
 
-    pub async fn click(&self, target: &str) -> BrowserResult<String> {
+    /// Click an element and return its structured action outcome.
+    pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.pointer_click(target, false).await
+    }
+
+    /// Double-click an element with the same target, scroll, and pointer
+    /// contract as a single click.
+    pub async fn double_click(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.pointer_click(target, true).await
+    }
+
+    async fn pointer_click(
+        &self,
+        target: &str,
+        double_click: bool,
+    ) -> BrowserResult<ActionOutcome> {
         let element = self.resolve_element(target).await?;
+        self.cdp
+            .scroll_into_view_if_needed(element.node_id, element.backend_dom_node_id)
+            .await?;
         let model = match (element.node_id, element.backend_dom_node_id) {
             (Some(node_id), _) => self.cdp.get_box_model(node_id).await?,
             (_, Some(backend_node_id)) => {
@@ -629,6 +685,31 @@ impl BrowserSession {
         };
         let (x, y) = center_of_box_model(&model)?;
         let point = Point { x, y };
+        let events = if double_click {
+            self.mouse.generate_double_click_events(point)
+        } else {
+            self.mouse.generate_click_events(point)
+        };
+        self.dispatch_pointer_events(point, events).await?;
+        Ok(ActionOutcome {
+            action: if double_click {
+                ActionKind::DoubleClick
+            } else {
+                ActionKind::Click
+            },
+            target: Some(ActionTarget {
+                label: element.label,
+                reference: element.reference,
+            }),
+            revision: self.invalidate_observation(),
+        })
+    }
+
+    async fn dispatch_pointer_events(
+        &self,
+        point: Point,
+        events: Vec<super::mouse::MouseEvent>,
+    ) -> BrowserResult<()> {
         let mut pointer = self.pointer.lock().await;
         let start = match (self.interaction_mode, *pointer) {
             (_, Some(point)) => point,
@@ -653,7 +734,7 @@ impl BrowserSession {
                 .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
                 .await?;
         }
-        for event in self.mouse.generate_click_events(point) {
+        for event in events {
             self.cdp
                 .dispatch_mouse_event(
                     &event.event_type,
@@ -669,17 +750,24 @@ impl BrowserSession {
             }
         }
         *pointer = Some(point);
-        self.invalidate_observation();
-        Ok(element.label)
+        Ok(())
     }
 
-    pub async fn type_text(&self, text: &str, target: Option<&str>) -> BrowserResult<()> {
-        if let Some(target) = target {
-            self.click(target).await?;
-        }
+    pub async fn type_text(
+        &self,
+        text: &str,
+        target: Option<&str>,
+    ) -> BrowserResult<ActionOutcome> {
+        let target = match target {
+            Some(target) => self.click(target).await?.target,
+            None => None,
+        };
         self.cdp.insert_text(text).await?;
-        self.invalidate_observation();
-        Ok(())
+        Ok(ActionOutcome {
+            action: ActionKind::Type,
+            target,
+            revision: self.invalidate_observation(),
+        })
     }
 
     async fn viewport_center(&self) -> BrowserResult<Point> {
@@ -704,14 +792,31 @@ impl BrowserSession {
         runtime_value(&raw)
     }
 
-    fn invalidate_observation(&self) {
-        self.page_revision.fetch_add(1, Ordering::Relaxed);
+    fn invalidate_observation(&self) -> u64 {
+        self.page_revision.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
         let target = target.trim().trim_matches('"');
         if target.is_empty() {
             return Err("element target cannot be empty".into());
+        }
+
+        if let Some(reference) = parse_revisioned_reference(target)? {
+            let current_revision = self.page_revision.load(Ordering::Relaxed);
+            if reference.revision != current_revision {
+                return Err(format!(
+                    "stale element reference '{target}': it belongs to revision {}, but the page is at revision {current_revision}; observe again",
+                    reference.revision
+                )
+                .into());
+            }
+            return Ok(ResolvedElement {
+                node_id: None,
+                backend_dom_node_id: Some(reference.backend_dom_node_id),
+                label: target.to_string(),
+                reference: Some(target.to_string()),
+            });
         }
 
         let snapshot = self.snapshot().await?;
@@ -732,8 +837,9 @@ impl BrowserSession {
         if let Some(element) = by_reference.or(by_number).or(by_name) {
             return Ok(ResolvedElement {
                 node_id: None,
-                backend_dom_node_id: element.backend_dom_node_id,
+                backend_dom_node_id: Some(element.backend_dom_node_id),
                 label: format!("{} {}", element.role, element.name),
+                reference: Some(element.reference.clone()),
             });
         }
 
@@ -744,22 +850,25 @@ impl BrowserSession {
                 node_id: Some(node_id),
                 backend_dom_node_id: None,
                 label: target.to_string(),
+                reference: None,
             });
         }
         Err(format!("element not found: {target}").into())
     }
 }
 
-fn interactive_elements(roots: &[AxNode]) -> Vec<InteractiveElement> {
+fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<InteractiveElement> {
     find_interactive_elements(roots)
         .into_iter()
-        .enumerate()
-        .map(|(index, node)| InteractiveElement {
-            reference: format!("e{}", index + 1),
-            role: node.role.clone(),
-            name: node.name.clone(),
-            description: node.description.clone(),
-            backend_dom_node_id: node.backend_dom_node_id,
+        .filter_map(|node| {
+            let backend_dom_node_id = node.backend_dom_node_id?;
+            Some(InteractiveElement {
+                reference: backend_node_reference(revision, backend_dom_node_id),
+                role: node.role.clone(),
+                name: node.name.clone(),
+                description: node.description.clone(),
+                backend_dom_node_id,
+            })
         })
         .collect()
 }
@@ -815,6 +924,42 @@ struct ResolvedElement {
     node_id: Option<i64>,
     backend_dom_node_id: Option<i64>,
     label: String,
+    reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RevisionedElementReference {
+    revision: u64,
+    backend_dom_node_id: i64,
+}
+
+/// Parse the public `r<revision>:b<backend-node-id>` reference shape.
+///
+/// Values that do not resemble this exact shape remain normal accessible-name
+/// or CSS-selector targets. A malformed value with the marker is an explicit
+/// error instead of a silent fallback.
+fn parse_revisioned_reference(value: &str) -> BrowserResult<Option<RevisionedElementReference>> {
+    let Some(rest) = value.strip_prefix('r') else {
+        return Ok(None);
+    };
+    let Some((revision, backend_dom_node_id)) = rest.split_once(":b") else {
+        return Ok(None);
+    };
+    if revision.is_empty() || backend_dom_node_id.is_empty() {
+        return Err(format!("invalid revisioned element reference: {value}").into());
+    }
+    let revision = revision
+        .parse::<u64>()
+        .map_err(|_| format!("invalid element reference revision: {value}"))?;
+    let backend_dom_node_id = backend_dom_node_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| format!("invalid backend node ID in element reference: {value}"))?;
+    Ok(Some(RevisionedElementReference {
+        revision,
+        backend_dom_node_id,
+    }))
 }
 
 fn runtime_value(raw: &Value) -> BrowserResult<Value> {
@@ -1170,6 +1315,7 @@ mod tests {
             dom: None,
             accessibility: CompactAccessibilitySnapshot {
                 page,
+                revision: 7,
                 roots: Vec::new(),
                 interactive: Vec::new(),
                 truncated: false,
@@ -1180,10 +1326,61 @@ mod tests {
         let structured = serde_json::to_value(&context).unwrap();
         assert!(structured.get("dom").is_none());
         assert!(structured.get("screenshot").is_none());
+        assert_eq!(structured["accessibility"]["revision"], 7);
 
         context.screenshot = Some("png-data".to_string());
         let visual = serde_json::to_value(&context).unwrap();
         assert_eq!(visual["screenshot"], "png-data");
+    }
+
+    #[test]
+    fn revisioned_references_are_parsed_and_validate_their_shape() {
+        assert_eq!(
+            parse_revisioned_reference("r7:b42").unwrap(),
+            Some(RevisionedElementReference {
+                revision: 7,
+                backend_dom_node_id: 42,
+            })
+        );
+        assert_eq!(parse_revisioned_reference("Save").unwrap(), None);
+        assert!(parse_revisioned_reference("r7:b0").is_err());
+        assert!(parse_revisioned_reference("r:b42").is_err());
+    }
+
+    #[test]
+    fn action_outcomes_are_compact_and_serializable() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Click,
+            target: Some(ActionTarget {
+                label: "button Save".to_string(),
+                reference: Some("r9:b42".to_string()),
+            }),
+            revision: 10,
+        };
+
+        let value = serde_json::to_value(outcome).unwrap();
+        assert_eq!(value["action"], "click");
+        assert_eq!(value["target"]["reference"], "r9:b42");
+        assert_eq!(value["revision"], 10);
+    }
+
+    #[test]
+    fn full_snapshot_controls_use_revisioned_backend_references() {
+        let roots = vec![AxNode {
+            ax_node_id: "button".to_string(),
+            backend_dom_node_id: Some(42),
+            role: "button".to_string(),
+            name: "Save".to_string(),
+            description: String::new(),
+            value: None,
+            children: Vec::new(),
+            bounds: None,
+            interactive: true,
+        }];
+        let controls = interactive_elements(&roots, 12);
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].reference, "r12:b42");
+        assert_eq!(controls[0].backend_dom_node_id, 42);
     }
 
     #[test]
@@ -1240,8 +1437,9 @@ mod tests {
         let context = session.observe().await.unwrap();
         let serialized = serde_json::to_string(&context).unwrap();
         assert!(context.accessibility.truncated);
+        assert_eq!(context.accessibility.revision, 1);
         assert_eq!(context.accessibility.roots[0].role, "RootWebArea");
-        assert_eq!(context.accessibility.interactive[0].reference, "e1");
+        assert_eq!(context.accessibility.interactive[0].reference, "r1:b42");
         assert_eq!(context.accessibility.interactive[0].role, "button");
         assert_eq!(context.accessibility.interactive[0].name, "Save");
         assert!(!serialized.contains(&huge_text));
@@ -1259,7 +1457,7 @@ mod tests {
 
         let snapshot = session.snapshot().await.unwrap();
         assert_eq!(snapshot.roots[0].name, huge_text);
-        assert_eq!(snapshot.interactive[0].reference, "e1");
+        assert_eq!(snapshot.interactive[0].reference, "r1:b42");
         assert_eq!(snapshot.interactive[0].description.len(), 33 * 1024);
 
         session.close().await.unwrap();

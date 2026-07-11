@@ -355,10 +355,27 @@ async fn execute_command(
     } else if lower == "observe" || lower == "context" {
         refresh_observation(session, app, false).await?;
         app.add_thought("DOM and accessibility context refreshed without a screenshot.");
-    } else if let Some(rest) = command.strip_prefix("click ") {
-        let target = session.click(rest.trim()).await?;
+    } else if let Some(rest) = command.strip_prefix("double click ") {
+        let outcome = session.double_click(rest.trim()).await?;
         refresh_observation(session, app, true).await?;
-        app.add_thought(format!("Clicked {target}"));
+        let label = outcome
+            .target
+            .as_ref()
+            .map(|target| target.label.as_str())
+            .unwrap_or("target");
+        app.add_thought(format!(
+            "Double-clicked {label} (revision {})",
+            outcome.revision
+        ));
+    } else if let Some(rest) = command.strip_prefix("click ") {
+        let outcome = session.click(rest.trim()).await?;
+        refresh_observation(session, app, true).await?;
+        let label = outcome
+            .target
+            .as_ref()
+            .map(|target| target.label.as_str())
+            .unwrap_or("target");
+        app.add_thought(format!("Clicked {label} (revision {})", outcome.revision));
     } else if let Some(rest) = command.strip_prefix("type ") {
         session.type_text(rest, None).await?;
         refresh_observation(session, app, true).await?;
@@ -367,11 +384,11 @@ async fn execute_command(
         let mut values = rest
             .split_whitespace()
             .filter_map(|value| value.parse().ok());
-        session
+        let outcome = session
             .scroll(values.next().unwrap_or(0.0), values.next().unwrap_or(600.0))
             .await?;
         refresh_observation(session, app, true).await?;
-        app.add_thought("Scrolled.");
+        app.add_thought(format!("Scrolled (revision {}).", outcome.revision));
     } else {
         let result = session.evaluate(command).await?;
         refresh_observation(session, app, true).await?;

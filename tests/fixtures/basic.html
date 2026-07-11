@@ -10,7 +10,10 @@
       <label for="name">Name</label>
       <input id="name" aria-label="Name">
       <button id="save" type="button">Save</button>
+      <button id="double" type="button">Double</button>
       <p id="result"></p>
+      <div style="height: 1800px" aria-hidden="true"></div>
+      <button id="offscreen-save" type="button">Offscreen Save</button>
     </main>
     <script>
       window.pointerEvents = [];
@@ -26,6 +29,13 @@
       document.querySelector("#save").addEventListener("click", () => {
         document.querySelector("#result").textContent =
           "Saved " + document.querySelector("#name").value;
+      });
+      window.doubleClicks = 0;
+      document.querySelector("#double").addEventListener("dblclick", () => {
+        window.doubleClicks += 1;
+      });
+      document.querySelector("#offscreen-save").addEventListener("click", () => {
+        document.querySelector("#result").textContent = "Offscreen saved";
       });
     </script>
   </body>

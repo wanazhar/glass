@@ -22,11 +22,21 @@ The cache stores compact context only. Deep DOM and screenshot data are never ca
 
 ## Element references
 
-Interactive controls expose references composed from the snapshot revision and backend DOM node ID. A reference from a prior revision must fail with a stale-reference error instead of selecting a newly numbered control. Accessible-name and CSS-selector lookup remain convenience paths.
+Interactive controls expose `r<revision>:b<backend-node-id>` references, and
+compact accessibility snapshots publish the matching revision. A reference from
+a prior revision must fail with a stale-reference error instead of selecting a
+newly numbered control. Accessible-name and CSS-selector lookup remain
+convenience paths.
 
 ## Action contract
 
-Fast actions avoid implicit waits. A click resolves a target, scrolls it into view only when required, dispatches the configured pointer mode, invalidates the snapshot revision, and returns a structured action result. Navigation or state waiting is an explicit operation.
+Fast actions avoid implicit waits. A click resolves a target, asks Chrome to
+scroll it into view only when required, dispatches the configured pointer mode,
+invalidates the snapshot revision, and returns a serializable action outcome
+with action kind, target, and resulting revision. Navigation or state waiting
+is an explicit operation. Double-click uses the same contract; drag remains an
+internal mouse-engine primitive until it has an equally reliable target/viewport
+contract.
 
 Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode keeps direct CDP input events and does not sleep between movement samples.
 

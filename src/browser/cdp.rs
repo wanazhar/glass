@@ -327,6 +327,31 @@ impl CdpClient {
         self.get_box_model_inner(None, Some(backend_node_id)).await
     }
 
+    /// Ask Chrome to scroll a DOM node into view only when it is necessary.
+    ///
+    /// The browser owns the visibility decision, avoiding a separate layout
+    /// probe and avoiding a scroll when the target is already actionable.
+    pub async fn scroll_into_view_if_needed(
+        &self,
+        node_id: Option<i64>,
+        backend_node_id: Option<i64>,
+    ) -> Result<Value, CdpError> {
+        let mut params = serde_json::Map::new();
+        if let Some(node_id) = node_id {
+            params.insert("nodeId".to_string(), Value::from(node_id));
+        }
+        if let Some(backend_node_id) = backend_node_id {
+            params.insert("backendNodeId".to_string(), Value::from(backend_node_id));
+        }
+        if params.is_empty() {
+            return Err(CdpError::transport(
+                "scrollIntoViewIfNeeded requires a nodeId or backendNodeId",
+            ));
+        }
+        self.send("DOM.scrollIntoViewIfNeeded", Some(Value::Object(params)))
+            .await
+    }
+
     async fn get_box_model_inner(
         &self,
         node_id: Option<i64>,
@@ -724,6 +749,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client.query_selector("#save").await.unwrap()["nodeId"], 7);
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scroll_into_view_uses_the_backend_node_without_a_layout_probe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(request["method"], "DOM.scrollIntoViewIfNeeded");
+            assert_eq!(
+                request["params"],
+                serde_json::json!({ "backendNodeId": 42 })
+            );
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        client
+            .scroll_into_view_if_needed(None, Some(42))
+            .await
+            .unwrap();
         client.close().await;
         server.await.unwrap();
     }

@@ -1,7 +1,7 @@
 ---
 id: action-003
 scope: browser actions
-status: pending
+status: done
 depends-on: [perf-001, lifecycle-002]
 ---
 
@@ -43,3 +43,16 @@ Make compact-snapshot controls safe to reuse and improve click behavior without 
 ## Commit
 
 `feat: add revisioned browser actions`
+
+## Completion
+
+- Compact and full accessibility controls publish revisioned backend-node
+  references in the `r<revision>:b<backend-node-id>` form.
+- Stale references fail before a full accessibility-tree lookup can select a
+  different control.
+- Click, double-click, type, and scroll return serializable action outcomes
+  containing the resulting page revision.
+- Chrome receives `DOM.scrollIntoViewIfNeeded` before pointer input; fast and
+  human pointer modes retain their existing event/timing behavior.
+- Drag remains internal to the mouse engine until it has a reliable
+  target/viewport contract.

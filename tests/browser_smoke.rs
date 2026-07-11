@@ -36,9 +36,10 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(session.text().await.unwrap().contains("Glass Fixture"));
 
     let context = session.observe().await.unwrap();
-    assert!(context.dom.is_some());
+    assert!(context.dom.is_none());
     assert!(!context.accessibility.interactive.is_empty());
     assert!(context.screenshot.is_none());
+    assert!(session.observe_with_dom().await.unwrap().dom.is_some());
 
     session
         .evaluate("document.querySelector('#result').textContent = 'Changed'")

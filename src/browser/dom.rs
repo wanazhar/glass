@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// Hard limits for accessibility data retained by a compact observation.
+pub const COMPACT_AX_MAX_NODES: usize = 128;
+pub const COMPACT_AX_MAX_INTERACTIVE: usize = 32;
+pub const COMPACT_AX_TEXT_MAX_BYTES: usize = 4 * 1024;
+pub const COMPACT_AX_ROLE_MAX_BYTES: usize = 64;
+const COMPACT_AX_INTERACTIVE_TEXT_MAX_BYTES: usize = COMPACT_AX_TEXT_MAX_BYTES / 2;
+const COMPACT_AX_OUTLINE_TEXT_MAX_BYTES: usize =
+    COMPACT_AX_TEXT_MAX_BYTES - COMPACT_AX_INTERACTIVE_TEXT_MAX_BYTES;
+const COMPACT_AX_TRUNCATION_MARKER: &str = "…";
+
 /// A simplified accessibility tree node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxNode {
@@ -15,6 +25,63 @@ pub struct AxNode {
     /// Bounding box: [x, y, width, height]. Filled by the session when needed.
     pub bounds: Option<[f64; 4]>,
     pub interactive: bool,
+}
+
+/// A bounded semantic accessibility node used only by compact observations.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactAxNode {
+    pub role: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<CompactAxNode>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub interactive: bool,
+}
+
+/// A bounded interactive control included in a compact observation.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactInteractiveElement {
+    pub reference: String,
+    pub role: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_dom_node_id: Option<i64>,
+}
+
+/// Compact accessibility data with no unbounded text fields.
+#[derive(Debug, Clone)]
+pub struct CompactAccessibilityProjection {
+    pub roots: Vec<CompactAxNode>,
+    pub interactive: Vec<CompactInteractiveElement>,
+    pub truncated: bool,
+}
+
+struct CompactProjectionState {
+    node_count: usize,
+    interactive_index: usize,
+    interactive_text_remaining: usize,
+    outline_text_remaining: usize,
+    interactive: Vec<CompactInteractiveElement>,
+    truncated: bool,
+}
+
+impl CompactProjectionState {
+    fn new() -> Self {
+        Self {
+            node_count: 0,
+            interactive_index: 0,
+            interactive_text_remaining: COMPACT_AX_INTERACTIVE_TEXT_MAX_BYTES,
+            outline_text_remaining: COMPACT_AX_OUTLINE_TEXT_MAX_BYTES,
+            interactive: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Extract a linked accessibility tree from `Accessibility.getFullAXTree`.
@@ -50,7 +117,11 @@ pub fn parse_accessibility_tree(raw: &Value) -> Vec<AxNode> {
         }
     }
     if roots.is_empty() {
-        roots.extend(by_id.keys().cloned());
+        roots.extend(
+            entries
+                .iter()
+                .filter_map(|entry| entry["nodeId"].as_str().map(String::from)),
+        );
     }
 
     let mut visiting = HashSet::new();
@@ -135,6 +206,101 @@ pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
         result.extend(find_interactive_elements(&node.children));
     }
     result
+}
+
+/// Project a full accessibility tree into bounded semantic context.
+///
+/// References use the same preorder numbering as `find_interactive_elements`,
+/// so every included control can be resolved through a full snapshot.
+pub fn project_compact_accessibility(nodes: &[AxNode]) -> CompactAccessibilityProjection {
+    let mut state = CompactProjectionState::new();
+    let roots = nodes
+        .iter()
+        .filter_map(|node| project_compact_node(node, &mut state))
+        .collect();
+    CompactAccessibilityProjection {
+        roots,
+        interactive: state.interactive,
+        truncated: state.truncated,
+    }
+}
+
+fn project_compact_node(
+    node: &AxNode,
+    state: &mut CompactProjectionState,
+) -> Option<CompactAxNode> {
+    if state.node_count >= COMPACT_AX_MAX_NODES {
+        state.truncated = true;
+        return None;
+    }
+    state.node_count += 1;
+
+    let (role, role_truncated) = truncate_utf8(&node.role, COMPACT_AX_ROLE_MAX_BYTES);
+    state.truncated |= role_truncated;
+    let mut name = String::new();
+    if node.interactive {
+        state.interactive_index += 1;
+        if state.interactive.len() < COMPACT_AX_MAX_INTERACTIVE {
+            let control_name = take_compact_text(
+                &node.name,
+                &mut state.interactive_text_remaining,
+                &mut state.truncated,
+            );
+            state.interactive.push(CompactInteractiveElement {
+                reference: format!("e{}", state.interactive_index),
+                role: role.clone(),
+                name: control_name,
+                backend_dom_node_id: node.backend_dom_node_id,
+            });
+        } else {
+            state.truncated = true;
+        }
+    } else {
+        name = take_compact_text(
+            &node.name,
+            &mut state.outline_text_remaining,
+            &mut state.truncated,
+        );
+    }
+
+    let children = node
+        .children
+        .iter()
+        .filter_map(|child| project_compact_node(child, state))
+        .collect();
+    Some(CompactAxNode {
+        role,
+        name,
+        children,
+        interactive: node.interactive,
+    })
+}
+
+fn take_compact_text(text: &str, remaining: &mut usize, truncated: &mut bool) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let (value, was_truncated) = truncate_utf8(text, *remaining);
+    *remaining = remaining.saturating_sub(value.len());
+    *truncated |= was_truncated;
+    value
+}
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+
+    let marker_len = COMPACT_AX_TRUNCATION_MARKER.len();
+    let mut end = max_bytes.saturating_sub(marker_len);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut value = text[..end].to_string();
+    if max_bytes >= marker_len {
+        value.push_str(COMPACT_AX_TRUNCATION_MARKER);
+    }
+    (value, true)
 }
 
 pub fn extract_text_content(nodes: &[AxNode]) -> String {

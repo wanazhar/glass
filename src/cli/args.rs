@@ -85,8 +85,11 @@ pub enum Commands {
     /// Print the accessibility snapshot.
     Dom,
 
-    /// Print structured DOM, accessibility, and text context.
+    /// Print compact accessibility and text context.
     Observe {
+        /// Include the full DOM tree. This is an explicit deep-inspection request.
+        #[arg(long)]
+        deep_dom: bool,
         /// Include a PNG screenshot in the structured context.
         #[arg(long)]
         screenshot: bool,
@@ -125,7 +128,10 @@ mod tests {
         assert_eq!(cli.interaction, InteractionMode::Human);
         assert!(matches!(
             cli.command,
-            Some(Commands::Observe { screenshot: false })
+            Some(Commands::Observe {
+                deep_dom: false,
+                screenshot: false
+            })
         ));
     }
 
@@ -138,7 +144,23 @@ mod tests {
         assert_eq!(cli.interaction, InteractionMode::Fast);
         assert!(matches!(
             cli.command,
-            Some(Commands::Observe { screenshot: true })
+            Some(Commands::Observe {
+                deep_dom: false,
+                screenshot: true
+            })
+        ));
+    }
+
+    #[test]
+    fn deep_dom_requires_an_explicit_observation_flag() {
+        let cli = Cli::try_parse_from(["glass", "observe", "--deep-dom"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Observe {
+                deep_dom: true,
+                screenshot: false
+            })
         ));
     }
 

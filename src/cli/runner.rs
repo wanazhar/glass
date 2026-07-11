@@ -93,11 +93,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::Text => println!("{}", session.text().await?),
         Commands::Dom => println!("{}", session.snapshot().await?.format()),
-        Commands::Observe { screenshot } => {
-            let context = if *screenshot {
-                session.observe_with_screenshot().await?
-            } else {
-                session.observe().await?
+        Commands::Observe {
+            deep_dom,
+            screenshot,
+        } => {
+            let context = match (*deep_dom, *screenshot) {
+                (false, false) => session.observe().await?,
+                (true, false) => session.observe_with_dom().await?,
+                (false, true) => session.observe_with_screenshot().await?,
+                (true, true) => session.observe_with_dom_and_screenshot().await?,
             };
             println!("{}", serde_json::to_string_pretty(&context)?);
         }

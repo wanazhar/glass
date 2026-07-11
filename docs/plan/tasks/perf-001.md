@@ -1,7 +1,7 @@
 ---
 id: perf-001
 scope: browser data plane
-status: ready
+status: done
 depends-on: []
 ---
 
@@ -45,3 +45,12 @@ Make default observation compact and avoid full-DOM/event work on the hot agent 
 ## Commit
 
 `perf: slim default browser observation`
+
+## Completion
+
+- Default observations cache only compact page state; deep DOM and screenshots are explicit additions.
+- Visible text is bounded to a UTF-8-safe 16 KiB budget before it becomes agent context.
+- The byte cap is applied after complete page text is parsed, preserving supplementary Unicode characters at the former UTF-16 boundary.
+- Cached accessibility context is bounded to 128 nodes, 32 interactive controls, and 4 KiB of UTF-8-safe AX label text; full snapshots remain explicit.
+- Selector lookup uses a root-only DOM request, and default CDP events carry no payload data.
+- Verification passed: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-targets`.

@@ -49,11 +49,19 @@ impl Display for CdpError {
 
 impl Error for CdpError {}
 
-/// Event pushed from Chrome.
-#[derive(Debug, Clone, Deserialize)]
+/// Lightweight notification of a CDP event.
+///
+/// This default event stream intentionally omits payloads. Subscribe to
+/// [`CdpClient::subscribe_events_with_params`] only when a caller needs them.
+#[derive(Debug, Clone)]
 pub struct CdpEvent {
     pub method: String,
-    #[serde(default)]
+}
+
+/// CDP event with its full JSON payload for explicit diagnostic or media use.
+#[derive(Debug, Clone)]
+pub struct CdpEventWithParams {
+    pub method: String,
     pub params: Value,
 }
 
@@ -67,8 +75,12 @@ struct IncomingMessage {
     error: Option<CdpError>,
     #[serde(default)]
     method: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncomingEventParams {
     #[serde(default)]
-    params: Option<Value>,
+    params: Value,
 }
 
 enum Command {
@@ -93,6 +105,7 @@ pub struct CdpClient {
     tx: mpsc::UnboundedSender<Command>,
     next_id: Arc<AtomicU64>,
     events: broadcast::Sender<CdpEvent>,
+    payload_events: broadcast::Sender<CdpEventWithParams>,
     timeout: Duration,
 }
 
@@ -112,7 +125,9 @@ impl CdpClient {
         let (mut write, mut read) = ws_stream.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
         let (event_tx, _) = broadcast::channel::<CdpEvent>(128);
+        let (payload_event_tx, _) = broadcast::channel::<CdpEventWithParams>(128);
         let actor_events = event_tx.clone();
+        let actor_payload_events = payload_event_tx.clone();
 
         tokio::spawn(async move {
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value, CdpError>>> =
@@ -146,6 +161,7 @@ impl CdpClient {
                                 handle_incoming_message(
                                     &mut pending,
                                     &actor_events,
+                                    &actor_payload_events,
                                     text.as_ref(),
                                 );
                             }
@@ -154,6 +170,7 @@ impl CdpClient {
                                     Ok(text) => handle_incoming_message(
                                         &mut pending,
                                         &actor_events,
+                                        &actor_payload_events,
                                         text,
                                     ),
                                     Err(error) => warn!(%error, "ignoring non-UTF-8 CDP frame"),
@@ -190,13 +207,21 @@ impl CdpClient {
             tx,
             next_id: Arc::new(AtomicU64::new(1)),
             events: event_tx,
+            payload_events: payload_event_tx,
             timeout,
         })
     }
 
-    /// Subscribe to unsolicited CDP events such as page lifecycle events.
+    /// Subscribe to method-only CDP events such as page lifecycle events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<CdpEvent> {
         self.events.subscribe()
+    }
+
+    /// Subscribe to CDP events with payloads for explicit media or diagnostic work.
+    ///
+    /// Payload JSON is parsed only while this stream has at least one receiver.
+    pub fn subscribe_events_with_params(&self) -> broadcast::Receiver<CdpEventWithParams> {
+        self.payload_events.subscribe()
     }
 
     /// Send a CDP command and wait for the response.
@@ -262,15 +287,26 @@ impl CdpClient {
         self.send("Accessibility.getFullAXTree", None).await
     }
 
-    /// Get the document root and descendants.
-    pub async fn get_document(&self) -> Result<Value, CdpError> {
+    /// Get the full document tree for an explicit deep-DOM inspection.
+    pub async fn get_deep_document(&self) -> Result<Value, CdpError> {
         self.send("DOM.getDocument", Some(serde_json::json!({ "depth": -1 })))
             .await
     }
 
+    /// Get only the document root for operations that do not need descendants.
+    pub async fn get_document_root(&self) -> Result<Value, CdpError> {
+        self.send("DOM.getDocument", Some(serde_json::json!({ "depth": 0 })))
+            .await
+    }
+
+    /// Compatibility alias for the explicit deep-DOM request.
+    pub async fn get_document(&self) -> Result<Value, CdpError> {
+        self.get_deep_document().await
+    }
+
     /// Query a CSS selector and return the matching node.
     pub async fn query_selector(&self, selector: &str) -> Result<Value, CdpError> {
-        let document = self.get_document().await?;
+        let document = self.get_document_root().await?;
         let root_id = document["root"]["nodeId"]
             .as_i64()
             .ok_or_else(|| CdpError::transport("DOM document response contained no root nodeId"))?;
@@ -397,6 +433,14 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Enable the only event domains required to wait for navigation and
+    /// invalidate compact observations.
+    pub async fn enable_observation_events(&self) -> Result<(), CdpError> {
+        self.enable_page().await?;
+        self.enable_dom().await?;
+        Ok(())
+    }
+
     pub async fn enable_runtime(&self) -> Result<(), CdpError> {
         self.send("Runtime.enable", None).await?;
         Ok(())
@@ -426,6 +470,7 @@ impl CdpClient {
 fn handle_incoming_message(
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>,
     events: &broadcast::Sender<CdpEvent>,
+    payload_events: &broadcast::Sender<CdpEventWithParams>,
     text: &str,
 ) {
     let message: IncomingMessage = match serde_json::from_str(text) {
@@ -451,9 +496,19 @@ fn handle_incoming_message(
 
     if let Some(method) = message.method {
         let _ = events.send(CdpEvent {
-            method,
-            params: message.params.unwrap_or(Value::Null),
+            method: method.clone(),
         });
+        if payload_events.receiver_count() > 0 {
+            match serde_json::from_str::<IncomingEventParams>(text) {
+                Ok(payload) => {
+                    let _ = payload_events.send(CdpEventWithParams {
+                        method,
+                        params: payload.params,
+                    });
+                }
+                Err(error) => warn!(%error, "ignoring malformed CDP event payload"),
+            }
+        }
     }
 }
 
@@ -529,6 +584,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delivers_event_payloads_only_to_opt_in_subscribers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "method": "Page.screencastFrame",
+                        "params": {"sessionId": 9, "data": "frame-data"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let mut methods = client.subscribe_events();
+        let mut payloads = client.subscribe_events_with_params();
+        client.send("test.ready", None).await.unwrap();
+
+        assert_eq!(methods.recv().await.unwrap().method, "Page.screencastFrame");
+        let payload = payloads.recv().await.unwrap();
+        assert_eq!(payload.method, "Page.screencastFrame");
+        assert_eq!(payload.params["sessionId"], 9);
+        assert_eq!(payload.params["data"], "frame-data");
+
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn requests_fast_screenshot_encoding_and_moves_the_payload() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -560,6 +666,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client.screenshot("png").await.unwrap(), "cG5n");
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn selector_lookup_fetches_only_the_document_root() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+
+            let root_request = websocket.next().await.unwrap().unwrap();
+            let root_request: Value = match root_request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(root_request["method"], "DOM.getDocument");
+            assert_eq!(root_request["params"], serde_json::json!({ "depth": 0 }));
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": root_request["id"],
+                        "result": {"root": {"nodeId": 42}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let selector_request = websocket.next().await.unwrap().unwrap();
+            let selector_request: Value = match selector_request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(selector_request["method"], "DOM.querySelector");
+            assert_eq!(
+                selector_request["params"],
+                serde_json::json!({ "nodeId": 42, "selector": "#save" })
+            );
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": selector_request["id"],
+                        "result": {"nodeId": 7}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert_eq!(client.query_selector("#save").await.unwrap()["nodeId"], 7);
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn observation_event_setup_enables_only_page_and_dom() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+
+            for _ in 0..2 {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text frame"),
+                };
+                methods.push(request["method"].as_str().unwrap().to_string());
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            assert_eq!(methods, ["Page.enable", "DOM.enable"]);
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        client.enable_observation_events().await.unwrap();
         client.close().await;
         server.await.unwrap();
     }

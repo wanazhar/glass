@@ -163,7 +163,7 @@ async fn benchmark_screencast(
     frames: usize,
     warmup: usize,
 ) -> BrowserResult<Value> {
-    let mut events = session.cdp().subscribe_events();
+    let mut events = session.cdp().subscribe_events_with_params();
     let started_command = Instant::now();
     session
         .cdp()
@@ -252,7 +252,7 @@ async fn benchmark_screencast(
 }
 
 async fn next_screencast_frame(
-    events: &mut tokio::sync::broadcast::Receiver<glass::browser::cdp::CdpEvent>,
+    events: &mut tokio::sync::broadcast::Receiver<glass::browser::cdp::CdpEventWithParams>,
 ) -> BrowserResult<(Instant, i64, String)> {
     loop {
         let mut event = events.recv().await?;

@@ -199,7 +199,7 @@ async fn main() -> BrowserResult<()> {
 
 async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
     let trace_iterations = positive_env("GLASS_CAPTURE_TRACE_ITERATIONS", 10);
-    let mut events = session.cdp().subscribe_events();
+    let mut events = session.cdp().subscribe_events_with_params();
     session
         .cdp()
         .send(

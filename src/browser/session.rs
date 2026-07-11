@@ -11,18 +11,27 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::cdp::{CdpClient, CdpError};
+use super::cdp::CdpClient;
 use super::chrome::{
     ChromeProcess, check_chrome_health, detect_chrome, get_ws_url, launch_chrome_with_options,
 };
 use super::dom::{
-    AxNode, DomNode, find_interactive_elements, format_tree, parse_accessibility_tree,
-    parse_dom_tree,
+    AxNode, CompactAxNode, CompactInteractiveElement, DomNode, find_interactive_elements,
+    format_tree, parse_accessibility_tree, parse_dom_tree, project_compact_accessibility,
 };
 use super::mouse::{MouseEngine, Point};
 use super::profile::ProfileManager;
 
 pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
+
+/// Maximum UTF-8 byte length of visible text returned by a compact observation.
+pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
+const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
+const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href, title: document.title, ready_state: document.readyState, text: document.body ? document.body.innerText : ''})";
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
@@ -77,16 +86,56 @@ pub struct AccessibilitySnapshot {
     pub interactive: Vec<InteractiveElement>,
 }
 
-/// The default agent observation: structured page state without a screenshot.
+/// Bounded accessibility state included with compact page observations.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactAccessibilitySnapshot {
+    pub page: PageInfo,
+    pub roots: Vec<CompactAxNode>,
+    pub interactive: Vec<CompactInteractiveElement>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+/// Structured page state. Default observations omit optional deep data.
 #[derive(Debug, Clone, Serialize)]
 pub struct PageContext {
     pub page: PageInfo,
     pub text: String,
+    /// Full DOM data is included only by an explicit deep-DOM observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dom: Option<DomNode>,
-    pub accessibility: AccessibilitySnapshot,
+    pub accessibility: CompactAccessibilitySnapshot,
     /// Base64 PNG data is populated only when visual context is explicitly requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CompactPageContext {
+    page: PageInfo,
+    text: String,
+    accessibility: CompactAccessibilitySnapshot,
+}
+
+impl CompactPageContext {
+    fn into_page_context(self) -> PageContext {
+        PageContext {
+            page: self.page,
+            text: self.text,
+            dom: None,
+            accessibility: self.accessibility,
+            screenshot: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EvaluatedPageState {
+    url: String,
+    title: String,
+    #[serde(default)]
+    ready_state: String,
+    text: String,
 }
 
 impl AccessibilitySnapshot {
@@ -126,7 +175,7 @@ pub struct BrowserSession {
 
 struct CachedObservation {
     revision: u64,
-    context: PageContext,
+    context: CompactPageContext,
 }
 
 impl BrowserSession {
@@ -176,15 +225,7 @@ impl BrowserSession {
             }
         };
 
-        let setup = async {
-            cdp.enable_page().await?;
-            cdp.enable_runtime().await?;
-            cdp.enable_network().await?;
-            cdp.enable_dom().await?;
-            cdp.enable_accessibility().await?;
-            Ok::<(), CdpError>(())
-        }
-        .await;
+        let setup = cdp.enable_observation_events().await;
         if let Err(error) = setup {
             cdp.close().await;
             if let Some(process) = chrome.as_mut() {
@@ -294,31 +335,70 @@ impl BrowserSession {
         Ok(value.as_str().unwrap_or_default().to_string())
     }
 
-    /// Collect DOM, accessibility, and visible text context without a screenshot.
+    /// Collect compact page context without a deep DOM or screenshot.
     pub async fn observe(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, true).await
+        self.observe_internal(false, false, true).await
+    }
+
+    /// Collect compact context and explicitly include the full DOM tree.
+    pub async fn observe_with_dom(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, false, true).await
     }
 
     /// Collect structured context and explicitly include a current screenshot.
     pub async fn observe_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, true).await
+        self.observe_internal(false, true, true).await
     }
 
-    /// Collect fresh structured context without a screenshot, bypassing the cache.
+    /// Collect context with both explicitly requested deep DOM and screenshot data.
+    pub async fn observe_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, true, true).await
+    }
+
+    /// Collect fresh compact context, bypassing the compact-context cache.
     pub async fn observe_fresh(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false).await
+        self.observe_internal(false, false, false).await
+    }
+
+    /// Collect fresh context and explicitly include the full DOM tree.
+    pub async fn observe_fresh_with_dom(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, false, false).await
     }
 
     /// Collect fresh structured context and explicitly include a screenshot.
     pub async fn observe_fresh_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, false).await
+        self.observe_internal(false, true, false).await
+    }
+
+    /// Collect fresh context with both explicitly requested deep DOM and screenshot data.
+    pub async fn observe_fresh_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, true, false).await
     }
 
     async fn observe_internal(
         &self,
+        include_dom: bool,
         include_screenshot: bool,
         use_cache: bool,
     ) -> BrowserResult<PageContext> {
+        let mut context = self
+            .compact_observation(use_cache)
+            .await?
+            .into_page_context();
+        if include_dom {
+            let raw = self.cdp.get_deep_document().await?;
+            context.dom = Some(
+                parse_dom_tree(&raw)
+                    .ok_or("CDP deep DOM response contained no parseable root node")?,
+            );
+        }
+        if include_screenshot {
+            context.screenshot = Some(self.screenshot_base64().await?);
+        }
+        Ok(context)
+    }
+
+    async fn compact_observation(&self, use_cache: bool) -> BrowserResult<CompactPageContext> {
         let revision = self.page_revision.load(Ordering::Relaxed);
         if use_cache {
             let cached_context = {
@@ -328,48 +408,47 @@ impl BrowserSession {
                     .filter(|cached| cached.revision == revision)
                     .map(|cached| cached.context.clone())
             };
-            if let Some(mut context) = cached_context {
-                if include_screenshot {
-                    context.screenshot = Some(self.screenshot_base64().await?);
-                }
+            if let Some(context) = cached_context {
                 return Ok(context);
             }
         }
 
-        let (page, text, accessibility, dom) = tokio::join!(
-            self.page_info(),
-            self.text(),
-            self.cdp.get_accessibility_tree(),
-            self.cdp.get_document(),
-        );
-        let page = page?;
-        let text = text?;
+        let (page_state, accessibility) =
+            tokio::join!(self.compact_page_state(), self.cdp.get_accessibility_tree(),);
+        let page_state = page_state?;
         let accessibility_raw = accessibility?;
-        let dom_raw = dom?;
-        let roots = parse_accessibility_tree(&accessibility_raw);
-        let accessibility = AccessibilitySnapshot {
-            page: page.clone(),
-            interactive: interactive_elements(&roots),
-            roots,
+        let page = PageInfo {
+            url: page_state.url,
+            title: page_state.title,
+            ready_state: page_state.ready_state,
         };
-        let context = PageContext {
+        let full_roots = parse_accessibility_tree(&accessibility_raw);
+        let compact_accessibility = project_compact_accessibility(&full_roots);
+        let accessibility = CompactAccessibilitySnapshot {
+            page: page.clone(),
+            roots: compact_accessibility.roots,
+            interactive: compact_accessibility.interactive,
+            truncated: compact_accessibility.truncated,
+        };
+        let context = CompactPageContext {
             page,
-            text,
-            dom: parse_dom_tree(&dom_raw),
+            text: truncate_visible_text(&page_state.text, COMPACT_TEXT_MAX_BYTES),
             accessibility,
-            screenshot: None,
         };
         *self.observation_cache.lock().await = Some(CachedObservation {
             revision,
             context: context.clone(),
         });
-        if include_screenshot {
-            let mut visual_context = context;
-            visual_context.screenshot = Some(self.screenshot_base64().await?);
-            Ok(visual_context)
-        } else {
-            Ok(context)
-        }
+        Ok(context)
+    }
+
+    async fn compact_page_state(&self) -> BrowserResult<EvaluatedPageState> {
+        let raw = self.cdp.evaluate(COMPACT_PAGE_STATE_EXPRESSION).await?;
+        let value = runtime_value(&raw)?;
+        let json = value
+            .as_str()
+            .ok_or("compact page-state evaluation returned a non-string value")?;
+        Ok(serde_json::from_str(json)?)
     }
 
     pub async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
@@ -545,6 +624,24 @@ fn interactive_elements(roots: &[AxNode]) -> Vec<InteractiveElement> {
         .collect()
 }
 
+fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let content_limit = max_bytes.saturating_sub(TEXT_TRUNCATION_MARKER.len());
+    let mut end = content_limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let mut truncated = text[..end].to_string();
+    if max_bytes >= TEXT_TRUNCATION_MARKER.len() {
+        truncated.push_str(TEXT_TRUNCATION_MARKER);
+    }
+    truncated
+}
+
 fn interaction_path(
     mode: InteractionMode,
     mouse: &MouseEngine,
@@ -638,6 +735,157 @@ pub fn normalize_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    fn test_session(cdp: CdpClient) -> BrowserSession {
+        BrowserSession {
+            cdp,
+            chrome: None,
+            profile_manager: ProfileManager::new(),
+            profile: "test".to_string(),
+            interaction_mode: InteractionMode::Fast,
+            mouse: MouseEngine::new(),
+            pointer: Mutex::new(None),
+            page_revision: Arc::new(AtomicU64::new(1)),
+            observation_cache: Mutex::new(None),
+        }
+    }
+
+    async fn observation_server(include_dom: bool) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut saw_runtime = false;
+            let mut saw_accessibility = false;
+            let mut saw_deep_dom = false;
+
+            for _ in 0..if include_dom { 3 } else { 2 } {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                let result = match request["method"].as_str() {
+                    Some("Runtime.evaluate") => {
+                        saw_runtime = true;
+                        let expression = request["params"]["expression"].as_str().unwrap();
+                        assert!(expression.contains("document.body.innerText"));
+                        assert!(!expression.contains(".slice(0,"));
+                        let text = format!(
+                            "{}😀{}",
+                            "a".repeat(4_095),
+                            "b".repeat(COMPACT_TEXT_MAX_BYTES)
+                        );
+                        let page_state = serde_json::json!({
+                            "url": "https://example.test",
+                            "title": "Example",
+                            "ready_state": "complete",
+                            "text": text,
+                        })
+                        .to_string();
+                        serde_json::json!({
+                            "result": {"value": page_state}
+                        })
+                    }
+                    Some("Accessibility.getFullAXTree") => {
+                        saw_accessibility = true;
+                        serde_json::json!({"nodes": []})
+                    }
+                    Some("DOM.getDocument") => {
+                        saw_deep_dom = true;
+                        assert_eq!(request["params"], serde_json::json!({"depth": -1}));
+                        serde_json::json!({
+                            "root": {
+                                "nodeId": 1,
+                                "nodeName": "#document",
+                                "nodeValue": "",
+                                "children": []
+                            }
+                        })
+                    }
+                    method => panic!("unexpected compact-observation command: {method:?}"),
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            assert!(saw_runtime);
+            assert!(saw_accessibility);
+            assert_eq!(saw_deep_dom, include_dom);
+        });
+        (format!("ws://{address}"), server)
+    }
+
+    async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
+        let huge_text = "x".repeat(33 * 1024);
+        let tree = serde_json::json!({
+            "nodes": [
+                {
+                    "nodeId": "root",
+                    "role": {"value": "RootWebArea"},
+                    "name": {"value": huge_text.clone()},
+                    "description": {"value": huge_text.clone()},
+                    "value": {"value": huge_text.clone()},
+                    "childIds": ["save"]
+                },
+                {
+                    "nodeId": "save",
+                    "parentId": "root",
+                    "backendDOMNodeId": 42,
+                    "role": {"value": "button"},
+                    "name": {"value": "Save"},
+                    "description": {"value": huge_text.clone()},
+                    "value": {"value": huge_text.clone()},
+                    "childIds": []
+                }
+            ]
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let text_for_server = huge_text.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            for _ in 0..4 {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                let result = match request["method"].as_str() {
+                    Some("Runtime.evaluate") => serde_json::json!({
+                        "result": {"value": serde_json::json!({
+                            "url": "https://example.test",
+                            "title": "Example",
+                            "ready_state": "complete",
+                            "text": text_for_server.clone(),
+                        }).to_string()}
+                    }),
+                    Some("Accessibility.getFullAXTree") => tree.clone(),
+                    method => panic!("unexpected compact-observation command: {method:?}"),
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        (format!("ws://{address}"), server, huge_text)
+    }
 
     #[test]
     fn normalizes_urls_without_touching_supported_schemes() {
@@ -694,19 +942,101 @@ mod tests {
             page: page.clone(),
             text: "Example".to_string(),
             dom: None,
-            accessibility: AccessibilitySnapshot {
+            accessibility: CompactAccessibilitySnapshot {
                 page,
                 roots: Vec::new(),
                 interactive: Vec::new(),
+                truncated: false,
             },
             screenshot: None,
         };
 
         let structured = serde_json::to_value(&context).unwrap();
+        assert!(structured.get("dom").is_none());
         assert!(structured.get("screenshot").is_none());
 
         context.screenshot = Some("png-data".to_string());
         let visual = serde_json::to_value(&context).unwrap();
         assert_eq!(visual["screenshot"], "png-data");
+    }
+
+    #[test]
+    fn compact_text_cap_is_utf8_safe_and_marks_truncation() {
+        let text = "🙂".repeat(COMPACT_TEXT_MAX_BYTES);
+        let compact = truncate_visible_text(&text, COMPACT_TEXT_MAX_BYTES);
+
+        assert!(compact.len() <= COMPACT_TEXT_MAX_BYTES);
+        assert!(compact.ends_with(TEXT_TRUNCATION_MARKER));
+        assert!(compact.is_char_boundary(compact.len()));
+    }
+
+    #[tokio::test]
+    async fn default_observation_is_compact_and_never_requests_deep_dom() {
+        let (url, server) = observation_server(false).await;
+        let session = test_session(CdpClient::connect(&url).await.unwrap());
+
+        let context = session.observe().await.unwrap();
+        assert!(context.dom.is_none());
+        assert!(context.screenshot.is_none());
+        assert!(context.text.contains('😀'));
+        assert!(context.text.ends_with(TEXT_TRUNCATION_MARKER));
+        assert!(context.text.len() <= COMPACT_TEXT_MAX_BYTES);
+        assert!(std::str::from_utf8(context.text.as_bytes()).is_ok());
+        let serialized = serde_json::to_value(&context).unwrap();
+        assert!(serialized.get("dom").is_none());
+        assert!(serialized.get("screenshot").is_none());
+
+        session.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deep_dom_observation_is_explicit_and_not_cached() {
+        let (url, server) = observation_server(true).await;
+        let session = test_session(CdpClient::connect(&url).await.unwrap());
+
+        let deep = session.observe_with_dom().await.unwrap();
+        assert_eq!(deep.dom.as_ref().unwrap().node_name, "#document");
+        assert!(serde_json::to_value(&deep).unwrap().get("dom").is_some());
+
+        let compact = session.observe().await.unwrap();
+        assert!(compact.dom.is_none());
+
+        session.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() {
+        let (url, server, huge_text) = large_accessibility_server().await;
+        let session = test_session(CdpClient::connect(&url).await.unwrap());
+
+        let context = session.observe().await.unwrap();
+        let serialized = serde_json::to_string(&context).unwrap();
+        assert!(context.accessibility.truncated);
+        assert_eq!(context.accessibility.roots[0].role, "RootWebArea");
+        assert_eq!(context.accessibility.interactive[0].reference, "e1");
+        assert_eq!(context.accessibility.interactive[0].role, "button");
+        assert_eq!(context.accessibility.interactive[0].name, "Save");
+        assert!(!serialized.contains(&huge_text));
+        assert!(
+            serialized.len()
+                <= COMPACT_TEXT_MAX_BYTES + crate::browser::dom::COMPACT_AX_TEXT_MAX_BYTES + 2_048
+        );
+
+        let cached = {
+            let cache = session.observation_cache.lock().await;
+            cache.as_ref().unwrap().context.clone()
+        };
+        let cached_json = serde_json::to_string(&cached.into_page_context()).unwrap();
+        assert!(!cached_json.contains(&huge_text));
+
+        let snapshot = session.snapshot().await.unwrap();
+        assert_eq!(snapshot.roots[0].name, huge_text);
+        assert_eq!(snapshot.interactive[0].reference, "e1");
+        assert_eq!(snapshot.interactive[0].description.len(), 33 * 1024);
+
+        session.close().await.unwrap();
+        server.await.unwrap();
     }
 }

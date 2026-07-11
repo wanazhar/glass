@@ -11,8 +11,9 @@ Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
 `observe()` returns a compact `PageContext`:
 
 - page URL, title, and ready state;
-- visible text capped to a documented byte budget;
-- accessibility roots and interactive controls with a snapshot revision;
+- visible text capped to a UTF-8-safe 16 KiB byte budget;
+- accessibility roots and interactive controls with a snapshot revision, bounded to 128 nodes,
+  32 controls, and 4 KiB of UTF-8-safe AX label text (roles are capped at 64 bytes);
 - no `dom` field and no screenshot by default.
 
 `observe_with_dom()` explicitly adds the full DOM. `observe_with_screenshot()` explicitly adds pixels. Combining both is allowed only through an explicitly named method/tool option.
@@ -33,7 +34,8 @@ Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode k
 
 - `DOM.getDocument(depth: -1)` is deep-DOM-only.
 - CSS selector lookup fetches only the document root.
-- CDP event broadcasts retain only data consumers require for invalidation; unused domains are not enabled.
+- Default CDP event broadcasts are method-only; payload delivery requires an explicit subscription.
+- Unused CDP domains are not enabled.
 - Network domain activation is not a default observation requirement.
 
 ## Browser lifecycle and persistence

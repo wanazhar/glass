@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Glass Scorecard Fixture v1</title>
+    <style>
+      #overlay { position: fixed; inset: 0; display: none; z-index: 10; background: #fff8; }
+      #moving { position: relative; }
+      iframe { width: 300px; height: 100px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <button id="duplicate-wrong">Delete draft</button>
+      <button id="duplicate-right">Delete</button>
+      <button id="overlay-target">Overlay target</button>
+      <div id="overlay">Blocking overlay</div>
+      <button id="moving">Moving target</button>
+      <button id="spa">SPA navigation</button>
+      <form id="form"><label>Name <input id="name"></label><button>Submit</button></form>
+      <button id="popup">Popup</button>
+      <button id="dialog">Dialog</button>
+      <a id="download" download="glass.txt" href="data:text/plain,glass">Download</a>
+      <iframe id="frame" srcdoc="<button id='frame-action' onclick=&quot;parent.document.querySelector('#result').value='frame-clicked'&quot;>Frame action</button>"></iframe>
+      <output id="result">idle</output>
+    </main>
+    <script>
+      const result = document.querySelector("#result");
+      document.querySelector("#duplicate-wrong").onclick = () => result.value = "wrong-target";
+      document.querySelector("#duplicate-right").onclick = () => result.value = "right-target";
+      document.querySelector("#overlay-target").onclick = () => result.value = "overlay-clicked";
+      document.querySelector("#moving").onpointerdown = () => {
+        document.querySelector("#moving").style.left = "240px";
+        document.querySelector("#overlay").style.display = "block";
+      };
+      document.querySelector("#moving").onclick = () => result.value = "reflow-clicked";
+      document.querySelector("#spa").onclick = () => { history.pushState({}, "", "#spa-complete"); result.value = "spa-complete"; };
+      document.querySelector("#form").onsubmit = event => { event.preventDefault(); result.value = "submitted:" + document.querySelector("#name").value; };
+      document.querySelector("#popup").onclick = () => { window.fixturePopup = window.open("about:blank", "fixture-popup"); result.value = window.fixturePopup ? "popup-opened" : "popup-blocked"; };
+      document.querySelector("#dialog").onclick = () => { if (confirm("Continue?")) result.value = "dialog-accepted"; };
+      document.querySelector("#download").onclick = () => result.value = "download-requested";
+      window.scheduleDelayed = () => {
+        document.querySelector("#delayed")?.remove();
+        setTimeout(() => { const node = document.createElement("p"); node.id = "delayed"; node.textContent = "Delayed content"; document.body.append(node); }, 150);
+      };
+      window.resetFixture = () => {
+        result.value = "idle";
+        document.querySelector("#overlay").style.display = "none";
+        document.querySelector("#moving").style.left = "0";
+        window.fixturePopup?.close();
+      };
+    </script>
+  </body>
+</html>

@@ -110,6 +110,14 @@ pub struct CdpClient {
 }
 
 impl CdpClient {
+    /// Number of CDP requests allocated by this connection so far.
+    ///
+    /// This is a monotonic diagnostic counter and does not retain request
+    /// payloads or alter command routing.
+    pub fn request_count(&self) -> u64 {
+        self.next_id.load(Ordering::Relaxed).saturating_sub(1)
+    }
+
     /// Connect to a Chrome CDP page WebSocket using the default timeout.
     pub async fn connect(ws_url: &str) -> Result<Self, Box<dyn Error>> {
         Self::connect_with_timeout(ws_url, Duration::from_secs(30)).await

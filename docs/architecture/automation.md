@@ -58,6 +58,11 @@ higher one.
 - New features must report their steady-state RSS, peak allocation, p50/p95
   latency, payload size, and binary-size delta before merge.
 
+The MCP transport bounds newline/header input to 8 KiB, content-length input to
+4 MiB, serialized output to 32 MiB, active requests to eight, and queued
+responses to sixteen. Browser operations retain single-session ordering even
+though the transport accepts requests concurrently for cancellation.
+
 Initial release budgets are defined in
 [`best-in-class-browser.md`](../plan/analysis/best-in-class-browser.md) and may
 only change with recorded evidence.

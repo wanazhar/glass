@@ -3,6 +3,12 @@
 Glass implements an MCP server over standard input and output. The server
 starts a browser lazily on the first browser tool call.
 
+Glass currently negotiates MCP protocol version `2024-11-05`. Initialization
+with a missing or unsupported version is rejected before a browser starts.
+After the initialize response, the client must send
+`notifications/initialized`; normal requests are rejected until that
+notification arrives. Repeated initialize requests are invalid.
+
 ## Configure a client
 
 Build or install Glass, then configure the MCP client to execute the binary
@@ -31,6 +37,40 @@ Session flags may be included before `--mcp`, for example:
 Use an absolute binary path in GUI clients, which may have a different `PATH`
 from an interactive shell. Keep stdout reserved for MCP messages; Glass emits
 diagnostics on stderr.
+
+## Transport limits and cancellation
+
+Glass accepts newline-delimited JSON-RPC and `Content-Length` framing. Frames
+must be valid UTF-8 and use a strict decimal content length followed by one
+blank line. The transport bounds are:
+
+| Resource | Limit |
+|---|---:|
+| Header or newline request | 8 KiB |
+| Content-length request body | 4 MiB |
+| Serialized response | 32 MiB |
+| Accepted concurrent requests | 8 |
+| Queued responses | 16 |
+
+Oversized or malformed input is rejected without allocating the declared body.
+An oversized result is replaced by a small JSON-RPC error instead of being
+partially written. The frame deadline begins when the first byte arrives, so an
+idle stdio server can wait indefinitely without treating inactivity as a
+partial-frame timeout.
+
+Clients cancel an in-flight request with `notifications/cancelled` and the
+original `requestId`. Glass returns error code `-32800` for that request and
+keeps the browser session available. Cancellation drops local waiting and
+pending CDP response state; it cannot undo browser input or JavaScript already
+accepted by Chrome. Cancellation reasons are neither logged nor returned.
+
+Glass accepts requests concurrently so cancellation remains responsive, while
+browser operations are serialized through the single owned session. Requests
+beyond the active limit receive a bounded overload error.
+
+Tool failures return a generic `browser tool failed` result. Glass deliberately
+does not echo targets, selectors, evaluated source, page-authored errors, or
+typed text through the MCP error surface. Local tracing remains metadata-only.
 
 ## Tools
 

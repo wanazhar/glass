@@ -48,7 +48,7 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
-    /// One-shot prompt, for example: "navigate to https://example.com".
+    /// One-shot prompt, for example: `navigate to https://example.com`.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 

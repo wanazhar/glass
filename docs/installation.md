@@ -1,0 +1,106 @@
+# Installation and operations
+
+## Build and install
+
+Glass uses the Rust 2024 edition. Build with the current stable Rust toolchain
+and the checked-in dependency lockfile:
+
+```console
+cargo build --release --locked
+```
+
+The optimized executable is `target/release/glass` on Unix-like systems and
+`target/release/glass.exe` on Windows. To install from a checkout:
+
+```console
+cargo install --path . --locked
+```
+
+## Browser selection
+
+Glass resolves the browser in this order:
+
+1. the path passed through `--chrome-path PATH` (or its `--chrome` alias);
+2. Chrome for Testing previously downloaded by `glass install-chromium`; then
+3. a detected system Chrome or Chromium installation.
+
+Override discovery when deployments use a nonstandard browser location:
+
+```console
+glass --chrome-path /opt/chrome/chrome navigate https://example.com
+```
+
+`glass install-chromium` downloads the latest stable Chrome for Testing for
+supported Linux, macOS, and Windows architectures. It requires network access
+to Google's Chrome for Testing service and an `unzip` executable. This is a
+convenience for local use; production systems should generally update the
+browser independently from Glass.
+
+## Session modes
+
+By default, Glass launches headless Chrome on CDP port `9222` with the named
+profile `default`.
+
+- `--profile NAME` persists cookies and browser storage in Glass's local data
+  directory. Profile names may contain ASCII letters, digits, `_`, and `-`.
+- `--incognito` creates a disposable user-data directory and removes it after
+  the owned session closes.
+- `--headed` displays the browser window.
+- `--port PORT` changes the local CDP port.
+
+List and manage named profiles with:
+
+```console
+glass profiles
+glass profiles create work
+glass profiles delete work
+```
+
+Deleting a profile permanently removes its browser data. Do not place files
+you want to retain inside a Glass-managed profile directory.
+
+## Attach to an existing browser
+
+Glass will not silently take over a process already listening on the selected
+CDP port. Start Chrome with remote debugging enabled, then opt in explicitly:
+
+```console
+glass --attach --port 9222 observe
+```
+
+When the endpoint exposes multiple page targets, select one explicitly:
+
+```console
+glass --attach --port 9222 --target-id TARGET_ID observe
+```
+
+Attach mode uses settings owned by the existing Chrome process. It therefore
+rejects `--incognito`, `--headed`, `--chrome-path`, and a non-default named
+profile.
+
+## Logging
+
+Glass writes structured diagnostics through `tracing`. Set `RUST_LOG` to
+control verbosity:
+
+```console
+RUST_LOG=glass=info glass observe
+RUST_LOG=glass=debug glass --headed navigate https://example.com
+```
+
+CLI results use stdout, while diagnostics use stderr. MCP clients must keep
+stdout reserved for protocol messages.
+
+## Production deployment
+
+- Build with `cargo build --release --locked` on the target platform.
+- Keep Chrome/Chromium patched and compatible with CDP.
+- Bind the debugging endpoint only to a trusted local interface and do not
+  publish its port through a container or firewall.
+- Use a dedicated OS account and a dedicated profile for automation.
+- Prefer `--incognito` for jobs that do not require persistent login state.
+- Treat screenshots, DOM output, logs, and profiles as potentially sensitive.
+- Gracefully terminate Glass so it can close Chrome and remove disposable
+  profile data.
+
+See [SECURITY.md](../SECURITY.md) for the complete trust model.

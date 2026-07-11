@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Lightweight browser agent for AI — raw CDP, no Playwright"
 license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/glass"
+homepage = "https://github.com/wanazhar/glass"
+repository = "https://github.com/wanazhar/glass"
 
 [dependencies]
 base64 = "0.22"

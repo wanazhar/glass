@@ -43,6 +43,10 @@ TUI ─────┘          │
 - Named profile data is Chrome's user-data directory; it is the single persistence source of truth.
 - Incognito sessions use both Chrome's `--incognito` flag and a Glass-owned disposable user-data directory.
 - Default agent observations are compact. Full DOM and images are separate operations.
+- CLI and MCP serialize structured agent results as compact single-line JSON. Their
+  `observe` operations return compact context unless `includeDom`/`--deep-dom`
+  or `includeScreenshot`/`--screenshot` is requested; `getDOM`/`dom` is an
+  explicit deep-inspection operation.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
 
 ## Module index

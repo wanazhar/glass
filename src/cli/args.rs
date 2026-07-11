@@ -95,7 +95,7 @@ pub enum Commands {
     /// Print the visible page text.
     Text,
 
-    /// Print the accessibility snapshot.
+    /// Print the full DOM tree. This is an explicit deep-inspection request.
     Dom,
 
     /// Print compact accessibility and text context.

@@ -46,6 +46,7 @@ struct Tool {
     input_schema: Value,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum FrameFormat {
     ContentLength,
     Newline,
@@ -57,6 +58,36 @@ struct RequestLogMetadata<'a> {
     request_id_kind: &'static str,
     request_id_present: bool,
     body_bytes: usize,
+}
+
+enum ToolInvocation<'a> {
+    Navigate {
+        url: &'a str,
+    },
+    Click {
+        target: &'a str,
+    },
+    DoubleClick {
+        target: &'a str,
+    },
+    Type {
+        text: &'a str,
+        target: Option<&'a str>,
+    },
+    Screenshot,
+    Observe {
+        include_dom: bool,
+        include_screenshot: bool,
+    },
+    GetDom,
+    GetText,
+    Evaluate {
+        expression: &'a str,
+    },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
 }
 
 pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
@@ -179,37 +210,22 @@ async fn call_tool(
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
 ) -> BrowserResult<Value> {
-    let tool_name = request.params["name"]
-        .as_str()
-        .ok_or("tools/call requires a string name")?;
-    let arguments = &request.params["arguments"];
+    let invocation = parse_tool_invocation(&request.params)?;
     let session = ensure_session(session, options).await?;
 
-    match tool_name {
-        "navigate" => {
-            let url = required_string(arguments, "url")?;
+    match invocation {
+        ToolInvocation::Navigate { url } => {
             let page = session.navigate(url).await?;
-            Ok(text_result(format!(
-                "navigated to {} — {}",
-                page.title, page.url
-            )))
+            serialized_result(&page)
         }
-        "click" => {
-            let target = required_string(arguments, "target")
-                .or_else(|_| required_string(arguments, "selector"))?;
-            action_result(session.click(target).await?)
-        }
-        "doubleClick" => {
-            let target = required_string(arguments, "target")
-                .or_else(|_| required_string(arguments, "selector"))?;
+        ToolInvocation::Click { target } => action_result(session.click(target).await?),
+        ToolInvocation::DoubleClick { target } => {
             action_result(session.double_click(target).await?)
         }
-        "type" => {
-            let text = required_string(arguments, "text")?;
-            let target = arguments["target"].as_str();
+        ToolInvocation::Type { text, target } => {
             action_result(session.type_text(text, target).await?)
         }
-        "screenshot" => {
+        ToolInvocation::Screenshot => {
             let image = session.screenshot_base64().await?;
             Ok(json!({
                 "content": [{
@@ -219,15 +235,18 @@ async fn call_tool(
                 }]
             }))
         }
-        "observe" => {
-            let include_screenshot = arguments["includeScreenshot"].as_bool().unwrap_or(false);
-            let mut context = if include_screenshot {
-                session.observe_with_screenshot().await?
-            } else {
-                session.observe().await?
+        ToolInvocation::Observe {
+            include_dom,
+            include_screenshot,
+        } => {
+            let mut context = match (include_dom, include_screenshot) {
+                (false, false) => session.observe().await?,
+                (true, false) => session.observe_with_dom().await?,
+                (false, true) => session.observe_with_screenshot().await?,
+                (true, true) => session.observe_with_dom_and_screenshot().await?,
             };
             let screenshot = context.screenshot.take();
-            let context_json = serde_json::to_string_pretty(&context)?;
+            let context_json = serde_json::to_string(&context)?;
             let mut content = vec![json!({"type": "text", "text": context_json})];
             if let Some(data) = screenshot {
                 content.push(json!({
@@ -238,19 +257,50 @@ async fn call_tool(
             }
             Ok(json!({"content": content}))
         }
-        "getDOM" | "dom" => Ok(text_result(session.snapshot().await?.format())),
-        "getText" | "text" => Ok(text_result(session.text().await?)),
-        "evaluate" => {
-            let expression = required_string(arguments, "expression")?;
-            Ok(text_result(serde_json::to_string_pretty(
-                &session.evaluate(expression).await?,
-            )?))
+        ToolInvocation::GetDom => serialized_result(&session.deep_dom().await?),
+        ToolInvocation::GetText => Ok(text_result(session.text().await?)),
+        ToolInvocation::Evaluate { expression } => {
+            serialized_result(&session.evaluate(expression).await?)
         }
-        "scroll" => {
-            let dx = arguments["dx"].as_f64().unwrap_or(0.0);
-            let dy = arguments["dy"].as_f64().unwrap_or(600.0);
-            action_result(session.scroll(dx, dy).await?)
-        }
+        ToolInvocation::Scroll { dx, dy } => action_result(session.scroll(dx, dy).await?),
+    }
+}
+
+fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
+    let tool_name = required_string(params, "name")?;
+    let arguments = &params["arguments"];
+    if !arguments.is_null() && !arguments.is_object() {
+        return Err("tools/call arguments must be an object".into());
+    }
+
+    match tool_name {
+        "navigate" => Ok(ToolInvocation::Navigate {
+            url: required_string(arguments, "url")?,
+        }),
+        "click" => Ok(ToolInvocation::Click {
+            target: required_target(arguments)?,
+        }),
+        "doubleClick" => Ok(ToolInvocation::DoubleClick {
+            target: required_target(arguments)?,
+        }),
+        "type" => Ok(ToolInvocation::Type {
+            text: required_string(arguments, "text")?,
+            target: optional_string(arguments, "target")?,
+        }),
+        "screenshot" => Ok(ToolInvocation::Screenshot),
+        "observe" => Ok(ToolInvocation::Observe {
+            include_dom: optional_bool(arguments, "includeDom")?,
+            include_screenshot: optional_bool(arguments, "includeScreenshot")?,
+        }),
+        "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
+        "getText" | "text" => Ok(ToolInvocation::GetText),
+        "evaluate" => Ok(ToolInvocation::Evaluate {
+            expression: required_string(arguments, "expression")?,
+        }),
+        "scroll" => Ok(ToolInvocation::Scroll {
+            dx: optional_number(arguments, "dx", 0.0)?,
+            dy: optional_number(arguments, "dy", 600.0)?,
+        }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
 }
@@ -310,15 +360,18 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "observe",
-            description: "Return DOM, accessibility, and visible text context; screenshots are opt-in.",
+            description: "Return compact accessibility and visible-text context; full DOM and screenshots are opt-in.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"includeScreenshot": {"type": "boolean", "default": false}}
+                "properties": {
+                    "includeDom": {"type": "boolean", "default": false},
+                    "includeScreenshot": {"type": "boolean", "default": false}
+                }
             }),
         },
         Tool {
             name: "getDOM",
-            description: "Return the current accessibility snapshot.",
+            description: "Return the full DOM tree. This is an explicit deep-inspection request.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
@@ -340,17 +393,50 @@ fn tools() -> Vec<Tool> {
             description: "Scroll the page by CSS pixel deltas.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"dx": {"type": "number"}, "dy": {"type": "number"}}
+                "properties": {
+                    "dx": {"type": "number", "default": 0},
+                    "dy": {"type": "number", "default": 600}
+                }
             }),
         },
     ]
 }
 
 fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a str> {
-    arguments[name]
-        .as_str()
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("missing string argument: {name}").into())
+        .ok_or_else(|| format!("{name} must be a non-empty string").into())
+}
+
+fn required_target(arguments: &Value) -> BrowserResult<&str> {
+    optional_string(arguments, "target")?.map_or_else(|| required_string(arguments, "selector"), Ok)
+}
+
+fn optional_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Option<&'a str>> {
+    match arguments.get(name) {
+        None => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
+        Some(_) => Err(format!("{name} must be a non-empty string").into()),
+    }
+}
+
+fn optional_bool(arguments: &Value, name: &str) -> BrowserResult<bool> {
+    match arguments.get(name) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{name} must be a boolean").into()),
+    }
+}
+
+fn optional_number(arguments: &Value, name: &str, default: f64) -> BrowserResult<f64> {
+    match arguments.get(name) {
+        None => Ok(default),
+        Some(value) => value
+            .as_f64()
+            .ok_or_else(|| format!("{name} must be a number").into()),
+    }
 }
 
 fn text_result(text: impl Into<String>) -> Value {
@@ -358,7 +444,11 @@ fn text_result(text: impl Into<String>) -> Value {
 }
 
 fn action_result(outcome: ActionOutcome) -> BrowserResult<Value> {
-    Ok(text_result(serde_json::to_string(&outcome)?))
+    serialized_result(&outcome)
+}
+
+fn serialized_result<T: Serialize + ?Sized>(value: &T) -> BrowserResult<Value> {
+    Ok(text_result(serde_json::to_string(value)?))
 }
 
 fn success_response(id: Option<Value>, result: Value) -> JsonRpcResponse {
@@ -438,6 +528,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::session::ActionKind;
 
     #[test]
     fn request_log_metadata_excludes_params_and_raw_id() {
@@ -465,7 +556,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn advertises_real_browser_tools_without_starting_chrome() {
+    async fn initializes_and_advertises_browser_tools_without_starting_chrome() {
+        let initialize: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05"}
+        }))
+        .unwrap();
         let request: JsonRpcRequest = serde_json::from_value(json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -473,6 +571,12 @@ mod tests {
         }))
         .unwrap();
         let mut session = None;
+        let initialized = handle_request(&initialize, &mut session, &SessionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(initialized.result.unwrap()["serverInfo"]["name"], "glass");
+        assert!(session.is_none());
+
         let result = handle_request(&request, &mut session, &SessionOptions::default())
             .await
             .unwrap();
@@ -484,8 +588,116 @@ mod tests {
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
             false
         );
+        assert_eq!(
+            observe["inputSchema"]["properties"]["includeDom"]["default"],
+            false
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
+        assert!(tools.iter().any(|tool| {
+            tool["name"] == "getDOM"
+                && tool["description"]
+                    .as_str()
+                    .is_some_and(|description| description.contains("explicit"))
+        }));
         assert!(session.is_none());
+    }
+
+    #[test]
+    fn parses_observation_options_strictly() {
+        let params = json!({
+            "name": "observe",
+            "arguments": {"includeDom": true, "includeScreenshot": false}
+        });
+        assert!(matches!(
+            parse_tool_invocation(&params).unwrap(),
+            ToolInvocation::Observe {
+                include_dom: true,
+                include_screenshot: false
+            }
+        ));
+
+        let invalid = json!({
+            "name": "observe",
+            "arguments": {"includeDom": "true"}
+        });
+        let error = parse_tool_invocation(&invalid)
+            .err()
+            .expect("invalid boolean option should fail");
+        assert!(error.to_string().contains("includeDom must be a boolean"));
+    }
+
+    #[test]
+    fn action_results_are_compact_json_text() {
+        let result = action_result(ActionOutcome {
+            action: ActionKind::Scroll,
+            target: None,
+            revision: 9,
+        })
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(!text.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            json!({"action": "scroll", "revision": 9})
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_tool_calls_without_starting_chrome() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "observe",
+                "arguments": {"includeScreenshot": "yes"}
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default())
+            .await
+            .unwrap();
+        let result = response.result.unwrap();
+
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|message| message.contains("includeScreenshot must be a boolean"))
+        );
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn preserves_content_length_framing() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let (mut sender, receiver) = tokio::io::duplex(512);
+        sender
+            .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+            .await
+            .unwrap();
+        sender.shutdown().await.unwrap();
+
+        let mut reader = BufReader::new(receiver);
+        let (decoded, format) = read_message(&mut reader).await.unwrap().unwrap();
+        assert_eq!(decoded, body);
+        assert_eq!(format, FrameFormat::ContentLength);
+
+        let response = success_response(Some(json!(1)), json!({"ok": true}));
+        let (mut sender, mut receiver) = tokio::io::duplex(512);
+        write_response(&mut sender, &response, FrameFormat::ContentLength)
+            .await
+            .unwrap();
+        sender.shutdown().await.unwrap();
+        let mut encoded = Vec::new();
+        receiver.read_to_end(&mut encoded).await.unwrap();
+        let encoded = String::from_utf8(encoded).unwrap();
+
+        assert!(encoded.starts_with("Content-Length: "));
+        assert!(encoded.ends_with(r#"{"jsonrpc":"2.0","result":{"ok":true},"id":1}"#));
     }
 }

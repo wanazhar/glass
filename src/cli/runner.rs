@@ -1,6 +1,7 @@
 use super::args::{Cli, Commands, ProfileCommand};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use serde::Serialize;
 
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     if cli.mcp {
@@ -80,29 +81,23 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
     match command {
         Commands::Navigate { url } => {
             let page = session.navigate(url).await?;
-            println!("navigated to {} — {}", page.title, page.url);
+            print_json(&page)?;
         }
         Commands::Click { target } => {
-            println!("{}", serde_json::to_string(&session.click(target).await?)?);
+            print_json(&session.click(target).await?)?;
         }
         Commands::DoubleClick { target } => {
-            println!(
-                "{}",
-                serde_json::to_string(&session.double_click(target).await?)?
-            );
+            print_json(&session.double_click(target).await?)?;
         }
         Commands::Type { text, target } => {
-            println!(
-                "{}",
-                serde_json::to_string(&session.type_text(text, target.as_deref()).await?)?
-            );
+            print_json(&session.type_text(text, target.as_deref()).await?)?;
         }
         Commands::Screenshot { output } => {
             std::fs::write(output, session.screenshot_png().await?)?;
             println!("wrote {output}");
         }
         Commands::Text => println!("{}", session.text().await?),
-        Commands::Dom => println!("{}", session.snapshot().await?.format()),
+        Commands::Dom => print_json(&session.deep_dom().await?)?,
         Commands::Observe {
             deep_dom,
             screenshot,
@@ -113,19 +108,13 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 (false, true) => session.observe_with_screenshot().await?,
                 (true, true) => session.observe_with_dom_and_screenshot().await?,
             };
-            println!("{}", serde_json::to_string_pretty(&context)?);
+            print_json(&context)?;
         }
         Commands::Scroll { dx, dy } => {
-            println!(
-                "{}",
-                serde_json::to_string(&session.scroll(*dx, *dy).await?)?
-            );
+            print_json(&session.scroll(*dx, *dy).await?)?;
         }
         Commands::Evaluate { expression } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&session.evaluate(expression).await?)?
-            );
+            print_json(&session.evaluate(expression).await?)?;
         }
         Commands::Tui
         | Commands::InstallChromium
@@ -144,32 +133,23 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
     for prefix in ["navigate to ", "go to ", "open "] {
         if lower.starts_with(prefix) {
             let page = session.navigate(trimmed[prefix.len()..].trim()).await?;
-            println!("navigated to {} — {}", page.title, page.url);
+            print_json(&page)?;
             return Ok(());
         }
     }
     if let Some(rest) = lower.strip_prefix("click ") {
         let target = &trimmed[trimmed.len() - rest.len()..];
-        println!(
-            "{}",
-            serde_json::to_string(&session.click(target.trim_matches('"')).await?)?
-        );
+        print_json(&session.click(target.trim_matches('"')).await?)?;
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("double click ") {
         let target = &trimmed[trimmed.len() - rest.len()..];
-        println!(
-            "{}",
-            serde_json::to_string(&session.double_click(target.trim_matches('"')).await?)?
-        );
+        print_json(&session.double_click(target.trim_matches('"')).await?)?;
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("type ") {
         let text = &trimmed[trimmed.len() - rest.len()..];
-        println!(
-            "{}",
-            serde_json::to_string(&session.type_text(text.trim_matches('"'), None).await?)?
-        );
+        print_json(&session.type_text(text.trim_matches('"'), None).await?)?;
         return Ok(());
     }
     if lower.starts_with("screenshot") {
@@ -190,20 +170,44 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
         return Ok(());
     }
     if matches!(lower.as_str(), "dom" | "snapshot" | "get dom") {
-        println!("{}", session.snapshot().await?.format());
+        print_json(&session.deep_dom().await?)?;
         return Ok(());
     }
     if matches!(lower.as_str(), "observe" | "context") {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&session.observe().await?)?
-        );
+        print_json(&session.observe().await?)?;
         return Ok(());
     }
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&session.evaluate(trimmed).await?)?
-    );
+    print_json(&session.evaluate(trimmed).await?)?;
     Ok(())
+}
+
+fn print_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<()> {
+    println!("{}", compact_json(value)?);
+    Ok(())
+}
+
+fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
+    Ok(serde_json::to_string(value)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn structured_cli_output_is_compact_json() {
+        let output = compact_json(&json!({
+            "page": {"title": "Glass", "url": "https://example.com"},
+            "items": [1, 2]
+        }))
+        .unwrap();
+
+        assert!(!output.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output).unwrap()["items"],
+            json!([1, 2])
+        );
+    }
 }

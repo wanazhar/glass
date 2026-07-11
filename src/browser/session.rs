@@ -505,7 +505,20 @@ impl BrowserSession {
         let value = self
             .evaluate_value("document.body ? document.body.innerText : ''")
             .await?;
-        Ok(value.as_str().unwrap_or_default().to_string())
+        Ok(truncate_visible_text(
+            value.as_str().unwrap_or_default(),
+            COMPACT_TEXT_MAX_BYTES,
+        ))
+    }
+
+    /// Fetch the full DOM only for an explicit deep-inspection operation.
+    pub async fn deep_dom(&self) -> BrowserResult<DomNode> {
+        let raw = self.cdp.get_deep_document().await?;
+        parse_dom_tree(&raw).ok_or_else(|| {
+            "CDP deep DOM response contained no parseable root node"
+                .to_string()
+                .into()
+        })
     }
 
     /// Collect compact page context without a deep DOM or screenshot.
@@ -559,11 +572,7 @@ impl BrowserSession {
             .await?
             .into_page_context();
         if include_dom {
-            let raw = self.cdp.get_deep_document().await?;
-            context.dom = Some(
-                parse_dom_tree(&raw)
-                    .ok_or("CDP deep DOM response contained no parseable root node")?,
-            );
+            context.dom = Some(self.deep_dom().await?);
         }
         if include_screenshot {
             context.screenshot = Some(self.screenshot_base64().await?);

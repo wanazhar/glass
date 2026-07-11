@@ -20,6 +20,20 @@ Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
 
 The cache stores compact context only. Deep DOM and screenshot data are never cached as the default page state.
 
+## Agent frontend contract
+
+CLI `observe` and MCP `observe` serialize `PageContext` as compact, single-line
+JSON. MCP uses `includeDom` and `includeScreenshot`; CLI uses `--deep-dom` and
+`--screenshot`. Both flags default to `false`, and a supplied non-boolean value
+is rejected rather than silently treated as `false`.
+
+`getDOM`/`dom` is an explicit deep-DOM operation and returns a serialized
+`DomNode`, not an unbounded accessibility snapshot. `getText`/`text` returns
+the same UTF-8-safe 16 KiB-bounded visible text used by compact observation.
+Input actions serialize `ActionOutcome`; navigation serializes `PageInfo`.
+Screenshots remain a distinct image response in MCP and an explicit file or
+structured-context request in CLI.
+
 ## Element references
 
 Interactive controls expose `r<revision>:b<backend-node-id>` references, and
@@ -76,6 +90,8 @@ the build installed by `install-chromium`, then system Chrome/Chromium.
 - An occupied CDP port without explicit attach is an error.
 - Multiple page targets in any mode without an explicit target ID are an error.
 - Missing required CDP fields, invalid element references, and stale references are explicit errors.
+- MCP tool arguments with an invalid type are explicit errors and do not start a
+  browser session.
 - No operation silently falls back to a different browser profile or page target.
 
 ## Tests

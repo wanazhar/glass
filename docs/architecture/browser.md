@@ -79,6 +79,11 @@ as a best effort only; on platforms that lock open browser files it can leave
 cleanup for a later pass. Improving abnormal-shutdown cleanup is tracked in
 the delivery backlog.
 
+For an owned session, `close()` first makes a bounded best-effort `Browser.close`
+request so Chrome can flush named-profile state. Glass then waits briefly for
+the child to exit and falls back to process termination if it does not. Attached
+sessions only close their CDP connection.
+
 `--attach` is intentionally narrow: it may not be combined with `--incognito`,
 `--chrome-path`, `--headed`, or a non-default `--profile`. The default profile
 value is ignored for compatibility because an attached Chrome instance owns its
@@ -96,4 +101,4 @@ the build installed by `install-chromium`, then system Chrome/Chromium.
 
 ## Tests
 
-Required coverage includes compact-vs-deep observation, bounded text, selector root lookup, stale references, fast and human motion, explicit attachment, incognito persistence, named profile deletion, and managed Chromium resolution.
+Required coverage includes compact-vs-deep observation, bounded text, selector root lookup, stale references, fast and human motion, explicit attachment, incognito isolation, named-profile persistence/deletion, and managed Chromium resolution.

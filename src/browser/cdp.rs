@@ -486,6 +486,13 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Ask an owned Chrome browser to close itself before process-level
+    /// shutdown. This gives profile-backed state a chance to flush cleanly.
+    pub async fn close_browser(&self) -> Result<(), CdpError> {
+        self.send("Browser.close", None).await?;
+        Ok(())
+    }
+
     /// Ask the connection task to close its WebSocket.
     pub async fn close(&self) {
         let _ = self.tx.send(Command::Close);
@@ -824,6 +831,38 @@ mod tests {
             .await
             .unwrap();
         client.enable_observation_events().await.unwrap();
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sends_browser_close_for_owned_session_shutdown() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(request["method"], "Browser.close");
+            assert!(request.get("params").is_none());
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        client.close_browser().await.unwrap();
         client.close().await;
         server.await.unwrap();
     }

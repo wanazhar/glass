@@ -30,6 +30,7 @@ pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
 pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
 const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href, title: document.title, ready_state: document.readyState, text: document.body ? document.body.innerText : ''})";
+const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -439,6 +440,14 @@ impl BrowserSession {
     }
 
     pub async fn close(mut self) -> BrowserResult<()> {
+        if self.chrome.is_some() {
+            // `Browser.close` lets Chrome commit profile-backed storage before
+            // the owned child process falls back to termination below. A page
+            // target can close its websocket before replying, so this is best
+            // effort and intentionally bounded.
+            let _ =
+                tokio::time::timeout(OWNED_BROWSER_CLOSE_TIMEOUT, self.cdp.close_browser()).await;
+        }
         self.cdp.close().await;
         let shutdown_result = if let Some(process) = self.chrome.as_mut() {
             process.shutdown().await

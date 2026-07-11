@@ -15,6 +15,7 @@ const PORT_LAUNCH_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 const PORT_LAUNCH_LOCK_RETRY: Duration = Duration::from_millis(25);
 const CHROME_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHROME_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CHROME_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// An advisory, cross-process lock for an owned Chrome launch on one CDP port.
 ///
@@ -85,12 +86,16 @@ impl ChromeProcess {
     pub async fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let shutdown_result = match self.child.take() {
             Some(mut child) => match child.try_wait() {
-                Ok(None) => match child.kill().await {
-                    Ok(()) => {
-                        let _ = child.wait().await;
-                        Ok(())
-                    }
-                    Err(error) => Err(Box::new(error) as Box<dyn std::error::Error>),
+                Ok(None) => match tokio::time::timeout(CHROME_SHUTDOWN_GRACE, child.wait()).await {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(Box::new(error) as Box<dyn std::error::Error>),
+                    Err(_) => match child.kill().await {
+                        Ok(()) => {
+                            let _ = child.wait().await;
+                            Ok(())
+                        }
+                        Err(error) => Err(Box::new(error) as Box<dyn std::error::Error>),
+                    },
                 },
                 Ok(Some(_)) => Ok(()),
                 Err(error) => Err(Box::new(error) as Box<dyn std::error::Error>),

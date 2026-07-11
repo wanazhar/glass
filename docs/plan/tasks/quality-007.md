@@ -34,8 +34,10 @@ binary size before new capabilities are implemented.
   downloads, and failure recovery.
 - Separate task success from operation latency and record wrong actions as a
   hard failure.
-- Record machine, OS, architecture, Rust, Chrome, iteration, warm/cold, and
-  profile metadata.
+- Record machine, OS, architecture, Rust, Chrome, iteration, session
+  temperature, and profile metadata. Corpus v1 is a warm single-session
+  comparison; cold mode is not emitted until an equivalent cross-adapter
+  browser lifecycle is defined.
 - Add comparison adapters without adding competitor dependencies to Glass.
 - Ratify or revise initial budgets with evidence.
 

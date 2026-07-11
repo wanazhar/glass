@@ -77,7 +77,7 @@ const wrongActions = outcomes.filter(
 const unsupported = outcomes.filter(
   ({ status }) => status === "unsupported",
 ).length;
-const failures = outcomes.length - successes;
+const failures = outcomes.filter(({ status }) => status === "failure").length;
 
 const report = {
   schema_version: 1,
@@ -122,7 +122,7 @@ const report = {
     wrong_actions: wrongActions,
     unsupported,
     task_success_rate: successes / outcomes.length,
-    hard_gate_passed: failures === 0 && wrongActions === 0,
+    hard_gate_passed: successes === outcomes.length,
   },
   scenarios: outcomes,
 };

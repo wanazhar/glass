@@ -103,9 +103,10 @@ async fn main() -> BrowserResult<()> {
     session.close().await?;
 
     let successes = count_status(&outcomes, "success");
+    let failures = count_status(&outcomes, "failure");
     let wrong_actions = count_status(&outcomes, "wrong_action");
     let unsupported = count_status(&outcomes, "unsupported");
-    let failures = outcomes.len() - successes;
+    let hard_gate_passed = successes == outcomes.len();
     let report = json!({
         "schema_version": 1,
         "tool": {"name": "glass", "version": env!("CARGO_PKG_VERSION")},
@@ -139,7 +140,7 @@ async fn main() -> BrowserResult<()> {
             "wrong_actions": wrong_actions,
             "unsupported": unsupported,
             "task_success_rate": successes as f64 / outcomes.len() as f64,
-            "hard_gate_passed": failures == 0 && wrong_actions == 0,
+            "hard_gate_passed": hard_gate_passed,
         },
         "scenarios": outcomes,
     });
@@ -446,6 +447,21 @@ mod tests {
         assert_eq!(successes, 1);
         assert_eq!(wrong, 1);
         assert_ne!(successes, outcomes.len());
+    }
+
+    #[test]
+    fn summary_status_counts_partition_outcomes() {
+        let outcomes = vec![
+            json!({"status":"success"}),
+            json!({"status":"failure"}),
+            json!({"status":"wrong_action"}),
+            json!({"status":"unsupported"}),
+        ];
+        let total = ["success", "failure", "wrong_action", "unsupported"]
+            .iter()
+            .map(|status| count_status(&outcomes, status))
+            .sum::<usize>();
+        assert_eq!(total, outcomes.len());
     }
 
     #[test]

@@ -77,9 +77,9 @@
       "additionalProperties": false,
       "properties": {
         "successes": {"type": "integer", "minimum": 0},
-        "failures": {"type": "integer", "minimum": 0},
-        "wrong_actions": {"type": "integer", "minimum": 0},
-        "unsupported": {"type": "integer", "minimum": 0},
+        "failures": {"type": "integer", "minimum": 0, "description": "Count of ordinary failure outcomes only"},
+        "wrong_actions": {"type": "integer", "minimum": 0, "description": "Count of forbidden-side-effect outcomes only"},
+        "unsupported": {"type": "integer", "minimum": 0, "description": "Count of explicitly unsupported outcomes only"},
         "task_success_rate": {"type": "number", "minimum": 0, "maximum": 1},
         "hard_gate_passed": {"type": "boolean"}
       }

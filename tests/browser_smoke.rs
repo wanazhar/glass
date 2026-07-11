@@ -140,6 +140,51 @@ async fn mcp_rejects_an_unnegotiated_client_before_tool_use() {
     assert!(!responses[0].to_string().contains("private-future-version"));
 }
 
+#[tokio::test]
+async fn mcp_enforces_initialization_lifecycle_and_notification_silence() {
+    let binary = glass_binary_path();
+    let child = Command::new(binary)
+        .arg("--mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let responses = mcp_responses(
+        child,
+        &[
+            json!({"jsonrpc":"2.0","method":"ping"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+        ],
+    )
+    .await;
+    assert_eq!(
+        responses.len(),
+        5,
+        "notifications must not produce responses"
+    );
+    let response = |id: i64| {
+        responses
+            .iter()
+            .find(|response| response["id"] == id)
+            .unwrap()
+    };
+    assert_eq!(response(1)["result"]["serverInfo"]["name"], "glass");
+    assert_eq!(response(2)["error"]["code"], -32002);
+    assert!(response(3)["result"]["tools"].is_array());
+    let null_id = responses
+        .iter()
+        .find(|response| response["id"].is_null())
+        .unwrap();
+    assert_eq!(null_id["result"], json!({}));
+    assert_eq!(response(4)["error"]["code"], -32600);
+}
+
 async fn write_mcp_line(writer: &mut tokio::process::ChildStdin, message: Value) {
     writer
         .write_all(format!("{message}\n").as_bytes())
@@ -204,6 +249,11 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     assert_eq!(read_mcp_line(&mut stdout).await["id"], 1);
     write_mcp_line(
         &mut stdin,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    write_mcp_line(
+        &mut stdin,
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
     )
     .await;
@@ -226,6 +276,11 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    write_mcp_line(&mut stdin, json!({"jsonrpc":"2.0","id":3,"method":"ping"})).await;
+    let duplicate = read_mcp_line(&mut stdout).await;
+    assert_eq!(duplicate["id"], 3);
+    assert_eq!(duplicate["error"]["code"], -32600);
+    assert_eq!(duplicate["error"]["message"], "duplicate active request id");
     write_mcp_line(
         &mut stdin,
         json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3,"reason":"private reason must not be logged"}}),
@@ -244,6 +299,20 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     let recovered = read_mcp_line(&mut stdout).await;
     assert_eq!(recovered["id"], 4);
     assert_eq!(recovered["result"]["content"][0]["text"], "42");
+
+    let sentinel = "#private-target-token-7319";
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"click","arguments":{"target":sentinel}}}),
+    )
+    .await;
+    let sanitized = read_mcp_line(&mut stdout).await;
+    assert_eq!(sanitized["id"], 6);
+    assert_eq!(
+        sanitized["result"]["content"][0]["text"],
+        "browser tool failed"
+    );
+    assert!(!sanitized.to_string().contains(sentinel));
 
     drop(stdin);
     let output = child.wait_with_output().await.unwrap();
@@ -450,6 +519,10 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
             }),
             json!({
                 "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+            json!({
+                "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
                 "params": {"name": "observe", "arguments": {}}
@@ -506,6 +579,10 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
             }),
             json!({
                 "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+            json!({
+                "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
                 "params": {"name": "navigate", "arguments": {"url": url}}
@@ -544,6 +621,10 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
                 "id": 1,
                 "method": "initialize",
                 "params": {"protocolVersion": "2024-11-05"}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
             }),
             json!({
                 "jsonrpc": "2.0",

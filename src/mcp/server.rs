@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -30,7 +30,50 @@ struct JsonRpcRequest {
     #[serde(default)]
     params: Value,
     #[serde(default)]
-    id: Option<Value>,
+    id: RequestId,
+}
+
+#[derive(Debug, Default)]
+enum RequestId {
+    #[default]
+    Missing,
+    Present(Value),
+}
+
+impl<'de> Deserialize<'de> for RequestId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::Present(Value::deserialize(deserializer)?))
+    }
+}
+
+impl RequestId {
+    fn is_notification(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+
+    fn response_value(&self) -> Option<Value> {
+        match self {
+            Self::Missing => None,
+            Self::Present(value) => Some(value.clone()),
+        }
+    }
+
+    fn cancellation_key(&self) -> Option<String> {
+        match self {
+            Self::Present(value @ (Value::String(_) | Value::Number(_))) => Some(value.to_string()),
+            Self::Missing | Self::Present(_) => None,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        matches!(
+            self,
+            Self::Missing | Self::Present(Value::Null | Value::String(_) | Value::Number(_))
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +154,13 @@ struct Outbound {
 
 type CancellationMap = Arc<StdMutex<HashMap<String, oneshot::Sender<()>>>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Uninitialized,
+    Negotiated,
+    Ready,
+}
+
 pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
     let local = tokio::task::LocalSet::new();
     local.run_until(run_mcp_server_local(cli)).await
@@ -142,7 +192,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         }
         Ok::<(), io::Error>(())
     });
-    let mut initialized = false;
+    let mut lifecycle = Lifecycle::Uninitialized;
 
     while let Some((body, format)) = read_message(&mut reader).await? {
         let body_bytes = body.len();
@@ -150,7 +200,8 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
             Ok(request) => request,
             Err(error) => {
                 debug!(body_bytes, "MCP request rejected: invalid JSON");
-                let response = error_response(None, -32700, format!("parse error: {error}"));
+                let response =
+                    error_response(Some(Value::Null), -32700, format!("parse error: {error}"));
                 send_response(&outbound_tx, response, format).await?;
                 continue;
             }
@@ -164,51 +215,109 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
             "MCP request received"
         );
 
-        if request.method == "notifications/cancelled" {
+        if !request.id.is_valid() {
+            send_response(
+                &outbound_tx,
+                error_response(Some(Value::Null), -32600, "invalid JSON-RPC request id"),
+                format,
+            )
+            .await?;
+            continue;
+        }
+        if request.method == "notifications/cancelled" && request.id.is_notification() {
             cancel_request(&request, &cancellations);
             continue;
         }
         if request.method == "initialize" {
+            if request.id.is_notification() {
+                continue;
+            }
+            if lifecycle != Lifecycle::Uninitialized {
+                send_response(
+                    &outbound_tx,
+                    error_response(
+                        request.id.response_value(),
+                        -32600,
+                        "initialize may only be requested once",
+                    ),
+                    format,
+                )
+                .await?;
+                continue;
+            }
             let response = initialize_response(&request);
             if response.error.is_none() {
-                initialized = true;
+                lifecycle = Lifecycle::Negotiated;
             }
             send_response(&outbound_tx, response, format).await?;
             continue;
         }
-        if request.id.is_none() && request.method == "notifications/initialized" {
+        if request.id.is_notification() && request.method == "notifications/initialized" {
+            if lifecycle == Lifecycle::Negotiated {
+                lifecycle = Lifecycle::Ready;
+            }
             continue;
         }
-        if !initialized {
-            send_response(
-                &outbound_tx,
-                error_response(request.id.clone(), -32002, "server is not initialized"),
-                format,
-            )
-            .await?;
+        if lifecycle != Lifecycle::Ready {
+            if !request.id.is_notification() {
+                send_response(
+                    &outbound_tx,
+                    error_response(
+                        request.id.response_value(),
+                        -32002,
+                        "server is not initialized",
+                    ),
+                    format,
+                )
+                .await?;
+            }
             continue;
         }
 
         let permit = match Arc::clone(&permits).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
+                if !request.id.is_notification() {
+                    send_response(
+                        &outbound_tx,
+                        error_response(
+                            request.id.response_value(),
+                            -32000,
+                            "too many concurrent requests",
+                        ),
+                        format,
+                    )
+                    .await?;
+                }
+                continue;
+            }
+        };
+        let cancellation_key = request.id.cancellation_key();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let mut cancel_guard = Some(cancel_tx);
+        if let Some(key) = cancellation_key.as_ref() {
+            let duplicate = {
+                let mut active = cancellations.lock().expect("cancellation map poisoned");
+                if active.contains_key(key) {
+                    true
+                } else {
+                    active.insert(key.clone(), cancel_guard.take().expect("sender available"));
+                    false
+                }
+            };
+            if duplicate {
                 send_response(
                     &outbound_tx,
-                    error_response(request.id.clone(), -32000, "too many concurrent requests"),
+                    error_response(
+                        request.id.response_value(),
+                        -32600,
+                        "duplicate active request id",
+                    ),
                     format,
                 )
                 .await?;
                 continue;
             }
-        };
-        let cancellation_key = request.id.as_ref().and_then(request_id_key);
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        let mut cancel_guard = Some(cancel_tx);
-        if let Some(key) = cancellation_key.as_ref() {
-            cancellations
-                .lock()
-                .expect("cancellation map poisoned")
-                .insert(key.clone(), cancel_guard.take().expect("sender available"));
         }
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
@@ -217,8 +326,8 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         tokio::task::spawn_local(async move {
             let _permit = permit;
             let _cancel_guard = cancel_guard;
-            let is_notification = request.id.is_none();
-            let id = request.id.clone();
+            let is_notification = request.id.is_notification();
+            let id = request.id.response_value();
             let operation = async {
                 let mut session = task_session.lock().await;
                 handle_request(&request, &mut session, &task_options).await
@@ -265,17 +374,17 @@ async fn send_response(
 }
 
 fn request_log_metadata(request: &JsonRpcRequest, body_bytes: usize) -> RequestLogMetadata<'_> {
-    let request_id_kind = match request.id.as_ref() {
-        None => "absent",
-        Some(Value::Null) => "null",
-        Some(Value::String(_)) => "string",
-        Some(Value::Number(_)) => "number",
-        Some(_) => "invalid",
+    let request_id_kind = match &request.id {
+        RequestId::Missing => "absent",
+        RequestId::Present(Value::Null) => "null",
+        RequestId::Present(Value::String(_)) => "string",
+        RequestId::Present(Value::Number(_)) => "number",
+        RequestId::Present(_) => "invalid",
     };
     RequestLogMetadata {
         method: &request.method,
         request_id_kind,
-        request_id_present: request.id.is_some(),
+        request_id_present: !request.id.is_notification(),
         body_bytes,
     }
 }
@@ -299,7 +408,7 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
 
 fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
     if request.jsonrpc != "2.0" {
-        return error_response(request.id.clone(), -32600, "jsonrpc must be 2.0");
+        return error_response(request.id.response_value(), -32600, "jsonrpc must be 2.0");
     }
     let Some(version) = request
         .params
@@ -307,20 +416,20 @@ fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
         .and_then(Value::as_str)
     else {
         return error_response(
-            request.id.clone(),
+            request.id.response_value(),
             -32602,
             "protocolVersion must be a supported string",
         );
     };
     if version != MCP_PROTOCOL_VERSION {
         return error_response(
-            request.id.clone(),
+            request.id.response_value(),
             -32602,
             "unsupported MCP protocol version",
         );
     }
     success_response(
-        request.id.clone(),
+        request.id.response_value(),
         json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": false}},
@@ -334,12 +443,12 @@ async fn handle_request(
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
 ) -> Option<JsonRpcResponse> {
-    if request.id.is_none() && request.method == "notifications/initialized" {
+    if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
     }
     if request.jsonrpc != "2.0" {
         return Some(error_response(
-            request.id.clone(),
+            request.id.response_value(),
             -32600,
             "jsonrpc must be 2.0",
         ));
@@ -347,15 +456,15 @@ async fn handle_request(
 
     let response = match request.method.as_str() {
         "initialize" => initialize_response(request),
-        "ping" => success_response(request.id.clone(), json!({})),
-        "tools/list" => success_response(request.id.clone(), json!({"tools": tools()})),
+        "ping" => success_response(request.id.response_value(), json!({})),
+        "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
         "tools/call" => match call_tool(request, session, options).await {
-            Ok(result) => success_response(request.id.clone(), result),
-            Err(error) => {
+            Ok(result) => success_response(request.id.response_value(), result),
+            Err(_error) => {
                 let mut response = success_response(
-                    request.id.clone(),
+                    request.id.response_value(),
                     json!({
-                        "content": [{"type": "text", "text": error.to_string()}],
+                        "content": [{"type": "text", "text": "browser tool failed"}],
                         "isError": true
                     }),
                 );
@@ -364,7 +473,7 @@ async fn handle_request(
             }
         },
         _ => error_response(
-            request.id.clone(),
+            request.id.response_value(),
             -32601,
             format!("method not found: {}", request.method),
         ),
@@ -960,11 +1069,8 @@ mod tests {
         let result = response.result.unwrap();
 
         assert_eq!(result["isError"], true);
-        assert!(
-            result["content"][0]["text"]
-                .as_str()
-                .is_some_and(|message| message.contains("includeScreenshot must be a boolean"))
-        );
+        assert_eq!(result["content"][0]["text"], "browser tool failed");
+        assert!(!result.to_string().contains("yes"));
         assert!(session.is_none());
     }
 
@@ -1044,6 +1150,25 @@ mod tests {
             let mut reader = BufReader::new(case.bytes.as_slice());
             let result = read_message(&mut reader).await;
             assert_eq!(result.is_ok(), case.valid, "corpus case {}", case.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn framing_property_sweep_handles_truncation_lengths_and_bytes() {
+        let complete = b"Content-Length: 2\r\n\r\n{}";
+        for end in 0..complete.len() {
+            let mut reader = BufReader::new(&complete[..end]);
+            let _ = read_message(&mut reader).await;
+        }
+        for digits in 1..=128 {
+            let frame = format!("Content-Length: {}\r\n\r\n", "9".repeat(digits));
+            let mut reader = BufReader::new(frame.as_bytes());
+            assert!(read_message(&mut reader).await.is_err());
+        }
+        for byte in 0_u8..=u8::MAX {
+            let line = [byte, b'\n'];
+            let mut reader = BufReader::new(&line[..]);
+            let _ = read_message(&mut reader).await;
         }
     }
 

@@ -5,6 +5,9 @@ starts a browser lazily on the first browser tool call.
 
 Glass currently negotiates MCP protocol version `2024-11-05`. Initialization
 with a missing or unsupported version is rejected before a browser starts.
+After the initialize response, the client must send
+`notifications/initialized`; normal requests are rejected until that
+notification arrives. Repeated initialize requests are invalid.
 
 ## Configure a client
 
@@ -51,7 +54,9 @@ blank line. The transport bounds are:
 
 Oversized or malformed input is rejected without allocating the declared body.
 An oversized result is replaced by a small JSON-RPC error instead of being
-partially written.
+partially written. The frame deadline begins when the first byte arrives, so an
+idle stdio server can wait indefinitely without treating inactivity as a
+partial-frame timeout.
 
 Clients cancel an in-flight request with `notifications/cancelled` and the
 original `requestId`. Glass returns error code `-32800` for that request and
@@ -62,6 +67,10 @@ accepted by Chrome. Cancellation reasons are neither logged nor returned.
 Glass accepts requests concurrently so cancellation remains responsive, while
 browser operations are serialized through the single owned session. Requests
 beyond the active limit receive a bounded overload error.
+
+Tool failures return a generic `browser tool failed` result. Glass deliberately
+does not echo targets, selectors, evaluated source, page-authored errors, or
+typed text through the MCP error surface. Local tracing remains metadata-only.
 
 ## Tools
 

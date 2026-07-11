@@ -20,6 +20,10 @@ as an MCP stdio server. Use --incognito for a disposable profile,
 the browser executable. Observation is DOM/accessibility-first; screenshots
 are explicit through screenshot or observe --screenshot. Clicks use smooth
 pointer motion by default; pass --interaction fast for low-latency automation.
+The TUI refreshes the structured observation after navigation and page-changing
+actions instead of silently taking images. Library callers use `observe()` for
+the cached structured context and the explicitly named
+`observe_with_screenshot()` only when pixels are needed.
 
 ## Development
 

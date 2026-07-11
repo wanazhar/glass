@@ -1,4 +1,3 @@
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io;
@@ -178,18 +177,22 @@ async fn call_tool(
             )))
         }
         "screenshot" => {
-            let image = session.screenshot_png().await?;
+            let image = session.screenshot_base64().await?;
             Ok(json!({
                 "content": [{
                     "type": "image",
-                    "data": STANDARD.encode(image),
+                    "data": image,
                     "mimeType": "image/png"
                 }]
             }))
         }
         "observe" => {
             let include_screenshot = arguments["includeScreenshot"].as_bool().unwrap_or(false);
-            let mut context = session.observe(include_screenshot).await?;
+            let mut context = if include_screenshot {
+                session.observe_with_screenshot().await?
+            } else {
+                session.observe().await?
+            };
             let screenshot = context.screenshot.take();
             let context_json = serde_json::to_string_pretty(&context)?;
             let mut content = vec![json!({"type": "text", "text": context_json})];
@@ -403,8 +406,15 @@ mod tests {
         let result = handle_request(&request, &mut session, &SessionOptions::default())
             .await
             .unwrap();
-        let tools = result.result.unwrap()["tools"].as_array().unwrap().len();
-        assert_eq!(tools, 9);
+        let result = result.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 9);
+        let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
+        assert_eq!(
+            observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
+            false
+        );
+        assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(session.is_none());
     }
 }

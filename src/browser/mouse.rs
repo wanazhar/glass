@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::debug;
 
 /// A 2D point for mouse path calculations.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,6 +39,16 @@ impl Default for MouseEngine {
 impl MouseEngine {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    fn with_seed(seed: u64) -> Self {
+        Self {
+            min_speed: 400.0,
+            max_speed: 800.0,
+            steps_per_second: 60,
+            seed: AtomicU64::new(seed | 1),
+        }
     }
 
     fn next_unit(&self) -> f64 {
@@ -108,8 +117,8 @@ impl MouseEngine {
             return vec![start];
         }
 
-        let nominal_speed = (self.min_speed + self.max_speed) / 2.0;
-        let duration = distance / nominal_speed;
+        let speed = self.min_speed + (self.max_speed - self.min_speed) * self.next_unit();
+        let duration = distance / speed;
         let steps = (duration * self.steps_per_second as f64)
             .round()
             .clamp(8.0, 120.0) as usize;
@@ -128,37 +137,20 @@ impl MouseEngine {
         points
     }
 
-    /// Calculate the delay between two consecutive pointer samples.
-    pub fn move_delay(&self, start: Point, end: Point) -> Duration {
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
-        let distance = (dx * dx + dy * dy).sqrt();
-        let speed = self.min_speed + (self.max_speed - self.min_speed) * self.next_unit();
-        Duration::from_secs_f64((distance / speed).max(0.005))
+    /// Calculate the cadence between consecutive pointer samples.
+    ///
+    /// Samples are evenly timed so the eased spatial curve produces actual
+    /// acceleration and deceleration instead of having its timing cancelled
+    /// out by distance-proportional sleeps.
+    pub fn move_delay(&self, _start: Point, _end: Point) -> Duration {
+        let cadence = 1.0 / self.steps_per_second.max(1) as f64;
+        let jitter = 0.9 + self.next_unit() * 0.2;
+        Duration::from_secs_f64((cadence * jitter).max(0.001))
     }
 
-    /// Move along a path, invoking the callback for each sample.
-    pub async fn move_to<F>(
-        &self,
-        start: Point,
-        end: Point,
-        mut callback: F,
-    ) -> Result<(), Box<dyn std::error::Error>>
-    where
-        F: FnMut(Point) -> futures_util::future::BoxFuture<'static, ()>,
-    {
-        let path = self.generate_path(start, end);
-        debug!(
-            steps = path.len(),
-            distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt() as u32,
-            "moving pointer"
-        );
-        for window in path.windows(2) {
-            let point = window[1];
-            callback(point).await;
-            tokio::time::sleep(self.move_delay(window[0], point)).await;
-        }
-        Ok(())
+    /// Return a short, varied mouse-down dwell before release.
+    pub fn click_delay(&self) -> Duration {
+        Duration::from_secs_f64(0.04 + self.next_unit() * 0.05)
     }
 
     /// Generate the press/release events after the pointer reaches a target.
@@ -258,7 +250,7 @@ mod tests {
 
     #[test]
     fn path_preserves_endpoints_and_has_bounded_samples() {
-        let engine = MouseEngine::new();
+        let engine = MouseEngine::with_seed(7);
         let start = Point { x: 0.0, y: 0.0 };
         let end = Point {
             x: 1_000.0,
@@ -272,7 +264,7 @@ mod tests {
 
     #[test]
     fn path_is_not_always_a_teleport() {
-        let engine = MouseEngine::new();
+        let engine = MouseEngine::with_seed(11);
         let path = engine.generate_path(Point { x: 0.0, y: 0.0 }, Point { x: 400.0, y: 0.0 });
         assert!(path.len() > 2);
         assert!(path.iter().any(|point| point.y.abs() > f64::EPSILON));
@@ -280,9 +272,19 @@ mod tests {
 
     #[test]
     fn click_events_only_press_and_release_after_motion() {
-        let events = MouseEngine::new().generate_click_events(Point { x: 2.0, y: 3.0 });
+        let events = MouseEngine::with_seed(13).generate_click_events(Point { x: 2.0, y: 3.0 });
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "mousePressed");
         assert_eq!(events[1].event_type, "mouseReleased");
+    }
+
+    #[test]
+    fn movement_and_click_delays_stay_in_human_ranges() {
+        let engine = MouseEngine::with_seed(17);
+        let move_delay = engine.move_delay(Point { x: 0.0, y: 0.0 }, Point { x: 5.0, y: 5.0 });
+        assert!((Duration::from_millis(15)..=Duration::from_millis(19)).contains(&move_delay));
+        assert!(
+            (Duration::from_millis(40)..=Duration::from_millis(90)).contains(&engine.click_delay())
+        );
     }
 }

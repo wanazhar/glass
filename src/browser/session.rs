@@ -34,7 +34,7 @@ pub struct SessionOptions {
     pub interaction_mode: InteractionMode,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum InteractionMode {
     Human,
     Fast,
@@ -85,6 +85,7 @@ pub struct PageContext {
     pub dom: Option<DomNode>,
     pub accessibility: AccessibilitySnapshot,
     /// Base64 PNG data is populated only when visual context is explicitly requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
 }
 
@@ -272,29 +273,45 @@ impl BrowserSession {
             Ok(Err(error)) => return Err(error.into()),
             Err(_) => return Err("navigation timed out waiting for Page.loadEventFired".into()),
         }
-        self.page_info().await
+        let page = self.page_info().await?;
+        self.invalidate_observation();
+        Ok(page)
     }
 
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
-        let raw = self.cdp.evaluate(expression).await?;
-        runtime_value(&raw)
+        let result = self.evaluate_value(expression).await;
+        // Arbitrary JavaScript may mutate DOM, styles, form state, or history.
+        // Invalidate synchronously so the next cached observation cannot race
+        // the asynchronous CDP mutation event stream.
+        self.invalidate_observation();
+        result
     }
 
     pub async fn text(&self) -> BrowserResult<String> {
         let value = self
-            .evaluate("document.body ? document.body.innerText : ''")
+            .evaluate_value("document.body ? document.body.innerText : ''")
             .await?;
         Ok(value.as_str().unwrap_or_default().to_string())
     }
 
-    /// Collect DOM, accessibility, and visible text context. Screenshots are opt-in.
-    pub async fn observe(&self, include_screenshot: bool) -> BrowserResult<PageContext> {
-        self.observe_internal(include_screenshot, true).await
+    /// Collect DOM, accessibility, and visible text context without a screenshot.
+    pub async fn observe(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(false, true).await
     }
 
-    /// Collect a fresh context, bypassing the event-driven cache.
-    pub async fn observe_fresh(&self, include_screenshot: bool) -> BrowserResult<PageContext> {
-        self.observe_internal(include_screenshot, false).await
+    /// Collect structured context and explicitly include a current screenshot.
+    pub async fn observe_with_screenshot(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, true).await
+    }
+
+    /// Collect fresh structured context without a screenshot, bypassing the cache.
+    pub async fn observe_fresh(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(false, false).await
+    }
+
+    /// Collect fresh structured context and explicitly include a screenshot.
+    pub async fn observe_fresh_with_screenshot(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(true, false).await
     }
 
     async fn observe_internal(
@@ -313,7 +330,7 @@ impl BrowserSession {
             };
             if let Some(mut context) = cached_context {
                 if include_screenshot {
-                    context.screenshot = Some(STANDARD.encode(self.screenshot_png().await?));
+                    context.screenshot = Some(self.screenshot_base64().await?);
                 }
                 return Ok(context);
             }
@@ -348,7 +365,7 @@ impl BrowserSession {
         });
         if include_screenshot {
             let mut visual_context = context;
-            visual_context.screenshot = Some(STANDARD.encode(self.screenshot_png().await?));
+            visual_context.screenshot = Some(self.screenshot_base64().await?);
             Ok(visual_context)
         } else {
             Ok(context)
@@ -356,12 +373,18 @@ impl BrowserSession {
     }
 
     pub async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
-        let data = self.cdp.screenshot("png").await?;
+        let data = self.screenshot_base64().await?;
         Ok(STANDARD.decode(data.as_bytes())?)
+    }
+
+    /// Capture a PNG while preserving CDP's base64 payload for image APIs.
+    pub async fn screenshot_base64(&self) -> BrowserResult<String> {
+        Ok(self.cdp.screenshot("png").await?)
     }
 
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<()> {
         self.cdp.scroll_by(dx, dy).await?;
+        self.invalidate_observation();
         Ok(())
     }
 
@@ -388,23 +411,28 @@ impl BrowserSession {
         let (x, y) = center_of_box_model(&model)?;
         let point = Point { x, y };
         let mut pointer = self.pointer.lock().await;
-        match self.interaction_mode {
-            InteractionMode::Human => {
-                let start = pointer.unwrap_or(Point { x: 640.0, y: 360.0 });
-                let path = self.mouse.generate_path(start, point);
-                for window in path.windows(2) {
-                    let next = window[1];
-                    self.cdp
-                        .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
-                        .await?;
-                    tokio::time::sleep(self.mouse.move_delay(window[0], next)).await;
-                }
+        let start = match (self.interaction_mode, *pointer) {
+            (_, Some(point)) => point,
+            (InteractionMode::Human, None) => self
+                .viewport_center()
+                .await
+                .unwrap_or(Point { x: 640.0, y: 360.0 }),
+            (InteractionMode::Fast, None) => point,
+        };
+        let path = interaction_path(self.interaction_mode, &self.mouse, start, point);
+        if self.interaction_mode == InteractionMode::Human && pointer.is_none() {
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", start.x, start.y, None, None)
+                .await?;
+        }
+        for window in path.windows(2) {
+            let next = window[1];
+            if self.interaction_mode == InteractionMode::Human {
+                tokio::time::sleep(self.mouse.move_delay(window[0], next)).await;
             }
-            InteractionMode::Fast => {
-                self.cdp
-                    .dispatch_mouse_event("mouseMoved", point.x, point.y, None, None)
-                    .await?;
-            }
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
+                .await?;
         }
         for event in self.mouse.generate_click_events(point) {
             self.cdp
@@ -416,8 +444,13 @@ impl BrowserSession {
                     Some(event.click_count),
                 )
                 .await?;
+            if self.interaction_mode == InteractionMode::Human && event.event_type == "mousePressed"
+            {
+                tokio::time::sleep(self.mouse.click_delay()).await;
+            }
         }
         *pointer = Some(point);
+        self.invalidate_observation();
         Ok(element.label)
     }
 
@@ -426,7 +459,34 @@ impl BrowserSession {
             self.click(target).await?;
         }
         self.cdp.insert_text(text).await?;
+        self.invalidate_observation();
         Ok(())
+    }
+
+    async fn viewport_center(&self) -> BrowserResult<Point> {
+        let value = self
+            .evaluate_value("[window.innerWidth / 2, window.innerHeight / 2]")
+            .await?;
+        let coordinates = value
+            .as_array()
+            .filter(|coordinates| coordinates.len() == 2)
+            .ok_or("viewport evaluation returned invalid coordinates")?;
+        let x = coordinates[0]
+            .as_f64()
+            .ok_or("viewport width was not numeric")?;
+        let y = coordinates[1]
+            .as_f64()
+            .ok_or("viewport height was not numeric")?;
+        Ok(Point { x, y })
+    }
+
+    async fn evaluate_value(&self, expression: &str) -> BrowserResult<Value> {
+        let raw = self.cdp.evaluate(expression).await?;
+        runtime_value(&raw)
+    }
+
+    fn invalidate_observation(&self) {
+        self.page_revision.fetch_add(1, Ordering::Relaxed);
     }
 
     async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
@@ -483,6 +543,18 @@ fn interactive_elements(roots: &[AxNode]) -> Vec<InteractiveElement> {
             backend_dom_node_id: node.backend_dom_node_id,
         })
         .collect()
+}
+
+fn interaction_path(
+    mode: InteractionMode,
+    mouse: &MouseEngine,
+    start: Point,
+    end: Point,
+) -> Vec<Point> {
+    match mode {
+        InteractionMode::Human => mouse.generate_path(start, end),
+        InteractionMode::Fast => vec![start, end],
+    }
 }
 
 fn context_event_invalidates_observation(method: &str) -> bool {
@@ -586,6 +658,21 @@ mod tests {
     }
 
     #[test]
+    fn interaction_modes_plan_smooth_or_direct_motion() {
+        let mouse = MouseEngine::new();
+        let start = Point { x: 10.0, y: 20.0 };
+        let end = Point { x: 410.0, y: 220.0 };
+
+        let human = interaction_path(InteractionMode::Human, &mouse, start, end);
+        let fast = interaction_path(InteractionMode::Fast, &mouse, start, end);
+
+        assert!(human.len() > 2);
+        assert_eq!(human.first(), Some(&start));
+        assert_eq!(human.last(), Some(&end));
+        assert_eq!(fast, vec![start, end]);
+    }
+
+    #[test]
     fn invalidates_context_only_for_page_or_dom_mutations() {
         assert!(context_event_invalidates_observation(
             "DOM.childNodeInserted"
@@ -594,5 +681,32 @@ mod tests {
         assert!(!context_event_invalidates_observation(
             "Network.loadingFinished"
         ));
+    }
+
+    #[test]
+    fn structured_context_omits_screenshot_until_explicitly_populated() {
+        let page = PageInfo {
+            url: "https://example.test".to_string(),
+            title: "Example".to_string(),
+            ready_state: "complete".to_string(),
+        };
+        let mut context = PageContext {
+            page: page.clone(),
+            text: "Example".to_string(),
+            dom: None,
+            accessibility: AccessibilitySnapshot {
+                page,
+                roots: Vec::new(),
+                interactive: Vec::new(),
+            },
+            screenshot: None,
+        };
+
+        let structured = serde_json::to_value(&context).unwrap();
+        assert!(structured.get("screenshot").is_none());
+
+        context.screenshot = Some("png-data".to_string());
+        let visual = serde_json::to_value(&context).unwrap();
+        assert_eq!(visual["screenshot"], "png-data");
     }
 }

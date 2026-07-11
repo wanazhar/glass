@@ -14,7 +14,7 @@ use ratatui::{
 use std::io;
 
 use crate::browser::profile::ProfileManager;
-use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use crate::browser::session::{BrowserResult, BrowserSession, PageContext, SessionOptions};
 use crate::cli::args::Cli;
 
 pub struct App {
@@ -22,6 +22,7 @@ pub struct App {
     title: String,
     thoughts: Vec<String>,
     page_content: Vec<String>,
+    page_scroll: u16,
     input: String,
     cursor_pos: usize,
     should_quit: bool,
@@ -39,6 +40,7 @@ impl App {
                 "Waiting for instructions...".to_string(),
             ],
             page_content: vec!["No page loaded.".to_string()],
+            page_scroll: 0,
             input: String::new(),
             cursor_pos: 0,
             should_quit: false,
@@ -159,7 +161,12 @@ fn draw(frame: &mut Frame, app: &App) {
     let page = app.page_content.join("\n");
     frame.render_widget(
         Paragraph::new(page)
-            .block(Block::default().borders(Borders::ALL).title("Page Content"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Structured Observation"),
+            )
+            .scroll((app.page_scroll, 0))
             .wrap(Wrap { trim: true }),
         content[1],
     );
@@ -171,7 +178,7 @@ fn draw(frame: &mut Frame, app: &App) {
     );
     frame.render_widget(
         Paragraph::new(format!(
-            " {}   q: quit   Enter: execute   Esc: close error/quit   {}",
+            " {}   PgUp/PgDn: observation   q: quit   Enter: execute   Esc: close error/quit   {}",
             app.status,
             app.input.chars().count()
         ))
@@ -218,6 +225,9 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         Ok(session) => {
             app.status = format!("Connected on port {}", cli.port);
             app.add_thought("Connected to Chrome.");
+            if let Err(error) = refresh_observation(&session, &mut app, false).await {
+                app.add_thought(format!("Initial observation failed: {error}"));
+            }
             Some(session)
         }
         Err(error) => {
@@ -271,6 +281,8 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
             KeyCode::Right => app.cursor_pos = (app.cursor_pos + 1).min(app.input.chars().count()),
             KeyCode::Home => app.cursor_pos = 0,
             KeyCode::End => app.cursor_pos = app.input.chars().count(),
+            KeyCode::PageUp => app.page_scroll = app.page_scroll.saturating_sub(10),
+            KeyCode::PageDown => app.page_scroll = app.page_scroll.saturating_add(10),
             KeyCode::Char(character) => app.insert_char(character),
             _ => {}
         }
@@ -293,7 +305,7 @@ async fn execute_command(
     let lower = command.trim().to_lowercase();
     if lower == "help" {
         app.add_thought("navigate URL | click TARGET | type TEXT | screenshot [FILE]");
-        app.add_thought("text | dom | scroll DX DY | profiles | JavaScript");
+        app.add_thought("observe | text | dom | scroll DX DY | profiles | JavaScript");
         return Ok(());
     }
     if lower == "profiles" {
@@ -313,10 +325,8 @@ async fn execute_command(
         .strip_prefix("navigate ")
         .or_else(|| command.strip_prefix("go "))
     {
-        let page = session.navigate(url.trim()).await?;
-        app.url = page.url;
-        app.title = format!("Glass — {}", page.title);
-        app.page_content = session.text().await?.lines().map(String::from).collect();
+        session.navigate(url.trim()).await?;
+        refresh_observation(session, app, true).await?;
         app.add_thought(format!("Page loaded: {}", app.title));
     } else if lower.starts_with("screenshot") {
         let output = command
@@ -328,6 +338,7 @@ async fn execute_command(
         app.add_thought(format!("Screenshot saved to {output}"));
     } else if lower == "text" || lower == "content" {
         app.page_content = session.text().await?.lines().map(String::from).collect();
+        app.page_scroll = 0;
         app.add_thought("Page content refreshed.");
     } else if lower == "dom" || lower == "snapshot" {
         app.page_content = session
@@ -337,17 +348,18 @@ async fn execute_command(
             .lines()
             .map(String::from)
             .collect();
+        app.page_scroll = 0;
         app.add_thought("Accessibility snapshot refreshed.");
     } else if lower == "observe" || lower == "context" {
-        let context = session.observe(false).await?;
-        app.url = context.page.url;
-        app.title = format!("Glass — {}", context.page.title);
-        app.page_content = context.text.lines().map(String::from).collect();
+        refresh_observation(session, app, false).await?;
         app.add_thought("DOM and accessibility context refreshed without a screenshot.");
     } else if let Some(rest) = command.strip_prefix("click ") {
-        app.add_thought(format!("Clicked {}", session.click(rest.trim()).await?));
+        let target = session.click(rest.trim()).await?;
+        refresh_observation(session, app, true).await?;
+        app.add_thought(format!("Clicked {target}"));
     } else if let Some(rest) = command.strip_prefix("type ") {
         session.type_text(rest, None).await?;
+        refresh_observation(session, app, true).await?;
         app.add_thought(format!("Typed {} characters.", rest.chars().count()));
     } else if let Some(rest) = command.strip_prefix("scroll ") {
         let mut values = rest
@@ -356,10 +368,37 @@ async fn execute_command(
         session
             .scroll(values.next().unwrap_or(0.0), values.next().unwrap_or(600.0))
             .await?;
+        refresh_observation(session, app, true).await?;
         app.add_thought("Scrolled.");
     } else {
         let result = session.evaluate(command).await?;
+        refresh_observation(session, app, true).await?;
         app.add_thought(format!("Result: {result}"));
     }
+    Ok(())
+}
+
+async fn refresh_observation(
+    session: &BrowserSession,
+    app: &mut App,
+    fresh: bool,
+) -> BrowserResult<()> {
+    let context = if fresh {
+        session.observe_fresh().await?
+    } else {
+        session.observe().await?
+    };
+    apply_observation(app, &context)?;
+    Ok(())
+}
+
+fn apply_observation(app: &mut App, context: &PageContext) -> BrowserResult<()> {
+    app.url.clone_from(&context.page.url);
+    app.title = format!("Glass — {}", context.page.title);
+    app.page_content = serde_json::to_string_pretty(context)?
+        .lines()
+        .map(String::from)
+        .collect();
+    app.page_scroll = 0;
     Ok(())
 }

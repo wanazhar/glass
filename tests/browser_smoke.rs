@@ -22,7 +22,7 @@ async fn browser_session_drives_a_local_fixture() {
     let url = format!("data:text/html;base64,{}", STANDARD.encode(html));
     let session = BrowserSession::start(&SessionOptions {
         port,
-        chrome_path: Some(chrome_path),
+        chrome_path: Some(chrome_path.clone()),
         profile: "e2e".to_string(),
         incognito: true,
         headed: false,
@@ -35,7 +35,7 @@ async fn browser_session_drives_a_local_fixture() {
     assert_eq!(page.title, "Glass Fixture");
     assert!(session.text().await.unwrap().contains("Glass Fixture"));
 
-    let context = session.observe(false).await.unwrap();
+    let context = session.observe().await.unwrap();
     assert!(context.dom.is_some());
     assert!(!context.accessibility.interactive.is_empty());
     assert!(context.screenshot.is_none());
@@ -44,15 +44,7 @@ async fn browser_session_drives_a_local_fixture() {
         .evaluate("document.querySelector('#result').textContent = 'Changed'")
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(
-        session
-            .observe(false)
-            .await
-            .unwrap()
-            .text
-            .contains("Changed")
-    );
+    assert!(session.observe().await.unwrap().text.contains("Changed"));
 
     let snapshot = session.snapshot().await.unwrap();
     assert!(
@@ -69,7 +61,22 @@ async fn browser_session_drives_a_local_fixture() {
     );
 
     session.type_text("Ada", Some("Name")).await.unwrap();
+    session.evaluate("window.pointerEvents = []").await.unwrap();
     session.click("Save").await.unwrap();
+    let pointer_events = session.evaluate("window.pointerEvents").await.unwrap();
+    let pointer_events = pointer_events.as_array().unwrap();
+    assert!(
+        pointer_events
+            .iter()
+            .filter(|event| event["type"] == "mousemove")
+            .count()
+            > 1
+    );
+    assert_eq!(
+        pointer_events[pointer_events.len() - 2]["type"],
+        "mousedown"
+    );
+    assert_eq!(pointer_events[pointer_events.len() - 1]["type"], "mouseup");
     assert_eq!(
         session
             .evaluate("document.querySelector('#result').textContent")
@@ -77,8 +84,46 @@ async fn browser_session_drives_a_local_fixture() {
             .unwrap(),
         "Saved Ada"
     );
-    let visual_context = session.observe(true).await.unwrap();
+    let visual_context = session.observe_with_screenshot().await.unwrap();
     assert!(visual_context.screenshot.is_some());
-    assert!(session.screenshot_png().await.unwrap().len() > 100);
+    assert!(session.observe().await.unwrap().screenshot.is_none());
+    let screenshot = session.screenshot_png().await.unwrap();
+    assert!(screenshot.len() > 100);
+    assert!(screenshot.starts_with(b"\x89PNG\r\n\x1a\n"));
     session.close().await.unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fast_session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "e2e-fast".to_string(),
+        incognito: true,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    fast_session.navigate(&url).await.unwrap();
+    fast_session
+        .evaluate("window.pointerEvents = []")
+        .await
+        .unwrap();
+    fast_session.click("Save").await.unwrap();
+    let pointer_events = fast_session.evaluate("window.pointerEvents").await.unwrap();
+    let pointer_events = pointer_events.as_array().unwrap();
+    assert_eq!(
+        pointer_events
+            .iter()
+            .filter(|event| event["type"] == "mousemove")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pointer_events[pointer_events.len() - 2]["type"],
+        "mousedown"
+    );
+    assert_eq!(pointer_events[pointer_events.len() - 1]["type"], "mouseup");
+    fast_session.close().await.unwrap();
 }

@@ -13,6 +13,16 @@
       <p id="result"></p>
     </main>
     <script>
+      window.pointerEvents = [];
+      for (const type of ["mousemove", "mousedown", "mouseup"]) {
+        document.addEventListener(type, (event) => {
+          window.pointerEvents.push({
+            type,
+            x: event.clientX,
+            y: event.clientY,
+          });
+        }, true);
+      }
       document.querySelector("#save").addEventListener("click", () => {
         document.querySelector("#result").textContent =
           "Saved " + document.querySelector("#name").value;

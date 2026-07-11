@@ -94,10 +94,12 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Text => println!("{}", session.text().await?),
         Commands::Dom => println!("{}", session.snapshot().await?.format()),
         Commands::Observe { screenshot } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&session.observe(*screenshot).await?)?
-            );
+            let context = if *screenshot {
+                session.observe_with_screenshot().await?
+            } else {
+                session.observe().await?
+            };
+            println!("{}", serde_json::to_string_pretty(&context)?);
         }
         Commands::Scroll { dx, dy } => {
             session.scroll(*dx, *dy).await?;
@@ -165,7 +167,7 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
     if matches!(lower.as_str(), "observe" | "context") {
         println!(
             "{}",
-            serde_json::to_string_pretty(&session.observe(false).await?)?
+            serde_json::to_string_pretty(&session.observe().await?)?
         );
         return Ok(());
     }

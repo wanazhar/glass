@@ -6,12 +6,13 @@ This plan implements the agreed goal: make Glass the fastest and smallest practi
 
 ## Task order
 
-1. [perf-001](tasks/perf-001.md) — compact observation and CDP hot path.
-2. [lifecycle-002](tasks/lifecycle-002.md) — explicit attachment, profile ownership, managed Chromium, and real incognito.
-3. [action-003](tasks/action-003.md) — stable references and low-cost reliable input primitives.
-4. [mcp-004](tasks/mcp-004.md) — compact persistent MCP and deterministic CLI data flow.
-5. [tui-005](tasks/tui-005.md) — responsive worker-based TUI with the existing layout.
-6. [verify-006](tasks/verify-006.md) — benchmarks, memory checks, and end-to-end regression coverage.
+1. [baseline-000](tasks/baseline-000.md) — audit and adopt the pre-existing observation/capture worktree changes.
+2. [perf-001](tasks/perf-001.md) — compact observation and CDP hot path.
+3. [lifecycle-002](tasks/lifecycle-002.md) — explicit attachment, profile ownership, managed Chromium, and real incognito.
+4. [action-003](tasks/action-003.md) — stable references and low-cost reliable input primitives.
+5. [mcp-004](tasks/mcp-004.md) — compact persistent MCP and deterministic CLI data flow.
+6. [tui-005](tasks/tui-005.md) — responsive worker-based TUI with the existing layout.
+7. [verify-006](tasks/verify-006.md) — benchmarks, memory checks, and end-to-end regression coverage.
 
 Each task is developed, tested, reviewed, merged, and locally committed before the next dependent task starts. Commit subjects use Conventional Commits.
 

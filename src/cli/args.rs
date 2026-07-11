@@ -113,3 +113,47 @@ pub enum ProfileCommand {
     Create { name: String },
     Delete { name: String },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observation_and_human_interaction_are_defaults() {
+        let cli = Cli::try_parse_from(["glass", "observe"]).unwrap();
+
+        assert_eq!(cli.interaction, InteractionMode::Human);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Observe { screenshot: false })
+        ));
+    }
+
+    #[test]
+    fn screenshot_and_fast_interaction_require_explicit_flags() {
+        let cli =
+            Cli::try_parse_from(["glass", "--interaction", "fast", "observe", "--screenshot"])
+                .unwrap();
+
+        assert_eq!(cli.interaction, InteractionMode::Fast);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Observe { screenshot: true })
+        ));
+    }
+
+    #[test]
+    fn screenshot_remains_a_separate_explicit_command() {
+        let cli = Cli::try_parse_from(["glass", "screenshot", "--output", "page.png"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Screenshot { output }) if output == "page.png"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_interaction_modes() {
+        assert!(Cli::try_parse_from(["glass", "--interaction", "instant", "observe"]).is_err());
+    }
+}

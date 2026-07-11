@@ -240,16 +240,21 @@ impl CdpClient {
 
     /// Take a screenshot and return its base64-encoded image data.
     pub async fn screenshot(&self, format: &str) -> Result<String, CdpError> {
-        let result = self
+        let mut result = self
             .send(
                 "Page.captureScreenshot",
-                Some(serde_json::json!({ "format": format })),
+                Some(serde_json::json!({
+                    "format": format,
+                    "optimizeForSpeed": true
+                })),
             )
             .await?;
-        result["data"]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| CdpError::transport("CDP screenshot response contained no data"))
+        match result.get_mut("data").map(Value::take) {
+            Some(Value::String(data)) => Ok(data),
+            _ => Err(CdpError::transport(
+                "CDP screenshot response contained no data",
+            )),
+        }
     }
 
     /// Get the accessibility tree.
@@ -519,6 +524,42 @@ mod tests {
         assert_eq!(second.unwrap()["method"], "second");
         assert_eq!(events.recv().await.unwrap().method, "Page.loadEventFired");
 
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn requests_fast_screenshot_encoding_and_moves_the_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(request["method"], "Page.captureScreenshot");
+            assert_eq!(request["params"]["format"], "png");
+            assert_eq!(request["params"]["optimizeForSpeed"], true);
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": request["id"],
+                        "result": {"data": "cG5n"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert_eq!(client.screenshot("png").await.unwrap(), "cG5n");
         client.close().await;
         server.await.unwrap();
     }

@@ -4,6 +4,7 @@
 
 | Module | Inputs | Outputs | Delivery task |
 |---|---|---|---|
+| existing worktree | pre-existing implementation changes | reviewed delivery baseline | baseline-000 |
 | `browser/cdp` | CDP requests/events | minimal response/event transport | perf-001, action-003 |
 | `browser/session` | frontend actions | compact context and action results | perf-001, action-003 |
 | `browser/chrome`, `profile` | CLI session options | owned/attached Chrome lifecycle | lifecycle-002 |

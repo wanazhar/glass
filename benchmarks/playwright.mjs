@@ -4,7 +4,10 @@ import { performance } from "node:perf_hooks";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
-const iterations = Number(process.env.GLASS_BENCH_ITERATIONS || 50);
+const requestedIterations = Number(process.env.GLASS_BENCH_ITERATIONS || 50);
+const iterations = Number.isInteger(requestedIterations) && requestedIterations > 0
+  ? requestedIterations
+  : 50;
 const executablePath = process.env.CHROME_PATH;
 const fixture = readFileSync(new URL("../tests/fixtures/basic.html", import.meta.url), "utf8");
 const dataUrl = "data:text/html;base64," + Buffer.from(fixture).toString("base64");
@@ -15,8 +18,8 @@ const browser = await chromium.launch({
   ...(executablePath ? { executablePath } : {}),
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-await page.goto(dataUrl, { waitUntil: "load" });
 const startup_ms = performance.now() - startupStarted;
+await page.goto(dataUrl, { waitUntil: "load" });
 
 async function measure(name, count, operation) {
   const samples = [];
@@ -41,11 +44,19 @@ async function measure(name, count, operation) {
 const results = [
   await measure("evaluate", iterations, () => page.evaluate(() => 1 + 1)),
   await measure("text", iterations, () => page.locator("body").innerText()),
-  await measure("observe", Math.max(5, Math.floor(iterations / 5)), () =>
+  await measure("observe_fresh", Math.max(5, Math.floor(iterations / 5)), () =>
     Promise.all([
       page.locator("body").innerText(),
       page.locator("body").ariaSnapshot(),
       page.evaluate(() => document.documentElement.outerHTML),
+    ]),
+  ),
+  await measure("observe_fresh_with_screenshot", Math.max(5, Math.floor(iterations / 5)), () =>
+    Promise.all([
+      page.locator("body").innerText(),
+      page.locator("body").ariaSnapshot(),
+      page.evaluate(() => document.documentElement.outerHTML),
+      page.screenshot({ type: "png" }),
     ]),
   ),
   await measure("dom_snapshot", Math.max(5, Math.floor(iterations / 5)), () =>
@@ -54,6 +65,10 @@ const results = [
   await measure("screenshot", Math.max(5, Math.floor(iterations / 5)), () =>
     page.screenshot({ type: "png" }),
   ),
+  await measure("click_pair_default", Math.max(5, Math.floor(iterations / 5)), async () => {
+    await page.getByLabel("Name").click();
+    await page.getByRole("button", { name: "Save" }).click();
+  }),
 ];
 
 console.log(JSON.stringify({

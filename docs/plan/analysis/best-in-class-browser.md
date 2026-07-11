@@ -33,6 +33,29 @@ latency. Task `quality-007` records hardware and ratifies thresholds before
 feature implementation. Any changed threshold requires an explanation and
 before/after evidence in the plan.
 
+### Ratified baseline: 2026-07-11
+
+The initial gates remain unchanged. A three-iteration optimized local run of
+`glass-local-v1` on Linux aarch64, Rust 1.97.0, and Chromium 150 recorded 30/33
+correct outcomes (90.9%) and three wrong-target actions. This is an intentional
+baseline failure: the duplicate-label scenario proves the harness catches the
+unsafe first-substring behavior assigned to `target-009`.
+
+The same run measured 6,082,560 bytes peak Glass RSS, 1,068,056,576 bytes peak
+Chrome process-tree RSS, 10,356 compact context bytes, and a 4,398,992-byte
+release binary. The disjoint process scopes make the large Chrome figure
+explicit rather than charging it to Glass. The existing operation benchmark
+recorded fresh compact observation p95 3.54 ms and cached observation p95 0.02
+ms. Fast click p95 was 17.15 ms end to end; the <=5 ms client-overhead gate is
+retained but requires the action instrumentation delivered with `target-009`
+to separate client work from Chrome and page reaction time.
+
+These samples establish that the memory, compact-context, observation, and
+binary gates are realistic on the recorded host. They do not waive the zero
+wrong-action or 100% deterministic-success gates. Release comparisons use 100
+iterations; these shorter measurements ratify the thresholds without claiming
+statistical release evidence.
+
 ## Module decomposition
 
 | Module | Inputs | Outputs | Dependencies | Delivery task |

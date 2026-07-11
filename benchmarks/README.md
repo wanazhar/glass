@@ -5,6 +5,44 @@ a cross-machine leaderboard: record the host OS/architecture, Chrome build,
 iteration count, and whether the browser was already warm whenever comparing
 runs.
 
+## Task-success scorecard
+
+The versioned local corpus in `scenarios/v1.json` covers duplicate labels,
+overlays, reflow, delayed content, SPA navigation, forms, popups, frames,
+dialogs, downloads, and recovery after a failed action. Run it against an
+optimized Glass binary and retain the JSON output:
+
+```sh
+cargo build --release
+GLASS_BINARY_PATH=target/release/glass \
+  GLASS_SCORECARD_ITERATIONS=100 \
+  cargo run --release --example scorecard > scorecard.json
+```
+
+`GLASS_SCORECARD_TEMPERATURE` is `warm` by default; use `cold` to reload the
+fixture between iterations. `GLASS_SCORECARD_PROFILE` records the caller's
+profile label. The report follows `report-schema.json` and records exact task
+outcomes, wrong actions, per-scenario latency and CDP request counts, compact
+context bytes, binary size, environment/tool versions, and process memory.
+`resources.runner` is the Glass runner process only. Chrome RSS is the complete process tree
+rooted at the owned browser PID; the two figures are deliberately disjoint.
+
+Use `GLASS_SCORECARD_TARGET_MODE=wrong` as a harness self-test. It deliberately
+chooses the wrong duplicate-label target, which must produce `wrong_action`, a
+failed hard gate, and a non-zero failure count. Competitor adapters follow
+`adapters/README.md` and keep their dependencies outside the Glass repository.
+
+Run the Playwright adapter from a temporary installation:
+
+```sh
+tmp_dir=$(mktemp -d)
+npm install --prefix "$tmp_dir" --no-save playwright@1.61.1
+NODE_PATH="$tmp_dir/node_modules" \
+  CHROME_PATH=/usr/bin/chromium \
+  GLASS_SCORECARD_ITERATIONS=100 \
+  node benchmarks/adapters/playwright-scorecard.mjs > playwright-scorecard.json
+```
+
 ## Core browser workflow
 
 Build the optimized binary first, then write one JSON report per run:

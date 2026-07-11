@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Glass browser scorecard report",
+  "type": "object",
+  "required": ["schema_version", "tool", "run", "environment", "resources", "summary", "scenarios"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool": {"type": "object", "required": ["name", "version"]},
+    "run": {"type": "object", "required": ["corpus", "iterations", "temperature", "profile"]},
+    "environment": {"type": "object", "required": ["os", "architecture", "rust", "chrome"]},
+    "resources": {"type": "object", "required": ["runner", "chrome", "binary_size_bytes", "cdp_requests"]},
+    "summary": {"type": "object", "required": ["successes", "failures", "wrong_actions", "task_success_rate", "hard_gate_passed"]},
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "iteration", "expected", "status", "latency_ms", "cdp_requests"]
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -304,6 +304,16 @@ impl Drop for DisposableProfileDir {
 }
 
 impl BrowserSession {
+    /// PID of Chrome launched by this session, absent for attached sessions.
+    pub fn owned_chrome_pid(&self) -> Option<u32> {
+        self.chrome.as_ref().map(|chrome| chrome.pid)
+    }
+
+    /// Number of CDP commands issued by this session's page connection.
+    pub fn cdp_request_count(&self) -> u64 {
+        self.cdp.request_count()
+    }
+
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
         options.validate()?;
         let profile_manager = ProfileManager::new();

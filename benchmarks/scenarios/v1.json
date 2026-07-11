@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "corpus": "glass-local-v1",
+  "fixture": "tests/fixtures/scorecard.html",
+  "scenarios": [
+    {"id":"duplicate-label","category":"targeting","expected":"right-target"},
+    {"id":"overlay","category":"targeting","expected":"blocked"},
+    {"id":"reflow","category":"targeting","expected":"reflow-clicked"},
+    {"id":"delayed-content","category":"wait","expected":"Delayed content"},
+    {"id":"spa-navigation","category":"navigation","expected":"spa-complete"},
+    {"id":"form","category":"input","expected":"submitted:Glass"},
+    {"id":"popup","category":"topology","expected":"popup-opened"},
+    {"id":"frame","category":"topology","expected":"frame-clicked"},
+    {"id":"dialog","category":"diagnostic","expected":"dialog-requested"},
+    {"id":"download","category":"diagnostic","expected":"download-requested"},
+    {"id":"failure-recovery","category":"recovery","expected":"recovered"}
+  ]
+}

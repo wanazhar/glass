@@ -155,6 +155,7 @@ async fn mcp_enforces_initialization_lifecycle_and_notification_silence() {
         &[
             json!({"jsonrpc":"2.0","method":"ping"}),
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+            json!({"jsonrpc":"1.0","method":"notifications/initialized"}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
@@ -281,6 +282,20 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     assert_eq!(duplicate["id"], 3);
     assert_eq!(duplicate["error"]["code"], -32600);
     assert_eq!(duplicate["error"]["message"], "duplicate active request id");
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"1.0","method":"notifications/cancelled","params":{"requestId":3}}),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            read_mcp_line(&mut stdout)
+        )
+        .await
+        .is_err(),
+        "an invalid JSON-RPC notification must not cancel active work"
+    );
     write_mcp_line(
         &mut stdin,
         json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3,"reason":"private reason must not be logged"}}),

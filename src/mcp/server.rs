@@ -224,6 +224,17 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
             .await?;
             continue;
         }
+        if request.jsonrpc != "2.0" {
+            if !request.id.is_notification() {
+                send_response(
+                    &outbound_tx,
+                    error_response(request.id.response_value(), -32600, "jsonrpc must be 2.0"),
+                    format,
+                )
+                .await?;
+            }
+            continue;
+        }
         if request.method == "notifications/cancelled" && request.id.is_notification() {
             cancel_request(&request, &cancellations);
             continue;

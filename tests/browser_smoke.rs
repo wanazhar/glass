@@ -1,9 +1,15 @@
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{ActionKind, BrowserSession, InteractionMode, SessionOptions};
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    process::{Child, Command},
     sync::oneshot,
 };
 
@@ -69,6 +75,102 @@ async fn page_target_id(port: u16) -> String {
         .expect("Chrome should expose a page target")
 }
 
+fn glass_binary_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_glass")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let binary_name = if cfg!(windows) { "glass.exe" } else { "glass" };
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("debug")
+                .join(binary_name)
+        })
+}
+
+async fn mcp_responses(mut child: Child, requests: &[Value]) -> Vec<Value> {
+    let input = format!(
+        "{}\n",
+        requests
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "MCP process failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+struct TemporaryProfileHome {
+    path: PathBuf,
+}
+
+impl TemporaryProfileHome {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryProfileHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn temporary_profile_home() -> TemporaryProfileHome {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("glass-e2e-profile-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    TemporaryProfileHome { path }
+}
+
+fn named_profile_mcp(
+    binary: &Path,
+    chrome_path: &Path,
+    home: &Path,
+    profile: &str,
+    port: u16,
+) -> Child {
+    let port_arg = port.to_string();
+    Command::new(binary)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .arg("--mcp")
+        .arg("--chrome-path")
+        .arg(chrome_path)
+        .arg("--profile")
+        .arg(profile)
+        .arg("--port")
+        .arg(port_arg)
+        .arg("--interaction")
+        .arg("fast")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
@@ -120,6 +222,216 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
             panic!("one owned session should start; first error: {first}; second error: {second}");
         }
     }
+}
+
+#[tokio::test]
+async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let Some(chrome_path) = detect_chrome() else {
+        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
+        return;
+    };
+
+    let binary = glass_binary_path();
+    assert!(
+        binary.is_file(),
+        "Glass binary is required for frontend integration: {}",
+        binary.display()
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let fixture_server = FixtureServer::start(include_str!("fixtures/basic.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "e2e-frontends".to_string(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+    let target_id = page_target_id(port).await;
+    let port_arg = port.to_string();
+
+    let cli = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port_arg,
+            "--target-id",
+            &target_id,
+            "--interaction",
+            "fast",
+            "click",
+            "Save",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "CLI attach failed: {}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_outcome: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli_outcome["action"], "click");
+    assert!(cli_outcome["revision"].is_u64());
+
+    let mcp = Command::new(&binary)
+        .args([
+            "--mcp",
+            "--attach",
+            "--port",
+            &port_arg,
+            "--target-id",
+            &target_id,
+            "--interaction",
+            "fast",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let responses = mcp_responses(
+        mcp,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "observe", "arguments": {}}
+            }),
+        ],
+    )
+    .await;
+    assert_eq!(responses[0]["result"]["serverInfo"]["name"], "glass");
+    let context_json = responses[1]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let context: Value = serde_json::from_str(context_json).unwrap();
+    assert!(context.get("dom").is_none());
+    assert!(context.get("screenshot").is_none());
+    assert!(context["accessibility"]["interactive"].is_array());
+
+    session.close().await.unwrap();
+    fixture_server.close().await;
+}
+
+#[tokio::test]
+async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let Some(chrome_path) = detect_chrome() else {
+        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
+        return;
+    };
+
+    let binary = glass_binary_path();
+    assert!(
+        binary.is_file(),
+        "Glass binary is required for frontend integration: {}",
+        binary.display()
+    );
+    let home = temporary_profile_home();
+    let profile = "persistent";
+    let fixture_server = FixtureServer::start(include_str!("fixtures/basic.html")).await;
+    let url = fixture_server.url.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let first_responses = mcp_responses(
+        named_profile_mcp(&binary, &chrome_path, home.path(), profile, first_port),
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "navigate", "arguments": {"url": url}}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evaluate",
+                    "arguments": {"expression": "localStorage.setItem('glass-persistent', 'saved')"}
+                }
+            }),
+        ],
+    )
+    .await;
+    assert_eq!(first_responses[0]["result"]["serverInfo"]["name"], "glass");
+    assert!(
+        home.path()
+            .join("config")
+            .join("glass")
+            .join("profiles")
+            .join("data")
+            .join(profile)
+            .is_dir()
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let second_responses = mcp_responses(
+        named_profile_mcp(&binary, &chrome_path, home.path(), profile, second_port),
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "navigate", "arguments": {"url": url}}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evaluate",
+                    "arguments": {"expression": "localStorage.getItem('glass-persistent')"}
+                }
+            }),
+        ],
+    )
+    .await;
+    let persisted = second_responses[2]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(persisted).unwrap(), "saved");
+
+    fixture_server.close().await;
 }
 
 #[tokio::test]
@@ -312,7 +624,7 @@ async fn browser_session_drives_a_local_fixture() {
     drop(listener);
     let fast_session = BrowserSession::start(&SessionOptions {
         port,
-        chrome_path: Some(chrome_path),
+        chrome_path: Some(chrome_path.clone()),
         profile: "e2e-fast".to_string(),
         incognito: true,
         attach: false,
@@ -350,5 +662,6 @@ async fn browser_session_drives_a_local_fixture() {
     );
     assert_eq!(pointer_events[pointer_events.len() - 1]["type"], "mouseup");
     fast_session.close().await.unwrap();
+
     fixture_server.close().await;
 }

@@ -39,8 +39,11 @@ the cached structured context and the explicitly named
     GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture
 
 The local fixture test requires a detectable Chrome/Chromium installation.
-Performance measurements are documented in benchmarks/README.md; they
-separate cold browser startup from warm CDP command latency.
+Performance measurements are documented in [benchmarks/README.md](benchmarks/README.md).
+The workflow records cold startup, warm compact observation, explicit deep DOM
+and screenshots, fast/human clicks, agent-context payload sizes, Glass RSS when
+the platform exposes it, and binary size without treating one machine's result
+as a universal comparison.
 
 ## Design
 

@@ -40,13 +40,16 @@
       document.querySelector("#dialog").onclick = () => { if (confirm("Continue?")) result.value = "dialog-accepted"; };
       document.querySelector("#download").onclick = () => result.value = "download-requested";
       window.scheduleDelayed = () => {
+        clearTimeout(window.delayedTimer);
         document.querySelector("#delayed")?.remove();
-        setTimeout(() => { const node = document.createElement("p"); node.id = "delayed"; node.textContent = "Delayed content"; document.body.append(node); }, 150);
+        window.delayedTimer = setTimeout(() => { const node = document.createElement("p"); node.id = "delayed"; node.textContent = "Delayed content"; document.body.append(node); }, 150);
       };
       window.resetFixture = () => {
         result.value = "idle";
         document.querySelector("#overlay").style.display = "none";
         document.querySelector("#moving").style.left = "0";
+        clearTimeout(window.delayedTimer);
+        document.querySelector("#delayed")?.remove();
         window.fixturePopup?.close();
       };
     </script>

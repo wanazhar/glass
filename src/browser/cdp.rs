@@ -95,6 +95,26 @@ enum Command {
     Close,
 }
 
+struct PendingRequestGuard {
+    tx: mpsc::UnboundedSender<Command>,
+    id: u64,
+    armed: bool,
+}
+
+impl PendingRequestGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.tx.send(Command::Cancel { id: self.id });
+        }
+    }
+}
+
 /// A multiplexed connection to Chrome DevTools Protocol.
 ///
 /// The connection task owns the WebSocket and the pending request map. This
@@ -251,17 +271,25 @@ impl CdpClient {
                 response: response_tx,
             })
             .map_err(|_| CdpError::transport("CDP connection task is unavailable"))?;
+        let mut pending_guard = PendingRequestGuard {
+            tx: self.tx.clone(),
+            id,
+            armed: true,
+        };
 
         match tokio::time::timeout(self.timeout, response_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(CdpError::transport("CDP response channel closed")),
-            Err(_) => {
-                let _ = self.tx.send(Command::Cancel { id });
-                Err(CdpError::transport(format!(
-                    "CDP response timeout after {} seconds",
-                    self.timeout.as_secs_f64()
-                )))
+            Ok(Ok(result)) => {
+                pending_guard.disarm();
+                result
             }
+            Ok(Err(_)) => {
+                pending_guard.disarm();
+                Err(CdpError::transport("CDP response channel closed"))
+            }
+            Err(_) => Err(CdpError::transport(format!(
+                "CDP response timeout after {} seconds",
+                self.timeout.as_secs_f64()
+            ))),
         }
     }
 

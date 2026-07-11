@@ -35,8 +35,8 @@ async fn main() -> BrowserResult<()> {
     let configured_port = std::env::var("GLASS_CDP_PORT")
         .ok()
         .and_then(|value| value.parse().ok());
-    let (port, chrome_path) = match configured_port {
-        Some(port) => (port, None),
+    let (port, chrome_path, attach) = match configured_port {
+        Some(port) => (port, None, true),
         None => {
             let Some(chrome_path) = detect_chrome() else {
                 return Err("Chrome/Chromium is required for the capture benchmark".into());
@@ -44,15 +44,21 @@ async fn main() -> BrowserResult<()> {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let port = listener.local_addr()?.port();
             drop(listener);
-            (port, Some(chrome_path))
+            (port, Some(chrome_path), false)
         }
     };
 
     let session = BrowserSession::start(&SessionOptions {
         port,
         chrome_path,
-        profile: "capture-benchmark".to_string(),
-        incognito: true,
+        profile: if attach {
+            "default".to_string()
+        } else {
+            "capture-benchmark".to_string()
+        },
+        incognito: !attach,
+        attach,
+        target_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })

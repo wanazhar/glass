@@ -1,7 +1,7 @@
 ---
 id: lifecycle-002
 scope: browser lifecycle
-status: pending
+status: done
 depends-on: [perf-001]
 ---
 
@@ -44,3 +44,15 @@ Correct incognito/profile behavior and prevent unintentional adoption of an exis
 ## Commit
 
 `fix: isolate browser profiles and attachment`
+
+## Completion
+
+- Owned sessions refuse an occupied CDP port; attachment is an explicit
+  `--attach` mode with validated launch-only option conflicts.
+- Target selection never adopts the first page silently when multiple targets
+  exist; `--target-id` selects the intended Chrome page.
+- Incognito launches both `--incognito` and a unique Glass-owned user-data
+  directory, which is removed after the owned process stops.
+- Chrome user-data directories are the named-profile authority; profile deletion
+  also removes legacy Chrome directories and JSON metadata.
+- Managed Chrome for Testing is resolved before system Chrome/Chromium.

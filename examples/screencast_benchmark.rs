@@ -81,6 +81,8 @@ async fn main() -> BrowserResult<()> {
         chrome_path: Some(chrome_path),
         profile: "screencast-benchmark".to_string(),
         incognito: true,
+        attach: false,
+        target_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })

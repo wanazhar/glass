@@ -20,6 +20,12 @@ as an MCP stdio server. Use --incognito for a disposable profile,
 the browser executable. Observation is DOM/accessibility-first; screenshots
 are explicit through screenshot or observe --screenshot. Clicks use smooth
 pointer motion by default; pass --interaction fast for low-latency automation.
+Glass never adopts an occupied CDP endpoint implicitly: pass --attach (and
+--target-id when the endpoint has multiple page targets) to use an existing
+Chrome instance. Attach mode deliberately rejects incognito, headed, custom
+Chrome-path, and named-profile options because the existing Chrome owns those
+settings. `install-chromium` installs a managed Chrome for Testing build that
+Glass resolves before a system browser.
 The TUI refreshes the structured observation after navigation and page-changing
 actions instead of silently taking images. Library callers use `observe()` for
 the cached structured context and the explicitly named

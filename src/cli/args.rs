@@ -18,6 +18,16 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub incognito: bool,
 
+    /// Attach to an existing Chrome CDP endpoint instead of launching Chrome.
+    /// The default profile value is ignored in this mode.
+    #[arg(long, global = true)]
+    pub attach: bool,
+
+    /// Chrome page target ID. Required when the selected endpoint has multiple
+    /// page targets.
+    #[arg(long = "target-id", global = true)]
+    pub target_id: Option<String>,
+
     /// Chrome remote debugging port.
     #[arg(long, global = true, default_value_t = 9222)]
     pub port: u16,
@@ -177,5 +187,23 @@ mod tests {
     #[test]
     fn rejects_unknown_interaction_modes() {
         assert!(Cli::try_parse_from(["glass", "--interaction", "instant", "observe"]).is_err());
+    }
+
+    #[test]
+    fn attach_and_target_id_are_explicit_global_options() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--attach",
+            "--port",
+            "9333",
+            "--target-id",
+            "page-2",
+            "observe",
+        ])
+        .unwrap();
+
+        assert!(cli.attach);
+        assert_eq!(cli.port, 9333);
+        assert_eq!(cli.target_id.as_deref(), Some("page-2"));
     }
 }

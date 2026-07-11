@@ -44,14 +44,27 @@ Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode k
 |---|---|---|
 | named profile | `--user-data-dir=<Glass profile dir>` | retained until delete-profile |
 | incognito | `--incognito` plus unique temporary `--user-data-dir` | removed when Glass-owned Chrome exits |
-| attach | no launch; explicit endpoint/target | Glass closes only the CDP connection |
+| attach | `--attach`; no launch; explicit endpoint/target | Glass closes only the CDP connection |
 
 `profiles list`, create, and delete operate on profile directories. Deletion removes the profile directory and any legacy metadata together.
+
+Library callers must invoke `BrowserSession::close()` when they finish an
+owned incognito session. That explicit asynchronous path stops Chrome before
+removing its disposable directory. Implicit `Drop` initiates process shutdown
+as a best effort only; on platforms that lock open browser files it can leave
+cleanup for a later pass. Improving abnormal-shutdown cleanup is tracked in
+the delivery backlog.
+
+`--attach` is intentionally narrow: it may not be combined with `--incognito`,
+`--chrome-path`, `--headed`, or a non-default `--profile`. The default profile
+value is ignored for compatibility because an attached Chrome instance owns its
+own profile. Chrome resolution for owned sessions is explicit path first, then
+the build installed by `install-chromium`, then system Chrome/Chromium.
 
 ## Errors and fallbacks
 
 - An occupied CDP port without explicit attach is an error.
-- Multiple attachable page targets without an explicit target ID are an error.
+- Multiple page targets in any mode without an explicit target ID are an error.
 - Missing required CDP fields, invalid element references, and stale references are explicit errors.
 - No operation silently falls back to a different browser profile or page target.
 

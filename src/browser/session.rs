@@ -3,7 +3,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 
 use super::cdp::CdpClient;
 use super::chrome::{
-    ChromeProcess, check_chrome_health, detect_chrome, get_ws_url, launch_chrome_with_options,
+    ChromeProcess, PortLaunchLock, check_chrome_health, get_ws_url, is_port_occupied,
+    launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, find_interactive_elements,
@@ -39,6 +40,11 @@ pub struct SessionOptions {
     pub chrome_path: Option<PathBuf>,
     pub profile: String,
     pub incognito: bool,
+    /// Attach to an existing Chrome CDP endpoint instead of launching Chrome.
+    pub attach: bool,
+    /// Explicit Chrome page target ID, required whenever the endpoint has more
+    /// than one page target.
+    pub target_id: Option<String>,
     pub headed: bool,
     pub interaction_mode: InteractionMode,
 }
@@ -56,9 +62,45 @@ impl Default for SessionOptions {
             chrome_path: None,
             profile: "default".to_string(),
             incognito: false,
+            attach: false,
+            target_id: None,
             headed: false,
             interaction_mode: InteractionMode::Human,
         }
+    }
+}
+
+impl SessionOptions {
+    /// Validate combinations that cannot be honored by an attached session.
+    pub fn validate(&self) -> BrowserResult<()> {
+        if self
+            .target_id
+            .as_deref()
+            .is_some_and(|target_id| target_id.trim().is_empty())
+        {
+            return Err("target ID cannot be empty".into());
+        }
+
+        if self.attach {
+            if self.incognito {
+                return Err("--attach cannot be combined with --incognito".into());
+            }
+            if self.profile != "default" {
+                return Err(
+                    "--attach cannot be combined with a named --profile; attached Chrome owns its profile"
+                        .into(),
+                );
+            }
+            if self.chrome_path.is_some() {
+                return Err("--attach cannot be combined with --chrome-path".into());
+            }
+            if self.headed {
+                return Err("--attach cannot be combined with --headed".into());
+            }
+        } else {
+            ProfileManager::validate_name(&self.profile)?;
+        }
+        Ok(())
     }
 }
 
@@ -164,6 +206,7 @@ impl AccessibilitySnapshot {
 pub struct BrowserSession {
     cdp: CdpClient,
     chrome: Option<ChromeProcess>,
+    disposable_profile: Option<DisposableProfileDir>,
     profile_manager: ProfileManager,
     profile: String,
     interaction_mode: InteractionMode,
@@ -178,35 +221,115 @@ struct CachedObservation {
     context: CompactPageContext,
 }
 
+/// A unique user-data directory owned by an incognito Glass session.
+///
+/// Chrome still receives `--incognito`; the fresh directory also prevents it
+/// from inheriting a user's default browser profile or leaving state behind
+/// after a normal Glass shutdown.
+#[derive(Debug)]
+struct DisposableProfileDir {
+    path: PathBuf,
+}
+
+impl DisposableProfileDir {
+    fn create() -> BrowserResult<Self> {
+        static NEXT_DISPOSABLE_PROFILE: AtomicU64 = AtomicU64::new(0);
+
+        let root = std::env::temp_dir().join("glass");
+        std::fs::create_dir_all(&root)?;
+        for _ in 0..32 {
+            let sequence = NEXT_DISPOSABLE_PROFILE.fetch_add(1, Ordering::Relaxed);
+            let nonce = format!(
+                "{}-{}-{sequence}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            );
+            let path = root.join(format!("incognito-{nonce}"));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err("could not allocate a unique incognito user-data directory".into())
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DisposableProfileDir {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %self.path.display(), %error, "could not remove disposable incognito profile");
+        }
+    }
+}
+
 impl BrowserSession {
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
-        ProfileManager::validate_name(&options.profile)?;
+        options.validate()?;
         let profile_manager = ProfileManager::new();
-        let profile_dir = if options.incognito {
+        let mut disposable_profile = None;
+        let mut chrome = None;
+
+        // Hold an OS-backed lock until the launched child has been verified
+        // and its CDP connection is established. A second Glass process that
+        // starts at the same time will re-check the port after this session
+        // owns it instead of accepting our endpoint as its own.
+        let _launch_lock = if options.attach {
             None
         } else {
-            Some(profile_manager.chrome_data_dir(&options.profile))
+            Some(PortLaunchLock::acquire(options.port).await?)
         };
 
-        let mut chrome = None;
-        if !check_chrome_health(options.port).await {
-            let chrome_path = options
-                .chrome_path
-                .clone()
-                .or_else(detect_chrome)
-                .ok_or("Chrome/Chromium not found; install it or pass --chrome-path")?;
+        if options.attach {
+            if !check_chrome_health(options.port).await {
+                return Err(format!(
+                    "cannot attach: no healthy Chrome CDP endpoint is listening on port {}; start Chrome with remote debugging or choose another --port",
+                    options.port
+                )
+                .into());
+            }
+        } else {
+            if is_port_occupied(options.port).await {
+                return Err(format!(
+                    "CDP port {} is already occupied; use --attach to connect to that Chrome endpoint or choose another --port",
+                    options.port
+                )
+                .into());
+            }
+
+            let chrome_path = resolve_chrome_path(options.chrome_path.clone())
+                .ok_or("Chrome/Chromium not found; run install-chromium or pass --chrome-path")?;
+            let profile_dir = if options.incognito {
+                let directory = DisposableProfileDir::create()?;
+                let path = directory.path().to_path_buf();
+                disposable_profile = Some(directory);
+                path
+            } else {
+                profile_manager.ensure_profile_dir(&options.profile)?
+            };
             chrome = Some(
                 launch_chrome_with_options(
                     &chrome_path,
                     options.port,
-                    profile_dir.as_deref(),
+                    Some(&profile_dir),
                     options.headed,
+                    options.incognito,
                 )
                 .await?,
             );
         }
 
-        let ws_url = match wait_for_ws_url(options.port).await {
+        let ws_url = match if options.attach {
+            get_ws_url(options.port, options.target_id.as_deref()).await
+        } else {
+            wait_for_ws_url(options.port, options.target_id.as_deref()).await
+        } {
             Ok(url) => url,
             Err(error) => {
                 if let Some(process) = chrome.as_mut() {
@@ -248,6 +371,7 @@ impl BrowserSession {
         Ok(Self {
             cdp,
             chrome,
+            disposable_profile,
             profile_manager,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
@@ -270,13 +394,29 @@ impl BrowserSession {
         &self.profile
     }
 
+    /// Whether the Chrome process was explicitly attached rather than launched
+    /// by this session.
+    pub fn is_attached(&self) -> bool {
+        self.chrome.is_none()
+    }
+
+    /// Whether this session owns the Chrome process and will stop it on close.
+    pub fn owns_chrome(&self) -> bool {
+        self.chrome.is_some()
+    }
+
     pub async fn close(mut self) -> BrowserResult<()> {
         self.cdp.close().await;
-        if let Some(process) = self.chrome.as_mut() {
-            process.shutdown().await?;
-        }
+        let shutdown_result = if let Some(process) = self.chrome.as_mut() {
+            process.shutdown().await
+        } else {
+            Ok(())
+        };
         self.chrome = None;
-        Ok(())
+        // Drop after the owned child has stopped so Chrome no longer holds
+        // files in the disposable user-data directory.
+        drop(self.disposable_profile.take());
+        shutdown_result
     }
 
     pub async fn page_info(&self) -> BrowserResult<PageInfo> {
@@ -704,12 +844,15 @@ fn center_of_box_model(raw: &Value) -> BrowserResult<(f64, f64)> {
     Ok(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0))
 }
 
-async fn wait_for_ws_url(port: u16) -> BrowserResult<String> {
+async fn wait_for_ws_url(port: u16, target_id: Option<&str>) -> BrowserResult<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match get_ws_url(port).await {
+        match get_ws_url(port, target_id).await {
             Ok(url) => return Ok(url),
-            Err(error) if tokio::time::Instant::now() < deadline => {
+            Err(error)
+                if error.to_string().starts_with("No page target")
+                    && tokio::time::Instant::now() < deadline =>
+            {
                 tracing::debug!(%error, "waiting for Chrome page target");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -743,6 +886,7 @@ mod tests {
         BrowserSession {
             cdp,
             chrome: None,
+            disposable_profile: None,
             profile_manager: ProfileManager::new(),
             profile: "test".to_string(),
             interaction_mode: InteractionMode::Fast,
@@ -751,6 +895,88 @@ mod tests {
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
         }
+    }
+
+    #[test]
+    fn attach_options_reject_launch_only_configuration() {
+        let attached = SessionOptions {
+            attach: true,
+            ..SessionOptions::default()
+        };
+        assert!(attached.validate().is_ok());
+
+        let mut incognito = attached.clone();
+        incognito.incognito = true;
+        assert!(
+            incognito
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("--incognito")
+        );
+
+        let mut profile = attached.clone();
+        profile.profile = "work".to_string();
+        assert!(
+            profile
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("--profile")
+        );
+
+        let mut chrome_path = attached.clone();
+        chrome_path.chrome_path = Some(PathBuf::from("/tmp/chrome"));
+        assert!(
+            chrome_path
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("--chrome-path")
+        );
+
+        let mut headed = attached;
+        headed.headed = true;
+        assert!(
+            headed
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("--headed")
+        );
+    }
+
+    #[test]
+    fn target_id_must_not_be_empty() {
+        let options = SessionOptions {
+            target_id: Some("   ".to_string()),
+            ..SessionOptions::default()
+        };
+
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("target ID")
+        );
+    }
+
+    #[test]
+    fn disposable_incognito_directories_are_unique_and_removed() {
+        let first = DisposableProfileDir::create().unwrap();
+        let first_path = first.path().to_path_buf();
+        let second = DisposableProfileDir::create().unwrap();
+        let second_path = second.path().to_path_buf();
+
+        assert_ne!(first_path, second_path);
+        assert!(first_path.is_dir());
+        assert!(second_path.is_dir());
+
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
     }
 
     async fn observation_server(include_dom: bool) -> (String, tokio::task::JoinHandle<()>) {

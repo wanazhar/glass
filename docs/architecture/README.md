@@ -38,7 +38,8 @@ TUI ─────┘          │
 
 ## Cross-module decisions
 
-- Existing CDP endpoints are never silently adopted. Attachment is explicit.
+- Existing CDP endpoints are never silently adopted. `--attach` is explicit,
+  ignores only the default profile value, and rejects launch-only profile flags.
 - Named profile data is Chrome's user-data directory; it is the single persistence source of truth.
 - Incognito sessions use both Chrome's `--incognito` flag and a Glass-owned disposable user-data directory.
 - Default agent observations are compact. Full DOM and images are separate operations.

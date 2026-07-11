@@ -66,6 +66,8 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
         chrome_path: cli.chrome_path.clone(),
         profile: cli.profile.clone(),
         incognito: cli.incognito,
+        attach: cli.attach,
+        target_id: cli.target_id.clone(),
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };

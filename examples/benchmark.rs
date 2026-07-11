@@ -25,9 +25,11 @@ async fn main() -> BrowserResult<()> {
     let startup_started = Instant::now();
     let fast_session = BrowserSession::start(&SessionOptions {
         port,
-        chrome_path: Some(chrome_path),
+        chrome_path: Some(chrome_path.clone()),
         profile: "benchmark".to_string(),
         incognito: true,
+        attach: false,
+        target_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -36,11 +38,16 @@ async fn main() -> BrowserResult<()> {
     let fixture = include_str!("../tests/fixtures/basic.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
     fast_session.navigate(&url).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let human_port = listener.local_addr()?.port();
+    drop(listener);
     let human_session = BrowserSession::start(&SessionOptions {
-        port,
-        chrome_path: None,
+        port: human_port,
+        chrome_path: Some(chrome_path),
         profile: "benchmark-human".to_string(),
         incognito: true,
+        attach: false,
+        target_id: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
     })

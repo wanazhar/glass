@@ -27,6 +27,12 @@ struct Scenario {
     id: String,
     category: String,
     expected: String,
+    forbidden: Vec<String>,
+}
+
+enum ScenarioRun {
+    Actual(String),
+    Unsupported(&'static str),
 }
 
 #[tokio::main]
@@ -37,11 +43,6 @@ async fn main() -> BrowserResult<()> {
     }
     let chrome_path = detect_chrome().ok_or("Chrome/Chromium is required for the scorecard")?;
     let iterations = positive_env("GLASS_SCORECARD_ITERATIONS", DEFAULT_ITERATIONS)?;
-    let temperature =
-        std::env::var("GLASS_SCORECARD_TEMPERATURE").unwrap_or_else(|_| "warm".to_string());
-    if !matches!(temperature.as_str(), "warm" | "cold") {
-        return Err("GLASS_SCORECARD_TEMPERATURE must be warm or cold".into());
-    }
     let profile = std::env::var("GLASS_SCORECARD_PROFILE")
         .unwrap_or_else(|_| "ephemeral-incognito".to_string());
     let fixture = include_str!("../tests/fixtures/scorecard.html");
@@ -76,11 +77,7 @@ async fn main() -> BrowserResult<()> {
             let latency_ms = run_started.elapsed().as_secs_f64() * 1_000.0;
             let cdp_requests = session.cdp_request_count().saturating_sub(before_cdp);
             let (status, actual, error) = match observed {
-                Ok(actual) if actual == scenario.expected => ("success", Some(actual), None),
-                Ok(actual) if scenario.id == "duplicate-label" => {
-                    ("wrong_action", Some(actual), None)
-                }
-                Ok(actual) => ("failure", Some(actual), None),
+                Ok(run) => classify_run(scenario, run),
                 Err(error) => ("failure", None, Some(error.to_string())),
             };
             outcomes.push(json!({
@@ -95,9 +92,6 @@ async fn main() -> BrowserResult<()> {
                 "cdp_requests": cdp_requests,
             }));
         }
-        if temperature == "cold" && iteration + 1 < iterations {
-            session.navigate(&url).await?;
-        }
     }
 
     let compact = session.observe_fresh().await?;
@@ -110,6 +104,7 @@ async fn main() -> BrowserResult<()> {
 
     let successes = count_status(&outcomes, "success");
     let wrong_actions = count_status(&outcomes, "wrong_action");
+    let unsupported = count_status(&outcomes, "unsupported");
     let failures = outcomes.len() - successes;
     let report = json!({
         "schema_version": 1,
@@ -118,7 +113,7 @@ async fn main() -> BrowserResult<()> {
             "corpus": corpus.corpus,
             "corpus_fixture": corpus.fixture,
             "iterations": iterations,
-            "temperature": temperature,
+            "temperature": "warm",
             "profile": profile,
             "viewport": {"width": 1280, "height": 720},
         },
@@ -142,6 +137,7 @@ async fn main() -> BrowserResult<()> {
             "successes": successes,
             "failures": failures,
             "wrong_actions": wrong_actions,
+            "unsupported": unsupported,
             "task_success_rate": successes as f64 / outcomes.len() as f64,
             "hard_gate_passed": failures == 0 && wrong_actions == 0,
         },
@@ -151,16 +147,37 @@ async fn main() -> BrowserResult<()> {
     Ok(())
 }
 
-async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<String> {
+fn classify_run(
+    scenario: &Scenario,
+    run: ScenarioRun,
+) -> (&'static str, Option<String>, Option<String>) {
+    match run {
+        ScenarioRun::Actual(actual) if actual == scenario.expected => {
+            ("success", Some(actual), None)
+        }
+        ScenarioRun::Actual(actual) if scenario.forbidden.contains(&actual) => {
+            ("wrong_action", Some(actual), None)
+        }
+        ScenarioRun::Actual(actual) => ("failure", Some(actual), None),
+        ScenarioRun::Unsupported(reason) => ("unsupported", None, Some(reason.to_string())),
+    }
+}
+
+async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<ScenarioRun> {
     match id {
         "duplicate-label" => {
-            let target = if std::env::var("GLASS_SCORECARD_TARGET_MODE").as_deref() == Ok("wrong") {
-                "Delete draft"
+            if std::env::var("GLASS_SCORECARD_TARGET_MODE").as_deref() == Ok("wrong") {
+                // Harness self-test: inject a faulty resolver result while the
+                // scenario intent remains the exact "Delete" control.
+                session
+                    .evaluate("document.querySelector('#duplicate-wrong').click()")
+                    .await?;
             } else {
-                "Delete"
-            };
-            session.click(target).await?;
-            string_eval(session, "document.querySelector('#result').value").await
+                session.click("Delete").await?;
+            }
+            Ok(ScenarioRun::Actual(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
         }
         "overlay" => {
             session
@@ -168,61 +185,64 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Strin
                 .await?;
             session.click("Overlay target").await?;
             let value = string_eval(session, "document.querySelector('#result').value").await?;
-            Ok(if value == "idle" {
+            Ok(ScenarioRun::Actual(if value == "idle" {
                 "blocked".to_string()
             } else {
                 value
-            })
+            }))
         }
         "reflow" => {
-            session
-                .evaluate("document.querySelector('#moving').style.left='80px'")
-                .await?;
             session.click("Moving target").await?;
-            string_eval(session, "document.querySelector('#result').value").await
+            let value = string_eval(session, "document.querySelector('#result').value").await?;
+            Ok(ScenarioRun::Actual(if value == "idle" {
+                "blocked".to_string()
+            } else {
+                value
+            }))
         }
         "delayed-content" => {
-            string_eval(
-                session,
-                "document.querySelector('#delayed')?.textContent || 'missing'",
-            )
-            .await
+            session.evaluate("window.scheduleDelayed()").await?;
+            Ok(ScenarioRun::Actual(
+                string_eval(
+                    session,
+                    "document.querySelector('#delayed')?.textContent || 'missing'",
+                )
+                .await?,
+            ))
         }
         "spa-navigation" => {
             session.click("SPA navigation").await?;
-            string_eval(session, "document.querySelector('#result').value").await
+            Ok(ScenarioRun::Actual(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
         }
         "form" => {
             session.type_text("Glass", Some("Name")).await?;
             session.click("Submit").await?;
-            string_eval(session, "document.querySelector('#result').value").await
+            Ok(ScenarioRun::Actual(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
         }
-        "popup" => {
-            session.click("Popup").await?;
-            let value = string_eval(session, "document.querySelector('#result').value").await?;
-            session.evaluate("window.fixturePopup?.close()").await?;
-            Ok(value)
-        }
-        "frame" => {
-            session.evaluate("document.querySelector('#frame').contentDocument.querySelector('#frame-action').click(); document.querySelector('#result').value='frame-clicked'").await?;
-            Ok("frame-clicked".to_string())
-        }
-        "dialog" => {
-            session.click("Dialog").await?;
-            string_eval(session, "document.querySelector('#result').value").await
-        }
-        "download" => {
-            session.click("Download").await?;
-            string_eval(session, "document.querySelector('#result').value").await
-        }
+        "popup" => Ok(ScenarioRun::Unsupported("popup control is not implemented")),
+        "frame" => Ok(ScenarioRun::Unsupported(
+            "frame targeting is not implemented",
+        )),
+        "dialog" => Ok(ScenarioRun::Unsupported(
+            "dialog handling is not implemented",
+        )),
+        "download" => Ok(ScenarioRun::Unsupported(
+            "download monitoring is not implemented",
+        )),
         "failure-recovery" => {
             if session.click("Definitely missing").await.is_ok() {
-                return Ok("unexpected-action".to_string());
+                return Ok(ScenarioRun::Actual("unexpected-action".to_string()));
             }
             session
                 .evaluate("document.querySelector('#result').value='recovered'")
                 .await?;
-            string_eval(session, "document.querySelector('#result').value").await
+            Ok(ScenarioRun::Actual(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
         }
         unknown => Err(format!("unknown scenario {unknown}").into()),
     }
@@ -426,6 +446,23 @@ mod tests {
         assert_eq!(successes, 1);
         assert_eq!(wrong, 1);
         assert_ne!(successes, outcomes.len());
+    }
+
+    #[test]
+    fn every_scenario_uses_its_declarative_forbidden_outcomes() {
+        let scenario = Scenario {
+            id: "not-special-cased".to_string(),
+            category: "targeting".to_string(),
+            expected: "safe".to_string(),
+            forbidden: vec!["unsafe-side-effect".to_string()],
+        };
+        let (status, actual, error) = classify_run(
+            &scenario,
+            ScenarioRun::Actual("unsafe-side-effect".to_string()),
+        );
+        assert_eq!(status, "wrong_action");
+        assert_eq!(actual.as_deref(), Some("unsafe-side-effect"));
+        assert!(error.is_none());
     }
 
     #[test]

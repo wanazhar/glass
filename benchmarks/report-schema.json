@@ -3,20 +3,123 @@
   "title": "Glass browser scorecard report",
   "type": "object",
   "required": ["schema_version", "tool", "run", "environment", "resources", "summary", "scenarios"],
+  "additionalProperties": false,
   "properties": {
     "schema_version": {"const": 1},
-    "tool": {"type": "object", "required": ["name", "version"]},
-    "run": {"type": "object", "required": ["corpus", "iterations", "temperature", "profile"]},
-    "environment": {"type": "object", "required": ["os", "architecture", "rust", "chrome"]},
-    "resources": {"type": "object", "required": ["runner", "chrome", "binary_size_bytes", "cdp_requests"]},
-    "summary": {"type": "object", "required": ["successes", "failures", "wrong_actions", "task_success_rate", "hard_gate_passed"]},
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["corpus", "corpus_fixture", "iterations", "temperature", "profile", "viewport"],
+      "additionalProperties": false,
+      "properties": {
+        "corpus": {"type": "string", "minLength": 1},
+        "corpus_fixture": {"type": "string", "minLength": 1},
+        "iterations": {"type": "integer", "minimum": 1},
+        "temperature": {"const": "warm"},
+        "profile": {"type": "string", "minLength": 1},
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["os", "architecture", "rust", "chrome", "machine"],
+      "additionalProperties": false,
+      "properties": {
+        "os": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "rust": {"type": ["string", "null"]},
+        "chrome": {"type": ["string", "null"]},
+        "machine": {"type": ["string", "null"]}
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["scope", "runner", "chrome", "binary_size_bytes", "compact_context_bytes", "cdp_requests", "startup_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "scope": {"type": "string", "minLength": 1},
+        "runner": {"$ref": "#/$defs/processMetrics"},
+        "chrome": {
+          "type": "object",
+          "required": ["root_pid", "rss_end_bytes", "peak_process_tree_rss_bytes"],
+          "additionalProperties": false,
+          "properties": {
+            "root_pid": {"type": ["integer", "null"], "minimum": 1},
+            "rss_end_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+            "peak_process_tree_rss_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"}
+          }
+        },
+        "binary_size_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+        "compact_context_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+        "cdp_requests": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+        "startup_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["successes", "failures", "wrong_actions", "unsupported", "task_success_rate", "hard_gate_passed"],
+      "additionalProperties": false,
+      "properties": {
+        "successes": {"type": "integer", "minimum": 0},
+        "failures": {"type": "integer", "minimum": 0},
+        "wrong_actions": {"type": "integer", "minimum": 0},
+        "unsupported": {"type": "integer", "minimum": 0},
+        "task_success_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "hard_gate_passed": {"type": "boolean"}
+      }
+    },
     "scenarios": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "category", "iteration", "expected", "status", "latency_ms", "cdp_requests"]
+        "required": ["id", "category", "iteration", "expected", "actual", "status", "error", "latency_ms", "cdp_requests"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "iteration": {"type": "integer", "minimum": 1},
+          "expected": {"type": "string"},
+          "actual": {"type": ["string", "null"]},
+          "status": {"enum": ["success", "failure", "wrong_action", "unsupported"]},
+          "error": {"type": ["string", "null"]},
+          "latency_ms": {"type": "number", "minimum": 0},
+          "cdp_requests": {"$ref": "#/$defs/nullableNonNegativeInteger"}
+        }
       }
     }
   },
-  "additionalProperties": false
+  "$defs": {
+    "nullableNonNegativeInteger": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "processMetrics": {
+      "type": "object",
+      "required": ["pid", "rss_start_bytes", "rss_end_bytes", "peak_rss_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "rss_start_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+        "rss_end_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"},
+        "peak_rss_bytes": {"$ref": "#/$defs/nullableNonNegativeInteger"}
+      }
+    }
+  }
 }

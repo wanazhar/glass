@@ -49,7 +49,7 @@ for (let iteration = 1; iteration <= iterations; iteration += 1) {
     const status =
       actual === scenario.expected
         ? "success"
-        : scenario.id === "duplicate-label" && actual !== null
+        : scenario.forbidden.includes(actual)
           ? "wrong_action"
           : "failure";
     outcomes.push({
@@ -73,6 +73,9 @@ await browser.close();
 const successes = outcomes.filter(({ status }) => status === "success").length;
 const wrongActions = outcomes.filter(
   ({ status }) => status === "wrong_action",
+).length;
+const unsupported = outcomes.filter(
+  ({ status }) => status === "unsupported",
 ).length;
 const failures = outcomes.length - successes;
 
@@ -117,6 +120,7 @@ const report = {
     successes,
     failures,
     wrong_actions: wrongActions,
+    unsupported,
     task_success_rate: successes / outcomes.length,
     hard_gate_passed: failures === 0 && wrongActions === 0,
   },
@@ -139,11 +143,13 @@ async function result(targetPage) {
 async function runScenario(targetPage, id) {
   switch (id) {
     case "duplicate-label": {
-      const name =
-        process.env.GLASS_SCORECARD_TARGET_MODE === "wrong"
-          ? "Delete draft"
-          : "Delete";
-      await targetPage.getByRole("button", { name, exact: true }).click();
+      if (process.env.GLASS_SCORECARD_TARGET_MODE === "wrong") {
+        await targetPage.locator("#duplicate-wrong").click();
+      } else {
+        await targetPage
+          .getByRole("button", { name: "Delete", exact: true })
+          .click();
+      }
       return result(targetPage);
     }
     case "overlay":
@@ -159,12 +165,12 @@ async function runScenario(targetPage, id) {
       }
       return result(targetPage);
     case "reflow":
-      await targetPage.locator("#moving").evaluate((node) => {
-        node.style.left = "80px";
-      });
       await targetPage.getByRole("button", { name: "Moving target" }).click();
-      return result(targetPage);
+      return (await result(targetPage)) === "idle"
+        ? "blocked"
+        : result(targetPage);
     case "delayed-content":
+      await targetPage.evaluate(() => window.scheduleDelayed());
       await targetPage.locator("#delayed").waitFor();
       return targetPage.locator("#delayed").textContent();
     case "spa-navigation":
@@ -177,8 +183,10 @@ async function runScenario(targetPage, id) {
     case "popup": {
       const popup = targetPage.waitForEvent("popup");
       await targetPage.getByRole("button", { name: "Popup" }).click();
-      await (await popup).close();
-      return result(targetPage);
+      const opened = await popup;
+      await opened.waitForLoadState();
+      await opened.close();
+      return "popup-controlled";
     }
     case "frame":
       await targetPage
@@ -190,13 +198,15 @@ async function runScenario(targetPage, id) {
       });
       return "frame-clicked";
     case "dialog":
+      targetPage.once("dialog", (dialog) => dialog.accept());
       await targetPage.getByRole("button", { name: "Dialog" }).click();
       return result(targetPage);
     case "download": {
       const download = targetPage.waitForEvent("download");
       await targetPage.getByRole("link", { name: "Download" }).click();
-      await download;
-      return result(targetPage);
+      const completed = await download;
+      await completed.createReadStream();
+      return "download-complete";
     }
     case "failure-recovery":
       try {

@@ -36,13 +36,15 @@ before/after evidence in the plan.
 ### Ratified baseline: 2026-07-11
 
 The initial gates remain unchanged. A three-iteration optimized local run of
-`glass-local-v1` on Linux aarch64, Rust 1.97.0, and Chromium 150 recorded 30/33
-correct outcomes (90.9%) and three wrong-target actions. This is an intentional
-baseline failure: the duplicate-label scenario proves the harness catches the
-unsafe first-substring behavior assigned to `target-009`.
+`glass-local-v1` on Linux aarch64, Rust 1.97.0, and Chromium 150 recorded 15/33
+correct outcomes (45.5%), three wrong-target actions, twelve explicitly
+unsupported outcomes, and three ordinary delayed-content failures. This is an
+intentional honest baseline: the duplicate-label scenario proves the harness
+catches the unsafe first-substring behavior assigned to `target-009`, while
+future-capability scenarios no longer simulate success through JavaScript.
 
-The same run measured 6,082,560 bytes peak Glass RSS, 1,068,056,576 bytes peak
-Chrome process-tree RSS, 10,356 compact context bytes, and a 4,398,992-byte
+The same run measured 6,029,312 bytes peak post-startup workflow Glass RSS,
+1,061,949,440 bytes peak Chrome process-tree RSS, 11,476 compact context bytes, and a 4,398,992-byte
 release binary. The disjoint process scopes make the large Chrome figure
 explicit rather than charging it to Glass. The existing operation benchmark
 recorded fresh compact observation p95 3.54 ms and cached observation p95 0.02

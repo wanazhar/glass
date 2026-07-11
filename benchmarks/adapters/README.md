@@ -3,11 +3,13 @@
 Competitor adapters live outside the Glass dependency graph. An adapter runs
 the versioned fixture scenarios and writes one JSON report matching
 `benchmarks/report-schema.json`. It must use the same Chrome executable,
-viewport, corpus version, iteration count, and warm/cold profile metadata.
+viewport, corpus version, iteration count, and warm profile metadata. A future
+cold corpus version must define equivalent browser lifecycle semantics before
+any adapter emits it.
 
-The adapter reports generic `resources.runner` data for its runner process tree
-separately from Chrome's
-process tree. A scenario is successful only when its exact expected state is
+The adapter reports generic `resources.runner` data and states whether that
+scope covers one runner process or its complete non-browser process tree,
+separately from Chrome's process tree. A scenario is successful only when its exact expected state is
 observed. Selecting a different actionable element is `wrong_action`, never a
 timeout or a partial success. Adapter dependencies must be installed in a
 temporary directory and must not be added to `Cargo.toml` or this repository.

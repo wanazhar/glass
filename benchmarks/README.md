@@ -19,13 +19,15 @@ GLASS_BINARY_PATH=target/release/glass \
   cargo run --release --example scorecard > scorecard.json
 ```
 
-`GLASS_SCORECARD_TEMPERATURE` is `warm` by default; use `cold` to reload the
-fixture between iterations. `GLASS_SCORECARD_PROFILE` records the caller's
+The v1 corpus defines a warm, single-session run; it does not label fixture
+reloads as cold browser starts. `GLASS_SCORECARD_PROFILE` records the caller's
 profile label. The report follows `report-schema.json` and records exact task
 outcomes, wrong actions, per-scenario latency and CDP request counts, compact
 context bytes, binary size, environment/tool versions, and process memory.
-`resources.runner` is the Glass runner process only. Chrome RSS is the complete process tree
-rooted at the owned browser PID; the two figures are deliberately disjoint.
+`resources.runner` is the Glass runner process only. Chrome RSS is the complete
+process tree rooted at the owned browser PID; the two figures are deliberately
+disjoint. Peak values cover the measured post-startup workflow; `startup_ms`
+is reported separately.
 
 Use `GLASS_SCORECARD_TARGET_MODE=wrong` as a harness self-test. It deliberately
 chooses the wrong duplicate-label target, which must produce `wrong_action`, a

@@ -3,16 +3,16 @@
   "corpus": "glass-local-v1",
   "fixture": "tests/fixtures/scorecard.html",
   "scenarios": [
-    {"id":"duplicate-label","category":"targeting","expected":"right-target"},
-    {"id":"overlay","category":"targeting","expected":"blocked"},
-    {"id":"reflow","category":"targeting","expected":"reflow-clicked"},
-    {"id":"delayed-content","category":"wait","expected":"Delayed content"},
-    {"id":"spa-navigation","category":"navigation","expected":"spa-complete"},
-    {"id":"form","category":"input","expected":"submitted:Glass"},
-    {"id":"popup","category":"topology","expected":"popup-opened"},
-    {"id":"frame","category":"topology","expected":"frame-clicked"},
-    {"id":"dialog","category":"diagnostic","expected":"dialog-requested"},
-    {"id":"download","category":"diagnostic","expected":"download-requested"},
-    {"id":"failure-recovery","category":"recovery","expected":"recovered"}
+    {"id":"duplicate-label","category":"targeting","expected":"right-target","forbidden":["wrong-target"]},
+    {"id":"overlay","category":"targeting","expected":"blocked","forbidden":["overlay-clicked"]},
+    {"id":"reflow","category":"targeting","expected":"blocked","forbidden":["reflow-clicked"]},
+    {"id":"delayed-content","category":"wait","expected":"Delayed content","forbidden":[]},
+    {"id":"spa-navigation","category":"navigation","expected":"spa-complete","forbidden":[]},
+    {"id":"form","category":"input","expected":"submitted:Glass","forbidden":["submitted:"]},
+    {"id":"popup","category":"topology","expected":"popup-controlled","forbidden":[]},
+    {"id":"frame","category":"topology","expected":"frame-clicked","forbidden":[]},
+    {"id":"dialog","category":"diagnostic","expected":"dialog-accepted","forbidden":[]},
+    {"id":"download","category":"diagnostic","expected":"download-complete","forbidden":[]},
+    {"id":"failure-recovery","category":"recovery","expected":"recovered","forbidden":["unexpected-action"]}
   ]
 }

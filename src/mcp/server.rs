@@ -51,6 +51,14 @@ enum FrameFormat {
     Newline,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RequestLogMetadata<'a> {
+    method: &'a str,
+    request_id_kind: &'static str,
+    request_id_present: bool,
+    body_bytes: usize,
+}
+
 pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
     info!("MCP server starting on stdio");
     let options = SessionOptions {
@@ -67,15 +75,24 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
     let mut session = None;
 
     while let Some((body, format)) = read_message(&mut reader).await? {
-        debug!(%body, "MCP request received");
+        let body_bytes = body.len();
         let request: JsonRpcRequest = match serde_json::from_str(&body) {
             Ok(request) => request,
             Err(error) => {
+                debug!(body_bytes, "MCP request rejected: invalid JSON");
                 let response = error_response(None, -32700, format!("parse error: {error}"));
                 write_response(&mut stdout, &response, format).await?;
                 continue;
             }
         };
+        let log = request_log_metadata(&request, body_bytes);
+        debug!(
+            method = log.method,
+            request_id_kind = log.request_id_kind,
+            request_id_present = log.request_id_present,
+            body_bytes = log.body_bytes,
+            "MCP request received"
+        );
 
         let response = handle_request(&request, &mut session, &options).await;
         if let Some(response) = response {
@@ -87,6 +104,22 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
         session.close().await?;
     }
     Ok(())
+}
+
+fn request_log_metadata(request: &JsonRpcRequest, body_bytes: usize) -> RequestLogMetadata<'_> {
+    let request_id_kind = match request.id.as_ref() {
+        None => "absent",
+        Some(Value::Null) => "null",
+        Some(Value::String(_)) => "string",
+        Some(Value::Number(_)) => "number",
+        Some(_) => "invalid",
+    };
+    RequestLogMetadata {
+        method: &request.method,
+        request_id_kind,
+        request_id_present: request.id.is_some(),
+        body_bytes,
+    }
 }
 
 async fn handle_request(
@@ -393,6 +426,31 @@ async fn write_response<W: AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_log_metadata_excludes_params_and_raw_id() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "private-request-id",
+            "method": "tools/call",
+            "params": {
+                "name": "type",
+                "arguments": {"text": "super-secret-value"}
+            }
+        })
+        .to_string();
+        let request: JsonRpcRequest = serde_json::from_str(&body).unwrap();
+
+        let metadata = request_log_metadata(&request, body.len());
+
+        assert_eq!(metadata.method, "tools/call");
+        assert_eq!(metadata.request_id_kind, "string");
+        assert!(metadata.request_id_present);
+        assert_eq!(metadata.body_bytes, body.len());
+        let rendered = format!("{metadata:?}");
+        assert!(!rendered.contains("private-request-id"));
+        assert!(!rendered.contains("super-secret-value"));
+    }
 
     #[tokio::test]
     async fn advertises_real_browser_tools_without_starting_chrome() {

@@ -1,7 +1,7 @@
 ---
 id: baseline-000
 scope: pre-existing worktree baseline
-status: in-progress
+status: done
 depends-on: []
 ---
 

@@ -45,21 +45,23 @@ prints its destination.
 
 ## Element targets
 
-`click`, `double-click`, and `type --target` accept:
+`click`, `double-click`, and `type --target` accept explicit locator forms:
 
-- a revisioned accessibility reference returned by `observe`, such as
-  `r7:b42`;
-- an accessible name; or
-- a CSS selector.
+- `ref=r7:b42` (or the bare `r7:b42` fast-path reference);
+- `name=Save` (a bare string is an exact accessible name for compatibility);
+- `role=button;name=Save`;
+- `text=Continue`, `css=button.primary`, or `ordinal=2`.
 
 Prefer revisioned references for agent workflows. They let Glass reject a
 reference after page state changes instead of acting on a stale element.
+Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
+with bounded candidates instead of choosing the first match.
 
 Quote selectors or text containing spaces or shell metacharacters:
 
 ```console
-glass click 'button[type="submit"]'
-glass type 'hello world' --target '#message'
+glass click 'css=button[type="submit"]'
+glass type 'hello world' --target 'css=#message'
 ```
 
 ## Profile and utility commands

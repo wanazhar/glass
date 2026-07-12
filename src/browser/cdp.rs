@@ -353,6 +353,106 @@ impl CdpClient {
         .await
     }
 
+    /// Query every node matching a CSS selector without silently choosing one.
+    pub async fn query_selector_all(&self, selector: &str) -> Result<Vec<i64>, CdpError> {
+        let document = self.get_document_root().await?;
+        let root_id = document["root"]["nodeId"]
+            .as_i64()
+            .ok_or_else(|| CdpError::transport("DOM document response contained no root nodeId"))?;
+        let result = self
+            .send(
+                "DOM.querySelectorAll",
+                Some(serde_json::json!({ "nodeId": root_id, "selector": selector })),
+            )
+            .await?;
+        Ok(result["nodeIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_i64)
+            .collect())
+    }
+
+    /// Search visible DOM text and return a bounded prefix plus the total count.
+    pub async fn search_dom(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<(usize, Vec<i64>), CdpError> {
+        let search = self
+            .send(
+                "DOM.performSearch",
+                Some(serde_json::json!({
+                    "query": query,
+                    "includeUserAgentShadowDOM": true
+                })),
+            )
+            .await?;
+        let search_id = search["searchId"]
+            .as_str()
+            .ok_or_else(|| CdpError::transport("DOM search response contained no searchId"))?;
+        let count = search["resultCount"].as_u64().unwrap_or(0) as usize;
+        let nodes = if count == 0 {
+            Vec::new()
+        } else {
+            let result = self
+                .send(
+                    "DOM.getSearchResults",
+                    Some(serde_json::json!({
+                        "searchId": search_id,
+                        "fromIndex": 0,
+                        "toIndex": count.min(limit)
+                    })),
+                )
+                .await?;
+            result["nodeIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_i64)
+                .collect()
+        };
+        let _ = self
+            .send(
+                "DOM.discardSearchResults",
+                Some(serde_json::json!({ "searchId": search_id })),
+            )
+            .await;
+        Ok((count, nodes))
+    }
+
+    /// Resolve a DOM/backend node and invoke a function on its remote object.
+    pub async fn call_on_node(
+        &self,
+        node_id: Option<i64>,
+        backend_node_id: Option<i64>,
+        function_declaration: &str,
+    ) -> Result<Value, CdpError> {
+        let mut params = serde_json::Map::new();
+        if let Some(node_id) = node_id {
+            params.insert("nodeId".to_string(), Value::from(node_id));
+        }
+        if let Some(backend_node_id) = backend_node_id {
+            params.insert("backendNodeId".to_string(), Value::from(backend_node_id));
+        }
+        let resolved = self
+            .send("DOM.resolveNode", Some(Value::Object(params)))
+            .await?;
+        let object_id = resolved["object"]["objectId"]
+            .as_str()
+            .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))?;
+        self.send(
+            "Runtime.callFunctionOn",
+            Some(serde_json::json!({
+                "objectId": object_id,
+                "functionDeclaration": function_declaration,
+                "returnByValue": true,
+                "awaitPromise": true
+            })),
+        )
+        .await
+    }
+
     /// Get the bounding box of a DOM node.
     pub async fn get_box_model(&self, node_id: i64) -> Result<Value, CdpError> {
         self.get_box_model_inner(Some(node_id), None).await

@@ -770,6 +770,36 @@ async fn browser_session_drives_a_local_fixture() {
             .any(|element| element.name == "Name")
     );
 
+    let ambiguous = session.click("name=Duplicate").await.unwrap_err();
+    assert!(ambiguous.to_string().contains("ambiguous"));
+    let ambiguous_css = session.click("css=.duplicate").await.unwrap_err();
+    assert!(ambiguous_css.to_string().contains("ambiguous"));
+    assert!(
+        session
+            .click("role=button")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("role=<role>;name=<accessible name>")
+    );
+    let disabled = session
+        .click("role=button;name=Disabled action")
+        .await
+        .unwrap_err();
+    assert!(disabled.to_string().contains("disabled"));
+    let covered = session.click("css=#covered").await.unwrap_err();
+    assert!(covered.to_string().contains("hit_test_blocked"));
+    let sticky = session.click("css=#sticky-covered").await.unwrap_err();
+    assert!(sticky.to_string().contains("hit_test_blocked"));
+    let moving = session.click("css=#moving").await.unwrap_err();
+    assert!(moving.to_string().contains("unstable_geometry"));
+    session.evaluate("window.scrollTo(0, 0)").await.unwrap();
+    let detached = session.click("css=#detach-on-scroll").await.unwrap_err();
+    assert!(
+        detached.to_string().contains("detached")
+            || detached.to_string().contains("Could not find node")
+    );
+
     let typed = session.type_text("Ada", Some("Name")).await.unwrap();
     assert_eq!(typed.action, ActionKind::Type);
     session.evaluate("window.pointerEvents = []").await.unwrap();

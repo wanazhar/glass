@@ -31,6 +31,37 @@ pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
 const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href, title: document.title, ready_state: document.readyState, text: document.body ? document.body.innerText : ''})";
 const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
+const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
+const HIT_TEST_FUNCTION: &str = r#"async function() {
+    const element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
+    if (!element || !element.isConnected) return {ok:false, reason:'detached'};
+    const sample = () => {
+        const rect = element.getBoundingClientRect();
+        return {left:rect.left, top:rect.top, width:rect.width, height:rect.height};
+    };
+    element.scrollIntoView({block:'nearest', inline:'nearest'});
+    const first = sample();
+    if (!element.isConnected) return {ok:false, reason:'detached'};
+    if (element.getAnimations({subtree:true}).some(animation => animation.playState === 'running'))
+        return {ok:false, reason:'unstable_geometry'};
+    const second = sample();
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || second.width <= 0 || second.height <= 0)
+        return {ok:false, reason:'not_visible'};
+    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
+        return {ok:false, reason:'disabled'};
+    if ([first.left, first.top, first.width, first.height].some((value, index) => Math.abs(value - [second.left, second.top, second.width, second.height][index]) > 1))
+        return {ok:false, reason:'unstable_geometry'};
+    const x = second.left + second.width / 2;
+    const y = second.top + second.height / 2;
+    if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)
+        return {ok:false, reason:'outside_viewport'};
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || (hit !== element && !element.contains(hit)))
+        return {ok:false, reason:'hit_test_blocked'};
+    return {ok:true, x, y};
+}"#;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -121,6 +152,32 @@ pub struct InteractiveElement {
     pub name: String,
     pub description: String,
     pub backend_dom_node_id: i64,
+}
+
+/// An explicit, deterministic element lookup strategy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Locator {
+    Reference(String),
+    AccessibleName(String),
+    RoleAndName { role: String, name: String },
+    Text(String),
+    Css(String),
+    Ordinal(usize),
+}
+
+/// A bounded description returned when a locator is ambiguous.
+#[derive(Debug, Clone, Serialize)]
+pub struct CandidateSummary {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug)]
+enum TargetResolution {
+    Unique(ResolvedElement),
+    Ambiguous(Vec<CandidateSummary>),
+    NotFound,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -701,18 +758,7 @@ impl BrowserSession {
         double_click: bool,
     ) -> BrowserResult<ActionOutcome> {
         let element = self.resolve_element(target).await?;
-        self.cdp
-            .scroll_into_view_if_needed(element.node_id, element.backend_dom_node_id)
-            .await?;
-        let model = match (element.node_id, element.backend_dom_node_id) {
-            (Some(node_id), _) => self.cdp.get_box_model(node_id).await?,
-            (_, Some(backend_node_id)) => {
-                self.cdp.get_box_model_for_backend(backend_node_id).await?
-            }
-            _ => return Err(format!("element has no DOM reference: {target}").into()),
-        };
-        let (x, y) = center_of_box_model(&model)?;
-        let point = Point { x, y };
+        let point = self.verified_action_point(&element).await?;
         let events = if double_click {
             self.mouse.generate_double_click_events(point)
         } else {
@@ -825,12 +871,25 @@ impl BrowserSession {
     }
 
     async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
-        let target = target.trim().trim_matches('"');
-        if target.is_empty() {
-            return Err("element target cannot be empty".into());
+        let locator = Locator::parse(target)?;
+        match self.resolve_locator(&locator).await? {
+            TargetResolution::Unique(element) => Ok(element),
+            TargetResolution::Ambiguous(candidates) => {
+                let labels = candidates
+                    .iter()
+                    .map(|candidate| candidate.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(format!("element target is ambiguous: {labels}").into())
+            }
+            TargetResolution::NotFound => Err(format!("element not found: {target}").into()),
         }
+    }
 
-        if let Some(reference) = parse_revisioned_reference(target)? {
+    async fn resolve_locator(&self, locator: &Locator) -> BrowserResult<TargetResolution> {
+        if let Locator::Reference(target) = locator {
+            let reference = parse_revisioned_reference(target)?
+                .ok_or_else(|| format!("invalid revisioned element reference: {target}"))?;
             let current_revision = self.page_revision.load(Ordering::Relaxed);
             if reference.revision != current_revision {
                 return Err(format!(
@@ -839,49 +898,107 @@ impl BrowserSession {
                 )
                 .into());
             }
-            return Ok(ResolvedElement {
+            return Ok(TargetResolution::Unique(ResolvedElement {
                 node_id: None,
                 backend_dom_node_id: Some(reference.backend_dom_node_id),
                 label: target.to_string(),
                 reference: Some(target.to_string()),
-            });
+            }));
         }
 
         let snapshot = self.snapshot().await?;
-        let lower = target.to_lowercase();
-        let by_reference = snapshot
-            .interactive
-            .iter()
-            .find(|element| element.reference.eq_ignore_ascii_case(target));
-        let by_number = target
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| snapshot.interactive.get(index.saturating_sub(1)));
-        let by_name = snapshot.interactive.iter().find(|element| {
-            element.name.to_lowercase() == lower
-                || element.name.to_lowercase().contains(&lower)
-                || element.role.to_lowercase() == lower
-        });
-        if let Some(element) = by_reference.or(by_number).or(by_name) {
-            return Ok(ResolvedElement {
+        let matches: Vec<&InteractiveElement> = match locator {
+            Locator::AccessibleName(name) => snapshot
+                .interactive
+                .iter()
+                .filter(|element| element.name.eq_ignore_ascii_case(name))
+                .collect(),
+            Locator::RoleAndName { role, name } => snapshot
+                .interactive
+                .iter()
+                .filter(|element| {
+                    element.role.eq_ignore_ascii_case(role)
+                        && element.name.eq_ignore_ascii_case(name)
+                })
+                .collect(),
+            Locator::Ordinal(index) => snapshot.interactive.get(index - 1).into_iter().collect(),
+            Locator::Reference(_) | Locator::Text(_) | Locator::Css(_) => Vec::new(),
+        };
+        if matches.len() == 1 {
+            let element = matches[0];
+            return Ok(TargetResolution::Unique(ResolvedElement {
                 node_id: None,
                 backend_dom_node_id: Some(element.backend_dom_node_id),
                 label: format!("{} {}", element.role, element.name),
                 reference: Some(element.reference.clone()),
-            });
+            }));
+        }
+        if matches.len() > 1 {
+            return Ok(TargetResolution::Ambiguous(
+                matches
+                    .into_iter()
+                    .take(AMBIGUOUS_CANDIDATE_LIMIT)
+                    .map(|element| CandidateSummary {
+                        label: bounded_candidate_label(&format!(
+                            "{} {}",
+                            element.role, element.name
+                        )),
+                        reference: Some(element.reference.clone()),
+                    })
+                    .collect(),
+            ));
         }
 
-        let node = self.cdp.query_selector(target).await?;
-        let node_id = node["nodeId"].as_i64().filter(|id| *id != 0);
-        if let Some(node_id) = node_id {
-            return Ok(ResolvedElement {
-                node_id: Some(node_id),
-                backend_dom_node_id: None,
-                label: target.to_string(),
-                reference: None,
-            });
+        match locator {
+            Locator::Css(selector) => {
+                let nodes = self.cdp.query_selector_all(selector).await?;
+                dom_nodes_resolution(nodes, format!("css={selector}"))
+            }
+            Locator::Text(text) => {
+                let (count, nodes) = self
+                    .cdp
+                    .search_dom(text, AMBIGUOUS_CANDIDATE_LIMIT + 1)
+                    .await?;
+                if count > 1 {
+                    return Ok(TargetResolution::Ambiguous(
+                        (1..=count.min(AMBIGUOUS_CANDIDATE_LIMIT))
+                            .map(|index| CandidateSummary {
+                                label: format!("text match {index}"),
+                                reference: None,
+                            })
+                            .collect(),
+                    ));
+                }
+                dom_nodes_resolution(nodes, format!("text={text}"))
+            }
+            Locator::Reference(_)
+            | Locator::AccessibleName(_)
+            | Locator::RoleAndName { .. }
+            | Locator::Ordinal(_) => Ok(TargetResolution::NotFound),
         }
-        Err(format!("element not found: {target}").into())
+    }
+
+    async fn verified_action_point(&self, element: &ResolvedElement) -> BrowserResult<Point> {
+        let raw = self
+            .cdp
+            .call_on_node(
+                element.node_id,
+                element.backend_dom_node_id,
+                HIT_TEST_FUNCTION,
+            )
+            .await?;
+        let value = runtime_value(&raw)?;
+        if value["ok"].as_bool() != Some(true) {
+            let reason = value["reason"].as_str().unwrap_or("verification_failed");
+            return Err(format!("target is not actionable: {reason}").into());
+        }
+        let x = value["x"]
+            .as_f64()
+            .ok_or("verified target x was not numeric")?;
+        let y = value["y"]
+            .as_f64()
+            .ok_or("verified target y was not numeric")?;
+        Ok(Point { x, y })
     }
 }
 
@@ -948,11 +1065,98 @@ fn context_event_invalidates_observation(method: &str) -> bool {
     )
 }
 
+#[derive(Debug)]
 struct ResolvedElement {
     node_id: Option<i64>,
     backend_dom_node_id: Option<i64>,
     label: String,
     reference: Option<String>,
+}
+
+impl Locator {
+    pub fn parse(value: &str) -> BrowserResult<Self> {
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() {
+            return Err("element target cannot be empty".into());
+        }
+        if parse_revisioned_reference(value)?.is_some() {
+            return Ok(Self::Reference(value.to_string()));
+        }
+        if let Some(reference) = value.strip_prefix("ref=") {
+            if reference.is_empty() {
+                return Err("reference locator cannot be empty".into());
+            }
+            return Ok(Self::Reference(reference.to_string()));
+        }
+        if let Some(name) = value.strip_prefix("name=") {
+            return nonempty_locator(name, "accessible name").map(Self::AccessibleName);
+        }
+        if let Some(text) = value.strip_prefix("text=") {
+            return nonempty_locator(text, "text").map(Self::Text);
+        }
+        if let Some(selector) = value.strip_prefix("css=") {
+            return nonempty_locator(selector, "CSS selector").map(Self::Css);
+        }
+        if let Some(index) = value.strip_prefix("ordinal=") {
+            let index = index
+                .parse::<usize>()
+                .ok()
+                .filter(|index| *index > 0)
+                .ok_or("ordinal locator must be a positive one-based integer")?;
+            return Ok(Self::Ordinal(index));
+        }
+        if let Some(rest) = value.strip_prefix("role=") {
+            let (role, name) = rest
+                .split_once(";name=")
+                .ok_or("role locator must use role=<role>;name=<accessible name>")?;
+            return Ok(Self::RoleAndName {
+                role: nonempty_locator(role, "role")?,
+                name: nonempty_locator(name, "accessible name")?,
+            });
+        }
+        Ok(Self::AccessibleName(value.to_string()))
+    }
+}
+
+fn nonempty_locator(value: &str, kind: &str) -> BrowserResult<String> {
+    if value.is_empty() {
+        return Err(format!("{kind} locator cannot be empty").into());
+    }
+    Ok(value.to_string())
+}
+
+fn dom_nodes_resolution(nodes: Vec<i64>, label: String) -> BrowserResult<TargetResolution> {
+    match nodes.as_slice() {
+        [] => Ok(TargetResolution::NotFound),
+        [node_id] => Ok(TargetResolution::Unique(ResolvedElement {
+            node_id: Some(*node_id),
+            backend_dom_node_id: None,
+            label,
+            reference: None,
+        })),
+        _ => Ok(TargetResolution::Ambiguous(
+            nodes
+                .into_iter()
+                .take(AMBIGUOUS_CANDIDATE_LIMIT)
+                .enumerate()
+                .map(|(index, _)| CandidateSummary {
+                    label: bounded_candidate_label(&format!("{label} match {}", index + 1)),
+                    reference: None,
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn bounded_candidate_label(value: &str) -> String {
+    if value.len() <= CANDIDATE_LABEL_MAX_BYTES {
+        return value.to_string();
+    }
+    let mut end = CANDIDATE_LABEL_MAX_BYTES - "…".len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -995,26 +1199,6 @@ fn runtime_value(raw: &Value) -> BrowserResult<Value> {
         return Err(format!("JavaScript evaluation failed: {exception}").into());
     }
     Ok(raw["result"]["value"].clone())
-}
-
-fn center_of_box_model(raw: &Value) -> BrowserResult<(f64, f64)> {
-    let content = raw["model"]["content"]
-        .as_array()
-        .ok_or("CDP box model response contained no content points")?;
-    if content.len() < 8 {
-        return Err("CDP box model content did not contain four points".into());
-    }
-    let coordinates: Vec<f64> = content.iter().filter_map(Value::as_f64).collect();
-    if coordinates.len() < 8 {
-        return Err("CDP box model content contained non-numeric coordinates".into());
-    }
-    let xs = coordinates.iter().step_by(2);
-    let ys = coordinates.iter().skip(1).step_by(2);
-    let min_x = xs.clone().copied().fold(f64::INFINITY, f64::min);
-    let max_x = xs.copied().fold(f64::NEG_INFINITY, f64::max);
-    let min_y = ys.clone().copied().fold(f64::INFINITY, f64::min);
-    let max_y = ys.copied().fold(f64::NEG_INFINITY, f64::max);
-    Ok(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0))
 }
 
 async fn wait_for_ws_url(port: u16, target_id: Option<&str>) -> BrowserResult<String> {
@@ -1297,14 +1481,6 @@ mod tests {
     }
 
     #[test]
-    fn computes_the_center_of_a_quad() {
-        let raw = serde_json::json!({
-            "model": {"content": [10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0]}
-        });
-        assert_eq!(center_of_box_model(&raw).unwrap(), (20.0, 30.0));
-    }
-
-    #[test]
     fn interaction_modes_plan_smooth_or_direct_motion() {
         let mouse = MouseEngine::new();
         let start = Point { x: 10.0, y: 20.0 };
@@ -1373,6 +1549,41 @@ mod tests {
         assert_eq!(parse_revisioned_reference("Save").unwrap(), None);
         assert!(parse_revisioned_reference("r7:b0").is_err());
         assert!(parse_revisioned_reference("r:b42").is_err());
+    }
+
+    #[test]
+    fn locators_parse_explicit_strategies_without_role_only_fallbacks() {
+        assert_eq!(
+            Locator::parse("r7:b42").unwrap(),
+            Locator::Reference("r7:b42".to_string())
+        );
+        assert_eq!(
+            Locator::parse("name=Save").unwrap(),
+            Locator::AccessibleName("Save".to_string())
+        );
+        assert_eq!(
+            Locator::parse("role=button;name=Save").unwrap(),
+            Locator::RoleAndName {
+                role: "button".to_string(),
+                name: "Save".to_string(),
+            }
+        );
+        assert_eq!(Locator::parse("ordinal=2").unwrap(), Locator::Ordinal(2));
+        assert_eq!(
+            Locator::parse("Save").unwrap(),
+            Locator::AccessibleName("Save".to_string())
+        );
+        assert!(Locator::parse("role=button").is_err());
+        assert!(Locator::parse("ordinal=0").is_err());
+        assert!(Locator::parse("css=").is_err());
+    }
+
+    #[test]
+    fn ambiguity_candidate_labels_are_utf8_safe_and_bounded() {
+        let label = bounded_candidate_label(&"界".repeat(100));
+        assert!(label.len() <= CANDIDATE_LABEL_MAX_BYTES);
+        assert!(label.ends_with('…'));
+        assert!(std::str::from_utf8(label.as_bytes()).is_ok());
     }
 
     #[test]

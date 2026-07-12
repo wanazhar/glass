@@ -88,6 +88,10 @@ typed text through the MCP error surface. Local tracing remains metadata-only.
 | `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
 
 All arguments are JSON. `scroll` defaults to `dx: 0` and `dy: 600`.
+`target` uses the same explicit locator forms as the CLI: `ref=`, `name=`,
+`role=...;name=...`, `text=`, `css=`, and `ordinal=`. Bare references and exact
+accessible names remain compatible. The legacy `selector` argument is treated
+as CSS, but must still resolve uniquely.
 `includeDom` and `includeScreenshot` default to `false`.
 
 ## Observation strategy

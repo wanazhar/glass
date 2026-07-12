@@ -73,10 +73,10 @@ pub enum Commands {
     /// Navigate to a URL.
     Navigate { url: String },
 
-    /// Click an element by accessibility reference, name, or CSS selector.
+    /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click { target: String },
 
-    /// Double-click an element by accessibility reference, name, or CSS selector.
+    /// Double-click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     DoubleClick { target: String },
 
     /// Type text into the focused element, optionally clicking a target first.

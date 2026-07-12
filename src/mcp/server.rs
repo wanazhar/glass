@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     io,
     sync::{Arc, Mutex as StdMutex},
@@ -122,10 +123,10 @@ enum ToolInvocation<'a> {
         url: &'a str,
     },
     Click {
-        target: &'a str,
+        target: Cow<'a, str>,
     },
     DoubleClick {
-        target: &'a str,
+        target: Cow<'a, str>,
     },
     Type {
         text: &'a str,
@@ -505,9 +506,9 @@ async fn call_tool(
             let page = session.navigate(url).await?;
             serialized_result(&page)
         }
-        ToolInvocation::Click { target } => action_result(session.click(target).await?),
+        ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
         ToolInvocation::DoubleClick { target } => {
-            action_result(session.double_click(target).await?)
+            action_result(session.double_click(target.as_ref()).await?)
         }
         ToolInvocation::Type { text, target } => {
             action_result(session.type_text(text, target).await?)
@@ -615,7 +616,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "click",
-            description: "Click an accessibility reference, accessible name, or CSS selector.",
+            description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
@@ -624,7 +625,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "doubleClick",
-            description: "Double-click an accessibility reference, accessible name, or CSS selector.",
+            description: "Double-click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
@@ -697,8 +698,14 @@ fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a st
         .ok_or_else(|| format!("{name} must be a non-empty string").into())
 }
 
-fn required_target(arguments: &Value) -> BrowserResult<&str> {
-    optional_string(arguments, "target")?.map_or_else(|| required_string(arguments, "selector"), Ok)
+fn required_target(arguments: &Value) -> BrowserResult<Cow<'_, str>> {
+    if let Some(target) = optional_string(arguments, "target")? {
+        return Ok(Cow::Borrowed(target));
+    }
+    Ok(Cow::Owned(format!(
+        "css={}",
+        required_string(arguments, "selector")?
+    )))
 }
 
 fn optional_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Option<&'a str>> {

@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 
 #[derive(Clone, Default)]
 struct CdpRoute {
+    target_id: Option<String>,
     session_id: Option<String>,
     context_id: Option<i64>,
     frame_id: Option<String>,
@@ -341,10 +342,10 @@ impl CdpClient {
     }
 
     pub fn set_active_session(&self, session_id: Option<String>) {
-        *self.active_route.lock().expect("active CDP route poisoned") = CdpRoute {
-            session_id,
-            ..CdpRoute::default()
-        };
+        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        route.session_id = session_id;
+        route.context_id = None;
+        route.frame_id = None;
     }
 
     pub fn set_active_context(&self, context_id: Option<i64>) {
@@ -366,11 +367,30 @@ impl CdpClient {
         frame_id: Option<String>,
         context_id: Option<i64>,
     ) {
+        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        route.session_id = session_id;
+        route.frame_id = frame_id;
+        route.context_id = context_id;
+    }
+
+    pub fn set_active_target_route(
+        &self,
+        target_id: Option<String>,
+        session_id: Option<String>,
+        frame_id: Option<String>,
+        context_id: Option<i64>,
+    ) {
         *self.active_route.lock().expect("active CDP route poisoned") = CdpRoute {
+            target_id,
             session_id,
             frame_id,
             context_id,
         };
+    }
+
+    pub fn operation_identity(&self) -> Option<(String, String)> {
+        let route = self.current_route();
+        Some((route.target_id?, route.frame_id?))
     }
 
     pub fn set_active_frame(&self, frame_id: Option<String>) {
@@ -404,7 +424,6 @@ impl CdpClient {
     pub async fn with_current_target_route<F: std::future::Future>(&self, future: F) -> F::Output {
         let mut route = self.current_route();
         route.context_id = None;
-        route.frame_id = None;
         OPERATION_ROUTE.scope(route, future).await
     }
 
@@ -971,11 +990,25 @@ mod tests {
         let client = CdpClient::connect(&format!("ws://{address}"))
             .await
             .unwrap();
-        client.set_active_session(Some("old".to_string()));
+        client.set_active_target_route(
+            Some("old-target".to_string()),
+            Some("old".to_string()),
+            Some("old-frame".to_string()),
+            None,
+        );
         client
             .with_current_route(async {
                 client.send("first", None).await.unwrap();
-                client.set_active_session(Some("new".to_string()));
+                client.set_active_target_route(
+                    Some("new-target".to_string()),
+                    Some("new".to_string()),
+                    Some("new-frame".to_string()),
+                    None,
+                );
+                assert_eq!(
+                    client.operation_identity(),
+                    Some(("old-target".to_string(), "old-frame".to_string()))
+                );
                 client.send("second", None).await.unwrap();
             })
             .await;

@@ -138,7 +138,10 @@ Each public routed operation snapshots one immutable session/frame/context
 route for its full async lifetime. Explicit selection atomically replaces the
 route for later operations without redirecting commands already in flight.
 OOPIF child sessions are auto-attached with flattened routing; pointer actions
-translate frame-local hit-test coordinates through the frame owner viewport.
+translate frame-local hit-test coordinates through the selected frame owner.
+Chrome reports that owner box in target-page coordinates, so a grandchild frame
+does not accumulate already-absolute ancestor offsets; real nested and OOPIF
+click tests enforce this coordinate contract.
 
 Target/frame lifecycle tracking is activated once per BrowserSession. Registry
 updates consume `Target.targetCreated`, `Target.targetDestroyed`,

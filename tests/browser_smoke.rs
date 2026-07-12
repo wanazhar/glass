@@ -1259,7 +1259,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     .await;
     let cross_origin_url = cross_origin.url.replace("127.0.0.1", "localhost");
     let html = format!(
-        "<title>topology</title><a id='popup' href='about:blank' target='_blank'>popup</a><iframe style='margin:80px' srcdoc=\"<button id='nested' onclick=&quot;document.body.dataset.clicked='yes'&quot;>nested frame</button>\"></iframe><iframe style='margin:60px' src='{}'></iframe>",
+        "<title>topology</title><a id='popup' href='about:blank' target='_blank'>popup</a><iframe style='margin:80px' srcdoc=\"<button id='nested' onclick=&quot;document.body.dataset.clicked='yes'&quot;>nested frame</button>\"></iframe><iframe style='margin:70px' srcdoc=\"<iframe style='margin:50px' srcdoc=&quot;<button id='deep' onclick='document.body.dataset.clicked=1'>deep frame</button>&quot;></iframe>\"></iframe><iframe style='margin:60px' src='{}'></iframe>",
         cross_origin_url
     );
     let fixture = FixtureServer::start(Box::leak(html.into_boxed_str())).await;
@@ -1306,17 +1306,21 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         .unwrap();
     assert_eq!(session.evaluate("document.title").await.unwrap(), "popup");
     session.select_target(&original.id).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
     let frames = session.list_frames().await.unwrap();
     assert!(
-        frames.len() >= 3,
-        "expected main, nested, and cross-origin frames: {frames:?}"
+        frames.len() >= 5,
+        "expected main, direct, grandchild, and cross-origin frames: {frames:?}"
     );
     let cross = frames
         .iter()
         .find(|frame| frame.url == cross_origin_url)
         .unwrap();
+    assert!(
+        cross.out_of_process,
+        "cross-site frame must use an OOPIF session"
+    );
     session.select_frame(&cross.id).await.unwrap();
     assert_eq!(
         session.evaluate("document.body.innerText").await.unwrap(),
@@ -1329,6 +1333,26 @@ async fn browser_session_routes_explicit_targets_and_frames() {
             .await
             .unwrap(),
         "yes"
+    );
+    let deep = frames
+        .iter()
+        .find(|frame| {
+            frame.parent_id.as_deref().is_some_and(|parent| {
+                frames
+                    .iter()
+                    .find(|candidate| candidate.id == parent)
+                    .is_some_and(|candidate| candidate.parent_id.is_some())
+            })
+        })
+        .unwrap();
+    session.select_frame(&deep.id).await.unwrap();
+    session.click("css=#deep").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.body.dataset.clicked")
+            .await
+            .unwrap(),
+        "1"
     );
     let nested = frames
         .iter()
@@ -1343,56 +1367,6 @@ async fn browser_session_routes_explicit_targets_and_frames() {
             .unwrap(),
         "yes"
     );
-    let binary = glass_binary_path();
-    let cli_output = Command::new(&binary)
-        .args([
-            "--attach",
-            "--port",
-            &port.to_string(),
-            "--target-id",
-            &original.id,
-            "--frame-id",
-            &nested.id,
-            "evaluate",
-            "document.body.innerText",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(cli_output.status.success());
-    assert_eq!(
-        serde_json::from_slice::<Value>(&cli_output.stdout).unwrap(),
-        "nested frame"
-    );
-    let mcp = Command::new(&binary)
-        .args([
-            "--attach",
-            "--port",
-            &port.to_string(),
-            "--target-id",
-            &original.id,
-            "--frame-id",
-            &nested.id,
-            "--mcp",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let responses = mcp_responses(
-        mcp,
-        &[
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
-            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"document.body.innerText"}}}),
-        ],
-    )
-    .await;
-    let text = responses[1]["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), "nested frame");
     session.select_target(&popup.id).await.unwrap();
     session.close_target(&popup.id).await.unwrap();
     assert!(
@@ -1404,6 +1378,99 @@ async fn browser_session_routes_explicit_targets_and_frames() {
             .contains("no active target")
     );
     session.select_target(&original.id).await.unwrap();
+    let binary = glass_binary_path();
+    let cli_targets = Command::new(&binary)
+        .args(["--attach", "--port", &port.to_string(), "targets"])
+        .output()
+        .await
+        .unwrap();
+    assert!(cli_targets.status.success());
+    let cli_targets: Value = serde_json::from_slice(&cli_targets.stdout).unwrap();
+    let cli_target_id = cli_targets[0]["id"].as_str().unwrap().to_string();
+    let cli_frames = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port.to_string(),
+            "--target-id",
+            &cli_target_id,
+            "frames",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(cli_frames.status.success());
+    let cli_frames: Value = serde_json::from_slice(&cli_frames.stdout).unwrap();
+    let cli_nested_id = cli_frames
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|frame| frame["url"] == "about:srcdoc")
+        .and_then(|frame| frame["id"].as_str())
+        .unwrap()
+        .to_string();
+    let cli_output = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port.to_string(),
+            "--target-id",
+            &cli_target_id,
+            "--frame-id",
+            &cli_nested_id,
+            "evaluate",
+            "document.body.innerText",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(cli_output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_output.stdout).unwrap(),
+        "nested frame"
+    );
+    let mut mcp = Command::new(&binary)
+        .args(["--attach", "--port", &port.to_string(), "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut mcp_stdin = mcp.stdin.take().unwrap();
+    let mut mcp_stdout = BufReader::new(mcp.stdout.take().unwrap());
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}})).await;
+    read_mcp_line(&mut mcp_stdout).await;
+    write_mcp_line(
+        &mut mcp_stdin,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"listTargets","arguments":{}}})).await;
+    let targets = read_mcp_line(&mut mcp_stdout).await;
+    let targets: Value =
+        serde_json::from_str(targets["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let mcp_target_id = targets[0]["id"].as_str().unwrap();
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"selectTarget","arguments":{"id":mcp_target_id}}})).await;
+    read_mcp_line(&mut mcp_stdout).await;
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"listFrames","arguments":{}}})).await;
+    let frames = read_mcp_line(&mut mcp_stdout).await;
+    let frames: Value =
+        serde_json::from_str(frames["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let mcp_nested_id = frames
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|frame| frame["url"] == "about:srcdoc")
+        .and_then(|frame| frame["id"].as_str())
+        .unwrap();
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"selectFrame","arguments":{"id":mcp_nested_id}}})).await;
+    read_mcp_line(&mut mcp_stdout).await;
+    write_mcp_line(&mut mcp_stdin, json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"document.body.innerText"}}})).await;
+    let evaluated = read_mcp_line(&mut mcp_stdout).await;
+    let text = evaluated["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), "nested frame");
+    drop(mcp_stdin);
+    assert!(mcp.wait().await.unwrap().success());
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         session.cdp().send("Page.crash", None),

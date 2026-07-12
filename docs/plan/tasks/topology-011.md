@@ -51,5 +51,7 @@ Implemented evidence:
   and proves the in-flight operation retains its original session.
 - Resource sanity (10 local release iterations): Glass RSS 3.1 MiB before
   start, 4.7 MiB after one session, 7.0 MiB after the two-session workload;
-  compact cached observation p50 0.013 ms and fresh p50 4.78 ms. These are
-  local regression evidence, not cross-machine claims.
+  compact cached observation p50/p95 0.013/0.021 ms, fresh p50/p95 4.78/4.99
+  ms, and compact payload 15,835 bytes. The release benchmark also reports its
+  final CDP request count and binary artifact size. These are local regression
+  evidence, not cross-machine claims.

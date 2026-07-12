@@ -196,6 +196,7 @@ pub struct FrameInfo {
     pub parent_id: Option<String>,
     pub url: String,
     pub active: bool,
+    pub out_of_process: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -634,7 +635,12 @@ impl BrowserSession {
             .as_str()
             .ok_or("Target.attachToTarget returned no sessionId")?
             .to_string();
-        cdp.set_active_session(Some(session_id.clone()));
+        cdp.set_active_target_route(
+            Some(target_id.clone()),
+            Some(session_id.clone()),
+            None,
+            None,
+        );
 
         let setup = cdp.enable_observation_events().await;
         if let Err(error) = setup {
@@ -675,7 +681,7 @@ impl BrowserSession {
                         let selected_context_invalidated = event.method == "Page.frameNavigated"
                             && event.params["frame"]["id"].as_str() == selected_frame.as_deref();
                         if apply_topology_event(&mut topology, &event) {
-                            cdp_for_events.set_active_session(None);
+                            cdp_for_events.set_active_target_route(None, None, None, None);
                         } else if selected_frame.is_some() && topology.active_frame_id.is_none() {
                             cdp_for_events.set_active_route(
                                 topology.active_session_id.clone(),
@@ -791,17 +797,9 @@ impl BrowserSession {
     }
 
     async fn route_identity(&self) -> BrowserResult<(String, String)> {
-        let topology = self.topology.lock().await;
-        Ok((
-            topology
-                .active_target_id
-                .clone()
-                .ok_or("no active target is selected")?,
-            topology
-                .active_frame_id
-                .clone()
-                .ok_or("no active frame is selected")?,
-        ))
+        self.cdp
+            .operation_identity()
+            .ok_or_else(|| "operation has no target/frame identity".into())
     }
 
     async fn ensured_route_identity(&self) -> BrowserResult<(String, String)> {
@@ -865,18 +863,8 @@ impl BrowserSession {
                 .await;
             return Err(error.into());
         }
-        {
-            let mut topology = self.topology.lock().await;
-            topology.active_target_id = Some(target_id.to_string());
-            topology.active_session_id = Some(new_session.clone());
-            topology.active_target_session_id = Some(new_session.clone());
-            topology.active_frame_id = None;
-            topology.frames.clear();
-            topology.frame_sessions.clear();
-            topology.frame_parents.clear();
-        }
-        self.cdp.set_active_session(Some(new_session.clone()));
-        self.cdp
+        if let Err(error) = self
+            .cdp
             .send_to_session(
                 &new_session,
                 "Target.setAutoAttach",
@@ -886,14 +874,63 @@ impl BrowserSession {
                     "flatten": true
                 })),
             )
-            .await?;
-        let main_frame = self
-            .list_frames()
-            .await?
-            .into_iter()
-            .find(|frame| frame.parent_id.is_none())
-            .ok_or("selected target returned no main frame")?;
-        self.select_frame(&main_frame.id).await?;
+            .await
+        {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": new_session})),
+                )
+                .await;
+            return Err(error.into());
+        }
+        let prepared = async {
+            let raw_frames = self
+                .cdp
+                .send_to_session(&new_session, "Page.getFrameTree", None)
+                .await?;
+            let mut frames = Vec::new();
+            collect_frames(&raw_frames["frameTree"], None, None, &mut frames)?;
+            let main_frame = frames
+                .iter()
+                .find(|frame| frame.parent_id.is_none())
+                .ok_or("selected target returned no main frame")?
+                .id
+                .clone();
+            Ok::<_, Box<dyn Error>>((frames, main_frame))
+        }
+        .await;
+        let (mut frames, main_frame) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        for frame in &mut frames {
+            frame.active = frame.id == main_frame;
+        }
+        {
+            let mut topology = self.topology.lock().await;
+            topology.active_target_id = Some(target_id.to_string());
+            topology.active_session_id = Some(new_session.clone());
+            topology.active_target_session_id = Some(new_session.clone());
+            topology.active_frame_id = Some(main_frame.clone());
+            topology.frames = frames;
+        }
+        self.cdp.set_active_target_route(
+            Some(target_id.to_string()),
+            Some(new_session.clone()),
+            Some(main_frame),
+            None,
+        );
         if let Some(old_session) = old_session {
             let _ = self
                 .cdp
@@ -931,7 +968,7 @@ impl BrowserSession {
             topology.frames.clear();
             topology.frame_sessions.clear();
             topology.frame_parents.clear();
-            self.cdp.set_active_session(None);
+            self.cdp.set_active_target_route(None, None, None, None);
         }
         topology.targets.retain(|target| target.id != target_id);
         Ok(())
@@ -964,15 +1001,24 @@ impl BrowserSession {
             )
         };
         let mut discovered_frame_sessions = Vec::new();
+        let mut stale_frame_sessions = HashSet::new();
         let mut queried_sessions = HashSet::new();
         for (attached_frame_id, session_id) in &attached_sessions {
             if !queried_sessions.insert(session_id.clone()) {
                 continue;
             }
-            let oopif_tree = self
+            let oopif_tree = match self
                 .cdp
                 .send_to_session(session_id, "Page.getFrameTree", None)
-                .await?;
+                .await
+            {
+                Ok(tree) => tree,
+                Err(error) if error.code == -32_001 => {
+                    stale_frame_sessions.insert(session_id.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             let start = frames.len();
             collect_frames(
                 &oopif_tree["frameTree"],
@@ -983,8 +1029,14 @@ impl BrowserSession {
             for frame in &frames[start..] {
                 discovered_frame_sessions.push((frame.id.clone(), session_id.clone()));
             }
+            for frame in &mut frames[start..] {
+                frame.out_of_process = true;
+            }
         }
         let mut topology = self.topology.lock().await;
+        topology
+            .frame_sessions
+            .retain(|_, session| !stale_frame_sessions.contains(session));
         for (frame_id, session_id) in discovered_frame_sessions {
             topology.frame_sessions.insert(frame_id, session_id);
         }
@@ -2457,6 +2509,7 @@ fn collect_frames(
         parent_id: parent_id.map(str::to_string),
         url: bounded_topology_text(frame["url"].as_str().unwrap_or_default()),
         active: active_frame_id == Some(id),
+        out_of_process: false,
     });
     if let Some(children) = frame_tree["childFrames"].as_array() {
         for child in children {
@@ -2563,17 +2616,13 @@ fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithPar
                 topology.frames.clear();
                 return true;
             }
-            if let Some((frame_id, _)) = topology
+            let active_session_detached = topology.active_session_id.as_deref() == Some(session_id);
+            topology
                 .frame_sessions
-                .iter()
-                .find(|(_, attached_session)| attached_session.as_str() == session_id)
-                .map(|(frame_id, attached_session)| (frame_id.clone(), attached_session.clone()))
-            {
-                topology.frame_sessions.remove(&frame_id);
-                if topology.active_frame_id.as_deref() == Some(frame_id.as_str()) {
-                    topology.active_frame_id = None;
-                    topology.active_session_id = topology.active_target_session_id.clone();
-                }
+                .retain(|_, attached_session| attached_session != session_id);
+            if active_session_detached {
+                topology.active_frame_id = None;
+                topology.active_session_id = topology.active_target_session_id.clone();
             }
         }
         "Target.attachedToTarget" => {
@@ -2599,7 +2648,15 @@ fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithPar
             }
         }
         "Page.frameAttached" | "Page.frameNavigated" | "Page.frameDetached" => {
-            if event.session_id.as_deref() != topology.active_session_id.as_deref() {
+            let event_session = event.session_id.as_deref();
+            let belongs_to_topology = event_session == topology.active_target_session_id.as_deref()
+                || event_session.is_some_and(|session_id| {
+                    topology
+                        .frame_sessions
+                        .values()
+                        .any(|attached| attached == session_id)
+                });
+            if !belongs_to_topology {
                 return false;
             }
             let id = event.params["frameId"]

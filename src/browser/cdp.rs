@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -269,6 +270,21 @@ impl CdpClient {
     /// Payload JSON is parsed only while this stream has at least one receiver.
     pub fn subscribe_events_with_params(&self) -> broadcast::Receiver<CdpEventWithParams> {
         self.payload_events.subscribe()
+    }
+
+    pub fn current_session_id(&self) -> Option<String> {
+        self.current_route().session_id
+    }
+
+    pub async fn set_domain_enabled_for(
+        &self,
+        session_id: Option<String>,
+        domain: &str,
+        enabled: bool,
+    ) -> Result<(), CdpError> {
+        let method = format!("{domain}.{}", if enabled { "enable" } else { "disable" });
+        self.send_routed(&method, None, session_id).await?;
+        Ok(())
     }
 
     /// Send a CDP command and wait for the response.
@@ -869,6 +885,21 @@ impl CdpClient {
         Ok(())
     }
 
+    pub async fn disable_runtime(&self) -> Result<(), CdpError> {
+        self.send("Runtime.disable", None).await?;
+        Ok(())
+    }
+
+    pub async fn enable_log(&self) -> Result<(), CdpError> {
+        self.send("Log.enable", None).await?;
+        Ok(())
+    }
+
+    pub async fn disable_log(&self) -> Result<(), CdpError> {
+        self.send("Log.disable", None).await?;
+        Ok(())
+    }
+
     pub async fn enable_network(&self) -> Result<(), CdpError> {
         self.send("Network.enable", None).await?;
         Ok(())
@@ -877,6 +908,31 @@ impl CdpClient {
     pub async fn disable_network(&self) -> Result<(), CdpError> {
         self.send("Network.disable", None).await?;
         Ok(())
+    }
+
+    pub async fn handle_javascript_dialog(&self, accept: bool) -> Result<Value, CdpError> {
+        self.send(
+            "Page.handleJavaScriptDialog",
+            Some(serde_json::json!({"accept": accept})),
+        )
+        .await
+    }
+
+    pub async fn set_download_behavior(
+        &self,
+        behavior: &str,
+        download_path: Option<&Path>,
+        events_enabled: bool,
+    ) -> Result<Value, CdpError> {
+        let mut params = serde_json::json!({
+            "behavior": behavior,
+            "eventsEnabled": events_enabled
+        });
+        if let Some(path) = download_path {
+            params["downloadPath"] = Value::from(path.to_string_lossy().into_owned());
+        }
+        self.send_browser("Browser.setDownloadBehavior", Some(params))
+            .await
     }
 
     pub async fn enable_dom(&self) -> Result<(), CdpError> {

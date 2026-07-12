@@ -44,6 +44,10 @@ dom
 observe [--deep-dom] [--screenshot]
 scroll [--dx PIXELS] [--dy PIXELS]
 wait CONDITION [--timeout-ms MILLISECONDS]
+diagnostics [--duration-ms MILLISECONDS]
+accept-dialog
+dismiss-dialog
+download DIRECTORY [--timeout-ms MILLISECONDS]
 targets
 new-target URL
 select-target ID
@@ -60,6 +64,12 @@ forms documented in the browser architecture (`lifecycle=`, `url=`,
 `url-prefix=`, target states, `text=`, `js=`, and `network-quiet=`);
 normal observations do not collect the full DOM. Likewise, screenshots are
 only captured by `screenshot` or `observe --screenshot`.
+
+`diagnostics` explicitly leases console and network domains for at most 30
+seconds and returns bounded, secret-redacted metadata. Dialog commands act only
+on an already open dialog. `download` serializes one browser-global download
+scope, restricts its destination to an existing directory under the authorized
+working root, and restores download denial on success, error, or cancellation.
 
 `targets` and `frames` are bounded topology queries. Creating a target or
 discovering a popup never selects it. In a one-shot CLI workflow, discover IDs

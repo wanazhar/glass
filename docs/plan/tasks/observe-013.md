@@ -1,7 +1,7 @@
 ---
 id: observe-013
 scope: consistent agent observation
-status: pending
+status: in-progress
 depends-on: [topology-011]
 ---
 

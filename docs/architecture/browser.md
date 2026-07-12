@@ -20,6 +20,29 @@ Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
 
 The cache stores compact context only. Deep DOM and screenshot data are never cached as the default page state.
 
+Compact collection snapshots the immutable target/frame route and page
+revision at entry. It collects page state and accessibility concurrently,
+checks the revision again, and retries once when they differ. A second race is
+returned explicitly as `consistent: false` with the starting and ending
+revisions; Glass never labels a mixed snapshot consistent. Each attempt is
+bounded by a one-second internal collection deadline.
+
+Every compact result includes target/frame identity and a bounded list of
+incompleteness reasons. Reasons distinguish visible-text, accessibility-node,
+accessibility-label, control, shadow-boundary, frame-boundary, canvas, and
+mutation-race limits. Shadow roots and child frames are represented by bounded
+boundary summaries rather than recursively expanding unrelated documents.
+
+Visible text remains UTF-8 byte bounded. Replacing `innerText` with a lower
+allocation traversal is allowed only after browser tests prove equivalent
+rendered-text semantics for hidden, clipped, generated, and whitespace-heavy
+content; until then Glass reports truncation and avoids a semantically weaker
+optimization.
+
+The compact cache owns one serialized-equivalent set of strings and bounded
+AX vectors for one route/revision. Callers receive clones; deep DOM, boundary
+descendants, screenshots, and source CDP payloads are not retained.
+
 ## Agent frontend contract
 
 CLI `observe` and MCP `observe` serialize `PageContext` as compact, single-line

@@ -20,6 +20,8 @@ pub struct CdpRequest {
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A protocol or transport error returned by a CDP connection.
@@ -63,6 +65,7 @@ pub struct CdpEvent {
 pub struct CdpEventWithParams {
     pub method: String,
     pub params: Value,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +78,8 @@ struct IncomingMessage {
     error: Option<CdpError>,
     #[serde(default)]
     method: Option<String>,
+    #[serde(default, rename = "sessionId")]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +132,9 @@ pub struct CdpClient {
     events: broadcast::Sender<CdpEvent>,
     payload_events: broadcast::Sender<CdpEventWithParams>,
     timeout: Duration,
+    active_session: Arc<std::sync::Mutex<Option<String>>>,
+    active_context: Arc<std::sync::Mutex<Option<i64>>>,
+    active_frame: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl CdpClient {
@@ -237,6 +245,9 @@ impl CdpClient {
             events: event_tx,
             payload_events: payload_event_tx,
             timeout,
+            active_session: Arc::new(std::sync::Mutex::new(None)),
+            active_context: Arc::new(std::sync::Mutex::new(None)),
+            active_frame: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -254,11 +265,34 @@ impl CdpClient {
 
     /// Send a CDP command and wait for the response.
     pub async fn send(&self, method: &str, params: Option<Value>) -> Result<Value, CdpError> {
+        let session_id = self
+            .active_session
+            .lock()
+            .expect("active CDP session poisoned")
+            .clone();
+        self.send_routed(method, params, session_id).await
+    }
+
+    pub async fn send_browser(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, CdpError> {
+        self.send_routed(method, params, None).await
+    }
+
+    async fn send_routed(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<String>,
+    ) -> Result<Value, CdpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = CdpRequest {
             id,
             method: method.to_string(),
             params,
+            session_id,
         };
         let json = serde_json::to_string(&request)
             .map_err(|error| CdpError::transport(format!("failed to encode request: {error}")))?;
@@ -293,6 +327,26 @@ impl CdpClient {
         }
     }
 
+    pub fn set_active_session(&self, session_id: Option<String>) {
+        *self
+            .active_session
+            .lock()
+            .expect("active CDP session poisoned") = session_id;
+        self.set_active_context(None);
+        self.set_active_frame(None);
+    }
+
+    pub fn set_active_context(&self, context_id: Option<i64>) {
+        *self
+            .active_context
+            .lock()
+            .expect("active CDP context poisoned") = context_id;
+    }
+
+    pub fn set_active_frame(&self, frame_id: Option<String>) {
+        *self.active_frame.lock().expect("active CDP frame poisoned") = frame_id;
+    }
+
     /// Navigate to a URL.
     pub async fn navigate(&self, url: &str) -> Result<Value, CdpError> {
         self.send("Page.navigate", Some(serde_json::json!({ "url": url })))
@@ -320,7 +374,16 @@ impl CdpClient {
 
     /// Get the accessibility tree.
     pub async fn get_accessibility_tree(&self) -> Result<Value, CdpError> {
-        self.send("Accessibility.getFullAXTree", None).await
+        let frame_id = self
+            .active_frame
+            .lock()
+            .expect("active CDP frame poisoned")
+            .clone();
+        self.send(
+            "Accessibility.getFullAXTree",
+            frame_id.map(|frame_id| serde_json::json!({"frameId": frame_id})),
+        )
+        .await
     }
 
     /// Get the full document tree for an explicit deep-DOM inspection.
@@ -413,16 +476,19 @@ impl CdpClient {
         // DOM.requestNode only returns frontend node IDs after the document has
         // been requested in this CDP session.
         self.get_document_root().await?;
-        let evaluated = self
-            .send(
-                "Runtime.evaluate",
-                Some(serde_json::json!({
-                    "expression": expression,
-                    "returnByValue": false,
-                    "awaitPromise": true
-                })),
-            )
-            .await?;
+        let context_id = *self
+            .active_context
+            .lock()
+            .expect("active CDP context poisoned");
+        let mut params = serde_json::json!({
+            "expression": expression,
+            "returnByValue": false,
+            "awaitPromise": true
+        });
+        if let Some(context_id) = context_id {
+            params["contextId"] = Value::from(context_id);
+        }
+        let evaluated = self.send("Runtime.evaluate", Some(params)).await?;
         if evaluated.get("exceptionDetails").is_some() {
             return Err(CdpError::transport("element query evaluation failed"));
         }
@@ -535,15 +601,19 @@ impl CdpClient {
 
     /// Evaluate JavaScript in the page.
     pub async fn evaluate(&self, expression: &str) -> Result<Value, CdpError> {
-        self.send(
-            "Runtime.evaluate",
-            Some(serde_json::json!({
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": true
-            })),
-        )
-        .await
+        let context_id = *self
+            .active_context
+            .lock()
+            .expect("active CDP context poisoned");
+        let mut params = serde_json::json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": true
+        });
+        if let Some(context_id) = context_id {
+            params["contextId"] = Value::from(context_id);
+        }
+        self.send("Runtime.evaluate", Some(params)).await
     }
 
     /// Insert text into the currently focused element.
@@ -659,7 +729,7 @@ impl CdpClient {
     /// Ask an owned Chrome browser to close itself before process-level
     /// shutdown. This gives profile-backed state a chance to flush cleanly.
     pub async fn close_browser(&self) -> Result<(), CdpError> {
-        self.send("Browser.close", None).await?;
+        self.send_browser("Browser.close", None).await?;
         Ok(())
     }
 
@@ -706,6 +776,7 @@ fn handle_incoming_message(
                     let _ = payload_events.send(CdpEventWithParams {
                         method,
                         params: payload.params,
+                        session_id: message.session_id,
                     });
                 }
                 Err(error) => warn!(%error, "ignoring malformed CDP event payload"),

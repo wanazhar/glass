@@ -90,6 +90,12 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `evaluate` | `expression` | Evaluate JavaScript. |
 | `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
 | `wait` | `condition`, optional `timeoutMs` | Wait for one typed condition. |
+| `listTargets` | none | List bounded page targets without selecting one. |
+| `createTarget` | `url` | Create a page target without selecting it. |
+| `selectTarget` | `id` | Select the target for later tools. |
+| `closeTarget` | `id` | Close a target; no implicit replacement is selected. |
+| `listFrames` | none | List bounded frames in the active target. |
+| `selectFrame` | `id` | Select the frame execution context for later tools. |
 
 All arguments are JSON. `scroll` defaults to `dx: 0` and `dy: 600`.
 `target` uses the same explicit locator forms as the CLI: `ref=`, `name=`,
@@ -99,6 +105,11 @@ as CSS, but must still resolve uniquely.
 `includeDom` and `includeScreenshot` default to `false`.
 `wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
 active wait and scoped network subscriptions are disabled on drop.
+
+Target and frame IDs come from the corresponding list tools and are bounded
+before Glass retains them. Popup discovery never changes the active target.
+Select targets and frames explicitly so an agent cannot drift into a newly
+opened tab or unrelated frame.
 
 ## Observation strategy
 

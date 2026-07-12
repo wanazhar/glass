@@ -154,6 +154,20 @@ enum ToolInvocation<'a> {
         condition: &'a str,
         timeout_ms: u64,
     },
+    ListTargets,
+    CreateTarget {
+        url: &'a str,
+    },
+    SelectTarget {
+        id: &'a str,
+    },
+    CloseTarget {
+        id: &'a str,
+    },
+    ListFrames,
+    SelectFrame {
+        id: &'a str,
+    },
 }
 
 struct Outbound {
@@ -581,6 +595,17 @@ async fn call_tool(
                 )
                 .await?,
         )?)),
+        ToolInvocation::ListTargets => serialized_result(&session.list_targets().await?),
+        ToolInvocation::CreateTarget { url } => {
+            serialized_result(&session.create_target(url).await?)
+        }
+        ToolInvocation::SelectTarget { id } => serialized_result(&session.select_target(id).await?),
+        ToolInvocation::CloseTarget { id } => {
+            session.close_target(id).await?;
+            serialized_result(&json!({"closed": id}))
+        }
+        ToolInvocation::ListFrames => serialized_result(&session.list_frames().await?),
+        ToolInvocation::SelectFrame { id } => serialized_result(&session.select_frame(id).await?),
     }
 }
 
@@ -623,6 +648,20 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "wait" => Ok(ToolInvocation::Wait {
             condition: required_string(arguments, "condition")?,
             timeout_ms: optional_u64(arguments, "timeoutMs", 10_000)?,
+        }),
+        "listTargets" => Ok(ToolInvocation::ListTargets),
+        "createTarget" => Ok(ToolInvocation::CreateTarget {
+            url: required_string(arguments, "url")?,
+        }),
+        "selectTarget" => Ok(ToolInvocation::SelectTarget {
+            id: required_string(arguments, "id")?,
+        }),
+        "closeTarget" => Ok(ToolInvocation::CloseTarget {
+            id: required_string(arguments, "id")?,
+        }),
+        "listFrames" => Ok(ToolInvocation::ListFrames),
+        "selectFrame" => Ok(ToolInvocation::SelectFrame {
+            id: required_string(arguments, "id")?,
         }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
@@ -733,6 +772,36 @@ fn tools() -> Vec<Tool> {
                 },
                 "required": ["condition"]
             }),
+        },
+        Tool {
+            name: "listTargets",
+            description: "List bounded page targets without changing the active target.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "createTarget",
+            description: "Create a page target without selecting it.",
+            input_schema: json!({"type":"object", "properties":{"url":{"type":"string"}}, "required":["url"]}),
+        },
+        Tool {
+            name: "selectTarget",
+            description: "Explicitly select the page target used by subsequent tools.",
+            input_schema: json!({"type":"object", "properties":{"id":{"type":"string"}}, "required":["id"]}),
+        },
+        Tool {
+            name: "closeTarget",
+            description: "Close one page target; closing the active target leaves no implicit selection.",
+            input_schema: json!({"type":"object", "properties":{"id":{"type":"string"}}, "required":["id"]}),
+        },
+        Tool {
+            name: "listFrames",
+            description: "List bounded frames in the active page target.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "selectFrame",
+            description: "Explicitly select the frame used by subsequent tools.",
+            input_schema: json!({"type":"object", "properties":{"id":{"type":"string"}}, "required":["id"]}),
         },
     ]
 }
@@ -1023,7 +1092,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 17);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1035,6 +1104,16 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
+        for name in [
+            "listTargets",
+            "createTarget",
+            "selectTarget",
+            "closeTarget",
+            "listFrames",
+            "selectFrame",
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+        }
         assert!(tools.iter().any(|tool| {
             tool["name"] == "getDOM"
                 && tool["description"]

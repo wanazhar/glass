@@ -32,6 +32,12 @@ dom
 observe [--deep-dom] [--screenshot]
 scroll [--dx PIXELS] [--dy PIXELS]
 wait CONDITION [--timeout-ms MILLISECONDS]
+targets
+new-target URL
+select-target ID
+close-target ID
+frames
+select-frame ID
 evaluate EXPRESSION
 ```
 
@@ -42,6 +48,12 @@ forms documented in the browser architecture (`lifecycle=`, `url=`,
 `url-prefix=`, target states, `text=`, `js=`, and `network-quiet=`);
 normal observations do not collect the full DOM. Likewise, screenshots are
 only captured by `screenshot` or `observe --screenshot`.
+
+`targets` and `frames` are bounded topology queries. Creating a target or
+discovering a popup never selects it; use `select-target` explicitly. Closing
+the active target leaves no selection. `select-frame` routes subsequent
+observation, evaluation, and locator work through that explicit frame until a
+navigation or target change invalidates the selection.
 
 Navigation, action, observation, DOM, scroll, and evaluation results are
 compact JSON on stdout. `text` emits plain text. `screenshot` writes a PNG and

@@ -127,6 +127,24 @@ pub enum Commands {
         timeout_ms: u64,
     },
 
+    /// List discoverable page targets without changing the active target.
+    Targets,
+
+    /// Create a page target without selecting it.
+    NewTarget { url: String },
+
+    /// Explicitly select the page target used by subsequent commands.
+    SelectTarget { id: String },
+
+    /// Close one page target.
+    CloseTarget { id: String },
+
+    /// List frames in the active page target.
+    Frames,
+
+    /// Explicitly select the frame used by subsequent commands.
+    SelectFrame { id: String },
+
     /// Evaluate JavaScript in the current page.
     Evaluate { expression: String },
 
@@ -214,6 +232,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Wait { condition, timeout_ms: 10_000 }) if condition == "text=Ready"
+        ));
+    }
+
+    #[test]
+    fn topology_commands_are_explicit() {
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "targets"]).unwrap().command,
+            Some(Commands::Targets)
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "select-frame", "frame-1"])
+                .unwrap()
+                .command,
+            Some(Commands::SelectFrame { id }) if id == "frame-1"
         ));
     }
 

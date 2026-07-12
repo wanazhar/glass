@@ -14,6 +14,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Persistent named profiles and disposable incognito sessions.
 - Human and fast pointer interaction modes.
 - Managed Chrome for Testing installer.
+- Bounded, explicit page-target and frame topology across the library, CLI,
+  and MCP, including popup discovery without implicit selection and
+  cross-origin frame execution-context routing.
 
 Before publishing `0.1.0`, rename this section to `## [0.1.0] - YYYY-MM-DD`
 and add comparison links when the repository URL is finalized.

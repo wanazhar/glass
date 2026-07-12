@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -12,10 +12,10 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::cdp::CdpClient;
+use super::cdp::{CdpClient, CdpEventWithParams};
 use super::chrome::{
-    ChromeProcess, PortLaunchLock, check_chrome_health, get_ws_url, is_port_occupied,
-    launch_chrome_with_options, resolve_chrome_path,
+    ChromeProcess, PortLaunchLock, check_chrome_health, get_browser_ws_url, get_ws_url,
+    is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
@@ -34,6 +34,11 @@ const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href,
 const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
+const TOPOLOGY_MAX_TARGETS: usize = 32;
+const TOPOLOGY_MAX_FRAMES: usize = 128;
+const TOPOLOGY_ID_MAX_BYTES: usize = 256;
+const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
+const TOPOLOGY_MAX_EVENTS: usize = 64;
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
@@ -159,6 +164,41 @@ pub struct PageInfo {
     pub title: String,
     #[serde(default)]
     pub ready_state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PageTargetInfo {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opener_id: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FrameInfo {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub url: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyEventSummary {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Default)]
+struct TopologyRegistry {
+    targets: Vec<PageTargetInfo>,
+    frames: Vec<FrameInfo>,
+    active_target_id: Option<String>,
+    active_frame_id: Option<String>,
+    active_session_id: Option<String>,
+    events: VecDeque<TopologyEventSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,6 +447,7 @@ pub struct BrowserSession {
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
+    topology: Arc<Mutex<TopologyRegistry>>,
 }
 
 struct CachedObservation {
@@ -541,7 +582,14 @@ impl BrowserSession {
                 return Err(error);
             }
         };
-        let cdp = match CdpClient::connect(&ws_url).await {
+        let target_id = ws_url
+            .rsplit('/')
+            .next()
+            .filter(|id| !id.is_empty())
+            .ok_or("page WebSocket URL contained no target ID")?
+            .to_string();
+        let browser_ws_url = get_browser_ws_url(options.port).await?;
+        let cdp = match CdpClient::connect(&browser_ws_url).await {
             Ok(cdp) => cdp,
             Err(error) => {
                 if let Some(process) = chrome.as_mut() {
@@ -550,6 +598,23 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+
+        cdp.send_browser(
+            "Target.setDiscoverTargets",
+            Some(serde_json::json!({"discover": true})),
+        )
+        .await?;
+        let attached = cdp
+            .send_browser(
+                "Target.attachToTarget",
+                Some(serde_json::json!({"targetId": target_id, "flatten": true})),
+            )
+            .await?;
+        let session_id = attached["sessionId"]
+            .as_str()
+            .ok_or("Target.attachToTarget returned no sessionId")?
+            .to_string();
+        cdp.set_active_session(Some(session_id.clone()));
 
         let setup = cdp.enable_observation_events().await;
         if let Err(error) = setup {
@@ -571,6 +636,31 @@ impl BrowserSession {
             }
         });
 
+        let topology = Arc::new(Mutex::new(TopologyRegistry {
+            active_target_id: Some(target_id.clone()),
+            active_session_id: Some(session_id.clone()),
+            ..TopologyRegistry::default()
+        }));
+        let mut topology_events = cdp.subscribe_events_with_params();
+        let topology_for_events = Arc::clone(&topology);
+        let cdp_for_events = cdp.clone();
+        tokio::spawn(async move {
+            loop {
+                match topology_events.recv().await {
+                    Ok(event) => {
+                        let mut topology = topology_for_events.lock().await;
+                        if apply_topology_event(&mut topology, &event) {
+                            cdp_for_events.set_active_session(None);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = resync_topology(&cdp_for_events, &topology_for_events).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         Ok(Self {
             cdp,
             chrome,
@@ -583,6 +673,7 @@ impl BrowserSession {
             page_revision,
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
+            topology,
         })
     }
 
@@ -596,6 +687,173 @@ impl BrowserSession {
 
     pub fn profile_name(&self) -> &str {
         &self.profile
+    }
+
+    pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        let raw = self.cdp.send_browser("Target.getTargets", None).await?;
+        let active = self.topology.lock().await.active_target_id.clone();
+        let mut targets = Vec::new();
+        for info in raw["targetInfos"].as_array().into_iter().flatten() {
+            if info["type"].as_str() != Some("page") {
+                continue;
+            }
+            let Some(id) = info["targetId"].as_str() else {
+                continue;
+            };
+            validate_topology_id(id)?;
+            if targets.len() == TOPOLOGY_MAX_TARGETS {
+                return Err("page target limit exceeded".into());
+            }
+            targets.push(PageTargetInfo {
+                id: id.to_string(),
+                url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+                title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+                opener_id: info["openerId"].as_str().map(str::to_string),
+                active: active.as_deref() == Some(id),
+            });
+        }
+        self.topology.lock().await.targets = targets.clone();
+        Ok(targets)
+    }
+
+    pub async fn topology_events(&self) -> Vec<TopologyEventSummary> {
+        self.topology.lock().await.events.iter().cloned().collect()
+    }
+
+    pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
+        let url = normalize_url(url);
+        let result = self
+            .cdp
+            .send_browser("Target.createTarget", Some(serde_json::json!({"url": url})))
+            .await?;
+        let id = result["targetId"]
+            .as_str()
+            .ok_or("Target.createTarget returned no targetId")?;
+        validate_topology_id(id)?;
+        let targets = self.list_targets().await?;
+        targets
+            .into_iter()
+            .find(|target| target.id == id)
+            .ok_or_else(|| "created target was not discoverable".into())
+    }
+
+    pub async fn select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
+        validate_topology_id(target_id)?;
+        let target = self
+            .list_targets()
+            .await?
+            .into_iter()
+            .find(|target| target.id == target_id)
+            .ok_or("page target was not found")?;
+        let attached = self
+            .cdp
+            .send_browser(
+                "Target.attachToTarget",
+                Some(serde_json::json!({"targetId": target_id, "flatten": true})),
+            )
+            .await?;
+        let new_session = attached["sessionId"]
+            .as_str()
+            .ok_or("Target.attachToTarget returned no sessionId")?
+            .to_string();
+        let old_session = self.topology.lock().await.active_session_id.clone();
+        self.cdp.set_active_session(Some(new_session.clone()));
+        if let Err(error) = self.cdp.enable_observation_events().await {
+            self.cdp.set_active_session(old_session);
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": new_session})),
+                )
+                .await;
+            return Err(error.into());
+        }
+        if let Some(old_session) = old_session {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": old_session})),
+                )
+                .await;
+        }
+        {
+            let mut topology = self.topology.lock().await;
+            topology.active_target_id = Some(target_id.to_string());
+            topology.active_session_id = Some(new_session);
+            topology.active_frame_id = None;
+            topology.frames.clear();
+        }
+        self.invalidate_observation();
+        Ok(PageTargetInfo {
+            active: true,
+            ..target
+        })
+    }
+
+    pub async fn close_target(&self, target_id: &str) -> BrowserResult<()> {
+        validate_topology_id(target_id)?;
+        let result = self
+            .cdp
+            .send_browser(
+                "Target.closeTarget",
+                Some(serde_json::json!({"targetId": target_id})),
+            )
+            .await?;
+        if result["success"].as_bool() != Some(true) {
+            return Err("Chrome refused to close target".into());
+        }
+        let mut topology = self.topology.lock().await;
+        if topology.active_target_id.as_deref() == Some(target_id) {
+            topology.active_target_id = None;
+            topology.active_session_id = None;
+            topology.active_frame_id = None;
+            topology.frames.clear();
+            self.cdp.set_active_session(None);
+        }
+        topology.targets.retain(|target| target.id != target_id);
+        Ok(())
+    }
+
+    pub async fn list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
+        if self.topology.lock().await.active_target_id.is_none() {
+            return Err("no active target is selected".into());
+        }
+        let raw = self.cdp.send("Page.getFrameTree", None).await?;
+        let active = self.topology.lock().await.active_frame_id.clone();
+        let mut frames = Vec::new();
+        collect_frames(&raw["frameTree"], None, active.as_deref(), &mut frames)?;
+        self.topology.lock().await.frames = frames.clone();
+        Ok(frames)
+    }
+
+    pub async fn select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
+        validate_topology_id(frame_id)?;
+        let frame = self
+            .list_frames()
+            .await?
+            .into_iter()
+            .find(|frame| frame.id == frame_id)
+            .ok_or("frame was not found")?;
+        let world = self
+            .cdp
+            .send(
+                "Page.createIsolatedWorld",
+                Some(serde_json::json!({"frameId": frame_id, "worldName":"glass"})),
+            )
+            .await?;
+        let context_id = world["executionContextId"]
+            .as_i64()
+            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
+        self.cdp.set_active_frame(Some(frame_id.to_string()));
+        self.cdp.set_active_context(Some(context_id));
+        self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
+        self.invalidate_observation();
+        Ok(FrameInfo {
+            active: true,
+            ..frame
+        })
     }
 
     /// Whether the Chrome process was explicitly attached rather than launched
@@ -1864,6 +2122,185 @@ fn bounded_candidate_label(value: &str) -> String {
     format!("{}…", &value[..end])
 }
 
+fn validate_topology_id(value: &str) -> BrowserResult<()> {
+    if value.is_empty() {
+        return Err("topology ID cannot be empty".into());
+    }
+    if value.len() > TOPOLOGY_ID_MAX_BYTES {
+        return Err(format!("topology ID exceeds {TOPOLOGY_ID_MAX_BYTES} UTF-8 bytes").into());
+    }
+    Ok(())
+}
+
+fn bounded_topology_text(value: &str) -> String {
+    if value.len() <= TOPOLOGY_TEXT_MAX_BYTES {
+        return value.to_string();
+    }
+    let mut end = TOPOLOGY_TEXT_MAX_BYTES - "…".len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
+fn collect_frames(
+    frame_tree: &Value,
+    parent_id: Option<&str>,
+    active_frame_id: Option<&str>,
+    frames: &mut Vec<FrameInfo>,
+) -> BrowserResult<()> {
+    if frames.len() == TOPOLOGY_MAX_FRAMES {
+        return Err("frame limit exceeded".into());
+    }
+    let frame = frame_tree
+        .get("frame")
+        .ok_or("Page.getFrameTree returned a node without frame data")?;
+    let id = frame["id"]
+        .as_str()
+        .ok_or("Page.getFrameTree returned a frame without an ID")?;
+    validate_topology_id(id)?;
+    frames.push(FrameInfo {
+        id: id.to_string(),
+        parent_id: parent_id.map(str::to_string),
+        url: bounded_topology_text(frame["url"].as_str().unwrap_or_default()),
+        active: active_frame_id == Some(id),
+    });
+    if let Some(children) = frame_tree["childFrames"].as_array() {
+        for child in children {
+            collect_frames(child, Some(id), active_frame_id, frames)?;
+        }
+    }
+    Ok(())
+}
+
+fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) {
+    topology.events.push_back(TopologyEventSummary {
+        kind: kind.to_string(),
+        id: bounded_topology_text(id),
+    });
+    while topology.events.len() > TOPOLOGY_MAX_EVENTS {
+        topology.events.pop_front();
+    }
+}
+
+/// Apply one bounded lifecycle notification. Returns true when the selected
+/// target was lost and CDP command routing must be cleared.
+fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithParams) -> bool {
+    match event.method.as_str() {
+        "Target.targetCreated" | "Target.targetInfoChanged" => {
+            let info = &event.params["targetInfo"];
+            if info["type"].as_str() != Some("page") {
+                return false;
+            }
+            let Some(id) = info["targetId"].as_str() else {
+                return false;
+            };
+            if validate_topology_id(id).is_err() {
+                push_topology_event(topology, "rejected-target", id);
+                return false;
+            }
+            let target = PageTargetInfo {
+                id: id.to_string(),
+                url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+                title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+                opener_id: info["openerId"].as_str().map(str::to_string),
+                active: topology.active_target_id.as_deref() == Some(id),
+            };
+            if let Some(existing) = topology.targets.iter_mut().find(|target| target.id == id) {
+                *existing = target;
+            } else if topology.targets.len() < TOPOLOGY_MAX_TARGETS {
+                topology.targets.push(target);
+            } else {
+                push_topology_event(topology, "rejected-target-budget", id);
+                return false;
+            }
+            push_topology_event(topology, "target-updated", id);
+        }
+        "Target.targetDestroyed" | "Target.targetCrashed" => {
+            let Some(id) = event.params["targetId"].as_str() else {
+                return false;
+            };
+            topology.targets.retain(|target| target.id != id);
+            push_topology_event(topology, event.method.as_str(), id);
+            if topology.active_target_id.as_deref() == Some(id) {
+                topology.active_target_id = None;
+                topology.active_session_id = None;
+                topology.active_frame_id = None;
+                topology.frames.clear();
+                return true;
+            }
+        }
+        "Page.frameAttached" | "Page.frameNavigated" | "Page.frameDetached" => {
+            if event.session_id.as_deref() != topology.active_session_id.as_deref() {
+                return false;
+            }
+            let id = event.params["frameId"]
+                .as_str()
+                .or_else(|| event.params["frame"]["id"].as_str());
+            if let Some(id) = id
+                && validate_topology_id(id).is_ok()
+            {
+                push_topology_event(topology, event.method.as_str(), id);
+            }
+            // Frame payloads are partial; the next list or lag resync rebuilds
+            // the authoritative bounded tree instead of guessing ancestry.
+            topology.frames.clear();
+            topology.active_frame_id = None;
+        }
+        _ => {}
+    }
+    false
+}
+
+async fn resync_topology(
+    cdp: &CdpClient,
+    registry: &Arc<Mutex<TopologyRegistry>>,
+) -> BrowserResult<()> {
+    let raw = cdp.send_browser("Target.getTargets", None).await?;
+    let (active_target, active_frame) = {
+        let topology = registry.lock().await;
+        (
+            topology.active_target_id.clone(),
+            topology.active_frame_id.clone(),
+        )
+    };
+    let mut targets = Vec::new();
+    for info in raw["targetInfos"].as_array().into_iter().flatten() {
+        if info["type"].as_str() != Some("page") {
+            continue;
+        }
+        let id = info["targetId"]
+            .as_str()
+            .ok_or("Target.getTargets returned a page without an ID")?;
+        validate_topology_id(id)?;
+        if targets.len() == TOPOLOGY_MAX_TARGETS {
+            return Err("page target limit exceeded during topology resync".into());
+        }
+        targets.push(PageTargetInfo {
+            id: id.to_string(),
+            url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+            title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+            opener_id: info["openerId"].as_str().map(str::to_string),
+            active: active_target.as_deref() == Some(id),
+        });
+    }
+    let mut frames = Vec::new();
+    if active_target.is_some() {
+        let raw = cdp.send("Page.getFrameTree", None).await?;
+        collect_frames(
+            &raw["frameTree"],
+            None,
+            active_frame.as_deref(),
+            &mut frames,
+        )?;
+    }
+    let mut topology = registry.lock().await;
+    topology.targets = targets;
+    topology.frames = frames;
+    push_topology_event(&mut topology, "resynchronized", "topology");
+    Ok(())
+}
+
 fn actionability_reason(reason: &str) -> TargetActionabilityReason {
     match reason {
         "detached" => TargetActionabilityReason::Detached,
@@ -1969,6 +2406,7 @@ mod tests {
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
+            topology: Arc::new(Mutex::new(TopologyRegistry::default())),
         }
     }
 
@@ -2211,6 +2649,48 @@ mod tests {
         assert_eq!(human.first(), Some(&start));
         assert_eq!(human.last(), Some(&end));
         assert_eq!(fast, vec![start, end]);
+    }
+
+    #[test]
+    fn topology_events_never_select_a_popup_and_clear_a_lost_active_target() {
+        let mut topology = TopologyRegistry {
+            active_target_id: Some("page-1".to_string()),
+            active_session_id: Some("session-1".to_string()),
+            ..TopologyRegistry::default()
+        };
+        let popup = CdpEventWithParams {
+            method: "Target.targetCreated".to_string(),
+            params: serde_json::json!({"targetInfo": {
+                "type": "page", "targetId": "popup-1", "url": "about:blank",
+                "title": "", "openerId": "page-1"
+            }}),
+            session_id: None,
+        };
+        assert!(!apply_topology_event(&mut topology, &popup));
+        assert_eq!(topology.active_target_id.as_deref(), Some("page-1"));
+        assert_eq!(topology.targets[0].opener_id.as_deref(), Some("page-1"));
+
+        let crashed = CdpEventWithParams {
+            method: "Target.targetCrashed".to_string(),
+            params: serde_json::json!({"targetId": "page-1"}),
+            session_id: None,
+        };
+        assert!(apply_topology_event(&mut topology, &crashed));
+        assert!(topology.active_target_id.is_none());
+        assert!(topology.events.len() <= TOPOLOGY_MAX_EVENTS);
+    }
+
+    #[test]
+    fn frame_collection_is_bounded_and_preserves_parents() {
+        let tree = serde_json::json!({
+            "frame": {"id":"root", "url":"https://root.test"},
+            "childFrames": [{"frame":{"id":"child", "url":"https://child.test"}}]
+        });
+        let mut frames = Vec::new();
+        collect_frames(&tree, None, Some("child"), &mut frames).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].parent_id.as_deref(), Some("root"));
+        assert!(frames[1].active);
     }
 
     #[test]

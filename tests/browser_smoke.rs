@@ -1232,3 +1232,95 @@ async fn browser_session_drives_a_local_fixture() {
 
     fixture_server.close().await;
 }
+
+#[tokio::test]
+async fn browser_session_routes_explicit_targets_and_frames() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let Some(chrome_path) = detect_chrome() else {
+        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let cross_origin = FixtureServer::start("<p id='cross'>cross origin frame</p>").await;
+    let html = format!(
+        "<title>topology</title><a id='popup' href='about:blank' target='_blank'>popup</a><iframe srcdoc=\"<p id='nested'>nested frame</p>\"></iframe><iframe src='{}'></iframe>",
+        cross_origin.url
+    );
+    let fixture = FixtureServer::start(Box::leak(html.into_boxed_str())).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "topology-e2e".to_string(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture.url).await.unwrap();
+
+    let original = session
+        .list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| target.active)
+        .unwrap();
+    session.click("css=#popup").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let targets = session.list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(
+        targets
+            .iter()
+            .any(|target| target.id == original.id && target.active)
+    );
+    let popup = targets
+        .into_iter()
+        .find(|target| target.id != original.id)
+        .unwrap();
+    assert_eq!(popup.opener_id.as_deref(), Some(original.id.as_str()));
+    session.select_target(&popup.id).await.unwrap();
+    session
+        .navigate("data:text/html,<title>popup</title>")
+        .await
+        .unwrap();
+    assert_eq!(session.evaluate("document.title").await.unwrap(), "popup");
+    session.select_target(&original.id).await.unwrap();
+
+    let frames = session.list_frames().await.unwrap();
+    assert!(
+        frames.len() >= 3,
+        "expected main, nested, and cross-origin frames"
+    );
+    let cross = frames
+        .iter()
+        .find(|frame| frame.url == cross_origin.url)
+        .unwrap();
+    session.select_frame(&cross.id).await.unwrap();
+    assert_eq!(
+        session.evaluate("document.body.innerText").await.unwrap(),
+        "cross origin frame"
+    );
+    session.select_target(&popup.id).await.unwrap();
+    session.close_target(&popup.id).await.unwrap();
+    assert!(
+        session
+            .list_frames()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no active target")
+    );
+
+    session.close().await.unwrap();
+    fixture.close().await;
+    cross_origin.close().await;
+}

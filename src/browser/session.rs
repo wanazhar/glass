@@ -2868,6 +2868,12 @@ mod tests {
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     fn test_session(cdp: CdpClient) -> BrowserSession {
+        cdp.set_active_target_route(
+            Some("test-target".to_string()),
+            None,
+            Some("test-frame".to_string()),
+            None,
+        );
         BrowserSession {
             cdp,
             chrome: None,

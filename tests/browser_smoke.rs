@@ -1005,6 +1005,45 @@ async fn browser_session_drives_a_local_fixture() {
     );
 
     session
+        .evaluate("globalThis.glassMutationTimer=setInterval(() => document.body.dataset.race=String(performance.now()), 0); true")
+        .await
+        .unwrap();
+    let raced = session.observe().await.unwrap();
+    assert!(!raced.consistency.consistent);
+    assert_eq!(raced.consistency.attempts, 2);
+    assert!(
+        raced
+            .incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::MutationRace)
+    );
+    session
+        .evaluate(
+            "clearInterval(globalThis.glassMutationTimer); delete document.body.dataset.race; true",
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let stable = session.observe().await.unwrap();
+    assert!(stable.consistency.consistent);
+
+    let rss_before_huge = process_rss_bytes();
+    session
+        .evaluate("document.querySelector('#result').textContent='界'.repeat(200000)")
+        .await
+        .unwrap();
+    let huge = session.observe().await.unwrap();
+    let huge_json = serde_json::to_vec(&huge).unwrap();
+    assert!(
+        huge.incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::VisibleText)
+    );
+    assert!(huge.text.len() <= glass::browser::session::COMPACT_TEXT_MAX_BYTES);
+    assert!(huge_json.len() < 32 * 1024);
+    if let (Some(before), Some(after)) = (rss_before_huge, process_rss_bytes()) {
+        assert!(after.saturating_sub(before) < 64 * 1024 * 1024);
+    }
+
+    session
         .evaluate("document.querySelector('#result').textContent = 'Changed'")
         .await
         .unwrap();
@@ -1390,6 +1429,18 @@ async fn browser_session_drives_a_local_fixture() {
     fast_session.close().await.unwrap();
 
     fixture_server.close().await;
+}
+
+fn process_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    Some(kib * 1024)
 }
 
 #[tokio::test]

@@ -68,9 +68,12 @@ Glass accepts requests concurrently so cancellation remains responsive, while
 browser operations are serialized through the single owned session. Requests
 beyond the active limit receive a bounded overload error.
 
-Tool failures return a generic `browser tool failed` result. Glass deliberately
-does not echo targets, selectors, evaluated source, page-authored errors, or
-typed text through the MCP error surface. Local tracing remains metadata-only.
+Targeting failures return bounded JSON with a typed `kind`, an optional
+actionability `reason`, and at most eight candidate summaries. These values are
+derived from the same bounded agent-facing target data as observations; raw
+targets/selectors are never echoed. Other tool failures return generic
+`browser tool failed` text. Evaluated source, typed text, and raw page/CDP
+errors never cross the MCP error surface. Local tracing remains metadata-only.
 
 ## Tools
 

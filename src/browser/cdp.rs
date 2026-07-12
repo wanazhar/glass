@@ -353,74 +353,6 @@ impl CdpClient {
         .await
     }
 
-    /// Query every node matching a CSS selector without silently choosing one.
-    pub async fn query_selector_all(&self, selector: &str) -> Result<Vec<i64>, CdpError> {
-        let document = self.get_document_root().await?;
-        let root_id = document["root"]["nodeId"]
-            .as_i64()
-            .ok_or_else(|| CdpError::transport("DOM document response contained no root nodeId"))?;
-        let result = self
-            .send(
-                "DOM.querySelectorAll",
-                Some(serde_json::json!({ "nodeId": root_id, "selector": selector })),
-            )
-            .await?;
-        Ok(result["nodeIds"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_i64)
-            .collect())
-    }
-
-    /// Search visible DOM text and return a bounded prefix plus the total count.
-    pub async fn search_dom(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<(usize, Vec<i64>), CdpError> {
-        let search = self
-            .send(
-                "DOM.performSearch",
-                Some(serde_json::json!({
-                    "query": query,
-                    "includeUserAgentShadowDOM": true
-                })),
-            )
-            .await?;
-        let search_id = search["searchId"]
-            .as_str()
-            .ok_or_else(|| CdpError::transport("DOM search response contained no searchId"))?;
-        let count = search["resultCount"].as_u64().unwrap_or(0) as usize;
-        let nodes = if count == 0 {
-            Vec::new()
-        } else {
-            let result = self
-                .send(
-                    "DOM.getSearchResults",
-                    Some(serde_json::json!({
-                        "searchId": search_id,
-                        "fromIndex": 0,
-                        "toIndex": count.min(limit)
-                    })),
-                )
-                .await?;
-            result["nodeIds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_i64)
-                .collect()
-        };
-        let _ = self
-            .send(
-                "DOM.discardSearchResults",
-                Some(serde_json::json!({ "searchId": search_id })),
-            )
-            .await;
-        Ok((count, nodes))
-    }
-
     /// Resolve a DOM/backend node and invoke a function on its remote object.
     pub async fn call_on_node(
         &self,
@@ -441,16 +373,98 @@ impl CdpClient {
         let object_id = resolved["object"]["objectId"]
             .as_str()
             .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))?;
-        self.send(
-            "Runtime.callFunctionOn",
-            Some(serde_json::json!({
-                "objectId": object_id,
-                "functionDeclaration": function_declaration,
-                "returnByValue": true,
-                "awaitPromise": true
-            })),
-        )
-        .await
+        let result = self
+            .send(
+                "Runtime.callFunctionOn",
+                Some(serde_json::json!({
+                    "objectId": object_id,
+                    "functionDeclaration": function_declaration,
+                    "returnByValue": true,
+                    "awaitPromise": true
+                })),
+            )
+            .await;
+        let _ = self
+            .send(
+                "Runtime.releaseObject",
+                Some(serde_json::json!({ "objectId": object_id })),
+            )
+            .await;
+        result
+    }
+
+    /// Resolve a page-produced, bounded remote element array into DOM node IDs.
+    ///
+    /// The expression must return an Array with at most `limit` elements and a
+    /// numeric `glassCount` property containing the total logical match count.
+    pub async fn bounded_element_query(
+        &self,
+        expression: &str,
+        limit: usize,
+    ) -> Result<(usize, Vec<i64>), CdpError> {
+        // DOM.requestNode only returns frontend node IDs after the document has
+        // been requested in this CDP session.
+        self.get_document_root().await?;
+        let evaluated = self
+            .send(
+                "Runtime.evaluate",
+                Some(serde_json::json!({
+                    "expression": expression,
+                    "returnByValue": false,
+                    "awaitPromise": true
+                })),
+            )
+            .await?;
+        if evaluated.get("exceptionDetails").is_some() {
+            return Err(CdpError::transport("element query evaluation failed"));
+        }
+        let array_id = evaluated["result"]["objectId"]
+            .as_str()
+            .ok_or_else(|| CdpError::transport("element query returned no remote array"))?;
+        let properties = self
+            .send(
+                "Runtime.getProperties",
+                Some(serde_json::json!({
+                    "objectId": array_id,
+                    "ownProperties": true
+                })),
+            )
+            .await?;
+        let mut count = 0;
+        let mut objects = Vec::with_capacity(limit);
+        for property in properties["result"].as_array().into_iter().flatten() {
+            if property["name"].as_str() == Some("glassCount") {
+                count = property["value"]["value"].as_u64().unwrap_or(0) as usize;
+                continue;
+            }
+            if property["name"]
+                .as_str()
+                .and_then(|name| name.parse::<usize>().ok())
+                .is_some_and(|index| index < limit)
+                && let Some(object_id) = property["value"]["objectId"].as_str()
+            {
+                objects.push(object_id.to_string());
+            }
+        }
+        let mut node_ids = Vec::with_capacity(objects.len());
+        for object_id in objects {
+            let requested = self
+                .send(
+                    "DOM.requestNode",
+                    Some(serde_json::json!({ "objectId": object_id })),
+                )
+                .await?;
+            if let Some(node_id) = requested["nodeId"].as_i64().filter(|id| *id != 0) {
+                node_ids.push(node_id);
+            }
+        }
+        let _ = self
+            .send(
+                "Runtime.releaseObject",
+                Some(serde_json::json!({ "objectId": array_id })),
+            )
+            .await;
+        Ok((count, node_ids))
     }
 
     /// Get the bounding box of a DOM node.

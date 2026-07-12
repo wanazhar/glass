@@ -13,7 +13,9 @@ use tokio::io::{
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
-use crate::browser::session::{ActionOutcome, BrowserResult, BrowserSession, SessionOptions};
+use crate::browser::session::{
+    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
+};
 use crate::cli::args::Cli;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -472,11 +474,15 @@ async fn handle_request(
         "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
         "tools/call" => match call_tool(request, session, options).await {
             Ok(result) => success_response(request.id.response_value(), result),
-            Err(_error) => {
+            Err(error) => {
+                let text = error
+                    .downcast_ref::<TargetError>()
+                    .and_then(|error| serde_json::to_string(error).ok())
+                    .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut response = success_response(
                     request.id.response_value(),
                     json!({
-                        "content": [{"type": "text", "text": "browser tool failed"}],
+                        "content": [{"type": "text", "text": text}],
                         "isError": true
                     }),
                 );

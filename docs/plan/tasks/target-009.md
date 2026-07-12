@@ -50,29 +50,36 @@ not-found results, and verify pointer hit targets immediately before dispatch.
   one-based ordinal locator strategies. Bare references retain the fast path;
   bare strings are exact accessible names. Role-only and substring-name
   selection no longer choose the first control.
-- Resolution now returns unique, not-found, or ambiguity internally. Ambiguity
+- Resolution now returns typed unique, not-found, stale, actionability, or
+  ambiguity outcomes across CLI and MCP. Ambiguity
   exposes at most eight UTF-8-safe 160-byte candidate summaries, and CSS/text
-  searches inspect match counts instead of using the first DOM result.
+  searches inspect match counts through bounded remote arrays instead of
+  materializing or using the first DOM result. Text means exact normalized
+  visible text and promotes nested text to its interactive owner.
 - Pointer actions resolve the remote node, scroll it with nearest alignment,
   reject detachment, hidden/disabled state, active animation, unstable or
-  off-viewport geometry, and require center-point hit ownership before any
-  pointer event is dispatched.
+  off-viewport geometry, and require center-point hit ownership initially and
+  again after pointer movement immediately before button dispatch.
 - CLI and MCP document the same locator forms. MCP's legacy `selector`
   argument is explicitly converted to CSS rather than reinterpreted as an
   accessible name.
 - Adversarial real-Chrome coverage exercises duplicate names/selectors,
-  role-only input, overlays, sticky occlusion, active reflow, disabled state,
-  and detachment during scrolling. The full seven-test browser suite passes.
+  role-only input, hidden/nested/selector-like text, overlays, sticky
+  occlusion, hover-triggered and active reflow, disabled state, detachment
+  during scrolling, typed MCP ambiguity, and absence of button events on
+  rejected actions. The full seven-test browser suite passes.
 - A three-iteration optimized scorecard recorded 18 successes, three known
   delayed-content failures, 12 unsupported outcomes, and zero wrong actions.
   All three duplicate-label repetitions selected `right-target`.
-- The 100-iteration optimized benchmark measured the revision-reference fast
-  click at 16.72 ms p50 and 17.39 ms p95 over two CDP round trips (20 click
-  samples), versus the recorded 17.15 ms baseline p95. Compact context was
-  10,764 bytes, Glass RSS ended at 6,352,896 bytes, and the stripped binary was
-  4,464,528 bytes (no change from `mcp-008`). Allocator-level peak
-  instrumentation is unavailable in the release profile; process RSS is the
-  conservative host measurement.
+- After press-boundary revalidation, the 100-iteration optimized benchmark
+  measured revision-reference clicks at 17.10 ms p50 and 32.26 ms p95 (20
+  samples). The median remains near the recorded 17.15 ms baseline p95; the
+  tail cost is recorded rather than hidden and is a follow-up optimization
+  target. Compact context was 14,448 bytes, Glass RSS ended at 7,204,864 bytes,
+  and the stripped binary was 4,530,112 bytes. All remain inside release gates.
+  Allocator instrumentation is unavailable in the release profile; peak
+  workflow RSS is the documented reproducible allocation proxy and increased
+  by 1,175,552 bytes versus the quality baseline while remaining under 8 MiB.
 
 ## Commit
 

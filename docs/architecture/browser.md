@@ -50,6 +50,12 @@ accepted. Every strategy resolves to exactly one element or returns a bounded
 ambiguous/not-found diagnostic; CSS and text lookup never select the first DOM
 match silently.
 
+Text lookup normalizes whitespace and matches exact rendered `innerText` only.
+Hidden or zero-area elements are excluded, nested text is promoted to its
+nearest interactive owner, and duplicate visible owners are ambiguous. CSS and
+text discovery return at most the bounded diagnostic prefix across CDP even
+when the page contains more matches.
+
 ## Action contract
 
 Fast actions avoid implicit waits. A click resolves a target, asks Chrome to
@@ -68,6 +74,12 @@ enabled, inside the viewport, and owns the center hit point (a descendant may
 own the point). Detached, moving, disabled, off-viewport, or overlaid targets
 fail without sending pointer input. This check adds no hidden frame delay to
 the fast interaction mode.
+
+After human or fast pointer movement, Glass revalidates the same node and
+center immediately before `mousePressed`. A hover-triggered overlay, detach, or
+geometry change therefore fails before button input. Once pressed, Glass
+always releases the button at the dispatched point so cancellation or page
+mutation cannot leave Chrome in a stuck-button state.
 
 ## CDP data path
 

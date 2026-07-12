@@ -34,7 +34,8 @@ const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
-    const element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
+    let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
+    if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
     if (!element || !element.isConnected) return {ok:false, reason:'detached'};
     const sample = () => {
         const rect = element.getBoundingClientRect();
@@ -172,6 +173,53 @@ pub struct CandidateSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
 }
+
+/// A bounded, structured targeting failure safe for agent-facing protocols.
+#[derive(Debug, Clone, Serialize)]
+pub struct TargetError {
+    pub kind: TargetErrorKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<TargetActionabilityReason>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetActionabilityReason {
+    Detached,
+    NotVisible,
+    Disabled,
+    UnstableGeometry,
+    OutsideViewport,
+    HitTestBlocked,
+    GeometryChanged,
+    NodeUnavailable,
+    VerificationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetErrorKind {
+    Ambiguous,
+    NotFound,
+    StaleReference,
+    NotActionable,
+}
+
+impl std::fmt::Display for TargetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self.kind {
+            TargetErrorKind::Ambiguous => "element target is ambiguous",
+            TargetErrorKind::NotFound => "element target was not found",
+            TargetErrorKind::StaleReference => "element reference is stale",
+            TargetErrorKind::NotActionable => "element target is not actionable",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for TargetError {}
 
 #[derive(Debug)]
 enum TargetResolution {
@@ -764,7 +812,8 @@ impl BrowserSession {
         } else {
             self.mouse.generate_click_events(point)
         };
-        self.dispatch_pointer_events(point, events).await?;
+        self.dispatch_pointer_events(&element, point, events)
+            .await?;
         Ok(ActionOutcome {
             action: if double_click {
                 ActionKind::DoubleClick
@@ -781,6 +830,7 @@ impl BrowserSession {
 
     async fn dispatch_pointer_events(
         &self,
+        element: &ResolvedElement,
         point: Point,
         events: Vec<super::mouse::MouseEvent>,
     ) -> BrowserResult<()> {
@@ -807,6 +857,15 @@ impl BrowserSession {
             self.cdp
                 .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
                 .await?;
+        }
+        let press_point = self.verified_action_point(element).await?;
+        if (press_point.x - point.x).abs() > 1.0 || (press_point.y - point.y).abs() > 1.0 {
+            return Err(TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(TargetActionabilityReason::GeometryChanged),
+                candidates: Vec::new(),
+            }
+            .into());
         }
         for event in events {
             self.cdp
@@ -874,15 +933,18 @@ impl BrowserSession {
         let locator = Locator::parse(target)?;
         match self.resolve_locator(&locator).await? {
             TargetResolution::Unique(element) => Ok(element),
-            TargetResolution::Ambiguous(candidates) => {
-                let labels = candidates
-                    .iter()
-                    .map(|candidate| candidate.label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(format!("element target is ambiguous: {labels}").into())
+            TargetResolution::Ambiguous(candidates) => Err(TargetError {
+                kind: TargetErrorKind::Ambiguous,
+                reason: None,
+                candidates,
             }
-            TargetResolution::NotFound => Err(format!("element not found: {target}").into()),
+            .into()),
+            TargetResolution::NotFound => Err(TargetError {
+                kind: TargetErrorKind::NotFound,
+                reason: None,
+                candidates: Vec::new(),
+            }
+            .into()),
         }
     }
 
@@ -892,10 +954,11 @@ impl BrowserSession {
                 .ok_or_else(|| format!("invalid revisioned element reference: {target}"))?;
             let current_revision = self.page_revision.load(Ordering::Relaxed);
             if reference.revision != current_revision {
-                return Err(format!(
-                    "stale element reference '{target}': it belongs to revision {}, but the page is at revision {current_revision}; observe again",
-                    reference.revision
-                )
+                return Err(TargetError {
+                    kind: TargetErrorKind::StaleReference,
+                    reason: None,
+                    candidates: Vec::new(),
+                }
                 .into());
             }
             return Ok(TargetResolution::Unique(ResolvedElement {
@@ -912,6 +975,7 @@ impl BrowserSession {
                 .interactive
                 .iter()
                 .filter(|element| element.name.eq_ignore_ascii_case(name))
+                .take(AMBIGUOUS_CANDIDATE_LIMIT + 1)
                 .collect(),
             Locator::RoleAndName { role, name } => snapshot
                 .interactive
@@ -920,6 +984,7 @@ impl BrowserSession {
                     element.role.eq_ignore_ascii_case(role)
                         && element.name.eq_ignore_ascii_case(name)
                 })
+                .take(AMBIGUOUS_CANDIDATE_LIMIT + 1)
                 .collect(),
             Locator::Ordinal(index) => snapshot.interactive.get(index - 1).into_iter().collect(),
             Locator::Reference(_) | Locator::Text(_) | Locator::Css(_) => Vec::new(),
@@ -951,13 +1016,18 @@ impl BrowserSession {
 
         match locator {
             Locator::Css(selector) => {
-                let nodes = self.cdp.query_selector_all(selector).await?;
-                dom_nodes_resolution(nodes, format!("css={selector}"))
-            }
-            Locator::Text(text) => {
+                let expression = css_query_expression(selector)?;
                 let (count, nodes) = self
                     .cdp
-                    .search_dom(text, AMBIGUOUS_CANDIDATE_LIMIT + 1)
+                    .bounded_element_query(&expression, AMBIGUOUS_CANDIDATE_LIMIT)
+                    .await?;
+                dom_nodes_resolution(count, nodes, format!("css={selector}"))
+            }
+            Locator::Text(text) => {
+                let expression = text_query_expression(text)?;
+                let (count, nodes) = self
+                    .cdp
+                    .bounded_element_query(&expression, AMBIGUOUS_CANDIDATE_LIMIT)
                     .await?;
                 if count > 1 {
                     return Ok(TargetResolution::Ambiguous(
@@ -969,7 +1039,7 @@ impl BrowserSession {
                             .collect(),
                     ));
                 }
-                dom_nodes_resolution(nodes, format!("text={text}"))
+                dom_nodes_resolution(count, nodes, format!("text={text}"))
             }
             Locator::Reference(_)
             | Locator::AccessibleName(_)
@@ -979,18 +1049,36 @@ impl BrowserSession {
     }
 
     async fn verified_action_point(&self, element: &ResolvedElement) -> BrowserResult<Point> {
-        let raw = self
+        let raw = match self
             .cdp
             .call_on_node(
                 element.node_id,
                 element.backend_dom_node_id,
                 HIT_TEST_FUNCTION,
             )
-            .await?;
+            .await
+        {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::debug!(%error, "target node could not be verified");
+                return Err(TargetError {
+                    kind: TargetErrorKind::NotActionable,
+                    reason: Some(TargetActionabilityReason::NodeUnavailable),
+                    candidates: Vec::new(),
+                }
+                .into());
+            }
+        };
         let value = runtime_value(&raw)?;
         if value["ok"].as_bool() != Some(true) {
             let reason = value["reason"].as_str().unwrap_or("verification_failed");
-            return Err(format!("target is not actionable: {reason}").into());
+            tracing::debug!(reason, "target actionability check failed");
+            return Err(TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(actionability_reason(reason)),
+                candidates: Vec::new(),
+            }
+            .into());
         }
         let x = value["x"]
             .as_f64()
@@ -1125,15 +1213,20 @@ fn nonempty_locator(value: &str, kind: &str) -> BrowserResult<String> {
     Ok(value.to_string())
 }
 
-fn dom_nodes_resolution(nodes: Vec<i64>, label: String) -> BrowserResult<TargetResolution> {
-    match nodes.as_slice() {
-        [] => Ok(TargetResolution::NotFound),
-        [node_id] => Ok(TargetResolution::Unique(ResolvedElement {
-            node_id: Some(*node_id),
+fn dom_nodes_resolution(
+    count: usize,
+    nodes: Vec<i64>,
+    label: String,
+) -> BrowserResult<TargetResolution> {
+    match count {
+        0 => Ok(TargetResolution::NotFound),
+        1 if nodes.len() == 1 => Ok(TargetResolution::Unique(ResolvedElement {
+            node_id: Some(nodes[0]),
             backend_dom_node_id: None,
             label,
             reference: None,
         })),
+        1 => Err("unique element query returned no DOM node".into()),
         _ => Ok(TargetResolution::Ambiguous(
             nodes
                 .into_iter()
@@ -1148,6 +1241,41 @@ fn dom_nodes_resolution(nodes: Vec<i64>, label: String) -> BrowserResult<TargetR
     }
 }
 
+fn css_query_expression(selector: &str) -> BrowserResult<String> {
+    let selector = serde_json::to_string(selector)?;
+    Ok(format!(
+        "(() => {{ const nodes = document.querySelectorAll({selector}); const out = []; for (let i = 0; i < Math.min(nodes.length, {AMBIGUOUS_CANDIDATE_LIMIT}); i++) out.push(nodes[i]); out.glassCount = nodes.length; return out; }})()"
+    ))
+}
+
+fn text_query_expression(text: &str) -> BrowserResult<String> {
+    let text = serde_json::to_string(text)?;
+    Ok(format!(
+        r#"(() => {{
+            const wanted = ({text}).replace(/\s+/g, ' ').trim();
+            const matches = [];
+            let count = 0;
+            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+            for (let element = walker.currentNode; element; element = walker.nextNode()) {{
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) continue;
+                const actual = (element.innerText || '').replace(/\s+/g, ' ').trim();
+                if (actual !== wanted) continue;
+                const candidate = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
+                if (matches.includes(candidate)) continue;
+                for (let index = matches.length - 1; index >= 0; index--) {{
+                    if (matches[index].contains(candidate)) {{ matches.splice(index, 1); count--; }}
+                }}
+                count++;
+                if (matches.length < {AMBIGUOUS_CANDIDATE_LIMIT}) matches.push(candidate);
+            }}
+            matches.glassCount = count;
+            return matches;
+        }})()"#
+    ))
+}
+
 fn bounded_candidate_label(value: &str) -> String {
     if value.len() <= CANDIDATE_LABEL_MAX_BYTES {
         return value.to_string();
@@ -1157,6 +1285,18 @@ fn bounded_candidate_label(value: &str) -> String {
         end -= 1;
     }
     format!("{}…", &value[..end])
+}
+
+fn actionability_reason(reason: &str) -> TargetActionabilityReason {
+    match reason {
+        "detached" => TargetActionabilityReason::Detached,
+        "not_visible" => TargetActionabilityReason::NotVisible,
+        "disabled" => TargetActionabilityReason::Disabled,
+        "unstable_geometry" => TargetActionabilityReason::UnstableGeometry,
+        "outside_viewport" => TargetActionabilityReason::OutsideViewport,
+        "hit_test_blocked" => TargetActionabilityReason::HitTestBlocked,
+        _ => TargetActionabilityReason::VerificationFailed,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

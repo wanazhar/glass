@@ -19,8 +19,14 @@
         <div id="cover" style="position: absolute; inset: 0; z-index: 2"></div>
       </div>
       <button id="moving" type="button" style="animation: move 0.08s linear infinite alternate">Moving action</button>
-      <button id="sticky-covered" type="button" style="position: fixed; top: 8px; left: 900px">Sticky-covered action</button>
-      <div id="sticky-cover" style="position: fixed; top: 0; left: 890px; width: 220px; height: 70px; z-index: 5"></div>
+      <button id="hover-reflow" type="button">Hover reflow action</button>
+      <button id="text-unique" type="button"><span>Unique visible phrase</span></button>
+      <span hidden>Unique visible phrase</span>
+      <button class="text-duplicate" type="button">Repeated phrase</button>
+      <button class="text-duplicate" type="button">Repeated phrase</button>
+      <button id="selector-text" type="button">#save</button>
+      <button id="sticky-covered" type="button" style="display: none; position: fixed; top: 500px; left: 1100px">Sticky-covered action</button>
+      <div id="sticky-cover" style="display: none; position: fixed; top: 490px; left: 1090px; width: 180px; height: 70px; z-index: 5"></div>
       <p id="result"></p>
       <div style="height: 1800px" aria-hidden="true"></div>
       <button id="detach-on-scroll" type="button">Detach on scroll</button>
@@ -48,6 +54,15 @@
       });
       document.querySelector("#offscreen-save").addEventListener("click", () => {
         document.querySelector("#result").textContent = "Offscreen saved";
+      });
+      document.querySelector("#hover-reflow").addEventListener("mousemove", () => {
+        document.querySelector("#hover-reflow").style.transform = "translateX(120px)";
+      }, {once: true});
+      document.querySelector("#text-unique").addEventListener("click", () => {
+        document.querySelector("#result").textContent = "Text unique clicked";
+      });
+      document.querySelector("#selector-text").addEventListener("click", () => {
+        document.querySelector("#result").textContent = "Selector text clicked";
       });
       const nativeScrollIntoView = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = function(options) {

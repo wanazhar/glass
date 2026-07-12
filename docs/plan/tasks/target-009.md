@@ -1,7 +1,7 @@
 ---
 id: target-009
 scope: deterministic element targeting
-status: pending
+status: done
 depends-on: [quality-007]
 ---
 
@@ -43,3 +43,43 @@ not-found results, and verify pointer hit targets immediately before dispatch.
   detached-element tests.
 - Zero wrong-target actions across the scorecard repetitions.
 - Fast reference path round trips and allocations do not regress materially.
+
+## Completion
+
+- Added explicit reference, exact accessible-name, role+name, text, CSS, and
+  one-based ordinal locator strategies. Bare references retain the fast path;
+  bare strings are exact accessible names. Role-only and substring-name
+  selection no longer choose the first control.
+- Resolution now returns typed unique, not-found, stale, actionability, or
+  ambiguity outcomes across CLI and MCP. Ambiguity
+  exposes at most eight UTF-8-safe 160-byte candidate summaries, and CSS/text
+  searches inspect match counts through bounded remote arrays instead of
+  materializing or using the first DOM result. Text means exact normalized
+  visible text and promotes nested text to its interactive owner.
+- Pointer actions resolve the remote node, scroll it with nearest alignment,
+  reject detachment, hidden/disabled state, active animation, unstable or
+  off-viewport geometry, and require center-point hit ownership initially and
+  again after pointer movement immediately before button dispatch.
+- CLI and MCP document the same locator forms. MCP's legacy `selector`
+  argument is explicitly converted to CSS rather than reinterpreted as an
+  accessible name.
+- Adversarial real-Chrome coverage exercises duplicate names/selectors,
+  role-only input, hidden/nested/selector-like text, overlays, sticky
+  occlusion, hover-triggered and active reflow, disabled state, detachment
+  during scrolling, typed MCP ambiguity, and absence of button events on
+  rejected actions. The full seven-test browser suite passes.
+- A three-iteration optimized scorecard recorded 18 successes, three known
+  delayed-content failures, 12 unsupported outcomes, and zero wrong actions.
+  All three duplicate-label repetitions selected `right-target`.
+- After press-boundary revalidation and remote-object reuse, the 100-iteration
+  optimized benchmark measured revision-reference clicks at 16.89 ms p50 and
+  18.02 ms p95 (20 samples), close to the recorded 17.15 ms baseline p95.
+  Compact context was 15,835 bytes, Glass RSS ended at 6,950,912 bytes, and the
+  stripped binary was 4,530,136 bytes. All remain inside release gates.
+  Allocator instrumentation is unavailable in the release profile; peak
+  workflow RSS is the documented reproducible allocation proxy and increased
+  by 921,600 bytes versus the quality baseline while remaining under 8 MiB.
+
+## Commit
+
+`feat: enforce deterministic element targeting`

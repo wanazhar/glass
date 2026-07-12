@@ -184,7 +184,9 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
             session
                 .evaluate("document.querySelector('#overlay').style.display='block'")
                 .await?;
-            session.click("Overlay target").await?;
+            if session.click("Overlay target").await.is_err() {
+                return Ok(ScenarioRun::Actual("blocked".to_string()));
+            }
             let value = string_eval(session, "document.querySelector('#result').value").await?;
             Ok(ScenarioRun::Actual(if value == "idle" {
                 "blocked".to_string()
@@ -218,7 +220,7 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
             ))
         }
         "form" => {
-            session.type_text("Glass", Some("Name")).await?;
+            session.type_text("Glass", Some("css=#name")).await?;
             session.click("Submit").await?;
             Ok(ScenarioRun::Actual(
                 string_eval(session, "document.querySelector('#result').value").await?,

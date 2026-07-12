@@ -21,3 +21,11 @@ effects and make every such outcome a hard failure. A future corpus should
 capture selected target identity or a complete fixture side-effect ledger so
 `wrong_actions` is exhaustive rather than limited to enumerated forbidden
 values.
+
+## Targeting: remote-handle cleanup on intermediate CDP errors
+
+Bounded CSS/text discovery releases its array and child remote objects on the
+successful path. If `Runtime.getProperties` or `DOM.requestNode` fails midway,
+the remaining remote handles are left for Chrome's execution-context cleanup.
+Add an actor-owned remote-object guard so every partial-error path releases all
+objects without increasing the fast reference path's request count.

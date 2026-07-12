@@ -1,5 +1,7 @@
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{ActionKind, BrowserSession, InteractionMode, SessionOptions};
+use glass::browser::session::{
+    ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
+};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -323,10 +325,9 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     .await;
     let sanitized = read_mcp_line(&mut stdout).await;
     assert_eq!(sanitized["id"], 6);
-    assert_eq!(
-        sanitized["result"]["content"][0]["text"],
-        "browser tool failed"
-    );
+    let target_error: Value =
+        serde_json::from_str(sanitized["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(target_error["kind"], "not_found");
     assert!(!sanitized.to_string().contains(sentinel));
 
     drop(stdin);
@@ -542,6 +543,12 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
                 "method": "tools/call",
                 "params": {"name": "observe", "arguments": {}}
             }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "click", "arguments": {"target": "name=Duplicate"}}
+            }),
         ],
     )
     .await;
@@ -553,6 +560,14 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert!(context.get("dom").is_none());
     assert!(context.get("screenshot").is_none());
     assert!(context["accessibility"]["interactive"].is_array());
+    let target_error: Value = serde_json::from_str(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(target_error["kind"], "ambiguous");
+    assert_eq!(target_error["candidates"].as_array().unwrap().len(), 2);
 
     session.close().await.unwrap();
     fixture_server.close().await;
@@ -748,7 +763,10 @@ async fn browser_session_drives_a_local_fixture() {
         .await
         .unwrap();
     let stale_error = session.click(&save_reference).await.unwrap_err();
-    assert!(stale_error.to_string().contains("stale element reference"));
+    assert_eq!(
+        stale_error.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::StaleReference
+    );
 
     session
         .evaluate("document.querySelector('#result').textContent = 'Changed'")
@@ -768,6 +786,112 @@ async fn browser_session_drives_a_local_fixture() {
             .interactive
             .iter()
             .any(|element| element.name == "Name")
+    );
+
+    session.click("text=Unique visible phrase").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#result').textContent")
+            .await
+            .unwrap(),
+        "Text unique clicked"
+    );
+    assert_eq!(
+        session
+            .click("text=Repeated phrase")
+            .await
+            .unwrap_err()
+            .downcast_ref::<TargetError>()
+            .unwrap()
+            .kind,
+        TargetErrorKind::Ambiguous
+    );
+    session.click("text=#save").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#result').textContent")
+            .await
+            .unwrap(),
+        "Selector text clicked"
+    );
+
+    session.evaluate("window.pointerEvents = []").await.unwrap();
+    let ambiguous = session.click("name=Duplicate").await.unwrap_err();
+    assert_eq!(
+        ambiguous.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::Ambiguous
+    );
+    let ambiguous_css = session.click("css=.duplicate").await.unwrap_err();
+    let ambiguous_css = ambiguous_css.downcast_ref::<TargetError>().unwrap();
+    assert_eq!(ambiguous_css.kind, TargetErrorKind::Ambiguous);
+    assert!(
+        ambiguous_css
+            .candidates
+            .iter()
+            .all(|candidate| candidate.label.starts_with("css match"))
+    );
+    assert!(
+        !serde_json::to_string(ambiguous_css)
+            .unwrap()
+            .contains(".duplicate")
+    );
+    assert!(
+        session
+            .click("role=button")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("role=<role>;name=<accessible name>")
+    );
+    let disabled = session
+        .click("role=button;name=Disabled action")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        disabled.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::NotActionable
+    );
+    let covered = session.click("css=#covered").await.unwrap_err();
+    assert_eq!(
+        covered.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::NotActionable
+    );
+    session
+        .evaluate("document.querySelector('#sticky-covered').style.display = 'block'; document.querySelector('#sticky-cover').style.display = 'block'")
+        .await
+        .unwrap();
+    let sticky = session.click("css=#sticky-covered").await.unwrap_err();
+    assert_eq!(
+        sticky.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::NotActionable
+    );
+    session
+        .evaluate("document.querySelector('#sticky-covered').style.display = 'none'; document.querySelector('#sticky-cover').style.display = 'none'")
+        .await
+        .unwrap();
+    let moving = session.click("css=#moving").await.unwrap_err();
+    assert_eq!(
+        moving.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::NotActionable
+    );
+    let hover_reflow = session.click("css=#hover-reflow").await.unwrap_err();
+    assert_eq!(
+        hover_reflow.downcast_ref::<TargetError>().unwrap().kind,
+        TargetErrorKind::NotActionable
+    );
+    session.evaluate("window.scrollTo(0, 0)").await.unwrap();
+    let detached = session.click("css=#detach-on-scroll").await.unwrap_err();
+    assert!(
+        detached.downcast_ref::<TargetError>().is_some()
+            || detached.to_string().contains("Could not find node")
+    );
+    let failed_pointer_events = session.evaluate("window.pointerEvents").await.unwrap();
+    assert!(
+        failed_pointer_events
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| { event["type"] != "mousedown" && event["type"] != "mouseup" })
     );
 
     let typed = session.type_text("Ada", Some("Name")).await.unwrap();
@@ -799,6 +923,31 @@ async fn browser_session_drives_a_local_fixture() {
     let double_clicked = session.double_click("Double").await.unwrap();
     assert_eq!(double_clicked.action, ActionKind::DoubleClick);
     assert_eq!(session.evaluate("window.doubleClicks").await.unwrap(), 1);
+
+    session.evaluate("window.pointerEvents = []").await.unwrap();
+    let mut cancelled_click = Box::pin(session.click("css=#cancel-release"));
+    loop {
+        tokio::select! {
+            result = &mut cancelled_click => panic!("click completed before cancellation: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                let events = session.evaluate("window.pointerEvents").await.unwrap();
+                if events.as_array().unwrap().iter().any(|event| event["type"] == "mousedown") {
+                    break;
+                }
+            }
+        }
+    }
+    drop(cancelled_click);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let cancellation_events = session.evaluate("window.pointerEvents").await.unwrap();
+    assert!(
+        cancellation_events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "mouseup"),
+        "dropping an in-progress click must release the pressed button"
+    );
 
     session.evaluate("window.scrollTo(0, 0)").await.unwrap();
     let offscreen = session.click("Offscreen Save").await.unwrap();

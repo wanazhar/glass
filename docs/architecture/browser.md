@@ -39,8 +39,22 @@ structured-context request in CLI.
 Interactive controls expose `r<revision>:b<backend-node-id>` references, and
 compact accessibility snapshots publish the matching revision. A reference from
 a prior revision must fail with a stale-reference error instead of selecting a
-newly numbered control. Accessible-name and CSS-selector lookup remain
-convenience paths.
+newly numbered control.
+
+String targets use explicit locator forms: `ref=<reference>`, `name=<accessible
+name>`, `role=<role>;name=<accessible name>`, `text=<text>`, `css=<selector>`,
+and `ordinal=<one-based index>`. A bare revisioned reference remains accepted as
+the fast agent path, and a bare string remains an exact accessible-name lookup
+for command-line compatibility. Role-only and substring-name lookup are not
+accepted. Every strategy resolves to exactly one element or returns a bounded
+ambiguous/not-found diagnostic; CSS and text lookup never select the first DOM
+match silently.
+
+Text lookup normalizes whitespace and matches exact rendered `innerText` only.
+Hidden or zero-area elements are excluded, nested text is promoted to its
+nearest interactive owner, and duplicate visible owners are ambiguous. CSS and
+text discovery return at most the bounded diagnostic prefix across CDP even
+when the page contains more matches.
 
 ## Action contract
 
@@ -53,6 +67,20 @@ internal mouse-engine primitive until it has an equally reliable target/viewport
 contract.
 
 Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode keeps direct CDP input events and does not sleep between movement samples.
+
+Immediately before pointer dispatch, Glass samples target geometry, rejects
+active element animations, and verifies that the node is connected, rendered,
+enabled, inside the viewport, and owns the center hit point (a descendant may
+own the point). Detached, moving, disabled, off-viewport, or overlaid targets
+fail without sending pointer input. This check adds no hidden frame delay to
+the fast interaction mode.
+
+After human or fast pointer movement, Glass revalidates the same node and
+center immediately before `mousePressed`. A hover-triggered overlay, detach, or
+geometry change therefore fails before button input. Once pressed, Glass
+releases the button at the dispatched point. A drop guard issues a best-effort
+release if cancellation interrupts the press/dwell/release sequence so Chrome
+is not left with a stuck button.
 
 ## CDP data path
 

@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserResult, BrowserSession, InteractionMode, SessionOptions};
+use glass::browser::session::{
+    BrowserResult, BrowserSession, InteractionMode, SessionOptions, WaitCondition,
+};
 use serde_json::{Value, json};
 use std::{
     future::Future,
@@ -70,6 +72,16 @@ async fn main() -> BrowserResult<()> {
         let results = vec![
             measure("evaluate", iterations, || async {
                 let _ = fast_session.evaluate("1 + 1").await?;
+                Ok(())
+            })
+            .await?,
+            measure("wait_js_true", iterations, || async {
+                let _ = fast_session
+                    .wait(
+                        WaitCondition::JavaScript("true".to_string()),
+                        Duration::from_secs(1),
+                    )
+                    .await?;
                 Ok(())
             })
             .await?,

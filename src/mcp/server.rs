@@ -14,7 +14,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
+    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError, WaitCondition,
+    WaitTimeout,
 };
 use crate::cli::args::Cli;
 
@@ -123,6 +124,7 @@ struct RequestLogMetadata<'a> {
 enum ToolInvocation<'a> {
     Navigate {
         url: &'a str,
+        timeout_ms: u64,
     },
     Click {
         target: Cow<'a, str>,
@@ -147,6 +149,10 @@ enum ToolInvocation<'a> {
     Scroll {
         dx: f64,
         dy: f64,
+    },
+    Wait {
+        condition: &'a str,
+        timeout_ms: u64,
     },
 }
 
@@ -478,6 +484,11 @@ async fn handle_request(
                 let text = error
                     .downcast_ref::<TargetError>()
                     .and_then(|error| serde_json::to_string(error).ok())
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<WaitTimeout>()
+                            .and_then(|error| serde_json::to_string(error).ok())
+                    })
                     .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut response = success_response(
                     request.id.response_value(),
@@ -508,8 +519,10 @@ async fn call_tool(
     let session = ensure_session(session, options).await?;
 
     match invocation {
-        ToolInvocation::Navigate { url } => {
-            let page = session.navigate(url).await?;
+        ToolInvocation::Navigate { url, timeout_ms } => {
+            let page = session
+                .navigate_with_deadline(url, Duration::from_millis(timeout_ms))
+                .await?;
             serialized_result(&page)
         }
         ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
@@ -557,6 +570,17 @@ async fn call_tool(
             serialized_result(&session.evaluate(expression).await?)
         }
         ToolInvocation::Scroll { dx, dy } => action_result(session.scroll(dx, dy).await?),
+        ToolInvocation::Wait {
+            condition,
+            timeout_ms,
+        } => Ok(text_result(serde_json::to_string(
+            &session
+                .wait(
+                    WaitCondition::parse(condition)?,
+                    Duration::from_millis(timeout_ms),
+                )
+                .await?,
+        )?)),
     }
 }
 
@@ -570,6 +594,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     match tool_name {
         "navigate" => Ok(ToolInvocation::Navigate {
             url: required_string(arguments, "url")?,
+            timeout_ms: optional_u64(arguments, "timeoutMs", 20_000)?,
         }),
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
@@ -595,6 +620,10 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             dx: optional_number(arguments, "dx", 0.0)?,
             dy: optional_number(arguments, "dy", 600.0)?,
         }),
+        "wait" => Ok(ToolInvocation::Wait {
+            condition: required_string(arguments, "condition")?,
+            timeout_ms: optional_u64(arguments, "timeoutMs", 10_000)?,
+        }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
 }
@@ -616,7 +645,7 @@ fn tools() -> Vec<Tool> {
             description: "Navigate the browser to a URL.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
+                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}},
                 "required": ["url"]
             }),
         },
@@ -693,6 +722,18 @@ fn tools() -> Vec<Tool> {
                 }
             }),
         },
+        Tool {
+            name: "wait",
+            description: "Wait for one typed condition until an explicit deadline.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "condition": {"type": "string"},
+                    "timeoutMs": {"type": "integer", "minimum": 1, "default": 10000}
+                },
+                "required": ["condition"]
+            }),
+        },
     ]
 }
 
@@ -736,6 +777,16 @@ fn optional_number(arguments: &Value, name: &str, default: f64) -> BrowserResult
         Some(value) => value
             .as_f64()
             .ok_or_else(|| format!("{name} must be a number").into()),
+    }
+}
+
+fn optional_u64(arguments: &Value, name: &str, default: u64) -> BrowserResult<u64> {
+    match arguments.get(name) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .filter(|value| (1..=300_000).contains(value))
+            .ok_or_else(|| format!("{name} must be an integer from 1 to 300000").into()),
     }
 }
 
@@ -972,7 +1023,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],

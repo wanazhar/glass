@@ -71,7 +71,11 @@ pub enum Commands {
     DeleteProfile { name: String },
 
     /// Navigate to a URL.
-    Navigate { url: String },
+    Navigate {
+        url: String,
+        #[arg(long, default_value_t = 20_000)]
+        timeout_ms: u64,
+    },
 
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click { target: String },
@@ -114,6 +118,13 @@ pub enum Commands {
         dx: f64,
         #[arg(long, default_value_t = 600.0)]
         dy: f64,
+    },
+
+    /// Wait for one explicit browser condition until a bounded deadline.
+    Wait {
+        condition: String,
+        #[arg(long, default_value_t = 10_000)]
+        timeout_ms: u64,
     },
 
     /// Evaluate JavaScript in the current page.
@@ -194,6 +205,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::DoubleClick { target }) if target == "r7:b42"
+        ));
+    }
+
+    #[test]
+    fn wait_has_an_explicit_condition_and_bounded_default() {
+        let cli = Cli::try_parse_from(["glass", "wait", "text=Ready"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Wait { condition, timeout_ms: 10_000 }) if condition == "text=Ready"
         ));
     }
 

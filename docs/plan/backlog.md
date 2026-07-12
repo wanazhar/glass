@@ -29,3 +29,10 @@ successful path. If `Runtime.getProperties` or `DOM.requestNode` fails midway,
 the remaining remote handles are left for Chrome's execution-context cleanup.
 Add an actor-owned remote-object guard so every partial-error path releases all
 objects without increasing the fast reference path's request count.
+
+## Waits: richer diagnostics and network stress instrumentation
+
+Promote Network event lag/domain failures to the same typed wait-error surface
+as timeouts, define whether visible-text substrings may span adjacent text
+nodes, and add a synthetic CDP stress driver that records Network lease memory
+and event-lag behavior under thousands of concurrent requests.

@@ -641,6 +641,11 @@ impl CdpClient {
         Ok(())
     }
 
+    pub async fn disable_network(&self) -> Result<(), CdpError> {
+        self.send("Network.disable", None).await?;
+        Ok(())
+    }
+
     pub async fn enable_dom(&self) -> Result<(), CdpError> {
         self.send("DOM.enable", None).await?;
         Ok(())

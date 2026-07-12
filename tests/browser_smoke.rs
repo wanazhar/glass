@@ -1,6 +1,7 @@
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{
     ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
+    WaitCondition, WaitTimeout,
 };
 use serde_json::{Value, json};
 use std::{
@@ -54,7 +55,13 @@ impl FixtureServer {
 
 async fn serve_fixture(mut stream: TcpStream, html: &'static str) {
     let mut request = [0; 4_096];
-    let _ = stream.read(&mut request).await;
+    let read = stream.read(&mut request).await.unwrap_or(0);
+    if String::from_utf8_lossy(&request[..read]).starts_with("GET /redirect ") {
+        let _ = stream
+            .write_all(b"HTTP/1.1 302 Found\r\nLocation: /fixture.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+        return;
+    }
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),
@@ -316,6 +323,30 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
     let recovered = read_mcp_line(&mut stdout).await;
     assert_eq!(recovered["id"], 4);
     assert_eq!(recovered["result"]["content"][0]["text"], "42");
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wait","arguments":{"condition":"js=false","timeoutMs":60000}}}),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}),
+    )
+    .await;
+    let cancelled_wait = read_mcp_line(&mut stdout).await;
+    assert_eq!(cancelled_wait["id"], 7);
+    assert_eq!(cancelled_wait["error"]["code"], -32800);
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"7 * 6"}}}),
+    )
+    .await;
+    assert_eq!(
+        read_mcp_line(&mut stdout).await["result"]["content"][0]["text"],
+        "42"
+    );
 
     let sentinel = "#private-target-token-7319";
     write_mcp_line(
@@ -732,6 +763,160 @@ async fn browser_session_drives_a_local_fixture() {
     let page = session.navigate(&url).await.unwrap();
     assert_eq!(page.title, "Glass Fixture");
     assert!(session.text().await.unwrap().contains("Glass Fixture"));
+    let redirected = session
+        .navigate(&fixture_server.url.replace("/fixture.html", "/redirect"))
+        .await
+        .unwrap();
+    assert!(redirected.url.ends_with("/fixture.html"));
+    for condition in [
+        WaitCondition::Lifecycle("complete".to_string()),
+        WaitCondition::UrlExact(redirected.url.clone()),
+        WaitCondition::TargetAttached("name=Save".to_string()),
+        WaitCondition::TargetVisible("name=Save".to_string()),
+        WaitCondition::TargetHidden("css=#sticky-covered".to_string()),
+        WaitCondition::TargetEnabled("name=Save".to_string()),
+        WaitCondition::JavaScript("true".to_string()),
+    ] {
+        session
+            .wait(condition, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+    let (quiet_a, quiet_b) = tokio::join!(
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(80)),
+            std::time::Duration::from_secs(1),
+        ),
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_secs(1),
+        )
+    );
+    quiet_a.unwrap();
+    quiet_b.unwrap();
+    let (cancelled_lease, surviving_lease) = tokio::join!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            session.wait(
+                WaitCondition::NetworkQuiet(std::time::Duration::from_millis(500)),
+                std::time::Duration::from_secs(1),
+            )
+        ),
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(120)),
+            std::time::Duration::from_secs(1),
+        )
+    );
+    assert!(cancelled_lease.is_err());
+    surviving_lease.unwrap();
+    session
+        .wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(80)),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    session
+        .evaluate(&format!(
+            "window.waitPulse = setInterval(() => fetch('{}?pulse=' + Date.now()), 20)",
+            fixture_server.url
+        ))
+        .await
+        .unwrap();
+    let never_idle = session
+        .wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_millis(350),
+        )
+        .await;
+    session
+        .evaluate("clearInterval(window.waitPulse)")
+        .await
+        .unwrap();
+    assert!(
+        never_idle
+            .unwrap_err()
+            .downcast_ref::<WaitTimeout>()
+            .is_some()
+    );
+
+    session
+        .evaluate("setTimeout(() => { const node = document.createElement('p'); node.textContent = 'Delayed wait content'; document.body.append(node); }, 120)")
+        .await
+        .unwrap();
+    let waited = session
+        .wait(
+            WaitCondition::Text("Delayed wait content".to_string()),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    assert_eq!(waited.condition, "text");
+    session
+        .evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"opacity:0\">Invisible wait only</div><div style=\"width:0;height:0;overflow:hidden\">Clipped wait only</div>')")
+        .await
+        .unwrap();
+    for hidden_text in ["Invisible wait only", "Clipped wait only"] {
+        assert!(
+            session
+                .wait(
+                    WaitCondition::Text(hidden_text.to_string()),
+                    std::time::Duration::from_millis(120),
+                )
+                .await
+                .unwrap_err()
+                .downcast_ref::<WaitTimeout>()
+                .is_some()
+        );
+    }
+    session
+        .evaluate("setTimeout(() => history.pushState({}, '', '#wait-spa'), 80)")
+        .await
+        .unwrap();
+    session
+        .wait(
+            WaitCondition::UrlPrefix(format!("{}#wait", fixture_server.url)),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    session
+        .wait(
+            WaitCondition::TargetStable("name=Save".to_string()),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    let timeout = session
+        .wait(
+            WaitCondition::JavaScript("false".to_string()),
+            std::time::Duration::from_millis(120),
+        )
+        .await
+        .unwrap_err();
+    let timeout = timeout.downcast_ref::<WaitTimeout>().unwrap();
+    assert_eq!(timeout.reason, "deadline_exceeded");
+    assert!(timeout.last_state.len() <= 512);
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session.wait(
+            WaitCondition::JavaScript("false".to_string()),
+            std::time::Duration::from_secs(10),
+        ),
+    )
+    .await;
+    assert!(cancelled.is_err());
+    assert_eq!(session.evaluate("6 * 7").await.unwrap(), 42);
+    let started = std::time::Instant::now();
+    let pending_timeout = session
+        .wait(
+            WaitCondition::JavaScript("new Promise(() => {})".to_string()),
+            std::time::Duration::from_millis(120),
+        )
+        .await
+        .unwrap_err();
+    assert!(pending_timeout.downcast_ref::<WaitTimeout>().is_some());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
 
     let context = session.observe().await.unwrap();
     assert!(context.dom.is_none());

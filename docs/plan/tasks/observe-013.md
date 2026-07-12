@@ -1,7 +1,7 @@
 ---
 id: observe-013
 scope: consistent agent observation
-status: in-progress
+status: done
 depends-on: [topology-011]
 ---
 
@@ -42,3 +42,27 @@ default costs.
   cache invalidation tests.
 - Allocation/RSS and context-size gates on adversarial large pages.
 - References from consistent observations remain actionable.
+
+## Completion
+
+- Compact observations now snapshot one immutable target/frame route, collect
+  inside an isolated execution world, retry one detected mutation race within
+  a one-second attempt deadline, and explicitly publish both CDP and DOM
+  revision evidence.
+- Visible text is UTF-8 bounded to 16 KiB before it crosses CDP. Accessibility
+  nodes, labels, and controls have distinct truncation reasons; shadow roots,
+  child frames, canvases, and the 512-element boundary scan remain bounded and
+  explicit.
+- Only consistent compact contexts are cached. Full DOM and screenshots remain
+  named, opt-in operations, and selected-frame observations retain actionable
+  revisioned references.
+- Unit and real-Chrome coverage exercises mutation races and recovery, cache
+  invalidation, shadow/frame/canvas boundaries, large Unicode content, a
+  sub-32-KiB compact context gate, and a sub-64-MiB Glass RSS delta gate.
+- A five-iteration release sanity run measured cached observation at 0.019 ms
+  p50, fresh observation at 9.53 ms p50, a 21,123-byte fixture context, and
+  7,999,488 bytes of post-workload Glass RSS.
+
+## Commit
+
+`feat: add consistent bounded observations`

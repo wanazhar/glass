@@ -88,16 +88,18 @@ is not left with a stuck button.
 Public string forms are `lifecycle=<load|domcontentloaded|complete>`,
 `url=<exact URL>`, `url-prefix=<prefix>`, `target-attached=<locator>`,
 `target-visible=<locator>`, `target-hidden=<locator>`,
-`target-enabled=<locator>`, `target-stable=<locator>`, `text=<exact text>`,
+`target-enabled=<locator>`, `target-stable=<locator>`, `text=<visible substring>`,
 `js=<predicate>`, and `network-quiet=<milliseconds>`. JavaScript predicates
 must return a boolean. Deadlines are positive milliseconds and never default
 to an unbounded wait.
 
 Lifecycle and URL waits consume Page events before polling current state.
 DOM-dependent conditions use bounded 50 ms polling because CDP does not expose
-a reliable semantic event for every state transition. Network quiet enables
-the Network domain only for the wait, tracks a bounded in-flight request set,
-and disables the domain afterward. Timeout results contain a typed condition,
+a reliable semantic event for every state transition. Text checks execute an
+untruncated page predicate. Network quiet enables the Network domain only for
+the first overlapping wait, tracks requests observed from activation onward in
+a bounded set, fails conservatively on event lag/overflow, and disables the
+domain after the last lease. Timeout results contain a typed condition,
 deadline, bounded last state, and reason; dropping the wait cancels it without
 leaving subscriptions or enabled domains behind.
 

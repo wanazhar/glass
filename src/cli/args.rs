@@ -71,7 +71,11 @@ pub enum Commands {
     DeleteProfile { name: String },
 
     /// Navigate to a URL.
-    Navigate { url: String },
+    Navigate {
+        url: String,
+        #[arg(long, default_value_t = 20_000)]
+        timeout_ms: u64,
+    },
 
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click { target: String },

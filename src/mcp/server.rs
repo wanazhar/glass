@@ -124,6 +124,7 @@ struct RequestLogMetadata<'a> {
 enum ToolInvocation<'a> {
     Navigate {
         url: &'a str,
+        timeout_ms: u64,
     },
     Click {
         target: Cow<'a, str>,
@@ -518,8 +519,10 @@ async fn call_tool(
     let session = ensure_session(session, options).await?;
 
     match invocation {
-        ToolInvocation::Navigate { url } => {
-            let page = session.navigate(url).await?;
+        ToolInvocation::Navigate { url, timeout_ms } => {
+            let page = session
+                .navigate_with_deadline(url, Duration::from_millis(timeout_ms))
+                .await?;
             serialized_result(&page)
         }
         ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
@@ -591,6 +594,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     match tool_name {
         "navigate" => Ok(ToolInvocation::Navigate {
             url: required_string(arguments, "url")?,
+            timeout_ms: optional_u64(arguments, "timeoutMs", 20_000)?,
         }),
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
@@ -641,7 +645,7 @@ fn tools() -> Vec<Tool> {
             description: "Navigate the browser to a URL.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
+                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}},
                 "required": ["url"]
             }),
         },
@@ -781,8 +785,8 @@ fn optional_u64(arguments: &Value, name: &str, default: u64) -> BrowserResult<u6
         None => Ok(default),
         Some(value) => value
             .as_u64()
-            .filter(|value| *value > 0)
-            .ok_or_else(|| format!("{name} must be a positive integer").into()),
+            .filter(|value| (1..=300_000).contains(value))
+            .ok_or_else(|| format!("{name} must be an integer from 1 to 300000").into()),
     }
 }
 

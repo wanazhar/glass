@@ -80,8 +80,10 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
-        Commands::Navigate { url } => {
-            let page = session.navigate(url).await?;
+        Commands::Navigate { url, timeout_ms } => {
+            let page = session
+                .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
+                .await?;
             print_json(&page)?;
         }
         Commands::Click { target } => {

@@ -37,6 +37,8 @@ const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
+const MAX_WAIT_DEADLINE: Duration = Duration::from_secs(300);
+const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
@@ -404,6 +406,7 @@ pub struct BrowserSession {
     pointer: Mutex<Option<Point>>,
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
+    network_wait_leases: Arc<Mutex<usize>>,
 }
 
 struct CachedObservation {
@@ -579,6 +582,7 @@ impl BrowserSession {
             pointer: Mutex::new(None),
             page_revision,
             observation_cache: Mutex::new(None),
+            network_wait_leases: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -642,42 +646,36 @@ impl BrowserSession {
     }
 
     pub async fn navigate(&self, url: &str) -> BrowserResult<PageInfo> {
-        let url = normalize_url(url);
-        let mut events = self.cdp.subscribe_events();
-        self.cdp.navigate(&url).await?;
-        self.wait_for_page_event("Page.loadEventFired", &mut events, Duration::from_secs(20))
-            .await?;
-        let page = self.page_info().await?;
-        self.invalidate_observation();
-        Ok(page)
+        self.navigate_with_deadline(url, Duration::from_secs(20))
+            .await
     }
 
-    async fn wait_for_page_event(
+    pub async fn navigate_with_deadline(
         &self,
-        method: &str,
-        events: &mut tokio::sync::broadcast::Receiver<super::cdp::CdpEvent>,
+        url: &str,
         deadline: Duration,
-    ) -> BrowserResult<()> {
-        let wait = tokio::time::timeout(deadline, async {
-            loop {
-                match events.recv().await {
-                    Ok(event) if event.method == method => return Ok(()),
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(_) => return Err("CDP event stream closed during wait"),
-                }
-            }
-        })
-        .await;
-        match wait {
-            Ok(result) => result.map_err(Into::into),
-            Err(_) => Err(WaitTimeout {
-                condition: "lifecycle".to_string(),
-                deadline_ms: deadline.as_millis() as u64,
-                last_state: "load_event_not_observed".to_string(),
-                reason: "deadline_exceeded",
-            }
-            .into()),
-        }
+    ) -> BrowserResult<PageInfo> {
+        validate_wait_deadline(deadline)?;
+        let url = normalize_url(url);
+        let mut events = self.cdp.subscribe_events();
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(deadline, self.cdp.navigate(&url))
+            .await
+            .map_err(|_| wait_timeout("lifecycle", deadline, "navigate_command_pending"))??;
+        let remaining = deadline.saturating_sub(started.elapsed());
+        self.wait_loop(
+            WaitCondition::Lifecycle("complete".to_string()),
+            remaining,
+            &mut events,
+            true,
+        )
+        .await?;
+        let remaining = deadline.saturating_sub(started.elapsed());
+        let page = tokio::time::timeout(remaining, self.page_info())
+            .await
+            .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+        self.invalidate_observation();
+        Ok(page)
     }
 
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
@@ -858,24 +856,45 @@ impl BrowserSession {
         condition: WaitCondition,
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
-        if deadline.is_zero() {
-            return Err("wait deadline must be positive".into());
-        }
+        validate_wait_deadline(deadline)?;
         if let WaitCondition::NetworkQuiet(quiet) = condition {
-            return self.wait_for_network_quiet(quiet, deadline).await;
+            return tokio::time::timeout(deadline, self.wait_for_network_quiet(quiet, deadline))
+                .await
+                .map_err(|_| wait_timeout("network_quiet", deadline, "network_check_pending"))?;
         }
+        let mut events = self.cdp.subscribe_events();
+        self.wait_loop(condition, deadline, &mut events, false)
+            .await
+    }
+
+    async fn wait_loop(
+        &self,
+        condition: WaitCondition,
+        deadline: Duration,
+        events: &mut tokio::sync::broadcast::Receiver<super::cdp::CdpEvent>,
+        require_load_event: bool,
+    ) -> BrowserResult<WaitOutcome> {
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
-        let mut events = self.cdp.subscribe_events();
         let mut previous_geometry = None;
         let description = condition.description();
+        let mut load_event_seen = !require_load_event;
+        let mut last_state = "not_checked".to_string();
         loop {
-            let (matched, state, geometry) = self
-                .check_wait_condition(&condition, previous_geometry.as_deref())
-                .await?;
-            let last_state = bounded_wait_state(&state);
+            let now = tokio::time::Instant::now();
+            if now >= expires {
+                return Err(wait_timeout(&description, deadline, &last_state).into());
+            }
+            let remaining = expires - now;
+            let (matched, state, geometry) = tokio::time::timeout(
+                remaining,
+                self.check_wait_condition(&condition, previous_geometry.as_deref()),
+            )
+            .await
+            .map_err(|_| wait_timeout(&description, deadline, &last_state))??;
+            last_state = bounded_wait_state(&state);
             previous_geometry = geometry;
-            if matched {
+            if matched && load_event_seen {
                 return Ok(WaitOutcome {
                     condition: description,
                     elapsed_ms: started.elapsed().as_millis() as u64,
@@ -883,20 +902,12 @@ impl BrowserSession {
                 });
             }
             let now = tokio::time::Instant::now();
-            if now >= expires {
-                return Err(WaitTimeout {
-                    condition: description,
-                    deadline_ms: deadline.as_millis() as u64,
-                    last_state,
-                    reason: "deadline_exceeded",
-                }
-                .into());
-            }
             let remaining = expires - now;
             tokio::select! {
                 _ = tokio::time::sleep(WAIT_POLL_INTERVAL.min(remaining)) => {}
                 event = events.recv() => match event {
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(event) => { load_event_seen |= event.method == "Page.loadEventFired"; }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(_) => return Err("CDP event stream closed during wait".into()),
                 }
             }
@@ -922,8 +933,14 @@ impl BrowserSession {
                 Ok((page.url.starts_with(prefix), page.url, None))
             }
             WaitCondition::Text(expected) => {
-                let text = self.text().await?;
-                Ok((text.contains(expected), text, None))
+                let expected = serde_json::to_string(expected)?;
+                let value = self
+                    .evaluate_value(&format!(
+                        "Boolean(document.body && document.body.innerText.includes({expected}))"
+                    ))
+                    .await?;
+                let matched = value.as_bool().unwrap_or(false);
+                Ok((matched, format!("present={matched}"), None))
             }
             WaitCondition::JavaScript(expression) => {
                 let value = self.evaluate_value(expression).await?;
@@ -1002,19 +1019,17 @@ impl BrowserSession {
             return Err("network quiet duration must be positive".into());
         }
         let mut events = self.cdp.subscribe_events_with_params();
-        self.cdp.enable_network().await?;
-        let mut guard = NetworkDomainGuard {
-            cdp: self.cdp.clone(),
-            armed: true,
-        };
+        let mut guard =
+            NetworkDomainGuard::acquire(self.cdp.clone(), Arc::clone(&self.network_wait_leases))
+                .await?;
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
         let mut empty_since = started;
         let mut in_flight = HashSet::new();
-        let mut overflow_in_flight = 0usize;
+        let mut overflowed = false;
         loop {
             let now = tokio::time::Instant::now();
-            if in_flight.is_empty() && overflow_in_flight == 0 && now.duration_since(empty_since) >= quiet {
+            if in_flight.is_empty() && !overflowed && now.duration_since(empty_since) >= quiet {
                 guard.disable().await?;
                 return Ok(WaitOutcome {
                     condition: "network_quiet".to_string(),
@@ -1026,36 +1041,39 @@ impl BrowserSession {
                 return Err(WaitTimeout {
                     condition: "network_quiet".to_string(),
                     deadline_ms: deadline.as_millis() as u64,
-                    last_state: format!("in_flight={}", in_flight.len() + overflow_in_flight),
+                    last_state: if overflowed {
+                        "in_flight=overflow".to_string()
+                    } else {
+                        format!("in_flight={}", in_flight.len())
+                    },
                     reason: "deadline_exceeded",
                 }
                 .into());
             }
             tokio::select! {
                 _ = tokio::time::sleep((expires - now).min(WAIT_POLL_INTERVAL)) => {}
-                event = events.recv() => if let Ok(event) = event {
-                    let request_id = event.params["requestId"].as_str();
-                    match event.method.as_str() {
+                event = events.recv() => match event {
+                    Ok(event) => {
+                      let request_id = event.params["requestId"].as_str();
+                      match event.method.as_str() {
                         "Network.requestWillBeSent" => {
                             if let Some(id) = request_id {
                                 if in_flight.len() < NETWORK_IN_FLIGHT_LIMIT {
                                     in_flight.insert(id.to_string());
                                 } else {
-                                    overflow_in_flight = overflow_in_flight.saturating_add(1);
+                                    overflowed = true;
                                 }
                             }
                         }
                         "Network.loadingFinished" | "Network.loadingFailed" => {
-                            if let Some(id) = request_id
-                                && !in_flight.remove(id)
-                                && overflow_in_flight > 0
-                            {
-                                overflow_in_flight -= 1;
-                            }
-                            if in_flight.is_empty() && overflow_in_flight == 0 { empty_since = tokio::time::Instant::now(); }
+                            if let Some(id) = request_id { in_flight.remove(id); }
+                            if in_flight.is_empty() && !overflowed { empty_since = tokio::time::Instant::now(); }
                         }
                         _ => {}
+                      }
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return Err("network wait event stream lagged".into()),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Err("network wait event stream closed".into()),
                 }
             }
         }
@@ -1469,12 +1487,31 @@ struct RemoteObjectGuard {
 
 struct NetworkDomainGuard {
     cdp: CdpClient,
+    leases: Arc<Mutex<usize>>,
     armed: bool,
 }
 
 impl NetworkDomainGuard {
+    async fn acquire(cdp: CdpClient, leases: Arc<Mutex<usize>>) -> BrowserResult<Self> {
+        let needs_enable = {
+            let mut count = leases.lock().await;
+            let needs_enable = *count == 0;
+            *count += 1;
+            needs_enable
+        };
+        let guard = Self {
+            cdp,
+            leases,
+            armed: true,
+        };
+        if needs_enable {
+            guard.cdp.enable_network().await?;
+        }
+        Ok(guard)
+    }
+
     async fn disable(&mut self) -> BrowserResult<()> {
-        self.cdp.disable_network().await?;
+        release_network_lease(&self.cdp, &self.leases).await?;
         self.armed = false;
         Ok(())
     }
@@ -1486,10 +1523,23 @@ impl Drop for NetworkDomainGuard {
             return;
         }
         let cdp = self.cdp.clone();
+        let leases = Arc::clone(&self.leases);
         tokio::spawn(async move {
-            let _ = cdp.disable_network().await;
+            let _ = release_network_lease(&cdp, &leases).await;
         });
     }
+}
+
+async fn release_network_lease(cdp: &CdpClient, leases: &Mutex<usize>) -> BrowserResult<()> {
+    let should_disable = {
+        let mut count = leases.lock().await;
+        *count = count.saturating_sub(1);
+        *count == 0
+    };
+    if should_disable {
+        cdp.disable_network().await?;
+    }
+    Ok(())
 }
 
 impl Drop for RemoteObjectGuard {
@@ -1526,6 +1576,9 @@ impl Drop for PressedButtonGuard {
 
 impl WaitCondition {
     pub fn parse(value: &str) -> BrowserResult<Self> {
+        if value.len() > MAX_WAIT_CONDITION_BYTES {
+            return Err("wait condition exceeds 4096 bytes".into());
+        }
         let (kind, argument) = value
             .split_once('=')
             .ok_or("wait condition must use <kind>=<value>")?;
@@ -1552,7 +1605,13 @@ impl WaitCondition {
             "target-stable" => Self::TargetStable(argument.to_string()),
             "text" => Self::Text(argument.to_string()),
             "js" => Self::JavaScript(argument.to_string()),
-            "network-quiet" => Self::NetworkQuiet(Duration::from_millis(argument.parse::<u64>()?)),
+            "network-quiet" => {
+                let duration = Duration::from_millis(argument.parse::<u64>()?);
+                if duration.is_zero() || duration > MAX_WAIT_DEADLINE {
+                    return Err("network quiet duration must be between 1 ms and 300000 ms".into());
+                }
+                Self::NetworkQuiet(duration)
+            }
             "lifecycle" => return Err("unsupported lifecycle wait value".into()),
             _ => return Err("unknown wait condition kind".into()),
         })
@@ -1577,6 +1636,22 @@ impl WaitCondition {
 
 fn bounded_wait_state(value: &str) -> String {
     truncate_visible_text(value, WAIT_LAST_STATE_MAX_BYTES)
+}
+
+fn validate_wait_deadline(deadline: Duration) -> BrowserResult<()> {
+    if deadline.is_zero() || deadline > MAX_WAIT_DEADLINE {
+        return Err("wait deadline must be between 1 ms and 300000 ms".into());
+    }
+    Ok(())
+}
+
+fn wait_timeout(condition: &str, deadline: Duration, last_state: &str) -> WaitTimeout {
+    WaitTimeout {
+        condition: condition.to_string(),
+        deadline_ms: deadline.as_millis() as u64,
+        last_state: bounded_wait_state(last_state),
+        reason: "deadline_exceeded",
+    }
 }
 
 impl Locator {
@@ -1824,6 +1899,7 @@ mod tests {
             pointer: Mutex::new(None),
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
+            network_wait_leases: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -2165,9 +2241,12 @@ mod tests {
             WaitCondition::parse("network-quiet=250").unwrap(),
             WaitCondition::NetworkQuiet(Duration::from_millis(250))
         );
-        assert!(WaitCondition::parse("network-quiet=0").is_ok());
+        assert!(WaitCondition::parse("network-quiet=0").is_err());
+        assert!(WaitCondition::parse(&format!("text={}", "x".repeat(4096))).is_err());
         assert!(WaitCondition::parse("lifecycle=forever").is_err());
         assert!(WaitCondition::parse("unknown=value").is_err());
+        assert!(validate_wait_deadline(Duration::from_millis(1)).is_ok());
+        assert!(validate_wait_deadline(Duration::from_secs(301)).is_err());
     }
 
     #[test]

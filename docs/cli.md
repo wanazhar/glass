@@ -22,7 +22,7 @@ Global options can be written before or after a subcommand.
 ## Browser commands
 
 ```text
-navigate URL
+navigate URL [--timeout-ms MILLISECONDS]
 click TARGET
 double-click TARGET
 type TEXT [--target TARGET]

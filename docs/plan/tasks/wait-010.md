@@ -46,22 +46,29 @@ not rely on sleeps or a universal page-ready heuristic.
 ## Completion
 
 - Added typed lifecycle, exact/prefix URL, target attached/visible/hidden/
-  enabled/stable, visible-text, boolean JavaScript, and bounded network-quiet
-  conditions with mandatory positive deadlines.
+  enabled/stable, untruncated visible-text substring, boolean JavaScript, and
+  bounded network-quiet conditions with deadlines limited to 1-300,000 ms and
+  condition strings limited to 4 KiB.
 - Waits subscribe to existing Page/DOM events and use a 50 ms bounded polling
   fallback for semantic state. Navigation now uses the same typed lifecycle
   timeout surface while subscribing before `Page.navigate` so fast loads and
   redirects cannot be missed.
-- Network quiet enables Network only for the wait, bounds retained request IDs
-  to 1,024 plus an overflow counter, and disables the domain synchronously on
-  success or through a drop guard on timeout/cancellation.
+- Network quiet uses a ref-counted Network-domain lease across overlapping
+  waits, bounds retained request IDs to 1,024, fails conservatively on event
+  lag or overflow, and disables the domain after the final success, timeout,
+  error, or cancellation lease is released. Its observation window explicitly
+  begins when the first lease enables Network.
 - Timeout errors expose only a typed condition, deadline, 512-byte last state,
   and reason. MCP serializes this safe structure; dropping an MCP wait cancels
   it and the serialized browser session remains usable.
 - CLI `wait CONDITION --timeout-ms` and MCP `wait` share the same parser and
   default 10-second deadline. Fast click/action paths were not changed.
-- Deterministic real-Chrome coverage includes delayed content, SPA URL change,
-  HTTP redirect, target stability, never-idle network traffic, timeout state,
+- Every condition check, including a never-resolving JavaScript promise and
+  the navigation command/page-info calls, is wrapped by the single overall
+  deadline. CLI and MCP navigation accept the same bounded timeout.
+- Deterministic real-Chrome coverage includes every condition variant, delayed
+  content, SPA URL change, HTTP redirect, target stability, overlapping
+  network leases, never-idle traffic, timeout state, pending-CDP deadline,
   local cancellation recovery, and MCP wait cancellation recovery.
 - On Linux/aarch64, a 50-iteration warm `js=true` wait measured 0.367 ms p50
   and 0.478 ms p95. The stripped release binary is 4,595,704 bytes (+65,568

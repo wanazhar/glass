@@ -768,6 +768,32 @@ async fn browser_session_drives_a_local_fixture() {
         .await
         .unwrap();
     assert!(redirected.url.ends_with("/fixture.html"));
+    for condition in [
+        WaitCondition::Lifecycle("complete".to_string()),
+        WaitCondition::UrlExact(redirected.url.clone()),
+        WaitCondition::TargetAttached("name=Save".to_string()),
+        WaitCondition::TargetVisible("name=Save".to_string()),
+        WaitCondition::TargetHidden("css=#sticky-covered".to_string()),
+        WaitCondition::TargetEnabled("name=Save".to_string()),
+        WaitCondition::JavaScript("true".to_string()),
+    ] {
+        session
+            .wait(condition, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+    let (quiet_a, quiet_b) = tokio::join!(
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(80)),
+            std::time::Duration::from_secs(1),
+        ),
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_secs(1),
+        )
+    );
+    quiet_a.unwrap();
+    quiet_b.unwrap();
     session
         .wait(
             WaitCondition::NetworkQuiet(std::time::Duration::from_millis(80)),
@@ -849,6 +875,16 @@ async fn browser_session_drives_a_local_fixture() {
     .await;
     assert!(cancelled.is_err());
     assert_eq!(session.evaluate("6 * 7").await.unwrap(), 42);
+    let started = std::time::Instant::now();
+    let pending_timeout = session
+        .wait(
+            WaitCondition::JavaScript("new Promise(() => {})".to_string()),
+            std::time::Duration::from_millis(120),
+        )
+        .await
+        .unwrap_err();
+    assert!(pending_timeout.downcast_ref::<WaitTimeout>().is_some());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
 
     let context = session.observe().await.unwrap();
     assert!(context.dom.is_none());

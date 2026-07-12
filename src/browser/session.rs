@@ -603,6 +603,7 @@ pub struct BrowserSession {
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
+    download_scope: Arc<Mutex<()>>,
     topology: Arc<Mutex<TopologyRegistry>>,
     upload_root: PathBuf,
 }
@@ -864,6 +865,7 @@ impl BrowserSession {
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
+            download_scope: Arc::new(Mutex::new(())),
             topology,
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
         };
@@ -1883,6 +1885,7 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let (target_id, frame_id) = self.route_identity().await?;
+                let route_session_id = self.cdp.current_session_id();
                 let mut events = self.cdp.subscribe_events_with_params();
                 let mut guard = DiagnosticDomainGuard::acquire(
                     self.cdp.clone(),
@@ -1900,13 +1903,14 @@ impl BrowserSession {
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => break,
                         event = events.recv() => match event {
-                            Ok(event) => collect_diagnostic_event(
+                            Ok(event) if event.session_id == route_session_id => collect_diagnostic_event(
                                 &event,
                                 &mut console,
                                 &mut network,
                                 &mut request_indexes,
                                 &mut dropped_events,
                             ),
+                            Ok(_) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                                 dropped_events = dropped_events.saturating_add(count);
                             }
@@ -1955,10 +1959,11 @@ impl BrowserSession {
                 "download destination must be a directory inside the authorized root".into(),
             );
         }
+        let _download_scope = self.download_scope.lock().await;
+        let (target_id, frame_id) = self.route_identity().await?;
         let mut events = self.cdp.subscribe_events_with_params();
-        self.cdp
-            .set_download_behavior("allow", Some(&destination), true)
-            .await?;
+        let mut download_guard =
+            DownloadBehaviorGuard::acquire(self.cdp.clone(), &destination).await?;
         let result = tokio::time::timeout(deadline, async {
             let mut guid = None;
             let mut filename = String::new();
@@ -1981,7 +1986,6 @@ impl BrowserSession {
                         }
                         let state = event.params["state"].as_str().unwrap_or("inProgress");
                         if matches!(state, "completed" | "canceled") {
-                            let (target_id, frame_id) = self.route_identity().await?;
                             return BrowserResult::Ok(DownloadOutcome {
                                 guid: active_guid.to_string(),
                                 suggested_filename: filename,
@@ -1990,8 +1994,8 @@ impl BrowserSession {
                                     &event.params["receivedBytes"],
                                 ),
                                 total_bytes: finite_nonnegative_u64(&event.params["totalBytes"]),
-                                target_id,
-                                frame_id,
+                                target_id: target_id.clone(),
+                                frame_id: frame_id.clone(),
                             });
                         }
                     }
@@ -2007,7 +2011,7 @@ impl BrowserSession {
         })
         .await
         .unwrap_or_else(|_| Err("download deadline exceeded".into()));
-        let _ = self.cdp.set_download_behavior("deny", None, false).await;
+        download_guard.disable().await?;
         result
     }
 
@@ -2772,7 +2776,7 @@ fn collect_diagnostic_event(
                 console,
                 ConsoleEvidence {
                     level: bounded_diagnostic_text(event.params["type"].as_str().unwrap_or("log")),
-                    text: bounded_diagnostic_text(&text),
+                    text: redact_diagnostic_text(&text),
                 },
                 dropped,
             );
@@ -2783,7 +2787,7 @@ fn collect_diagnostic_event(
                 console,
                 ConsoleEvidence {
                     level: bounded_diagnostic_text(entry["level"].as_str().unwrap_or("log")),
-                    text: bounded_diagnostic_text(entry["text"].as_str().unwrap_or("")),
+                    text: redact_diagnostic_text(entry["text"].as_str().unwrap_or("")),
                 },
                 dropped,
             );
@@ -2853,6 +2857,28 @@ fn bounded_diagnostic_text(value: &str) -> String {
     truncate_utf8_bytes(value, MAX_DIAGNOSTIC_TEXT_BYTES)
 }
 
+fn redact_diagnostic_text(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if ["authorization", "cookie", "password", "token", "secret"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "[redacted sensitive console entry]".to_string();
+    }
+    let redacted = value
+        .split_whitespace()
+        .map(|part| {
+            if part.starts_with("http://") || part.starts_with("https://") {
+                redact_diagnostic_url(part)
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    bounded_diagnostic_text(&redacted)
+}
+
 fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
     let mut end = value.len().min(max_bytes);
     while end > 0 && !value.is_char_boundary(end) {
@@ -2868,6 +2894,8 @@ fn redact_diagnostic_url(value: &str) -> String {
             MAX_DIAGNOSTIC_URL_BYTES,
         );
     };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
     if url.query().is_some() {
         let names = url
             .query_pairs()
@@ -3026,6 +3054,7 @@ struct RemoteObjectGuard {
 struct NetworkDomainGuard {
     cdp: CdpClient,
     leases: Arc<Mutex<NetworkLeaseState>>,
+    session_id: Option<String>,
     armed: bool,
 }
 
@@ -3033,35 +3062,50 @@ struct DiagnosticDomainGuard {
     cdp: CdpClient,
     network: NetworkDomainGuard,
     leases: Arc<Mutex<DiagnosticLeaseState>>,
+    session_id: Option<String>,
+    armed: bool,
+}
+
+struct DownloadBehaviorGuard {
+    cdp: CdpClient,
     armed: bool,
 }
 
 #[derive(Default)]
 struct DiagnosticLeaseState {
-    count: usize,
+    counts: HashMap<Option<String>, usize>,
 }
 
 #[derive(Default)]
 struct NetworkLeaseState {
-    count: usize,
+    counts: HashMap<Option<String>, usize>,
 }
 
 impl NetworkDomainGuard {
     async fn acquire(cdp: CdpClient, leases: Arc<Mutex<NetworkLeaseState>>) -> BrowserResult<Self> {
+        let session_id = cdp.current_session_id();
         let mut state = leases.lock().await;
-        state.count += 1;
+        let count = state.counts.entry(session_id.clone()).or_default();
+        *count += 1;
         let mut guard = Self {
             cdp,
             leases: Arc::clone(&leases),
+            session_id: session_id.clone(),
             armed: true,
         };
-        if state.count == 1
-            && let Err(error) = guard.cdp.enable_network().await
+        if *count == 1
+            && let Err(error) = guard
+                .cdp
+                .set_domain_enabled_for(session_id.clone(), "Network", true)
+                .await
         {
-            state.count = 0;
+            state.counts.remove(&session_id);
             guard.armed = false;
             drop(state);
-            let _ = guard.cdp.disable_network().await;
+            let _ = guard
+                .cdp
+                .set_domain_enabled_for(session_id, "Network", false)
+                .await;
             return Err(error.into());
         }
         drop(state);
@@ -3070,8 +3114,9 @@ impl NetworkDomainGuard {
 
     async fn disable(&mut self) -> BrowserResult<()> {
         let state = self.leases.lock().await;
+        release_network_lease_locked(&self.cdp, &self.session_id, state).await?;
         self.armed = false;
-        release_network_lease_locked(&self.cdp, state).await
+        Ok(())
     }
 }
 
@@ -3082,16 +3127,26 @@ impl DiagnosticDomainGuard {
         leases: Arc<Mutex<DiagnosticLeaseState>>,
     ) -> BrowserResult<Self> {
         let network = NetworkDomainGuard::acquire(cdp.clone(), network_leases).await?;
+        let session_id = cdp.current_session_id();
         let mut state = leases.lock().await;
-        state.count += 1;
-        if state.count == 1 {
-            if let Err(error) = cdp.enable_runtime().await {
-                state.count = 0;
+        let count = state.counts.entry(session_id.clone()).or_default();
+        *count += 1;
+        if *count == 1 {
+            if let Err(error) = cdp
+                .set_domain_enabled_for(session_id.clone(), "Runtime", true)
+                .await
+            {
+                state.counts.remove(&session_id);
                 return Err(error.into());
             }
-            if let Err(error) = cdp.enable_log().await {
-                state.count = 0;
-                let _ = cdp.disable_runtime().await;
+            if let Err(error) = cdp
+                .set_domain_enabled_for(session_id.clone(), "Log", true)
+                .await
+            {
+                state.counts.remove(&session_id);
+                let _ = cdp
+                    .set_domain_enabled_for(session_id.clone(), "Runtime", false)
+                    .await;
                 return Err(error.into());
             }
         }
@@ -3100,20 +3155,28 @@ impl DiagnosticDomainGuard {
             cdp,
             network,
             leases,
+            session_id,
             armed: true,
         })
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
-        self.armed = false;
         let mut state = self.leases.lock().await;
-        state.count = state.count.saturating_sub(1);
-        if state.count == 0 {
-            self.cdp.disable_log().await?;
-            self.cdp.disable_runtime().await?;
+        let count = state.counts.entry(self.session_id.clone()).or_default();
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            state.counts.remove(&self.session_id);
+            self.cdp
+                .set_domain_enabled_for(self.session_id.clone(), "Log", false)
+                .await?;
+            self.cdp
+                .set_domain_enabled_for(self.session_id.clone(), "Runtime", false)
+                .await?;
         }
         drop(state);
-        self.network.disable().await
+        self.network.disable().await?;
+        self.armed = false;
+        Ok(())
     }
 }
 
@@ -3124,13 +3187,46 @@ impl Drop for DiagnosticDomainGuard {
         }
         let cdp = self.cdp.clone();
         let leases = Arc::clone(&self.leases);
+        let session_id = self.session_id.clone();
         tokio::spawn(async move {
             let mut state = leases.lock().await;
-            state.count = state.count.saturating_sub(1);
-            if state.count == 0 {
-                let _ = cdp.disable_log().await;
-                let _ = cdp.disable_runtime().await;
+            let count = state.counts.entry(session_id.clone()).or_default();
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                state.counts.remove(&session_id);
+                let _ = cdp
+                    .set_domain_enabled_for(session_id.clone(), "Log", false)
+                    .await;
+                let _ = cdp
+                    .set_domain_enabled_for(session_id, "Runtime", false)
+                    .await;
             }
+        });
+    }
+}
+
+impl DownloadBehaviorGuard {
+    async fn acquire(cdp: CdpClient, destination: &Path) -> BrowserResult<Self> {
+        cdp.set_download_behavior("allow", Some(destination), true)
+            .await?;
+        Ok(Self { cdp, armed: true })
+    }
+
+    async fn disable(&mut self) -> BrowserResult<()> {
+        self.cdp.set_download_behavior("deny", None, false).await?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for DownloadBehaviorGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cdp = self.cdp.clone();
+        tokio::spawn(async move {
+            let _ = cdp.set_download_behavior("deny", None, false).await;
         });
     }
 }
@@ -3142,8 +3238,9 @@ impl Drop for NetworkDomainGuard {
         }
         let cdp = self.cdp.clone();
         let leases = Arc::clone(&self.leases);
+        let session_id = self.session_id.clone();
         tokio::spawn(async move {
-            let _ = release_network_lease(&cdp, &leases).await;
+            let _ = release_network_lease(&cdp, &leases, &session_id).await;
         });
     }
 }
@@ -3151,17 +3248,22 @@ impl Drop for NetworkDomainGuard {
 async fn release_network_lease(
     cdp: &CdpClient,
     leases: &Mutex<NetworkLeaseState>,
+    session_id: &Option<String>,
 ) -> BrowserResult<()> {
-    release_network_lease_locked(cdp, leases.lock().await).await
+    release_network_lease_locked(cdp, session_id, leases.lock().await).await
 }
 
 async fn release_network_lease_locked(
     cdp: &CdpClient,
+    session_id: &Option<String>,
     mut state: tokio::sync::MutexGuard<'_, NetworkLeaseState>,
 ) -> BrowserResult<()> {
-    state.count = state.count.saturating_sub(1);
-    if state.count == 0 {
-        cdp.disable_network().await?;
+    let count = state.counts.entry(session_id.clone()).or_default();
+    *count = count.saturating_sub(1);
+    if *count == 0 {
+        state.counts.remove(session_id);
+        cdp.set_domain_enabled_for(session_id.clone(), "Network", false)
+            .await?;
     }
     Ok(())
 }
@@ -3895,6 +3997,7 @@ mod tests {
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
+            download_scope: Arc::new(Mutex::new(())),
             topology: Arc::new(Mutex::new(TopologyRegistry {
                 active_target_id: Some("test-target".to_string()),
                 active_frame_id: Some("test-frame".to_string()),
@@ -4412,6 +4515,8 @@ mod tests {
             "https://user:pass@example.test/path?token=secret&empty=#fragment",
         );
         assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("user"));
+        assert!(!redacted.contains("pass"));
         assert!(!redacted.contains("fragment"));
         assert!(redacted.contains("token=%5Bredacted%5D"));
 
@@ -4452,6 +4557,10 @@ mod tests {
         assert!(!serialized.contains("never-retain-this"));
         assert!(!serialized.contains("Authorization"));
         assert_eq!(network[0].method, "POST");
+        assert_eq!(
+            redact_diagnostic_text("Authorization: Bearer top-secret"),
+            "[redacted sensitive console entry]"
+        );
     }
 
     #[test]

@@ -272,6 +272,21 @@ impl CdpClient {
         self.payload_events.subscribe()
     }
 
+    pub fn current_session_id(&self) -> Option<String> {
+        self.current_route().session_id
+    }
+
+    pub async fn set_domain_enabled_for(
+        &self,
+        session_id: Option<String>,
+        domain: &str,
+        enabled: bool,
+    ) -> Result<(), CdpError> {
+        let method = format!("{domain}.{}", if enabled { "enable" } else { "disable" });
+        self.send_routed(&method, None, session_id).await?;
+        Ok(())
+    }
+
     /// Send a CDP command and wait for the response.
     pub async fn send(&self, method: &str, params: Option<Value>) -> Result<Value, CdpError> {
         let session_id = self.current_route().session_id;

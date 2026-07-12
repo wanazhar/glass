@@ -170,6 +170,26 @@ Downloads require an explicit scoped destination and return lifecycle evidence
 from will-begin through progress or completion; Glass never captures response
 bodies as diagnostic evidence.
 
+## Visual evidence
+
+Visual capture is always explicit. A request names viewport, full-page, or one
+resolved element; PNG, JPEG, and WebP formats; scale; optional CSS-pixel clip;
+and lossy quality where applicable. Results report encoded byte length, image
+dimensions, device scale factor, selected target/frame identity, and the exact
+effective clip. No image bytes enter observation or session caches.
+
+Full-page capture snapshots layout metrics once and captures that bounded
+content extent without permanently resizing the user viewport. Element capture
+uses the same actionable backend-node resolution and clips to its current box.
+Comparison is optional and bounded: Glass reports dimensions, changed-pixel
+count, ratio, and one bounded difference box without retaining either input.
+
+Screencast is a distinct opt-in scope with a dedicated capacity-two frame
+channel. Every received frame is acknowledged exactly once, overwritten or
+lagged frames increment explicit counters, and dropping the scope stops casting
+and drains acknowledgements. Streaming never uses the generic CDP broadcast
+payload path for image ownership.
+
 ## Extension rule
 
 Frontends call `BrowserSession`; they do not issue raw CDP. CDP domain adapters

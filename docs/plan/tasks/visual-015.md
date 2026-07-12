@@ -1,7 +1,7 @@
 ---
 id: visual-015
 scope: visual capture and verification
-status: pending
+status: in-progress
 depends-on: [topology-011, observe-013]
 ---
 

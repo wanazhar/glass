@@ -944,10 +944,35 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(pending_timeout.downcast_ref::<WaitTimeout>().is_some());
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
 
+    session
+        .evaluate(
+            "(() => { const host=document.createElement('div'); host.attachShadow({mode:'open'}).innerHTML='<button>Shadow action</button>'; document.body.append(host, document.createElement('canvas')); const frame=document.createElement('iframe'); frame.srcdoc='<p>child frame</p>'; document.body.append(frame); return true; })()",
+        )
+        .await
+        .unwrap();
     let context = session.observe().await.unwrap();
     assert!(context.dom.is_none());
     assert!(!context.accessibility.interactive.is_empty());
     assert!(context.screenshot.is_none());
+    assert!(context.consistency.consistent);
+    assert_eq!(context.boundaries.shadow_roots, 1);
+    assert_eq!(context.boundaries.child_frames, 1);
+    assert_eq!(context.boundaries.canvases, 1);
+    assert!(
+        context
+            .incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::ShadowBoundary)
+    );
+    assert!(
+        context
+            .incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::FrameBoundary)
+    );
+    assert!(
+        context
+            .incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::Canvas)
+    );
     assert!(session.observe_with_dom().await.unwrap().dom.is_some());
 
     let save_reference = context
@@ -978,6 +1003,45 @@ async fn browser_session_drives_a_local_fixture() {
         stale_error.downcast_ref::<TargetError>().unwrap().kind,
         TargetErrorKind::StaleReference
     );
+
+    session
+        .evaluate("globalThis.glassMutationTimer=setInterval(() => document.body.dataset.race=String(performance.now()), 0); true")
+        .await
+        .unwrap();
+    let raced = session.observe().await.unwrap();
+    assert!(!raced.consistency.consistent);
+    assert_eq!(raced.consistency.attempts, 2);
+    assert!(
+        raced
+            .incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::MutationRace)
+    );
+    session
+        .evaluate(
+            "clearInterval(globalThis.glassMutationTimer); delete document.body.dataset.race; true",
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let stable = session.observe().await.unwrap();
+    assert!(stable.consistency.consistent);
+
+    let rss_before_huge = process_rss_bytes();
+    session
+        .evaluate("document.querySelector('#result').textContent='界'.repeat(200000)")
+        .await
+        .unwrap();
+    let huge = session.observe().await.unwrap();
+    let huge_json = serde_json::to_vec(&huge).unwrap();
+    assert!(
+        huge.incomplete
+            .contains(&glass::browser::session::ObservationIncompleteReason::VisibleText)
+    );
+    assert!(huge.text.len() <= glass::browser::session::COMPACT_TEXT_MAX_BYTES);
+    assert!(huge_json.len() < 32 * 1024);
+    if let (Some(before), Some(after)) = (rss_before_huge, process_rss_bytes()) {
+        assert!(after.saturating_sub(before) < 64 * 1024 * 1024);
+    }
 
     session
         .evaluate("document.querySelector('#result').textContent = 'Changed'")
@@ -1365,6 +1429,18 @@ async fn browser_session_drives_a_local_fixture() {
     fast_session.close().await.unwrap();
 
     fixture_server.close().await;
+}
+
+fn process_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    Some(kib * 1024)
 }
 
 #[tokio::test]

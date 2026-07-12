@@ -705,6 +705,14 @@ impl CdpClient {
     /// Evaluate JavaScript in the page.
     pub async fn evaluate(&self, expression: &str) -> Result<Value, CdpError> {
         let context_id = self.current_route().context_id;
+        self.evaluate_in_context(expression, context_id).await
+    }
+
+    pub async fn evaluate_in_context(
+        &self,
+        expression: &str,
+        context_id: Option<i64>,
+    ) -> Result<Value, CdpError> {
         let mut params = serde_json::json!({
             "expression": expression,
             "returnByValue": true,

@@ -1037,7 +1037,15 @@ async fn browser_session_drives_a_local_fixture() {
         .wait_for_download(&download_dir, std::time::Duration::from_secs(5))
         .await
         .unwrap();
-    assert!(matches!(download.state.as_str(), "completed" | "canceled"));
+    let confined_worktree = std::env::current_dir()
+        .unwrap()
+        .components()
+        .any(|component| component.as_os_str() == ".worktrees");
+    if confined_worktree {
+        assert!(matches!(download.state.as_str(), "completed" | "canceled"));
+    } else {
+        assert_eq!(download.state, "completed");
+    }
     assert_eq!(download.suggested_filename, "glass.txt");
     if download.state == "completed" {
         assert_eq!(download.received_bytes, 14);

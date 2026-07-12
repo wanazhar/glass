@@ -1,7 +1,7 @@
 ---
 id: diagnostic-014
 scope: scoped browser diagnostics
-status: in-progress
+status: done
 depends-on: [wait-010, topology-011]
 ---
 
@@ -39,3 +39,23 @@ keeping expensive CDP domains disabled outside explicit scopes.
 - Real console error, failed request, redirect, auth-header redaction, dialog,
   download, lag, and lease-cleanup tests.
 - Default observation has no Network-domain or diagnostic-retention regression.
+
+## Completion
+
+- Added explicit CLI, MCP, and library diagnostic scopes with route-keyed
+  Runtime, Log, and Network leases, immutable session filtering, 30-second
+  deadlines, bounded fields/vectors, and explicit dropped-event counts.
+- URL credentials and query values, sensitive header names and all header
+  values, request bodies, and Runtime console argument values are omitted or
+  redacted. Browser Log text receives conservative marker and URL redaction.
+- Added accept/dismiss dialog primitives and a serialized browser-global
+  download lifecycle with authorized destinations, frame correlation, bounded
+  outcomes, and deny-on-drop cleanup.
+- Deterministic cancellation coverage proves all leased domains disable when a
+  diagnostic future is dropped. Real Chrome covers console errors, failed
+  requests, redirects, auth/query redaction, both dialog outcomes, and download
+  terminal evidence; default observation continues to enable only Page and DOM.
+
+## Commit
+
+`feat: add scoped browser diagnostics`

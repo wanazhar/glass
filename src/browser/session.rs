@@ -379,7 +379,18 @@ pub struct PageContext {
 pub enum ActionKind {
     Click,
     DoubleClick,
+    Hover,
+    Drag,
     Type,
+    KeyDown,
+    KeyUp,
+    KeyPress,
+    Shortcut,
+    Clear,
+    Check,
+    Uncheck,
+    Select,
+    Upload,
     Scroll,
 }
 
@@ -403,6 +414,8 @@ pub struct ActionOutcome {
     pub revision: u64,
     pub target_id: String,
     pub frame_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -469,6 +482,7 @@ pub struct BrowserSession {
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     topology: Arc<Mutex<TopologyRegistry>>,
+    upload_root: PathBuf,
 }
 
 struct CachedObservation {
@@ -728,6 +742,7 @@ impl BrowserSession {
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             topology,
+            upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1383,6 +1398,7 @@ impl BrowserSession {
                     revision: self.invalidate_observation(),
                     target_id,
                     frame_id,
+                    evidence: None,
                 })
             })
             .await
@@ -1656,6 +1672,241 @@ impl BrowserSession {
         self.pointer_click(target, true).await
     }
 
+    pub async fn hover(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await?;
+                let remote = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id,
+                };
+                let local = self.verified_action_point(&remote.object_id).await?;
+                let point = self.target_viewport_point(local).await?;
+                self.move_pointer(point).await?;
+                self.action_outcome(ActionKind::Hover, Some(element), None)
+                    .await
+            })
+            .await
+    }
+
+    pub async fn drag(&self, source: &str, destination: &str) -> BrowserResult<ActionOutcome> {
+        self.cdp
+            .with_current_route(async {
+                let source = self.resolve_element(source).await?;
+                let source_object = self
+                    .cdp
+                    .resolve_node_object(source.node_id, source.backend_dom_node_id)
+                    .await?;
+                let source_guard = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id: source_object,
+                };
+                let destination = self.resolve_element(destination).await?;
+                let destination_object = self
+                    .cdp
+                    .resolve_node_object(destination.node_id, destination.backend_dom_node_id)
+                    .await?;
+                let destination_guard = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id: destination_object,
+                };
+                let source_local = self.verified_action_point(&source_guard.object_id).await?;
+                let destination_local = self
+                    .verified_action_point(&destination_guard.object_id)
+                    .await?;
+                let source_point = self.target_viewport_point(source_local).await?;
+                let destination_point = self.target_viewport_point(destination_local).await?;
+                self.move_pointer(source_point).await?;
+                let verified_source = self.verified_action_point(&source_guard.object_id).await?;
+                if (verified_source.x - source_local.x).abs() > 1.0
+                    || (verified_source.y - source_local.y).abs() > 1.0
+                {
+                    return Err(TargetError {
+                        kind: TargetErrorKind::NotActionable,
+                        reason: Some(TargetActionabilityReason::GeometryChanged),
+                        candidates: Vec::new(),
+                    }
+                    .into());
+                }
+                self.cdp
+                    .dispatch_mouse_event(
+                        "mousePressed",
+                        source_point.x,
+                        source_point.y,
+                        Some("left"),
+                        Some(1),
+                    )
+                    .await?;
+                let mut pressed = PressedButtonGuard {
+                    cdp: self.cdp.clone(),
+                    point: source_point,
+                    click_count: 1,
+                    armed: true,
+                };
+                let drag_path = interaction_path(
+                    self.interaction_mode,
+                    &self.mouse,
+                    source_point,
+                    destination_point,
+                );
+                for window in drag_path.windows(2) {
+                    let point = window[1];
+                    if self.interaction_mode == InteractionMode::Human {
+                        tokio::time::sleep(self.mouse.move_delay(window[0], point)).await;
+                    }
+                    self.cdp
+                        .dispatch_mouse_event("mouseMoved", point.x, point.y, Some("left"), Some(1))
+                        .await?;
+                }
+                let verified_destination = self
+                    .verified_action_point(&destination_guard.object_id)
+                    .await?;
+                if (verified_destination.x - destination_local.x).abs() > 1.0
+                    || (verified_destination.y - destination_local.y).abs() > 1.0
+                {
+                    return Err(TargetError {
+                        kind: TargetErrorKind::NotActionable,
+                        reason: Some(TargetActionabilityReason::GeometryChanged),
+                        candidates: Vec::new(),
+                    }
+                    .into());
+                }
+                self.cdp
+                    .dispatch_mouse_event(
+                        "mouseReleased",
+                        destination_point.x,
+                        destination_point.y,
+                        Some("left"),
+                        Some(1),
+                    )
+                    .await?;
+                pressed.armed = false;
+                *self.pointer.lock().await = Some(destination_point);
+                self.action_outcome(ActionKind::Drag, Some(source), None)
+                    .await
+            })
+            .await
+    }
+
+    pub async fn key_down(&self, key: &str) -> BrowserResult<ActionOutcome> {
+        self.keyboard_action(ActionKind::KeyDown, key, "rawKeyDown", 0)
+            .await
+    }
+
+    pub async fn key_up(&self, key: &str) -> BrowserResult<ActionOutcome> {
+        self.keyboard_action(ActionKind::KeyUp, key, "keyUp", 0)
+            .await
+    }
+
+    pub async fn key_press(&self, key: &str) -> BrowserResult<ActionOutcome> {
+        validate_key(key)?;
+        self.cdp
+            .with_current_route(async {
+                let code = key_code(key);
+                self.cdp
+                    .dispatch_key_event_with_modifiers("rawKeyDown", key, &code, "", 0)
+                    .await?;
+                if key.chars().count() == 1 {
+                    self.cdp
+                        .dispatch_key_event_with_modifiers("char", key, &code, key, 0)
+                        .await?;
+                }
+                self.cdp
+                    .dispatch_key_event_with_modifiers("keyUp", key, &code, "", 0)
+                    .await?;
+                self.action_outcome(ActionKind::KeyPress, None, None).await
+            })
+            .await
+    }
+
+    pub async fn shortcut(&self, shortcut: &str) -> BrowserResult<ActionOutcome> {
+        let (modifiers, key) = parse_shortcut(shortcut)?;
+        self.cdp
+            .with_current_route(async {
+                let code = key_code(&key);
+                self.cdp
+                    .dispatch_key_event_with_modifiers("rawKeyDown", &key, &code, "", modifiers)
+                    .await?;
+                self.cdp
+                    .dispatch_key_event_with_modifiers("keyUp", &key, &code, "", modifiers)
+                    .await?;
+                self.action_outcome(ActionKind::Shortcut, None, None).await
+            })
+            .await
+    }
+
+    pub async fn clear(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
+                let remote = RemoteObjectGuard { cdp: self.cdp.clone(), object_id };
+                let editable = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable}").await?)?;
+                if editable.as_bool() != Some(true) { return Err("clear target is not editable".into()); }
+                let clicked = self.click(target).await?;
+                self.shortcut(if cfg!(target_os = "macos") {
+                    "Meta+A"
+                } else {
+                    "Control+A"
+                })
+                .await?;
+                self.key_press("Backspace").await?;
+                let empty = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement ? this.value === '' : this.textContent === ''}").await?)?;
+                if empty.as_bool() != Some(true) { return Err("clear target did not become empty".into()); }
+                self.action_outcome_from_target(ActionKind::Clear, clicked.target)
+                    .await
+            })
+            .await
+    }
+
+    pub async fn check(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.set_checked(target, true).await
+    }
+
+    pub async fn uncheck(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.set_checked(target, false).await
+    }
+
+    pub async fn select_option(&self, target: &str, value: &str) -> BrowserResult<ActionOutcome> {
+        if value.is_empty() || value.len() > 4096 {
+            return Err("select value must be 1..=4096 bytes".into());
+        }
+        let value_json = serde_json::to_string(value)?;
+        self.form_object_action(target, ActionKind::Select, &format!(r#"function() {{ if (!(this instanceof HTMLSelectElement)) return {{ok:false,reason:'not_select'}}; const option = Array.from(this.options).find(option => option.value === {value_json}); if (!option) return {{ok:false,reason:'option_not_found'}}; this.value = option.value; this.dispatchEvent(new Event('input',{{bubbles:true}})); this.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:this.value === option.value}}; }}"#)).await
+    }
+
+    pub async fn upload_files(
+        &self,
+        target: &str,
+        paths: &[PathBuf],
+    ) -> BrowserResult<ActionOutcome> {
+        self.cdp.with_current_route(async {
+            if paths.is_empty() || paths.len() > 16 { return Err("upload requires 1..=16 files".into()); }
+            let mut files = Vec::with_capacity(paths.len());
+            for path in paths {
+                let canonical = std::fs::canonicalize(path)?;
+                if !canonical.is_file() { return Err("upload path must be a regular file".into()); }
+                if !canonical.starts_with(&self.upload_root) { return Err("upload path is outside the allowed workspace root".into()); }
+                files.push(canonical.to_string_lossy().into_owned());
+            }
+            let element = self.resolve_element(target).await?;
+            let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
+            let remote = RemoteObjectGuard { cdp: self.cdp.clone(), object_id };
+            self.verified_action_point(&remote.object_id).await?;
+            let input = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return {ok:this instanceof HTMLInputElement && this.type === 'file'}}").await?)?;
+            if input["ok"].as_bool() != Some(true) { return Err("upload target is not a file input".into()); }
+            if element.node_id.is_none() && element.backend_dom_node_id.is_none() { return Err("file input target has no DOM node ID".into()); }
+            self.cdp.set_file_input_files(element.node_id, element.backend_dom_node_id, &files).await?;
+            let verified = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this.files.length}").await?)?;
+            if verified.as_u64() != Some(files.len() as u64) { return Err("file input did not retain the requested file count".into()); }
+            self.action_outcome(ActionKind::Upload, Some(element), Some(serde_json::json!({"file_count": files.len()}))).await
+        }).await
+    }
+
     async fn pointer_click(
         &self,
         target: &str,
@@ -1703,6 +1954,7 @@ impl BrowserSession {
                     revision: self.invalidate_observation(),
                     target_id,
                     frame_id,
+                    evidence: None,
                 })
             })
             .await
@@ -1802,9 +2054,131 @@ impl BrowserSession {
                     revision: self.invalidate_observation(),
                     target_id,
                     frame_id,
+                    evidence: None,
                 })
             })
             .await
+    }
+
+    async fn move_pointer(&self, destination: Point) -> BrowserResult<()> {
+        let mut pointer = self.pointer.lock().await;
+        let start = pointer.unwrap_or(destination);
+        for window in
+            interaction_path(self.interaction_mode, &self.mouse, start, destination).windows(2)
+        {
+            if self.interaction_mode == InteractionMode::Human {
+                tokio::time::sleep(self.mouse.move_delay(window[0], window[1])).await;
+            }
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", window[1].x, window[1].y, None, None)
+                .await?;
+        }
+        if start == destination {
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", destination.x, destination.y, None, None)
+                .await?;
+        }
+        *pointer = Some(destination);
+        Ok(())
+    }
+
+    async fn keyboard_action(
+        &self,
+        action: ActionKind,
+        key: &str,
+        event_type: &str,
+        modifiers: i64,
+    ) -> BrowserResult<ActionOutcome> {
+        validate_key(key)?;
+        self.cdp
+            .with_current_route(async {
+                self.cdp
+                    .dispatch_key_event_with_modifiers(
+                        event_type,
+                        key,
+                        &key_code(key),
+                        "",
+                        modifiers,
+                    )
+                    .await?;
+                self.action_outcome(action, None, None).await
+            })
+            .await
+    }
+
+    async fn set_checked(&self, target: &str, checked: bool) -> BrowserResult<ActionOutcome> {
+        let action = if checked {
+            ActionKind::Check
+        } else {
+            ActionKind::Uncheck
+        };
+        let script = format!(
+            r#"function() {{ if (!(this instanceof HTMLInputElement) || !['checkbox','radio'].includes(this.type)) return {{ok:false,reason:'not_checkable'}}; if (this.checked !== {checked}) this.click(); return {{ok:this.checked === {checked}}}; }}"#
+        );
+        self.form_object_action(target, action, &script).await
+    }
+
+    async fn form_object_action(
+        &self,
+        target: &str,
+        action: ActionKind,
+        function: &str,
+    ) -> BrowserResult<ActionOutcome> {
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await?;
+                let remote = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id,
+                };
+                self.verified_action_point(&remote.object_id).await?;
+                let result = self.cdp.call_on_object(&remote.object_id, function).await?;
+                let value = runtime_value(&result)?;
+                if value["ok"].as_bool() != Some(true) {
+                    return Err(format!(
+                        "form action failed: {}",
+                        value["reason"].as_str().unwrap_or("verification_failed")
+                    )
+                    .into());
+                }
+                self.action_outcome(action, Some(element), None).await
+            })
+            .await
+    }
+
+    async fn action_outcome(
+        &self,
+        action: ActionKind,
+        element: Option<ResolvedElement>,
+        evidence: Option<Value>,
+    ) -> BrowserResult<ActionOutcome> {
+        let target = element.map(|element| ActionTarget {
+            label: element.label,
+            reference: element.reference,
+        });
+        let mut outcome = self.action_outcome_from_target(action, target).await?;
+        outcome.evidence = evidence;
+        Ok(outcome)
+    }
+
+    async fn action_outcome_from_target(
+        &self,
+        action: ActionKind,
+        target: Option<ActionTarget>,
+    ) -> BrowserResult<ActionOutcome> {
+        let (target_id, frame_id) = self.route_identity().await?;
+        Ok(ActionOutcome {
+            action,
+            target,
+            revision: self.invalidate_observation(),
+            target_id,
+            frame_id,
+            evidence: None,
+        })
     }
 
     async fn viewport_center(&self) -> BrowserResult<Point> {
@@ -2048,6 +2422,53 @@ fn interaction_path(
         InteractionMode::Human => mouse.generate_path(start, end),
         InteractionMode::Fast => vec![start, end],
     }
+}
+
+fn validate_key(key: &str) -> BrowserResult<()> {
+    if key.is_empty() || key.len() > 64 || key.chars().any(char::is_control) {
+        return Err("key must be 1..=64 printable UTF-8 bytes".into());
+    }
+    Ok(())
+}
+
+fn key_code(key: &str) -> String {
+    match key {
+        " " => "Space".to_string(),
+        "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Tab" | "Escape"
+        | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" => key.to_string(),
+        _ if key.chars().count() == 1 => {
+            let character = key.chars().next().unwrap();
+            if character.is_ascii_alphabetic() {
+                format!("Key{}", character.to_ascii_uppercase())
+            } else if character.is_ascii_digit() {
+                format!("Digit{character}")
+            } else {
+                key.to_string()
+            }
+        }
+        _ => key.to_string(),
+    }
+}
+
+fn parse_shortcut(value: &str) -> BrowserResult<(i64, String)> {
+    if value.is_empty() || value.len() > 256 {
+        return Err("shortcut must be 1..=256 bytes".into());
+    }
+    let mut modifiers = 0;
+    let mut key = None;
+    for part in value.split('+') {
+        match part.to_ascii_lowercase().as_str() {
+            "alt" => modifiers |= 1,
+            "control" | "ctrl" => modifiers |= 2,
+            "meta" | "cmd" | "command" => modifiers |= 4,
+            "shift" => modifiers |= 8,
+            _ if key.is_none() => key = Some(part.to_string()),
+            _ => return Err("shortcut must contain exactly one non-modifier key".into()),
+        }
+    }
+    let key = key.ok_or("shortcut requires a non-modifier key")?;
+    validate_key(&key)?;
+    Ok((modifiers, key))
 }
 
 fn context_event_invalidates_observation(method: &str) -> bool {
@@ -2891,6 +3312,7 @@ mod tests {
                 active_frame_id: Some("test-frame".to_string()),
                 ..TopologyRegistry::default()
             })),
+            upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
         }
     }
 
@@ -3178,6 +3600,17 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_shortcuts_are_bounded_and_map_modifiers() {
+        assert_eq!(
+            parse_shortcut("Control+Shift+A").unwrap(),
+            (10, "A".to_string())
+        );
+        assert_eq!(key_code("a"), "KeyA");
+        assert!(parse_shortcut("Control+A+B").is_err());
+        assert!(validate_key("").is_err());
+    }
+
+    #[test]
     fn invalidates_context_only_for_page_or_dom_mutations() {
         assert!(context_event_invalidates_observation(
             "DOM.childNodeInserted"
@@ -3303,6 +3736,7 @@ mod tests {
             revision: 10,
             target_id: "target-1".to_string(),
             frame_id: "frame-1".to_string(),
+            evidence: None,
         };
 
         let value = serde_json::to_value(outcome).unwrap();

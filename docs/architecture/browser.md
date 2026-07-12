@@ -62,9 +62,27 @@ Fast actions avoid implicit waits. A click resolves a target, asks Chrome to
 scroll it into view only when required, dispatches the configured pointer mode,
 invalidates the snapshot revision, and returns a serializable action outcome
 with action kind, target, and resulting revision. Navigation or state waiting
-is an explicit operation. Double-click uses the same contract; drag remains an
-internal mouse-engine primitive until it has an equally reliable target/viewport
-contract.
+is an explicit operation. Double-click uses the same contract. Hover moves
+without button events. Drag resolves and revalidates both endpoints, presses
+only after source validation, revalidates the destination before release, and
+uses the configured human or fast motion path. Cancellation after press keeps
+the existing best-effort release guard.
+
+Keyboard primitives use `Input.dispatchKeyEvent`: key-down and key-up are
+independent operations, key press emits down/optional character/up ordering,
+and shortcuts carry explicit modifier bits. Key names, shortcut length, and
+text are bounded before CDP. `type` remains efficient text insertion;
+contenteditable and browser-shortcut workflows use keyboard primitives.
+
+`clear` focuses a unique actionable target and sends select-all plus Backspace.
+Check/uncheck are idempotent only after verifying checkbox/radio state; select
+matches one option value exactly and verifies the result. File upload accepts
+a bounded list of canonical regular files, resolves one file input, uses
+`DOM.setFileInputFiles`, and returns only file count—never paths or contents.
+Paths are rejected unless they remain under the canonical process workspace
+root; later safety profiles may narrow that boundary but cannot widen it
+implicitly. Form operations revalidate immediately before the side effect and
+verify post-state.
 
 Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode keeps direct CDP input events and does not sleep between movement samples.
 

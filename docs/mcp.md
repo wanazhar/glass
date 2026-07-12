@@ -82,7 +82,15 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `navigate` | `url` | Navigate and return page state. |
 | `click` | `target` or `selector` | Click one element. |
 | `doubleClick` | `target` or `selector` | Double-click one element. |
+| `hover` | `target` | Move over one element. |
+| `drag` | `source`, `destination` | Drag between two verified elements. |
 | `type` | `text`, optional `target` | Focus optionally, then insert text. |
+| `key`, `keyDown`, `keyUp` | `key` | Dispatch browser-faithful keyboard events. |
+| `shortcut` | `shortcut` | Dispatch an explicit modifier shortcut. |
+| `clear` | `target` | Clear one editable control. |
+| `check`, `uncheck` | `target` | Verify checkbox/radio state. |
+| `select` | `target`, `value` | Select one exact option value. |
+| `upload` | `target`, `files` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
 | `observe` | optional `includeDom`, `includeScreenshot` | Return structured page context. |
 | `getDOM` | none | Return the full DOM tree. |

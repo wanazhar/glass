@@ -93,8 +93,28 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::DoubleClick { target } => {
             print_json(&session.double_click(target).await?)?;
         }
+        Commands::Hover { target } => print_json(&session.hover(target).await?)?,
+        Commands::Drag {
+            source,
+            destination,
+        } => {
+            print_json(&session.drag(source, destination).await?)?;
+        }
         Commands::Type { text, target } => {
             print_json(&session.type_text(text, target.as_deref()).await?)?;
+        }
+        Commands::Key { key } => print_json(&session.key_press(key).await?)?,
+        Commands::KeyDown { key } => print_json(&session.key_down(key).await?)?,
+        Commands::KeyUp { key } => print_json(&session.key_up(key).await?)?,
+        Commands::Shortcut { shortcut } => print_json(&session.shortcut(shortcut).await?)?,
+        Commands::Clear { target } => print_json(&session.clear(target).await?)?,
+        Commands::Check { target } => print_json(&session.check(target).await?)?,
+        Commands::Uncheck { target } => print_json(&session.uncheck(target).await?)?,
+        Commands::Select { target, value } => {
+            print_json(&session.select_option(target, value).await?)?;
+        }
+        Commands::Upload { target, files } => {
+            print_json(&session.upload_files(target, files).await?)?;
         }
         Commands::Screenshot { output } => {
             std::fs::write(output, session.screenshot_png().await?)?;

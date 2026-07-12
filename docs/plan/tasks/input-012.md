@@ -1,7 +1,7 @@
 ---
 id: input-012
 scope: complete browser input primitives
-status: pending
+status: in-progress
 depends-on: [topology-011, target-009]
 ---
 

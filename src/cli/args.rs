@@ -87,11 +87,48 @@ pub enum Commands {
     /// Double-click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     DoubleClick { target: String },
 
+    /// Move the pointer over an element without clicking.
+    Hover { target: String },
+
+    /// Drag one element to another uniquely resolved element.
+    Drag { source: String, destination: String },
+
     /// Type text into the focused element, optionally clicking a target first.
     Type {
         text: String,
         #[arg(long)]
         target: Option<String>,
+    },
+
+    /// Dispatch one complete key press.
+    Key { key: String },
+
+    /// Dispatch only a key-down event.
+    KeyDown { key: String },
+
+    /// Dispatch only a key-up event.
+    KeyUp { key: String },
+
+    /// Dispatch a modifier shortcut such as Control+A.
+    Shortcut { shortcut: String },
+
+    /// Clear an editable element.
+    Clear { target: String },
+
+    /// Ensure a checkbox or radio is checked.
+    Check { target: String },
+
+    /// Ensure a checkbox is unchecked.
+    Uncheck { target: String },
+
+    /// Select one exact option value.
+    Select { target: String, value: String },
+
+    /// Set a bounded list of regular files on one file input.
+    Upload {
+        target: String,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
     },
 
     /// Capture a PNG screenshot.
@@ -262,6 +299,22 @@ mod tests {
                 .unwrap()
                 .command,
             Some(Commands::SelectFrame { id }) if id == "frame-1"
+        ));
+    }
+
+    #[test]
+    fn complete_input_commands_are_explicit() {
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "drag", "css=#from", "css=#to"])
+                .unwrap()
+                .command,
+            Some(Commands::Drag { source, destination }) if source == "css=#from" && destination == "css=#to"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "shortcut", "Control+A"])
+                .unwrap()
+                .command,
+            Some(Commands::Shortcut { shortcut }) if shortcut == "Control+A"
         ));
     }
 

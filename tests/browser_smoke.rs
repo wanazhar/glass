@@ -973,6 +973,58 @@ async fn browser_session_drives_a_local_fixture() {
             .incomplete
             .contains(&glass::browser::session::ObservationIncompleteReason::Canvas)
     );
+
+    session
+        .evaluate(
+            "setTimeout(() => { console.error('diagnostic-boom'); fetch('http://127.0.0.1:1/fail?token=secret').catch(() => {}); }, 50); true",
+        )
+        .await
+        .unwrap();
+    let diagnostics = session
+        .diagnostics(std::time::Duration::from_millis(300))
+        .await
+        .unwrap();
+    assert!(
+        diagnostics
+            .console
+            .iter()
+            .any(|entry| entry.text.contains("diagnostic-boom"))
+    );
+    assert!(
+        diagnostics
+            .network
+            .iter()
+            .any(|entry| entry.failure.is_some())
+    );
+    let diagnostic_json = serde_json::to_string(&diagnostics).unwrap();
+    assert!(!diagnostic_json.contains("secret"));
+
+    session
+        .evaluate("setTimeout(() => alert('bounded dialog'), 20); true")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    session.dismiss_dialog().await.unwrap();
+
+    let download_dir = std::env::current_dir()
+        .unwrap()
+        .join(format!("glass-download-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&download_dir);
+    std::fs::create_dir_all(&download_dir).unwrap();
+    session
+        .evaluate("setTimeout(() => { const a=document.createElement('a'); a.href='data:text/plain,glass-download'; a.download='glass.txt'; a.click(); }, 50); true")
+        .await
+        .unwrap();
+    let download = session
+        .wait_for_download(&download_dir, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(matches!(download.state.as_str(), "completed" | "canceled"));
+    assert_eq!(download.suggested_filename, "glass.txt");
+    if download.state == "completed" {
+        assert_eq!(download.received_bytes, 14);
+    }
+    let _ = std::fs::remove_dir_all(download_dir);
     assert!(session.observe_with_dom().await.unwrap().dom.is_some());
 
     let save_reference = context

@@ -190,6 +190,15 @@ enum ToolInvocation<'a> {
         condition: &'a str,
         timeout_ms: u64,
     },
+    Diagnostics {
+        duration_ms: u64,
+    },
+    AcceptDialog,
+    DismissDialog,
+    Download {
+        destination: std::path::PathBuf,
+        timeout_ms: u64,
+    },
     ListTargets,
     CreateTarget {
         url: &'a str,
@@ -652,6 +661,27 @@ async fn call_tool(
                 )
                 .await?,
         )?)),
+        ToolInvocation::Diagnostics { duration_ms } => serialized_result(
+            &session
+                .diagnostics(Duration::from_millis(duration_ms))
+                .await?,
+        ),
+        ToolInvocation::AcceptDialog => {
+            session.accept_dialog().await?;
+            serialized_result(&json!({"dialog": "accepted"}))
+        }
+        ToolInvocation::DismissDialog => {
+            session.dismiss_dialog().await?;
+            serialized_result(&json!({"dialog": "dismissed"}))
+        }
+        ToolInvocation::Download {
+            destination,
+            timeout_ms,
+        } => serialized_result(
+            &session
+                .wait_for_download(&destination, Duration::from_millis(timeout_ms))
+                .await?,
+        ),
         ToolInvocation::ListTargets => serialized_result(&session.list_targets().await?),
         ToolInvocation::CreateTarget { url } => {
             serialized_result(&session.create_target(url).await?)
@@ -741,6 +771,15 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "wait" => Ok(ToolInvocation::Wait {
             condition: required_string(arguments, "condition")?,
             timeout_ms: optional_u64(arguments, "timeoutMs", 10_000)?,
+        }),
+        "diagnostics" => Ok(ToolInvocation::Diagnostics {
+            duration_ms: optional_u64(arguments, "durationMs", 1_000)?,
+        }),
+        "acceptDialog" => Ok(ToolInvocation::AcceptDialog),
+        "dismissDialog" => Ok(ToolInvocation::DismissDialog),
+        "download" => Ok(ToolInvocation::Download {
+            destination: std::path::PathBuf::from(required_string(arguments, "destination")?),
+            timeout_ms: optional_u64(arguments, "timeoutMs", 30_000)?,
         }),
         "listTargets" => Ok(ToolInvocation::ListTargets),
         "createTarget" => Ok(ToolInvocation::CreateTarget {
@@ -920,6 +959,26 @@ fn tools() -> Vec<Tool> {
                 },
                 "required": ["condition"]
             }),
+        },
+        Tool {
+            name: "diagnostics",
+            description: "Collect bounded, redacted console and network evidence in an explicit scope.",
+            input_schema: json!({"type":"object","properties":{"durationMs":{"type":"integer","minimum":1,"maximum":30000,"default":1000}}}),
+        },
+        Tool {
+            name: "acceptDialog",
+            description: "Accept the currently open JavaScript dialog.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "dismissDialog",
+            description: "Dismiss the currently open JavaScript dialog.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "download",
+            description: "Wait for one download into an authorized existing directory.",
+            input_schema: json!({"type":"object","properties":{"destination":{"type":"string"},"timeoutMs":{"type":"integer","minimum":1,"maximum":30000,"default":30000}},"required":["destination"]}),
         },
         Tool {
             name: "listTargets",
@@ -1266,7 +1325,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 32);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1291,6 +1350,9 @@ mod tests {
         for name in [
             "hover", "drag", "key", "shortcut", "clear", "check", "uncheck", "select", "upload",
         ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+        }
+        for name in ["diagnostics", "acceptDialog", "dismissDialog", "download"] {
             assert!(tools.iter().any(|tool| tool["name"] == name));
         }
         assert!(tools.iter().any(|tool| {

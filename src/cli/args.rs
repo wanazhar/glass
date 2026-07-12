@@ -168,6 +168,25 @@ pub enum Commands {
         timeout_ms: u64,
     },
 
+    /// Collect bounded, redacted console and network evidence.
+    Diagnostics {
+        #[arg(long, default_value_t = 1_000)]
+        duration_ms: u64,
+    },
+
+    /// Accept the currently open JavaScript dialog.
+    AcceptDialog,
+
+    /// Dismiss the currently open JavaScript dialog.
+    DismissDialog,
+
+    /// Wait for one download into an authorized existing directory.
+    Download {
+        destination: PathBuf,
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u64,
+    },
+
     /// List discoverable page targets without changing the active target.
     Targets,
 

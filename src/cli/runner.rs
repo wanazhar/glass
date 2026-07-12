@@ -150,6 +150,27 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .await?,
             )?;
         }
+        Commands::Diagnostics { duration_ms } => print_json(
+            &session
+                .diagnostics(Duration::from_millis(*duration_ms))
+                .await?,
+        )?,
+        Commands::AcceptDialog => {
+            session.accept_dialog().await?;
+            print_json(&serde_json::json!({"dialog": "accepted"}))?;
+        }
+        Commands::DismissDialog => {
+            session.dismiss_dialog().await?;
+            print_json(&serde_json::json!({"dialog": "dismissed"}))?;
+        }
+        Commands::Download {
+            destination,
+            timeout_ms,
+        } => print_json(
+            &session
+                .wait_for_download(destination, Duration::from_millis(*timeout_ms))
+                .await?,
+        )?,
         Commands::Targets => print_json(&session.list_targets().await?)?,
         Commands::NewTarget { url } => print_json(&session.create_target(url).await?)?,
         Commands::SelectTarget { id } => print_json(&session.select_target(id).await?)?,

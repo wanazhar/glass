@@ -70,6 +70,10 @@ const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
 const MAX_WAIT_DEADLINE: Duration = Duration::from_secs(300);
 const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
+const MAX_DIAGNOSTIC_DURATION: Duration = Duration::from_secs(30);
+const MAX_DIAGNOSTIC_EVENTS: usize = 128;
+const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
+const MAX_DIAGNOSTIC_URL_BYTES: usize = 4 * 1024;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
@@ -413,6 +417,47 @@ pub struct ObservationConsistency {
     pub end_mutation_revision: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticReport {
+    pub target_id: String,
+    pub frame_id: String,
+    pub duration_ms: u64,
+    pub console: Vec<ConsoleEvidence>,
+    pub network: Vec<NetworkEvidence>,
+    pub dropped_events: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsoleEvidence {
+    pub level: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkEvidence {
+    pub request_id: String,
+    pub method: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub safe_header_names: Vec<String>,
+    pub redirect_count: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadOutcome {
+    pub guid: String,
+    pub suggested_filename: String,
+    pub state: String,
+    pub received_bytes: u64,
+    pub total_bytes: u64,
+    pub target_id: String,
+    pub frame_id: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ObservationBoundarySummary {
     pub scanned_elements: usize,
@@ -557,6 +602,7 @@ pub struct BrowserSession {
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
+    diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     topology: Arc<Mutex<TopologyRegistry>>,
     upload_root: PathBuf,
 }
@@ -817,6 +863,7 @@ impl BrowserSession {
             page_revision,
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
+            diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             topology,
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
         };
@@ -1828,6 +1875,142 @@ impl BrowserSession {
         }
     }
 
+    /// Collect explicitly scoped, bounded, secret-redacted browser evidence.
+    pub async fn diagnostics(&self, duration: Duration) -> BrowserResult<DiagnosticReport> {
+        if duration.is_zero() || duration > MAX_DIAGNOSTIC_DURATION {
+            return Err("diagnostic duration must be between 1 ms and 30 seconds".into());
+        }
+        self.cdp
+            .with_current_route(async {
+                let (target_id, frame_id) = self.route_identity().await?;
+                let mut events = self.cdp.subscribe_events_with_params();
+                let mut guard = DiagnosticDomainGuard::acquire(
+                    self.cdp.clone(),
+                    Arc::clone(&self.network_wait_leases),
+                    Arc::clone(&self.diagnostic_leases),
+                )
+                .await?;
+                let started = tokio::time::Instant::now();
+                let deadline = started + duration;
+                let mut console = Vec::new();
+                let mut network = Vec::new();
+                let mut request_indexes = HashMap::new();
+                let mut dropped_events = 0_u64;
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        event = events.recv() => match event {
+                            Ok(event) => collect_diagnostic_event(
+                                &event,
+                                &mut console,
+                                &mut network,
+                                &mut request_indexes,
+                                &mut dropped_events,
+                            ),
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                                dropped_events = dropped_events.saturating_add(count);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+                guard.disable().await?;
+                Ok(DiagnosticReport {
+                    target_id,
+                    frame_id,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    console,
+                    network,
+                    dropped_events,
+                })
+            })
+            .await
+    }
+
+    pub async fn accept_dialog(&self) -> BrowserResult<()> {
+        self.cdp.handle_javascript_dialog(true).await?;
+        self.invalidate_observation();
+        Ok(())
+    }
+
+    pub async fn dismiss_dialog(&self) -> BrowserResult<()> {
+        self.cdp.handle_javascript_dialog(false).await?;
+        self.invalidate_observation();
+        Ok(())
+    }
+
+    /// Wait for one explicitly authorized download lifecycle.
+    pub async fn wait_for_download(
+        &self,
+        destination: &Path,
+        deadline: Duration,
+    ) -> BrowserResult<DownloadOutcome> {
+        if deadline.is_zero() || deadline > MAX_DIAGNOSTIC_DURATION {
+            return Err("download deadline must be between 1 ms and 30 seconds".into());
+        }
+        let destination = std::fs::canonicalize(destination)
+            .map_err(|error| format!("download destination must exist: {error}"))?;
+        if !destination.is_dir() || !destination.starts_with(&self.upload_root) {
+            return Err(
+                "download destination must be a directory inside the authorized root".into(),
+            );
+        }
+        let mut events = self.cdp.subscribe_events_with_params();
+        self.cdp
+            .set_download_behavior("allow", Some(&destination), true)
+            .await?;
+        let result = tokio::time::timeout(deadline, async {
+            let mut guid = None;
+            let mut filename = String::new();
+            loop {
+                match events.recv().await {
+                    Ok(event) if event.method == "Browser.downloadWillBegin" => {
+                        guid = event.params["guid"].as_str().map(bounded_diagnostic_text);
+                        filename = bounded_diagnostic_text(
+                            event.params["suggestedFilename"]
+                                .as_str()
+                                .unwrap_or("download"),
+                        );
+                    }
+                    Ok(event) if event.method == "Browser.downloadProgress" => {
+                        let Some(active_guid) = guid.as_deref() else {
+                            continue;
+                        };
+                        if event.params["guid"].as_str() != Some(active_guid) {
+                            continue;
+                        }
+                        let state = event.params["state"].as_str().unwrap_or("inProgress");
+                        if matches!(state, "completed" | "canceled") {
+                            let (target_id, frame_id) = self.route_identity().await?;
+                            return BrowserResult::Ok(DownloadOutcome {
+                                guid: active_guid.to_string(),
+                                suggested_filename: filename,
+                                state: state.to_ascii_lowercase(),
+                                received_bytes: finite_nonnegative_u64(
+                                    &event.params["receivedBytes"],
+                                ),
+                                total_bytes: finite_nonnegative_u64(&event.params["totalBytes"]),
+                                target_id,
+                                frame_id,
+                            });
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        return Err(format!("download event stream dropped {count} events").into());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err("download event stream closed".into());
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err("download deadline exceeded".into()));
+        let _ = self.cdp.set_download_behavior("deny", None, false).await;
+        result
+    }
+
     /// Click an element and return its structured action outcome.
     pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.pointer_click(target, false).await
@@ -2565,6 +2748,167 @@ fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
     truncate_visible_text_with_status(text, max_bytes).0
 }
 
+fn collect_diagnostic_event(
+    event: &CdpEventWithParams,
+    console: &mut Vec<ConsoleEvidence>,
+    network: &mut Vec<NetworkEvidence>,
+    request_indexes: &mut HashMap<String, usize>,
+    dropped: &mut u64,
+) {
+    match event.method.as_str() {
+        "Runtime.consoleAPICalled" => {
+            let text = event.params["args"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|arg| {
+                    arg["value"]
+                        .as_str()
+                        .or_else(|| arg["description"].as_str())
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            push_bounded(
+                console,
+                ConsoleEvidence {
+                    level: bounded_diagnostic_text(event.params["type"].as_str().unwrap_or("log")),
+                    text: bounded_diagnostic_text(&text),
+                },
+                dropped,
+            );
+        }
+        "Log.entryAdded" => {
+            let entry = &event.params["entry"];
+            push_bounded(
+                console,
+                ConsoleEvidence {
+                    level: bounded_diagnostic_text(entry["level"].as_str().unwrap_or("log")),
+                    text: bounded_diagnostic_text(entry["text"].as_str().unwrap_or("")),
+                },
+                dropped,
+            );
+        }
+        "Network.requestWillBeSent" => {
+            let Some(request_id) = event.params["requestId"].as_str() else {
+                return;
+            };
+            if let Some(index) = request_indexes.get(request_id).copied() {
+                network[index].redirect_count = network[index].redirect_count.saturating_add(1);
+                return;
+            }
+            if network.len() >= MAX_DIAGNOSTIC_EVENTS {
+                *dropped = dropped.saturating_add(1);
+                return;
+            }
+            let request = &event.params["request"];
+            let index = network.len();
+            request_indexes.insert(request_id.to_string(), index);
+            network.push(NetworkEvidence {
+                request_id: bounded_diagnostic_text(request_id),
+                method: bounded_diagnostic_text(request["method"].as_str().unwrap_or("")),
+                url: redact_diagnostic_url(request["url"].as_str().unwrap_or("")),
+                status: None,
+                failure: None,
+                safe_header_names: safe_header_names(&request["headers"]),
+                redirect_count: u16::from(event.params.get("redirectResponse").is_some()),
+            });
+        }
+        "Network.responseReceived" => {
+            if let Some(index) = event.params["requestId"]
+                .as_str()
+                .and_then(|id| request_indexes.get(id))
+                .copied()
+            {
+                network[index].status = event.params["response"]["status"]
+                    .as_u64()
+                    .and_then(|status| u16::try_from(status).ok());
+            }
+        }
+        "Network.loadingFailed" => {
+            if let Some(index) = event.params["requestId"]
+                .as_str()
+                .and_then(|id| request_indexes.get(id))
+                .copied()
+            {
+                network[index].failure = Some(bounded_diagnostic_text(
+                    event.params["errorText"]
+                        .as_str()
+                        .unwrap_or("request_failed"),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_bounded<T>(values: &mut Vec<T>, value: T, dropped: &mut u64) {
+    if values.len() < MAX_DIAGNOSTIC_EVENTS {
+        values.push(value);
+    } else {
+        *dropped = dropped.saturating_add(1);
+    }
+}
+
+fn bounded_diagnostic_text(value: &str) -> String {
+    truncate_utf8_bytes(value, MAX_DIAGNOSTIC_TEXT_BYTES)
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    let mut end = value.len().min(max_bytes);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn redact_diagnostic_url(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return truncate_utf8_bytes(
+            value.split('?').next().unwrap_or(""),
+            MAX_DIAGNOSTIC_URL_BYTES,
+        );
+    };
+    if url.query().is_some() {
+        let names = url
+            .query_pairs()
+            .map(|(name, _)| name.into_owned())
+            .collect::<Vec<_>>();
+        url.set_query(None);
+        if !names.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(names.iter().map(|name| (name.as_str(), "[redacted]")));
+        }
+    }
+    url.set_fragment(None);
+    truncate_utf8_bytes(url.as_str(), MAX_DIAGNOSTIC_URL_BYTES)
+}
+
+fn safe_header_names(headers: &Value) -> Vec<String> {
+    let mut names = headers
+        .as_object()
+        .into_iter()
+        .flat_map(|headers| headers.keys())
+        .filter(|name| {
+            !matches!(
+                name.to_ascii_lowercase().as_str(),
+                "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+            )
+        })
+        .take(32)
+        .map(|name| truncate_utf8_bytes(name, 128))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn finite_nonnegative_u64(value: &Value) -> u64 {
+    value
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value.min(u64::MAX as f64) as u64)
+        .unwrap_or(0)
+}
+
 fn truncate_visible_text_with_status(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);
@@ -2685,6 +3029,18 @@ struct NetworkDomainGuard {
     armed: bool,
 }
 
+struct DiagnosticDomainGuard {
+    cdp: CdpClient,
+    network: NetworkDomainGuard,
+    leases: Arc<Mutex<DiagnosticLeaseState>>,
+    armed: bool,
+}
+
+#[derive(Default)]
+struct DiagnosticLeaseState {
+    count: usize,
+}
+
 #[derive(Default)]
 struct NetworkLeaseState {
     count: usize,
@@ -2716,6 +3072,66 @@ impl NetworkDomainGuard {
         let state = self.leases.lock().await;
         self.armed = false;
         release_network_lease_locked(&self.cdp, state).await
+    }
+}
+
+impl DiagnosticDomainGuard {
+    async fn acquire(
+        cdp: CdpClient,
+        network_leases: Arc<Mutex<NetworkLeaseState>>,
+        leases: Arc<Mutex<DiagnosticLeaseState>>,
+    ) -> BrowserResult<Self> {
+        let network = NetworkDomainGuard::acquire(cdp.clone(), network_leases).await?;
+        let mut state = leases.lock().await;
+        state.count += 1;
+        if state.count == 1 {
+            if let Err(error) = cdp.enable_runtime().await {
+                state.count = 0;
+                return Err(error.into());
+            }
+            if let Err(error) = cdp.enable_log().await {
+                state.count = 0;
+                let _ = cdp.disable_runtime().await;
+                return Err(error.into());
+            }
+        }
+        drop(state);
+        Ok(Self {
+            cdp,
+            network,
+            leases,
+            armed: true,
+        })
+    }
+
+    async fn disable(&mut self) -> BrowserResult<()> {
+        self.armed = false;
+        let mut state = self.leases.lock().await;
+        state.count = state.count.saturating_sub(1);
+        if state.count == 0 {
+            self.cdp.disable_log().await?;
+            self.cdp.disable_runtime().await?;
+        }
+        drop(state);
+        self.network.disable().await
+    }
+}
+
+impl Drop for DiagnosticDomainGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cdp = self.cdp.clone();
+        let leases = Arc::clone(&self.leases);
+        tokio::spawn(async move {
+            let mut state = leases.lock().await;
+            state.count = state.count.saturating_sub(1);
+            if state.count == 0 {
+                let _ = cdp.disable_log().await;
+                let _ = cdp.disable_runtime().await;
+            }
+        });
     }
 }
 
@@ -3478,6 +3894,7 @@ mod tests {
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
+            diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             topology: Arc::new(Mutex::new(TopologyRegistry {
                 active_target_id: Some("test-target".to_string()),
                 active_frame_id: Some("test-frame".to_string()),
@@ -3987,6 +4404,54 @@ mod tests {
         assert_eq!(value["action"], "click");
         assert_eq!(value["target"]["reference"], "r9:b42");
         assert_eq!(value["revision"], 10);
+    }
+
+    #[test]
+    fn diagnostics_redact_secrets_and_bound_retention() {
+        let redacted = redact_diagnostic_url(
+            "https://user:pass@example.test/path?token=secret&empty=#fragment",
+        );
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("fragment"));
+        assert!(redacted.contains("token=%5Bredacted%5D"));
+
+        let headers = serde_json::json!({
+            "Authorization": "Bearer secret",
+            "Cookie": "session=secret",
+            "X-Trace": "safe",
+            "Accept": "*/*"
+        });
+        assert_eq!(safe_header_names(&headers), vec!["Accept", "X-Trace"]);
+
+        let event = CdpEventWithParams {
+            method: "Network.requestWillBeSent".to_string(),
+            session_id: None,
+            params: serde_json::json!({
+                "requestId": "request-1",
+                "request": {
+                    "method": "POST",
+                    "url": "https://example.test/api?password=hunter2",
+                    "headers": headers,
+                    "postData": "never-retain-this"
+                }
+            }),
+        };
+        let mut console = Vec::new();
+        let mut network = Vec::new();
+        let mut indexes = HashMap::new();
+        let mut dropped = 0;
+        collect_diagnostic_event(
+            &event,
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+        );
+        let serialized = serde_json::to_string(&network).unwrap();
+        assert!(!serialized.contains("hunter2"));
+        assert!(!serialized.contains("never-retain-this"));
+        assert!(!serialized.contains("Authorization"));
+        assert_eq!(network[0].method, "POST");
     }
 
     #[test]

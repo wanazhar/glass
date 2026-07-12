@@ -1,7 +1,7 @@
 ---
 id: diagnostic-014
 scope: scoped browser diagnostics
-status: pending
+status: in-progress
 depends-on: [wait-010, topology-011]
 ---
 

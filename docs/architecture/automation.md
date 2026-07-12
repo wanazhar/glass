@@ -150,6 +150,26 @@ requests, dialogs, downloads, and recent lifecycle events. Secret-bearing
 request bodies, cookies, headers, typed text, and evaluated source are redacted
 by default.
 
+Diagnostic capture is an explicit, time-bounded scope rather than permanent
+session state. A scope has one owner, a maximum 30-second lifetime, and bounded
+buffers of 128 console entries, 128 network entries, 16 dialogs, and 32
+download transitions. Runtime/Log and Network are enabled on the selected
+target only while at least one scope leases them; the final lease disables the
+domains and drops retained evidence.
+
+Every entry carries the immutable target/frame route and a monotonic timestamp.
+Text fields are UTF-8 bounded to 2 KiB and URLs to 4 KiB. URL query values,
+cookies, authorization and proxy-authorization headers, request bodies, and
+typed or evaluated source are never retained. Network evidence is metadata
+only: method, redacted URL, status or failure class, redirect count, and bounded
+safe header names. Broadcast lag increments an explicit dropped-event counter.
+
+Dialogs are reported even without a diagnostic scope because they block page
+progress, but only bounded metadata is retained until accept or dismiss.
+Downloads require an explicit scoped destination and return lifecycle evidence
+from will-begin through progress or completion; Glass never captures response
+bodies as diagnostic evidence.
+
 ## Extension rule
 
 Frontends call `BrowserSession`; they do not issue raw CDP. CDP domain adapters

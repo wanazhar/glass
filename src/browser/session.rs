@@ -4214,6 +4214,34 @@ mod tests {
         (format!("ws://{address}"), server)
     }
 
+    async fn diagnostic_cleanup_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+            for _ in 0..6 {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                methods.push(request["method"].as_str().unwrap().to_string());
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            methods
+        });
+        (format!("ws://{address}"), server)
+    }
+
     async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
         let huge_text = "x".repeat(33 * 1024);
         let tree = serde_json::json!({
@@ -4656,6 +4684,44 @@ mod tests {
 
         session.close().await.unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostic_cancellation_disables_every_scoped_domain() {
+        let (url, server) = diagnostic_cleanup_server().await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let session = test_session(cdp.clone());
+        cdp.set_active_target_route(
+            Some("test-target".to_string()),
+            Some("diagnostic-session".to_string()),
+            Some("test-frame".to_string()),
+            None,
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(25),
+                session.diagnostics(Duration::from_secs(5))
+            )
+            .await
+            .is_err()
+        );
+        let methods = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        for method in [
+            "Network.enable",
+            "Runtime.enable",
+            "Log.enable",
+            "Log.disable",
+            "Runtime.disable",
+            "Network.disable",
+        ] {
+            assert!(
+                methods.iter().any(|actual| actual == method),
+                "missing {method}"
+            );
+        }
     }
 
     #[tokio::test]

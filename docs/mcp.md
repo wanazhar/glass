@@ -98,6 +98,9 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `evaluate` | `expression` | Evaluate JavaScript. |
 | `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
 | `wait` | `condition`, optional `timeoutMs` | Wait for one typed condition. |
+| `diagnostics` | optional `durationMs` | Collect bounded redacted console/network evidence. |
+| `acceptDialog`, `dismissDialog` | none | Resolve the currently open JavaScript dialog. |
+| `download` | `destination`, optional `timeoutMs` | Wait for one scoped download lifecycle. |
 | `listTargets` | none | List bounded page targets without selecting one. |
 | `createTarget` | `url` | Create a page target without selecting it. |
 | `selectTarget` | `id` | Select the target for later tools. |
@@ -113,6 +116,10 @@ as CSS, but must still resolve uniquely.
 `includeDom` and `includeScreenshot` default to `false`.
 `wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
 active wait and scoped network subscriptions are disabled on drop.
+Diagnostic and download durations are limited to 30 seconds. Console argument
+values, request bodies, sensitive header values/names, URL credentials, and
+query values are omitted or redacted. Download destinations must be existing
+directories inside the authorized working root.
 
 Target and frame IDs come from the corresponding list tools and are bounded
 before Glass retains them. Popup discovery never changes the active target.

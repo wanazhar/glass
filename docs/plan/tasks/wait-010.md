@@ -1,7 +1,7 @@
 ---
 id: wait-010
 scope: explicit browser waits
-status: pending
+status: in-progress
 depends-on: [mcp-008, target-009]
 ---
 

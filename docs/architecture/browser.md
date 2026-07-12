@@ -78,8 +78,9 @@ the fast interaction mode.
 After human or fast pointer movement, Glass revalidates the same node and
 center immediately before `mousePressed`. A hover-triggered overlay, detach, or
 geometry change therefore fails before button input. Once pressed, Glass
-always releases the button at the dispatched point so cancellation or page
-mutation cannot leave Chrome in a stuck-button state.
+releases the button at the dispatched point. A drop guard issues a best-effort
+release if cancellation interrupts the press/dwell/release sequence so Chrome
+is not left with a stuck button.
 
 ## CDP data path
 

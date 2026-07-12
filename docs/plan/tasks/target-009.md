@@ -71,15 +71,14 @@ not-found results, and verify pointer hit targets immediately before dispatch.
 - A three-iteration optimized scorecard recorded 18 successes, three known
   delayed-content failures, 12 unsupported outcomes, and zero wrong actions.
   All three duplicate-label repetitions selected `right-target`.
-- After press-boundary revalidation, the 100-iteration optimized benchmark
-  measured revision-reference clicks at 17.10 ms p50 and 32.26 ms p95 (20
-  samples). The median remains near the recorded 17.15 ms baseline p95; the
-  tail cost is recorded rather than hidden and is a follow-up optimization
-  target. Compact context was 14,448 bytes, Glass RSS ended at 7,204,864 bytes,
-  and the stripped binary was 4,530,112 bytes. All remain inside release gates.
+- After press-boundary revalidation and remote-object reuse, the 100-iteration
+  optimized benchmark measured revision-reference clicks at 16.89 ms p50 and
+  18.02 ms p95 (20 samples), close to the recorded 17.15 ms baseline p95.
+  Compact context was 15,835 bytes, Glass RSS ended at 6,950,912 bytes, and the
+  stripped binary was 4,530,136 bytes. All remain inside release gates.
   Allocator instrumentation is unavailable in the release profile; peak
   workflow RSS is the documented reproducible allocation proxy and increased
-  by 1,175,552 bytes versus the quality baseline while remaining under 8 MiB.
+  by 921,600 bytes versus the quality baseline while remaining under 8 MiB.
 
 ## Commit
 

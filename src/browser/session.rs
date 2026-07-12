@@ -806,13 +806,29 @@ impl BrowserSession {
         double_click: bool,
     ) -> BrowserResult<ActionOutcome> {
         let element = self.resolve_element(target).await?;
-        let point = self.verified_action_point(&element).await?;
+        let object_id = self
+            .cdp
+            .resolve_node_object(element.node_id, element.backend_dom_node_id)
+            .await
+            .map_err(|error| {
+                tracing::debug!(%error, "target node could not be resolved");
+                TargetError {
+                    kind: TargetErrorKind::NotActionable,
+                    reason: Some(TargetActionabilityReason::NodeUnavailable),
+                    candidates: Vec::new(),
+                }
+            })?;
+        let remote = RemoteObjectGuard {
+            cdp: self.cdp.clone(),
+            object_id,
+        };
+        let point = self.verified_action_point(&remote.object_id).await?;
         let events = if double_click {
             self.mouse.generate_double_click_events(point)
         } else {
             self.mouse.generate_click_events(point)
         };
-        self.dispatch_pointer_events(&element, point, events)
+        self.dispatch_pointer_events(&remote.object_id, point, events)
             .await?;
         Ok(ActionOutcome {
             action: if double_click {
@@ -830,7 +846,7 @@ impl BrowserSession {
 
     async fn dispatch_pointer_events(
         &self,
-        element: &ResolvedElement,
+        object_id: &str,
         point: Point,
         events: Vec<super::mouse::MouseEvent>,
     ) -> BrowserResult<()> {
@@ -858,7 +874,7 @@ impl BrowserSession {
                 .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
                 .await?;
         }
-        let press_point = self.verified_action_point(element).await?;
+        let press_point = self.verified_action_point(object_id).await?;
         if (press_point.x - point.x).abs() > 1.0 || (press_point.y - point.y).abs() > 1.0 {
             return Err(TargetError {
                 kind: TargetErrorKind::NotActionable,
@@ -867,6 +883,7 @@ impl BrowserSession {
             }
             .into());
         }
+        let mut pressed = None;
         for event in events {
             self.cdp
                 .dispatch_mouse_event(
@@ -877,6 +894,18 @@ impl BrowserSession {
                     Some(event.click_count),
                 )
                 .await?;
+            if event.event_type == "mousePressed" {
+                pressed = Some(PressedButtonGuard {
+                    cdp: self.cdp.clone(),
+                    point,
+                    click_count: event.click_count,
+                    armed: true,
+                });
+            } else if event.event_type == "mouseReleased"
+                && let Some(mut guard) = pressed.take()
+            {
+                guard.armed = false;
+            }
             if self.interaction_mode == InteractionMode::Human && event.event_type == "mousePressed"
             {
                 tokio::time::sleep(self.mouse.click_delay()).await;
@@ -1021,7 +1050,7 @@ impl BrowserSession {
                     .cdp
                     .bounded_element_query(&expression, AMBIGUOUS_CANDIDATE_LIMIT)
                     .await?;
-                dom_nodes_resolution(count, nodes, format!("css={selector}"))
+                dom_nodes_resolution(count, nodes, format!("css={selector}"), "css match")
             }
             Locator::Text(text) => {
                 let expression = text_query_expression(text)?;
@@ -1039,7 +1068,7 @@ impl BrowserSession {
                             .collect(),
                     ));
                 }
-                dom_nodes_resolution(count, nodes, format!("text={text}"))
+                dom_nodes_resolution(count, nodes, format!("text={text}"), "text match")
             }
             Locator::Reference(_)
             | Locator::AccessibleName(_)
@@ -1048,16 +1077,8 @@ impl BrowserSession {
         }
     }
 
-    async fn verified_action_point(&self, element: &ResolvedElement) -> BrowserResult<Point> {
-        let raw = match self
-            .cdp
-            .call_on_node(
-                element.node_id,
-                element.backend_dom_node_id,
-                HIT_TEST_FUNCTION,
-            )
-            .await
-        {
+    async fn verified_action_point(&self, object_id: &str) -> BrowserResult<Point> {
+        let raw = match self.cdp.call_on_object(object_id, HIT_TEST_FUNCTION).await {
             Ok(raw) => raw,
             Err(error) => {
                 tracing::debug!(%error, "target node could not be verified");
@@ -1161,6 +1182,50 @@ struct ResolvedElement {
     reference: Option<String>,
 }
 
+struct PressedButtonGuard {
+    cdp: CdpClient,
+    point: Point,
+    click_count: u32,
+    armed: bool,
+}
+
+struct RemoteObjectGuard {
+    cdp: CdpClient,
+    object_id: String,
+}
+
+impl Drop for RemoteObjectGuard {
+    fn drop(&mut self) {
+        let cdp = self.cdp.clone();
+        let object_id = self.object_id.clone();
+        tokio::spawn(async move {
+            let _ = cdp.release_object(&object_id).await;
+        });
+    }
+}
+
+impl Drop for PressedButtonGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cdp = self.cdp.clone();
+        let point = self.point;
+        let click_count = self.click_count;
+        tokio::spawn(async move {
+            let _ = cdp
+                .dispatch_mouse_event(
+                    "mouseReleased",
+                    point.x,
+                    point.y,
+                    Some("left"),
+                    Some(click_count),
+                )
+                .await;
+        });
+    }
+}
+
 impl Locator {
     pub fn parse(value: &str) -> BrowserResult<Self> {
         let value = value.trim().trim_matches('"');
@@ -1217,6 +1282,7 @@ fn dom_nodes_resolution(
     count: usize,
     nodes: Vec<i64>,
     label: String,
+    candidate_kind: &str,
 ) -> BrowserResult<TargetResolution> {
     match count {
         0 => Ok(TargetResolution::NotFound),
@@ -1233,7 +1299,7 @@ fn dom_nodes_resolution(
                 .take(AMBIGUOUS_CANDIDATE_LIMIT)
                 .enumerate()
                 .map(|(index, _)| CandidateSummary {
-                    label: bounded_candidate_label(&format!("{label} match {}", index + 1)),
+                    label: format!("{candidate_kind} {}", index + 1),
                     reference: None,
                 })
                 .collect(),
@@ -1260,6 +1326,20 @@ fn text_query_expression(text: &str) -> BrowserResult<String> {
                 const style = getComputedStyle(element);
                 const rect = element.getBoundingClientRect();
                 if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) continue;
+                if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
+                let clipped = false;
+                let visibleLeft = rect.left, visibleTop = rect.top, visibleRight = rect.right, visibleBottom = rect.bottom;
+                for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {{
+                    const ancestorStyle = getComputedStyle(ancestor);
+                    if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden' || Number(ancestorStyle.opacity) === 0) {{ clipped = true; break; }}
+                    if (/(hidden|clip)/.test(ancestorStyle.overflow + ancestorStyle.overflowX + ancestorStyle.overflowY)) {{
+                        const bounds = ancestor.getBoundingClientRect();
+                        visibleLeft = Math.max(visibleLeft, bounds.left); visibleTop = Math.max(visibleTop, bounds.top);
+                        visibleRight = Math.min(visibleRight, bounds.right); visibleBottom = Math.min(visibleBottom, bounds.bottom);
+                        if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) {{ clipped = true; break; }}
+                    }}
+                }}
+                if (clipped) continue;
                 const actual = (element.innerText || '').replace(/\s+/g, ' ').trim();
                 if (actual !== wanted) continue;
                 const candidate = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;

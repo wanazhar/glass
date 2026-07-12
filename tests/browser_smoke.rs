@@ -822,9 +822,18 @@ async fn browser_session_drives_a_local_fixture() {
         TargetErrorKind::Ambiguous
     );
     let ambiguous_css = session.click("css=.duplicate").await.unwrap_err();
-    assert_eq!(
-        ambiguous_css.downcast_ref::<TargetError>().unwrap().kind,
-        TargetErrorKind::Ambiguous
+    let ambiguous_css = ambiguous_css.downcast_ref::<TargetError>().unwrap();
+    assert_eq!(ambiguous_css.kind, TargetErrorKind::Ambiguous);
+    assert!(
+        ambiguous_css
+            .candidates
+            .iter()
+            .all(|candidate| candidate.label.starts_with("css match"))
+    );
+    assert!(
+        !serde_json::to_string(ambiguous_css)
+            .unwrap()
+            .contains(".duplicate")
     );
     assert!(
         session
@@ -914,6 +923,31 @@ async fn browser_session_drives_a_local_fixture() {
     let double_clicked = session.double_click("Double").await.unwrap();
     assert_eq!(double_clicked.action, ActionKind::DoubleClick);
     assert_eq!(session.evaluate("window.doubleClicks").await.unwrap(), 1);
+
+    session.evaluate("window.pointerEvents = []").await.unwrap();
+    let mut cancelled_click = Box::pin(session.click("css=#cancel-release"));
+    loop {
+        tokio::select! {
+            result = &mut cancelled_click => panic!("click completed before cancellation: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                let events = session.evaluate("window.pointerEvents").await.unwrap();
+                if events.as_array().unwrap().iter().any(|event| event["type"] == "mousedown") {
+                    break;
+                }
+            }
+        }
+    }
+    drop(cancelled_click);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let cancellation_events = session.evaluate("window.pointerEvents").await.unwrap();
+    assert!(
+        cancellation_events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "mouseup"),
+        "dropping an in-progress click must release the pressed button"
+    );
 
     session.evaluate("window.scrollTo(0, 0)").await.unwrap();
     let offscreen = session.click("Offscreen Save").await.unwrap();

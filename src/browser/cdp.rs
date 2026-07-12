@@ -353,13 +353,12 @@ impl CdpClient {
         .await
     }
 
-    /// Resolve a DOM/backend node and invoke a function on its remote object.
-    pub async fn call_on_node(
+    /// Resolve a DOM/backend node to a reusable remote object.
+    pub async fn resolve_node_object(
         &self,
         node_id: Option<i64>,
         backend_node_id: Option<i64>,
-        function_declaration: &str,
-    ) -> Result<Value, CdpError> {
+    ) -> Result<String, CdpError> {
         let mut params = serde_json::Map::new();
         if let Some(node_id) = node_id {
             params.insert("nodeId".to_string(), Value::from(node_id));
@@ -370,27 +369,36 @@ impl CdpClient {
         let resolved = self
             .send("DOM.resolveNode", Some(Value::Object(params)))
             .await?;
-        let object_id = resolved["object"]["objectId"]
+        resolved["object"]["objectId"]
             .as_str()
-            .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))?;
-        let result = self
-            .send(
-                "Runtime.callFunctionOn",
-                Some(serde_json::json!({
-                    "objectId": object_id,
-                    "functionDeclaration": function_declaration,
-                    "returnByValue": true,
-                    "awaitPromise": true
-                })),
-            )
-            .await;
-        let _ = self
-            .send(
-                "Runtime.releaseObject",
-                Some(serde_json::json!({ "objectId": object_id })),
-            )
-            .await;
-        result
+            .map(str::to_string)
+            .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))
+    }
+
+    /// Invoke a function on a previously resolved remote object.
+    pub async fn call_on_object(
+        &self,
+        object_id: &str,
+        function_declaration: &str,
+    ) -> Result<Value, CdpError> {
+        self.send(
+            "Runtime.callFunctionOn",
+            Some(serde_json::json!({
+                "objectId": object_id,
+                "functionDeclaration": function_declaration,
+                "returnByValue": true,
+                "awaitPromise": true
+            })),
+        )
+        .await
+    }
+
+    pub async fn release_object(&self, object_id: &str) -> Result<Value, CdpError> {
+        self.send(
+            "Runtime.releaseObject",
+            Some(serde_json::json!({ "objectId": object_id })),
+        )
+        .await
     }
 
     /// Resolve a page-produced, bounded remote element array into DOM node IDs.
@@ -453,7 +461,14 @@ impl CdpClient {
                     "DOM.requestNode",
                     Some(serde_json::json!({ "objectId": object_id })),
                 )
-                .await?;
+                .await;
+            let _ = self
+                .send(
+                    "Runtime.releaseObject",
+                    Some(serde_json::json!({ "objectId": object_id })),
+                )
+                .await;
+            let requested = requested?;
             if let Some(node_id) = requested["nodeId"].as_i64().filter(|id| *id != 0) {
                 node_ids.push(node_id);
             }

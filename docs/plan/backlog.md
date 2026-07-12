@@ -36,3 +36,14 @@ Promote Network event lag/domain failures to the same typed wait-error surface
 as timeouts, define whether visible-text substrings may span adjacent text
 nodes, and add a synthetic CDP stress driver that records Network lease memory
 and event-lag behavior under thousands of concurrent requests.
+
+## Topology: typed errors and parallel smoke-test ports
+
+Promote no-selection, stale target/frame, topology-budget, and routing-loss
+failures to a bounded typed error that MCP can safely serialize without URLs
+or raw oversized IDs. The current explicit behavior is correct but generic
+errors give agents less recovery guidance than target and wait failures.
+
+Opt-in browser smoke tests pass serially. Their release-and-reclaim ephemeral
+port helper can collide when the suite runs in parallel; replace it with a
+process-wide test port lease before making parallel E2E execution a gate.

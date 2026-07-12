@@ -540,6 +540,24 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     let cli_outcome: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli_outcome["action"], "click");
     assert!(cli_outcome["revision"].is_u64());
+    let cli_input = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port_arg,
+            "--target-id",
+            &target_id,
+            "check",
+            "css=#agree",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(cli_input.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_input.stdout).unwrap()["action"],
+        "check"
+    );
 
     let mcp = Command::new(&binary)
         .args([
@@ -582,6 +600,8 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
                 "method": "tools/call",
                 "params": {"name": "click", "arguments": {"target": "name=Duplicate"}}
             }),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check","arguments":{"target":"css=#agree"}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"select","arguments":{"target":"css=#choice","value":"b"}}}),
         ],
     )
     .await;
@@ -601,6 +621,8 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     .unwrap();
     assert_eq!(target_error["kind"], "ambiguous");
     assert_eq!(target_error["candidates"].as_array().unwrap().len(), 2);
+    assert_eq!(responses[3]["result"]["isError"], Value::Null);
+    assert_eq!(responses[4]["result"]["isError"], Value::Null);
 
     session.close().await.unwrap();
     fixture_server.close().await;
@@ -1101,13 +1123,14 @@ async fn browser_session_drives_a_local_fixture() {
     session.key_press("x").await.unwrap();
     session.shortcut("Control+A").await.unwrap();
     let key_events = session.evaluate("window.keyEvents").await.unwrap();
-    assert!(
-        key_events
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event["type"] == "keydown" && event["key"] == "x")
-    );
+    let x_events: Vec<_> = key_events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["key"] == "x")
+        .map(|event| event["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(x_events, ["keydown", "keypress", "keyup"]);
     assert!(
         key_events
             .as_array()
@@ -1143,6 +1166,13 @@ async fn browser_session_drives_a_local_fixture() {
         .drag("css=#drag-source", "css=#drag-target")
         .await
         .unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#drag-target').dataset.dropped")
+            .await
+            .unwrap(),
+        "yes"
+    );
     assert!(
         session
             .evaluate("window.pointerEvents.some(event => event.type === 'mouseup')")
@@ -1151,8 +1181,7 @@ async fn browser_session_drives_a_local_fixture() {
             .as_bool()
             .unwrap()
     );
-    let upload_path = std::env::temp_dir().join(format!("glass-upload-{}.txt", std::process::id()));
-    std::fs::write(&upload_path, b"upload fixture").unwrap();
+    let upload_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.html");
     session
         .upload_files("css=#upload", std::slice::from_ref(&upload_path))
         .await
@@ -1164,7 +1193,6 @@ async fn browser_session_drives_a_local_fixture() {
             .unwrap(),
         1
     );
-    std::fs::remove_file(upload_path).unwrap();
     session.type_text("Ada", Some("Name")).await.unwrap();
     session.evaluate("window.pointerEvents = []").await.unwrap();
     session.click("Save").await.unwrap();
@@ -1334,7 +1362,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let cross_origin = FixtureServer::start(
-        "<button id='cross' onclick=\"document.body.dataset.clicked='yes'\">cross origin frame</button><input id='cross-check' type='checkbox'><input id='cross-input'>",
+        "<button id='cross' onclick=\"document.body.dataset.clicked='yes'\">cross origin frame</button><input id='cross-check' type='checkbox'><input id='cross-input'><input id='cross-upload' type='file'>",
     )
     .await;
     let cross_origin_url = cross_origin.url.replace("127.0.0.1", "localhost");
@@ -1433,6 +1461,18 @@ async fn browser_session_routes_explicit_targets_and_frames() {
             .await
             .unwrap(),
         ""
+    );
+    let frame_upload = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.html");
+    session
+        .upload_files("css=#cross-upload", &[frame_upload])
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#cross-upload').files.length")
+            .await
+            .unwrap(),
+        1
     );
     let deep = frames
         .iter()

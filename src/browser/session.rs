@@ -482,6 +482,7 @@ pub struct BrowserSession {
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     topology: Arc<Mutex<TopologyRegistry>>,
+    upload_root: PathBuf,
 }
 
 struct CachedObservation {
@@ -741,6 +742,7 @@ impl BrowserSession {
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             topology,
+            upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1760,8 +1762,19 @@ impl BrowserSession {
                         .dispatch_mouse_event("mouseMoved", point.x, point.y, Some("left"), Some(1))
                         .await?;
                 }
-                self.verified_action_point(&destination_guard.object_id)
+                let verified_destination = self
+                    .verified_action_point(&destination_guard.object_id)
                     .await?;
+                if (verified_destination.x - destination_local.x).abs() > 1.0
+                    || (verified_destination.y - destination_local.y).abs() > 1.0
+                {
+                    return Err(TargetError {
+                        kind: TargetErrorKind::NotActionable,
+                        reason: Some(TargetActionabilityReason::GeometryChanged),
+                        candidates: Vec::new(),
+                    }
+                    .into());
+                }
                 self.cdp
                     .dispatch_mouse_event(
                         "mouseReleased",
@@ -1829,6 +1842,11 @@ impl BrowserSession {
     pub async fn clear(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
+                let remote = RemoteObjectGuard { cdp: self.cdp.clone(), object_id };
+                let editable = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable}").await?)?;
+                if editable.as_bool() != Some(true) { return Err("clear target is not editable".into()); }
                 let clicked = self.click(target).await?;
                 self.shortcut(if cfg!(target_os = "macos") {
                     "Meta+A"
@@ -1837,6 +1855,8 @@ impl BrowserSession {
                 })
                 .await?;
                 self.key_press("Backspace").await?;
+                let empty = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement ? this.value === '' : this.textContent === ''}").await?)?;
+                if empty.as_bool() != Some(true) { return Err("clear target did not become empty".into()); }
                 self.action_outcome_from_target(ActionKind::Clear, clicked.target)
                     .await
             })
@@ -1870,6 +1890,7 @@ impl BrowserSession {
             for path in paths {
                 let canonical = std::fs::canonicalize(path)?;
                 if !canonical.is_file() { return Err("upload path must be a regular file".into()); }
+                if !canonical.starts_with(&self.upload_root) { return Err("upload path is outside the allowed workspace root".into()); }
                 files.push(canonical.to_string_lossy().into_owned());
             }
             let element = self.resolve_element(target).await?;
@@ -3291,6 +3312,7 @@ mod tests {
                 active_frame_id: Some("test-frame".to_string()),
                 ..TopologyRegistry::default()
             })),
+            upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
         }
     }
 

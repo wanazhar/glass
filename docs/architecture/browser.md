@@ -79,8 +79,10 @@ Check/uncheck are idempotent only after verifying checkbox/radio state; select
 matches one option value exactly and verifies the result. File upload accepts
 a bounded list of canonical regular files, resolves one file input, uses
 `DOM.setFileInputFiles`, and returns only file count—never paths or contents.
-Form operations revalidate immediately before the side effect and verify
-post-state.
+Paths are rejected unless they remain under the canonical process workspace
+root; later safety profiles may narrow that boundary but cannot widen it
+implicitly. Form operations revalidate immediately before the side effect and
+verify post-state.
 
 Human mode keeps the existing Bézier pointer path and dwell timing. Fast mode keeps direct CDP input events and does not sleep between movement samples.
 

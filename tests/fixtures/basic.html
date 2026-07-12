@@ -35,7 +35,7 @@
       <label><input id="agree" type="checkbox"> Agree</label>
       <select id="choice" aria-label="Choice"><option value="a">Alpha</option><option value="b">Beta</option></select>
       <input id="upload" type="file" aria-label="Upload">
-      <div id="drag-source" draggable="true" tabindex="0" style="width:80px;height:30px">Drag source</div>
+      <div id="drag-source" tabindex="0" style="width:80px;height:30px">Drag source</div>
       <div id="drag-target" tabindex="0" style="width:100px;height:40px">Drag target</div>
       <div style="height: 1800px" aria-hidden="true"></div>
       <button id="detach-on-scroll" type="button">Detach on scroll</button>
@@ -77,6 +77,7 @@
       for (const type of ["keydown", "keypress", "keyup"]) document.addEventListener(type, event => window.keyEvents.push({type, key:event.key, ctrl:event.ctrlKey, shift:event.shiftKey}), true);
       window.dragEvents = [];
       for (const type of ["mousedown", "mousemove", "mouseup"]) document.querySelector("#drag-target").addEventListener(type, event => window.dragEvents.push(type));
+      document.querySelector("#drag-target").addEventListener("mouseup", event => event.currentTarget.dataset.dropped = "yes");
       const nativeScrollIntoView = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = function(options) {
         nativeScrollIntoView.call(this, options);

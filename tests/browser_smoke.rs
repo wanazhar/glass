@@ -1088,6 +1088,86 @@ async fn browser_session_drives_a_local_fixture() {
     session.evaluate("window.pointerEvents = []").await.unwrap();
     let saved = session.click("Save").await.unwrap();
     assert_eq!(saved.action, ActionKind::Click);
+    session.hover("css=#save").await.unwrap();
+    session.clear("css=#name").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#name').value")
+            .await
+            .unwrap(),
+        ""
+    );
+    session.click("css=#editable").await.unwrap();
+    session.key_press("x").await.unwrap();
+    session.shortcut("Control+A").await.unwrap();
+    let key_events = session.evaluate("window.keyEvents").await.unwrap();
+    assert!(
+        key_events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "keydown" && event["key"] == "x")
+    );
+    assert!(
+        key_events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["ctrl"] == true)
+    );
+    session.check("css=#agree").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#agree').checked")
+            .await
+            .unwrap(),
+        true
+    );
+    session.uncheck("css=#agree").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#agree').checked")
+            .await
+            .unwrap(),
+        false
+    );
+    session.select_option("css=#choice", "b").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#choice').value")
+            .await
+            .unwrap(),
+        "b"
+    );
+    session
+        .drag("css=#drag-source", "css=#drag-target")
+        .await
+        .unwrap();
+    assert!(
+        session
+            .evaluate("window.pointerEvents.some(event => event.type === 'mouseup')")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+    let upload_path = std::env::temp_dir().join(format!("glass-upload-{}.txt", std::process::id()));
+    std::fs::write(&upload_path, b"upload fixture").unwrap();
+    session
+        .upload_files("css=#upload", std::slice::from_ref(&upload_path))
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#upload').files.length")
+            .await
+            .unwrap(),
+        1
+    );
+    std::fs::remove_file(upload_path).unwrap();
+    session.type_text("Ada", Some("Name")).await.unwrap();
+    session.evaluate("window.pointerEvents = []").await.unwrap();
+    session.click("Save").await.unwrap();
     let pointer_events = session.evaluate("window.pointerEvents").await.unwrap();
     let pointer_events = pointer_events.as_array().unwrap();
     assert!(
@@ -1254,7 +1334,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let cross_origin = FixtureServer::start(
-        "<button id='cross' onclick=\"document.body.dataset.clicked='yes'\">cross origin frame</button>",
+        "<button id='cross' onclick=\"document.body.dataset.clicked='yes'\">cross origin frame</button><input id='cross-check' type='checkbox'><input id='cross-input'>",
     )
     .await;
     let cross_origin_url = cross_origin.url.replace("127.0.0.1", "localhost");
@@ -1333,6 +1413,26 @@ async fn browser_session_routes_explicit_targets_and_frames() {
             .await
             .unwrap(),
         "yes"
+    );
+    session.check("css=#cross-check").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#cross-check').checked")
+            .await
+            .unwrap(),
+        true
+    );
+    session
+        .type_text("frame", Some("css=#cross-input"))
+        .await
+        .unwrap();
+    session.clear("css=#cross-input").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#cross-input').value")
+            .await
+            .unwrap(),
+        ""
     );
     let deep = frames
         .iter()

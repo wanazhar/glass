@@ -132,9 +132,45 @@ enum ToolInvocation<'a> {
     DoubleClick {
         target: Cow<'a, str>,
     },
+    Hover {
+        target: Cow<'a, str>,
+    },
+    Drag {
+        source: Cow<'a, str>,
+        destination: Cow<'a, str>,
+    },
     Type {
         text: &'a str,
         target: Option<&'a str>,
+    },
+    Key {
+        key: &'a str,
+    },
+    KeyDown {
+        key: &'a str,
+    },
+    KeyUp {
+        key: &'a str,
+    },
+    Shortcut {
+        shortcut: &'a str,
+    },
+    Clear {
+        target: Cow<'a, str>,
+    },
+    Check {
+        target: Cow<'a, str>,
+    },
+    Uncheck {
+        target: Cow<'a, str>,
+    },
+    Select {
+        target: Cow<'a, str>,
+        value: &'a str,
+    },
+    Upload {
+        target: Cow<'a, str>,
+        files: Vec<std::path::PathBuf>,
     },
     Screenshot,
     Observe {
@@ -544,8 +580,28 @@ async fn call_tool(
         ToolInvocation::DoubleClick { target } => {
             action_result(session.double_click(target.as_ref()).await?)
         }
+        ToolInvocation::Hover { target } => action_result(session.hover(target.as_ref()).await?),
+        ToolInvocation::Drag {
+            source,
+            destination,
+        } => action_result(session.drag(source.as_ref(), destination.as_ref()).await?),
         ToolInvocation::Type { text, target } => {
             action_result(session.type_text(text, target).await?)
+        }
+        ToolInvocation::Key { key } => action_result(session.key_press(key).await?),
+        ToolInvocation::KeyDown { key } => action_result(session.key_down(key).await?),
+        ToolInvocation::KeyUp { key } => action_result(session.key_up(key).await?),
+        ToolInvocation::Shortcut { shortcut } => action_result(session.shortcut(shortcut).await?),
+        ToolInvocation::Clear { target } => action_result(session.clear(target.as_ref()).await?),
+        ToolInvocation::Check { target } => action_result(session.check(target.as_ref()).await?),
+        ToolInvocation::Uncheck { target } => {
+            action_result(session.uncheck(target.as_ref()).await?)
+        }
+        ToolInvocation::Select { target, value } => {
+            action_result(session.select_option(target.as_ref(), value).await?)
+        }
+        ToolInvocation::Upload { target, files } => {
+            action_result(session.upload_files(target.as_ref(), &files).await?)
         }
         ToolInvocation::Screenshot => {
             let image = session.screenshot_base64().await?;
@@ -628,9 +684,45 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "doubleClick" => Ok(ToolInvocation::DoubleClick {
             target: required_target(arguments)?,
         }),
+        "hover" => Ok(ToolInvocation::Hover {
+            target: required_target(arguments)?,
+        }),
+        "drag" => Ok(ToolInvocation::Drag {
+            source: Cow::Borrowed(required_string(arguments, "source")?),
+            destination: Cow::Borrowed(required_string(arguments, "destination")?),
+        }),
         "type" => Ok(ToolInvocation::Type {
             text: required_string(arguments, "text")?,
             target: optional_string(arguments, "target")?,
+        }),
+        "key" => Ok(ToolInvocation::Key {
+            key: required_string(arguments, "key")?,
+        }),
+        "keyDown" => Ok(ToolInvocation::KeyDown {
+            key: required_string(arguments, "key")?,
+        }),
+        "keyUp" => Ok(ToolInvocation::KeyUp {
+            key: required_string(arguments, "key")?,
+        }),
+        "shortcut" => Ok(ToolInvocation::Shortcut {
+            shortcut: required_string(arguments, "shortcut")?,
+        }),
+        "clear" => Ok(ToolInvocation::Clear {
+            target: required_target(arguments)?,
+        }),
+        "check" => Ok(ToolInvocation::Check {
+            target: required_target(arguments)?,
+        }),
+        "uncheck" => Ok(ToolInvocation::Uncheck {
+            target: required_target(arguments)?,
+        }),
+        "select" => Ok(ToolInvocation::Select {
+            target: required_target(arguments)?,
+            value: required_string(arguments, "value")?,
+        }),
+        "upload" => Ok(ToolInvocation::Upload {
+            target: required_target(arguments)?,
+            files: required_path_array(arguments, "files")?,
         }),
         "screenshot" => Ok(ToolInvocation::Screenshot),
         "observe" => Ok(ToolInvocation::Observe {
@@ -706,6 +798,61 @@ fn tools() -> Vec<Tool> {
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
+        },
+        Tool {
+            name: "hover",
+            description: "Move the pointer over one actionable target.",
+            input_schema: target_schema(),
+        },
+        Tool {
+            name: "drag",
+            description: "Drag one actionable target to another.",
+            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"]}),
+        },
+        Tool {
+            name: "key",
+            description: "Dispatch a complete browser key press.",
+            input_schema: string_schema("key"),
+        },
+        Tool {
+            name: "keyDown",
+            description: "Dispatch a browser key-down event.",
+            input_schema: string_schema("key"),
+        },
+        Tool {
+            name: "keyUp",
+            description: "Dispatch a browser key-up event.",
+            input_schema: string_schema("key"),
+        },
+        Tool {
+            name: "shortcut",
+            description: "Dispatch one explicit modifier shortcut.",
+            input_schema: string_schema("shortcut"),
+        },
+        Tool {
+            name: "clear",
+            description: "Clear one actionable editable target.",
+            input_schema: target_schema(),
+        },
+        Tool {
+            name: "check",
+            description: "Ensure one checkbox or radio is checked.",
+            input_schema: target_schema(),
+        },
+        Tool {
+            name: "uncheck",
+            description: "Ensure one checkbox is unchecked.",
+            input_schema: target_schema(),
+        },
+        Tool {
+            name: "select",
+            description: "Select one exact option value.",
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"}},"required":["target","value"]}),
+        },
+        Tool {
+            name: "upload",
+            description: "Set bounded local regular files on one file input; contents are never returned.",
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}}},"required":["target","files"]}),
         },
         Tool {
             name: "type",
@@ -807,12 +954,38 @@ fn tools() -> Vec<Tool> {
     ]
 }
 
+fn target_schema() -> Value {
+    json!({"type":"object","properties":{"target":{"type":"string"}},"required":["target"]})
+}
+
+fn string_schema(name: &str) -> Value {
+    json!({"type":"object","properties":{(name):{"type":"string"}},"required":[name]})
+}
+
 fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a str> {
     arguments
         .get(name)
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("{name} must be a non-empty string").into())
+}
+
+fn required_path_array(arguments: &Value, name: &str) -> BrowserResult<Vec<std::path::PathBuf>> {
+    let values = arguments
+        .get(name)
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty() && values.len() <= 16)
+        .ok_or_else(|| format!("{name} must contain 1..=16 paths"))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|path| !path.is_empty())
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| format!("{name} entries must be non-empty strings").into())
+        })
+        .collect()
 }
 
 fn required_target(arguments: &Value) -> BrowserResult<Cow<'_, str>> {
@@ -1093,7 +1266,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 28);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1112,6 +1285,11 @@ mod tests {
             "closeTarget",
             "listFrames",
             "selectFrame",
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+        }
+        for name in [
+            "hover", "drag", "key", "shortcut", "clear", "check", "uncheck", "select", "upload",
         ] {
             assert!(tools.iter().any(|tool| tool["name"] == name));
         }
@@ -1195,6 +1373,7 @@ mod tests {
             revision: 9,
             target_id: "target-1".to_string(),
             frame_id: "frame-1".to_string(),
+            evidence: None,
         })
         .unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();

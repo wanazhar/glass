@@ -26,7 +26,18 @@ Global options can be written before or after a subcommand.
 navigate URL [--timeout-ms MILLISECONDS]
 click TARGET
 double-click TARGET
+hover TARGET
+drag SOURCE DESTINATION
 type TEXT [--target TARGET]
+key KEY
+key-down KEY
+key-up KEY
+shortcut SHORTCUT
+clear TARGET
+check TARGET
+uncheck TARGET
+select TARGET VALUE
+upload TARGET FILE...
 screenshot [-o|--output FILE]
 text
 dom
@@ -59,6 +70,10 @@ restarting. Closing the active target leaves no implicit replacement.
 Navigation, action, observation, DOM, scroll, and evaluation results are
 compact JSON on stdout. `text` emits plain text. `screenshot` writes a PNG and
 prints its destination.
+
+Keyboard commands emit browser key events; `type` remains the efficient plain
+text path. Shortcuts use `Control+A`/`Shift+Enter` syntax. Upload accepts 1–16
+regular files and never includes paths or contents in its result.
 
 ## Element targets
 

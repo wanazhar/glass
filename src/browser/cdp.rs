@@ -767,6 +767,54 @@ impl CdpClient {
         .await
     }
 
+    pub async fn dispatch_key_event_with_modifiers(
+        &self,
+        event_type: &str,
+        key: &str,
+        code: &str,
+        text: &str,
+        modifiers: i64,
+    ) -> Result<Value, CdpError> {
+        let virtual_key_code = match key {
+            "Backspace" => 8,
+            "Tab" => 9,
+            "Enter" => 13,
+            "Escape" => 27,
+            "Delete" => 46,
+            _ if key.len() == 1 => key.as_bytes()[0].to_ascii_uppercase() as i64,
+            _ => 0,
+        };
+        self.send(
+            "Input.dispatchKeyEvent",
+            Some(serde_json::json!({
+                "type": event_type,
+                "key": key,
+                "code": code,
+                "text": text,
+                "modifiers": modifiers,
+                "windowsVirtualKeyCode": virtual_key_code,
+                "nativeVirtualKeyCode": virtual_key_code
+            })),
+        )
+        .await
+    }
+
+    pub async fn set_file_input_files(
+        &self,
+        node_id: Option<i64>,
+        backend_node_id: Option<i64>,
+        files: &[String],
+    ) -> Result<Value, CdpError> {
+        let mut params = serde_json::json!({"files": files});
+        if let Some(node_id) = node_id {
+            params["nodeId"] = Value::from(node_id);
+        }
+        if let Some(backend_node_id) = backend_node_id {
+            params["backendNodeId"] = Value::from(backend_node_id);
+        }
+        self.send("DOM.setFileInputFiles", Some(params)).await
+    }
+
     /// Scroll the current page by a delta in CSS pixels.
     pub async fn scroll_by(&self, dx: f64, dy: f64) -> Result<Value, CdpError> {
         let expression = format!(

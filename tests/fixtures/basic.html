@@ -31,6 +31,12 @@
       <button id="sticky-covered" type="button" style="display: none; position: fixed; top: 500px; left: 1100px">Sticky-covered action</button>
       <div id="sticky-cover" style="display: none; position: fixed; top: 490px; left: 1090px; width: 180px; height: 70px; z-index: 5"></div>
       <p id="result"></p>
+      <div id="editable" contenteditable="true" tabindex="0">Edit me</div>
+      <label><input id="agree" type="checkbox"> Agree</label>
+      <select id="choice" aria-label="Choice"><option value="a">Alpha</option><option value="b">Beta</option></select>
+      <input id="upload" type="file" aria-label="Upload">
+      <div id="drag-source" draggable="true" tabindex="0" style="width:80px;height:30px">Drag source</div>
+      <div id="drag-target" tabindex="0" style="width:100px;height:40px">Drag target</div>
       <div style="height: 1800px" aria-hidden="true"></div>
       <button id="detach-on-scroll" type="button">Detach on scroll</button>
       <button id="offscreen-save" type="button">Offscreen Save</button>
@@ -67,6 +73,10 @@
       document.querySelector("#selector-text").addEventListener("click", () => {
         document.querySelector("#result").textContent = "Selector text clicked";
       });
+      window.keyEvents = [];
+      for (const type of ["keydown", "keypress", "keyup"]) document.addEventListener(type, event => window.keyEvents.push({type, key:event.key, ctrl:event.ctrlKey, shift:event.shiftKey}), true);
+      window.dragEvents = [];
+      for (const type of ["mousedown", "mousemove", "mouseup"]) document.querySelector("#drag-target").addEventListener(type, event => window.dragEvents.push(type));
       const nativeScrollIntoView = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = function(options) {
         nativeScrollIntoView.call(this, options);

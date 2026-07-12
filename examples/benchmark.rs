@@ -36,6 +36,7 @@ async fn main() -> BrowserResult<()> {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -50,6 +51,7 @@ async fn main() -> BrowserResult<()> {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
     })

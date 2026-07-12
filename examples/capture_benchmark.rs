@@ -59,6 +59,7 @@ async fn main() -> BrowserResult<()> {
         incognito: !attach,
         attach,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })

@@ -446,6 +446,7 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     };
@@ -506,6 +507,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -737,6 +739,7 @@ async fn browser_session_drives_a_local_fixture() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
     })
@@ -752,6 +755,7 @@ async fn browser_session_drives_a_local_fixture() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -1091,7 +1095,8 @@ async fn browser_session_drives_a_local_fixture() {
             .iter()
             .filter(|event| event["type"] == "mousemove")
             .count()
-            > 1
+            > 1,
+        "expected human motion samples: {pointer_events:?}"
     );
     assert_eq!(
         pointer_events[pointer_events.len() - 2]["type"],
@@ -1171,6 +1176,7 @@ async fn browser_session_drives_a_local_fixture() {
         incognito: false,
         attach: true,
         target_id: Some(page_target_id(port).await),
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -1196,6 +1202,7 @@ async fn browser_session_drives_a_local_fixture() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -1246,10 +1253,14 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let cross_origin = FixtureServer::start("<p id='cross'>cross origin frame</p>").await;
+    let cross_origin = FixtureServer::start(
+        "<button id='cross' onclick=\"document.body.dataset.clicked='yes'\">cross origin frame</button>",
+    )
+    .await;
+    let cross_origin_url = cross_origin.url.replace("127.0.0.1", "localhost");
     let html = format!(
-        "<title>topology</title><a id='popup' href='about:blank' target='_blank'>popup</a><iframe srcdoc=\"<p id='nested'>nested frame</p>\"></iframe><iframe src='{}'></iframe>",
-        cross_origin.url
+        "<title>topology</title><a id='popup' href='about:blank' target='_blank'>popup</a><iframe style='margin:80px' srcdoc=\"<button id='nested' onclick=&quot;document.body.dataset.clicked='yes'&quot;>nested frame</button>\"></iframe><iframe style='margin:60px' src='{}'></iframe>",
+        cross_origin_url
     );
     let fixture = FixtureServer::start(Box::leak(html.into_boxed_str())).await;
     let session = BrowserSession::start(&SessionOptions {
@@ -1259,6 +1270,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -1294,23 +1306,110 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         .unwrap();
     assert_eq!(session.evaluate("document.title").await.unwrap(), "popup");
     session.select_target(&original.id).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let frames = session.list_frames().await.unwrap();
     assert!(
         frames.len() >= 3,
-        "expected main, nested, and cross-origin frames"
+        "expected main, nested, and cross-origin frames: {frames:?}"
     );
     let cross = frames
         .iter()
-        .find(|frame| frame.url == cross_origin.url)
+        .find(|frame| frame.url == cross_origin_url)
         .unwrap();
     session.select_frame(&cross.id).await.unwrap();
     assert_eq!(
         session.evaluate("document.body.innerText").await.unwrap(),
         "cross origin frame"
     );
+    session.click("css=#cross").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.body.dataset.clicked")
+            .await
+            .unwrap(),
+        "yes"
+    );
+    let nested = frames
+        .iter()
+        .find(|frame| frame.url == "about:srcdoc")
+        .unwrap();
+    session.select_frame(&nested.id).await.unwrap();
+    session.click("css=#nested").await.unwrap();
+    assert_eq!(
+        session
+            .evaluate("document.body.dataset.clicked")
+            .await
+            .unwrap(),
+        "yes"
+    );
+    let binary = glass_binary_path();
+    let cli_output = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port.to_string(),
+            "--target-id",
+            &original.id,
+            "--frame-id",
+            &nested.id,
+            "evaluate",
+            "document.body.innerText",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(cli_output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_output.stdout).unwrap(),
+        "nested frame"
+    );
+    let mcp = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port.to_string(),
+            "--target-id",
+            &original.id,
+            "--frame-id",
+            &nested.id,
+            "--mcp",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let responses = mcp_responses(
+        mcp,
+        &[
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"document.body.innerText"}}}),
+        ],
+    )
+    .await;
+    let text = responses[1]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), "nested frame");
     session.select_target(&popup.id).await.unwrap();
     session.close_target(&popup.id).await.unwrap();
+    assert!(
+        session
+            .list_frames()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no active target")
+    );
+    session.select_target(&original.id).await.unwrap();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        session.cdp().send("Page.crash", None),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     assert!(
         session
             .list_frames()

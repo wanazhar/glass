@@ -134,6 +134,12 @@ execution-context routing rather than DOM access through a parent document.
 Navigation invalidates only the affected frame subtree and its published
 references.
 
+Each public routed operation snapshots one immutable session/frame/context
+route for its full async lifetime. Explicit selection atomically replaces the
+route for later operations without redirecting commands already in flight.
+OOPIF child sessions are auto-attached with flattened routing; pointer actions
+translate frame-local hit-test coordinates through the frame owner viewport.
+
 Target/frame lifecycle tracking is activated once per BrowserSession. Registry
 updates consume `Target.targetCreated`, `Target.targetDestroyed`,
 `Target.targetCrashed`, `Page.frameAttached`, `Page.frameNavigated`,

@@ -198,6 +198,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         incognito: cli.incognito,
         attach: cli.attach,
         target_id: cli.target_id.clone(),
+        frame_id: cli.frame_id.clone(),
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
@@ -1192,6 +1193,8 @@ mod tests {
             action: ActionKind::Scroll,
             target: None,
             revision: 9,
+            target_id: "target-1".to_string(),
+            frame_id: "frame-1".to_string(),
         })
         .unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();
@@ -1199,7 +1202,7 @@ mod tests {
         assert!(!text.contains('\n'));
         assert_eq!(
             serde_json::from_str::<Value>(text).unwrap(),
-            json!({"action": "scroll", "revision": 9})
+            json!({"action": "scroll", "revision": 9, "target_id":"target-1", "frame_id":"frame-1"})
         );
     }
 

@@ -1233,6 +1233,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         incognito: cli.incognito,
         attach: cli.attach,
         target_id: cli.target_id.clone(),
+        frame_id: cli.frame_id.clone(),
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };

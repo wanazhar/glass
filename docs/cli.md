@@ -11,6 +11,7 @@ for the installed version.
 | `--incognito` | off | Disposable browser session. |
 | `--attach` | off | Connect to an existing CDP endpoint. |
 | `--target-id ID` | automatic | Select a page on an attached endpoint. |
+| `--frame-id ID` | main frame | Select a frame for this CLI invocation. |
 | `--port PORT` | `9222` | CDP debugging port. |
 | `--headed` | off | Display the Chrome window. |
 | `--interaction human|fast` | `human` | Smooth or direct pointer events. |
@@ -50,10 +51,10 @@ normal observations do not collect the full DOM. Likewise, screenshots are
 only captured by `screenshot` or `observe --screenshot`.
 
 `targets` and `frames` are bounded topology queries. Creating a target or
-discovering a popup never selects it; use `select-target` explicitly. Closing
-the active target leaves no selection. `select-frame` routes subsequent
-observation, evaluation, and locator work through that explicit frame until a
-navigation or target change invalidates the selection.
+discovering a popup never selects it. In a one-shot CLI workflow, discover IDs
+first and pass `--target-id` and `--frame-id` on the action invocation. MCP and
+library sessions can also use `select-target` and `select-frame` without
+restarting. Closing the active target leaves no implicit replacement.
 
 Navigation, action, observation, DOM, scroll, and evaluation results are
 compact JSON on stdout. `text` emits plain text. `screenshot` writes a PNG and

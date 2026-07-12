@@ -13,6 +13,17 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
+#[derive(Clone, Default)]
+struct CdpRoute {
+    session_id: Option<String>,
+    context_id: Option<i64>,
+    frame_id: Option<String>,
+}
+
+tokio::task_local! {
+    static OPERATION_ROUTE: CdpRoute;
+}
+
 /// A CDP method call request.
 #[derive(Debug, Serialize)]
 pub struct CdpRequest {
@@ -132,9 +143,7 @@ pub struct CdpClient {
     events: broadcast::Sender<CdpEvent>,
     payload_events: broadcast::Sender<CdpEventWithParams>,
     timeout: Duration,
-    active_session: Arc<std::sync::Mutex<Option<String>>>,
-    active_context: Arc<std::sync::Mutex<Option<i64>>>,
-    active_frame: Arc<std::sync::Mutex<Option<String>>>,
+    active_route: Arc<std::sync::Mutex<CdpRoute>>,
 }
 
 impl CdpClient {
@@ -245,9 +254,7 @@ impl CdpClient {
             events: event_tx,
             payload_events: payload_event_tx,
             timeout,
-            active_session: Arc::new(std::sync::Mutex::new(None)),
-            active_context: Arc::new(std::sync::Mutex::new(None)),
-            active_frame: Arc::new(std::sync::Mutex::new(None)),
+            active_route: Arc::new(std::sync::Mutex::new(CdpRoute::default())),
         })
     }
 
@@ -265,11 +272,7 @@ impl CdpClient {
 
     /// Send a CDP command and wait for the response.
     pub async fn send(&self, method: &str, params: Option<Value>) -> Result<Value, CdpError> {
-        let session_id = self
-            .active_session
-            .lock()
-            .expect("active CDP session poisoned")
-            .clone();
+        let session_id = self.current_route().session_id;
         self.send_routed(method, params, session_id).await
     }
 
@@ -279,6 +282,16 @@ impl CdpClient {
         params: Option<Value>,
     ) -> Result<Value, CdpError> {
         self.send_routed(method, params, None).await
+    }
+
+    pub async fn send_to_session(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, CdpError> {
+        self.send_routed(method, params, Some(session_id.to_string()))
+            .await
     }
 
     async fn send_routed(
@@ -328,23 +341,101 @@ impl CdpClient {
     }
 
     pub fn set_active_session(&self, session_id: Option<String>) {
-        *self
-            .active_session
-            .lock()
-            .expect("active CDP session poisoned") = session_id;
-        self.set_active_context(None);
-        self.set_active_frame(None);
+        *self.active_route.lock().expect("active CDP route poisoned") = CdpRoute {
+            session_id,
+            ..CdpRoute::default()
+        };
     }
 
     pub fn set_active_context(&self, context_id: Option<i64>) {
-        *self
-            .active_context
+        self.active_route
             .lock()
-            .expect("active CDP context poisoned") = context_id;
+            .expect("active CDP route poisoned")
+            .context_id = context_id;
+    }
+
+    pub fn set_active_frame_context(&self, frame_id: Option<String>, context_id: Option<i64>) {
+        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        route.frame_id = frame_id;
+        route.context_id = context_id;
+    }
+
+    pub fn set_active_route(
+        &self,
+        session_id: Option<String>,
+        frame_id: Option<String>,
+        context_id: Option<i64>,
+    ) {
+        *self.active_route.lock().expect("active CDP route poisoned") = CdpRoute {
+            session_id,
+            frame_id,
+            context_id,
+        };
     }
 
     pub fn set_active_frame(&self, frame_id: Option<String>) {
-        *self.active_frame.lock().expect("active CDP frame poisoned") = frame_id;
+        self.active_route
+            .lock()
+            .expect("active CDP route poisoned")
+            .frame_id = frame_id;
+    }
+
+    pub fn active_frame(&self) -> Option<String> {
+        self.current_route().frame_id
+    }
+
+    fn current_route(&self) -> CdpRoute {
+        OPERATION_ROUTE.try_with(Clone::clone).unwrap_or_else(|_| {
+            self.active_route
+                .lock()
+                .expect("active CDP route poisoned")
+                .clone()
+        })
+    }
+
+    pub async fn with_current_route<F: std::future::Future>(&self, future: F) -> F::Output {
+        if OPERATION_ROUTE.try_with(|_| ()).is_ok() {
+            future.await
+        } else {
+            OPERATION_ROUTE.scope(self.current_route(), future).await
+        }
+    }
+
+    pub async fn with_current_target_route<F: std::future::Future>(&self, future: F) -> F::Output {
+        let mut route = self.current_route();
+        route.context_id = None;
+        route.frame_id = None;
+        OPERATION_ROUTE.scope(route, future).await
+    }
+
+    /// Return the selected child frame viewport origin in target coordinates.
+    pub async fn frame_viewport_offset(&self, frame_id: &str) -> Result<(f64, f64), CdpError> {
+        let owner = self
+            .send(
+                "DOM.getFrameOwner",
+                Some(serde_json::json!({"frameId": frame_id})),
+            )
+            .await?;
+        let backend_node_id = owner["backendNodeId"]
+            .as_i64()
+            .ok_or_else(|| CdpError::transport("frame owner contained no backend node ID"))?;
+        let model = self
+            .send(
+                "DOM.getBoxModel",
+                Some(serde_json::json!({"backendNodeId": backend_node_id})),
+            )
+            .await?;
+        let content = model["model"]["content"]
+            .as_array()
+            .filter(|quad| quad.len() >= 2)
+            .ok_or_else(|| CdpError::transport("frame owner contained no content quad"))?;
+        let x = content[0]
+            .as_f64()
+            .ok_or_else(|| CdpError::transport("frame owner x was not numeric"))?;
+        let y = content[1]
+            .as_f64()
+            .ok_or_else(|| CdpError::transport("frame owner y was not numeric"))?;
+        Ok((x, y))
     }
 
     /// Navigate to a URL.
@@ -374,11 +465,7 @@ impl CdpClient {
 
     /// Get the accessibility tree.
     pub async fn get_accessibility_tree(&self) -> Result<Value, CdpError> {
-        let frame_id = self
-            .active_frame
-            .lock()
-            .expect("active CDP frame poisoned")
-            .clone();
+        let frame_id = self.current_route().frame_id;
         self.send(
             "Accessibility.getFullAXTree",
             frame_id.map(|frame_id| serde_json::json!({"frameId": frame_id})),
@@ -476,10 +563,7 @@ impl CdpClient {
         // DOM.requestNode only returns frontend node IDs after the document has
         // been requested in this CDP session.
         self.get_document_root().await?;
-        let context_id = *self
-            .active_context
-            .lock()
-            .expect("active CDP context poisoned");
+        let context_id = self.current_route().context_id;
         let mut params = serde_json::json!({
             "expression": expression,
             "returnByValue": false,
@@ -601,10 +685,7 @@ impl CdpClient {
 
     /// Evaluate JavaScript in the page.
     pub async fn evaluate(&self, expression: &str) -> Result<Value, CdpError> {
-        let context_id = *self
-            .active_context
-            .lock()
-            .expect("active CDP context poisoned");
+        let context_id = self.current_route().context_id;
         let mut params = serde_json::json!({
             "expression": expression,
             "returnByValue": true,
@@ -698,6 +779,13 @@ impl CdpClient {
     pub async fn enable_observation_events(&self) -> Result<(), CdpError> {
         self.enable_page().await?;
         self.enable_dom().await?;
+        Ok(())
+    }
+
+    pub async fn enable_observation_events_for(&self, session_id: &str) -> Result<(), CdpError> {
+        self.send_to_session(session_id, "Page.enable", None)
+            .await?;
+        self.send_to_session(session_id, "DOM.enable", None).await?;
         Ok(())
     }
 
@@ -852,6 +940,46 @@ mod tests {
         assert_eq!(second.unwrap()["method"], "second");
         assert_eq!(events.recv().await.unwrap().method, "Page.loadEventFired");
 
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn operation_route_is_immutable_across_selection_changes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            for expected_session in ["old", "old", "new"] {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text frame"),
+                };
+                assert_eq!(request["sessionId"], expected_session);
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        client.set_active_session(Some("old".to_string()));
+        client
+            .with_current_route(async {
+                client.send("first", None).await.unwrap();
+                client.set_active_session(Some("new".to_string()));
+                client.send("second", None).await.unwrap();
+            })
+            .await;
+        client.send("third", None).await.unwrap();
         client.close().await;
         server.await.unwrap();
     }

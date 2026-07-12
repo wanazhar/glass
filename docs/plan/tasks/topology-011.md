@@ -41,3 +41,15 @@ page targets and frames without penalizing the common one-page path.
   crash scenarios.
 - CLI and MCP integration from target discovery through frame action.
 - One-page observation/action resource budget remains within its gate.
+
+Implemented evidence:
+
+- Real Chrome: user-gesture popup discovery, explicit tab switching, active
+  close, target crash, nested offset-frame click, forced cross-site OOPIF
+  evaluation/click, and CLI/MCP frame-routed evaluation.
+- Route race: a unit contract changes global selection between two CDP calls
+  and proves the in-flight operation retains its original session.
+- Resource sanity (10 local release iterations): Glass RSS 3.1 MiB before
+  start, 4.7 MiB after one session, 7.0 MiB after the two-session workload;
+  compact cached observation p50 0.013 ms and fresh p50 4.78 ms. These are
+  local regression evidence, not cross-machine claims.

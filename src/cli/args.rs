@@ -28,6 +28,10 @@ pub struct Cli {
     #[arg(long = "target-id", global = true)]
     pub target_id: Option<String>,
 
+    /// Chrome frame ID used by commands in this one-shot session.
+    #[arg(long = "frame-id", global = true)]
+    pub frame_id: Option<String>,
+
     /// Chrome remote debugging port.
     #[arg(long, global = true, default_value_t = 9222)]
     pub port: u16,
@@ -241,6 +245,18 @@ mod tests {
             Cli::try_parse_from(["glass", "targets"]).unwrap().command,
             Some(Commands::Targets)
         ));
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--target-id",
+            "page-1",
+            "--frame-id",
+            "frame-1",
+            "evaluate",
+            "document.title",
+        ])
+        .unwrap();
+        assert_eq!(cli.target_id.as_deref(), Some("page-1"));
+        assert_eq!(cli.frame_id.as_deref(), Some("frame-1"));
         assert!(matches!(
             Cli::try_parse_from(["glass", "select-frame", "frame-1"])
                 .unwrap()

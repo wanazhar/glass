@@ -49,9 +49,10 @@ Implemented evidence:
   evaluation/click, and CLI/MCP frame-routed evaluation.
 - Route race: a unit contract changes global selection between two CDP calls
   and proves the in-flight operation retains its original session.
-- Resource sanity (10 local release iterations): Glass RSS 3.1 MiB before
-  start, 4.7 MiB after one session, 7.0 MiB after the two-session workload;
-  compact cached observation p50/p95 0.013/0.021 ms, fresh p50/p95 4.78/4.99
-  ms, and compact payload 15,835 bytes. The release benchmark also reports its
-  final CDP request count and binary artifact size. These are local regression
-  evidence, not cross-machine claims.
+- Resource sanity ([retained JSON](../../../benchmarks/topology-report.json), five
+  local release iterations): Glass RSS 3.2 MiB before start, 4.8 MiB after one
+  session, and 7.1 MiB after the two-session workload; compact cached
+  observation p50/p95 0.015/0.021 ms, fresh p50/p95 4.83/5.00 ms, compact
+  payload 16,021 bytes, 133 CDP requests after the workload, and a 4,726,808
+  byte release binary. These are local regression evidence, not cross-machine
+  claims.

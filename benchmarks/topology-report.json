@@ -1,0 +1,35 @@
+{
+  "tool": "glass",
+  "browser": "Chrome/Chromium via raw CDP",
+  "iterations": 5,
+  "expensive_iterations": 5,
+  "cold_start_ms": 788.572311,
+  "cdp_request_count_after_workload": 133,
+  "glass_binary_size_bytes": 4726808,
+  "glass_process_memory": {
+    "scope": "Glass client process only; Chrome child-process memory is excluded",
+    "rss_bytes_before_start": 3223552,
+    "rss_bytes_after_fast_start": 4775936,
+    "rss_bytes_after_all_sessions_start": 4980736,
+    "rss_bytes_after_workload": 7106560
+  },
+  "payload_bytes": {
+    "page_context_json_bytes": {
+      "compact": 16021,
+      "with_deep_dom": 25844,
+      "with_screenshot": 68069
+    },
+    "screenshot_base64_bytes": 52032
+  },
+  "results": [
+    {"operation":"evaluate","iterations":5,"total_ms":2.955885,"average_ms":0.591177,"p50_ms":0.5318,"p95_ms":0.982482},
+    {"operation":"wait_js_true","iterations":5,"total_ms":1.834403,"average_ms":0.3668806,"p50_ms":0.36692,"p95_ms":0.401001},
+    {"operation":"text","iterations":5,"total_ms":2.115443,"average_ms":0.4230886,"p50_ms":0.35192,"p95_ms":0.703241},
+    {"operation":"observe_compact_fresh","iterations":5,"total_ms":23.840357,"average_ms":4.7680714,"p50_ms":4.828088,"p95_ms":5.001848},
+    {"operation":"observe_compact_cached","iterations":5,"total_ms":0.081441,"average_ms":0.0162882,"p50_ms":0.01508,"p95_ms":0.02084},
+    {"operation":"deep_dom","iterations":5,"total_ms":7.157011,"average_ms":1.4314022,"p50_ms":1.402162,"p95_ms":1.602402},
+    {"operation":"screenshot_base64","iterations":5,"total_ms":260.988327,"average_ms":52.1976654,"p50_ms":49.984278,"p95_ms":60.601654},
+    {"operation":"click_fast","iterations":5,"total_ms":89.63978,"average_ms":17.927956,"p50_ms":16.515506,"p95_ms":24.259118},
+    {"operation":"click_human","iterations":5,"total_ms":2207.231805,"average_ms":441.446361,"p50_ms":447.468098,"p95_ms":518.78069}
+  ]
+}

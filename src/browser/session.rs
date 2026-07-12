@@ -885,6 +885,14 @@ impl BrowserSession {
         }
         let mut pressed = None;
         for event in events {
+            if event.event_type == "mousePressed" {
+                pressed = Some(PressedButtonGuard {
+                    cdp: self.cdp.clone(),
+                    point,
+                    click_count: event.click_count,
+                    armed: true,
+                });
+            }
             self.cdp
                 .dispatch_mouse_event(
                     &event.event_type,
@@ -894,14 +902,7 @@ impl BrowserSession {
                     Some(event.click_count),
                 )
                 .await?;
-            if event.event_type == "mousePressed" {
-                pressed = Some(PressedButtonGuard {
-                    cdp: self.cdp.clone(),
-                    point,
-                    click_count: event.click_count,
-                    armed: true,
-                });
-            } else if event.event_type == "mouseReleased"
+            if event.event_type == "mouseReleased"
                 && let Some(mut guard) = pressed.take()
             {
                 guard.armed = false;

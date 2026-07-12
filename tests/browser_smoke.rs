@@ -794,6 +794,21 @@ async fn browser_session_drives_a_local_fixture() {
     );
     quiet_a.unwrap();
     quiet_b.unwrap();
+    let (cancelled_lease, surviving_lease) = tokio::join!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            session.wait(
+                WaitCondition::NetworkQuiet(std::time::Duration::from_millis(500)),
+                std::time::Duration::from_secs(1),
+            )
+        ),
+        session.wait(
+            WaitCondition::NetworkQuiet(std::time::Duration::from_millis(120)),
+            std::time::Duration::from_secs(1),
+        )
+    );
+    assert!(cancelled_lease.is_err());
+    surviving_lease.unwrap();
     session
         .wait(
             WaitCondition::NetworkQuiet(std::time::Duration::from_millis(80)),
@@ -837,6 +852,23 @@ async fn browser_session_drives_a_local_fixture() {
         .await
         .unwrap();
     assert_eq!(waited.condition, "text");
+    session
+        .evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"opacity:0\">Invisible wait only</div><div style=\"width:0;height:0;overflow:hidden\">Clipped wait only</div>')")
+        .await
+        .unwrap();
+    for hidden_text in ["Invisible wait only", "Clipped wait only"] {
+        assert!(
+            session
+                .wait(
+                    WaitCondition::Text(hidden_text.to_string()),
+                    std::time::Duration::from_millis(120),
+                )
+                .await
+                .unwrap_err()
+                .downcast_ref::<WaitTimeout>()
+                .is_some()
+        );
+    }
     session
         .evaluate("setTimeout(() => history.pushState({}, '', '#wait-spa'), 80)")
         .await

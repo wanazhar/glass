@@ -406,7 +406,7 @@ pub struct BrowserSession {
     pointer: Mutex<Option<Point>>,
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
-    network_wait_leases: Arc<Mutex<usize>>,
+    network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
 }
 
 struct CachedObservation {
@@ -582,7 +582,7 @@ impl BrowserSession {
             pointer: Mutex::new(None),
             page_revision,
             observation_cache: Mutex::new(None),
-            network_wait_leases: Arc::new(Mutex::new(0)),
+            network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
         })
     }
 
@@ -666,6 +666,7 @@ impl BrowserSession {
         self.wait_loop(
             WaitCondition::Lifecycle("complete".to_string()),
             remaining,
+            deadline,
             &mut events,
             true,
         )
@@ -857,13 +858,14 @@ impl BrowserSession {
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
         validate_wait_deadline(deadline)?;
+        condition.validate()?;
         if let WaitCondition::NetworkQuiet(quiet) = condition {
             return tokio::time::timeout(deadline, self.wait_for_network_quiet(quiet, deadline))
                 .await
                 .map_err(|_| wait_timeout("network_quiet", deadline, "network_check_pending"))?;
         }
         let mut events = self.cdp.subscribe_events();
-        self.wait_loop(condition, deadline, &mut events, false)
+        self.wait_loop(condition, deadline, deadline, &mut events, false)
             .await
     }
 
@@ -871,6 +873,7 @@ impl BrowserSession {
         &self,
         condition: WaitCondition,
         deadline: Duration,
+        reported_deadline: Duration,
         events: &mut tokio::sync::broadcast::Receiver<super::cdp::CdpEvent>,
         require_load_event: bool,
     ) -> BrowserResult<WaitOutcome> {
@@ -883,7 +886,7 @@ impl BrowserSession {
         loop {
             let now = tokio::time::Instant::now();
             if now >= expires {
-                return Err(wait_timeout(&description, deadline, &last_state).into());
+                return Err(wait_timeout(&description, reported_deadline, &last_state).into());
             }
             let remaining = expires - now;
             let (matched, state, geometry) = tokio::time::timeout(
@@ -891,7 +894,7 @@ impl BrowserSession {
                 self.check_wait_condition(&condition, previous_geometry.as_deref()),
             )
             .await
-            .map_err(|_| wait_timeout(&description, deadline, &last_state))??;
+            .map_err(|_| wait_timeout(&description, reported_deadline, &last_state))??;
             last_state = bounded_wait_state(&state);
             previous_geometry = geometry;
             if matched && load_event_seen {
@@ -933,12 +936,8 @@ impl BrowserSession {
                 Ok((page.url.starts_with(prefix), page.url, None))
             }
             WaitCondition::Text(expected) => {
-                let expected = serde_json::to_string(expected)?;
-                let value = self
-                    .evaluate_value(&format!(
-                        "Boolean(document.body && document.body.innerText.includes({expected}))"
-                    ))
-                    .await?;
+                let expression = visible_text_contains_expression(expected)?;
+                let value = self.evaluate_value(&expression).await?;
                 let matched = value.as_bool().unwrap_or(false);
                 Ok((matched, format!("present={matched}"), None))
             }
@@ -1487,26 +1486,34 @@ struct RemoteObjectGuard {
 
 struct NetworkDomainGuard {
     cdp: CdpClient,
-    leases: Arc<Mutex<usize>>,
+    leases: Arc<Mutex<NetworkLeaseState>>,
     armed: bool,
 }
 
+#[derive(Default)]
+struct NetworkLeaseState {
+    count: usize,
+}
+
 impl NetworkDomainGuard {
-    async fn acquire(cdp: CdpClient, leases: Arc<Mutex<usize>>) -> BrowserResult<Self> {
-        let needs_enable = {
-            let mut count = leases.lock().await;
-            let needs_enable = *count == 0;
-            *count += 1;
-            needs_enable
-        };
-        let guard = Self {
+    async fn acquire(cdp: CdpClient, leases: Arc<Mutex<NetworkLeaseState>>) -> BrowserResult<Self> {
+        let mut state = leases.lock().await;
+        state.count += 1;
+        let mut guard = Self {
             cdp,
-            leases,
+            leases: Arc::clone(&leases),
             armed: true,
         };
-        if needs_enable {
-            guard.cdp.enable_network().await?;
+        if state.count == 1
+            && let Err(error) = guard.cdp.enable_network().await
+        {
+            state.count = 0;
+            guard.armed = false;
+            drop(state);
+            let _ = guard.cdp.disable_network().await;
+            return Err(error.into());
         }
+        drop(state);
         Ok(guard)
     }
 
@@ -1530,13 +1537,13 @@ impl Drop for NetworkDomainGuard {
     }
 }
 
-async fn release_network_lease(cdp: &CdpClient, leases: &Mutex<usize>) -> BrowserResult<()> {
-    let should_disable = {
-        let mut count = leases.lock().await;
-        *count = count.saturating_sub(1);
-        *count == 0
-    };
-    if should_disable {
+async fn release_network_lease(
+    cdp: &CdpClient,
+    leases: &Mutex<NetworkLeaseState>,
+) -> BrowserResult<()> {
+    let mut state = leases.lock().await;
+    state.count = state.count.saturating_sub(1);
+    if state.count == 0 {
         cdp.disable_network().await?;
     }
     Ok(())
@@ -1631,6 +1638,31 @@ impl WaitCondition {
             Self::JavaScript(_) => "javascript_predicate".to_string(),
             Self::NetworkQuiet(_) => "network_quiet".to_string(),
         }
+    }
+
+    fn validate(&self) -> BrowserResult<()> {
+        let value = match self {
+            Self::Lifecycle(value)
+            | Self::UrlExact(value)
+            | Self::UrlPrefix(value)
+            | Self::TargetAttached(value)
+            | Self::TargetVisible(value)
+            | Self::TargetHidden(value)
+            | Self::TargetEnabled(value)
+            | Self::TargetStable(value)
+            | Self::Text(value)
+            | Self::JavaScript(value) => Some(value),
+            Self::NetworkQuiet(duration) => {
+                if duration.is_zero() || *duration > MAX_WAIT_DEADLINE {
+                    return Err("network quiet duration must be between 1 ms and 300000 ms".into());
+                }
+                None
+            }
+        };
+        if value.is_some_and(|value| value.is_empty() || value.len() > MAX_WAIT_CONDITION_BYTES) {
+            return Err("wait condition value must contain 1-4096 bytes".into());
+        }
+        Ok(())
     }
 }
 
@@ -1784,6 +1816,37 @@ fn text_query_expression(text: &str) -> BrowserResult<String> {
     ))
 }
 
+fn visible_text_contains_expression(text: &str) -> BrowserResult<String> {
+    let text = serde_json::to_string(text)?;
+    Ok(format!(
+        r#"(() => {{
+            const wanted = {text};
+            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {{
+                if (!(node.nodeValue || '').includes(wanted)) continue;
+                const element = node.parentElement;
+                if (!element) continue;
+                if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) continue;
+                let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom, hidden = false;
+                for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {{
+                    const style = getComputedStyle(ancestor);
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {{ hidden = true; break; }}
+                    if (/(hidden|clip)/.test(style.overflow + style.overflowX + style.overflowY)) {{
+                        const bounds = ancestor.getBoundingClientRect();
+                        left = Math.max(left, bounds.left); top = Math.max(top, bounds.top);
+                        right = Math.min(right, bounds.right); bottom = Math.min(bottom, bounds.bottom);
+                        if (right <= left || bottom <= top) {{ hidden = true; break; }}
+                    }}
+                }}
+                if (!hidden) return true;
+            }}
+            return false;
+        }})()"#
+    ))
+}
+
 fn bounded_candidate_label(value: &str) -> String {
     if value.len() <= CANDIDATE_LABEL_MAX_BYTES {
         return value.to_string();
@@ -1899,7 +1962,7 @@ mod tests {
             pointer: Mutex::new(None),
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
-            network_wait_leases: Arc::new(Mutex::new(0)),
+            network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
         }
     }
 

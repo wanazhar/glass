@@ -54,7 +54,9 @@ not rely on sleeps or a universal page-ready heuristic.
   timeout surface while subscribing before `Page.navigate` so fast loads and
   redirects cannot be missed.
 - Network quiet uses a ref-counted Network-domain lease across overlapping
-  waits, bounds retained request IDs to 1,024, fails conservatively on event
+  waits. A serialized async state machine holds the lease lock across Network
+  enable/disable acknowledgements so acquire, cancellation, and final release
+  cannot reorder domain transitions. It bounds retained request IDs to 1,024, fails conservatively on event
   lag or overflow, and disables the domain after the final success, timeout,
   error, or cancellation lease is released. Its observation window explicitly
   begins when the first lease enables Network.
@@ -66,6 +68,9 @@ not rely on sleeps or a universal page-ready heuristic.
 - Every condition check, including a never-resolving JavaScript promise and
   the navigation command/page-info calls, is wrapped by the single overall
   deadline. CLI and MCP navigation accept the same bounded timeout.
+- Visible-text polling traverses rendered text nodes and rejects opacity-zero,
+  hidden, zero-area, and fully clipped ancestors rather than trusting
+  `body.innerText`.
 - Deterministic real-Chrome coverage includes every condition variant, delayed
   content, SPA URL change, HTTP redirect, target stability, overlapping
   network leases, never-idle traffic, timeout state, pending-CDP deadline,

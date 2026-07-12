@@ -1959,8 +1959,8 @@ impl BrowserSession {
                 "download destination must be a directory inside the authorized root".into(),
             );
         }
-        let _download_scope = self.download_scope.lock().await;
         let (target_id, frame_id) = self.route_identity().await?;
+        let _download_scope = self.download_scope.lock().await;
         let mut events = self.cdp.subscribe_events_with_params();
         let mut download_guard =
             DownloadBehaviorGuard::acquire(self.cdp.clone(), &destination).await?;
@@ -1970,6 +1970,9 @@ impl BrowserSession {
             loop {
                 match events.recv().await {
                     Ok(event) if event.method == "Browser.downloadWillBegin" => {
+                        if event.params["frameId"].as_str() != Some(frame_id.as_str()) {
+                            continue;
+                        }
                         guid = event.params["guid"].as_str().map(bounded_diagnostic_text);
                         filename = bounded_diagnostic_text(
                             event.params["suggestedFilename"]
@@ -2761,22 +2764,11 @@ fn collect_diagnostic_event(
 ) {
     match event.method.as_str() {
         "Runtime.consoleAPICalled" => {
-            let text = event.params["args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|arg| {
-                    arg["value"]
-                        .as_str()
-                        .or_else(|| arg["description"].as_str())
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
             push_bounded(
                 console,
                 ConsoleEvidence {
                     level: bounded_diagnostic_text(event.params["type"].as_str().unwrap_or("log")),
-                    text: redact_diagnostic_text(&text),
+                    text: "[console arguments redacted]".to_string(),
                 },
                 dropped,
             );
@@ -4561,6 +4553,26 @@ mod tests {
             redact_diagnostic_text("Authorization: Bearer top-secret"),
             "[redacted sensitive console entry]"
         );
+        let console_event = CdpEventWithParams {
+            method: "Runtime.consoleAPICalled".to_string(),
+            session_id: None,
+            params: serde_json::json!({
+                "type": "error",
+                "args": [{"value": "hunter2"}]
+            }),
+        };
+        for _ in 0..=MAX_DIAGNOSTIC_EVENTS {
+            collect_diagnostic_event(
+                &console_event,
+                &mut console,
+                &mut network,
+                &mut indexes,
+                &mut dropped,
+            );
+        }
+        assert_eq!(console.len(), MAX_DIAGNOSTIC_EVENTS);
+        assert_eq!(console[0].text, "[console arguments redacted]");
+        assert_eq!(dropped, 1);
     }
 
     #[test]

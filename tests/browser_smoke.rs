@@ -56,7 +56,7 @@ impl FixtureServer {
 async fn serve_fixture(mut stream: TcpStream, html: &'static str) {
     let mut request = [0; 4_096];
     let read = stream.read(&mut request).await.unwrap_or(0);
-    if String::from_utf8_lossy(&request[..read]).starts_with("GET /redirect ") {
+    if String::from_utf8_lossy(&request[..read]).starts_with("GET /redirect") {
         let _ = stream
             .write_all(b"HTTP/1.1 302 Found\r\nLocation: /fixture.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await;
@@ -975,9 +975,15 @@ async fn browser_session_drives_a_local_fixture() {
     );
 
     session
-        .evaluate(
-            "setTimeout(() => { console.error('diagnostic-boom'); fetch('http://127.0.0.1:1/fail?token=secret').catch(() => {}); }, 50); true",
-        )
+        .evaluate(&format!(
+            "setTimeout(() => {{ console.error('diagnostic-boom'); fetch('http://127.0.0.1:1/fail?token=secret').catch(() => {{}}); fetch({}, {{headers:{{Authorization:'Bearer secret'}}}}); }}, 50); true",
+            serde_json::to_string(
+                &fixture_server
+                    .url
+                    .replace("/fixture.html", "/redirect?credential=secret")
+            )
+            .unwrap()
+        ))
         .await
         .unwrap();
     let diagnostics = session
@@ -988,7 +994,13 @@ async fn browser_session_drives_a_local_fixture() {
         diagnostics
             .console
             .iter()
-            .any(|entry| entry.text.contains("diagnostic-boom"))
+            .any(|entry| entry.level == "error" && entry.text.contains("redacted"))
+    );
+    assert!(
+        diagnostics
+            .network
+            .iter()
+            .any(|entry| entry.redirect_count > 0)
     );
     assert!(
         diagnostics
@@ -1005,6 +1017,12 @@ async fn browser_session_drives_a_local_fixture() {
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     session.dismiss_dialog().await.unwrap();
+    session
+        .evaluate("setTimeout(() => confirm('accept dialog'), 20); true")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    session.accept_dialog().await.unwrap();
 
     let download_dir = std::env::current_dir()
         .unwrap()
@@ -1026,6 +1044,7 @@ async fn browser_session_drives_a_local_fixture() {
     }
     let _ = std::fs::remove_dir_all(download_dir);
     assert!(session.observe_with_dom().await.unwrap().dom.is_some());
+    let context = session.observe_fresh().await.unwrap();
 
     let save_reference = context
         .accessibility

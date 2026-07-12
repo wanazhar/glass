@@ -37,6 +37,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         incognito: cli.incognito,
         attach: cli.attach,
         target_id: cli.target_id.clone(),
+        frame_id: cli.frame_id.clone(),
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
@@ -129,6 +130,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .await?,
             )?;
         }
+        Commands::Targets => print_json(&session.list_targets().await?)?,
+        Commands::NewTarget { url } => print_json(&session.create_target(url).await?)?,
+        Commands::SelectTarget { id } => print_json(&session.select_target(id).await?)?,
+        Commands::CloseTarget { id } => {
+            session.close_target(id).await?;
+            print_json(&serde_json::json!({"closed": id}))?;
+        }
+        Commands::Frames => print_json(&session.list_frames().await?)?,
+        Commands::SelectFrame { id } => print_json(&session.select_frame(id).await?)?,
         Commands::Evaluate { expression } => {
             print_json(&session.evaluate(expression).await?)?;
         }

@@ -113,6 +113,43 @@ leaving subscriptions or enabled domains behind.
 
 ## Browser lifecycle and persistence
 
+## Target and frame topology
+
+A session owns one bounded topology registry: at most 32 page targets, 128
+frames across all targets, and 64 recent lifecycle summaries. Each page is
+identified by Chrome's target ID and each frame by its frame ID; IDs are capped
+at 256 bytes before retention. The registry records opener, URL, title, active
+state, parent frame, and last lifecycle state without retaining page content.
+
+`list_targets`, `create_target`, `select_target`, and `close_target` are
+explicit operations. Popup discovery adds a registry entry but never changes
+the active target. Closing or crashing the active target clears selection and
+requires an explicit subsequent selection; Glass never guesses another tab.
+
+`list_frames` and `select_frame` are scoped to the selected target. The main
+frame is explicit rather than represented by an absent value. Commands carry
+the selected target/frame routing identity through the CDP actor. Same-process
+and out-of-process cross-origin frames use flattened Target sessions and
+execution-context routing rather than DOM access through a parent document.
+Navigation invalidates only the affected frame subtree and its published
+references.
+
+Each public routed operation snapshots one immutable session/frame/context
+route for its full async lifetime. Explicit selection atomically replaces the
+route for later operations without redirecting commands already in flight.
+OOPIF child sessions are auto-attached with flattened routing; pointer actions
+translate frame-local hit-test coordinates through the selected frame owner.
+Chrome reports that owner box in target-page coordinates, so a grandchild frame
+does not accumulate already-absolute ancestor offsets; real nested and OOPIF
+click tests enforce this coordinate contract.
+
+Target/frame lifecycle tracking is activated once per BrowserSession. Registry
+updates consume `Target.targetCreated`, `Target.targetDestroyed`,
+`Target.targetCrashed`, `Page.frameAttached`, `Page.frameNavigated`,
+`Page.frameDetached`, and popup opener metadata. Unknown, oversized, or
+over-budget entries are rejected with typed topology errors; event lag forces
+a bounded resynchronization through `Target.getTargets` and `Page.getFrameTree`.
+
 | Mode | Chrome flags/data | Cleanup |
 |---|---|---|
 | named profile | `--user-data-dir=<Glass profile dir>` | retained until delete-profile |

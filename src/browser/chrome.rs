@@ -578,6 +578,27 @@ struct PageTarget {
     websocket_debugger_url: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct BrowserVersionEndpoint {
+    #[serde(rename = "webSocketDebuggerUrl")]
+    websocket_debugger_url: String,
+}
+
+pub async fn get_browser_ws_url(port: u16) -> Result<String, Box<dyn std::error::Error>> {
+    let response = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/json/version"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Chrome version endpoint failed with {}", response.status()).into());
+    }
+    Ok(response
+        .json::<BrowserVersionEndpoint>()
+        .await?
+        .websocket_debugger_url)
+}
+
 /// Get the WebSocket debugger URL for an explicitly selected page target.
 ///
 /// A single page target is selected automatically. Multiple page targets are

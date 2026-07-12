@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -12,10 +12,10 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::cdp::CdpClient;
+use super::cdp::{CdpClient, CdpEventWithParams};
 use super::chrome::{
-    ChromeProcess, PortLaunchLock, check_chrome_health, get_ws_url, is_port_occupied,
-    launch_chrome_with_options, resolve_chrome_path,
+    ChromeProcess, PortLaunchLock, check_chrome_health, get_browser_ws_url, get_ws_url,
+    is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
@@ -34,6 +34,11 @@ const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href,
 const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
+const TOPOLOGY_MAX_TARGETS: usize = 32;
+const TOPOLOGY_MAX_FRAMES: usize = 128;
+const TOPOLOGY_ID_MAX_BYTES: usize = 256;
+const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
+const TOPOLOGY_MAX_EVENTS: usize = 64;
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
@@ -94,6 +99,7 @@ pub struct SessionOptions {
     /// Explicit Chrome page target ID, required whenever the endpoint has more
     /// than one page target.
     pub target_id: Option<String>,
+    pub frame_id: Option<String>,
     pub headed: bool,
     pub interaction_mode: InteractionMode,
 }
@@ -113,6 +119,7 @@ impl Default for SessionOptions {
             incognito: false,
             attach: false,
             target_id: None,
+            frame_id: None,
             headed: false,
             interaction_mode: InteractionMode::Human,
         }
@@ -128,6 +135,13 @@ impl SessionOptions {
             .is_some_and(|target_id| target_id.trim().is_empty())
         {
             return Err("target ID cannot be empty".into());
+        }
+        if self
+            .frame_id
+            .as_deref()
+            .is_some_and(|frame_id| frame_id.trim().is_empty())
+        {
+            return Err("frame ID cannot be empty".into());
         }
 
         if self.attach {
@@ -159,6 +173,49 @@ pub struct PageInfo {
     pub title: String,
     #[serde(default)]
     pub ready_state: String,
+    #[serde(default)]
+    pub target_id: String,
+    #[serde(default)]
+    pub frame_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PageTargetInfo {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opener_id: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FrameInfo {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub url: String,
+    pub active: bool,
+    pub out_of_process: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyEventSummary {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Default)]
+struct TopologyRegistry {
+    targets: Vec<PageTargetInfo>,
+    frames: Vec<FrameInfo>,
+    active_target_id: Option<String>,
+    active_frame_id: Option<String>,
+    active_target_session_id: Option<String>,
+    active_session_id: Option<String>,
+    frame_sessions: HashMap<String, String>,
+    frame_parents: HashMap<String, String>,
+    events: VecDeque<TopologyEventSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -270,6 +327,8 @@ pub struct WaitOutcome {
     pub condition: String,
     pub elapsed_ms: u64,
     pub last_state: String,
+    pub target_id: String,
+    pub frame_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +401,8 @@ pub struct ActionOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionTarget>,
     pub revision: u64,
+    pub target_id: String,
+    pub frame_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +468,7 @@ pub struct BrowserSession {
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
+    topology: Arc<Mutex<TopologyRegistry>>,
 }
 
 struct CachedObservation {
@@ -541,7 +603,14 @@ impl BrowserSession {
                 return Err(error);
             }
         };
-        let cdp = match CdpClient::connect(&ws_url).await {
+        let target_id = ws_url
+            .rsplit('/')
+            .next()
+            .filter(|id| !id.is_empty())
+            .ok_or("page WebSocket URL contained no target ID")?
+            .to_string();
+        let browser_ws_url = get_browser_ws_url(options.port).await?;
+        let cdp = match CdpClient::connect(&browser_ws_url).await {
             Ok(cdp) => cdp,
             Err(error) => {
                 if let Some(process) = chrome.as_mut() {
@@ -550,6 +619,28 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+
+        cdp.send_browser(
+            "Target.setDiscoverTargets",
+            Some(serde_json::json!({"discover": true})),
+        )
+        .await?;
+        let attached = cdp
+            .send_browser(
+                "Target.attachToTarget",
+                Some(serde_json::json!({"targetId": target_id, "flatten": true})),
+            )
+            .await?;
+        let session_id = attached["sessionId"]
+            .as_str()
+            .ok_or("Target.attachToTarget returned no sessionId")?
+            .to_string();
+        cdp.set_active_target_route(
+            Some(target_id.clone()),
+            Some(session_id.clone()),
+            None,
+            None,
+        );
 
         let setup = cdp.enable_observation_events().await;
         if let Err(error) = setup {
@@ -571,7 +662,60 @@ impl BrowserSession {
             }
         });
 
-        Ok(Self {
+        let topology = Arc::new(Mutex::new(TopologyRegistry {
+            active_target_id: Some(target_id.clone()),
+            active_target_session_id: Some(session_id.clone()),
+            active_session_id: Some(session_id.clone()),
+            ..TopologyRegistry::default()
+        }));
+        let mut topology_events = cdp.subscribe_events_with_params();
+        let topology_for_events = Arc::clone(&topology);
+        let cdp_for_events = cdp.clone();
+        tokio::spawn(async move {
+            loop {
+                match topology_events.recv().await {
+                    Ok(event) => {
+                        let mut topology = topology_for_events.lock().await;
+                        let selected_frame = topology.active_frame_id.clone();
+                        let selected_session = topology.active_session_id.clone();
+                        let selected_context_invalidated = event.method == "Page.frameNavigated"
+                            && event.params["frame"]["id"].as_str() == selected_frame.as_deref();
+                        if apply_topology_event(&mut topology, &event) {
+                            cdp_for_events.set_active_target_route(None, None, None, None);
+                        } else if selected_frame.is_some() && topology.active_frame_id.is_none() {
+                            cdp_for_events.set_active_route(
+                                topology.active_session_id.clone(),
+                                None,
+                                None,
+                            );
+                        } else if selected_session != topology.active_session_id
+                            || selected_context_invalidated
+                        {
+                            cdp_for_events.set_active_route(
+                                topology.active_session_id.clone(),
+                                topology.active_frame_id.clone(),
+                                None,
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = resync_topology(&cdp_for_events, &topology_for_events).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        cdp.send(
+            "Target.setAutoAttach",
+            Some(serde_json::json!({
+                "autoAttach": true,
+                "waitForDebuggerOnStart": false,
+                "flatten": true
+            })),
+        )
+        .await?;
+
+        let session = Self {
             cdp,
             chrome,
             disposable_profile,
@@ -583,7 +727,30 @@ impl BrowserSession {
             page_revision,
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
-        })
+            topology,
+        };
+        let initialize_frame = async {
+            let frame_id = match options.frame_id.as_deref() {
+                Some(frame_id) => frame_id.to_string(),
+                None => {
+                    session
+                        .list_frames()
+                        .await?
+                        .into_iter()
+                        .next()
+                        .ok_or("active target returned no main frame")?
+                        .id
+                }
+            };
+            session.select_frame(&frame_id).await?;
+            Ok::<(), Box<dyn Error>>(())
+        }
+        .await;
+        if let Err(error) = initialize_frame {
+            let _ = session.close().await;
+            return Err(error);
+        }
+        Ok(session)
     }
 
     pub fn cdp(&self) -> &CdpClient {
@@ -596,6 +763,336 @@ impl BrowserSession {
 
     pub fn profile_name(&self) -> &str {
         &self.profile
+    }
+
+    pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        let raw = self.cdp.send_browser("Target.getTargets", None).await?;
+        let active = self.topology.lock().await.active_target_id.clone();
+        let mut targets = Vec::new();
+        for info in raw["targetInfos"].as_array().into_iter().flatten() {
+            if info["type"].as_str() != Some("page") {
+                continue;
+            }
+            let Some(id) = info["targetId"].as_str() else {
+                continue;
+            };
+            validate_topology_id(id)?;
+            if targets.len() == TOPOLOGY_MAX_TARGETS {
+                return Err("page target limit exceeded".into());
+            }
+            targets.push(PageTargetInfo {
+                id: id.to_string(),
+                url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+                title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+                opener_id: retained_optional_topology_id(info["openerId"].as_str())?,
+                active: active.as_deref() == Some(id),
+            });
+        }
+        self.topology.lock().await.targets = targets.clone();
+        Ok(targets)
+    }
+
+    pub async fn topology_events(&self) -> Vec<TopologyEventSummary> {
+        self.topology.lock().await.events.iter().cloned().collect()
+    }
+
+    async fn route_identity(&self) -> BrowserResult<(String, String)> {
+        self.cdp
+            .operation_identity()
+            .ok_or_else(|| "operation has no target/frame identity".into())
+    }
+
+    async fn ensured_route_identity(&self) -> BrowserResult<(String, String)> {
+        if let Ok(route) = self.route_identity().await {
+            return Ok(route);
+        }
+        let main_frame = self
+            .list_frames()
+            .await?
+            .into_iter()
+            .find(|frame| frame.parent_id.is_none())
+            .ok_or("active target returned no main frame")?;
+        self.select_frame(&main_frame.id).await?;
+        self.route_identity().await
+    }
+
+    pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
+        let url = normalize_url(url);
+        let result = self
+            .cdp
+            .send_browser("Target.createTarget", Some(serde_json::json!({"url": url})))
+            .await?;
+        let id = result["targetId"]
+            .as_str()
+            .ok_or("Target.createTarget returned no targetId")?;
+        validate_topology_id(id)?;
+        let targets = self.list_targets().await?;
+        targets
+            .into_iter()
+            .find(|target| target.id == id)
+            .ok_or_else(|| "created target was not discoverable".into())
+    }
+
+    pub async fn select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
+        validate_topology_id(target_id)?;
+        let target = self
+            .list_targets()
+            .await?
+            .into_iter()
+            .find(|target| target.id == target_id)
+            .ok_or("page target was not found")?;
+        let attached = self
+            .cdp
+            .send_browser(
+                "Target.attachToTarget",
+                Some(serde_json::json!({"targetId": target_id, "flatten": true})),
+            )
+            .await?;
+        let new_session = attached["sessionId"]
+            .as_str()
+            .ok_or("Target.attachToTarget returned no sessionId")?
+            .to_string();
+        let old_session = self.topology.lock().await.active_session_id.clone();
+        if let Err(error) = self.cdp.enable_observation_events_for(&new_session).await {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": new_session})),
+                )
+                .await;
+            return Err(error.into());
+        }
+        if let Err(error) = self
+            .cdp
+            .send_to_session(
+                &new_session,
+                "Target.setAutoAttach",
+                Some(serde_json::json!({
+                    "autoAttach": true,
+                    "waitForDebuggerOnStart": false,
+                    "flatten": true
+                })),
+            )
+            .await
+        {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": new_session})),
+                )
+                .await;
+            return Err(error.into());
+        }
+        let prepared = async {
+            let raw_frames = self
+                .cdp
+                .send_to_session(&new_session, "Page.getFrameTree", None)
+                .await?;
+            let mut frames = Vec::new();
+            collect_frames(&raw_frames["frameTree"], None, None, &mut frames)?;
+            let main_frame = frames
+                .iter()
+                .find(|frame| frame.parent_id.is_none())
+                .ok_or("selected target returned no main frame")?
+                .id
+                .clone();
+            Ok::<_, Box<dyn Error>>((frames, main_frame))
+        }
+        .await;
+        let (mut frames, main_frame) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        for frame in &mut frames {
+            frame.active = frame.id == main_frame;
+        }
+        {
+            let mut topology = self.topology.lock().await;
+            topology.active_target_id = Some(target_id.to_string());
+            topology.active_session_id = Some(new_session.clone());
+            topology.active_target_session_id = Some(new_session.clone());
+            topology.active_frame_id = Some(main_frame.clone());
+            topology.frames = frames;
+        }
+        self.cdp.set_active_target_route(
+            Some(target_id.to_string()),
+            Some(new_session.clone()),
+            Some(main_frame),
+            None,
+        );
+        if let Some(old_session) = old_session {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": old_session})),
+                )
+                .await;
+        }
+        self.invalidate_observation();
+        Ok(PageTargetInfo {
+            active: true,
+            ..target
+        })
+    }
+
+    pub async fn close_target(&self, target_id: &str) -> BrowserResult<()> {
+        validate_topology_id(target_id)?;
+        let result = self
+            .cdp
+            .send_browser(
+                "Target.closeTarget",
+                Some(serde_json::json!({"targetId": target_id})),
+            )
+            .await?;
+        if result["success"].as_bool() != Some(true) {
+            return Err("Chrome refused to close target".into());
+        }
+        let mut topology = self.topology.lock().await;
+        if topology.active_target_id.as_deref() == Some(target_id) {
+            topology.active_target_id = None;
+            topology.active_session_id = None;
+            topology.active_target_session_id = None;
+            topology.active_frame_id = None;
+            topology.frames.clear();
+            topology.frame_sessions.clear();
+            topology.frame_parents.clear();
+            self.cdp.set_active_target_route(None, None, None, None);
+        }
+        topology.targets.retain(|target| target.id != target_id);
+        Ok(())
+    }
+
+    pub async fn list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
+        let (target_id, target_session, active) = {
+            let topology = self.topology.lock().await;
+            (
+                topology.active_target_id.clone(),
+                topology.active_target_session_id.clone(),
+                topology.active_frame_id.clone(),
+            )
+        };
+        if target_id.is_none() {
+            return Err("no active target is selected".into());
+        }
+        let target_session = target_session.ok_or("active target has no CDP session")?;
+        let raw = self
+            .cdp
+            .send_to_session(&target_session, "Page.getFrameTree", None)
+            .await?;
+        let mut frames = Vec::new();
+        collect_frames(&raw["frameTree"], None, active.as_deref(), &mut frames)?;
+        let (attached_sessions, frame_parents) = {
+            let topology = self.topology.lock().await;
+            (
+                topology.frame_sessions.clone(),
+                topology.frame_parents.clone(),
+            )
+        };
+        let mut discovered_frame_sessions = Vec::new();
+        let mut stale_frame_sessions = HashSet::new();
+        let mut queried_sessions = HashSet::new();
+        for (attached_frame_id, session_id) in &attached_sessions {
+            if !queried_sessions.insert(session_id.clone()) {
+                continue;
+            }
+            let oopif_tree = match self
+                .cdp
+                .send_to_session(session_id, "Page.getFrameTree", None)
+                .await
+            {
+                Ok(tree) => tree,
+                Err(error) if error.code == -32_001 => {
+                    stale_frame_sessions.insert(session_id.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let start = frames.len();
+            collect_frames(
+                &oopif_tree["frameTree"],
+                frame_parents.get(attached_frame_id).map(String::as_str),
+                active.as_deref(),
+                &mut frames,
+            )?;
+            for frame in &frames[start..] {
+                discovered_frame_sessions.push((frame.id.clone(), session_id.clone()));
+            }
+            for frame in &mut frames[start..] {
+                frame.out_of_process = true;
+            }
+        }
+        let mut topology = self.topology.lock().await;
+        topology
+            .frame_sessions
+            .retain(|_, session| !stale_frame_sessions.contains(session));
+        for (frame_id, session_id) in discovered_frame_sessions {
+            topology.frame_sessions.insert(frame_id, session_id);
+        }
+        topology.frames = frames.clone();
+        Ok(frames)
+    }
+
+    pub async fn select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
+        validate_topology_id(frame_id)?;
+        let frame = self
+            .list_frames()
+            .await?
+            .into_iter()
+            .find(|frame| frame.id == frame_id)
+            .ok_or("frame was not found")?;
+        let session_id = {
+            let topology = self.topology.lock().await;
+            topology
+                .frame_sessions
+                .get(frame_id)
+                .cloned()
+                .or_else(|| topology.active_target_session_id.clone())
+                .ok_or("active target has no CDP session")?
+        };
+        let context_id = if frame.parent_id.is_none() {
+            None
+        } else {
+            let world = self
+                .cdp
+                .send_to_session(
+                    &session_id,
+                    "Page.createIsolatedWorld",
+                    Some(serde_json::json!({"frameId": frame_id, "worldName":"glass"})),
+                )
+                .await?;
+            Some(
+                world["executionContextId"]
+                    .as_i64()
+                    .ok_or("Page.createIsolatedWorld returned no executionContextId")?,
+            )
+        };
+        self.cdp.set_active_route(
+            Some(session_id.clone()),
+            Some(frame_id.to_string()),
+            context_id,
+        );
+        {
+            let mut topology = self.topology.lock().await;
+            topology.active_frame_id = Some(frame_id.to_string());
+            topology.active_session_id = Some(session_id);
+        }
+        self.invalidate_observation();
+        Ok(FrameInfo {
+            active: true,
+            ..frame
+        })
     }
 
     /// Whether the Chrome process was explicitly attached rather than launched
@@ -632,6 +1129,7 @@ impl BrowserSession {
     }
 
     pub async fn page_info(&self) -> BrowserResult<PageInfo> {
+        self.cdp.with_current_route(async {
         let raw = self
             .cdp
             .evaluate(
@@ -642,7 +1140,10 @@ impl BrowserSession {
         let json = value
             .as_str()
             .ok_or("document state evaluation returned a non-string value")?;
-        Ok(serde_json::from_str(json)?)
+                let mut page: PageInfo = serde_json::from_str(json)?;
+                (page.target_id, page.frame_id) = self.route_identity().await?;
+                Ok(page)
+        }).await
     }
 
     pub async fn navigate(&self, url: &str) -> BrowserResult<PageInfo> {
@@ -655,57 +1156,88 @@ impl BrowserSession {
         url: &str,
         deadline: Duration,
     ) -> BrowserResult<PageInfo> {
-        validate_wait_deadline(deadline)?;
-        let url = normalize_url(url);
-        let mut events = self.cdp.subscribe_events();
-        let started = tokio::time::Instant::now();
-        tokio::time::timeout(deadline, self.cdp.navigate(&url))
+        self.cdp
+            .with_current_target_route(async {
+                validate_wait_deadline(deadline)?;
+                let url = normalize_url(url);
+                let mut events = self.cdp.subscribe_events();
+                let started = tokio::time::Instant::now();
+                let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
+                    .await
+                    .map_err(|_| {
+                        wait_timeout("lifecycle", deadline, "navigate_command_pending")
+                    })??;
+                if let Some(frame_id) = navigation["frameId"].as_str() {
+                    validate_topology_id(frame_id)?;
+                    self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
+                    self.cdp
+                        .set_active_frame_context(Some(frame_id.to_string()), None);
+                }
+                let remaining = deadline.saturating_sub(started.elapsed());
+                self.wait_loop(
+                    WaitCondition::Lifecycle("complete".to_string()),
+                    remaining,
+                    deadline,
+                    &mut events,
+                    true,
+                )
+                .await?;
+                let remaining = deadline.saturating_sub(started.elapsed());
+                let main_frame = self
+                    .list_frames()
+                    .await?
+                    .into_iter()
+                    .find(|frame| frame.parent_id.is_none())
+                    .ok_or("navigated target returned no main frame")?;
+                self.select_frame(&main_frame.id).await?;
+                let page = tokio::time::timeout(remaining, self.page_info())
+                    .await
+                    .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+                self.invalidate_observation();
+                Ok(page)
+            })
             .await
-            .map_err(|_| wait_timeout("lifecycle", deadline, "navigate_command_pending"))??;
-        let remaining = deadline.saturating_sub(started.elapsed());
-        self.wait_loop(
-            WaitCondition::Lifecycle("complete".to_string()),
-            remaining,
-            deadline,
-            &mut events,
-            true,
-        )
-        .await?;
-        let remaining = deadline.saturating_sub(started.elapsed());
-        let page = tokio::time::timeout(remaining, self.page_info())
-            .await
-            .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
-        self.invalidate_observation();
-        Ok(page)
     }
 
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
-        let result = self.evaluate_value(expression).await;
-        // Arbitrary JavaScript may mutate DOM, styles, form state, or history.
-        // Invalidate synchronously so the next cached observation cannot race
-        // the asynchronous CDP mutation event stream.
-        self.invalidate_observation();
-        result
+        self.cdp
+            .with_current_route(async {
+                let result = self.evaluate_value(expression).await;
+                // Arbitrary JavaScript may mutate DOM, styles, form state, or history.
+                // Invalidate synchronously so the next cached observation cannot race
+                // the asynchronous CDP mutation event stream.
+                self.invalidate_observation();
+                result
+            })
+            .await
     }
 
     pub async fn text(&self) -> BrowserResult<String> {
-        let value = self
-            .evaluate_value("document.body ? document.body.innerText : ''")
-            .await?;
-        Ok(truncate_visible_text(
-            value.as_str().unwrap_or_default(),
-            COMPACT_TEXT_MAX_BYTES,
-        ))
+        self.cdp
+            .with_current_route(async {
+                let value = self
+                    .evaluate_value("document.body ? document.body.innerText : ''")
+                    .await?;
+                Ok(truncate_visible_text(
+                    value.as_str().unwrap_or_default(),
+                    COMPACT_TEXT_MAX_BYTES,
+                ))
+            })
+            .await
     }
 
     /// Fetch the full DOM only for an explicit deep-inspection operation.
     pub async fn deep_dom(&self) -> BrowserResult<DomNode> {
-        let raw = self.cdp.get_deep_document().await?;
-        parse_dom_tree(&raw).ok_or_else(|| {
-            "CDP deep DOM response contained no parseable root node"
-                .to_string()
-                .into()
-        })
+        self.cdp
+            .with_current_route(async {
+                let raw = self.cdp.get_deep_document().await?;
+                parse_dom_tree(&raw).ok_or_else(|| {
+                    "CDP deep DOM response contained no parseable root node"
+                        .to_string()
+                        .into()
+                })
+            })
+            .await
     }
 
     /// Collect compact page context without a deep DOM or screenshot.
@@ -754,17 +1286,21 @@ impl BrowserSession {
         include_screenshot: bool,
         use_cache: bool,
     ) -> BrowserResult<PageContext> {
-        let mut context = self
-            .compact_observation(use_cache)
-            .await?
-            .into_page_context();
-        if include_dom {
-            context.dom = Some(self.deep_dom().await?);
-        }
-        if include_screenshot {
-            context.screenshot = Some(self.screenshot_base64().await?);
-        }
-        Ok(context)
+        self.cdp
+            .with_current_route(async {
+                let mut context = self
+                    .compact_observation(use_cache)
+                    .await?
+                    .into_page_context();
+                if include_dom {
+                    context.dom = Some(self.deep_dom().await?);
+                }
+                if include_screenshot {
+                    context.screenshot = Some(self.screenshot_base64().await?);
+                }
+                Ok(context)
+            })
+            .await
     }
 
     async fn compact_observation(&self, use_cache: bool) -> BrowserResult<CompactPageContext> {
@@ -786,10 +1322,13 @@ impl BrowserSession {
             tokio::join!(self.compact_page_state(), self.cdp.get_accessibility_tree(),);
         let page_state = page_state?;
         let accessibility_raw = accessibility?;
+        let (target_id, frame_id) = self.route_identity().await?;
         let page = PageInfo {
             url: page_state.url,
             title: page_state.title,
             ready_state: page_state.ready_state,
+            target_id,
+            frame_id,
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
         let compact_accessibility = project_compact_accessibility(&full_roots, revision);
@@ -828,28 +1367,41 @@ impl BrowserSession {
 
     /// Capture a PNG while preserving CDP's base64 payload for image APIs.
     pub async fn screenshot_base64(&self) -> BrowserResult<String> {
-        Ok(self.cdp.screenshot("png").await?)
+        self.cdp
+            .with_current_route(async { Ok(self.cdp.screenshot("png").await?) })
+            .await
     }
 
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
-        self.cdp.scroll_by(dx, dy).await?;
-        Ok(ActionOutcome {
-            action: ActionKind::Scroll,
-            target: None,
-            revision: self.invalidate_observation(),
-        })
+        self.cdp
+            .with_current_route(async {
+                self.cdp.scroll_by(dx, dy).await?;
+                let (target_id, frame_id) = self.ensured_route_identity().await?;
+                Ok(ActionOutcome {
+                    action: ActionKind::Scroll,
+                    target: None,
+                    revision: self.invalidate_observation(),
+                    target_id,
+                    frame_id,
+                })
+            })
+            .await
     }
 
     pub async fn snapshot(&self) -> BrowserResult<AccessibilitySnapshot> {
-        let revision = self.page_revision.load(Ordering::Relaxed);
-        let raw = self.cdp.get_accessibility_tree().await?;
-        let roots = parse_accessibility_tree(&raw);
-        let interactive = interactive_elements(&roots, revision);
-        Ok(AccessibilitySnapshot {
-            page: self.page_info().await?,
-            roots,
-            interactive,
-        })
+        self.cdp
+            .with_current_route(async {
+                let revision = self.page_revision.load(Ordering::Relaxed);
+                let raw = self.cdp.get_accessibility_tree().await?;
+                let roots = parse_accessibility_tree(&raw);
+                let interactive = interactive_elements(&roots, revision);
+                Ok(AccessibilitySnapshot {
+                    page: self.page_info().await?,
+                    roots,
+                    interactive,
+                })
+            })
+            .await
     }
 
     pub async fn wait(
@@ -857,15 +1409,24 @@ impl BrowserSession {
         condition: WaitCondition,
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
-        validate_wait_deadline(deadline)?;
-        condition.validate()?;
-        if let WaitCondition::NetworkQuiet(quiet) = condition {
-            return tokio::time::timeout(deadline, self.wait_for_network_quiet(quiet, deadline))
-                .await
-                .map_err(|_| wait_timeout("network_quiet", deadline, "network_check_pending"))?;
-        }
-        let mut events = self.cdp.subscribe_events();
-        self.wait_loop(condition, deadline, deadline, &mut events, false)
+        self.cdp
+            .with_current_route(async {
+                validate_wait_deadline(deadline)?;
+                condition.validate()?;
+                if let WaitCondition::NetworkQuiet(quiet) = condition {
+                    return tokio::time::timeout(
+                        deadline,
+                        self.wait_for_network_quiet(quiet, deadline),
+                    )
+                    .await
+                    .map_err(|_| {
+                        wait_timeout("network_quiet", deadline, "network_check_pending")
+                    })?;
+                }
+                let mut events = self.cdp.subscribe_events();
+                self.wait_loop(condition, deadline, deadline, &mut events, false)
+                    .await
+            })
             .await
     }
 
@@ -898,10 +1459,13 @@ impl BrowserSession {
             last_state = bounded_wait_state(&state);
             previous_geometry = geometry;
             if matched && load_event_seen {
+                let (target_id, frame_id) = self.ensured_route_identity().await?;
                 return Ok(WaitOutcome {
                     condition: description,
                     elapsed_ms: started.elapsed().as_millis() as u64,
                     last_state,
+                    target_id,
+                    frame_id,
                 });
             }
             let now = tokio::time::Instant::now();
@@ -1030,10 +1594,13 @@ impl BrowserSession {
             let now = tokio::time::Instant::now();
             if in_flight.is_empty() && !overflowed && now.duration_since(empty_since) >= quiet {
                 guard.disable().await?;
+                let (target_id, frame_id) = self.route_identity().await?;
                 return Ok(WaitOutcome {
                     condition: "network_quiet".to_string(),
                     elapsed_ms: started.elapsed().as_millis() as u64,
                     last_state: "in_flight=0".to_string(),
+                    target_id,
+                    frame_id,
                 });
             }
             if now >= expires {
@@ -1094,48 +1661,57 @@ impl BrowserSession {
         target: &str,
         double_click: bool,
     ) -> BrowserResult<ActionOutcome> {
-        let element = self.resolve_element(target).await?;
-        let object_id = self
-            .cdp
-            .resolve_node_object(element.node_id, element.backend_dom_node_id)
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await
+                    .map_err(|error| {
+                        tracing::debug!(%error, "target node could not be resolved");
+                        TargetError {
+                            kind: TargetErrorKind::NotActionable,
+                            reason: Some(TargetActionabilityReason::NodeUnavailable),
+                            candidates: Vec::new(),
+                        }
+                    })?;
+                let remote = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id,
+                };
+                let local_point = self.verified_action_point(&remote.object_id).await?;
+                let point = self.target_viewport_point(local_point).await?;
+                let events = if double_click {
+                    self.mouse.generate_double_click_events(point)
+                } else {
+                    self.mouse.generate_click_events(point)
+                };
+                self.dispatch_pointer_events(&remote.object_id, local_point, point, events)
+                    .await?;
+                let (target_id, frame_id) = self.route_identity().await?;
+                Ok(ActionOutcome {
+                    action: if double_click {
+                        ActionKind::DoubleClick
+                    } else {
+                        ActionKind::Click
+                    },
+                    target: Some(ActionTarget {
+                        label: element.label,
+                        reference: element.reference,
+                    }),
+                    revision: self.invalidate_observation(),
+                    target_id,
+                    frame_id,
+                })
+            })
             .await
-            .map_err(|error| {
-                tracing::debug!(%error, "target node could not be resolved");
-                TargetError {
-                    kind: TargetErrorKind::NotActionable,
-                    reason: Some(TargetActionabilityReason::NodeUnavailable),
-                    candidates: Vec::new(),
-                }
-            })?;
-        let remote = RemoteObjectGuard {
-            cdp: self.cdp.clone(),
-            object_id,
-        };
-        let point = self.verified_action_point(&remote.object_id).await?;
-        let events = if double_click {
-            self.mouse.generate_double_click_events(point)
-        } else {
-            self.mouse.generate_click_events(point)
-        };
-        self.dispatch_pointer_events(&remote.object_id, point, events)
-            .await?;
-        Ok(ActionOutcome {
-            action: if double_click {
-                ActionKind::DoubleClick
-            } else {
-                ActionKind::Click
-            },
-            target: Some(ActionTarget {
-                label: element.label,
-                reference: element.reference,
-            }),
-            revision: self.invalidate_observation(),
-        })
     }
 
     async fn dispatch_pointer_events(
         &self,
         object_id: &str,
+        local_point: Point,
         point: Point,
         events: Vec<super::mouse::MouseEvent>,
     ) -> BrowserResult<()> {
@@ -1164,7 +1740,9 @@ impl BrowserSession {
                 .await?;
         }
         let press_point = self.verified_action_point(object_id).await?;
-        if (press_point.x - point.x).abs() > 1.0 || (press_point.y - point.y).abs() > 1.0 {
+        if (press_point.x - local_point.x).abs() > 1.0
+            || (press_point.y - local_point.y).abs() > 1.0
+        {
             return Err(TargetError {
                 kind: TargetErrorKind::NotActionable,
                 reason: Some(TargetActionabilityReason::GeometryChanged),
@@ -1210,16 +1788,23 @@ impl BrowserSession {
         text: &str,
         target: Option<&str>,
     ) -> BrowserResult<ActionOutcome> {
-        let target = match target {
-            Some(target) => self.click(target).await?.target,
-            None => None,
-        };
-        self.cdp.insert_text(text).await?;
-        Ok(ActionOutcome {
-            action: ActionKind::Type,
-            target,
-            revision: self.invalidate_observation(),
-        })
+        self.cdp
+            .with_current_route(async {
+                let target = match target {
+                    Some(target) => self.click(target).await?.target,
+                    None => None,
+                };
+                self.cdp.insert_text(text).await?;
+                let (target_id, frame_id) = self.route_identity().await?;
+                Ok(ActionOutcome {
+                    action: ActionKind::Type,
+                    target,
+                    revision: self.invalidate_observation(),
+                    target_id,
+                    frame_id,
+                })
+            })
+            .await
     }
 
     async fn viewport_center(&self) -> BrowserResult<Point> {
@@ -1237,6 +1822,24 @@ impl BrowserSession {
             .as_f64()
             .ok_or("viewport height was not numeric")?;
         Ok(Point { x, y })
+    }
+
+    async fn target_viewport_point(&self, point: Point) -> BrowserResult<Point> {
+        let Some(frame_id) = self.cdp.active_frame() else {
+            return Ok(point);
+        };
+        let frames = self.list_frames().await?;
+        let Some(frame) = frames.iter().find(|frame| frame.id == frame_id) else {
+            return Err("selected frame is no longer attached".into());
+        };
+        if frame.parent_id.is_none() {
+            return Ok(point);
+        }
+        let (x, y) = self.cdp.frame_viewport_offset(&frame_id).await?;
+        Ok(Point {
+            x: point.x + x,
+            y: point.y + y,
+        })
     }
 
     async fn evaluate_value(&self, expression: &str) -> BrowserResult<Value> {
@@ -1864,6 +2467,314 @@ fn bounded_candidate_label(value: &str) -> String {
     format!("{}…", &value[..end])
 }
 
+fn validate_topology_id(value: &str) -> BrowserResult<()> {
+    if value.is_empty() {
+        return Err("topology ID cannot be empty".into());
+    }
+    if value.len() > TOPOLOGY_ID_MAX_BYTES {
+        return Err(format!("topology ID exceeds {TOPOLOGY_ID_MAX_BYTES} UTF-8 bytes").into());
+    }
+    Ok(())
+}
+
+fn bounded_topology_text(value: &str) -> String {
+    if value.len() <= TOPOLOGY_TEXT_MAX_BYTES {
+        return value.to_string();
+    }
+    let mut end = TOPOLOGY_TEXT_MAX_BYTES - "…".len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
+fn collect_frames(
+    frame_tree: &Value,
+    parent_id: Option<&str>,
+    active_frame_id: Option<&str>,
+    frames: &mut Vec<FrameInfo>,
+) -> BrowserResult<()> {
+    if frames.len() == TOPOLOGY_MAX_FRAMES {
+        return Err("frame limit exceeded".into());
+    }
+    let frame = frame_tree
+        .get("frame")
+        .ok_or("Page.getFrameTree returned a node without frame data")?;
+    let id = frame["id"]
+        .as_str()
+        .ok_or("Page.getFrameTree returned a frame without an ID")?;
+    validate_topology_id(id)?;
+    frames.push(FrameInfo {
+        id: id.to_string(),
+        parent_id: parent_id.map(str::to_string),
+        url: bounded_topology_text(frame["url"].as_str().unwrap_or_default()),
+        active: active_frame_id == Some(id),
+        out_of_process: false,
+    });
+    if let Some(children) = frame_tree["childFrames"].as_array() {
+        for child in children {
+            collect_frames(child, Some(id), active_frame_id, frames)?;
+        }
+    }
+    Ok(())
+}
+
+fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) {
+    topology.events.push_back(TopologyEventSummary {
+        kind: kind.to_string(),
+        id: bounded_topology_id(id),
+    });
+    while topology.events.len() > TOPOLOGY_MAX_EVENTS {
+        topology.events.pop_front();
+    }
+}
+
+fn bounded_topology_id(value: &str) -> String {
+    if value.len() <= TOPOLOGY_ID_MAX_BYTES {
+        return value.to_string();
+    }
+    let mut end = TOPOLOGY_ID_MAX_BYTES - "…".len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
+fn retained_optional_topology_id(value: Option<&str>) -> BrowserResult<Option<String>> {
+    value
+        .map(|id| {
+            validate_topology_id(id)?;
+            Ok(id.to_string())
+        })
+        .transpose()
+}
+
+/// Apply one bounded lifecycle notification. Returns true when the selected
+/// target was lost and CDP command routing must be cleared.
+fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithParams) -> bool {
+    match event.method.as_str() {
+        "Target.targetCreated" | "Target.targetInfoChanged" => {
+            let info = &event.params["targetInfo"];
+            if info["type"].as_str() != Some("page") {
+                return false;
+            }
+            let Some(id) = info["targetId"].as_str() else {
+                return false;
+            };
+            if validate_topology_id(id).is_err() {
+                push_topology_event(topology, "rejected-target", id);
+                return false;
+            }
+            let Ok(opener_id) = retained_optional_topology_id(info["openerId"].as_str()) else {
+                push_topology_event(topology, "rejected-target-opener", id);
+                return false;
+            };
+            let target = PageTargetInfo {
+                id: id.to_string(),
+                url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+                title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+                opener_id,
+                active: topology.active_target_id.as_deref() == Some(id),
+            };
+            if let Some(existing) = topology.targets.iter_mut().find(|target| target.id == id) {
+                *existing = target;
+            } else if topology.targets.len() < TOPOLOGY_MAX_TARGETS {
+                topology.targets.push(target);
+            } else {
+                push_topology_event(topology, "rejected-target-budget", id);
+                return false;
+            }
+            push_topology_event(topology, "target-updated", id);
+        }
+        "Target.targetDestroyed" | "Target.targetCrashed" => {
+            let Some(id) = event.params["targetId"].as_str() else {
+                return false;
+            };
+            topology.targets.retain(|target| target.id != id);
+            push_topology_event(topology, event.method.as_str(), id);
+            if topology.active_target_id.as_deref() == Some(id) {
+                topology.active_target_id = None;
+                topology.active_target_session_id = None;
+                topology.active_session_id = None;
+                topology.active_frame_id = None;
+                topology.frames.clear();
+                topology.frame_sessions.clear();
+                topology.frame_parents.clear();
+                return true;
+            }
+        }
+        "Target.detachedFromTarget" => {
+            let Some(session_id) = event.params["sessionId"].as_str() else {
+                return false;
+            };
+            push_topology_event(topology, "Target.detachedFromTarget", session_id);
+            if topology.active_target_session_id.as_deref() == Some(session_id) {
+                topology.active_target_id = None;
+                topology.active_target_session_id = None;
+                topology.active_session_id = None;
+                topology.active_frame_id = None;
+                topology.frames.clear();
+                return true;
+            }
+            let active_session_detached = topology.active_session_id.as_deref() == Some(session_id);
+            topology
+                .frame_sessions
+                .retain(|_, attached_session| attached_session != session_id);
+            if active_session_detached {
+                topology.active_frame_id = None;
+                topology.active_session_id = topology.active_target_session_id.clone();
+            }
+        }
+        "Target.attachedToTarget" => {
+            let info = &event.params["targetInfo"];
+            if info["type"].as_str() != Some("iframe") {
+                return false;
+            }
+            let (Some(frame_id), Some(session_id)) = (
+                info["targetId"].as_str(),
+                event.params["sessionId"].as_str(),
+            ) else {
+                return false;
+            };
+            if validate_topology_id(frame_id).is_err() || validate_topology_id(session_id).is_err()
+            {
+                return false;
+            }
+            if topology.frame_sessions.len() < TOPOLOGY_MAX_FRAMES {
+                topology
+                    .frame_sessions
+                    .insert(frame_id.to_string(), session_id.to_string());
+                push_topology_event(topology, "Target.attachedToTarget", frame_id);
+            }
+        }
+        "Page.frameAttached" | "Page.frameNavigated" | "Page.frameDetached" => {
+            let event_session = event.session_id.as_deref();
+            let belongs_to_topology = event_session == topology.active_target_session_id.as_deref()
+                || event_session.is_some_and(|session_id| {
+                    topology
+                        .frame_sessions
+                        .values()
+                        .any(|attached| attached == session_id)
+                });
+            if !belongs_to_topology {
+                return false;
+            }
+            let id = event.params["frameId"]
+                .as_str()
+                .or_else(|| event.params["frame"]["id"].as_str());
+            if let Some(id) = id
+                && validate_topology_id(id).is_ok()
+            {
+                push_topology_event(topology, event.method.as_str(), id);
+                if event.method == "Page.frameAttached"
+                    && let Some(parent_id) = event.params["parentFrameId"].as_str()
+                    && validate_topology_id(parent_id).is_ok()
+                {
+                    topology
+                        .frame_parents
+                        .insert(id.to_string(), parent_id.to_string());
+                }
+                if event.method == "Page.frameDetached" {
+                    topology.frame_parents.remove(id);
+                }
+            }
+            let selected_was_affected = id.is_some_and(|changed_id| {
+                topology.active_frame_id.as_deref() == Some(changed_id)
+                    || frame_is_descendant_of(
+                        &topology.frames,
+                        topology.active_frame_id.as_deref(),
+                        changed_id,
+                    )
+            });
+            let selected_is_main = topology
+                .active_frame_id
+                .as_deref()
+                .and_then(|selected| topology.frames.iter().find(|frame| frame.id == selected))
+                .is_some_and(|frame| frame.parent_id.is_none());
+            topology.frames.clear();
+            if selected_was_affected
+                && matches!(
+                    event.method.as_str(),
+                    "Page.frameNavigated" | "Page.frameDetached"
+                )
+                && !(event.method == "Page.frameNavigated" && selected_is_main)
+            {
+                topology.active_frame_id = None;
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
+fn frame_is_descendant_of(frames: &[FrameInfo], selected: Option<&str>, ancestor: &str) -> bool {
+    let Some(mut current) = selected else {
+        return false;
+    };
+    while let Some(frame) = frames.iter().find(|frame| frame.id == current) {
+        let Some(parent) = frame.parent_id.as_deref() else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+async fn resync_topology(
+    cdp: &CdpClient,
+    registry: &Arc<Mutex<TopologyRegistry>>,
+) -> BrowserResult<()> {
+    let raw = cdp.send_browser("Target.getTargets", None).await?;
+    let (active_target, active_frame, target_session) = {
+        let topology = registry.lock().await;
+        (
+            topology.active_target_id.clone(),
+            topology.active_frame_id.clone(),
+            topology.active_target_session_id.clone(),
+        )
+    };
+    let mut targets = Vec::new();
+    for info in raw["targetInfos"].as_array().into_iter().flatten() {
+        if info["type"].as_str() != Some("page") {
+            continue;
+        }
+        let id = info["targetId"]
+            .as_str()
+            .ok_or("Target.getTargets returned a page without an ID")?;
+        validate_topology_id(id)?;
+        if targets.len() == TOPOLOGY_MAX_TARGETS {
+            return Err("page target limit exceeded during topology resync".into());
+        }
+        targets.push(PageTargetInfo {
+            id: id.to_string(),
+            url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
+            title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+            opener_id: retained_optional_topology_id(info["openerId"].as_str())?,
+            active: active_target.as_deref() == Some(id),
+        });
+    }
+    let mut frames = Vec::new();
+    if let Some(target_session) = target_session {
+        let raw = cdp
+            .send_to_session(&target_session, "Page.getFrameTree", None)
+            .await?;
+        collect_frames(
+            &raw["frameTree"],
+            None,
+            active_frame.as_deref(),
+            &mut frames,
+        )?;
+    }
+    let mut topology = registry.lock().await;
+    topology.targets = targets;
+    topology.frames = frames;
+    push_topology_event(&mut topology, "resynchronized", "topology");
+    Ok(())
+}
+
 fn actionability_reason(reason: &str) -> TargetActionabilityReason {
     match reason {
         "detached" => TargetActionabilityReason::Detached,
@@ -1969,6 +2880,11 @@ mod tests {
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
+            topology: Arc::new(Mutex::new(TopologyRegistry {
+                active_target_id: Some("test-target".to_string()),
+                active_frame_id: Some("test-frame".to_string()),
+                ..TopologyRegistry::default()
+            })),
         }
     }
 
@@ -2214,6 +3130,48 @@ mod tests {
     }
 
     #[test]
+    fn topology_events_never_select_a_popup_and_clear_a_lost_active_target() {
+        let mut topology = TopologyRegistry {
+            active_target_id: Some("page-1".to_string()),
+            active_session_id: Some("session-1".to_string()),
+            ..TopologyRegistry::default()
+        };
+        let popup = CdpEventWithParams {
+            method: "Target.targetCreated".to_string(),
+            params: serde_json::json!({"targetInfo": {
+                "type": "page", "targetId": "popup-1", "url": "about:blank",
+                "title": "", "openerId": "page-1"
+            }}),
+            session_id: None,
+        };
+        assert!(!apply_topology_event(&mut topology, &popup));
+        assert_eq!(topology.active_target_id.as_deref(), Some("page-1"));
+        assert_eq!(topology.targets[0].opener_id.as_deref(), Some("page-1"));
+
+        let crashed = CdpEventWithParams {
+            method: "Target.targetCrashed".to_string(),
+            params: serde_json::json!({"targetId": "page-1"}),
+            session_id: None,
+        };
+        assert!(apply_topology_event(&mut topology, &crashed));
+        assert!(topology.active_target_id.is_none());
+        assert!(topology.events.len() <= TOPOLOGY_MAX_EVENTS);
+    }
+
+    #[test]
+    fn frame_collection_is_bounded_and_preserves_parents() {
+        let tree = serde_json::json!({
+            "frame": {"id":"root", "url":"https://root.test"},
+            "childFrames": [{"frame":{"id":"child", "url":"https://child.test"}}]
+        });
+        let mut frames = Vec::new();
+        collect_frames(&tree, None, Some("child"), &mut frames).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].parent_id.as_deref(), Some("root"));
+        assert!(frames[1].active);
+    }
+
+    #[test]
     fn invalidates_context_only_for_page_or_dom_mutations() {
         assert!(context_event_invalidates_observation(
             "DOM.childNodeInserted"
@@ -2230,6 +3188,8 @@ mod tests {
             url: "https://example.test".to_string(),
             title: "Example".to_string(),
             ready_state: "complete".to_string(),
+            target_id: "target-1".to_string(),
+            frame_id: "frame-1".to_string(),
         };
         let mut context = PageContext {
             page: page.clone(),
@@ -2335,6 +3295,8 @@ mod tests {
                 reference: Some("r9:b42".to_string()),
             }),
             revision: 10,
+            target_id: "target-1".to_string(),
+            frame_id: "frame-1".to_string(),
         };
 
         let value = serde_json::to_value(outcome).unwrap();

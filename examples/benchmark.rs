@@ -36,6 +36,7 @@ async fn main() -> BrowserResult<()> {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
     })
@@ -50,6 +51,7 @@ async fn main() -> BrowserResult<()> {
         incognito: true,
         attach: false,
         target_id: None,
+        frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
     })
@@ -133,6 +135,7 @@ async fn main() -> BrowserResult<()> {
                 "rss_bytes_after_workload": process_rss_bytes(),
             },
             "glass_binary_size_bytes": glass_binary_size_bytes(),
+            "cdp_request_count_after_workload": fast_session.cdp().request_count(),
             "results": results,
         }))
     }

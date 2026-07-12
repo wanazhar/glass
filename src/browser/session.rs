@@ -52,7 +52,10 @@ const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.localName === 'canvas') summary.canvases += 1;
     }
     return JSON.stringify({url:location.href, title:document.title, ready_state:document.readyState,
-        text:document.body ? document.body.innerText : '', mutation_revision:state.revision, boundaries:summary});
+        text:(() => { const source=document.body ? document.body.innerText : ''; const bytes=new Uint8Array(16384);
+            const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
+            return new TextDecoder().decode(bytes.subarray(0, encoded.written)); })(),
+        mutation_revision:state.revision, boundaries:summary});
 })()"#;
 const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
@@ -418,13 +421,17 @@ pub struct ObservationBoundarySummary {
     pub child_frames: usize,
     pub canvases: usize,
     pub truncated: bool,
+    #[serde(default)]
+    pub text_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservationIncompleteReason {
     VisibleText,
-    Accessibility,
+    AccessibilityNode,
+    AccessibilityLabel,
+    Control,
     ShadowBoundary,
     FrameBoundary,
     Canvas,
@@ -1402,13 +1409,24 @@ impl BrowserSession {
             }
         }
 
+        let (target_id, frame_id) = self.route_identity().await?;
+        let world = self
+            .cdp
+            .send(
+                "Page.createIsolatedWorld",
+                Some(serde_json::json!({"frameId": frame_id, "worldName": "glass-observation"})),
+            )
+            .await?;
+        let context_id = world["executionContextId"]
+            .as_i64()
+            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
         let mut collected = None;
         for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
             let start_revision = self.page_revision.load(Ordering::Relaxed);
             let attempt_result = tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
-                let start = self.compact_page_state().await?;
+                let start = self.compact_page_state(context_id).await?;
                 let accessibility = self.cdp.get_accessibility_tree().await?;
-                let end = self.compact_page_state().await?;
+                let end = self.compact_page_state(context_id).await?;
                 BrowserResult::Ok((start, accessibility, end))
             })
             .await
@@ -1434,7 +1452,6 @@ impl BrowserSession {
             end_revision,
             (start_state, accessibility_raw, page_state),
         ) = collected.expect("observation always performs at least one attempt");
-        let (target_id, frame_id) = self.route_identity().await?;
         let page = PageInfo {
             url: page_state.url,
             title: page_state.title,
@@ -1444,14 +1461,28 @@ impl BrowserSession {
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
         let compact_accessibility = project_compact_accessibility(&full_roots, end_revision);
-        let (text, text_truncated) =
+        let (mut text, locally_truncated) =
             truncate_visible_text_with_status(&page_state.text, COMPACT_TEXT_MAX_BYTES);
+        let text_truncated = locally_truncated || page_state.boundaries.text_truncated;
+        if page_state.boundaries.text_truncated && !text.ends_with(TEXT_TRUNCATION_MARKER) {
+            let content_limit = COMPACT_TEXT_MAX_BYTES.saturating_sub(TEXT_TRUNCATION_MARKER.len());
+            while text.len() > content_limit {
+                text.pop();
+            }
+            text.push_str(TEXT_TRUNCATION_MARKER);
+        }
         let mut incomplete = Vec::new();
         if text_truncated {
             incomplete.push(ObservationIncompleteReason::VisibleText);
         }
-        if compact_accessibility.truncated {
-            incomplete.push(ObservationIncompleteReason::Accessibility);
+        if compact_accessibility.nodes_truncated {
+            incomplete.push(ObservationIncompleteReason::AccessibilityNode);
+        }
+        if compact_accessibility.labels_truncated {
+            incomplete.push(ObservationIncompleteReason::AccessibilityLabel);
+        }
+        if compact_accessibility.controls_truncated {
+            incomplete.push(ObservationIncompleteReason::Control);
         }
         if page_state.boundaries.shadow_roots > 0 {
             incomplete.push(ObservationIncompleteReason::ShadowBoundary);
@@ -1499,8 +1530,11 @@ impl BrowserSession {
         Ok(context)
     }
 
-    async fn compact_page_state(&self) -> BrowserResult<EvaluatedPageState> {
-        let raw = self.cdp.evaluate(COMPACT_PAGE_STATE_EXPRESSION).await?;
+    async fn compact_page_state(&self, context_id: i64) -> BrowserResult<EvaluatedPageState> {
+        let raw = self
+            .cdp
+            .evaluate_in_context(COMPACT_PAGE_STATE_EXPRESSION, Some(context_id))
+            .await?;
         let value = runtime_value(&raw)?;
         let json = value
             .as_str()
@@ -3545,13 +3579,16 @@ mod tests {
             let mut saw_accessibility = false;
             let mut saw_deep_dom = false;
 
-            for _ in 0..if include_dom { 4 } else { 3 } {
+            for _ in 0..if include_dom { 5 } else { 4 } {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
                     _ => panic!("expected text CDP request"),
                 };
                 let result = match request["method"].as_str() {
+                    Some("Page.createIsolatedWorld") => {
+                        serde_json::json!({"executionContextId": 71})
+                    }
                     Some("Runtime.evaluate") => {
                         saw_runtime = true;
                         let expression = request["params"]["expression"].as_str().unwrap();
@@ -3624,13 +3661,16 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.unwrap();
             let mut runtime_revision = 0_u64;
-            for _ in 0..6 {
+            for _ in 0..7 {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
                     _ => panic!("expected text CDP request"),
                 };
                 let result = match request["method"].as_str() {
+                    Some("Page.createIsolatedWorld") => {
+                        serde_json::json!({"executionContextId": 72})
+                    }
                     Some("Runtime.evaluate") => {
                         runtime_revision += 1;
                         serde_json::json!({"result": {"value": serde_json::json!({
@@ -3692,13 +3732,16 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.unwrap();
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
                     _ => panic!("expected text CDP request"),
                 };
                 let result = match request["method"].as_str() {
+                    Some("Page.createIsolatedWorld") => {
+                        serde_json::json!({"executionContextId": 73})
+                    }
                     Some("Runtime.evaluate") => serde_json::json!({
                         "result": {"value": serde_json::json!({
                             "url": "https://example.test",

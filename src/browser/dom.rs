@@ -55,6 +55,9 @@ pub struct CompactAccessibilityProjection {
     pub roots: Vec<CompactAxNode>,
     pub interactive: Vec<CompactInteractiveElement>,
     pub truncated: bool,
+    pub nodes_truncated: bool,
+    pub labels_truncated: bool,
+    pub controls_truncated: bool,
 }
 
 struct CompactProjectionState {
@@ -63,6 +66,9 @@ struct CompactProjectionState {
     outline_text_remaining: usize,
     interactive: Vec<CompactInteractiveElement>,
     truncated: bool,
+    nodes_truncated: bool,
+    labels_truncated: bool,
+    controls_truncated: bool,
 }
 
 impl CompactProjectionState {
@@ -73,6 +79,9 @@ impl CompactProjectionState {
             outline_text_remaining: COMPACT_AX_OUTLINE_TEXT_MAX_BYTES,
             interactive: Vec::new(),
             truncated: false,
+            nodes_truncated: false,
+            labels_truncated: false,
+            controls_truncated: false,
         }
     }
 }
@@ -222,6 +231,9 @@ pub fn project_compact_accessibility(
         roots,
         interactive: state.interactive,
         truncated: state.truncated,
+        nodes_truncated: state.nodes_truncated,
+        labels_truncated: state.labels_truncated,
+        controls_truncated: state.controls_truncated,
     }
 }
 
@@ -232,12 +244,14 @@ fn project_compact_node(
 ) -> Option<CompactAxNode> {
     if state.node_count >= COMPACT_AX_MAX_NODES {
         state.truncated = true;
+        state.nodes_truncated = true;
         return None;
     }
     state.node_count += 1;
 
     let (role, role_truncated) = truncate_utf8(&node.role, COMPACT_AX_ROLE_MAX_BYTES);
     state.truncated |= role_truncated;
+    state.labels_truncated |= role_truncated;
     let mut name = String::new();
     if node.interactive {
         if state.interactive.len() < COMPACT_AX_MAX_INTERACTIVE {
@@ -246,6 +260,7 @@ fn project_compact_node(
                 &mut state.interactive_text_remaining,
                 &mut state.truncated,
             );
+            state.controls_truncated |= control_name.len() < node.name.len();
             if let Some(backend_dom_node_id) = node.backend_dom_node_id {
                 state.interactive.push(CompactInteractiveElement {
                     reference: backend_node_reference(revision, backend_dom_node_id),
@@ -257,9 +272,11 @@ fn project_compact_node(
                 // A control without a backend node cannot be acted on through
                 // CDP, so do not publish a reference that would fail later.
                 state.truncated = true;
+                state.controls_truncated = true;
             }
         } else {
             state.truncated = true;
+            state.controls_truncated = true;
         }
     } else {
         name = take_compact_text(
@@ -267,6 +284,7 @@ fn project_compact_node(
             &mut state.outline_text_remaining,
             &mut state.truncated,
         );
+        state.labels_truncated |= name.len() < node.name.len();
     }
 
     let children = node

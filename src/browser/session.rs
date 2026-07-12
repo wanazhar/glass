@@ -1518,8 +1518,9 @@ impl NetworkDomainGuard {
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
+        let state = self.leases.lock().await;
         self.armed = false;
-        release_network_lease(&self.cdp, &self.leases).await
+        release_network_lease_locked(&self.cdp, state).await
     }
 }
 
@@ -1540,7 +1541,13 @@ async fn release_network_lease(
     cdp: &CdpClient,
     leases: &Mutex<NetworkLeaseState>,
 ) -> BrowserResult<()> {
-    let mut state = leases.lock().await;
+    release_network_lease_locked(cdp, leases.lock().await).await
+}
+
+async fn release_network_lease_locked(
+    cdp: &CdpClient,
+    mut state: tokio::sync::MutexGuard<'_, NetworkLeaseState>,
+) -> BrowserResult<()> {
     state.count = state.count.saturating_sub(1);
     if state.count == 0 {
         cdp.disable_network().await?;

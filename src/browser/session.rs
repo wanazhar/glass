@@ -30,7 +30,30 @@ pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
 /// Maximum UTF-8 byte length of visible text returned by a compact observation.
 pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
-const COMPACT_PAGE_STATE_EXPRESSION: &str = "JSON.stringify({url: location.href, title: document.title, ready_state: document.readyState, text: document.body ? document.body.innerText : ''})";
+const COMPACT_OBSERVATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
+const COMPACT_OBSERVATION_MAX_ATTEMPTS: u8 = 2;
+const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
+    const key = '__glassObservationRevision';
+    let state = globalThis[key];
+    if (!state) {
+        state = {revision: 0};
+        const observer = new MutationObserver(() => { state.revision += 1; });
+        observer.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
+        globalThis[key] = state;
+    }
+    const summary = {scanned_elements:0, scan_limit:512, shadow_roots:0, child_frames:0, canvases:0, truncated:false};
+    const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+        if (summary.scanned_elements >= summary.scan_limit) { summary.truncated = true; break; }
+        const element = walker.currentNode;
+        summary.scanned_elements += 1;
+        if (element.shadowRoot) summary.shadow_roots += 1;
+        if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
+        if (element.localName === 'canvas') summary.canvases += 1;
+    }
+    return JSON.stringify({url:location.href, title:document.title, ready_state:document.readyState,
+        text:document.body ? document.body.innerText : '', mutation_revision:state.revision, boundaries:summary});
+})()"#;
 const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
@@ -368,9 +391,45 @@ pub struct PageContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dom: Option<DomNode>,
     pub accessibility: CompactAccessibilitySnapshot,
+    pub consistency: ObservationConsistency,
+    pub boundaries: ObservationBoundarySummary,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<ObservationIncompleteReason>,
     /// Base64 PNG data is populated only when visual context is explicitly requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservationConsistency {
+    pub consistent: bool,
+    pub attempts: u8,
+    pub start_revision: u64,
+    pub end_revision: u64,
+    pub start_mutation_revision: u64,
+    pub end_mutation_revision: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ObservationBoundarySummary {
+    pub scanned_elements: usize,
+    pub scan_limit: usize,
+    pub shadow_roots: usize,
+    pub child_frames: usize,
+    pub canvases: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationIncompleteReason {
+    VisibleText,
+    Accessibility,
+    ShadowBoundary,
+    FrameBoundary,
+    Canvas,
+    BoundaryScan,
+    MutationRace,
 }
 
 /// The completed browser operation represented by an [`ActionOutcome`].
@@ -423,6 +482,9 @@ struct CompactPageContext {
     page: PageInfo,
     text: String,
     accessibility: CompactAccessibilitySnapshot,
+    consistency: ObservationConsistency,
+    boundaries: ObservationBoundarySummary,
+    incomplete: Vec<ObservationIncompleteReason>,
 }
 
 impl CompactPageContext {
@@ -432,6 +494,9 @@ impl CompactPageContext {
             text: self.text,
             dom: None,
             accessibility: self.accessibility,
+            consistency: self.consistency,
+            boundaries: self.boundaries,
+            incomplete: self.incomplete,
             screenshot: None,
         }
     }
@@ -443,6 +508,10 @@ struct EvaluatedPageState {
     title: String,
     #[serde(default)]
     ready_state: String,
+    #[serde(default)]
+    mutation_revision: u64,
+    #[serde(default)]
+    boundaries: ObservationBoundarySummary,
     text: String,
 }
 
@@ -1333,10 +1402,38 @@ impl BrowserSession {
             }
         }
 
-        let (page_state, accessibility) =
-            tokio::join!(self.compact_page_state(), self.cdp.get_accessibility_tree(),);
-        let page_state = page_state?;
-        let accessibility_raw = accessibility?;
+        let mut collected = None;
+        for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
+            let start_revision = self.page_revision.load(Ordering::Relaxed);
+            let attempt_result = tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
+                let start = self.compact_page_state().await?;
+                let accessibility = self.cdp.get_accessibility_tree().await?;
+                let end = self.compact_page_state().await?;
+                BrowserResult::Ok((start, accessibility, end))
+            })
+            .await
+            .map_err(|_| "compact observation attempt exceeded its one-second deadline")??;
+            let end_revision = self.page_revision.load(Ordering::Relaxed);
+            let consistent = start_revision == end_revision
+                && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision;
+            collected = Some((
+                attempt,
+                consistent,
+                start_revision,
+                end_revision,
+                attempt_result,
+            ));
+            if consistent {
+                break;
+            }
+        }
+        let (
+            attempts,
+            consistent,
+            start_revision,
+            end_revision,
+            (start_state, accessibility_raw, page_state),
+        ) = collected.expect("observation always performs at least one attempt");
         let (target_id, frame_id) = self.route_identity().await?;
         let page = PageInfo {
             url: page_state.url,
@@ -1346,23 +1443,59 @@ impl BrowserSession {
             frame_id,
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
-        let compact_accessibility = project_compact_accessibility(&full_roots, revision);
+        let compact_accessibility = project_compact_accessibility(&full_roots, end_revision);
+        let (text, text_truncated) =
+            truncate_visible_text_with_status(&page_state.text, COMPACT_TEXT_MAX_BYTES);
+        let mut incomplete = Vec::new();
+        if text_truncated {
+            incomplete.push(ObservationIncompleteReason::VisibleText);
+        }
+        if compact_accessibility.truncated {
+            incomplete.push(ObservationIncompleteReason::Accessibility);
+        }
+        if page_state.boundaries.shadow_roots > 0 {
+            incomplete.push(ObservationIncompleteReason::ShadowBoundary);
+        }
+        if page_state.boundaries.child_frames > 0 {
+            incomplete.push(ObservationIncompleteReason::FrameBoundary);
+        }
+        if page_state.boundaries.canvases > 0 {
+            incomplete.push(ObservationIncompleteReason::Canvas);
+        }
+        if page_state.boundaries.truncated {
+            incomplete.push(ObservationIncompleteReason::BoundaryScan);
+        }
+        if !consistent {
+            incomplete.push(ObservationIncompleteReason::MutationRace);
+        }
         let accessibility = CompactAccessibilitySnapshot {
             page: page.clone(),
-            revision,
+            revision: end_revision,
             roots: compact_accessibility.roots,
             interactive: compact_accessibility.interactive,
             truncated: compact_accessibility.truncated,
         };
         let context = CompactPageContext {
             page,
-            text: truncate_visible_text(&page_state.text, COMPACT_TEXT_MAX_BYTES),
+            text,
             accessibility,
+            consistency: ObservationConsistency {
+                consistent,
+                attempts,
+                start_revision,
+                end_revision,
+                start_mutation_revision: start_state.mutation_revision,
+                end_mutation_revision: page_state.mutation_revision,
+            },
+            boundaries: page_state.boundaries,
+            incomplete,
         };
-        *self.observation_cache.lock().await = Some(CachedObservation {
-            revision,
-            context: context.clone(),
-        });
+        if consistent && self.page_revision.load(Ordering::Relaxed) == end_revision {
+            *self.observation_cache.lock().await = Some(CachedObservation {
+                revision: end_revision,
+                context: context.clone(),
+            });
+        }
         Ok(context)
     }
 
@@ -2395,8 +2528,12 @@ fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<InteractiveEleme
 }
 
 fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
+    truncate_visible_text_with_status(text, max_bytes).0
+}
+
+fn truncate_visible_text_with_status(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
-        return text.to_string();
+        return (text.to_string(), false);
     }
 
     let content_limit = max_bytes.saturating_sub(TEXT_TRUNCATION_MARKER.len());
@@ -2409,7 +2546,7 @@ fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
     if max_bytes >= TEXT_TRUNCATION_MARKER.len() {
         truncated.push_str(TEXT_TRUNCATION_MARKER);
     }
-    truncated
+    (truncated, true)
 }
 
 fn interaction_path(
@@ -3408,7 +3545,7 @@ mod tests {
             let mut saw_accessibility = false;
             let mut saw_deep_dom = false;
 
-            for _ in 0..if include_dom { 3 } else { 2 } {
+            for _ in 0..if include_dom { 4 } else { 3 } {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
@@ -3430,6 +3567,15 @@ mod tests {
                             "title": "Example",
                             "ready_state": "complete",
                             "text": text,
+                            "mutation_revision": 0,
+                            "boundaries": {
+                                "scanned_elements": 12,
+                                "scan_limit": 512,
+                                "shadow_roots": 1,
+                                "child_frames": 1,
+                                "canvases": 1,
+                                "truncated": false
+                            }
                         })
                         .to_string();
                         serde_json::json!({
@@ -3471,6 +3617,51 @@ mod tests {
         (format!("ws://{address}"), server)
     }
 
+    async fn mutation_race_server() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut runtime_revision = 0_u64;
+            for _ in 0..6 {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                let result = match request["method"].as_str() {
+                    Some("Runtime.evaluate") => {
+                        runtime_revision += 1;
+                        serde_json::json!({"result": {"value": serde_json::json!({
+                            "url": "https://race.test",
+                            "title": "Race",
+                            "ready_state": "complete",
+                            "text": "changing",
+                            "mutation_revision": runtime_revision,
+                            "boundaries": {"scanned_elements": 1, "scan_limit": 512,
+                                "shadow_roots": 0, "child_frames": 0, "canvases": 0,
+                                "truncated": false}
+                        }).to_string()}})
+                    }
+                    Some("Accessibility.getFullAXTree") => serde_json::json!({"nodes": []}),
+                    method => panic!("unexpected mutation-race command: {method:?}"),
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "id": request["id"], "result": result
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        (format!("ws://{address}"), server)
+    }
+
     async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
         let huge_text = "x".repeat(33 * 1024);
         let tree = serde_json::json!({
@@ -3501,7 +3692,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.unwrap();
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
@@ -3641,6 +3832,16 @@ mod tests {
                 interactive: Vec::new(),
                 truncated: false,
             },
+            consistency: ObservationConsistency {
+                consistent: true,
+                attempts: 1,
+                start_revision: 0,
+                end_revision: 0,
+                start_mutation_revision: 0,
+                end_mutation_revision: 0,
+            },
+            boundaries: ObservationBoundarySummary::default(),
+            incomplete: Vec::new(),
             screenshot: None,
         };
 
@@ -3786,9 +3987,43 @@ mod tests {
         assert!(context.text.ends_with(TEXT_TRUNCATION_MARKER));
         assert!(context.text.len() <= COMPACT_TEXT_MAX_BYTES);
         assert!(std::str::from_utf8(context.text.as_bytes()).is_ok());
+        assert!(context.consistency.consistent);
+        assert_eq!(context.consistency.attempts, 1);
+        assert_eq!(context.boundaries.shadow_roots, 1);
+        assert_eq!(
+            context.incomplete,
+            vec![
+                ObservationIncompleteReason::VisibleText,
+                ObservationIncompleteReason::ShadowBoundary,
+                ObservationIncompleteReason::FrameBoundary,
+                ObservationIncompleteReason::Canvas,
+            ]
+        );
         let serialized = serde_json::to_value(&context).unwrap();
         assert!(serialized.get("dom").is_none());
         assert!(serialized.get("screenshot").is_none());
+
+        session.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mutation_race_retries_once_marks_incomplete_and_is_not_cached() {
+        let (url, server) = mutation_race_server().await;
+        let session = test_session(CdpClient::connect(&url).await.unwrap());
+
+        let context = session.observe().await.unwrap();
+        assert!(!context.consistency.consistent);
+        assert_eq!(context.consistency.attempts, 2);
+        assert!(
+            context.consistency.end_mutation_revision > context.consistency.start_mutation_revision
+        );
+        assert!(
+            context
+                .incomplete
+                .contains(&ObservationIncompleteReason::MutationRace)
+        );
+        assert!(session.observation_cache.lock().await.is_none());
 
         session.close().await.unwrap();
         server.await.unwrap();

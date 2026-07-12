@@ -89,6 +89,7 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
 | `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
+| `wait` | `condition`, optional `timeoutMs` | Wait for one typed condition. |
 
 All arguments are JSON. `scroll` defaults to `dx: 0` and `dy: 600`.
 `target` uses the same explicit locator forms as the CLI: `ref=`, `name=`,
@@ -96,6 +97,8 @@ All arguments are JSON. `scroll` defaults to `dx: 0` and `dy: 600`.
 accessible names remain compatible. The legacy `selector` argument is treated
 as CSS, but must still resolve uniquely.
 `includeDom` and `includeScreenshot` default to `false`.
+`wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
+active wait and scoped network subscriptions are disabled on drop.
 
 ## Observation strategy
 

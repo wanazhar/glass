@@ -31,11 +31,15 @@ text
 dom
 observe [--deep-dom] [--screenshot]
 scroll [--dx PIXELS] [--dy PIXELS]
+wait CONDITION [--timeout-ms MILLISECONDS]
 evaluate EXPRESSION
 ```
 
 `screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and
 `dy=600`. `dom` and `observe --deep-dom` are explicit deep-inspection actions;
+`wait` defaults to a 10-second bounded deadline and accepts the typed condition
+forms documented in the browser architecture (`lifecycle=`, `url=`,
+`url-prefix=`, target states, `text=`, `js=`, and `network-quiet=`);
 normal observations do not collect the full DOM. Likewise, screenshots are
 only captured by `screenshot` or `observe --screenshot`.
 

@@ -1,7 +1,8 @@
 use super::args::{Cli, Commands, ProfileCommand};
 use crate::browser::profile::ProfileManager;
-use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions, WaitCondition};
 use serde::Serialize;
+use std::time::Duration;
 
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     if cli.mcp {
@@ -112,6 +113,19 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::Scroll { dx, dy } => {
             print_json(&session.scroll(*dx, *dy).await?)?;
+        }
+        Commands::Wait {
+            condition,
+            timeout_ms,
+        } => {
+            print_json(
+                &session
+                    .wait(
+                        WaitCondition::parse(condition)?,
+                        Duration::from_millis(*timeout_ms),
+                    )
+                    .await?,
+            )?;
         }
         Commands::Evaluate { expression } => {
             print_json(&session.evaluate(expression).await?)?;

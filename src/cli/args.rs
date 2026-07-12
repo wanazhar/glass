@@ -116,6 +116,13 @@ pub enum Commands {
         dy: f64,
     },
 
+    /// Wait for one explicit browser condition until a bounded deadline.
+    Wait {
+        condition: String,
+        #[arg(long, default_value_t = 10_000)]
+        timeout_ms: u64,
+    },
+
     /// Evaluate JavaScript in the current page.
     Evaluate { expression: String },
 
@@ -194,6 +201,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::DoubleClick { target }) if target == "r7:b42"
+        ));
+    }
+
+    #[test]
+    fn wait_has_an_explicit_condition_and_bounded_default() {
+        let cli = Cli::try_parse_from(["glass", "wait", "text=Ready"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Wait { condition, timeout_ms: 10_000 }) if condition == "text=Ready"
         ));
     }
 

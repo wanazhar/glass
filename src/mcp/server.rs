@@ -14,7 +14,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
+    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError, WaitCondition,
+    WaitTimeout,
 };
 use crate::cli::args::Cli;
 
@@ -147,6 +148,10 @@ enum ToolInvocation<'a> {
     Scroll {
         dx: f64,
         dy: f64,
+    },
+    Wait {
+        condition: &'a str,
+        timeout_ms: u64,
     },
 }
 
@@ -478,6 +483,11 @@ async fn handle_request(
                 let text = error
                     .downcast_ref::<TargetError>()
                     .and_then(|error| serde_json::to_string(error).ok())
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<WaitTimeout>()
+                            .and_then(|error| serde_json::to_string(error).ok())
+                    })
                     .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut response = success_response(
                     request.id.response_value(),
@@ -557,6 +567,17 @@ async fn call_tool(
             serialized_result(&session.evaluate(expression).await?)
         }
         ToolInvocation::Scroll { dx, dy } => action_result(session.scroll(dx, dy).await?),
+        ToolInvocation::Wait {
+            condition,
+            timeout_ms,
+        } => Ok(text_result(serde_json::to_string(
+            &session
+                .wait(
+                    WaitCondition::parse(condition)?,
+                    Duration::from_millis(timeout_ms),
+                )
+                .await?,
+        )?)),
     }
 }
 
@@ -594,6 +615,10 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "scroll" => Ok(ToolInvocation::Scroll {
             dx: optional_number(arguments, "dx", 0.0)?,
             dy: optional_number(arguments, "dy", 600.0)?,
+        }),
+        "wait" => Ok(ToolInvocation::Wait {
+            condition: required_string(arguments, "condition")?,
+            timeout_ms: optional_u64(arguments, "timeoutMs", 10_000)?,
         }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
@@ -693,6 +718,18 @@ fn tools() -> Vec<Tool> {
                 }
             }),
         },
+        Tool {
+            name: "wait",
+            description: "Wait for one typed condition until an explicit deadline.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "condition": {"type": "string"},
+                    "timeoutMs": {"type": "integer", "minimum": 1, "default": 10000}
+                },
+                "required": ["condition"]
+            }),
+        },
     ]
 }
 
@@ -736,6 +773,16 @@ fn optional_number(arguments: &Value, name: &str, default: f64) -> BrowserResult
         Some(value) => value
             .as_f64()
             .ok_or_else(|| format!("{name} must be a number").into()),
+    }
+}
+
+fn optional_u64(arguments: &Value, name: &str, default: u64) -> BrowserResult<u64> {
+    match arguments.get(name) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| format!("{name} must be a positive integer").into()),
     }
 }
 
@@ -972,7 +1019,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],

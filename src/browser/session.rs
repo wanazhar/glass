@@ -1518,9 +1518,8 @@ impl NetworkDomainGuard {
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
-        release_network_lease(&self.cdp, &self.leases).await?;
         self.armed = false;
-        Ok(())
+        release_network_lease(&self.cdp, &self.leases).await
     }
 }
 

@@ -1121,6 +1121,14 @@ async fn browser_session_drives_a_local_fixture() {
     );
     session.click("css=#editable").await.unwrap();
     session.key_press("x").await.unwrap();
+    assert!(
+        session
+            .evaluate("document.querySelector('#editable').textContent.includes('x')")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
     session.shortcut("Control+A").await.unwrap();
     let key_events = session.evaluate("window.keyEvents").await.unwrap();
     let x_events: Vec<_> = key_events
@@ -1137,6 +1145,17 @@ async fn browser_session_drives_a_local_fixture() {
             .unwrap()
             .iter()
             .any(|event| event["ctrl"] == true)
+    );
+    session.type_text("Par", Some("css=#city")).await.unwrap();
+    session.key_press("ArrowDown").await.unwrap();
+    session.key_press("Enter").await.unwrap();
+    assert!(
+        session
+            .evaluate("document.querySelector('#city').value.startsWith('Par')")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
     );
     session.check("css=#agree").await.unwrap();
     assert_eq!(

@@ -913,9 +913,12 @@ async fn execute_browser_operation(
             }))
         }
         BrowserOperation::Screenshot(output) => {
+            let output = session
+                .policy()
+                .require_output_path(std::path::Path::new(&output))?;
             tokio::fs::write(&output, session.screenshot_png().await?).await?;
             Ok(Box::new(OperationResult {
-                activity: format!("Screenshot saved to {output}"),
+                activity: format!("Screenshot saved to {}", output.display()),
                 update: None,
             }))
         }
@@ -1010,10 +1013,15 @@ async fn send_browser_event(events: &mpsc::Sender<BrowserEvent>, event: BrowserE
     events.send(event).await.is_ok()
 }
 
-fn dispatch_ui_intent(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, intent: UiIntent) {
+fn dispatch_ui_intent(
+    app: &mut App,
+    commands: &mpsc::Sender<BrowserCommand>,
+    policy: &BrowserPolicy,
+    intent: UiIntent,
+) {
     match intent {
         UiIntent::None => {}
-        UiIntent::Submit(command) => handle_submission(app, commands, command),
+        UiIntent::Submit(command) => handle_submission(app, commands, policy, command),
         UiIntent::Cancel(id) => {
             if commands.try_send(BrowserCommand::Cancel { id }).is_err() {
                 app.cancellation_enqueue_failed(id);
@@ -1026,7 +1034,12 @@ fn dispatch_ui_intent(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, in
     }
 }
 
-fn handle_submission(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, command: String) {
+fn handle_submission(
+    app: &mut App,
+    commands: &mpsc::Sender<BrowserCommand>,
+    policy: &BrowserPolicy,
+    command: String,
+) {
     app.add_activity(format!("> {command}"));
     match parse_command(&command) {
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
@@ -1036,6 +1049,12 @@ fn handle_submission(app: &mut App, commands: &mpsc::Sender<BrowserCommand>, com
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
+            if let Err(error) =
+                policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)
+            {
+                app.report_error(error.to_string());
+                return;
+            }
             match ProfileManager::new().list_profiles() {
                 Ok(profiles) if profiles.is_empty() => app.add_activity("No saved profiles."),
                 Ok(profiles) => {
@@ -1244,7 +1263,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     let local = LocalSet::new();
     let browser_worker = local.spawn_local(browser_worker(
         options,
-        policy,
+        policy.clone(),
         browser_command_rx,
         browser_event_tx,
         shutdown_rx,
@@ -1259,6 +1278,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
             &browser_commands,
             &mut input_events,
             &mut browser_events,
+            &policy,
         ))
         .await;
 
@@ -1285,6 +1305,7 @@ async fn run_tui_loop(
     commands: &mpsc::Sender<BrowserCommand>,
     input_events: &mut mpsc::Receiver<InputEvent>,
     browser_events: &mut mpsc::Receiver<BrowserEvent>,
+    policy: &BrowserPolicy,
 ) -> BrowserResult<()> {
     let mut redraw = true;
     let mut browser_events_open = true;
@@ -1301,7 +1322,7 @@ async fn run_tui_loop(
             input = input_events.recv() => match input {
                 Some(InputEvent::Key(key)) => {
                     let intent = app.reduce_key(key);
-                    dispatch_ui_intent(app, commands, intent);
+                    dispatch_ui_intent(app, commands, policy, intent);
                     true
                 }
                 Some(InputEvent::Redraw) => true,

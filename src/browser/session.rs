@@ -866,6 +866,7 @@ pub struct BrowserSession {
     topology: Arc<Mutex<TopologyRegistry>>,
     upload_root: PathBuf,
     policy: BrowserPolicy,
+    policy_interception: Option<PolicyInterception>,
 }
 
 struct CachedObservation {
@@ -873,46 +874,70 @@ struct CachedObservation {
     context: CompactPageContext,
 }
 
-struct NavigationPolicyGuard {
+type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
+
+struct PolicyInterception {
     cdp: CdpClient,
-    session_id: Option<String>,
-    denial: Arc<Mutex<Option<PolicyError>>>,
+    sessions: Arc<Mutex<HashSet<String>>>,
+    paused: PausedPolicyRequests,
+    last_denial: Arc<Mutex<Option<PolicyError>>>,
     worker: tokio::task::JoinHandle<()>,
-    armed: bool,
 }
 
-impl NavigationPolicyGuard {
-    async fn acquire(cdp: CdpClient, policy: BrowserPolicy) -> BrowserResult<Option<Self>> {
-        if policy.preset() != PolicyPreset::Hardened {
-            return Ok(None);
-        }
-        let session_id = cdp.current_session_id();
+impl PolicyInterception {
+    async fn start(
+        cdp: CdpClient,
+        policy: BrowserPolicy,
+        initial_session: String,
+    ) -> BrowserResult<Self> {
         let mut events = cdp.subscribe_events_with_params();
-        let denial = Arc::new(Mutex::new(None));
+        let sessions = Arc::new(Mutex::new(HashSet::from([initial_session.clone()])));
+        let paused = Arc::new(Mutex::new(HashSet::new()));
+        let last_denial = Arc::new(Mutex::new(None));
         let worker_cdp = cdp.clone();
-        let worker_session_id = session_id.clone();
-        let worker_denial = Arc::clone(&denial);
+        let worker_sessions = Arc::clone(&sessions);
+        let worker_paused = Arc::clone(&paused);
+        let worker_denial = Arc::clone(&last_denial);
         let worker = tokio::spawn(async move {
             while let Ok(event) = events.recv().await {
-                if event.method != "Fetch.requestPaused" || event.session_id != worker_session_id {
+                if event.method == "Target.attachedToTarget" {
+                    if let Some(session_id) = event.params["sessionId"].as_str() {
+                        let session_id = session_id.to_string();
+                        if enable_fetch_for(&worker_cdp, &session_id).await.is_ok() {
+                            worker_sessions.lock().await.insert(session_id.clone());
+                            let _ = worker_cdp
+                                .send_to_session(
+                                    &session_id,
+                                    "Runtime.runIfWaitingForDebugger",
+                                    None,
+                                )
+                                .await;
+                        }
+                    }
+                    continue;
+                }
+                if event.method != "Fetch.requestPaused" {
                     continue;
                 }
                 let Some(request_id) = event.params["requestId"].as_str() else {
                     continue;
                 };
+                let request_id = request_id.to_string();
+                let key = (event.session_id.clone(), request_id.clone());
+                worker_paused.lock().await.insert(key.clone());
                 let url = event.params["request"]["url"].as_str().unwrap_or_default();
                 let decision = policy.require_url(url).await;
                 let (method, params) = match decision {
                     Ok(_) => (
                         "Fetch.continueRequest",
-                        serde_json::json!({"requestId": request_id}),
+                        serde_json::json!({"requestId": &request_id}),
                     ),
                     Err(error) => {
                         *worker_denial.lock().await = Some(error);
                         (
                             "Fetch.failRequest",
                             serde_json::json!({
-                                "requestId": request_id,
+                                "requestId": &request_id,
                                 "errorReason": "BlockedByClient"
                             }),
                         )
@@ -926,50 +951,45 @@ impl NavigationPolicyGuard {
                     }
                     None => worker_cdp.send(method, Some(params)).await,
                 };
+                worker_paused.lock().await.remove(&key);
             }
         });
-        let enable = serde_json::json!({
-            "patterns": [{"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"}]
-        });
-        let enabled = match session_id.as_deref() {
-            Some(session_id) => {
-                cdp.send_to_session(session_id, "Fetch.enable", Some(enable))
-                    .await
-            }
-            None => cdp.send("Fetch.enable", Some(enable)).await,
-        };
-        if let Err(error) = enabled {
+        if let Err(error) = enable_fetch_for(&cdp, &initial_session).await {
             worker.abort();
-            return Err(error.into());
+            return Err(error);
         }
-        Ok(Some(Self {
+        Ok(Self {
             cdp,
-            session_id,
-            denial,
+            sessions,
+            paused,
+            last_denial,
             worker,
-            armed: true,
-        }))
+        })
     }
 
-    async fn finish(mut self) -> BrowserResult<Option<PolicyError>> {
-        disable_fetch_for(&self.cdp, self.session_id.as_deref()).await?;
-        self.worker.abort();
-        self.armed = false;
-        Ok(self.denial.lock().await.take())
+    async fn take_denial(&self) -> Option<PolicyError> {
+        self.last_denial.lock().await.take()
     }
-}
 
-impl Drop for NavigationPolicyGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
+    async fn shutdown(self) {
+        for (session_id, request_id) in self.paused.lock().await.clone() {
+            let params = Some(serde_json::json!({
+                "requestId": request_id,
+                "errorReason": "Aborted"
+            }));
+            let _ = match session_id.as_deref() {
+                Some(session_id) => {
+                    self.cdp
+                        .send_to_session(session_id, "Fetch.failRequest", params)
+                        .await
+                }
+                None => self.cdp.send("Fetch.failRequest", params).await,
+            };
+        }
+        for session_id in self.sessions.lock().await.clone() {
+            let _ = disable_fetch_for(&self.cdp, Some(&session_id)).await;
         }
         self.worker.abort();
-        let cdp = self.cdp.clone();
-        let session_id = self.session_id.clone();
-        tokio::spawn(async move {
-            let _ = disable_fetch_for(&cdp, session_id.as_deref()).await;
-        });
     }
 }
 
@@ -1039,7 +1059,7 @@ impl BrowserSession {
 
     pub async fn start_with_policy(
         options: &SessionOptions,
-        policy: BrowserPolicy,
+        mut policy: BrowserPolicy,
     ) -> BrowserResult<Self> {
         options.validate()?;
         if options.attach {
@@ -1048,6 +1068,7 @@ impl BrowserSession {
         if !options.attach && !options.incognito {
             policy.require(PolicyCapability::PersistentProfile)?;
         }
+        let resolver_rules = policy.prepare_hardened_session(options.attach).await?;
         let profile_manager = ProfileManager::new();
         let mut disposable_profile = None;
         let mut chrome = None;
@@ -1096,6 +1117,7 @@ impl BrowserSession {
                     Some(&profile_dir),
                     options.headed,
                     options.incognito,
+                    resolver_rules.as_deref(),
                 )
                 .await?,
             );
@@ -1161,6 +1183,11 @@ impl BrowserSession {
             }
             return Err(Box::new(error));
         }
+        let policy_interception = if policy.preset() == PolicyPreset::Hardened {
+            Some(PolicyInterception::start(cdp.clone(), policy.clone(), session_id.clone()).await?)
+        } else {
+            None
+        };
 
         let page_revision = Arc::new(AtomicU64::new(1));
         let mut events = cdp.subscribe_events();
@@ -1216,11 +1243,11 @@ impl BrowserSession {
                 }
             }
         });
-        cdp.send(
+        cdp.send_browser(
             "Target.setAutoAttach",
             Some(serde_json::json!({
                 "autoAttach": true,
-                "waitForDebuggerOnStart": false,
+                "waitForDebuggerOnStart": policy.preset() == PolicyPreset::Hardened,
                 "flatten": true
             })),
         )
@@ -1243,6 +1270,7 @@ impl BrowserSession {
             topology,
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
             policy,
+            policy_interception,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1268,8 +1296,11 @@ impl BrowserSession {
         Ok(session)
     }
 
-    pub fn cdp(&self) -> &CdpClient {
-        &self.cdp
+    /// Explicit privileged escape hatch for benchmark and protocol diagnostics.
+    /// Hardened sessions deny it unless `raw-cdp` is deliberately allowed.
+    pub fn raw_cdp(&self) -> BrowserResult<&CdpClient> {
+        self.policy.require(PolicyCapability::RawCdp)?;
+        Ok(&self.cdp)
     }
 
     pub fn profile_manager(&self) -> &ProfileManager {
@@ -1635,6 +1666,9 @@ impl BrowserSession {
             let _ =
                 tokio::time::timeout(OWNED_BROWSER_CLOSE_TIMEOUT, self.cdp.close_browser()).await;
         }
+        if let Some(interception) = self.policy_interception.take() {
+            interception.shutdown().await;
+        }
         self.cdp.close().await;
         let shutdown_result = if let Some(process) = self.chrome.as_mut() {
             process.shutdown().await
@@ -1681,8 +1715,9 @@ impl BrowserSession {
                 validate_wait_deadline(deadline)?;
                 let url = normalize_url(url);
                 self.policy.require_url(&url).await?;
-                let guard =
-                    NavigationPolicyGuard::acquire(self.cdp.clone(), self.policy.clone()).await?;
+                if let Some(interception) = &self.policy_interception {
+                    interception.take_denial().await;
+                }
                 let result = async {
                     let mut events = self.cdp.subscribe_events();
                     let started = tokio::time::Instant::now();
@@ -1721,9 +1756,10 @@ impl BrowserSession {
                     Ok(page)
                 }
                 .await;
-                if let Some(guard) = guard
-                    && let Some(error) = guard.finish().await?
-                {
+                if let Some(error) = match &self.policy_interception {
+                    Some(interception) => interception.take_denial().await,
+                    None => None,
+                } {
                     return Err(error.into());
                 }
                 result
@@ -2122,6 +2158,7 @@ impl BrowserSession {
         max_width: u32,
         max_height: u32,
     ) -> BrowserResult<ScreencastScope> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         if format == VisualFormat::Webp {
             return Err("CDP screencast supports only png or jpeg".into());
         }
@@ -3607,6 +3644,22 @@ async fn disable_fetch_for(cdp: &CdpClient, session_id: Option<&str>) -> Browser
     Ok(())
 }
 
+async fn enable_fetch_for(cdp: &CdpClient, session_id: &str) -> BrowserResult<()> {
+    cdp.send_to_session(
+        session_id,
+        "Fetch.enable",
+        Some(serde_json::json!({
+            "patterns": [{
+                "urlPattern": "*",
+                "resourceType": "Document",
+                "requestStage": "Request"
+            }]
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
 fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {
     let values = value
         .as_array()
@@ -4719,6 +4772,7 @@ mod tests {
             })),
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
             policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
+            policy_interception: None,
         }
     }
 
@@ -5558,6 +5612,7 @@ mod tests {
                 .send(Message::Text(
                     serde_json::json!({
                         "method": "Fetch.requestPaused",
+                        "sessionId": "route-1",
                         "params": {
                             "requestId": "redirect-1",
                             "request": {"url": "http://127.0.0.1/private"}
@@ -5602,15 +5657,15 @@ mod tests {
             .await
             .unwrap();
         let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
-        let guard = NavigationPolicyGuard::acquire(cdp.clone(), policy)
+        let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
             .await
-            .unwrap()
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(matches!(
-            guard.finish().await.unwrap(),
+            interception.take_denial().await,
             Some(PolicyError::Denied { .. })
         ));
+        interception.shutdown().await;
         cdp.close().await;
         server.await.unwrap();
     }

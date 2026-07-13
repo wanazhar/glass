@@ -65,7 +65,7 @@ async fn main() -> BrowserResult<()> {
     })
     .await?;
     session
-        .cdp()
+        .raw_cdp()?
         .send(
             "Emulation.setDeviceMetricsOverride",
             Some(json!({
@@ -174,7 +174,7 @@ async fn main() -> BrowserResult<()> {
         }));
         if spec.name == "png_baseline_default" {
             let response = session
-                .cdp()
+                .raw_cdp()?
                 .send("Page.captureScreenshot", Some(spec.params.clone()))
                 .await?;
             reference_base64 = response["data"].as_str().map(String::from);
@@ -206,9 +206,9 @@ async fn main() -> BrowserResult<()> {
 
 async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
     let trace_iterations = positive_env("GLASS_CAPTURE_TRACE_ITERATIONS", 10);
-    let mut events = session.cdp().subscribe_events_with_params();
+    let mut events = session.raw_cdp()?.subscribe_events_with_params();
     session
-        .cdp()
+        .raw_cdp()?
         .send(
             "Tracing.start",
             Some(json!({
@@ -223,7 +223,7 @@ async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
     for _ in 0..trace_iterations {
         let started = Instant::now();
         let response = session
-            .cdp()
+            .raw_cdp()?
             .send("Page.captureScreenshot", Some(json!({"format": "png"})))
             .await?;
         commands.push(started.elapsed());
@@ -233,7 +233,7 @@ async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
                 .ok_or("traced capture response contained no data")?,
         )?;
     }
-    session.cdp().send("Tracing.end", None).await?;
+    session.raw_cdp()?.send("Tracing.end", None).await?;
 
     let trace_events = tokio::time::timeout(Duration::from_secs(10), async {
         let mut collected = Vec::new();
@@ -290,7 +290,7 @@ async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
 async fn capture(session: &BrowserSession, spec: &CaptureSpec) -> BrowserResult<CaptureSample> {
     let started = Instant::now();
     let response = session
-        .cdp()
+        .raw_cdp()?
         .send("Page.captureScreenshot", Some(spec.params.clone()))
         .await?;
     let command = started.elapsed();

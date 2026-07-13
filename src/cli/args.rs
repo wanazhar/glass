@@ -23,6 +23,10 @@ pub struct Cli {
     #[arg(long = "policy-confirm", global = true, value_enum)]
     pub policy_confirm: Vec<PolicyCapability>,
 
+    /// Supply one consumable approval token for a confirmation-required capability.
+    #[arg(long = "policy-confirm-once", global = true, value_enum)]
+    pub policy_confirm_once: Vec<PolicyCapability>,
+
     /// Permit only these exact hosts in hardened mode (repeatable).
     #[arg(long = "policy-allow-host", global = true)]
     pub policy_allow_host: Vec<String>,

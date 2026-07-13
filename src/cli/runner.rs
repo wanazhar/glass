@@ -236,7 +236,8 @@ pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
     .with_host_rules(
         cli.policy_allow_host.iter().cloned(),
         cli.policy_deny_host.iter().cloned(),
-    )?)
+    )?
+    .with_confirmation_tokens(cli.policy_confirm_once.iter().copied())?)
 }
 
 async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()> {
@@ -271,8 +272,11 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
             .map(|(_, value)| value.trim())
             .filter(|value| !value.is_empty())
             .unwrap_or("screenshot.png");
-        std::fs::write(output, session.screenshot_png().await?)?;
-        println!("wrote {output}");
+        let output = session
+            .policy()
+            .require_output_path(std::path::Path::new(output))?;
+        std::fs::write(&output, session.screenshot_png().await?)?;
+        println!("wrote {}", output.display());
         return Ok(());
     }
     if matches!(

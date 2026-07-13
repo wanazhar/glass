@@ -135,7 +135,7 @@ async fn main() -> BrowserResult<()> {
                 "rss_bytes_after_workload": process_rss_bytes(),
             },
             "glass_binary_size_bytes": glass_binary_size_bytes(),
-            "cdp_request_count_after_workload": fast_session.cdp().request_count(),
+            "cdp_request_count_after_workload": fast_session.cdp_request_count(),
             "results": results,
         }))
     }

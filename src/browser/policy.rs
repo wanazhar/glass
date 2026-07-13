@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ pub enum PolicyCapability {
     Upload,
     Download,
     Screenshot,
+    RawCdp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
@@ -52,6 +53,8 @@ pub struct BrowserPolicy {
     confirmed_capabilities: BTreeSet<PolicyCapability>,
     allowed_hosts: BTreeSet<String>,
     denied_hosts: BTreeSet<String>,
+    confirmation_tokens: std::sync::Arc<std::sync::Mutex<BTreeMap<PolicyCapability, u32>>>,
+    pinned_hosts: BTreeMap<String, IpAddr>,
     workspace_root: PathBuf,
 }
 
@@ -109,12 +112,24 @@ impl BrowserPolicy {
                 reason: "workspace root must be a directory".to_string(),
             });
         }
+        let allowed_capabilities: BTreeSet<_> = allowed_capabilities.into_iter().collect();
+        let confirmed_capabilities: BTreeSet<_> = confirmed_capabilities.into_iter().collect();
+        if allowed_capabilities
+            .iter()
+            .any(|capability| confirmed_capabilities.contains(capability))
+        {
+            return Err(PolicyError::InvalidConfiguration {
+                reason: "a capability cannot be both allowed and confirmation-required".to_string(),
+            });
+        }
         Ok(Self {
             preset,
-            allowed_capabilities: allowed_capabilities.into_iter().collect(),
-            confirmed_capabilities: confirmed_capabilities.into_iter().collect(),
+            allowed_capabilities,
+            confirmed_capabilities,
             allowed_hosts: BTreeSet::new(),
             denied_hosts: BTreeSet::new(),
+            confirmation_tokens: Default::default(),
+            pinned_hosts: BTreeMap::new(),
             workspace_root,
         })
     }
@@ -142,8 +157,84 @@ impl BrowserPolicy {
         self.preset
     }
 
+    pub fn with_confirmation_tokens(
+        self,
+        capabilities: impl IntoIterator<Item = PolicyCapability>,
+    ) -> Result<Self, PolicyError> {
+        let mut tokens =
+            self.confirmation_tokens
+                .lock()
+                .map_err(|_| PolicyError::InvalidConfiguration {
+                    reason: "confirmation token state is unavailable".to_string(),
+                })?;
+        for capability in capabilities {
+            if !self.confirmed_capabilities.contains(&capability) {
+                return Err(PolicyError::InvalidConfiguration {
+                    reason: format!(
+                        "{capability:?} needs --policy-confirm before a one-operation token"
+                    ),
+                });
+            }
+            *tokens.entry(capability).or_default() += 1;
+        }
+        drop(tokens);
+        Ok(self)
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    pub async fn prepare_hardened_session(
+        &mut self,
+        attached: bool,
+    ) -> Result<Option<String>, PolicyError> {
+        if self.preset == PolicyPreset::Development {
+            return Ok(None);
+        }
+        if self.allowed_hosts.is_empty() {
+            return Err(PolicyError::InvalidConfiguration {
+                reason: "hardened mode requires at least one exact --policy-allow-host".to_string(),
+            });
+        }
+        let mut resolver_rules = Vec::with_capacity(self.allowed_hosts.len());
+        for host in &self.allowed_hosts {
+            let address = if let Ok(address) = host.parse::<IpAddr>() {
+                address
+            } else {
+                if attached {
+                    return Err(PolicyError::InvalidConfiguration {
+                        reason: "hardened attach requires public IP-literal allow rules to avoid DNS rebinding"
+                            .to_string(),
+                    });
+                }
+                let addresses: Vec<IpAddr> = tokio::net::lookup_host((host.as_str(), 443))
+                    .await
+                    .map_err(|error| PolicyError::InvalidConfiguration {
+                        reason: format!("could not resolve allowed host {host}: {error}"),
+                    })?
+                    .map(|address| address.ip())
+                    .collect();
+                if addresses.is_empty() || addresses.iter().copied().any(is_non_public_ip) {
+                    return Err(PolicyError::InvalidConfiguration {
+                        reason: format!(
+                            "allowed host {host} did not resolve only to public addresses"
+                        ),
+                    });
+                }
+                addresses[0]
+            };
+            if is_non_public_ip(address) {
+                return Err(PolicyError::InvalidConfiguration {
+                    reason: format!("allowed host {host} is not a public address"),
+                });
+            }
+            self.pinned_hosts.insert(host.clone(), address);
+            if !attached {
+                resolver_rules.push(format!("MAP {host} {address}"));
+            }
+        }
+        Ok((!resolver_rules.is_empty()).then(|| resolver_rules.join(",")))
     }
 
     pub fn decide(&self, capability: PolicyCapability) -> PolicyDecision {
@@ -163,12 +254,28 @@ impl BrowserPolicy {
     }
 
     pub fn require(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
-        let operation = format!("{capability:?}").to_lowercase();
         match self.decide(capability) {
             PolicyDecision::Allow => Ok(()),
-            PolicyDecision::Deny { reason } => Err(PolicyError::Denied { operation, reason }),
+            PolicyDecision::Deny { reason } => Err(PolicyError::Denied {
+                operation: capability_name(capability).to_string(),
+                reason,
+            }),
             PolicyDecision::RequireConfirmation { reason } => {
-                Err(PolicyError::ConfirmationRequired { operation, reason })
+                let mut tokens = self.confirmation_tokens.lock().map_err(|_| {
+                    PolicyError::InvalidConfiguration {
+                        reason: "confirmation token state is unavailable".to_string(),
+                    }
+                })?;
+                let remaining = tokens.entry(capability).or_default();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    Ok(())
+                } else {
+                    Err(PolicyError::ConfirmationRequired {
+                        operation: capability_name(capability).to_string(),
+                        reason,
+                    })
+                }
             }
         }
     }
@@ -178,6 +285,15 @@ impl BrowserPolicy {
             operation: "navigate".to_string(),
             reason: format!("URL is invalid: {error}"),
         })?;
+        let host = url.host_str().map(|host| host.trim_end_matches('.'));
+        if host.is_some_and(|host| self.denied_hosts.contains(host)) {
+            return Err(url_denied("host is explicitly denied"));
+        }
+        if !self.allowed_hosts.is_empty()
+            && !host.is_some_and(|host| self.allowed_hosts.contains(host))
+        {
+            return Err(url_denied("host is not in the explicit allow list"));
+        }
         if self.preset == PolicyPreset::Development {
             return Ok(url);
         }
@@ -189,25 +305,16 @@ impl BrowserPolicy {
         if !url.username().is_empty() || url.password().is_some() {
             return Err(url_denied("URLs containing credentials are not permitted"));
         }
-        let host = url
-            .host_str()
-            .ok_or_else(|| url_denied("URL must contain a host"))?;
-        if self.denied_hosts.contains(host) {
-            return Err(url_denied("host is explicitly denied"));
-        }
-        if !self.allowed_hosts.is_empty() && !self.allowed_hosts.contains(host) {
-            return Err(url_denied("host is not in the explicit allow list"));
-        }
+        let host = host.ok_or_else(|| url_denied("URL must contain a host"))?;
         if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
             return Err(url_denied("localhost destinations are not permitted"));
         }
-        let port = url.port_or_known_default().unwrap_or(0);
-        let addresses: Vec<IpAddr> = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|error| url_denied(&format!("host resolution failed: {error}")))?
-            .map(|address| address.ip())
-            .collect();
-        if addresses.is_empty() || addresses.iter().copied().any(is_non_public_ip) {
+        let Some(address) = self.pinned_hosts.get(host).copied() else {
+            return Err(url_denied(
+                "hardened host was not pinned at session startup",
+            ));
+        };
+        if is_non_public_ip(address) {
             return Err(url_denied(
                 "host resolves to a non-public or reserved network destination",
             ));
@@ -262,6 +369,18 @@ impl BrowserPolicy {
     }
 }
 
+fn capability_name(capability: PolicyCapability) -> &'static str {
+    match capability {
+        PolicyCapability::Attach => "attach",
+        PolicyCapability::PersistentProfile => "persistent_profile",
+        PolicyCapability::Evaluate => "evaluate",
+        PolicyCapability::Upload => "upload",
+        PolicyCapability::Download => "download",
+        PolicyCapability::Screenshot => "screenshot",
+        PolicyCapability::RawCdp => "raw_cdp",
+    }
+}
+
 fn normalize_host_rules(
     hosts: impl IntoIterator<Item = String>,
 ) -> Result<BTreeSet<String>, PolicyError> {
@@ -298,24 +417,56 @@ fn url_denied(reason: &str) -> PolicyError {
 fn is_non_public_ip(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => {
-            address.is_private()
-                || address.is_loopback()
-                || address.is_link_local()
-                || address.is_multicast()
-                || address.is_unspecified()
-                || address.is_broadcast()
-                || address.is_documentation()
-                || address.octets()[0] == 0
-                || address.octets()[0] >= 240
-                || is_shared_v4(address)
+            let value = u32::from(address);
+            [
+                ("0.0.0.0", 8),
+                ("10.0.0.0", 8),
+                ("100.64.0.0", 10),
+                ("127.0.0.0", 8),
+                ("169.254.0.0", 16),
+                ("172.16.0.0", 12),
+                ("192.0.0.0", 24),
+                ("192.0.2.0", 24),
+                ("192.88.99.0", 24),
+                ("192.168.0.0", 16),
+                ("198.18.0.0", 15),
+                ("198.51.100.0", 24),
+                ("203.0.113.0", 24),
+                ("224.0.0.0", 4),
+                ("240.0.0.0", 4),
+            ]
+            .into_iter()
+            .any(|(network, prefix)| {
+                ipv4_in_prefix(
+                    value,
+                    u32::from(network.parse::<Ipv4Addr>().unwrap()),
+                    prefix,
+                )
+            })
         }
         IpAddr::V6(address) => {
             address.is_loopback()
                 || address.is_multicast()
                 || address.is_unspecified()
-                || is_unique_local_v6(address)
-                || is_link_local_v6(address)
-                || is_documentation_v6(address)
+                || [
+                    ("64:ff9b::", 96),
+                    ("64:ff9b:1::", 48),
+                    ("100::", 64),
+                    ("2001::", 32),
+                    ("2001:db8::", 32),
+                    ("2002::", 16),
+                    ("fc00::", 7),
+                    ("fe80::", 10),
+                    ("fec0::", 10),
+                ]
+                .into_iter()
+                .any(|(network, prefix)| {
+                    ipv6_in_prefix(
+                        u128::from(address),
+                        u128::from(network.parse::<Ipv6Addr>().unwrap()),
+                        prefix,
+                    )
+                })
                 || address
                     .to_ipv4_mapped()
                     .is_some_and(|address| is_non_public_ip(IpAddr::V4(address)))
@@ -323,21 +474,14 @@ fn is_non_public_ip(address: IpAddr) -> bool {
     }
 }
 
-fn is_shared_v4(address: Ipv4Addr) -> bool {
-    let octets = address.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
+fn ipv4_in_prefix(value: u32, network: u32, prefix: u32) -> bool {
+    let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+    value & mask == network & mask
 }
 
-fn is_unique_local_v6(address: Ipv6Addr) -> bool {
-    address.segments()[0] & 0xfe00 == 0xfc00
-}
-
-fn is_link_local_v6(address: Ipv6Addr) -> bool {
-    address.segments()[0] & 0xffc0 == 0xfe80
-}
-
-fn is_documentation_v6(address: Ipv6Addr) -> bool {
-    address.segments()[..2] == [0x2001, 0x0db8]
+fn ipv6_in_prefix(value: u128, network: u128, prefix: u32) -> bool {
+    let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+    value & mask == network & mask
 }
 
 #[cfg(test)]
@@ -363,6 +507,23 @@ mod tests {
             confirm.require(PolicyCapability::Evaluate),
             Err(PolicyError::ConfirmationRequired { .. })
         ));
+        let approved = confirm
+            .with_confirmation_tokens([PolicyCapability::Evaluate])
+            .unwrap();
+        assert!(approved.require(PolicyCapability::Evaluate).is_ok());
+        assert!(matches!(
+            approved.require(PolicyCapability::Evaluate),
+            Err(PolicyError::ConfirmationRequired { .. })
+        ));
+        assert!(
+            BrowserPolicy::new(
+                PolicyPreset::Hardened,
+                &root,
+                [PolicyCapability::Evaluate],
+                [PolicyCapability::Evaluate],
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -380,6 +541,36 @@ mod tests {
         ] {
             assert!(policy.require_url(value).await.is_err(), "accepted {value}");
         }
+        for value in [
+            "192.0.0.8",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "64:ff9b::1",
+            "2001::1",
+            "2002::1",
+            "fec0::1",
+        ] {
+            assert!(is_non_public_ip(value.parse().unwrap()), "accepted {value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_host_rules_are_canonical_and_pinned() {
+        let root = std::env::current_dir().unwrap();
+        let denied = BrowserPolicy::development(&root)
+            .unwrap()
+            .with_host_rules([], ["example.com".to_string()])
+            .unwrap();
+        assert!(denied.require_url("https://example.com./").await.is_err());
+
+        let mut pinned = BrowserPolicy::hardened(&root)
+            .unwrap()
+            .with_host_rules(["8.8.8.8".to_string()], [])
+            .unwrap();
+        let rules = pinned.prepare_hardened_session(false).await.unwrap();
+        assert_eq!(rules.as_deref(), Some("MAP 8.8.8.8 8.8.8.8"));
+        assert!(pinned.require_url("https://8.8.8.8/").await.is_ok());
     }
 
     #[test]

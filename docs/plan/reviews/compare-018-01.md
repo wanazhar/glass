@@ -96,3 +96,96 @@ Reviewed commit `c3b3500` against `docs/plan/tasks/compare-018.md`,
 The harness has the right adapter shape and disclosure posture, but its control
 claims, hard-gate aggregation, and bounded failure behavior are not yet strong
 enough to support reproducible competitive acceptance.
+
+---
+
+## Re-review: `03a4522`
+
+### Resolution of prior findings
+
+1. **Controlled viewport/profile — resolved.** Glass now applies and verifies a
+   1280x720 device-metrics override (`examples/scorecard.rs:74-91`). All three
+   adapters use the declared `fresh-ephemeral-single-session` semantics, and
+   the control gate compares profile, viewport, corpus, iteration count,
+   temperature, and Chrome version (`benchmarks/run-acceptance.mjs:195-201`).
+
+2. **Incomplete hard-gate aggregation — partially resolved, still blocking
+   below.** The aggregate now includes the six omitted ratified thresholds and
+   release/platform prerequisites (`benchmarks/run-acceptance.mjs:64-82`).
+
+3. **Unbounded execution/failure publication — partially resolved, still
+   blocking below.** Command output is bounded, commands and MCP requests have
+   deadlines, MCP exit rejects pending requests, and an ordinary setup failure
+   writes both aggregate files (`benchmarks/run-acceptance.mjs:33-101`,
+   `benchmarks/run-acceptance.mjs:117-155`,
+   `benchmarks/adapters/playwright-mcp-scorecard.mjs:134-203`). A missing-Chrome
+   smoke check confirmed `environment.json` and `acceptance.json` are emitted
+   with every gate false.
+
+4. **Trusted summaries/incomplete matrices — partially resolved, still
+   blocking below.** Scenario identities and iteration pairs are unique and
+   complete, classifications and summaries are recomputed, and expected tool
+   versions are checked (`benchmarks/run-acceptance.mjs:157-193`). Full report
+   validation is still absent.
+
+### Remaining findings
+
+1. **P1 — blocking — malformed ratified-gate evidence crashes before the
+   aggregate report is written.**
+
+   `retainEvidence` accepts any revision-matching JSON object and marks it
+   completed without validating `metrics` (`benchmarks/run-acceptance.mjs:204-215`).
+   `prerequisiteGates` then reads `.metrics` outside any error boundary and
+   immediately dereferences it (`benchmarks/run-acceptance.mjs:218-227`). A
+   revision-matching file with no `metrics`, `metrics: null`, or an unreadable
+   copied report throws a `TypeError` or parse error before
+   `environment.json`/`acceptance.json` are written at lines 91-100. This
+   contradicts the documented fail-closed behavior and the task requirement to
+   publish failures. Validate and derive every prerequisite inside the guarded
+   ingestion path; malformed evidence must produce `status: invalid` and false
+   gates, not terminate the runner.
+
+2. **P1 — blocking — release-validation and platform-matrix gates trust an
+   unauditable boolean assertion.**
+
+   The task requires the full release validation and real-browser platform
+   matrix to pass and links claims to raw evidence
+   (`docs/plan/tasks/compare-018.md:39-44`). The new ingestion accepts any JSON
+   containing the current revision, `schema_version: 1`, and `passed: true`
+   (`benchmarks/run-acceptance.mjs:204-229`); the repository provides no schema,
+   producer, required platform/check matrix, or result validation for those
+   files. A hand-authored three-field JSON file therefore sets each hard gate
+   true without proving that one check ran. Define versioned evidence schemas
+   and validate the required release checks/platform rows and their raw result
+   references before deriving these gates.
+
+3. **P2 — blocking — adapter reports still are not validated against the
+   published report schema and malformed resource data can abort aggregation.**
+
+   The adapter contract requires reports matching
+   `benchmarks/report-schema.json` (`benchmarks/adapters/README.md:3-5`). The
+   replacement validator checks exact keys for only the top-level and selected
+   objects; it does not validate nested `resources.runner`/`resources.chrome`
+   structures or most schema types and bounds
+   (`benchmarks/run-acceptance.mjs:157-169`). For example, a report with
+   `resources.runner: null` passes `validateReport`, enters the completed-report
+   map, and then throws while evaluating the Glass budget at line 78, again
+   preventing aggregate publication. Apply the full schema or equivalent
+   exhaustive validation inside `runAdapter`; invalid reports must remain
+   adapter failures and must never reach gate aggregation.
+
+### Re-review checks
+
+- `node --check` passed for the runner and both JavaScript adapters.
+- A quick missing-`CHROME_PATH` run completed without installing dependencies
+  and retained `environment.json` plus `acceptance.json` with all gates false.
+- No 100-iteration run, dependency installation, or release evidence was
+  executed as part of this review.
+
+### Re-review conclusion
+
+**blocked**
+
+The normal-path controls and matrix recomputation are materially stronger, but
+malformed evidence can still suppress the aggregate report, and the two release
+prerequisite gates remain assertions rather than reproducible evidence.

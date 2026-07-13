@@ -1067,7 +1067,7 @@ impl DisposableProfileDir {
 
     fn cleanup_abandoned(root: &Path) -> BrowserResult<()> {
         let mut candidates = Vec::new();
-        for entry in std::fs::read_dir(root)?.take(DISPOSABLE_CLEANUP_BATCH) {
+        for entry in std::fs::read_dir(root)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir()
                 || !entry
@@ -1086,26 +1086,38 @@ impl DisposableProfileDir {
                 _ => continue,
             };
             candidates.push((entry.path(), owner));
-        }
-        let pids = candidates
-            .iter()
-            .map(|(_, owner)| Pid::from_u32(owner.pid))
-            .collect::<Vec<_>>();
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
-        for (path, owner) in candidates {
-            let live_start = system
-                .process(Pid::from_u32(owner.pid))
-                .map(|process| process.start_time());
-            if live_start != Some(owner.process_start)
-                && let Err(error) = std::fs::remove_dir_all(path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error.into());
+            if candidates.len() == DISPOSABLE_CLEANUP_BATCH {
+                reap_disposable_candidates(&mut candidates)?;
             }
         }
-        Ok(())
+        reap_disposable_candidates(&mut candidates)
     }
+}
+
+fn reap_disposable_candidates(
+    candidates: &mut Vec<(PathBuf, DisposableProfileOwner)>,
+) -> BrowserResult<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let pids = candidates
+        .iter()
+        .map(|(_, owner)| Pid::from_u32(owner.pid))
+        .collect::<Vec<_>>();
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+    for (path, owner) in candidates.drain(..) {
+        let live_start = system
+            .process(Pid::from_u32(owner.pid))
+            .map(|process| process.start_time());
+        if live_start != Some(owner.process_start)
+            && let Err(error) = std::fs::remove_dir_all(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
+        }
+    }
+    Ok(())
 }
 
 fn process_start_identity(pid: u32) -> Option<u64> {

@@ -189,3 +189,66 @@ enough to support reproducible competitive acceptance.
 The normal-path controls and matrix recomputation are materially stronger, but
 malformed evidence can still suppress the aggregate report, and the two release
 prerequisite gates remain assertions rather than reproducible evidence.
+
+---
+
+## Final bounded re-review: `af3bd10`
+
+This review is limited to the three code blockers recorded for `03a4522`.
+
+### Code finding resolution
+
+1. **Malformed ratified metrics — resolved.** Evidence is now validated inside
+   `retainEvidence`'s guarded path before it is copied or exposed to gate
+   derivation (`benchmarks/run-acceptance.mjs:214-227`). Missing, null, or
+   incomplete metrics fail `exactKeys`, become `status: invalid`, and
+   `prerequisiteGates` reads only optional validated `derived.metrics`
+   (`benchmarks/run-acceptance.mjs:229-241`). A focused probe with missing
+   metrics confirmed that both aggregate files were retained, the evidence was
+   marked invalid, and all affected gates were false.
+
+2. **Unauditable release/platform assertions — resolved.** The contract now
+   declares the exact nine release checks and five platform targets
+   (`benchmarks/acceptance-v1.json:9-17`). Evidence must identify its type,
+   tested revision, producer name/version/command/run URL, and per-row raw
+   report; release and platform rows are exact-key validated, must all pass,
+   must cover the exact configured set once, and reject duplicates or extras
+   (`benchmarks/run-acceptance.mjs:244-285`). The published versioned evidence
+   schema documents the same structures
+   (`benchmarks/prerequisite-evidence-schema.json`). Focused empty-matrix probes
+   were reported invalid and could not set either hard gate.
+
+3. **Nested resource validation — resolved.** `validateReport` now requires the
+   exact runner and Chrome resource structures and validates PID, nullable RSS,
+   size/count, scope, and startup bounds before inserting a report into the
+   completed-report map (`benchmarks/run-acceptance.mjs:157-176`). Gate reads
+   are additionally null-safe (`benchmarks/run-acceptance.mjs:78-80`). A null
+   or malformed nested resource therefore remains an adapter failure rather
+   than reaching aggregation.
+
+### Final bounded checks
+
+- `node --check` passed for `benchmarks/run-acceptance.mjs`,
+  `benchmarks/adapters/playwright-scorecard.mjs`, and
+  `benchmarks/adapters/playwright-mcp-scorecard.mjs`.
+- Focused malformed ratified, release-check, and platform-matrix fixtures all
+  produced `status: invalid`, false gates, `best_in_class_eligible: false`, and
+  retained `environment.json` plus `acceptance.json`.
+- No dependency installation, browser run, 100-iteration corpus, release
+  validation, or platform matrix was executed in this bounded re-review.
+
+### Code verdict
+
+**pass**
+
+No blocking code finding remains from review `19241f7`.
+
+### Delivery evidence status
+
+**blocked pending required evidence**
+
+This code verdict does not satisfy the task's empirical release gate. The
+100-iteration comparative reports, ratified-gate metrics and raw references,
+full release-validation evidence, and real-browser platform-matrix evidence
+remain absent from this review. Glass remains ineligible for best-in-class
+language until those long-run artifacts exist and the runner accepts them.

@@ -5,6 +5,8 @@
   "iterations": 100,
   "viewport": {"width": 1280, "height": 720},
   "temperature": "warm",
+  "profile_semantics": "fresh-ephemeral-single-session",
+  "required_prerequisites": ["ratified_gates", "release_validation", "real_browser_platform_matrix"],
   "adapters": [
     {"id": "glass", "required": true, "version": "workspace"},
     {"id": "playwright", "required": true, "version": "1.61.1"},
@@ -22,5 +24,13 @@
     "peak_runner_rss_bytes": 16777216,
     "compact_context_bytes": 24576,
     "binary_size_bytes": 6291456
+  },
+  "ratified_gates": {
+    "representative_task_success_rate_min": 0.95,
+    "fresh_compact_observe_p95_ms_max": 5.0,
+    "cached_compact_observe_p95_ms_max": 0.1,
+    "fast_action_client_overhead_p95_ms_max": 5.0,
+    "idle_glass_rss_bytes_max": 8388608,
+    "mcp_malformed_input_survival_rate_min": 1.0
   }
 }

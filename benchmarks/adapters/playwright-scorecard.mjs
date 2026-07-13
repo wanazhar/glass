@@ -87,7 +87,7 @@ const report = {
     corpus_fixture: corpus.fixture,
     iterations,
     temperature: "warm",
-    profile: "ephemeral-incognito",
+    profile: process.env.GLASS_SCORECARD_PROFILE ?? "fresh-ephemeral-single-session",
     viewport: { width: 1280, height: 720 },
   },
   environment: {

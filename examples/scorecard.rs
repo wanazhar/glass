@@ -71,6 +71,24 @@ async fn main() -> BrowserResult<()> {
         interaction_mode: InteractionMode::Fast,
     })
     .await?;
+    session
+        .raw_cdp()?
+        .send(
+            "Emulation.setDeviceMetricsOverride",
+            Some(json!({
+                "width": 1280,
+                "height": 720,
+                "deviceScaleFactor": 1,
+                "mobile": false
+            })),
+        )
+        .await?;
+    let viewport = session
+        .evaluate("({width: innerWidth, height: innerHeight})")
+        .await?;
+    if viewport != json!({"width": 1280, "height": 720}) {
+        return Err(format!("scorecard viewport control failed: {viewport}").into());
+    }
     let startup_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let chrome_pid = session
         .owned_chrome_pid()

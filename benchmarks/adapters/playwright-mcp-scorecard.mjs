@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import process from "node:process";
-import readline from "node:readline";
 import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
@@ -11,6 +10,7 @@ const iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLA
 const chromePath = requiredEnv("CHROME_PATH");
 const command = requiredEnv("PLAYWRIGHT_MCP_COMMAND");
 const expectedVersion = requiredEnv("PLAYWRIGHT_MCP_VERSION");
+const requestTimeoutMs = positiveInteger("PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS", process.env.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS ?? "30000");
 const outputDir = fs.mkdtempSync(`${os.tmpdir()}/glass-playwright-mcp-`);
 const startupStarted = performance.now();
 const client = new McpClient(command, [
@@ -61,7 +61,7 @@ const report = {
   schema_version: 1,
   tool: { name: "playwright-mcp", version: expectedVersion },
   run: { corpus: corpus.corpus, corpus_fixture: corpus.fixture, iterations, temperature: "warm",
-    profile: "ephemeral-isolated", viewport: { width: 1280, height: 720 } },
+    profile: process.env.GLASS_SCORECARD_PROFILE ?? "fresh-ephemeral-single-session", viewport: { width: 1280, height: 720 } },
   environment: { os: process.platform, architecture: process.arch, rust: null,
     chrome: commandVersion(chromePath), machine: `${os.hostname()} ${os.release()}` },
   resources: {
@@ -137,25 +137,53 @@ class McpClient {
     this.pid = this.child.pid;
     this.nextId = 0;
     this.pending = new Map();
+    this.buffer = Buffer.alloc(0);
+    this.failed = null;
     this.peakRss = processRss(this.pid);
     this.sampler = setInterval(() => { const rss = processRss(this.pid); if (rss !== null) this.peakRss = Math.max(this.peakRss ?? 0, rss); }, 10);
-    readline.createInterface({ input: this.child.stdout }).on("line", (line) => this.onLine(line));
+    this.child.stdout.on("data", (chunk) => this.onData(chunk));
+    this.child.once("error", (error) => this.fail(error));
+    this.child.once("exit", (code, signal) => this.fail(new Error(`MCP server exited (${code ?? signal})`)));
+  }
+  onData(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (this.buffer.length > 1024 * 1024) return this.fail(new Error("MCP response exceeded 1 MiB"));
+    for (;;) {
+      const newline = this.buffer.indexOf(10);
+      if (newline < 0) return;
+      const line = this.buffer.subarray(0, newline).toString("utf8");
+      this.buffer = this.buffer.subarray(newline + 1);
+      this.onLine(line);
+    }
   }
   onLine(line) {
     let message;
-    try { message = JSON.parse(line); } catch { return; }
+    try { message = JSON.parse(line); } catch { return this.fail(new Error("MCP server emitted malformed JSON")); }
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
+    clearTimeout(pending.timer);
     if (message.error) pending.reject(new Error(`MCP ${message.error.code}: ${message.error.message}`));
     else pending.resolve(message.result);
   }
   request(method, params) {
     return new Promise((resolve, reject) => {
+      if (this.failed) return reject(this.failed);
       const id = ++this.nextId;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP ${method} exceeded ${requestTimeoutMs} ms`));
+        this.child.kill("SIGKILL");
+      }, requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
+  }
+  fail(error) {
+    if (this.failed) return;
+    this.failed = error;
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    this.pending.clear();
   }
   async initialize() {
     const result = await this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "glass-acceptance", version: "1" } });

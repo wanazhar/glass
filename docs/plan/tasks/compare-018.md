@@ -56,3 +56,23 @@ passes. Playwright is the required general automation baseline. The required
 agent-focused baseline must drive the corpus through a released MCP/browser
 integration, not through Glass internals. Codex is an additional black-box row
 only when its browser automation surface is callable by the harness.
+
+## Implementation checkpoint
+
+Commits `c3b3500` and its review-fix milestone add a versioned, fail-closed
+acceptance runner. Playwright 1.61.1 and released `@playwright/mcp` 0.0.78 stay
+in a temporary npm prefix and use one explicit Chromium path, a verified
+1280x720 viewport, and equivalent fresh-ephemeral single-session profile
+semantics. Codex remains explicitly unsupported because no callable harness
+contract exists.
+
+Reports retain bounded raw output and environment metadata. Commands and MCP
+requests have deadlines, setup failures still publish an aggregate report, and
+the runner validates every scenario/iteration pair and recomputes summaries.
+Eligibility fails closed without revision-bound evidence for every ratified
+performance, protocol, release-validation, and real-browser platform gate.
+
+Focused Linux aarch64 verification covers Node syntax and scorecard unit tests.
+The interrupted one-iteration diagnostic produced no adapter report and is not
+release evidence. This task remains in progress until the 100-iteration run and
+all prerequisite evidence are published; Glass does not claim best in class.

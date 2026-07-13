@@ -59,9 +59,17 @@ checkout. Codex browser automation is explicitly unsupported because this
 harness has no callable, versioned black-box invocation contract for it.
 
 Missing adapters, mismatched controls, any wrong action, incomplete task
-success, or a Glass resource-budget failure blocks best-in-class language.
-Even when every boolean gate passes, the retained comparison evidence still
-needs interpretation before making a comparative leadership claim.
+success, a Glass resource-budget failure, missing full release validation, or
+missing real-browser platform-matrix evidence blocks best-in-class language.
+The latter evidence files use `{ "schema_version": 1, "git_revision": "...",
+"passed": true }` and are supplied through `GLASS_RELEASE_VALIDATION_REPORT`
+and `GLASS_PLATFORM_MATRIX_REPORT`; the runner copies them into `raw/` and
+rejects evidence for another revision. Even when every boolean gate passes,
+the retained comparison still needs interpretation before a leadership claim.
+The remaining ratified thresholds use the same envelope plus a `metrics`
+object and `GLASS_RATIFIED_GATES_REPORT`; absent or malformed metrics fail
+closed. Every command has a deadline and bounded file capture. Setup and
+adapter failures still produce `environment.json` and `acceptance.json`.
 
 Run the Playwright adapter from a temporary installation:
 

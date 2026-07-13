@@ -81,6 +81,18 @@ pub struct CdpEventWithParams {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct CdpScreencastFrame {
+    pub data: String,
+    pub metadata: Value,
+    pub session_id: Option<String>,
+}
+
+struct ScreencastSink {
+    session_id: Option<String>,
+    sender: mpsc::Sender<CdpScreencastFrame>,
+}
+
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
     #[serde(default)]
@@ -109,6 +121,9 @@ enum Command {
     },
     Cancel {
         id: u64,
+    },
+    FireAndForget {
+        json: String,
     },
     Close,
 }
@@ -144,6 +159,9 @@ pub struct CdpClient {
     next_id: Arc<AtomicU64>,
     events: broadcast::Sender<CdpEvent>,
     payload_events: broadcast::Sender<CdpEventWithParams>,
+    screencast_sink: Arc<std::sync::Mutex<Option<ScreencastSink>>>,
+    screencast_received: Arc<AtomicU64>,
+    screencast_dropped: Arc<AtomicU64>,
     timeout: Duration,
     active_route: Arc<std::sync::Mutex<CdpRoute>>,
 }
@@ -175,6 +193,15 @@ impl CdpClient {
         let (payload_event_tx, _) = broadcast::channel::<CdpEventWithParams>(128);
         let actor_events = event_tx.clone();
         let actor_payload_events = payload_event_tx.clone();
+        let screencast_sink = Arc::new(std::sync::Mutex::new(None));
+        let actor_screencast_sink = Arc::clone(&screencast_sink);
+        let screencast_received = Arc::new(AtomicU64::new(0));
+        let actor_screencast_received = Arc::clone(&screencast_received);
+        let screencast_dropped = Arc::new(AtomicU64::new(0));
+        let actor_screencast_dropped = Arc::clone(&screencast_dropped);
+        let actor_tx = tx.clone();
+        let actor_next_id = Arc::new(AtomicU64::new(1));
+        let next_id = Arc::clone(&actor_next_id);
 
         tokio::spawn(async move {
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value, CdpError>>> =
@@ -195,6 +222,12 @@ impl CdpClient {
                             Some(Command::Cancel { id }) => {
                                 pending.remove(&id);
                             }
+                            Some(Command::FireAndForget { json }) => {
+                                if let Err(error) = write.send(Message::Text(json.into())).await {
+                                    close_reason = format!("CDP write failed: {error}");
+                                    break;
+                                }
+                            }
                             Some(Command::Close) | None => {
                                 let _ = write.send(Message::Close(None)).await;
                                 close_reason = "CDP connection closed by client".to_string();
@@ -209,6 +242,13 @@ impl CdpClient {
                                     &mut pending,
                                     &actor_events,
                                     &actor_payload_events,
+                                    ScreencastDispatch {
+                                        sink: &actor_screencast_sink,
+                                        received: &actor_screencast_received,
+                                        dropped: &actor_screencast_dropped,
+                                        command_tx: &actor_tx,
+                                        next_id: &actor_next_id,
+                                    },
                                     text.as_ref(),
                                 );
                             }
@@ -218,6 +258,13 @@ impl CdpClient {
                                         &mut pending,
                                         &actor_events,
                                         &actor_payload_events,
+                                        ScreencastDispatch {
+                                            sink: &actor_screencast_sink,
+                                            received: &actor_screencast_received,
+                                            dropped: &actor_screencast_dropped,
+                                            command_tx: &actor_tx,
+                                            next_id: &actor_next_id,
+                                        },
                                         text,
                                     ),
                                     Err(error) => warn!(%error, "ignoring non-UTF-8 CDP frame"),
@@ -252,9 +299,12 @@ impl CdpClient {
 
         Ok(Self {
             tx,
-            next_id: Arc::new(AtomicU64::new(1)),
+            next_id,
             events: event_tx,
             payload_events: payload_event_tx,
+            screencast_sink,
+            screencast_received,
+            screencast_dropped,
             timeout,
             active_route: Arc::new(std::sync::Mutex::new(CdpRoute::default())),
         })
@@ -270,6 +320,41 @@ impl CdpClient {
     /// Payload JSON is parsed only while this stream has at least one receiver.
     pub fn subscribe_events_with_params(&self) -> broadcast::Receiver<CdpEventWithParams> {
         self.payload_events.subscribe()
+    }
+
+    pub fn open_screencast_channel(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<mpsc::Receiver<CdpScreencastFrame>, CdpError> {
+        let mut sink = self
+            .screencast_sink
+            .lock()
+            .map_err(|_| CdpError::transport("screencast sink lock poisoned"))?;
+        if sink.is_some() {
+            return Err(CdpError::transport("a screencast scope is already active"));
+        }
+        let (sender, receiver) = mpsc::channel(2);
+        *sink = Some(ScreencastSink { session_id, sender });
+        self.screencast_received.store(0, Ordering::Relaxed);
+        self.screencast_dropped.store(0, Ordering::Relaxed);
+        Ok(receiver)
+    }
+
+    pub fn close_screencast_channel(&self) -> (u64, u64) {
+        if let Ok(mut sink) = self.screencast_sink.lock() {
+            *sink = None;
+        }
+        (
+            self.screencast_received.load(Ordering::Relaxed),
+            self.screencast_dropped.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn screencast_stats(&self) -> (u64, u64) {
+        (
+            self.screencast_received.load(Ordering::Relaxed),
+            self.screencast_dropped.load(Ordering::Relaxed),
+        )
     }
 
     pub fn current_session_id(&self) -> Option<String> {
@@ -481,21 +566,25 @@ impl CdpClient {
 
     /// Take a screenshot and return its base64-encoded image data.
     pub async fn screenshot(&self, format: &str) -> Result<String, CdpError> {
-        let mut result = self
-            .send(
-                "Page.captureScreenshot",
-                Some(serde_json::json!({
-                    "format": format,
-                    "optimizeForSpeed": true
-                })),
-            )
-            .await?;
+        self.screenshot_with_params(serde_json::json!({
+            "format": format,
+            "optimizeForSpeed": true
+        }))
+        .await
+    }
+
+    pub async fn screenshot_with_params(&self, params: Value) -> Result<String, CdpError> {
+        let mut result = self.send("Page.captureScreenshot", Some(params)).await?;
         match result.get_mut("data").map(Value::take) {
             Some(Value::String(data)) => Ok(data),
             _ => Err(CdpError::transport(
                 "CDP screenshot response contained no data",
             )),
         }
+    }
+
+    pub async fn get_layout_metrics(&self) -> Result<Value, CdpError> {
+        self.send("Page.getLayoutMetrics", None).await
     }
 
     /// Get the accessibility tree.
@@ -958,10 +1047,19 @@ impl CdpClient {
     }
 }
 
+struct ScreencastDispatch<'a> {
+    sink: &'a std::sync::Mutex<Option<ScreencastSink>>,
+    received: &'a AtomicU64,
+    dropped: &'a AtomicU64,
+    command_tx: &'a mpsc::UnboundedSender<Command>,
+    next_id: &'a AtomicU64,
+}
+
 fn handle_incoming_message(
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>,
     events: &broadcast::Sender<CdpEvent>,
     payload_events: &broadcast::Sender<CdpEventWithParams>,
+    screencast: ScreencastDispatch<'_>,
     text: &str,
 ) {
     let message: IncomingMessage = match serde_json::from_str(text) {
@@ -986,6 +1084,53 @@ fn handle_incoming_message(
     }
 
     if let Some(method) = message.method {
+        if method == "Page.screencastFrame" {
+            match serde_json::from_str::<IncomingEventParams>(text) {
+                Ok(mut payload) => {
+                    let frame_session_id = payload.params["sessionId"].as_u64();
+                    if let Some(frame_session_id) = frame_session_id {
+                        let id = screencast.next_id.fetch_add(1, Ordering::Relaxed);
+                        let mut ack = serde_json::json!({
+                            "id": id,
+                            "method": "Page.screencastFrameAck",
+                            "params": {"sessionId": frame_session_id}
+                        });
+                        if let Some(session_id) = message.session_id.as_deref() {
+                            ack["sessionId"] = Value::from(session_id);
+                        }
+                        let _ = screencast.command_tx.send(Command::FireAndForget {
+                            json: ack.to_string(),
+                        });
+                    }
+                    let data = payload.params["data"].take();
+                    let metadata = payload.params["metadata"].take();
+                    let frame = match data {
+                        Value::String(data) => Some(CdpScreencastFrame {
+                            data,
+                            metadata,
+                            session_id: message.session_id,
+                        }),
+                        _ => None,
+                    };
+                    if let Some(frame) = frame {
+                        let sink = screencast.sink.lock().expect("screencast sink poisoned");
+                        if let Some(sink) = sink.as_ref()
+                            && sink.session_id == frame.session_id
+                        {
+                            screencast.received.fetch_add(1, Ordering::Relaxed);
+                            if frame.data.len() > 32 * 1024 * 1024
+                                || sink.sender.try_send(frame).is_err()
+                            {
+                                screencast.dropped.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+                Err(error) => warn!(%error, "ignoring malformed screencast payload"),
+            }
+            let _ = events.send(CdpEvent { method });
+            return;
+        }
         let _ = events.send(CdpEvent {
             method: method.clone(),
         });
@@ -1142,17 +1287,29 @@ mod tests {
                 _ => panic!("expected text frame"),
             };
 
-            websocket
-                .send(Message::Text(
-                    serde_json::json!({
-                        "method": "Page.screencastFrame",
-                        "params": {"sessionId": 9, "data": "frame-data"}
-                    })
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .unwrap();
+            for index in 0..5 {
+                let route = if index == 0 { "foreign" } else { "wanted" };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "method": "Page.screencastFrame",
+                            "sessionId": route,
+                            "params": {"sessionId": 9, "data": format!("frame-{index}")}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let ack = websocket.next().await.unwrap().unwrap();
+                let ack: Value = match ack {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text frame"),
+                };
+                assert_eq!(ack["method"], "Page.screencastFrameAck");
+                assert_eq!(ack["params"]["sessionId"], 9);
+                assert_eq!(ack["sessionId"], route);
+            }
             websocket
                 .send(Message::Text(
                     serde_json::json!({"id": request["id"], "result": {}})
@@ -1168,13 +1325,16 @@ mod tests {
             .unwrap();
         let mut methods = client.subscribe_events();
         let mut payloads = client.subscribe_events_with_params();
+        let mut frames = client
+            .open_screencast_channel(Some("wanted".to_string()))
+            .unwrap();
         client.send("test.ready", None).await.unwrap();
 
         assert_eq!(methods.recv().await.unwrap().method, "Page.screencastFrame");
-        let payload = payloads.recv().await.unwrap();
-        assert_eq!(payload.method, "Page.screencastFrame");
-        assert_eq!(payload.params["sessionId"], 9);
-        assert_eq!(payload.params["data"], "frame-data");
+        assert_eq!(frames.recv().await.unwrap().data, "frame-1");
+        assert_eq!(frames.recv().await.unwrap().data, "frame-2");
+        assert!(payloads.try_recv().is_err());
+        assert_eq!(client.screencast_stats(), (4, 2));
 
         client.close().await;
         server.await.unwrap();

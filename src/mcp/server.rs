@@ -14,8 +14,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError, WaitCondition,
-    WaitTimeout,
+    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
+    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 
@@ -172,7 +172,14 @@ enum ToolInvocation<'a> {
         target: Cow<'a, str>,
         files: Vec<std::path::PathBuf>,
     },
-    Screenshot,
+    Screenshot {
+        format: VisualFormat,
+        quality: Option<u8>,
+        scale: f64,
+        full_page: bool,
+        clip: Option<VisualClip>,
+        target: Option<String>,
+    },
     Observe {
         include_dom: bool,
         include_screenshot: bool,
@@ -612,13 +619,29 @@ async fn call_tool(
         ToolInvocation::Upload { target, files } => {
             action_result(session.upload_files(target.as_ref(), &files).await?)
         }
-        ToolInvocation::Screenshot => {
-            let image = session.screenshot_base64().await?;
+        ToolInvocation::Screenshot {
+            format,
+            quality,
+            scale,
+            full_page,
+            clip,
+            target,
+        } => {
+            let capture = session
+                .capture_visual(&VisualCaptureOptions {
+                    format,
+                    quality,
+                    scale,
+                    clip,
+                    full_page,
+                    target,
+                })
+                .await?;
             Ok(json!({
-                "content": [{
+                "content": [{"type":"text", "text": serde_json::to_string(&capture.metadata)?}, {
                     "type": "image",
-                    "data": image,
-                    "mimeType": "image/png"
+                    "data": capture.data,
+                    "mimeType": format!("image/{}", format.as_cdp())
                 }]
             }))
         }
@@ -754,7 +777,16 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             target: required_target(arguments)?,
             files: required_path_array(arguments, "files")?,
         }),
-        "screenshot" => Ok(ToolInvocation::Screenshot),
+        "screenshot" => Ok(ToolInvocation::Screenshot {
+            format: parse_visual_format(optional_string(arguments, "format")?.unwrap_or("png"))?,
+            quality: optional_u64_value(arguments, "quality")?
+                .map(|value| u8::try_from(value).map_err(|_| "quality must be 0..=100"))
+                .transpose()?,
+            scale: optional_number(arguments, "scale", 1.0)?,
+            full_page: optional_bool(arguments, "fullPage")?,
+            clip: optional_visual_clip(arguments)?,
+            target: optional_string(arguments, "target")?.map(str::to_string),
+        }),
         "observe" => Ok(ToolInvocation::Observe {
             include_dom: optional_bool(arguments, "includeDom")?,
             include_screenshot: optional_bool(arguments, "includeScreenshot")?,
@@ -904,8 +936,15 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "screenshot",
-            description: "Capture the current page as a PNG image.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            description: "Capture explicit viewport, clip, element, or full-page visual evidence with metadata.",
+            input_schema: json!({"type":"object","properties":{
+                "format":{"type":"string","enum":["png","jpeg","webp"],"default":"png"},
+                "quality":{"type":"integer","minimum":0,"maximum":100},
+                "scale":{"type":"number","minimum":0.1,"maximum":4.0,"default":1.0},
+                "fullPage":{"type":"boolean","default":false},
+                "clip":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number"},"height":{"type":"number"}},"required":["x","y","width","height"]},
+                "target":{"type":"string"}
+            }}),
         },
         Tool {
             name: "observe",
@@ -1090,6 +1129,44 @@ fn optional_u64(arguments: &Value, name: &str, default: u64) -> BrowserResult<u6
             .filter(|value| (1..=300_000).contains(value))
             .ok_or_else(|| format!("{name} must be an integer from 1 to 300000").into()),
     }
+}
+
+fn optional_u64_value(arguments: &Value, name: &str) -> BrowserResult<Option<u64>> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("{name} must be a non-negative integer").into()),
+    }
+}
+
+fn parse_visual_format(value: &str) -> BrowserResult<VisualFormat> {
+    match value {
+        "png" => Ok(VisualFormat::Png),
+        "jpeg" => Ok(VisualFormat::Jpeg),
+        "webp" => Ok(VisualFormat::Webp),
+        _ => Err("format must be png, jpeg, or webp".into()),
+    }
+}
+
+fn optional_visual_clip(arguments: &Value) -> BrowserResult<Option<VisualClip>> {
+    let Some(value) = arguments.get("clip").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or("clip must be an object")?;
+    let number = |name: &str| {
+        object
+            .get(name)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("clip.{name} must be numeric"))
+    };
+    Ok(Some(VisualClip {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("width")?,
+        height: number("height")?,
+    }))
 }
 
 fn text_result(text: impl Into<String>) -> Value {

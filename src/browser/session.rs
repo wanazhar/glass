@@ -74,6 +74,11 @@ const MAX_DIAGNOSTIC_DURATION: Duration = Duration::from_secs(30);
 const MAX_DIAGNOSTIC_EVENTS: usize = 128;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 const MAX_DIAGNOSTIC_URL_BYTES: usize = 4 * 1024;
+// Eight megapixels bounds worst-case 4-byte pixels plus base64 below 64 MiB
+// before Chrome is asked to encode or the generic CDP actor receives JSON.
+const MAX_VISUAL_PIXELS: f64 = 8.0 * 1024.0 * 1024.0;
+const MAX_VISUAL_BASE64_BYTES: usize = 64 * 1024 * 1024;
+const VISUAL_HEADER_BASE64_BYTES: usize = 64 * 1024;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
@@ -456,6 +461,259 @@ pub struct DownloadOutcome {
     pub total_bytes: u64,
     pub target_id: String,
     pub frame_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualFormat {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl VisualFormat {
+    pub fn as_cdp(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Webp => "webp",
+        }
+    }
+}
+
+impl std::str::FromStr for VisualClip {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let values = value
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse::<f64>()
+                    .map_err(|_| "clip must be x,y,width,height".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() != 4 {
+            return Err("clip must be x,y,width,height".to_string());
+        }
+        Ok(Self {
+            x: values[0],
+            y: values[1],
+            width: values[2],
+            height: values[3],
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct VisualClip {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct VisualCaptureOptions {
+    pub format: VisualFormat,
+    pub quality: Option<u8>,
+    pub scale: f64,
+    pub clip: Option<VisualClip>,
+    pub full_page: bool,
+    pub target: Option<String>,
+}
+
+impl Default for VisualCaptureOptions {
+    fn default() -> Self {
+        Self {
+            format: VisualFormat::Png,
+            quality: None,
+            scale: 1.0,
+            clip: None,
+            full_page: false,
+            target: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VisualCaptureMetadata {
+    pub format: VisualFormat,
+    pub width: usize,
+    pub height: usize,
+    pub encoded_bytes: usize,
+    pub device_scale_factor: f64,
+    pub scale: f64,
+    pub full_page: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clip: Option<VisualClip>,
+    pub target_id: String,
+    pub frame_id: String,
+}
+
+#[derive(Debug)]
+pub struct VisualCapture {
+    pub data: String,
+    pub metadata: VisualCaptureMetadata,
+}
+
+#[cfg(feature = "visual-compare")]
+#[derive(Debug, Serialize)]
+pub struct VisualComparison {
+    pub width: u32,
+    pub height: u32,
+    pub changed_pixels: u64,
+    pub changed_ratio: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difference_box: Option<VisualClip>,
+}
+
+#[cfg(feature = "visual-compare")]
+pub fn compare_png_visuals(first: &str, second: &str) -> BrowserResult<VisualComparison> {
+    let first = decode_png_for_comparison(first)?;
+    let second = decode_png_for_comparison(second)?;
+    if first.0 != second.0 || first.1 != second.1 || first.2 != second.2 {
+        return Err("visual comparison requires equal PNG dimensions and color layout".into());
+    }
+    let (width, height, samples, first_pixels) = first;
+    let second_pixels = second.3;
+    let mut changed = 0_u64;
+    let mut left = width;
+    let mut top = height;
+    let mut right = 0_u32;
+    let mut bottom = 0_u32;
+    for (index, (a, b)) in first_pixels
+        .chunks_exact(samples)
+        .zip(second_pixels.chunks_exact(samples))
+        .enumerate()
+    {
+        if a != b {
+            changed += 1;
+            let x = index as u32 % width;
+            let y = index as u32 / width;
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x);
+            bottom = bottom.max(y);
+        }
+    }
+    Ok(VisualComparison {
+        width,
+        height,
+        changed_pixels: changed,
+        changed_ratio: changed as f64 / (u64::from(width) * u64::from(height)) as f64,
+        difference_box: (changed > 0).then_some(VisualClip {
+            x: f64::from(left),
+            y: f64::from(top),
+            width: f64::from(right - left + 1),
+            height: f64::from(bottom - top + 1),
+        }),
+    })
+}
+
+#[cfg(feature = "visual-compare")]
+fn decode_png_for_comparison(value: &str) -> BrowserResult<(u32, u32, usize, Vec<u8>)> {
+    if value.len() > MAX_VISUAL_BASE64_BYTES {
+        return Err("comparison PNG exceeded 64 MiB base64 budget".into());
+    }
+    let encoded = STANDARD.decode(value.as_bytes())?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(encoded));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let output_size = reader.output_buffer_size();
+    if output_size > 32 * 1024 * 1024 {
+        return Err("comparison PNG decoded size exceeded 32 MiB".into());
+    }
+    let mut pixels = vec![0; output_size];
+    let info = reader.next_frame(&mut pixels)?;
+    pixels.truncate(info.buffer_size());
+    let samples = info.color_type.samples();
+    Ok((info.width, info.height, samples, pixels))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScreencastFrame {
+    pub data: String,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ScreencastStats {
+    pub received: u64,
+    pub dropped: u64,
+}
+
+pub struct ScreencastScope {
+    cdp: CdpClient,
+    session_id: Option<String>,
+    receiver: tokio::sync::mpsc::Receiver<super::cdp::CdpScreencastFrame>,
+    armed: bool,
+}
+
+struct ScreencastStartupGuard {
+    cdp: CdpClient,
+    session_id: Option<String>,
+    armed: bool,
+}
+
+impl ScreencastStartupGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ScreencastStartupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cdp.close_screencast_channel();
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = stop_screencast_for(&cdp, session_id.as_deref()).await;
+        });
+    }
+}
+
+impl ScreencastScope {
+    pub async fn next_frame(&mut self) -> Option<ScreencastFrame> {
+        while let Some(frame) = self.receiver.recv().await {
+            if frame.session_id == self.session_id {
+                return Some(ScreencastFrame {
+                    data: frame.data,
+                    metadata: frame.metadata,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn stats(&self) -> ScreencastStats {
+        let (received, dropped) = self.cdp.screencast_stats();
+        ScreencastStats { received, dropped }
+    }
+
+    pub async fn stop(mut self) -> BrowserResult<ScreencastStats> {
+        stop_screencast_for(&self.cdp, self.session_id.as_deref()).await?;
+        let (received, dropped) = self.cdp.close_screencast_channel();
+        self.armed = false;
+        Ok(ScreencastStats { received, dropped })
+    }
+}
+
+impl Drop for ScreencastScope {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cdp.close_screencast_channel();
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = stop_screencast_for(&cdp, session_id.as_deref()).await;
+        });
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1601,6 +1859,178 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async { Ok(self.cdp.screenshot("png").await?) })
             .await
+    }
+
+    /// Capture exact opt-in visual evidence with explicit effective metadata.
+    pub async fn capture_visual(
+        &self,
+        options: &VisualCaptureOptions,
+    ) -> BrowserResult<VisualCapture> {
+        validate_visual_options(options)?;
+        self.cdp
+            .with_current_route(async {
+                let metrics = self.cdp.get_layout_metrics().await?;
+                let dpr = runtime_value(&self.cdp.evaluate("devicePixelRatio").await?)?
+                    .as_f64()
+                    .unwrap_or(1.0);
+                let (_, selected_frame_id) = self.route_identity().await?;
+                let selected_child_frame = {
+                    let topology = self.topology.lock().await;
+                    topology
+                        .frames
+                        .iter()
+                        .find(|frame| frame.id == selected_frame_id)
+                        .is_some_and(|frame| frame.parent_id.is_some())
+                };
+                if selected_child_frame {
+                    return Err("exact visual capture of a selected child frame is not supported; select its page target or the main frame".into());
+                }
+                let mut clip = options.clip;
+                if options.full_page {
+                    clip = Some(visual_rect(&metrics["cssContentSize"])?);
+                } else if let Some(target) = options.target.as_deref() {
+                    let element = self.resolve_element(target).await?;
+                    let model = match (element.node_id, element.backend_dom_node_id) {
+                        (Some(node_id), _) => self.cdp.get_box_model(node_id).await?,
+                        (_, Some(backend_id)) => {
+                            self.cdp.get_box_model_for_backend(backend_id).await?
+                        }
+                        _ => return Err("visual target has no DOM node identity".into()),
+                    };
+                    let mut element_clip = visual_quad_rect(&model["model"]["border"])?;
+                    let viewport = visual_viewport_rect(&metrics["cssVisualViewport"])?;
+                    element_clip.x += viewport.x;
+                    element_clip.y += viewport.y;
+                    clip = Some(element_clip);
+                } else if clip.is_none() && options.scale != 1.0 {
+                    clip = Some(visual_viewport_rect(&metrics["cssVisualViewport"])?);
+                }
+                let viewport = visual_viewport_rect(&metrics["cssVisualViewport"])?;
+                validate_effective_visual_clip(
+                    Some(clip.unwrap_or(viewport)),
+                    if clip.is_some() { options.scale } else { dpr },
+                )?;
+                let mut params = serde_json::json!({
+                    "format": options.format.as_cdp(),
+                    "optimizeForSpeed": true,
+                    "captureBeyondViewport": options.full_page || clip.is_some(),
+                    "fromSurface": true
+                });
+                if let Some(quality) = options.quality {
+                    params["quality"] = Value::from(quality);
+                }
+                if let Some(clip) = clip {
+                    params["clip"] = serde_json::json!({
+                        "x": clip.x,
+                        "y": clip.y,
+                        "width": clip.width,
+                        "height": clip.height,
+                        "scale": options.scale
+                    });
+                }
+                if options.full_page {
+                    let latest = self.cdp.get_layout_metrics().await?;
+                    let latest_clip = visual_rect(&latest["cssContentSize"])?;
+                    if !visual_clips_match(clip.expect("full-page capture has a clip"), latest_clip) {
+                        return Err("full-page geometry changed during capture preparation".into());
+                    }
+                } else if let Some(target) = options.target.as_deref() {
+                    let element = self.resolve_element(target).await?;
+                    let model = match (element.node_id, element.backend_dom_node_id) {
+                        (Some(node_id), _) => self.cdp.get_box_model(node_id).await?,
+                        (_, Some(backend_id)) => self.cdp.get_box_model_for_backend(backend_id).await?,
+                        _ => return Err("visual target has no DOM node identity".into()),
+                    };
+                    let latest_metrics = self.cdp.get_layout_metrics().await?;
+                    let viewport = visual_viewport_rect(&latest_metrics["cssVisualViewport"])?;
+                    let mut latest_clip = visual_quad_rect(&model["model"]["border"])?;
+                    latest_clip.x += viewport.x;
+                    latest_clip.y += viewport.y;
+                    if !visual_clips_match(clip.expect("element capture has a clip"), latest_clip) {
+                        return Err("element geometry changed during capture preparation".into());
+                    }
+                }
+                let data = self.cdp.screenshot_with_params(params).await?;
+                if data.len() > MAX_VISUAL_BASE64_BYTES {
+                    return Err("visual base64 payload exceeded 64 MiB".into());
+                }
+                let encoded_bytes = decoded_base64_len(&data)?;
+                let header_end = data.len().min(VISUAL_HEADER_BASE64_BYTES) / 4 * 4;
+                let header = STANDARD.decode(&data.as_bytes()[..header_end])?;
+                let size = imagesize::blob_size(&header)?;
+                let (target_id, frame_id) = self.route_identity().await?;
+                Ok(VisualCapture {
+                    metadata: VisualCaptureMetadata {
+                        format: options.format,
+                        width: size.width,
+                        height: size.height,
+                        encoded_bytes,
+                        device_scale_factor: dpr,
+                        scale: options.scale,
+                        full_page: options.full_page,
+                        clip,
+                        target_id,
+                        frame_id,
+                    },
+                    data,
+                })
+            })
+            .await
+    }
+
+    pub async fn start_screencast(
+        &self,
+        format: VisualFormat,
+        quality: u8,
+        max_width: u32,
+        max_height: u32,
+    ) -> BrowserResult<ScreencastScope> {
+        if format == VisualFormat::Webp {
+            return Err("CDP screencast supports only png or jpeg".into());
+        }
+        if quality > 100
+            || max_width == 0
+            || max_height == 0
+            || max_width > 4096
+            || max_height > 4096
+            || f64::from(max_width) * f64::from(max_height) > MAX_VISUAL_PIXELS
+        {
+            return Err(
+                "screencast quality must be 0..=100 and dimensions must fit the 8 MP budget".into(),
+            );
+        }
+        let session_id = self.cdp.current_session_id();
+        let receiver = self.cdp.open_screencast_channel(session_id.clone())?;
+        let mut startup = ScreencastStartupGuard {
+            cdp: self.cdp.clone(),
+            session_id: session_id.clone(),
+            armed: true,
+        };
+        let parameters = Some(serde_json::json!({
+            "format": format.as_cdp(),
+            "quality": quality,
+            "maxWidth": max_width,
+            "maxHeight": max_height,
+            "everyNthFrame": 1
+        }));
+        let start_result = match session_id.as_deref() {
+            Some(session_id) => {
+                self.cdp
+                    .send_to_session(session_id, "Page.startScreencast", parameters)
+                    .await
+            }
+            None => self.cdp.send("Page.startScreencast", parameters).await,
+        };
+        if let Err(error) = start_result {
+            return Err(error.into());
+        }
+        startup.disarm();
+        Ok(ScreencastScope {
+            cdp: self.cdp.clone(),
+            session_id,
+            receiver,
+            armed: true,
+        })
     }
 
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
@@ -2927,6 +3357,149 @@ fn finite_nonnegative_u64(value: &Value) -> u64 {
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| value.min(u64::MAX as f64) as u64)
         .unwrap_or(0)
+}
+
+fn validate_visual_options(options: &VisualCaptureOptions) -> BrowserResult<()> {
+    if !options.scale.is_finite() || !(0.1..=4.0).contains(&options.scale) {
+        return Err("visual scale must be finite and between 0.1 and 4.0".into());
+    }
+    if options.full_page as u8 + options.clip.is_some() as u8 + options.target.is_some() as u8 > 1 {
+        return Err("full-page, clip, and element capture are mutually exclusive".into());
+    }
+    if options.format == VisualFormat::Png && options.quality.is_some() {
+        return Err("PNG capture does not accept quality".into());
+    }
+    if options.quality.is_some_and(|quality| quality > 100) {
+        return Err("visual quality must be between 0 and 100".into());
+    }
+    if let Some(clip) = options.clip {
+        for value in [clip.x, clip.y, clip.width, clip.height] {
+            if !value.is_finite() {
+                return Err("visual clip values must be finite".into());
+            }
+        }
+        if clip.x < 0.0 || clip.y < 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
+            return Err("visual clip must have non-negative origin and positive size".into());
+        }
+        validate_effective_visual_clip(Some(clip), options.scale)?;
+    }
+    Ok(())
+}
+
+fn validate_effective_visual_clip(clip: Option<VisualClip>, scale: f64) -> BrowserResult<()> {
+    let Some(clip) = clip else { return Ok(()) };
+    let width = clip.width * scale;
+    let height = clip.height * scale;
+    if width > 16_384.0 || height > 16_384.0 || width * height > MAX_VISUAL_PIXELS {
+        return Err("visual output exceeds the 16384-axis or 8-megapixel budget".into());
+    }
+    Ok(())
+}
+
+fn visual_clips_match(first: VisualClip, second: VisualClip) -> bool {
+    [
+        (first.x, second.x),
+        (first.y, second.y),
+        (first.width, second.width),
+        (first.height, second.height),
+    ]
+    .into_iter()
+    .all(|(first, second)| (first - second).abs() <= 0.5)
+}
+
+fn visual_rect(value: &Value) -> BrowserResult<VisualClip> {
+    let clip = VisualClip {
+        x: value["x"].as_f64().unwrap_or(0.0),
+        y: value["y"].as_f64().unwrap_or(0.0),
+        width: value["width"].as_f64().ok_or("visual width was missing")?,
+        height: value["height"]
+            .as_f64()
+            .ok_or("visual height was missing")?,
+    };
+    validate_visual_options(&VisualCaptureOptions {
+        clip: Some(clip),
+        ..VisualCaptureOptions::default()
+    })?;
+    Ok(clip)
+}
+
+fn visual_viewport_rect(value: &Value) -> BrowserResult<VisualClip> {
+    visual_rect(&serde_json::json!({
+        "x": value["pageX"].as_f64().unwrap_or(0.0),
+        "y": value["pageY"].as_f64().unwrap_or(0.0),
+        "width": value["clientWidth"].as_f64().ok_or("visual viewport width was missing")?,
+        "height": value["clientHeight"].as_f64().ok_or("visual viewport height was missing")?
+    }))
+}
+
+fn decoded_base64_len(value: &str) -> BrowserResult<usize> {
+    if !value.len().is_multiple_of(4) {
+        return Err("visual base64 payload had invalid length".into());
+    }
+    let padding = value
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .count();
+    Ok(value.len() / 4 * 3 - padding)
+}
+
+async fn stop_screencast_for(cdp: &CdpClient, session_id: Option<&str>) -> BrowserResult<()> {
+    match session_id {
+        Some(session_id) => {
+            cdp.send_to_session(session_id, "Page.stopScreencast", None)
+                .await?;
+        }
+        None => {
+            cdp.send("Page.stopScreencast", None).await?;
+        }
+    }
+    Ok(())
+}
+
+fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {
+    let values = value
+        .as_array()
+        .ok_or("visual element border quad was missing")?;
+    if values.len() != 8 {
+        return Err("visual element border quad must contain eight coordinates".into());
+    }
+    let coordinates = values
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .ok_or("visual border coordinate was not numeric")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let xs = [
+        coordinates[0],
+        coordinates[2],
+        coordinates[4],
+        coordinates[6],
+    ];
+    let ys = [
+        coordinates[1],
+        coordinates[3],
+        coordinates[5],
+        coordinates[7],
+    ];
+    let left = xs.into_iter().fold(f64::INFINITY, f64::min);
+    let right = xs.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    let top = ys.into_iter().fold(f64::INFINITY, f64::min);
+    let bottom = ys.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0.0 || height <= 0.0 {
+        return Err("visual element has empty geometry".into());
+    }
+    Ok(VisualClip {
+        x: left,
+        y: top,
+        width,
+        height,
+    })
 }
 
 fn truncate_visible_text_with_status(text: &str, max_bytes: usize) -> (String, bool) {
@@ -4604,6 +5177,41 @@ mod tests {
     }
 
     #[test]
+    fn visual_capture_validation_uses_effective_viewport_and_scale() {
+        let viewport = visual_viewport_rect(&serde_json::json!({
+            "pageX": 15.0,
+            "pageY": 25.0,
+            "clientWidth": 800.0,
+            "clientHeight": 600.0
+        }))
+        .unwrap();
+        assert_eq!(viewport.x, 15.0);
+        assert_eq!(viewport.y, 25.0);
+        assert_eq!(viewport.width, 800.0);
+        assert!(validate_effective_visual_clip(Some(viewport), 2.0).is_ok());
+        assert!(
+            validate_effective_visual_clip(
+                Some(VisualClip {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 8_000.0,
+                    height: 8_000.0
+                }),
+                4.0
+            )
+            .is_err()
+        );
+        assert_eq!(decoded_base64_len("aGVsbG8=").unwrap(), 5);
+        assert!(!visual_clips_match(
+            viewport,
+            VisualClip {
+                x: 16.0,
+                ..viewport
+            }
+        ));
+    }
+
+    #[test]
     fn full_snapshot_controls_use_revisioned_backend_references() {
         let roots = vec![AxNode {
             ax_node_id: "button".to_string(),
@@ -4773,5 +5381,36 @@ mod tests {
 
         session.close().await.unwrap();
         server.await.unwrap();
+    }
+
+    #[cfg(feature = "visual-compare")]
+    fn comparison_png(width: u32, height: u32, pixels: &[u8]) -> String {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(pixels).unwrap();
+        }
+        STANDARD.encode(encoded)
+    }
+
+    #[cfg(feature = "visual-compare")]
+    #[test]
+    fn compares_equal_sized_pngs_with_exact_difference_bounds() {
+        let first = comparison_png(2, 2, &[0; 16]);
+        let mut changed_pixels = [0; 16];
+        changed_pixels[4..8].copy_from_slice(&[255, 0, 0, 255]);
+        let second = comparison_png(2, 2, &changed_pixels);
+
+        let comparison = compare_png_visuals(&first, &second).unwrap();
+        assert_eq!(comparison.changed_pixels, 1);
+        assert_eq!(comparison.changed_ratio, 0.25);
+        let bounds = comparison.difference_box.unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (1.0, 0.0, 1.0, 1.0)
+        );
     }
 }

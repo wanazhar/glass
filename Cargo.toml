@@ -9,6 +9,10 @@ documentation = "https://docs.rs/glass"
 homepage = "https://github.com/wanazhar/glass"
 repository = "https://github.com/wanazhar/glass"
 
+[features]
+default = []
+visual-compare = ["dep:png"]
+
 [dependencies]
 base64 = "0.22"
 tokio = {
@@ -30,10 +34,11 @@ chrono = "0.4"
 futures-util = "0.3"
 libc = "0.2"
 fs2 = "0.4"
+imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
+png = { version = "0.17", optional = true }
 
 [dev-dependencies]
 base64-simd = "0.8"
-imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [profile.release]
 opt-level = 3

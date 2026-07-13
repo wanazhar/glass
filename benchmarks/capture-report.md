@@ -191,9 +191,9 @@ polling on this animated workload. It does not prove an intrinsic Rust advantage
 Playwright can access the same raw CDP screencast methods. Screencast also cannot
 replace an exact-time one-shot screenshot or a future full-page capture API.
 
-Before production integration, route screencast frames through a dedicated
-bounded typed channel. The current generic `broadcast<CdpEvent>` deep-clones
-large `serde_json::Value` payloads to every receiver, including the observation
-cache invalidator. Production code also needs guaranteed acknowledgements,
-lag/drop metrics, stop-on-cleanup, metadata handling, and compatibility fallback
-because the CDP screencast API remains experimental.
+Production integration now routes screencast frames through a dedicated
+two-frame typed channel rather than the generic event broadcast. Glass
+acknowledges every valid frame before bounded delivery, reports received and
+dropped counts, pins start/stop/frame delivery to the selected CDP session, and
+stops the stream when its scope is dropped. Callers should retain a polling
+fallback because the CDP screencast API remains experimental.

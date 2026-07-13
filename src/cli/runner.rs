@@ -1,6 +1,8 @@
 use super::args::{Cli, Commands, ProfileCommand};
 use crate::browser::profile::ProfileManager;
-use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions, WaitCondition};
+use crate::browser::session::{
+    BrowserResult, BrowserSession, SessionOptions, VisualCaptureOptions, WaitCondition,
+};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -116,9 +118,33 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Upload { target, files } => {
             print_json(&session.upload_files(target, files).await?)?;
         }
-        Commands::Screenshot { output } => {
-            std::fs::write(output, session.screenshot_png().await?)?;
+        Commands::Screenshot {
+            output,
+            format,
+            quality,
+            scale,
+            full_page,
+            clip,
+            target,
+        } => {
+            let capture = session
+                .capture_visual(&VisualCaptureOptions {
+                    format: *format,
+                    quality: *quality,
+                    scale: *scale,
+                    clip: *clip,
+                    full_page: *full_page,
+                    target: target.clone(),
+                })
+                .await?;
+            let mut source = base64::read::DecoderReader::new(
+                capture.data.as_bytes(),
+                &base64::engine::general_purpose::STANDARD,
+            );
+            let mut file = std::fs::File::create(output)?;
+            std::io::copy(&mut source, &mut file)?;
             println!("wrote {output}");
+            print_json(&capture.metadata)?;
         }
         Commands::Text => println!("{}", session.text().await?),
         Commands::Dom => print_json(&session.deep_dom().await?)?,

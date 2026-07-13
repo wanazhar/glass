@@ -228,7 +228,15 @@ impl BrowserPolicy {
                         ),
                     });
                 }
-                addresses[0]
+                addresses
+                    .iter()
+                    .copied()
+                    .find(IpAddr::is_ipv4)
+                    .ok_or_else(|| PolicyError::InvalidConfiguration {
+                        reason: format!(
+                            "allowed host {host} needs a public IPv4 address for resolver pinning"
+                        ),
+                    })?
             };
             if is_non_public_ip(address) {
                 return Err(PolicyError::InvalidConfiguration {

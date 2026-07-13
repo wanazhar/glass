@@ -74,6 +74,9 @@ const MAX_DIAGNOSTIC_DURATION: Duration = Duration::from_secs(30);
 const MAX_DIAGNOSTIC_EVENTS: usize = 128;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 const MAX_DIAGNOSTIC_URL_BYTES: usize = 4 * 1024;
+const MAX_VISUAL_PIXELS: f64 = 64.0 * 1024.0 * 1024.0;
+const MAX_VISUAL_BASE64_BYTES: usize = 64 * 1024 * 1024;
+const VISUAL_HEADER_BASE64_BYTES: usize = 64 * 1024;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
@@ -546,7 +549,7 @@ pub struct VisualCaptureMetadata {
     pub frame_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VisualCapture {
     pub data: String,
     pub metadata: VisualCaptureMetadata,
@@ -1706,6 +1709,21 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let metrics = self.cdp.get_layout_metrics().await?;
+                let dpr = runtime_value(&self.cdp.evaluate("devicePixelRatio").await?)?
+                    .as_f64()
+                    .unwrap_or(1.0);
+                let (_, selected_frame_id) = self.route_identity().await?;
+                let selected_child_frame = {
+                    let topology = self.topology.lock().await;
+                    topology
+                        .frames
+                        .iter()
+                        .find(|frame| frame.id == selected_frame_id)
+                        .is_some_and(|frame| frame.parent_id.is_some())
+                };
+                if selected_child_frame {
+                    return Err("exact visual capture of a selected child frame is not supported; select its page target or the main frame".into());
+                }
                 let mut clip = options.clip;
                 if options.full_page {
                     clip = Some(visual_rect(&metrics["cssContentSize"])?);
@@ -1718,10 +1736,19 @@ impl BrowserSession {
                         }
                         _ => return Err("visual target has no DOM node identity".into()),
                     };
-                    clip = Some(visual_quad_rect(&model["model"]["border"])?);
+                    let mut element_clip = visual_quad_rect(&model["model"]["border"])?;
+                    let viewport = visual_viewport_rect(&metrics["cssVisualViewport"])?;
+                    element_clip.x += viewport.x;
+                    element_clip.y += viewport.y;
+                    clip = Some(element_clip);
                 } else if clip.is_none() && options.scale != 1.0 {
-                    clip = Some(visual_rect(&metrics["cssVisualViewport"])?);
+                    clip = Some(visual_viewport_rect(&metrics["cssVisualViewport"])?);
                 }
+                let viewport = visual_viewport_rect(&metrics["cssVisualViewport"])?;
+                validate_effective_visual_clip(
+                    Some(clip.unwrap_or(viewport)),
+                    if clip.is_some() { options.scale } else { dpr },
+                )?;
                 let mut params = serde_json::json!({
                     "format": options.format.as_cdp(),
                     "optimizeForSpeed": true,
@@ -1741,13 +1768,13 @@ impl BrowserSession {
                     });
                 }
                 let data = self.cdp.screenshot_with_params(params).await?;
-                let decoded = STANDARD.decode(data.as_bytes())?;
-                let size = imagesize::blob_size(&decoded)?;
-                let encoded_bytes = decoded.len();
-                drop(decoded);
-                let dpr = runtime_value(&self.cdp.evaluate("devicePixelRatio").await?)?
-                    .as_f64()
-                    .unwrap_or(1.0);
+                if data.len() > MAX_VISUAL_BASE64_BYTES {
+                    return Err("visual base64 payload exceeded 64 MiB".into());
+                }
+                let encoded_bytes = decoded_base64_len(&data)?;
+                let header_end = data.len().min(VISUAL_HEADER_BASE64_BYTES) / 4 * 4;
+                let header = STANDARD.decode(&data.as_bytes()[..header_end])?;
+                let size = imagesize::blob_size(&header)?;
                 let (target_id, frame_id) = self.route_identity().await?;
                 Ok(VisualCapture {
                     metadata: VisualCaptureMetadata {
@@ -3116,9 +3143,17 @@ fn validate_visual_options(options: &VisualCaptureOptions) -> BrowserResult<()> 
         if clip.x < 0.0 || clip.y < 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
             return Err("visual clip must have non-negative origin and positive size".into());
         }
-        if clip.width * options.scale > 16_384.0 || clip.height * options.scale > 16_384.0 {
-            return Err("visual output dimensions exceed 16384 pixels".into());
-        }
+        validate_effective_visual_clip(Some(clip), options.scale)?;
+    }
+    Ok(())
+}
+
+fn validate_effective_visual_clip(clip: Option<VisualClip>, scale: f64) -> BrowserResult<()> {
+    let Some(clip) = clip else { return Ok(()) };
+    let width = clip.width * scale;
+    let height = clip.height * scale;
+    if width > 16_384.0 || height > 16_384.0 || width * height > MAX_VISUAL_PIXELS {
+        return Err("visual output exceeds the 16384-axis or 64-megapixel budget".into());
     }
     Ok(())
 }
@@ -3137,6 +3172,28 @@ fn visual_rect(value: &Value) -> BrowserResult<VisualClip> {
         ..VisualCaptureOptions::default()
     })?;
     Ok(clip)
+}
+
+fn visual_viewport_rect(value: &Value) -> BrowserResult<VisualClip> {
+    visual_rect(&serde_json::json!({
+        "x": value["pageX"].as_f64().unwrap_or(0.0),
+        "y": value["pageY"].as_f64().unwrap_or(0.0),
+        "width": value["clientWidth"].as_f64().ok_or("visual viewport width was missing")?,
+        "height": value["clientHeight"].as_f64().ok_or("visual viewport height was missing")?
+    }))
+}
+
+fn decoded_base64_len(value: &str) -> BrowserResult<usize> {
+    if value.len() % 4 != 0 {
+        return Err("visual base64 payload had invalid length".into());
+    }
+    let padding = value
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .count();
+    Ok(value.len() / 4 * 3 - padding)
 }
 
 fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {
@@ -3170,12 +3227,17 @@ fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {
     let right = xs.into_iter().fold(f64::NEG_INFINITY, f64::max);
     let top = ys.into_iter().fold(f64::INFINITY, f64::min);
     let bottom = ys.into_iter().fold(f64::NEG_INFINITY, f64::max);
-    visual_rect(&serde_json::json!({
-        "x": left,
-        "y": top,
-        "width": right - left,
-        "height": bottom - top
-    }))
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0.0 || height <= 0.0 {
+        return Err("visual element has empty geometry".into());
+    }
+    Ok(VisualClip {
+        x: left,
+        y: top,
+        width,
+        height,
+    })
 }
 
 fn truncate_visible_text_with_status(text: &str, max_bytes: usize) -> (String, bool) {
@@ -4850,6 +4912,34 @@ mod tests {
         assert_eq!(console.len(), MAX_DIAGNOSTIC_EVENTS);
         assert_eq!(console[0].text, "[console arguments redacted]");
         assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn visual_capture_validation_uses_effective_viewport_and_scale() {
+        let viewport = visual_viewport_rect(&serde_json::json!({
+            "pageX": 15.0,
+            "pageY": 25.0,
+            "clientWidth": 800.0,
+            "clientHeight": 600.0
+        }))
+        .unwrap();
+        assert_eq!(viewport.x, 15.0);
+        assert_eq!(viewport.y, 25.0);
+        assert_eq!(viewport.width, 800.0);
+        assert!(validate_effective_visual_clip(Some(viewport), 2.0).is_ok());
+        assert!(
+            validate_effective_visual_clip(
+                Some(VisualClip {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 8_000.0,
+                    height: 8_000.0
+                }),
+                4.0
+            )
+            .is_err()
+        );
+        assert_eq!(decoded_base64_len("aGVsbG8=").unwrap(), 5);
     }
 
     #[test]

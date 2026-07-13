@@ -137,13 +137,12 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     target: target.clone(),
                 })
                 .await?;
-            std::fs::write(
-                output,
-                base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    capture.data.as_bytes(),
-                )?,
-            )?;
+            let mut source = base64::read::DecoderReader::new(
+                capture.data.as_bytes(),
+                &base64::engine::general_purpose::STANDARD,
+            );
+            let mut file = std::fs::File::create(output)?;
+            std::io::copy(&mut source, &mut file)?;
             println!("wrote {output}");
             print_json(&capture.metadata)?;
         }

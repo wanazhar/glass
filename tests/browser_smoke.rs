@@ -982,6 +982,60 @@ async fn browser_session_drives_a_local_fixture() {
         (240, 160)
     );
     assert!(clip_capture.metadata.encoded_bytes > 0);
+    let viewport_capture = session.capture_visual(&Default::default()).await.unwrap();
+    assert!(viewport_capture.metadata.width > 0 && viewport_capture.metadata.height > 0);
+    let jpeg_capture = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            format: glass::browser::session::VisualFormat::Jpeg,
+            quality: Some(80),
+            clip: Some(glass::browser::session::VisualClip {
+                x: 10.0,
+                y: 10.0,
+                width: 64.0,
+                height: 48.0,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (jpeg_capture.metadata.width, jpeg_capture.metadata.height),
+        (64, 48)
+    );
+    let webp_capture = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            format: glass::browser::session::VisualFormat::Webp,
+            quality: Some(80),
+            clip: Some(glass::browser::session::VisualClip {
+                x: 10.0,
+                y: 10.0,
+                width: 64.0,
+                height: 48.0,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (webp_capture.metadata.width, webp_capture.metadata.height),
+        (64, 48)
+    );
+    session
+        .evaluate("document.body.style.minHeight='2000px'; scrollTo(0, 150); true")
+        .await
+        .unwrap();
+    let scaled_viewport = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            scale: 1.5,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(scaled_viewport.metadata.clip.unwrap().y >= 100.0);
+    assert_eq!(
+        scaled_viewport.metadata.width,
+        (scaled_viewport.metadata.clip.unwrap().width * 1.5) as usize
+    );
     let full_capture = session
         .capture_visual(&glass::browser::session::VisualCaptureOptions {
             full_page: true,

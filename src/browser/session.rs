@@ -5025,6 +5025,31 @@ mod tests {
     }
 
     #[test]
+    fn disposable_cleanup_scans_beyond_one_memory_batch() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-disposable-batch-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let owner = serde_json::to_vec(&DisposableProfileOwner {
+            pid: u32::MAX,
+            process_start: 1,
+        })
+        .unwrap();
+        for index in 0..=DISPOSABLE_CLEANUP_BATCH {
+            let path = root.join(format!("incognito-{index:04}"));
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join(DISPOSABLE_OWNER_FILE), &owner).unwrap();
+        }
+
+        DisposableProfileDir::cleanup_abandoned(&root).unwrap();
+
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
     fn disposable_profile_is_recovered_after_forced_process_exit() {
         let path_record = std::env::temp_dir().join(format!(
             "glass-crash-profile-path-{}-{}",

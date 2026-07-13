@@ -105,7 +105,7 @@ async function runScenario(mcp, id) {
     case "frame":
       return runCode(mcp, "async (page) => { await page.frameLocator('#frame').locator('#frame-action').click(); return 'frame-clicked'; }");
     case "dialog":
-      return runCode(mcp, "async (page) => { page.once('dialog', dialog => dialog.accept()); await page.locator('#dialog').click(); return await page.locator('#result').inputValue(); }");
+      return runCode(mcp, "async (page) => { const handled = new Promise((resolve, reject) => page.once('dialog', dialog => dialog.accept().then(resolve, reject))); await page.locator('#dialog').click(); await handled; return await page.locator('#result').evaluate(node => node.value); }");
     case "download":
       return runCode(mcp, "async (page) => { const event = page.waitForEvent('download'); await page.locator('#download').click(); const download = await event; await download.createReadStream(); return 'download-complete'; }");
     case "failure-recovery":

@@ -87,3 +87,13 @@ Focused Linux aarch64 verification covers Node syntax and scorecard unit tests.
 The interrupted one-iteration diagnostic produced no adapter report and is not
 release evidence. This task remains in progress until the 100-iteration run and
 all prerequisite evidence are published; Glass does not claim best in class.
+
+Attempt 02 at reviewed revision `8101ca2` stopped the release sequence. A final
+bounded trace localized Glass's failure to the missing CDP response for
+popup-opening `mouseReleased`; the preceding press responds normally. The
+Playwright baseline passed 11/11. Playwright MCP exposed a separate harness
+race: its dialog callback started acceptance without awaiting completion, so
+the next reset encountered the modal. The MCP adapter now awaits an explicit
+dialog-handled promise. No Glass core workaround was accepted because the
+existing task-local route invariant already holds and fire-and-forget input
+would weaken correctness.

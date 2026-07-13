@@ -42,6 +42,14 @@ reached. The initial trace printed the next frame scenario's start before its
 reset, so it does not establish a frame-action failure. The popup-opening click
 is the current product-path defect and no release comparison proceeds.
 
+The final permitted event-level trace narrowed this further: `mousePressed`
+receives its CDP response, while popup-opening `mouseReleased` is sent and never
+receives a response before the 30-second CDP deadline. Glass already captures
+an immutable operation route and routes responses by request ID, so changing
+the active-route snapshot would not be an evidence-backed fix. The frame path
+cannot be assessed independently after the popup timeout leaves the route
+unusable.
+
 Static inspection localized the MCP harness defect: its dialog callback starts
 `dialog.accept()` but does not await completion before returning. The next
 `browser_evaluate` reset therefore encounters the modal. The minimal future

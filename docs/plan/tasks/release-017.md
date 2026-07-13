@@ -1,7 +1,7 @@
 ---
 id: release-017
 scope: production and supply-chain hardening
-status: pending
+status: in-progress
 depends-on: [mcp-008, policy-016, visual-015]
 ---
 
@@ -44,3 +44,27 @@ and resistant to malformed input or interrupted lifecycle operations.
 - Corrupt/interrupted downloads never become executable installations.
 - Crash cleanup and parser fuzz targets run in CI with documented budgets.
 - Release artifacts reproduce documented version, help, and checksums.
+
+## Accepted contract
+
+Managed Chrome installation is a transaction: download a pinned version into a
+new staging directory, stream to a bounded archive while hashing, compare the
+published SHA-256 digest, extract with an in-process ZIP reader, validate the
+platform executable, then atomically rename staging into the versioned install
+directory. A stable `current` record changes only after validation. Startup
+removes abandoned staging directories; `install-chromium --update` is the only
+operation that changes an already valid managed version.
+
+Disposable profile directories carry an owner record containing Glass PID and
+process-start identity. Startup removes only records whose owner is provably
+dead, never an active or malformed directory. Normal shutdown remains eager.
+
+Parser fuzzing is split into bounded cargo-fuzz targets for MCP framing, CDP
+messages, accessibility/DOM projection, locators, and URL policy. CI runs a
+short deterministic corpus on every change and scheduled longer budgets.
+
+Release CI builds each claimed target from a tag, runs platform-native browser
+and archive smoke tests, emits the binary plus README/license, produces SHA-256
+checksums, and signs the checksum manifest through keyless provenance. License,
+dependency, and vulnerability reports are attached to the same workflow; a
+failed report blocks publication rather than producing a partial release.

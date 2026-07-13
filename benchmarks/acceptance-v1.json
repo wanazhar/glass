@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "glass-competitive-acceptance-v1",
+  "corpus": "glass-local-v1",
+  "iterations": 100,
+  "viewport": {"width": 1280, "height": 720},
+  "temperature": "warm",
+  "adapters": [
+    {"id": "glass", "required": true, "version": "workspace"},
+    {"id": "playwright", "required": true, "version": "1.61.1"},
+    {"id": "playwright-mcp", "required": true, "version": "0.0.78"},
+    {
+      "id": "codex-browser",
+      "required": false,
+      "version": null,
+      "unsupported_reason": "No callable, versioned Codex browser-automation harness contract is exposed to this repository."
+    }
+  ],
+  "glass_budgets": {
+    "wrong_actions": 0,
+    "task_success_rate": 1.0,
+    "peak_runner_rss_bytes": 16777216,
+    "compact_context_bytes": 24576,
+    "binary_size_bytes": 6291456
+  }
+}

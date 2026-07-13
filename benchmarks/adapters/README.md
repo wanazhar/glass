@@ -18,3 +18,12 @@ temporary directory and must not be added to `Cargo.toml` or this repository.
 Playwright installation is described in `benchmarks/README.md`. Metrics that
 cannot be collected through Playwright's public API are explicitly `null`, not
 estimated or silently omitted.
+
+`playwright-mcp-scorecard.mjs` is the released agent-browser adapter. It is a
+dependency-free MCP client that invokes a separately installed, exactly pinned
+`@playwright/mcp` executable. Complex topology and diagnostic scenarios use
+the server's published `browser_run_code_unsafe` MCP tool; this is recorded as
+a privileged released tool, not as a safety equivalence with Glass's default
+policy. The adapter validates its required tool surface before running. Its
+runner RSS covers the MCP server process only; unavailable client and Chrome
+process-tree metrics remain `null` with an explicit scope description.

@@ -34,6 +34,35 @@ chooses the wrong duplicate-label target, which must produce `wrong_action`, a
 failed hard gate, and a non-zero failure count. Competitor adapters follow
 `adapters/README.md` and keep their dependencies outside the Glass repository.
 
+### Competitive acceptance
+
+The release comparison is pinned by `acceptance-v1.json`. The runner builds
+Glass, installs competitor adapters into a temporary npm prefix, drives all
+three runnable adapters with one explicitly selected Chromium executable, and
+retains raw reports, stderr logs, environment metadata, and the gate decision:
+
+```sh
+CHROME_PATH=/absolute/path/to/chromium \
+  node benchmarks/run-acceptance.mjs
+```
+
+The default release run uses 100 iterations and writes to
+`benchmarks/results/compare-018/`. `GLASS_SCORECARD_ITERATIONS` may shorten a
+diagnostic run, but such a run is not release evidence. A failed gate exits
+with status 2 after writing the report; `GLASS_ACCEPTANCE_ALLOW_FAILURE=1` is
+only for inspecting known local failures.
+
+The mature agent baseline is Microsoft's released `@playwright/mcp@0.0.78`,
+called over stdio MCP with `--isolated` and `--executable-path`. Playwright is
+pinned independently at `1.61.1`. Neither dependency enters `Cargo.toml` or the
+checkout. Codex browser automation is explicitly unsupported because this
+harness has no callable, versioned black-box invocation contract for it.
+
+Missing adapters, mismatched controls, any wrong action, incomplete task
+success, or a Glass resource-budget failure blocks best-in-class language.
+Even when every boolean gate passes, the retained comparison evidence still
+needs interpretation before making a comparative leadership claim.
+
 Run the Playwright adapter from a temporary installation:
 
 ```sh

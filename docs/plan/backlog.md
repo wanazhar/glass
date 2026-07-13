@@ -1,5 +1,19 @@
 # Backlog
 
+## Comparative acceptance: broader corpus and complete resource scopes
+
+After the local v1 gate, add a versioned representative workflow corpus rather
+than treating deterministic fixtures as external task success. Define portable
+process-tree accounting for Node clients, MCP servers, and Chrome so competitor
+memory can be compared without nullable scopes. Add a callable Codex adapter
+only if Codex exposes a versioned black-box automation contract to the harness;
+do not infer behavior from an interactive product surface.
+
+The released Playwright MCP baseline exposes complex workflows through a tool
+explicitly named `browser_run_code_unsafe`. Add a second agent baseline with a
+non-RCE task surface, and separate privileged-tool usability and safety
+evidence before making broad agent-friendliness claims.
+
 ## Lifecycle: cleanup after implicit incognito-session drop
 
 `BrowserSession::close()` correctly stops a Glass-owned Chrome process before

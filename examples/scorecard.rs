@@ -41,7 +41,17 @@ async fn main() -> BrowserResult<()> {
     if corpus.schema_version != 1 {
         return Err(format!("unsupported corpus schema {}", corpus.schema_version).into());
     }
-    let chrome_path = detect_chrome().ok_or("Chrome/Chromium is required for the scorecard")?;
+    let chrome_path = std::env::var_os("CHROME_PATH")
+        .map(PathBuf::from)
+        .or_else(detect_chrome)
+        .ok_or("Chrome/Chromium is required for the scorecard")?;
+    if !chrome_path.is_file() {
+        return Err(format!(
+            "CHROME_PATH does not name a file: {}",
+            chrome_path.display()
+        )
+        .into());
+    }
     let iterations = positive_env("GLASS_SCORECARD_ITERATIONS", DEFAULT_ITERATIONS)?;
     let profile = std::env::var("GLASS_SCORECARD_PROFILE")
         .unwrap_or_else(|_| "ephemeral-incognito".to_string());

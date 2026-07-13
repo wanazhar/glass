@@ -16,6 +16,11 @@ Glass provides four interfaces over the same browser session:
 Glass is preparing its `0.1.0` release. Treat the CLI and Rust API as
 pre-stable: breaking changes may occur before `1.0.0`.
 
+Glass does not currently claim to be best in class. Its release gate publishes
+wrong-action, task-success, resource, and unsupported-adapter evidence; any
+failed hard gate blocks that language. See the
+[competitive acceptance guide](benchmarks/README.md#competitive-acceptance).
+
 ## Requirements
 
 - Linux, macOS, or Windows on a supported Rust target;

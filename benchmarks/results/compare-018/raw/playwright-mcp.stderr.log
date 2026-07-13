@@ -1,0 +1,12 @@
+file://<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs:16
+const client = new McpClient(command, [
+               ^
+
+ReferenceError: Cannot access 'McpClient' before initialization
+    at file://<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs:16:16
+    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async node:internal/modules/esm/loader:633:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.16.0

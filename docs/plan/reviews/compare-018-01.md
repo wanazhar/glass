@@ -252,3 +252,62 @@ This code verdict does not satisfy the task's empirical release gate. The
 full release-validation evidence, and real-browser platform-matrix evidence
 remain absent from this review. Glass remains ineligible for best-in-class
 language until those long-run artifacts exist and the runner accepts them.
+
+---
+
+## Focused measured-harness re-review: `6b18deb`
+
+This review is limited to the failures retained from the first measured run.
+
+### Findings
+
+No blocking finding remains in the reviewed scope.
+
+### Verified fixes
+
+- Viewport validation now compares the numeric `width` and `height` fields
+  structurally in both adapter validation and the cross-adapter control gate;
+  JSON key insertion order can no longer reject Glass's valid viewport
+  (`benchmarks/run-acceptance.mjs:176-179`,
+  `benchmarks/run-acceptance.mjs:205-211`,
+  `benchmarks/run-acceptance.mjs:296`).
+- The Playwright adapter reads the HTML `<output>` element through its `value`
+  property rather than calling the input-only `inputValue()` API
+  (`benchmarks/adapters/playwright-scorecard.mjs:139-141`).
+- Playwright MCP client creation now calls a hoisted factory that constructs an
+  inline class, removing the top-level class temporal-dead-zone failure
+  (`benchmarks/adapters/playwright-mcp-scorecard.mjs:16-19`,
+  `benchmarks/adapters/playwright-mcp-scorecard.mjs:134-205`).
+- Glass delayed content uses the public typed wait API before reading the
+  expected state (`examples/scorecard.rs:232-246`). Popup and frame scenarios
+  use public target/frame listing and selection APIs, return to the original
+  page/main frame, and let the fixture's next reset close the retained popup
+  (`examples/scorecard.rs:261-289`, `examples/scorecard.rs:334-350`,
+  `tests/fixtures/scorecard.html:47-54`). Dialog and download scenarios exercise
+  the public `accept_dialog` and `wait_for_download` APIs; download cleanup runs
+  on both success and error paths (`examples/scorecard.rs:291-317`). These are
+  current `BrowserSession` APIs also used by CLI/MCP dispatch, not simulated
+  success or raw-CDP instrumentation.
+- Commit inspection found no temporary tracing, debug output, fixture mutation,
+  or benchmark-result manipulation.
+
+### Checks
+
+- `node --check` passed for the acceptance runner, Playwright adapter, and
+  Playwright MCP adapter.
+- `cargo test --example scorecard --locked` passed all 5 unit tests.
+- No browser execution, dependency installation, or long acceptance run was
+  performed in this focused review.
+
+### Code verdict
+
+**pass**
+
+### Full-rerun decision
+
+**Safe to rerun the full acceptance harness.** The known first-run structural,
+Playwright API, MCP initialization, delayed-wait, and unsupported-Glass-scenario
+failures are addressed through real current surfaces. This is a code-readiness
+decision, not evidence that the 100-iteration gate will pass; the retained full
+rerun remains authoritative for timing, cleanup, task success, and resource
+outcomes.

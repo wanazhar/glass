@@ -35,10 +35,12 @@ This diagnostic failed its adapter gate, so the required 100-iteration attempt
 A separate temporary one-iteration progress trace, not retained as acceptance
 evidence and fully reverted afterward, localized the Glass failure. Duplicate
 target, overlay, reflow, delayed content, SPA navigation, and form scenarios
-completed successfully. Popup control returned a failure. The frame scenario
-then selected the discovered same-process `srcdoc` child and did not complete
-its public `click("css=#frame-action")` path before CDP timed out. This is a
-current product-path defect, so no release comparison proceeds.
+completed successfully. A final bounded substep trace showed that listing the
+original target succeeds, but `session.click("css=#popup")` never returns when
+the authored handler opens the popup; target waiting and selection are never
+reached. The initial trace printed the next frame scenario's start before its
+reset, so it does not establish a frame-action failure. The popup-opening click
+is the current product-path defect and no release comparison proceeds.
 
 Static inspection localized the MCP harness defect: its dialog callback starts
 `dialog.accept()` but does not await completion before returning. The next

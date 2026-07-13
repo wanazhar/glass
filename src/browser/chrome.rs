@@ -304,6 +304,7 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     lock_file.lock_exclusive()?;
     cleanup_install_staging(&install_dir)?;
     if !update && let Some(path) = managed_chrome_path_in(&install_dir, platform) {
+        prune_managed_chrome(&install_dir)?;
         info!(path = %path.display(), "Chromium already installed");
         return Ok(path);
     }
@@ -383,6 +384,7 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     use std::io::Write as _;
     marker.write_all(format!("{PINNED_CHROME_VERSION}\n").as_bytes())?;
     marker.sync_all()?;
+    sync_directory(&extract_root)?;
     let versions = install_dir.join("versions");
     std::fs::create_dir_all(&versions)?;
     let final_dir = versions.join(format!("{PINNED_CHROME_VERSION}-{nonce}"));
@@ -398,7 +400,7 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     std::fs::rename(&pending_record, current.join(format!("{generation:020}")))?;
     sync_directory(&current)?;
     drop(guard);
-    prune_managed_chrome(&install_dir, &final_dir)?;
+    prune_managed_chrome(&install_dir)?;
     let path = managed_chrome_path_in(&install_dir, platform)
         .ok_or("installed Chrome executable was not discoverable")?;
     info!(path = %path.display(), version = PINNED_CHROME_VERSION, "Chrome for Testing installed atomically");
@@ -430,7 +432,7 @@ fn next_current_generation(current: &Path) -> std::io::Result<u64> {
         .ok_or_else(|| std::io::Error::other("managed Chrome generation overflowed"))
 }
 
-fn prune_managed_chrome(install_dir: &Path, active: &Path) -> std::io::Result<()> {
+fn prune_managed_chrome(install_dir: &Path) -> std::io::Result<()> {
     let current = install_dir.join("current");
     let mut records = std::fs::read_dir(&current)?
         .filter_map(Result::ok)
@@ -448,9 +450,7 @@ fn prune_managed_chrome(install_dir: &Path, active: &Path) -> std::io::Result<()
     }
     for entry in std::fs::read_dir(install_dir.join("versions"))? {
         let entry = entry?;
-        if !retained.contains(&entry.file_name().to_string_lossy().into_owned())
-            && entry.path() != active
-        {
+        if !retained.contains(&entry.file_name().to_string_lossy().into_owned()) {
             std::fs::remove_dir_all(entry.path())?;
         }
     }

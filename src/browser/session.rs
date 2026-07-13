@@ -1017,6 +1017,7 @@ struct DisposableProfileDir {
 }
 
 const DISPOSABLE_OWNER_FILE: &str = ".glass-owner.json";
+const DISPOSABLE_CLEANUP_BATCH: usize = 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DisposableProfileOwner {
@@ -1066,7 +1067,7 @@ impl DisposableProfileDir {
 
     fn cleanup_abandoned(root: &Path) -> BrowserResult<()> {
         let mut candidates = Vec::new();
-        for entry in std::fs::read_dir(root)? {
+        for entry in std::fs::read_dir(root)?.take(DISPOSABLE_CLEANUP_BATCH) {
             let entry = entry?;
             if !entry.file_type()?.is_dir()
                 || !entry
@@ -1096,8 +1097,11 @@ impl DisposableProfileDir {
             let live_start = system
                 .process(Pid::from_u32(owner.pid))
                 .map(|process| process.start_time());
-            if live_start != Some(owner.process_start) {
-                std::fs::remove_dir_all(path)?;
+            if live_start != Some(owner.process_start)
+                && let Err(error) = std::fs::remove_dir_all(path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(error.into());
             }
         }
         Ok(())

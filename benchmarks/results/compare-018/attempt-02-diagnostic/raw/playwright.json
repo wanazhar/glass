@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "name": "playwright",
+    "version": "1.61.1"
+  },
+  "run": {
+    "corpus": "glass-local-v1",
+    "corpus_fixture": "tests/fixtures/scorecard.html",
+    "iterations": 1,
+    "temperature": "warm",
+    "profile": "fresh-ephemeral-single-session",
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "arm64",
+    "rust": null,
+    "chrome": "Chromium 150.0.7871.46 snap",
+    "machine": "wanazhar 6.17.0-1011-oracle"
+  },
+  "resources": {
+    "scope": "Runner RSS is Node only; Chrome process-tree RSS and raw CDP request count are unavailable through the public Playwright adapter and reported as null",
+    "runner": {
+      "pid": 3718555,
+      "rss_start_bytes": 132231168,
+      "rss_end_bytes": 147025920,
+      "peak_rss_bytes": 147025920
+    },
+    "chrome": {
+      "root_pid": null,
+      "rss_end_bytes": null,
+      "peak_process_tree_rss_bytes": null
+    },
+    "binary_size_bytes": 121333752,
+    "compact_context_bytes": null,
+    "cdp_requests": null,
+    "startup_ms": 555.556284
+  },
+  "summary": {
+    "successes": 11,
+    "failures": 0,
+    "wrong_actions": 0,
+    "unsupported": 0,
+    "task_success_rate": 1,
+    "hard_gate_passed": true
+  },
+  "scenarios": [
+    {
+      "id": "duplicate-label",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "right-target",
+      "actual": "right-target",
+      "status": "success",
+      "error": null,
+      "latency_ms": 147.23047399999996,
+      "cdp_requests": null
+    },
+    {
+      "id": "overlay",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 268.12258700000007,
+      "cdp_requests": null
+    },
+    {
+      "id": "reflow",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 44.413470999999845,
+      "cdp_requests": null
+    },
+    {
+      "id": "delayed-content",
+      "category": "wait",
+      "iteration": 1,
+      "expected": "Delayed content",
+      "actual": "Delayed content",
+      "status": "success",
+      "error": null,
+      "latency_ms": 190.3649429999998,
+      "cdp_requests": null
+    },
+    {
+      "id": "spa-navigation",
+      "category": "navigation",
+      "iteration": 1,
+      "expected": "spa-complete",
+      "actual": "spa-complete",
+      "status": "success",
+      "error": null,
+      "latency_ms": 80.72272799999996,
+      "cdp_requests": null
+    },
+    {
+      "id": "form",
+      "category": "input",
+      "iteration": 1,
+      "expected": "submitted:Glass",
+      "actual": "submitted:Glass",
+      "status": "success",
+      "error": null,
+      "latency_ms": 79.49524700000029,
+      "cdp_requests": null
+    },
+    {
+      "id": "popup",
+      "category": "topology",
+      "iteration": 1,
+      "expected": "popup-controlled",
+      "actual": "popup-controlled",
+      "status": "success",
+      "error": null,
+      "latency_ms": 119.19726999999966,
+      "cdp_requests": null
+    },
+    {
+      "id": "frame",
+      "category": "topology",
+      "iteration": 1,
+      "expected": "frame-clicked",
+      "actual": "frame-clicked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 104.05220499999996,
+      "cdp_requests": null
+    },
+    {
+      "id": "dialog",
+      "category": "diagnostic",
+      "iteration": 1,
+      "expected": "dialog-accepted",
+      "actual": "dialog-accepted",
+      "status": "success",
+      "error": null,
+      "latency_ms": 110.2448959999997,
+      "cdp_requests": null
+    },
+    {
+      "id": "download",
+      "category": "diagnostic",
+      "iteration": 1,
+      "expected": "download-complete",
+      "actual": "download-complete",
+      "status": "success",
+      "error": null,
+      "latency_ms": 117.54970800000001,
+      "cdp_requests": null
+    },
+    {
+      "id": "failure-recovery",
+      "category": "recovery",
+      "iteration": 1,
+      "expected": "recovered",
+      "actual": "recovered",
+      "status": "success",
+      "error": null,
+      "latency_ms": 108.07581200000004,
+      "cdp_requests": null
+    }
+  ]
+}

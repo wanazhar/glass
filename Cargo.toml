@@ -12,6 +12,7 @@ repository = "https://github.com/wanazhar/glass"
 [features]
 default = []
 visual-compare = ["dep:png"]
+fuzzing = []
 
 [dependencies]
 base64 = "0.22"

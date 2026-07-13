@@ -13,7 +13,7 @@ const expectedVersion = requiredEnv("PLAYWRIGHT_MCP_VERSION");
 const requestTimeoutMs = positiveInteger("PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS", process.env.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS ?? "30000");
 const outputDir = fs.mkdtempSync(`${os.tmpdir()}/glass-playwright-mcp-`);
 const startupStarted = performance.now();
-const client = new McpClient(command, [
+const client = createMcpClient(command, [
   "--headless", "--isolated", "--executable-path", chromePath,
   "--output-dir", outputDir,
 ]);
@@ -131,7 +131,8 @@ function processRss(pid) {
   try { const match = fs.readFileSync(`/proc/${pid}/status`, "utf8").match(/^VmRSS:\s+(\d+)\s+kB$/m); return match ? Number(match[1]) * 1024 : null; } catch { return null; }
 }
 
-class McpClient {
+function createMcpClient(command, args) {
+  return new (class McpClient {
   constructor(command, args) {
     this.child = spawn(command, args, { stdio: ["pipe", "pipe", "inherit"] });
     this.pid = this.child.pid;
@@ -201,4 +202,5 @@ class McpClient {
     await Promise.race([new Promise((resolve) => this.child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 2000))]);
     if (this.child.exitCode === null) this.child.kill("SIGKILL");
   }
+  })(command, args);
 }

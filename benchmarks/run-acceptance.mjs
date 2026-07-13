@@ -176,7 +176,7 @@ function validateReport(report, id) {
   }
   if (report.run?.corpus !== contract.corpus || report.run?.corpus_fixture !== corpus.fixture || report.run?.iterations !== iterations ||
       report.run?.temperature !== contract.temperature || report.run?.profile !== contract.profile_semantics ||
-      JSON.stringify(report.run?.viewport) !== JSON.stringify(contract.viewport)) throw new Error(`${id} report violates controlled run metadata`);
+      !sameViewport(report.run?.viewport, contract.viewport)) throw new Error(`${id} report violates controlled run metadata`);
   const seen = new Set();
   const counts = { success: 0, failure: 0, wrong_action: 0, unsupported: 0 };
   const definitions = new Map(corpus.scenarios.map((scenario) => [scenario.id, scenario]));
@@ -207,7 +207,7 @@ function controlGates(rows) {
     temperature: report.run.temperature, profile: report.run.profile, viewport: report.run.viewport, chrome: report.environment.chrome }));
   const chrome = details[0]?.chrome;
   const ok = details.length === 3 && typeof chrome === "string" && details.every((row) => row.corpus === contract.corpus && row.iterations === iterations &&
-    row.temperature === contract.temperature && row.profile === contract.profile_semantics && JSON.stringify(row.viewport) === JSON.stringify(contract.viewport) && row.chrome === chrome);
+    row.temperature === contract.temperature && row.profile === contract.profile_semantics && sameViewport(row.viewport, contract.viewport) && row.chrome === chrome);
   return { ok, details };
 }
 
@@ -293,6 +293,7 @@ function nonEmpty(value) { return typeof value === "string" && value.length > 0;
 function positiveIntegerValue(value) { return Number.isInteger(value) && value >= 1; }
 function nullablePositiveInteger(value) { return value === null || positiveIntegerValue(value); }
 function nullableNonNegativeInteger(value) { return value === null || Number.isInteger(value) && value >= 0; }
+function sameViewport(actual, expected) { return actual?.width === expected.width && actual?.height === expected.height; }
 function sanitizeArgs(args) { return args.map((arg) => arg.startsWith(os.tmpdir()) ? `<temporary>/${path.basename(arg)}` : arg); }
 function readCargoVersion() { return fs.readFileSync(path.join(root, "Cargo.toml"), "utf8").match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null; }
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }

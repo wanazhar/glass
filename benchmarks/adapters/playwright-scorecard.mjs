@@ -137,7 +137,7 @@ async function reset(targetPage) {
 }
 
 async function result(targetPage) {
-  return targetPage.locator("#result").inputValue();
+  return targetPage.locator("#result").evaluate((node) => node.value);
 }
 
 async function runScenario(targetPage, id) {

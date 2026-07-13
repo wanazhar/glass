@@ -1,4 +1,4 @@
-use glass::browser::chrome::detect_chrome;
+use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
     ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
     WaitCondition, WaitTimeout,
@@ -221,7 +221,7 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };
@@ -430,7 +430,7 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };
@@ -484,7 +484,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };
@@ -634,7 +634,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };
@@ -743,7 +743,7 @@ async fn browser_session_drives_a_local_fixture() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };
@@ -1647,7 +1647,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
+    let Some(chrome_path) = resolve_chrome_path(None) else {
         eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
         return;
     };

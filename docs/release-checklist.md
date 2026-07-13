@@ -22,13 +22,19 @@ cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo build --release --locked
 cargo package --locked
+cargo deny check
+cargo audit
+cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
-- [ ] Run the opt-in browser smoke test on at least one supported platform.
+- [ ] Confirm the tagged release matrix ran the real-browser smoke on Linux
+      x86-64, macOS x86-64/arm64, and Windows x86/x86-64.
 - [ ] Smoke-test `--help`, `navigate`, `observe`, `screenshot`, TUI startup,
       and MCP initialization using the release binary.
 - [ ] Inspect `cargo package --list` and unpacked package contents.
-- [ ] Scan the release artifacts and record checksums.
+- [ ] Download every artifact, verify `SHA256SUMS` with `sha256sum -c`, and
+      verify the Sigstore bundle with `cosign verify-blob`.
+- [ ] Review the attached dependency, license, and vulnerability JSON reports.
 
 ## Publish
 

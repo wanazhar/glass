@@ -3184,7 +3184,7 @@ fn visual_viewport_rect(value: &Value) -> BrowserResult<VisualClip> {
 }
 
 fn decoded_base64_len(value: &str) -> BrowserResult<usize> {
-    if value.len() % 4 != 0 {
+    if !value.len().is_multiple_of(4) {
         return Err("visual base64 payload had invalid length".into());
     }
     let padding = value

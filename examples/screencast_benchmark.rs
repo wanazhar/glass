@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserResult, BrowserSession, InteractionMode, SessionOptions};
+use glass::browser::session::{
+    BrowserResult, BrowserSession, InteractionMode, SessionOptions, VisualFormat,
+};
 use serde_json::{Value, json};
 use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -166,64 +168,48 @@ async fn benchmark_screencast(
     frames: usize,
     warmup: usize,
 ) -> BrowserResult<Value> {
-    let mut events = session.cdp().subscribe_events_with_params();
+    let visual_format = match format {
+        "jpeg" => VisualFormat::Jpeg,
+        "png" => VisualFormat::Png,
+        _ => return Err("unsupported screencast format".into()),
+    };
     let started_command = Instant::now();
-    session
-        .cdp()
-        .send(
-            "Page.startScreencast",
-            Some(json!({
-                "format": format,
-                "quality": quality,
-                "maxWidth": VIEWPORT_WIDTH,
-                "maxHeight": VIEWPORT_HEIGHT,
-                "everyNthFrame": 1
-            })),
+    let mut screencast = session
+        .start_screencast(
+            visual_format,
+            quality as u8,
+            VIEWPORT_WIDTH,
+            VIEWPORT_HEIGHT,
         )
         .await?;
     let start_command = started_command.elapsed();
 
-    let mut acknowledgements = JoinSet::new();
     for _ in 0..warmup {
-        let (_, session_id, _) = next_screencast_frame(&mut events).await?;
-        spawn_ack(&mut acknowledgements, session.cdp().clone(), session_id);
+        screencast
+            .next_frame()
+            .await
+            .ok_or("screencast ended during warmup")?;
     }
 
     let wire_started = Instant::now();
     let mut first_arrival = None;
     let mut last_arrival = None;
     let mut decoders = JoinSet::new();
-    let mut lagged_events = 0_u64;
     let mut received = 0_usize;
     while received < frames {
-        match events.recv().await {
-            Ok(mut event) if event.method == "Page.screencastFrame" => {
-                let arrival = Instant::now();
-                first_arrival.get_or_insert(arrival);
-                last_arrival = Some(arrival);
-                let session_id = event.params["sessionId"]
-                    .as_i64()
-                    .ok_or("screencast frame contained no sessionId")?;
-                let data = take_frame_data(&mut event.params)?;
-                spawn_ack(&mut acknowledgements, session.cdp().clone(), session_id);
-                let index = received;
-                decoders.spawn_blocking(move || decode_frame(index, data));
-                received += 1;
-            }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                lagged_events += count;
-            }
-            Err(error) => return Err(format!("screencast event stream closed: {error}").into()),
-        }
+        let frame = screencast
+            .next_frame()
+            .await
+            .ok_or("screencast ended before the requested frame count")?;
+        let arrival = Instant::now();
+        first_arrival.get_or_insert(arrival);
+        last_arrival = Some(arrival);
+        let index = received;
+        decoders.spawn_blocking(move || decode_frame(index, frame.data));
+        received += 1;
     }
     let wire_elapsed = wire_started.elapsed();
-    session.cdp().send("Page.stopScreencast", None).await?;
-
-    let mut ack_round_trips = Vec::with_capacity(frames + warmup);
-    while let Some(result) = acknowledgements.join_next().await {
-        ack_round_trips.push(result.map_err(|error| error.to_string())??);
-    }
+    let stream_stats = screencast.stop().await?;
     let mut decoded = Vec::with_capacity(frames);
     while let Some(result) = decoders.join_next().await {
         decoded.push(result.map_err(|error| error.to_string())??);
@@ -245,46 +231,13 @@ async fn benchmark_screencast(
         },
         "receive_plus_decode_ms": duration_ms(decoded_elapsed),
         "receive_plus_decode_fps": frames as f64 / decoded_elapsed.as_secs_f64(),
-        "ack_round_trip_ms": summarize_durations(ack_round_trips),
-        "lagged_broadcast_events": lagged_events,
-        "commands": frames + warmup + 2,
+        "received_frames": stream_stats.received,
+        "dropped_frames": stream_stats.dropped,
+        "commands": 2,
         "frame_events": frames + warmup,
-        "note": "ACK commands are spawned before base64 decode; decode uses Tokio's blocking pool"
+        "note": "Glass ACKs frames before bounded channel delivery; decode uses Tokio's blocking pool"
     });
     summarize_frames(decoded, decoded_elapsed, details)
-}
-
-async fn next_screencast_frame(
-    events: &mut tokio::sync::broadcast::Receiver<glass::browser::cdp::CdpEventWithParams>,
-) -> BrowserResult<(Instant, i64, String)> {
-    loop {
-        let mut event = events.recv().await?;
-        if event.method != "Page.screencastFrame" {
-            continue;
-        }
-        let session_id = event.params["sessionId"]
-            .as_i64()
-            .ok_or("screencast frame contained no sessionId")?;
-        let data = take_frame_data(&mut event.params)?;
-        return Ok((Instant::now(), session_id, data));
-    }
-}
-
-fn spawn_ack(
-    acknowledgements: &mut JoinSet<Result<Duration, String>>,
-    cdp: glass::browser::cdp::CdpClient,
-    session_id: i64,
-) {
-    acknowledgements.spawn(async move {
-        let started = Instant::now();
-        cdp.send(
-            "Page.screencastFrameAck",
-            Some(json!({"sessionId": session_id})),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        Ok(started.elapsed())
-    });
 }
 
 async fn capture_and_decode(
@@ -299,16 +252,6 @@ async fn capture_and_decode(
         .as_str()
         .ok_or("capture response contained no data")?;
     decode_frame(0, data.to_string()).map_err(Into::into)
-}
-
-fn take_frame_data(params: &mut Value) -> BrowserResult<String> {
-    match params
-        .as_object_mut()
-        .and_then(|params| params.remove("data"))
-    {
-        Some(Value::String(data)) => Ok(data),
-        _ => Err("screencast frame contained no data".into()),
-    }
 }
 
 fn decode_frame(index: usize, data: String) -> Result<DecodedFrame, String> {
@@ -359,23 +302,6 @@ fn capture_params(format: &str, quality: u32) -> Value {
     } else {
         json!({"format": format, "optimizeForSpeed": true})
     }
-}
-
-fn summarize_durations(mut samples: Vec<Duration>) -> Value {
-    if samples.is_empty() {
-        return Value::Null;
-    }
-    samples.sort_unstable();
-    let total: Duration = samples.iter().copied().sum();
-    let percentile = |ratio: f64| {
-        let index = ((samples.len() - 1) as f64 * ratio).round() as usize;
-        duration_ms(samples[index])
-    };
-    json!({
-        "average": duration_ms(total) / samples.len() as f64,
-        "p50": percentile(0.50),
-        "p95": percentile(0.95)
-    })
 }
 
 fn duration_ms(duration: Duration) -> f64 {

@@ -1073,6 +1073,21 @@ async fn browser_session_drives_a_local_fixture() {
         .unwrap();
     assert!(element_capture.metadata.width > 0 && element_capture.metadata.height > 0);
     assert_eq!(element_capture.metadata.target_id, context.page.target_id);
+    let mut screencast = session
+        .start_screencast(glass::browser::session::VisualFormat::Jpeg, 70, 640, 480)
+        .await
+        .unwrap();
+    session
+        .evaluate("document.body.style.backgroundColor='rgb(1, 2, 3)'; true")
+        .await
+        .unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), screencast.next_frame())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!frame.data.is_empty());
+    let stream_stats = screencast.stop().await.unwrap();
+    assert!(stream_stats.received >= 1);
     assert!(
         context
             .incomplete

@@ -557,6 +557,139 @@ pub struct VisualCapture {
     pub metadata: VisualCaptureMetadata,
 }
 
+#[cfg(feature = "visual-compare")]
+#[derive(Debug, Serialize)]
+pub struct VisualComparison {
+    pub width: u32,
+    pub height: u32,
+    pub changed_pixels: u64,
+    pub changed_ratio: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difference_box: Option<VisualClip>,
+}
+
+#[cfg(feature = "visual-compare")]
+pub fn compare_png_visuals(first: &str, second: &str) -> BrowserResult<VisualComparison> {
+    let first = decode_png_for_comparison(first)?;
+    let second = decode_png_for_comparison(second)?;
+    if first.0 != second.0 || first.1 != second.1 || first.2 != second.2 {
+        return Err("visual comparison requires equal PNG dimensions and color layout".into());
+    }
+    let (width, height, samples, first_pixels) = first;
+    let second_pixels = second.3;
+    let mut changed = 0_u64;
+    let mut left = width;
+    let mut top = height;
+    let mut right = 0_u32;
+    let mut bottom = 0_u32;
+    for (index, (a, b)) in first_pixels
+        .chunks_exact(samples)
+        .zip(second_pixels.chunks_exact(samples))
+        .enumerate()
+    {
+        if a != b {
+            changed += 1;
+            let x = index as u32 % width;
+            let y = index as u32 / width;
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x);
+            bottom = bottom.max(y);
+        }
+    }
+    Ok(VisualComparison {
+        width,
+        height,
+        changed_pixels: changed,
+        changed_ratio: changed as f64 / (u64::from(width) * u64::from(height)) as f64,
+        difference_box: (changed > 0).then_some(VisualClip {
+            x: f64::from(left),
+            y: f64::from(top),
+            width: f64::from(right - left + 1),
+            height: f64::from(bottom - top + 1),
+        }),
+    })
+}
+
+#[cfg(feature = "visual-compare")]
+fn decode_png_for_comparison(value: &str) -> BrowserResult<(u32, u32, usize, Vec<u8>)> {
+    if value.len() > MAX_VISUAL_BASE64_BYTES {
+        return Err("comparison PNG exceeded 64 MiB base64 budget".into());
+    }
+    let encoded = STANDARD.decode(value.as_bytes())?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(encoded));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let output_size = reader.output_buffer_size();
+    if output_size > 32 * 1024 * 1024 {
+        return Err("comparison PNG decoded size exceeded 32 MiB".into());
+    }
+    let mut pixels = vec![0; output_size];
+    let info = reader.next_frame(&mut pixels)?;
+    pixels.truncate(info.buffer_size());
+    let samples = info.color_type.samples();
+    Ok((info.width, info.height, samples, pixels))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScreencastFrame {
+    pub data: String,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ScreencastStats {
+    pub received: u64,
+    pub dropped: u64,
+}
+
+pub struct ScreencastScope {
+    cdp: CdpClient,
+    session_id: Option<String>,
+    receiver: tokio::sync::mpsc::Receiver<super::cdp::CdpScreencastFrame>,
+    armed: bool,
+}
+
+impl ScreencastScope {
+    pub async fn next_frame(&mut self) -> Option<ScreencastFrame> {
+        while let Some(frame) = self.receiver.recv().await {
+            if frame.session_id == self.session_id {
+                return Some(ScreencastFrame {
+                    data: frame.data,
+                    metadata: frame.metadata,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn stats(&self) -> ScreencastStats {
+        let (received, dropped) = self.cdp.screencast_stats();
+        ScreencastStats { received, dropped }
+    }
+
+    pub async fn stop(mut self) -> BrowserResult<ScreencastStats> {
+        stop_screencast_for(&self.cdp, self.session_id.as_deref()).await?;
+        let (received, dropped) = self.cdp.close_screencast_channel();
+        self.armed = false;
+        Ok(ScreencastStats { received, dropped })
+    }
+}
+
+impl Drop for ScreencastScope {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cdp.close_screencast_channel();
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = stop_screencast_for(&cdp, session_id.as_deref()).await;
+        });
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ObservationBoundarySummary {
     pub scanned_elements: usize,
@@ -1817,6 +1950,53 @@ impl BrowserSession {
                 })
             })
             .await
+    }
+
+    pub async fn start_screencast(
+        &self,
+        format: VisualFormat,
+        quality: u8,
+        max_width: u32,
+        max_height: u32,
+    ) -> BrowserResult<ScreencastScope> {
+        if format == VisualFormat::Webp {
+            return Err("CDP screencast supports only png or jpeg".into());
+        }
+        if quality > 100
+            || max_width == 0
+            || max_height == 0
+            || max_width > 4096
+            || max_height > 4096
+        {
+            return Err("screencast quality must be 0..=100 and dimensions 1..=4096".into());
+        }
+        let receiver = self.cdp.open_screencast_channel()?;
+        let session_id = self.cdp.current_session_id();
+        let parameters = Some(serde_json::json!({
+            "format": format.as_cdp(),
+            "quality": quality,
+            "maxWidth": max_width,
+            "maxHeight": max_height,
+            "everyNthFrame": 1
+        }));
+        let start_result = match session_id.as_deref() {
+            Some(session_id) => {
+                self.cdp
+                    .send_to_session(session_id, "Page.startScreencast", parameters)
+                    .await
+            }
+            None => self.cdp.send("Page.startScreencast", parameters).await,
+        };
+        if let Err(error) = start_result {
+            self.cdp.close_screencast_channel();
+            return Err(error.into());
+        }
+        Ok(ScreencastScope {
+            cdp: self.cdp.clone(),
+            session_id,
+            receiver,
+            armed: true,
+        })
     }
 
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
@@ -3229,6 +3409,19 @@ fn decoded_base64_len(value: &str) -> BrowserResult<usize> {
         .take_while(|byte| **byte == b'=')
         .count();
     Ok(value.len() / 4 * 3 - padding)
+}
+
+async fn stop_screencast_for(cdp: &CdpClient, session_id: Option<&str>) -> BrowserResult<()> {
+    match session_id {
+        Some(session_id) => {
+            cdp.send_to_session(session_id, "Page.stopScreencast", None)
+                .await?;
+        }
+        None => {
+            cdp.send("Page.stopScreencast", None).await?;
+        }
+    }
+    Ok(())
 }
 
 fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {
@@ -5154,5 +5347,36 @@ mod tests {
 
         session.close().await.unwrap();
         server.await.unwrap();
+    }
+
+    #[cfg(feature = "visual-compare")]
+    fn comparison_png(width: u32, height: u32, pixels: &[u8]) -> String {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(pixels).unwrap();
+        }
+        STANDARD.encode(encoded)
+    }
+
+    #[cfg(feature = "visual-compare")]
+    #[test]
+    fn compares_equal_sized_pngs_with_exact_difference_bounds() {
+        let first = comparison_png(2, 2, &[0; 16]);
+        let mut changed_pixels = [0; 16];
+        changed_pixels[4..8].copy_from_slice(&[255, 0, 0, 255]);
+        let second = comparison_png(2, 2, &changed_pixels);
+
+        let comparison = compare_png_visuals(&first, &second).unwrap();
+        assert_eq!(comparison.changed_pixels, 1);
+        assert_eq!(comparison.changed_ratio, 0.25);
+        let bounds = comparison.difference_box.unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (1.0, 0.0, 1.0, 1.0)
+        );
     }
 }

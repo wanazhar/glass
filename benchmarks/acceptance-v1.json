@@ -7,6 +7,14 @@
   "temperature": "warm",
   "profile_semantics": "fresh-ephemeral-single-session",
   "required_prerequisites": ["ratified_gates", "release_validation", "real_browser_platform_matrix"],
+  "release_checks": ["fmt", "test", "clippy", "docs", "build", "package", "deny", "audit", "fuzz-check"],
+  "platform_targets": [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "i686-pc-windows-msvc"
+  ],
   "adapters": [
     {"id": "glass", "required": true, "version": "workspace"},
     {"id": "playwright", "required": true, "version": "1.61.1"},

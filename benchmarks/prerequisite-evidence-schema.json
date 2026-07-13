@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Glass competitive acceptance prerequisite evidence",
+  "oneOf": [
+    {"$ref": "#/$defs/ratified"},
+    {"$ref": "#/$defs/release"},
+    {"$ref": "#/$defs/platform"}
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["schema_version", "type", "git_revision", "producer"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "type": {"enum": ["ratified_gates", "release_validation", "real_browser_platform_matrix"]},
+        "git_revision": {"type": "string", "minLength": 40},
+        "producer": {"$ref": "#/$defs/producer"}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "required": ["name", "version", "command", "run_url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "command": {"type": "string", "minLength": 1},
+        "run_url": {"type": "string", "minLength": 1}
+      }
+    },
+    "ratified": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["passed", "metrics", "raw_reports"],
+          "properties": {
+            "type": {"const": "ratified_gates"},
+            "passed": {"type": "boolean"},
+            "metrics": {"type": "object"},
+            "raw_reports": {"type": "object"}
+          }
+        }
+      ]
+    },
+    "release": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["checks"],
+          "properties": {"type": {"const": "release_validation"}, "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}}}
+        }
+      ]
+    },
+    "platform": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["platforms"],
+          "properties": {"type": {"const": "real_browser_platform_matrix"}, "platforms": {"type": "array", "items": {"$ref": "#/$defs/platformRow"}}}
+        }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "status", "raw_report"],
+      "additionalProperties": false,
+      "properties": {"id": {"type": "string"}, "status": {"const": "passed"}, "raw_report": {"type": "string", "minLength": 1}}
+    },
+    "platformRow": {
+      "type": "object",
+      "required": ["target", "os", "architecture", "chrome", "status", "raw_report"],
+      "additionalProperties": false,
+      "properties": {
+        "target": {"type": "string"}, "os": {"type": "string", "minLength": 1}, "architecture": {"type": "string", "minLength": 1},
+        "chrome": {"type": "string", "minLength": 1}, "status": {"const": "passed"}, "raw_report": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

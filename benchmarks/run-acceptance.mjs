@@ -75,9 +75,9 @@ const gates = {
   controlled_environment: controls.ok,
   zero_wrong_actions: reports.size === 3 && [...reports.values()].every(({ derived }) => derived.wrong_actions === 0),
   deterministic_task_success: reports.size === 3 && [...reports.values()].every(({ derived }) => derived.hard_gate_passed),
-  peak_default_workflow_rss: budget(glass?.report.resources.runner.peak_rss_bytes, contract.glass_budgets.peak_runner_rss_bytes),
-  compact_context: budget(glass?.report.resources.compact_context_bytes, contract.glass_budgets.compact_context_bytes),
-  release_binary_size: budget(glass?.report.resources.binary_size_bytes, contract.glass_budgets.binary_size_bytes),
+  peak_default_workflow_rss: budget(glass?.report?.resources?.runner?.peak_rss_bytes, contract.glass_budgets.peak_runner_rss_bytes),
+  compact_context: budget(glass?.report?.resources?.compact_context_bytes, contract.glass_budgets.compact_context_bytes),
+  release_binary_size: budget(glass?.report?.resources?.binary_size_bytes, contract.glass_budgets.binary_size_bytes),
 };
 const bestInClassEligible = Object.values(gates).every((passed) => passed === true);
 const environment = {
@@ -161,9 +161,19 @@ function validateReport(report, id) {
   exactKeys(report.run, ["corpus", "corpus_fixture", "iterations", "temperature", "profile", "viewport"], `${id} run`);
   exactKeys(report.environment, ["os", "architecture", "rust", "chrome", "machine"], `${id} environment`);
   exactKeys(report.resources, ["scope", "runner", "chrome", "binary_size_bytes", "compact_context_bytes", "cdp_requests", "startup_ms"], `${id} resources`);
+  exactKeys(report.resources.runner, ["pid", "rss_start_bytes", "rss_end_bytes", "peak_rss_bytes"], `${id} runner resources`);
+  exactKeys(report.resources.chrome, ["root_pid", "rss_end_bytes", "peak_process_tree_rss_bytes"], `${id} Chrome resources`);
   exactKeys(report.summary, ["successes", "failures", "wrong_actions", "unsupported", "task_success_rate", "hard_gate_passed"], `${id} summary`);
   const expectedTool = expectedTools()[id];
   if (report.tool?.name !== id || report.tool?.version !== expectedTool) throw new Error(`${id} reported an unexpected tool identity/version`);
+  if (!nonEmpty(report.resources.scope) || !positiveIntegerValue(report.resources.runner.pid) ||
+      !nullableNonNegativeInteger(report.resources.runner.rss_start_bytes) || !nullableNonNegativeInteger(report.resources.runner.rss_end_bytes) ||
+      !nullableNonNegativeInteger(report.resources.runner.peak_rss_bytes) || !nullablePositiveInteger(report.resources.chrome.root_pid) ||
+      !nullableNonNegativeInteger(report.resources.chrome.rss_end_bytes) || !nullableNonNegativeInteger(report.resources.chrome.peak_process_tree_rss_bytes) ||
+      !nullableNonNegativeInteger(report.resources.binary_size_bytes) || !nullableNonNegativeInteger(report.resources.compact_context_bytes) ||
+      !nullableNonNegativeInteger(report.resources.cdp_requests) || !Number.isFinite(report.resources.startup_ms) || report.resources.startup_ms < 0) {
+    throw new Error(`${id} contains invalid resource metrics`);
+  }
   if (report.run?.corpus !== contract.corpus || report.run?.corpus_fixture !== corpus.fixture || report.run?.iterations !== iterations ||
       report.run?.temperature !== contract.temperature || report.run?.profile !== contract.profile_semantics ||
       JSON.stringify(report.run?.viewport) !== JSON.stringify(contract.viewport)) throw new Error(`${id} report violates controlled run metadata`);
@@ -207,16 +217,17 @@ function retainEvidence(id, variable) {
   try {
     const evidence = readJson(source);
     if (evidence.schema_version !== 1 || evidence.git_revision !== gitRevision) throw new Error("Evidence must use schema 1 and match the tested git revision.");
+    const derived = validateEvidence(id, evidence);
     const destination = path.join(rawDir, `${id}.json`);
     fs.copyFileSync(source, destination);
-    return { status: "completed", passed: evidence.passed === true, report: path.relative(outputDir, destination), reason: evidence.passed === true ? null : "Evidence reports failure." };
+    return { status: "completed", passed: derived.passed, report: path.relative(outputDir, destination), reason: derived.passed ? null : "Validated evidence reports a failed check.", derived };
   } catch (error) {
     return { status: "invalid", passed: false, report: null, reason: String(error.message ?? error) };
   }
 }
 
 function prerequisiteGates(evidence) {
-  const metrics = evidence.ratified_gates.report ? readJson(path.join(outputDir, evidence.ratified_gates.report)).metrics : {};
+  const metrics = evidence.ratified_gates.derived?.metrics ?? {};
   const limits = contract.ratified_gates;
   return {
     representative_task_success: evidence.ratified_gates.passed && atLeast(metrics.representative_task_success_rate, limits.representative_task_success_rate_min),
@@ -230,10 +241,58 @@ function prerequisiteGates(evidence) {
   };
 }
 
+function validateEvidence(id, evidence) {
+  validateProducer(evidence.producer, id);
+  if (evidence.type !== id) throw new Error(`${id} evidence has the wrong type`);
+  if (id === "ratified_gates") {
+    exactKeys(evidence, ["schema_version", "type", "git_revision", "producer", "passed", "metrics", "raw_reports"], id);
+    exactKeys(evidence.metrics, ["representative_task_success_rate", "fresh_compact_observe_p95_ms", "cached_compact_observe_p95_ms", "fast_action_client_overhead_p95_ms", "idle_glass_rss_bytes", "mcp_malformed_input_survival_rate"], `${id} metrics`);
+    exactKeys(evidence.raw_reports, Object.keys(evidence.metrics), `${id} raw reports`);
+    if (typeof evidence.passed !== "boolean" || Object.values(evidence.metrics).some((value) => !Number.isFinite(value) || value < 0) || Object.values(evidence.raw_reports).some((value) => !nonEmpty(value))) throw new Error(`${id} evidence has invalid metrics or raw references`);
+    return { passed: evidence.passed, metrics: evidence.metrics };
+  }
+  if (id === "release_validation") {
+    exactKeys(evidence, ["schema_version", "type", "git_revision", "producer", "checks"], id);
+    return validateRows(evidence.checks, contract.release_checks, "check", id);
+  }
+  if (id === "real_browser_platform_matrix") {
+    exactKeys(evidence, ["schema_version", "type", "git_revision", "producer", "platforms"], id);
+    return validateRows(evidence.platforms, contract.platform_targets, "platform", id);
+  }
+  throw new Error(`unknown evidence type ${id}`);
+}
+
+function validateProducer(producer, label) {
+  exactKeys(producer, ["name", "version", "command", "run_url"], `${label} producer`);
+  if (![producer.name, producer.version, producer.command, producer.run_url].every(nonEmpty)) throw new Error(`${label} producer is not auditable`);
+}
+
+function validateRows(rows, expectedIds, kind, label) {
+  if (!Array.isArray(rows) || rows.length !== expectedIds.length) throw new Error(`${label} has an incomplete ${kind} matrix`);
+  const ids = new Set();
+  for (const row of rows) {
+    if (kind === "check") {
+      exactKeys(row, ["id", "status", "raw_report"], `${label} check`);
+      ids.add(row.id);
+      if (row.status !== "passed" || !nonEmpty(row.raw_report)) throw new Error(`${label} contains a failed or unauditable check`);
+    } else {
+      exactKeys(row, ["target", "os", "architecture", "chrome", "status", "raw_report"], `${label} platform`);
+      ids.add(row.target);
+      if (![row.os, row.architecture, row.chrome, row.raw_report].every(nonEmpty) || row.status !== "passed") throw new Error(`${label} contains a failed or unauditable platform`);
+    }
+  }
+  if (ids.size !== expectedIds.length || expectedIds.some((id) => !ids.has(id))) throw new Error(`${label} has duplicate or unexpected ${kind} rows`);
+  return { passed: true };
+}
+
 function expectedTools() { return { glass: readCargoVersion(), playwright: "1.61.1", "playwright-mcp": "0.0.78", "codex-browser": null }; }
 function exactKeys(value, expected, label) { if (!value || typeof value !== "object" || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) throw new Error(`${label} has unexpected or missing keys`); }
 function budget(value, maximum) { return Number.isFinite(value) && value <= maximum; }
 function atLeast(value, minimum) { return Number.isFinite(value) && value >= minimum; }
+function nonEmpty(value) { return typeof value === "string" && value.length > 0; }
+function positiveIntegerValue(value) { return Number.isInteger(value) && value >= 1; }
+function nullablePositiveInteger(value) { return value === null || positiveIntegerValue(value); }
+function nullableNonNegativeInteger(value) { return value === null || Number.isInteger(value) && value >= 0; }
 function sanitizeArgs(args) { return args.map((arg) => arg.startsWith(os.tmpdir()) ? `<temporary>/${path.basename(arg)}` : arg); }
 function readCargoVersion() { return fs.readFileSync(path.join(root, "Cargo.toml"), "utf8").match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null; }
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }

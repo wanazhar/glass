@@ -70,6 +70,10 @@ The remaining ratified thresholds use the same envelope plus a `metrics`
 object and `GLASS_RATIFIED_GATES_REPORT`; absent or malformed metrics fail
 closed. Every command has a deadline and bounded file capture. Setup and
 adapter failures still produce `environment.json` and `acceptance.json`.
+All prerequisite files follow `prerequisite-evidence-schema.json`, identify
+their producer and run URL, and link each required check or platform row to its
+raw result. The runner additionally enforces the exact release-check and target
+sets in `acceptance-v1.json`; a top-level `passed` assertion alone is rejected.
 
 Run the Playwright adapter from a temporary installation:
 

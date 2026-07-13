@@ -390,11 +390,12 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     sync_directory(&versions)?;
     let current = install_dir.join("current");
     std::fs::create_dir_all(&current)?;
+    let generation = next_current_generation(&current)?;
     let pending_record = staging.join("current-record");
     let mut record = File::create(&pending_record)?;
     record.write_all(final_dir.file_name().unwrap().to_string_lossy().as_bytes())?;
     record.sync_all()?;
-    std::fs::rename(&pending_record, current.join(&nonce))?;
+    std::fs::rename(&pending_record, current.join(format!("{generation:020}")))?;
     sync_directory(&current)?;
     drop(guard);
     prune_managed_chrome(&install_dir, &final_dir)?;
@@ -404,26 +405,57 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     Ok(path)
 }
 
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> std::io::Result<()> {
     File::open(path)?.sync_all()
 }
 
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    // Windows does not permit opening directories with ordinary std file
+    // handles. File and marker contents are synced; publication still uses an
+    // atomic same-volume rename, while directory metadata durability is left
+    // to the filesystem.
+    Ok(())
+}
+
+fn next_current_generation(current: &Path) -> std::io::Result<u64> {
+    let greatest = std::fs::read_dir(current)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    greatest
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("managed Chrome generation overflowed"))
+}
+
 fn prune_managed_chrome(install_dir: &Path, active: &Path) -> std::io::Result<()> {
     let current = install_dir.join("current");
-    let active_name = active.file_name();
-    for entry in std::fs::read_dir(install_dir.join("versions"))? {
-        let entry = entry?;
-        if Some(entry.file_name().as_os_str()) != active_name {
-            std::fs::remove_dir_all(entry.path())?;
-        }
-    }
     let mut records = std::fs::read_dir(&current)?
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
     records.sort_by_key(|entry| entry.file_name());
-    for entry in records.into_iter().rev().skip(1) {
+    let retained = records
+        .iter()
+        .rev()
+        .take(2)
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .map(|name| name.trim().to_owned())
+        .collect::<std::collections::HashSet<_>>();
+    for entry in records.into_iter().rev().skip(2) {
         std::fs::remove_file(entry.path())?;
     }
+    for entry in std::fs::read_dir(install_dir.join("versions"))? {
+        let entry = entry?;
+        if !retained.contains(&entry.file_name().to_string_lossy().into_owned())
+            && entry.path() != active
+        {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+    }
+    sync_directory(&current)?;
+    sync_directory(&install_dir.join("versions"))?;
     Ok(())
 }
 
@@ -518,7 +550,18 @@ fn extract_chrome_zip(
         }
         std::os::unix::fs::symlink(target, link)?;
     }
+    sync_directory_tree(destination)?;
     Ok(())
+}
+
+fn sync_directory_tree(root: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_directory_tree(&entry.path())?;
+        }
+    }
+    sync_directory(root)
 }
 
 fn safe_relative_symlink(link: &Path, target: &Path) -> bool {

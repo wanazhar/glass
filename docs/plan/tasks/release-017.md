@@ -1,7 +1,7 @@
 ---
 id: release-017
 scope: production and supply-chain hardening
-status: in-progress
+status: completed
 depends-on: [mcp-008, policy-016, visual-015]
 ---
 
@@ -68,3 +68,16 @@ and archive smoke tests, emits the binary plus README/license, produces SHA-256
 checksums, and signs the checksum manifest through keyless provenance. License,
 dependency, and vulnerability reports are attached to the same workflow; a
 failed report blocks publication rather than producing a partial release.
+
+## Result
+
+- Managed Chrome uses a release-pinned version, size, and SHA-256 digest; the
+  bounded in-process extractor supports contained macOS framework symlinks and
+  publishes through crash-durable monotonic generations.
+- Disposable profiles use PID plus process-start ownership, eager cleanup, and
+  bounded-batch crash recovery verified by a forced-process-exit test.
+- Five production-parser fuzz targets run bounded pull-request and scheduled
+  budgets without committing generated fuzz artifacts.
+- Tagged CI fails closed across Linux x86-64, macOS x86-64/arm64, and Windows
+  x86/x86-64, then publishes packaged binaries, flat signed SHA-256 checksums,
+  provenance, and blocking dependency/license/vulnerability reports.

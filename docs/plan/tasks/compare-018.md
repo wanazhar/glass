@@ -1,7 +1,7 @@
 ---
 id: compare-018
 scope: final competitive acceptance
-status: pending
+status: in-progress
 depends-on: [release-017]
 ---
 
@@ -42,3 +42,17 @@ success, safety, efficiency, and usability evidence.
 - All correctness and safety gates pass.
 - Resource and task-success claims link to raw reports and environment metadata.
 - Full release validation and real-browser platform matrix pass.
+
+## Accepted execution contract
+
+The release gate uses `glass-local-v1` with 100 iterations, one pinned system
+Chromium executable, a warm profile, and identical fixture state. Raw JSON and
+an environment manifest are retained for every runnable adapter. A comparison
+surface that is unavailable on the host is reported as unsupported with the
+missing invocation contract; it is never simulated.
+
+Glass may claim best-in-class only if every hard gate in the report schema
+passes. Playwright is the required general automation baseline. The required
+agent-focused baseline must drive the corpus through a released MCP/browser
+integration, not through Glass internals. Codex is an additional black-box row
+only when its browser automation surface is callable by the harness.

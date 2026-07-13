@@ -91,6 +91,40 @@ RUST_LOG=glass=debug glass --headed navigate https://example.com
 CLI results use stdout, while diagnostics use stderr. MCP clients must keep
 stdout reserved for protocol messages.
 
+## Safety presets
+
+`--policy development` is the default and preserves normal local workflows.
+For an untrusted agent, use an owned disposable session with exact host rules:
+
+```console
+glass --policy hardened --incognito \
+  --policy-allow-host example.com \
+  navigate https://example.com
+```
+
+Repeat `--policy-allow-host` or `--policy-deny-host` for exact DNS names or
+public IPv4 literals. Wildcards, overlapping allow/deny rules, private or
+reserved addresses, and hardened startup without an allow host are rejected.
+Owned hardened sessions pin allowed names in Chrome to prevent a second DNS
+resolution from rebinding to a private address. Hardened attach therefore
+requires an explicit `attach` capability and IP-literal host rules.
+
+Privileged capabilities are `attach`, `persistent-profile`, `evaluate`,
+`upload`, `download`, `screenshot`, and `raw-cdp`. For example, this allows one
+confirmed screenshot and then returns to confirmation-required behavior:
+
+```console
+glass --policy hardened --incognito \
+  --policy-allow-host example.com \
+  --policy-confirm screenshot --policy-confirm-once screenshot \
+  screenshot --output evidence.png
+```
+
+Policy flags are global and apply identically to one-shot CLI, MCP, and TUI
+sessions. Invalid combinations fail before Chrome starts.
+`raw-cdp` is an unlimited library escape hatch and therefore supports explicit
+allow only, not confirmation tokens.
+
 ## Production deployment
 
 - Build with `cargo build --release --locked` on the target platform.

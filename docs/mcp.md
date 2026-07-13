@@ -34,6 +34,28 @@ Session flags may be included before `--mcp`, for example:
 }
 ```
 
+For an untrusted MCP client, put policy authority in the fixed client
+configuration rather than tool arguments:
+
+```json
+{
+  "command": "/absolute/path/to/glass",
+  "args": [
+    "--policy", "hardened",
+    "--incognito",
+    "--policy-allow-host", "example.com",
+    "--mcp"
+  ]
+}
+```
+
+The hardened preset denies evaluate, screenshots, uploads, downloads,
+persistent profiles, attach, and raw CDP by default. Policy failures are MCP
+tool errors containing bounded typed JSON with `denied`,
+`confirmation_required`, or `invalid_configuration` kinds. One-operation
+confirmation tokens are consumed across the shared session and cannot be
+supplied through an MCP tool call.
+
 Use an absolute binary path in GUI clients, which may have a different `PATH`
 from an interactive shell. Keep stdout reserved for MCP messages; Glass emits
 diagnostics on stderr.

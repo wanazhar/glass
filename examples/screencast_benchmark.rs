@@ -91,7 +91,7 @@ async fn main() -> BrowserResult<()> {
     })
     .await?;
     session
-        .cdp()
+        .raw_cdp()?
         .send(
             "Emulation.setDeviceMetricsOverride",
             Some(json!({
@@ -245,7 +245,7 @@ async fn capture_and_decode(
     params: Value,
 ) -> BrowserResult<DecodedFrame> {
     let response = session
-        .cdp()
+        .raw_cdp()?
         .send("Page.captureScreenshot", Some(params))
         .await?;
     let data = response["data"]

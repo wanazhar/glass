@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::browser::policy::{PolicyCapability, PolicyPreset};
 use crate::browser::session::{InteractionMode, VisualClip, VisualFormat};
 
 #[derive(Debug, Parser)]
@@ -10,6 +11,30 @@ use crate::browser::session::{InteractionMode, VisualClip, VisualFormat};
     about = "Lightweight local-first browser agent using raw Chrome DevTools Protocol"
 )]
 pub struct Cli {
+    /// Browser safety preset. Hardened mode fails closed for privileged operations.
+    #[arg(long, global = true, value_enum, default_value_t = PolicyPreset::Development)]
+    pub policy: PolicyPreset,
+
+    /// Explicitly allow a privileged capability under the selected policy.
+    #[arg(long = "policy-allow", global = true, value_enum)]
+    pub policy_allow: Vec<PolicyCapability>,
+
+    /// Return a typed confirmation-required result for this capability.
+    #[arg(long = "policy-confirm", global = true, value_enum)]
+    pub policy_confirm: Vec<PolicyCapability>,
+
+    /// Supply one consumable approval token for a confirmation-required capability.
+    #[arg(long = "policy-confirm-once", global = true, value_enum)]
+    pub policy_confirm_once: Vec<PolicyCapability>,
+
+    /// Permit only these exact hosts in hardened mode (repeatable).
+    #[arg(long = "policy-allow-host", global = true)]
+    pub policy_allow_host: Vec<String>,
+
+    /// Deny these exact hosts in hardened mode (repeatable).
+    #[arg(long = "policy-deny-host", global = true)]
+    pub policy_deny_host: Vec<String>,
+
     /// Named browser profile used for persistent cookies and storage.
     #[arg(long, global = true, default_value = "default")]
     pub profile: String,

@@ -330,7 +330,7 @@ pub async fn launch_chrome(
     port: u16,
     profile_dir: Option<&Path>,
 ) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
-    launch_chrome_with_options(chrome_path, port, profile_dir, false, false).await
+    launch_chrome_with_options(chrome_path, port, profile_dir, false, false, None).await
 }
 
 /// Launch Chrome with remote debugging enabled.
@@ -340,16 +340,21 @@ pub async fn launch_chrome_with_options(
     profile_dir: Option<&Path>,
     headed: bool,
     incognito: bool,
+    host_resolver_rules: Option<&str>,
 ) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
     let args = chrome_arguments(port, profile_dir, headed, incognito);
 
     info!(binary = %chrome_path.display(), arguments = %args.join(" "), "launching Chrome");
-    let mut child = Command::new(chrome_path)
+    let mut command = Command::new(chrome_path);
+    command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    if let Some(rules) = host_resolver_rules {
+        command.arg(format!("--host-resolver-rules={rules}"));
+    }
+    let mut child = command.spawn()?;
     let pid = child.id().unwrap_or(0);
     let stderr = child
         .stderr
@@ -894,7 +899,7 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).unwrap();
 
-        let error = launch_chrome_with_options(&script, port, Some(&root), false, false)
+        let error = launch_chrome_with_options(&script, port, Some(&root), false, false, None)
             .await
             .err()
             .expect("a foreign endpoint must not be adopted");

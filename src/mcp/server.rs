@@ -13,6 +13,7 @@ use tokio::io::{
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
+use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
     VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
@@ -254,6 +255,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
+    let policy = crate::cli::runner::policy_from_cli(cli)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let stdout = tokio::io::stdout();
@@ -408,6 +410,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         }
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
+        let task_policy = policy.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
@@ -417,7 +420,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
             let id = request.id.response_value();
             let operation = async {
                 let mut session = task_session.lock().await;
-                handle_request(&request, &mut session, &task_options).await
+                handle_request(&request, &mut session, &task_options, &task_policy).await
             };
             let mut response = tokio::select! {
                 response = operation => response,
@@ -529,6 +532,7 @@ async fn handle_request(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
+    policy: &BrowserPolicy,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -545,7 +549,7 @@ async fn handle_request(
         "initialize" => initialize_response(request),
         "ping" => success_response(request.id.response_value(), json!({})),
         "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
-        "tools/call" => match call_tool(request, session, options).await {
+        "tools/call" => match call_tool(request, session, options, policy).await {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
                 let text = error
@@ -554,6 +558,11 @@ async fn handle_request(
                     .or_else(|| {
                         error
                             .downcast_ref::<WaitTimeout>()
+                            .and_then(|error| serde_json::to_string(error).ok())
+                    })
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<PolicyError>()
                             .and_then(|error| serde_json::to_string(error).ok())
                     })
                     .unwrap_or_else(|| "browser tool failed".to_string());
@@ -581,9 +590,10 @@ async fn call_tool(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
+    policy: &BrowserPolicy,
 ) -> BrowserResult<Value> {
     let invocation = parse_tool_invocation(&request.params)?;
-    let session = ensure_session(session, options).await?;
+    let session = ensure_session(session, options, policy).await?;
 
     match invocation {
         ToolInvocation::Navigate { url, timeout_ms } => {
@@ -834,9 +844,10 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
 async fn ensure_session<'a>(
     session: &'a mut Option<BrowserSession>,
     options: &SessionOptions,
+    policy: &BrowserPolicy,
 ) -> BrowserResult<&'a mut BrowserSession> {
     if session.is_none() {
-        *session = Some(BrowserSession::start(options).await?);
+        *session = Some(BrowserSession::start_with_policy(options, policy.clone()).await?);
     }
     Ok(session.as_mut().expect("session initialized"))
 }
@@ -1391,13 +1402,19 @@ mod tests {
         }))
         .unwrap();
         let mut session = None;
-        let initialized = handle_request(&initialize, &mut session, &SessionOptions::default())
-            .await
-            .unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let initialized = handle_request(
+            &initialize,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+        )
+        .await
+        .unwrap();
         assert_eq!(initialized.result.unwrap()["serverInfo"]["name"], "glass");
         assert!(session.is_none());
 
-        let result = handle_request(&request, &mut session, &SessionOptions::default())
+        let result = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
             .await
             .unwrap();
         let result = result.result.unwrap();
@@ -1537,8 +1554,9 @@ mod tests {
         }))
         .unwrap();
         let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default())
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
             .await
             .unwrap();
         let result = response.result.unwrap();

@@ -23,6 +23,7 @@ use super::dom::{
     project_compact_accessibility,
 };
 use super::mouse::{MouseEngine, Point};
+use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
@@ -852,7 +853,6 @@ pub struct BrowserSession {
     cdp: CdpClient,
     chrome: Option<ChromeProcess>,
     disposable_profile: Option<DisposableProfileDir>,
-    profile_manager: ProfileManager,
     profile: String,
     interaction_mode: InteractionMode,
     mouse: MouseEngine,
@@ -864,11 +864,145 @@ pub struct BrowserSession {
     download_scope: Arc<Mutex<()>>,
     topology: Arc<Mutex<TopologyRegistry>>,
     upload_root: PathBuf,
+    policy: BrowserPolicy,
+    policy_interception: Option<PolicyInterception>,
 }
 
 struct CachedObservation {
     revision: u64,
     context: CompactPageContext,
+}
+
+type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
+
+struct PolicyInterception {
+    cdp: CdpClient,
+    sessions: Arc<Mutex<HashSet<String>>>,
+    paused: PausedPolicyRequests,
+    last_denial: Arc<Mutex<Option<PolicyError>>>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl PolicyInterception {
+    async fn start(
+        cdp: CdpClient,
+        policy: BrowserPolicy,
+        initial_session: String,
+    ) -> BrowserResult<Self> {
+        let mut events = cdp.subscribe_events_with_params();
+        let sessions = Arc::new(Mutex::new(HashSet::from([initial_session.clone()])));
+        let paused = Arc::new(Mutex::new(HashSet::new()));
+        let last_denial = Arc::new(Mutex::new(None));
+        let worker_cdp = cdp.clone();
+        let worker_sessions = Arc::clone(&sessions);
+        let worker_paused = Arc::clone(&paused);
+        let worker_denial = Arc::clone(&last_denial);
+        let worker = tokio::spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        *worker_denial.lock().await = Some(PolicyError::Denied {
+                            operation: "navigation".to_string(),
+                            reason: format!(
+                                "policy event stream lagged by {count}; paused requests remain blocked"
+                            ),
+                        });
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if event.method == "Target.attachedToTarget" {
+                    if let Some(session_id) = event.params["sessionId"].as_str() {
+                        let session_id = session_id.to_string();
+                        if enable_fetch_for(&worker_cdp, &session_id).await.is_ok() {
+                            worker_sessions.lock().await.insert(session_id.clone());
+                            let _ = worker_cdp
+                                .send_to_session(
+                                    &session_id,
+                                    "Runtime.runIfWaitingForDebugger",
+                                    None,
+                                )
+                                .await;
+                        }
+                    }
+                    continue;
+                }
+                if event.method != "Fetch.requestPaused" {
+                    continue;
+                }
+                let Some(request_id) = event.params["requestId"].as_str() else {
+                    continue;
+                };
+                let request_id = request_id.to_string();
+                let key = (event.session_id.clone(), request_id.clone());
+                worker_paused.lock().await.insert(key.clone());
+                let url = event.params["request"]["url"].as_str().unwrap_or_default();
+                let decision = policy.require_url(url).await;
+                let (method, params) = match decision {
+                    Ok(_) => (
+                        "Fetch.continueRequest",
+                        serde_json::json!({"requestId": &request_id}),
+                    ),
+                    Err(error) => {
+                        *worker_denial.lock().await = Some(error);
+                        (
+                            "Fetch.failRequest",
+                            serde_json::json!({
+                                "requestId": &request_id,
+                                "errorReason": "BlockedByClient"
+                            }),
+                        )
+                    }
+                };
+                let _ = match event.session_id.as_deref() {
+                    Some(session_id) => {
+                        worker_cdp
+                            .send_to_session(session_id, method, Some(params))
+                            .await
+                    }
+                    None => worker_cdp.send(method, Some(params)).await,
+                };
+                worker_paused.lock().await.remove(&key);
+            }
+        });
+        if let Err(error) = enable_fetch_for(&cdp, &initial_session).await {
+            worker.abort();
+            return Err(error);
+        }
+        Ok(Self {
+            cdp,
+            sessions,
+            paused,
+            last_denial,
+            worker,
+        })
+    }
+
+    async fn take_denial(&self) -> Option<PolicyError> {
+        self.last_denial.lock().await.take()
+    }
+
+    async fn shutdown(self) {
+        for (session_id, request_id) in self.paused.lock().await.clone() {
+            let params = Some(serde_json::json!({
+                "requestId": request_id,
+                "errorReason": "Aborted"
+            }));
+            let _ = match session_id.as_deref() {
+                Some(session_id) => {
+                    self.cdp
+                        .send_to_session(session_id, "Fetch.failRequest", params)
+                        .await
+                }
+                None => self.cdp.send("Fetch.failRequest", params).await,
+            };
+        }
+        for session_id in self.sessions.lock().await.clone() {
+            let _ = disable_fetch_for(&self.cdp, Some(&session_id)).await;
+        }
+        self.worker.abort();
+    }
 }
 
 /// A unique user-data directory owned by an incognito Glass session.
@@ -931,7 +1065,22 @@ impl BrowserSession {
     }
 
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
+        let policy = BrowserPolicy::development(std::env::current_dir()?)?;
+        Self::start_with_policy(options, policy).await
+    }
+
+    pub async fn start_with_policy(
+        options: &SessionOptions,
+        mut policy: BrowserPolicy,
+    ) -> BrowserResult<Self> {
         options.validate()?;
+        if options.attach {
+            policy.require(PolicyCapability::Attach)?;
+        }
+        if !options.attach && !options.incognito {
+            policy.require(PolicyCapability::PersistentProfile)?;
+        }
+        let resolver_rules = policy.prepare_hardened_session(options.attach).await?;
         let profile_manager = ProfileManager::new();
         let mut disposable_profile = None;
         let mut chrome = None;
@@ -980,6 +1129,7 @@ impl BrowserSession {
                     Some(&profile_dir),
                     options.headed,
                     options.incognito,
+                    resolver_rules.as_deref(),
                 )
                 .await?,
             );
@@ -1045,6 +1195,11 @@ impl BrowserSession {
             }
             return Err(Box::new(error));
         }
+        let policy_interception = if policy.preset() == PolicyPreset::Hardened {
+            Some(PolicyInterception::start(cdp.clone(), policy.clone(), session_id.clone()).await?)
+        } else {
+            None
+        };
 
         let page_revision = Arc::new(AtomicU64::new(1));
         let mut events = cdp.subscribe_events();
@@ -1100,11 +1255,11 @@ impl BrowserSession {
                 }
             }
         });
-        cdp.send(
+        cdp.send_browser(
             "Target.setAutoAttach",
             Some(serde_json::json!({
                 "autoAttach": true,
-                "waitForDebuggerOnStart": false,
+                "waitForDebuggerOnStart": policy.preset() == PolicyPreset::Hardened,
                 "flatten": true
             })),
         )
@@ -1114,7 +1269,6 @@ impl BrowserSession {
             cdp,
             chrome,
             disposable_profile,
-            profile_manager,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
             mouse: MouseEngine::new(),
@@ -1126,6 +1280,8 @@ impl BrowserSession {
             download_scope: Arc::new(Mutex::new(())),
             topology,
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
+            policy,
+            policy_interception,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1151,16 +1307,19 @@ impl BrowserSession {
         Ok(session)
     }
 
-    pub fn cdp(&self) -> &CdpClient {
-        &self.cdp
-    }
-
-    pub fn profile_manager(&self) -> &ProfileManager {
-        &self.profile_manager
+    /// Explicit privileged escape hatch for benchmark and protocol diagnostics.
+    /// Hardened sessions deny it unless `raw-cdp` is deliberately allowed.
+    pub fn raw_cdp(&self) -> BrowserResult<&CdpClient> {
+        self.policy.require(PolicyCapability::RawCdp)?;
+        Ok(&self.cdp)
     }
 
     pub fn profile_name(&self) -> &str {
         &self.profile
+    }
+
+    pub fn policy(&self) -> &BrowserPolicy {
+        &self.policy
     }
 
     pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
@@ -1216,6 +1375,7 @@ impl BrowserSession {
 
     pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
         let url = normalize_url(url);
+        self.policy.require_url(&url).await?;
         let result = self
             .cdp
             .send_browser("Target.createTarget", Some(serde_json::json!({"url": url})))
@@ -1261,6 +1421,23 @@ impl BrowserSession {
                 .await;
             return Err(error.into());
         }
+        if let Some(interception) = &self.policy_interception {
+            if let Err(error) = enable_fetch_for(&self.cdp, &new_session).await {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err(error);
+            }
+            interception
+                .sessions
+                .lock()
+                .await
+                .insert(new_session.clone());
+        }
         if let Err(error) = self
             .cdp
             .send_to_session(
@@ -1268,7 +1445,7 @@ impl BrowserSession {
                 "Target.setAutoAttach",
                 Some(serde_json::json!({
                     "autoAttach": true,
-                    "waitForDebuggerOnStart": false,
+                    "waitForDebuggerOnStart": self.policy.preset() == PolicyPreset::Hardened,
                     "flatten": true
                 })),
             )
@@ -1513,6 +1690,9 @@ impl BrowserSession {
             let _ =
                 tokio::time::timeout(OWNED_BROWSER_CLOSE_TIMEOUT, self.cdp.close_browser()).await;
         }
+        if let Some(interception) = self.policy_interception.take() {
+            interception.shutdown().await;
+        }
         self.cdp.close().await;
         let shutdown_result = if let Some(process) = self.chrome.as_mut() {
             process.shutdown().await
@@ -1558,46 +1738,63 @@ impl BrowserSession {
             .with_current_target_route(async {
                 validate_wait_deadline(deadline)?;
                 let url = normalize_url(url);
-                let mut events = self.cdp.subscribe_events();
-                let started = tokio::time::Instant::now();
-                let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
-                    .await
-                    .map_err(|_| {
-                        wait_timeout("lifecycle", deadline, "navigate_command_pending")
-                    })??;
-                if let Some(frame_id) = navigation["frameId"].as_str() {
-                    validate_topology_id(frame_id)?;
-                    self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
-                    self.cdp
-                        .set_active_frame_context(Some(frame_id.to_string()), None);
+                self.policy.require_url(&url).await?;
+                if let Some(interception) = &self.policy_interception
+                    && let Some(error) = interception.take_denial().await
+                {
+                    return Err(error.into());
                 }
-                let remaining = deadline.saturating_sub(started.elapsed());
-                self.wait_loop(
-                    WaitCondition::Lifecycle("complete".to_string()),
-                    remaining,
-                    deadline,
-                    &mut events,
-                    true,
-                )
-                .await?;
-                let remaining = deadline.saturating_sub(started.elapsed());
-                let main_frame = self
-                    .list_frames()
-                    .await?
-                    .into_iter()
-                    .find(|frame| frame.parent_id.is_none())
-                    .ok_or("navigated target returned no main frame")?;
-                self.select_frame(&main_frame.id).await?;
-                let page = tokio::time::timeout(remaining, self.page_info())
-                    .await
-                    .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
-                self.invalidate_observation();
-                Ok(page)
+                let result = async {
+                    let mut events = self.cdp.subscribe_events();
+                    let started = tokio::time::Instant::now();
+                    let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
+                        .await
+                        .map_err(|_| {
+                            wait_timeout("lifecycle", deadline, "navigate_command_pending")
+                        })??;
+                    if let Some(frame_id) = navigation["frameId"].as_str() {
+                        validate_topology_id(frame_id)?;
+                        self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
+                        self.cdp
+                            .set_active_frame_context(Some(frame_id.to_string()), None);
+                    }
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    self.wait_loop(
+                        WaitCondition::Lifecycle("complete".to_string()),
+                        remaining,
+                        deadline,
+                        &mut events,
+                        true,
+                    )
+                    .await?;
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    let main_frame = self
+                        .list_frames()
+                        .await?
+                        .into_iter()
+                        .find(|frame| frame.parent_id.is_none())
+                        .ok_or("navigated target returned no main frame")?;
+                    self.select_frame(&main_frame.id).await?;
+                    let page = tokio::time::timeout(remaining, self.page_info())
+                        .await
+                        .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+                    self.invalidate_observation();
+                    Ok(page)
+                }
+                .await;
+                if let Some(error) = match &self.policy_interception {
+                    Some(interception) => interception.take_denial().await,
+                    None => None,
+                } {
+                    return Err(error.into());
+                }
+                result
             })
             .await
     }
 
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
+        self.policy.require(PolicyCapability::Evaluate)?;
         self.cdp
             .with_current_route(async {
                 let result = self.evaluate_value(expression).await;
@@ -1684,6 +1881,11 @@ impl BrowserSession {
         include_screenshot: bool,
         use_cache: bool,
     ) -> BrowserResult<PageContext> {
+        if let Some(interception) = &self.policy_interception
+            && let Some(error) = interception.take_denial().await
+        {
+            return Err(error.into());
+        }
         self.cdp
             .with_current_route(async {
                 let mut context = self
@@ -1856,6 +2058,7 @@ impl BrowserSession {
 
     /// Capture a PNG while preserving CDP's base64 payload for image APIs.
     pub async fn screenshot_base64(&self) -> BrowserResult<String> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         self.cdp
             .with_current_route(async { Ok(self.cdp.screenshot("png").await?) })
             .await
@@ -1866,6 +2069,7 @@ impl BrowserSession {
         &self,
         options: &VisualCaptureOptions,
     ) -> BrowserResult<VisualCapture> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         validate_visual_options(options)?;
         self.cdp
             .with_current_route(async {
@@ -1985,6 +2189,7 @@ impl BrowserSession {
         max_width: u32,
         max_height: u32,
     ) -> BrowserResult<ScreencastScope> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         if format == VisualFormat::Webp {
             return Err("CDP screencast supports only png or jpeg".into());
         }
@@ -2379,11 +2584,11 @@ impl BrowserSession {
         destination: &Path,
         deadline: Duration,
     ) -> BrowserResult<DownloadOutcome> {
+        self.policy.require(PolicyCapability::Download)?;
         if deadline.is_zero() || deadline > MAX_DIAGNOSTIC_DURATION {
             return Err("download deadline must be between 1 ms and 30 seconds".into());
         }
-        let destination = std::fs::canonicalize(destination)
-            .map_err(|error| format!("download destination must exist: {error}"))?;
+        let destination = self.policy.require_existing_path(destination)?;
         if !destination.is_dir() || !destination.starts_with(&self.upload_root) {
             return Err(
                 "download destination must be a directory inside the authorized root".into(),
@@ -2671,11 +2876,12 @@ impl BrowserSession {
         target: &str,
         paths: &[PathBuf],
     ) -> BrowserResult<ActionOutcome> {
+        self.policy.require(PolicyCapability::Upload)?;
         self.cdp.with_current_route(async {
             if paths.is_empty() || paths.len() > 16 { return Err("upload requires 1..=16 files".into()); }
             let mut files = Vec::with_capacity(paths.len());
             for path in paths {
-                let canonical = std::fs::canonicalize(path)?;
+                let canonical = self.policy.require_existing_path(path)?;
                 if !canonical.is_file() { return Err("upload path must be a regular file".into()); }
                 if !canonical.starts_with(&self.upload_root) { return Err("upload path is outside the allowed workspace root".into()); }
                 files.push(canonical.to_string_lossy().into_owned());
@@ -2957,6 +3163,16 @@ impl BrowserSession {
         action: ActionKind,
         target: Option<ActionTarget>,
     ) -> BrowserResult<ActionOutcome> {
+        if let Some(interception) = &self.policy_interception {
+            // A same-route command is an ordering barrier for synchronous
+            // click/form navigation. The interception itself remains active
+            // for delayed page-authored navigation after this action returns.
+            let _ = self.cdp.evaluate("0").await;
+            tokio::task::yield_now().await;
+            if let Some(error) = interception.take_denial().await {
+                return Err(error.into());
+            }
+        }
         let (target_id, frame_id) = self.route_identity().await?;
         Ok(ActionOutcome {
             action,
@@ -3455,6 +3671,33 @@ async fn stop_screencast_for(cdp: &CdpClient, session_id: Option<&str>) -> Brows
             cdp.send("Page.stopScreencast", None).await?;
         }
     }
+    Ok(())
+}
+
+async fn disable_fetch_for(cdp: &CdpClient, session_id: Option<&str>) -> BrowserResult<()> {
+    match session_id {
+        Some(session_id) => {
+            cdp.send_to_session(session_id, "Fetch.disable", None)
+                .await?
+        }
+        None => cdp.send("Fetch.disable", None).await?,
+    };
+    Ok(())
+}
+
+async fn enable_fetch_for(cdp: &CdpClient, session_id: &str) -> BrowserResult<()> {
+    cdp.send_to_session(
+        session_id,
+        "Fetch.enable",
+        Some(serde_json::json!({
+            "patterns": [{
+                "urlPattern": "*",
+                "resourceType": "Document",
+                "requestStage": "Request"
+            }]
+        })),
+    )
+    .await?;
     Ok(())
 }
 
@@ -4553,7 +4796,6 @@ mod tests {
             cdp,
             chrome: None,
             disposable_profile: None,
-            profile_manager: ProfileManager::new(),
             profile: "test".to_string(),
             interaction_mode: InteractionMode::Fast,
             mouse: MouseEngine::new(),
@@ -4569,6 +4811,8 @@ mod tests {
                 ..TopologyRegistry::default()
             })),
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+            policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
+            policy_interception: None,
         }
     }
 
@@ -5380,6 +5624,89 @@ mod tests {
         assert_eq!(snapshot.interactive[0].description.len(), 33 * 1024);
 
         session.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hardened_navigation_intercepts_private_redirects_before_following() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let enable = websocket.next().await.unwrap().unwrap();
+            let enable: Value = match enable {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.enable"),
+            };
+            assert_eq!(enable["method"], "Fetch.enable");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": enable["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "method": "Fetch.requestPaused",
+                        "sessionId": "route-1",
+                        "params": {
+                            "requestId": "redirect-1",
+                            "request": {"url": "http://127.0.0.1/private"}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let blocked = websocket.next().await.unwrap().unwrap();
+            let blocked: Value = match blocked {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.failRequest"),
+            };
+            assert_eq!(blocked["method"], "Fetch.failRequest");
+            assert_eq!(blocked["params"]["requestId"], "redirect-1");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": blocked["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let disable = websocket.next().await.unwrap().unwrap();
+            let disable: Value = match disable {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.disable"),
+            };
+            assert_eq!(disable["method"], "Fetch.disable");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": disable["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
+        let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(matches!(
+            interception.take_denial().await,
+            Some(PolicyError::Denied { .. })
+        ));
+        interception.shutdown().await;
+        cdp.close().await;
         server.await.unwrap();
     }
 

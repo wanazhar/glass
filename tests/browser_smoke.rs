@@ -985,7 +985,8 @@ async fn browser_session_drives_a_local_fixture() {
     let viewport_capture = session.capture_visual(&Default::default()).await.unwrap();
     assert!(viewport_capture.metadata.width > 0 && viewport_capture.metadata.height > 0);
     session
-        .cdp()
+        .raw_cdp()
+        .unwrap()
         .send(
             "Emulation.setDeviceMetricsOverride",
             Some(json!({"width":400,"height":300,"deviceScaleFactor":2,"mobile":false})),
@@ -999,7 +1000,8 @@ async fn browser_session_drives_a_local_fixture() {
     );
     assert_eq!(hidpi_capture.metadata.device_scale_factor, 2.0);
     session
-        .cdp()
+        .raw_cdp()
+        .unwrap()
         .send("Emulation.clearDeviceMetricsOverride", None)
         .await
         .unwrap();
@@ -1904,7 +1906,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     assert!(mcp.wait().await.unwrap().success());
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        session.cdp().send("Page.crash", None),
+        session.raw_cdp().unwrap().send("Page.crash", None),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;

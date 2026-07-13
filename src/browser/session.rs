@@ -650,6 +650,32 @@ pub struct ScreencastScope {
     armed: bool,
 }
 
+struct ScreencastStartupGuard {
+    cdp: CdpClient,
+    session_id: Option<String>,
+    armed: bool,
+}
+
+impl ScreencastStartupGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ScreencastStartupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cdp.close_screencast_channel();
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = stop_screencast_for(&cdp, session_id.as_deref()).await;
+        });
+    }
+}
+
 impl ScreencastScope {
     pub async fn next_frame(&mut self) -> Option<ScreencastFrame> {
         while let Some(frame) = self.receiver.recv().await {
@@ -1967,11 +1993,19 @@ impl BrowserSession {
             || max_height == 0
             || max_width > 4096
             || max_height > 4096
+            || f64::from(max_width) * f64::from(max_height) > MAX_VISUAL_PIXELS
         {
-            return Err("screencast quality must be 0..=100 and dimensions 1..=4096".into());
+            return Err(
+                "screencast quality must be 0..=100 and dimensions must fit the 8 MP budget".into(),
+            );
         }
-        let receiver = self.cdp.open_screencast_channel()?;
         let session_id = self.cdp.current_session_id();
+        let receiver = self.cdp.open_screencast_channel(session_id.clone())?;
+        let mut startup = ScreencastStartupGuard {
+            cdp: self.cdp.clone(),
+            session_id: session_id.clone(),
+            armed: true,
+        };
         let parameters = Some(serde_json::json!({
             "format": format.as_cdp(),
             "quality": quality,
@@ -1988,9 +2022,9 @@ impl BrowserSession {
             None => self.cdp.send("Page.startScreencast", parameters).await,
         };
         if let Err(error) = start_result {
-            self.cdp.close_screencast_channel();
             return Err(error.into());
         }
+        startup.disarm();
         Ok(ScreencastScope {
             cdp: self.cdp.clone(),
             session_id,

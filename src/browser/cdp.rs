@@ -88,6 +88,11 @@ pub struct CdpScreencastFrame {
     pub session_id: Option<String>,
 }
 
+struct ScreencastSink {
+    session_id: Option<String>,
+    sender: mpsc::Sender<CdpScreencastFrame>,
+}
+
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
     #[serde(default)]
@@ -154,7 +159,7 @@ pub struct CdpClient {
     next_id: Arc<AtomicU64>,
     events: broadcast::Sender<CdpEvent>,
     payload_events: broadcast::Sender<CdpEventWithParams>,
-    screencast_sink: Arc<std::sync::Mutex<Option<mpsc::Sender<CdpScreencastFrame>>>>,
+    screencast_sink: Arc<std::sync::Mutex<Option<ScreencastSink>>>,
     screencast_received: Arc<AtomicU64>,
     screencast_dropped: Arc<AtomicU64>,
     timeout: Duration,
@@ -317,7 +322,10 @@ impl CdpClient {
         self.payload_events.subscribe()
     }
 
-    pub fn open_screencast_channel(&self) -> Result<mpsc::Receiver<CdpScreencastFrame>, CdpError> {
+    pub fn open_screencast_channel(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<mpsc::Receiver<CdpScreencastFrame>, CdpError> {
         let mut sink = self
             .screencast_sink
             .lock()
@@ -326,7 +334,7 @@ impl CdpClient {
             return Err(CdpError::transport("a screencast scope is already active"));
         }
         let (sender, receiver) = mpsc::channel(2);
-        *sink = Some(sender);
+        *sink = Some(ScreencastSink { session_id, sender });
         self.screencast_received.store(0, Ordering::Relaxed);
         self.screencast_dropped.store(0, Ordering::Relaxed);
         Ok(receiver)
@@ -1040,7 +1048,7 @@ impl CdpClient {
 }
 
 struct ScreencastDispatch<'a> {
-    sink: &'a std::sync::Mutex<Option<mpsc::Sender<CdpScreencastFrame>>>,
+    sink: &'a std::sync::Mutex<Option<ScreencastSink>>,
     received: &'a AtomicU64,
     dropped: &'a AtomicU64,
     command_tx: &'a mpsc::UnboundedSender<Command>,
@@ -1094,7 +1102,6 @@ fn handle_incoming_message(
                             json: ack.to_string(),
                         });
                     }
-                    screencast.received.fetch_add(1, Ordering::Relaxed);
                     let data = payload.params["data"].take();
                     let metadata = payload.params["metadata"].take();
                     let frame = match data {
@@ -1105,16 +1112,18 @@ fn handle_incoming_message(
                         }),
                         _ => None,
                     };
-                    let sent = frame.is_some_and(|frame| {
-                        screencast
-                            .sink
-                            .lock()
-                            .expect("screencast sink poisoned")
-                            .as_ref()
-                            .is_some_and(|sink| sink.try_send(frame).is_ok())
-                    });
-                    if !sent {
-                        screencast.dropped.fetch_add(1, Ordering::Relaxed);
+                    if let Some(frame) = frame {
+                        let sink = screencast.sink.lock().expect("screencast sink poisoned");
+                        if let Some(sink) = sink.as_ref()
+                            && sink.session_id == frame.session_id
+                        {
+                            screencast.received.fetch_add(1, Ordering::Relaxed);
+                            if frame.data.len() > 32 * 1024 * 1024
+                                || sink.sender.try_send(frame).is_err()
+                            {
+                                screencast.dropped.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                     }
                 }
                 Err(error) => warn!(%error, "ignoring malformed screencast payload"),
@@ -1278,11 +1287,13 @@ mod tests {
                 _ => panic!("expected text frame"),
             };
 
-            for index in 0..4 {
+            for index in 0..5 {
+                let route = if index == 0 { "foreign" } else { "wanted" };
                 websocket
                     .send(Message::Text(
                         serde_json::json!({
                             "method": "Page.screencastFrame",
+                            "sessionId": route,
                             "params": {"sessionId": 9, "data": format!("frame-{index}")}
                         })
                         .to_string()
@@ -1297,6 +1308,7 @@ mod tests {
                 };
                 assert_eq!(ack["method"], "Page.screencastFrameAck");
                 assert_eq!(ack["params"]["sessionId"], 9);
+                assert_eq!(ack["sessionId"], route);
             }
             websocket
                 .send(Message::Text(
@@ -1313,12 +1325,14 @@ mod tests {
             .unwrap();
         let mut methods = client.subscribe_events();
         let mut payloads = client.subscribe_events_with_params();
-        let mut frames = client.open_screencast_channel().unwrap();
+        let mut frames = client
+            .open_screencast_channel(Some("wanted".to_string()))
+            .unwrap();
         client.send("test.ready", None).await.unwrap();
 
         assert_eq!(methods.recv().await.unwrap().method, "Page.screencastFrame");
-        assert_eq!(frames.recv().await.unwrap().data, "frame-0");
         assert_eq!(frames.recv().await.unwrap().data, "frame-1");
+        assert_eq!(frames.recv().await.unwrap().data, "frame-2");
         assert!(payloads.try_recv().is_err());
         assert_eq!(client.screencast_stats(), (4, 2));
 

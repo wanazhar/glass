@@ -233,7 +233,7 @@ async fn benchmark_screencast(
         "receive_plus_decode_fps": frames as f64 / decoded_elapsed.as_secs_f64(),
         "received_frames": stream_stats.received,
         "dropped_frames": stream_stats.dropped,
-        "commands": 2,
+        "commands": frames + warmup + 2,
         "frame_events": frames + warmup,
         "note": "Glass ACKs frames before bounded channel delivery; decode uses Tokio's blocking pool"
     });

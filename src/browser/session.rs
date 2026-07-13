@@ -10,6 +10,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
 use super::cdp::{CdpClient, CdpEventWithParams};
@@ -1015,12 +1016,24 @@ struct DisposableProfileDir {
     path: PathBuf,
 }
 
+const DISPOSABLE_OWNER_FILE: &str = ".glass-owner.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DisposableProfileOwner {
+    pid: u32,
+    process_start: u64,
+}
+
 impl DisposableProfileDir {
     fn create() -> BrowserResult<Self> {
         static NEXT_DISPOSABLE_PROFILE: AtomicU64 = AtomicU64::new(0);
 
         let root = std::env::temp_dir().join("glass");
         std::fs::create_dir_all(&root)?;
+        Self::cleanup_abandoned(&root)?;
+        let pid = std::process::id();
+        let process_start = process_start_identity(pid)
+            .ok_or("could not determine Glass process start identity")?;
         for _ in 0..32 {
             let sequence = NEXT_DISPOSABLE_PROFILE.fetch_add(1, Ordering::Relaxed);
             let nonce = format!(
@@ -1030,7 +1043,16 @@ impl DisposableProfileDir {
             );
             let path = root.join(format!("incognito-{nonce}"));
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    let owner = DisposableProfileOwner { pid, process_start };
+                    let owner_json = serde_json::to_vec(&owner)?;
+                    if let Err(error) = std::fs::write(path.join(DISPOSABLE_OWNER_FILE), owner_json)
+                    {
+                        let _ = std::fs::remove_dir_all(&path);
+                        return Err(error.into());
+                    }
+                    return Ok(Self { path });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -1041,6 +1063,52 @@ impl DisposableProfileDir {
     fn path(&self) -> &Path {
         &self.path
     }
+
+    fn cleanup_abandoned(root: &Path) -> BrowserResult<()> {
+        let mut candidates = Vec::new();
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir()
+                || !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("incognito-")
+            {
+                continue;
+            }
+            let bytes = match std::fs::read(entry.path().join(DISPOSABLE_OWNER_FILE)) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let owner = match serde_json::from_slice::<DisposableProfileOwner>(&bytes) {
+                Ok(owner) if owner.pid != 0 && owner.process_start != 0 => owner,
+                _ => continue,
+            };
+            candidates.push((entry.path(), owner));
+        }
+        let pids = candidates
+            .iter()
+            .map(|(_, owner)| Pid::from_u32(owner.pid))
+            .collect::<Vec<_>>();
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+        for (path, owner) in candidates {
+            let live_start = system
+                .process(Pid::from_u32(owner.pid))
+                .map(|process| process.start_time());
+            if live_start != Some(owner.process_start) {
+                std::fs::remove_dir_all(path)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn process_start_identity(pid: u32) -> Option<u64> {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map(|process| process.start_time())
 }
 
 impl Drop for DisposableProfileDir {
@@ -4896,6 +4964,86 @@ mod tests {
         drop(second);
         assert!(!first_path.exists());
         assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn disposable_cleanup_removes_only_provably_abandoned_profiles() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-disposable-cleanup-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let active = root.join("incognito-active");
+        let dead = root.join("incognito-dead");
+        let malformed = root.join("incognito-malformed");
+        for path in [&active, &dead, &malformed] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let active_owner = DisposableProfileOwner {
+            pid: std::process::id(),
+            process_start: process_start_identity(std::process::id()).unwrap(),
+        };
+        std::fs::write(
+            active.join(DISPOSABLE_OWNER_FILE),
+            serde_json::to_vec(&active_owner).unwrap(),
+        )
+        .unwrap();
+        let dead_owner = DisposableProfileOwner {
+            pid: u32::MAX,
+            process_start: 1,
+        };
+        std::fs::write(
+            dead.join(DISPOSABLE_OWNER_FILE),
+            serde_json::to_vec(&dead_owner).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(malformed.join(DISPOSABLE_OWNER_FILE), b"not-json").unwrap();
+
+        DisposableProfileDir::cleanup_abandoned(&root).unwrap();
+
+        assert!(active.exists());
+        assert!(!dead.exists());
+        assert!(malformed.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disposable_profile_is_recovered_after_forced_process_exit() {
+        let path_record = std::env::temp_dir().join(format!(
+            "glass-crash-profile-path-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser::session::tests::disposable_profile_crash_helper",
+                "--ignored",
+            ])
+            .env("GLASS_CRASH_PROFILE_PATH_RECORD", &path_record)
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        let abandoned = PathBuf::from(std::fs::read_to_string(&path_record).unwrap());
+        assert!(abandoned.exists());
+
+        DisposableProfileDir::cleanup_abandoned(&std::env::temp_dir().join("glass")).unwrap();
+
+        assert!(!abandoned.exists());
+        std::fs::remove_file(path_record).unwrap();
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for forced-exit recovery"]
+    fn disposable_profile_crash_helper() {
+        let Some(path_record) = std::env::var_os("GLASS_CRASH_PROFILE_PATH_RECORD") else {
+            return;
+        };
+        let profile = DisposableProfileDir::create().unwrap();
+        std::fs::write(path_record, profile.path().to_string_lossy().as_bytes()).unwrap();
+        std::mem::forget(profile);
+        std::process::exit(86);
     }
 
     async fn observation_server(include_dom: bool) -> (String, tokio::task::JoinHandle<()>) {

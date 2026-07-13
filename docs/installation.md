@@ -122,6 +122,8 @@ glass --policy hardened --incognito \
 
 Policy flags are global and apply identically to one-shot CLI, MCP, and TUI
 sessions. Invalid combinations fail before Chrome starts.
+`raw-cdp` is an unlimited library escape hatch and therefore supports explicit
+allow only, not confirmation tokens.
 
 ## Production deployment
 

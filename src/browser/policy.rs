@@ -168,6 +168,12 @@ impl BrowserPolicy {
                     reason: "confirmation token state is unavailable".to_string(),
                 })?;
         for capability in capabilities {
+            if capability == PolicyCapability::RawCdp {
+                return Err(PolicyError::InvalidConfiguration {
+                    reason: "raw CDP is an unlimited escape hatch and supports explicit allow only"
+                        .to_string(),
+                });
+            }
             if !self.confirmed_capabilities.contains(&capability) {
                 return Err(PolicyError::InvalidConfiguration {
                     reason: format!(
@@ -296,6 +302,11 @@ impl BrowserPolicy {
         }
         if self.preset == PolicyPreset::Development {
             return Ok(url);
+        }
+        if url.host_str().is_some_and(|host| host.ends_with('.')) {
+            return Err(url_denied(
+                "hardened URLs must use a canonical host without a trailing dot",
+            ));
         }
         if !matches!(url.scheme(), "http" | "https") {
             return Err(url_denied(

@@ -39,7 +39,8 @@ return a structured confirmation requirement with `--policy-confirm
 CAPABILITY`. `--policy-confirm-once CAPABILITY` supplies one consumable token;
 it is invalid unless the same capability is confirmation-required. These flags
 are authority grants and should be fixed by the deployment, never copied from
-untrusted model output.
+untrusted model output. Raw CDP returns an unrestricted protocol handle, so it
+cannot use one-operation tokens and requires an explicit `raw-cdp` allow grant.
 
 Filesystem reads and writes in hardened mode are canonicalized and confined to
 the process working directory. Existing symlinks resolving outside that root

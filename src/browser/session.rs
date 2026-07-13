@@ -853,7 +853,6 @@ pub struct BrowserSession {
     cdp: CdpClient,
     chrome: Option<ChromeProcess>,
     disposable_profile: Option<DisposableProfileDir>,
-    profile_manager: ProfileManager,
     profile: String,
     interaction_mode: InteractionMode,
     mouse: MouseEngine,
@@ -899,7 +898,20 @@ impl PolicyInterception {
         let worker_paused = Arc::clone(&paused);
         let worker_denial = Arc::clone(&last_denial);
         let worker = tokio::spawn(async move {
-            while let Ok(event) = events.recv().await {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        *worker_denial.lock().await = Some(PolicyError::Denied {
+                            operation: "navigation".to_string(),
+                            reason: format!(
+                                "policy event stream lagged by {count}; paused requests remain blocked"
+                            ),
+                        });
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 if event.method == "Target.attachedToTarget" {
                     if let Some(session_id) = event.params["sessionId"].as_str() {
                         let session_id = session_id.to_string();
@@ -1257,7 +1269,6 @@ impl BrowserSession {
             cdp,
             chrome,
             disposable_profile,
-            profile_manager,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
             mouse: MouseEngine::new(),
@@ -1301,10 +1312,6 @@ impl BrowserSession {
     pub fn raw_cdp(&self) -> BrowserResult<&CdpClient> {
         self.policy.require(PolicyCapability::RawCdp)?;
         Ok(&self.cdp)
-    }
-
-    pub fn profile_manager(&self) -> &ProfileManager {
-        &self.profile_manager
     }
 
     pub fn profile_name(&self) -> &str {
@@ -1414,6 +1421,23 @@ impl BrowserSession {
                 .await;
             return Err(error.into());
         }
+        if let Some(interception) = &self.policy_interception {
+            if let Err(error) = enable_fetch_for(&self.cdp, &new_session).await {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err(error);
+            }
+            interception
+                .sessions
+                .lock()
+                .await
+                .insert(new_session.clone());
+        }
         if let Err(error) = self
             .cdp
             .send_to_session(
@@ -1421,7 +1445,7 @@ impl BrowserSession {
                 "Target.setAutoAttach",
                 Some(serde_json::json!({
                     "autoAttach": true,
-                    "waitForDebuggerOnStart": false,
+                    "waitForDebuggerOnStart": self.policy.preset() == PolicyPreset::Hardened,
                     "flatten": true
                 })),
             )
@@ -1715,8 +1739,10 @@ impl BrowserSession {
                 validate_wait_deadline(deadline)?;
                 let url = normalize_url(url);
                 self.policy.require_url(&url).await?;
-                if let Some(interception) = &self.policy_interception {
-                    interception.take_denial().await;
+                if let Some(interception) = &self.policy_interception
+                    && let Some(error) = interception.take_denial().await
+                {
+                    return Err(error.into());
                 }
                 let result = async {
                     let mut events = self.cdp.subscribe_events();
@@ -1855,6 +1881,11 @@ impl BrowserSession {
         include_screenshot: bool,
         use_cache: bool,
     ) -> BrowserResult<PageContext> {
+        if let Some(interception) = &self.policy_interception
+            && let Some(error) = interception.take_denial().await
+        {
+            return Err(error.into());
+        }
         self.cdp
             .with_current_route(async {
                 let mut context = self
@@ -3132,6 +3163,16 @@ impl BrowserSession {
         action: ActionKind,
         target: Option<ActionTarget>,
     ) -> BrowserResult<ActionOutcome> {
+        if let Some(interception) = &self.policy_interception {
+            // A same-route command is an ordering barrier for synchronous
+            // click/form navigation. The interception itself remains active
+            // for delayed page-authored navigation after this action returns.
+            let _ = self.cdp.evaluate("0").await;
+            tokio::task::yield_now().await;
+            if let Some(error) = interception.take_denial().await {
+                return Err(error.into());
+            }
+        }
         let (target_id, frame_id) = self.route_identity().await?;
         Ok(ActionOutcome {
             action,
@@ -4755,7 +4796,6 @@ mod tests {
             cdp,
             chrome: None,
             disposable_profile: None,
-            profile_manager: ProfileManager::new(),
             profile: "test".to_string(),
             interaction_mode: InteractionMode::Fast,
             mouse: MouseEngine::new(),

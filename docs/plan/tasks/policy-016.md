@@ -1,7 +1,7 @@
 ---
 id: policy-016
 scope: browser safety policy
-status: pending
+status: in-progress
 depends-on: [input-012, diagnostic-014]
 ---
 
@@ -43,3 +43,30 @@ making normal local development cumbersome.
   destinations, data/file URLs, and frontend inconsistencies.
 - CLI/MCP/TUI enforce the same session policy.
 - Policy checks add negligible hot-path memory and latency.
+
+## Accepted contract
+
+Policy is an immutable value owned by `BrowserSession`; every frontend selects
+the same preset at session construction and cannot bypass checks with raw CDP.
+`development` preserves the current local workflow. `hardened` permits only
+public HTTP(S) navigation by default, requires an incognito owned browser, and
+denies evaluate, attach, persistent profiles, upload, download, and screenshots
+unless that capability is explicitly allowed.
+
+Policy evaluation returns one of `Allow`, `Deny(reason)`, or
+`RequireConfirmation(reason)`. Confirmation is a caller-supplied capability
+token scoped to one operation class; the browser layer never prompts or treats
+an omitted answer as approval. Invalid hardened configuration is a startup
+error.
+
+URL policy canonicalizes with the URL parser, rejects credentials and unknown
+schemes, normalizes DNS names, resolves every address, and rejects loopback,
+private, link-local, multicast, unspecified, and documentation-only network
+ranges. Navigation interception applies the same decision to redirects before
+Chrome follows them. Filesystem policy canonicalizes the existing target or
+its nearest existing parent and then enforces the configured workspace root,
+so `..`, alternate spellings, and symlinks cannot escape it.
+
+Privileged capabilities remain visible in structured CLI/MCP results and logs:
+JavaScript evaluation and attached authenticated profiles are never folded into
+a generic browser failure.

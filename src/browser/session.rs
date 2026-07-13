@@ -23,6 +23,7 @@ use super::dom::{
     project_compact_accessibility,
 };
 use super::mouse::{MouseEngine, Point};
+use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
@@ -864,11 +865,112 @@ pub struct BrowserSession {
     download_scope: Arc<Mutex<()>>,
     topology: Arc<Mutex<TopologyRegistry>>,
     upload_root: PathBuf,
+    policy: BrowserPolicy,
 }
 
 struct CachedObservation {
     revision: u64,
     context: CompactPageContext,
+}
+
+struct NavigationPolicyGuard {
+    cdp: CdpClient,
+    session_id: Option<String>,
+    denial: Arc<Mutex<Option<PolicyError>>>,
+    worker: tokio::task::JoinHandle<()>,
+    armed: bool,
+}
+
+impl NavigationPolicyGuard {
+    async fn acquire(cdp: CdpClient, policy: BrowserPolicy) -> BrowserResult<Option<Self>> {
+        if policy.preset() != PolicyPreset::Hardened {
+            return Ok(None);
+        }
+        let session_id = cdp.current_session_id();
+        let mut events = cdp.subscribe_events_with_params();
+        let denial = Arc::new(Mutex::new(None));
+        let worker_cdp = cdp.clone();
+        let worker_session_id = session_id.clone();
+        let worker_denial = Arc::clone(&denial);
+        let worker = tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if event.method != "Fetch.requestPaused" || event.session_id != worker_session_id {
+                    continue;
+                }
+                let Some(request_id) = event.params["requestId"].as_str() else {
+                    continue;
+                };
+                let url = event.params["request"]["url"].as_str().unwrap_or_default();
+                let decision = policy.require_url(url).await;
+                let (method, params) = match decision {
+                    Ok(_) => (
+                        "Fetch.continueRequest",
+                        serde_json::json!({"requestId": request_id}),
+                    ),
+                    Err(error) => {
+                        *worker_denial.lock().await = Some(error);
+                        (
+                            "Fetch.failRequest",
+                            serde_json::json!({
+                                "requestId": request_id,
+                                "errorReason": "BlockedByClient"
+                            }),
+                        )
+                    }
+                };
+                let _ = match event.session_id.as_deref() {
+                    Some(session_id) => {
+                        worker_cdp
+                            .send_to_session(session_id, method, Some(params))
+                            .await
+                    }
+                    None => worker_cdp.send(method, Some(params)).await,
+                };
+            }
+        });
+        let enable = serde_json::json!({
+            "patterns": [{"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"}]
+        });
+        let enabled = match session_id.as_deref() {
+            Some(session_id) => {
+                cdp.send_to_session(session_id, "Fetch.enable", Some(enable))
+                    .await
+            }
+            None => cdp.send("Fetch.enable", Some(enable)).await,
+        };
+        if let Err(error) = enabled {
+            worker.abort();
+            return Err(error.into());
+        }
+        Ok(Some(Self {
+            cdp,
+            session_id,
+            denial,
+            worker,
+            armed: true,
+        }))
+    }
+
+    async fn finish(mut self) -> BrowserResult<Option<PolicyError>> {
+        disable_fetch_for(&self.cdp, self.session_id.as_deref()).await?;
+        self.worker.abort();
+        self.armed = false;
+        Ok(self.denial.lock().await.take())
+    }
+}
+
+impl Drop for NavigationPolicyGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.worker.abort();
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = disable_fetch_for(&cdp, session_id.as_deref()).await;
+        });
+    }
 }
 
 /// A unique user-data directory owned by an incognito Glass session.
@@ -931,7 +1033,21 @@ impl BrowserSession {
     }
 
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
+        let policy = BrowserPolicy::development(std::env::current_dir()?)?;
+        Self::start_with_policy(options, policy).await
+    }
+
+    pub async fn start_with_policy(
+        options: &SessionOptions,
+        policy: BrowserPolicy,
+    ) -> BrowserResult<Self> {
         options.validate()?;
+        if options.attach {
+            policy.require(PolicyCapability::Attach)?;
+        }
+        if !options.attach && !options.incognito {
+            policy.require(PolicyCapability::PersistentProfile)?;
+        }
         let profile_manager = ProfileManager::new();
         let mut disposable_profile = None;
         let mut chrome = None;
@@ -1126,6 +1242,7 @@ impl BrowserSession {
             download_scope: Arc::new(Mutex::new(())),
             topology,
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
+            policy,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1161,6 +1278,10 @@ impl BrowserSession {
 
     pub fn profile_name(&self) -> &str {
         &self.profile
+    }
+
+    pub fn policy(&self) -> &BrowserPolicy {
+        &self.policy
     }
 
     pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
@@ -1216,6 +1337,7 @@ impl BrowserSession {
 
     pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
         let url = normalize_url(url);
+        self.policy.require_url(&url).await?;
         let result = self
             .cdp
             .send_browser("Target.createTarget", Some(serde_json::json!({"url": url})))
@@ -1558,46 +1680,59 @@ impl BrowserSession {
             .with_current_target_route(async {
                 validate_wait_deadline(deadline)?;
                 let url = normalize_url(url);
-                let mut events = self.cdp.subscribe_events();
-                let started = tokio::time::Instant::now();
-                let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
-                    .await
-                    .map_err(|_| {
-                        wait_timeout("lifecycle", deadline, "navigate_command_pending")
-                    })??;
-                if let Some(frame_id) = navigation["frameId"].as_str() {
-                    validate_topology_id(frame_id)?;
-                    self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
-                    self.cdp
-                        .set_active_frame_context(Some(frame_id.to_string()), None);
+                self.policy.require_url(&url).await?;
+                let guard =
+                    NavigationPolicyGuard::acquire(self.cdp.clone(), self.policy.clone()).await?;
+                let result = async {
+                    let mut events = self.cdp.subscribe_events();
+                    let started = tokio::time::Instant::now();
+                    let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
+                        .await
+                        .map_err(|_| {
+                            wait_timeout("lifecycle", deadline, "navigate_command_pending")
+                        })??;
+                    if let Some(frame_id) = navigation["frameId"].as_str() {
+                        validate_topology_id(frame_id)?;
+                        self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
+                        self.cdp
+                            .set_active_frame_context(Some(frame_id.to_string()), None);
+                    }
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    self.wait_loop(
+                        WaitCondition::Lifecycle("complete".to_string()),
+                        remaining,
+                        deadline,
+                        &mut events,
+                        true,
+                    )
+                    .await?;
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    let main_frame = self
+                        .list_frames()
+                        .await?
+                        .into_iter()
+                        .find(|frame| frame.parent_id.is_none())
+                        .ok_or("navigated target returned no main frame")?;
+                    self.select_frame(&main_frame.id).await?;
+                    let page = tokio::time::timeout(remaining, self.page_info())
+                        .await
+                        .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+                    self.invalidate_observation();
+                    Ok(page)
                 }
-                let remaining = deadline.saturating_sub(started.elapsed());
-                self.wait_loop(
-                    WaitCondition::Lifecycle("complete".to_string()),
-                    remaining,
-                    deadline,
-                    &mut events,
-                    true,
-                )
-                .await?;
-                let remaining = deadline.saturating_sub(started.elapsed());
-                let main_frame = self
-                    .list_frames()
-                    .await?
-                    .into_iter()
-                    .find(|frame| frame.parent_id.is_none())
-                    .ok_or("navigated target returned no main frame")?;
-                self.select_frame(&main_frame.id).await?;
-                let page = tokio::time::timeout(remaining, self.page_info())
-                    .await
-                    .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
-                self.invalidate_observation();
-                Ok(page)
+                .await;
+                if let Some(guard) = guard
+                    && let Some(error) = guard.finish().await?
+                {
+                    return Err(error.into());
+                }
+                result
             })
             .await
     }
 
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
+        self.policy.require(PolicyCapability::Evaluate)?;
         self.cdp
             .with_current_route(async {
                 let result = self.evaluate_value(expression).await;
@@ -1856,6 +1991,7 @@ impl BrowserSession {
 
     /// Capture a PNG while preserving CDP's base64 payload for image APIs.
     pub async fn screenshot_base64(&self) -> BrowserResult<String> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         self.cdp
             .with_current_route(async { Ok(self.cdp.screenshot("png").await?) })
             .await
@@ -1866,6 +2002,7 @@ impl BrowserSession {
         &self,
         options: &VisualCaptureOptions,
     ) -> BrowserResult<VisualCapture> {
+        self.policy.require(PolicyCapability::Screenshot)?;
         validate_visual_options(options)?;
         self.cdp
             .with_current_route(async {
@@ -2379,11 +2516,11 @@ impl BrowserSession {
         destination: &Path,
         deadline: Duration,
     ) -> BrowserResult<DownloadOutcome> {
+        self.policy.require(PolicyCapability::Download)?;
         if deadline.is_zero() || deadline > MAX_DIAGNOSTIC_DURATION {
             return Err("download deadline must be between 1 ms and 30 seconds".into());
         }
-        let destination = std::fs::canonicalize(destination)
-            .map_err(|error| format!("download destination must exist: {error}"))?;
+        let destination = self.policy.require_existing_path(destination)?;
         if !destination.is_dir() || !destination.starts_with(&self.upload_root) {
             return Err(
                 "download destination must be a directory inside the authorized root".into(),
@@ -2671,11 +2808,12 @@ impl BrowserSession {
         target: &str,
         paths: &[PathBuf],
     ) -> BrowserResult<ActionOutcome> {
+        self.policy.require(PolicyCapability::Upload)?;
         self.cdp.with_current_route(async {
             if paths.is_empty() || paths.len() > 16 { return Err("upload requires 1..=16 files".into()); }
             let mut files = Vec::with_capacity(paths.len());
             for path in paths {
-                let canonical = std::fs::canonicalize(path)?;
+                let canonical = self.policy.require_existing_path(path)?;
                 if !canonical.is_file() { return Err("upload path must be a regular file".into()); }
                 if !canonical.starts_with(&self.upload_root) { return Err("upload path is outside the allowed workspace root".into()); }
                 files.push(canonical.to_string_lossy().into_owned());
@@ -3455,6 +3593,17 @@ async fn stop_screencast_for(cdp: &CdpClient, session_id: Option<&str>) -> Brows
             cdp.send("Page.stopScreencast", None).await?;
         }
     }
+    Ok(())
+}
+
+async fn disable_fetch_for(cdp: &CdpClient, session_id: Option<&str>) -> BrowserResult<()> {
+    match session_id {
+        Some(session_id) => {
+            cdp.send_to_session(session_id, "Fetch.disable", None)
+                .await?
+        }
+        None => cdp.send("Fetch.disable", None).await?,
+    };
     Ok(())
 }
 
@@ -4569,6 +4718,7 @@ mod tests {
                 ..TopologyRegistry::default()
             })),
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+            policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
         }
     }
 
@@ -5380,6 +5530,88 @@ mod tests {
         assert_eq!(snapshot.interactive[0].description.len(), 33 * 1024);
 
         session.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hardened_navigation_intercepts_private_redirects_before_following() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let enable = websocket.next().await.unwrap().unwrap();
+            let enable: Value = match enable {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.enable"),
+            };
+            assert_eq!(enable["method"], "Fetch.enable");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": enable["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "method": "Fetch.requestPaused",
+                        "params": {
+                            "requestId": "redirect-1",
+                            "request": {"url": "http://127.0.0.1/private"}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let blocked = websocket.next().await.unwrap().unwrap();
+            let blocked: Value = match blocked {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.failRequest"),
+            };
+            assert_eq!(blocked["method"], "Fetch.failRequest");
+            assert_eq!(blocked["params"]["requestId"], "redirect-1");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": blocked["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let disable = websocket.next().await.unwrap().unwrap();
+            let disable: Value = match disable {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected Fetch.disable"),
+            };
+            assert_eq!(disable["method"], "Fetch.disable");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": disable["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
+        let guard = NavigationPolicyGuard::acquire(cdp.clone(), policy)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(matches!(
+            guard.finish().await.unwrap(),
+            Some(PolicyError::Denied { .. })
+        ));
+        cdp.close().await;
         server.await.unwrap();
     }
 

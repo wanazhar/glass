@@ -29,6 +29,7 @@ use tokio::{
     time::{self, MissedTickBehavior},
 };
 
+use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SessionOptions,
@@ -711,6 +712,7 @@ enum ActiveOperationState {
 
 async fn browser_worker(
     options: SessionOptions,
+    policy: BrowserPolicy,
     mut commands: mpsc::Receiver<BrowserCommand>,
     events: mpsc::Sender<BrowserEvent>,
     mut shutdown: watch::Receiver<bool>,
@@ -720,7 +722,7 @@ async fn browser_worker(
     }
 
     let Some(session) =
-        start_browser_session(&options, &mut commands, &events, &mut shutdown).await
+        start_browser_session(&options, policy, &mut commands, &events, &mut shutdown).await
     else {
         return;
     };
@@ -734,11 +736,12 @@ async fn browser_worker(
 
 async fn start_browser_session(
     options: &SessionOptions,
+    policy: BrowserPolicy,
     commands: &mut mpsc::Receiver<BrowserCommand>,
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Option<BrowserSession> {
-    let start = BrowserSession::start(options);
+    let start = BrowserSession::start_with_policy(options, policy);
     tokio::pin!(start);
 
     loop {
@@ -1237,9 +1240,11 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
+    let policy = crate::cli::runner::policy_from_cli(cli)?;
     let local = LocalSet::new();
     let browser_worker = local.spawn_local(browser_worker(
         options,
+        policy,
         browser_command_rx,
         browser_event_tx,
         shutdown_rx,

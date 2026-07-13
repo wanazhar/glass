@@ -1,4 +1,5 @@
 use super::args::{Cli, Commands, ProfileCommand};
+use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     BrowserResult, BrowserSession, SessionOptions, VisualCaptureOptions, WaitCondition,
@@ -7,6 +8,7 @@ use serde::Serialize;
 use std::time::Duration;
 
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
+    let policy = policy_from_cli(&cli)?;
     if cli.mcp {
         return crate::mcp::server::run_mcp_server(&cli).await;
     }
@@ -18,10 +20,12 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             return Ok(());
         }
         Some(Commands::Profiles { action }) => {
+            policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_profiles(action.as_ref())?;
             return Ok(());
         }
         Some(Commands::DeleteProfile { name }) => {
+            policy.require(PolicyCapability::PersistentProfile)?;
             ProfileManager::new().delete_profile(name)?;
             println!("deleted profile {name}");
             return Ok(());
@@ -43,7 +47,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
     };
-    let session = BrowserSession::start(&options).await?;
+    let session = BrowserSession::start_with_policy(&options, policy).await?;
     let result = if let Some(prompt) = &cli.prompt {
         run_prompt(&session, prompt).await
     } else if let Some(command) = &cli.command {
@@ -127,6 +131,9 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             clip,
             target,
         } => {
+            let output = session
+                .policy()
+                .require_output_path(std::path::Path::new(output))?;
             let capture = session
                 .capture_visual(&VisualCaptureOptions {
                     format: *format,
@@ -141,9 +148,9 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 capture.data.as_bytes(),
                 &base64::engine::general_purpose::STANDARD,
             );
-            let mut file = std::fs::File::create(output)?;
+            let mut file = std::fs::File::create(&output)?;
             std::io::copy(&mut source, &mut file)?;
-            println!("wrote {output}");
+            println!("wrote {}", output.display());
             print_json(&capture.metadata)?;
         }
         Commands::Text => println!("{}", session.text().await?),
@@ -217,6 +224,19 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
     }
     Ok(())
+}
+
+pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
+    Ok(BrowserPolicy::new(
+        cli.policy,
+        std::env::current_dir()?,
+        cli.policy_allow.iter().copied(),
+        cli.policy_confirm.iter().copied(),
+    )?
+    .with_host_rules(
+        cli.policy_allow_host.iter().cloned(),
+        cli.policy_deny_host.iter().cloned(),
+    )?)
 }
 
 async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()> {

@@ -88,7 +88,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Download and install a managed Chrome for Testing build.
-    InstallChromium,
+    InstallChromium {
+        /// Reinstall the version pinned by this Glass release.
+        #[arg(long)]
+        update: bool,
+    },
 
     /// List or manage saved profiles.
     Profiles {

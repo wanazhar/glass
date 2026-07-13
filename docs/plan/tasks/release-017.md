@@ -49,7 +49,7 @@ and resistant to malformed input or interrupted lifecycle operations.
 
 Managed Chrome installation is a transaction: download a pinned version into a
 new staging directory, stream to a bounded archive while hashing, compare the
-published SHA-256 digest, extract with an in-process ZIP reader, validate the
+release-pinned storage digest and length, extract with an in-process ZIP reader, validate the
 platform executable, then atomically rename staging into the versioned install
 directory. A stable `current` record changes only after validation. Startup
 removes abandoned staging directories; `install-chromium --update` is the only

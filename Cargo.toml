@@ -25,7 +25,7 @@ serde_json = "1"
 ratatui = "0.29"
 crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2"
 dirs = "6"
 tracing = "0.1"
@@ -35,7 +35,9 @@ futures-util = "0.3"
 libc = "0.2"
 fs2 = "0.4"
 imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
+md-5 = "0.10"
 png = { version = "0.17", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 base64-simd = "0.8"

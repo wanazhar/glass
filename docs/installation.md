@@ -30,11 +30,13 @@ Override discovery when deployments use a nonstandard browser location:
 glass --chrome-path /opt/chrome/chrome navigate https://example.com
 ```
 
-`glass install-chromium` downloads the latest stable Chrome for Testing for
-supported Linux, macOS, and Windows architectures. It requires network access
-to Google's Chrome for Testing service and an `unzip` executable. This is a
-convenience for local use; production systems should generally update the
-browser independently from Glass.
+`glass install-chromium` installs the Chrome for Testing version pinned by this
+Glass release for Linux x86-64, macOS x86-64/arm64, or Windows x86/x86-64.
+Glass streams the bounded archive, checks its pinned size and digest, extracts
+it with an in-process ZIP reader, and atomically publishes only a validated
+executable. It does not require an external `unzip` program. Reinstall the
+release-pinned browser explicitly with `glass install-chromium --update`.
+Production systems may instead update a system browser independently.
 
 ## Session modes
 

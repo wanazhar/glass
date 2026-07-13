@@ -14,8 +14,8 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     }
 
     match &cli.command {
-        Some(Commands::InstallChromium) => {
-            let path = crate::browser::chrome::download_chromium().await?;
+        Some(Commands::InstallChromium { update }) => {
+            let path = crate::browser::chrome::download_chromium(*update).await?;
             println!("Chrome for Testing installed at {}", path.display());
             return Ok(());
         }
@@ -217,7 +217,7 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             print_json(&session.evaluate(expression).await?)?;
         }
         Commands::Tui
-        | Commands::InstallChromium
+        | Commands::InstallChromium { .. }
         | Commands::Profiles { .. }
         | Commands::DeleteProfile { .. } => {
             unreachable!("handled before starting a browser session")

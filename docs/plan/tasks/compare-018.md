@@ -1,7 +1,7 @@
 ---
 id: compare-018
 scope: final competitive acceptance
-status: in-progress
+status: blocked
 depends-on: [release-017]
 ---
 
@@ -56,6 +56,17 @@ passes. Playwright is the required general automation baseline. The required
 agent-focused baseline must drive the corpus through a released MCP/browser
 integration, not through Glass internals. Codex is an additional black-box row
 only when its browser automation surface is callable by the harness.
+
+## Evidence blocker
+
+The reproducible harness and fail-closed evidence validators pass independent
+code review, but the empirical gate has not run. Completion requires retained
+100-iteration Glass, Playwright, and Playwright MCP reports plus revision-bound
+ratified-metric, release-validation, and five-platform browser evidence. The
+first external run was interrupted before producing output and was not used.
+Until those artifacts exist, `best_in_class_eligible` remains false and Glass
+must not use best-in-class language. Codex remains an explicit unsupported row
+because this environment exposes no callable versioned black-box contract.
 
 ## Implementation checkpoint
 

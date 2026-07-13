@@ -125,7 +125,8 @@ jobs:
       - name: Create and sign checksums
         working-directory: dist
         run: |
-          sha256sum glass-* reports/*.json > SHA256SUMS
+          sha256sum glass-* > SHA256SUMS
+          (cd reports && sha256sum *.json) >> SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
       - uses: actions/attest-build-provenance@v2
         with:

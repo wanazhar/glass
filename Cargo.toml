@@ -30,10 +30,10 @@ chrono = "0.4"
 futures-util = "0.3"
 libc = "0.2"
 fs2 = "0.4"
+imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dev-dependencies]
 base64-simd = "0.8"
-imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [profile.release]
 opt-level = 3

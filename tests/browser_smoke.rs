@@ -963,6 +963,43 @@ async fn browser_session_drives_a_local_fixture() {
             .incomplete
             .contains(&glass::browser::session::ObservationIncompleteReason::ShadowBoundary)
     );
+
+    let clip_capture = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            clip: Some(glass::browser::session::VisualClip {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            }),
+            scale: 2.0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (clip_capture.metadata.width, clip_capture.metadata.height),
+        (240, 160)
+    );
+    assert!(clip_capture.metadata.encoded_bytes > 0);
+    let full_capture = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            full_page: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(full_capture.metadata.width >= clip_capture.metadata.width);
+    assert!(full_capture.metadata.height >= clip_capture.metadata.height);
+    let element_capture = session
+        .capture_visual(&glass::browser::session::VisualCaptureOptions {
+            target: Some("name=Save".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(element_capture.metadata.width > 0 && element_capture.metadata.height > 0);
+    assert_eq!(element_capture.metadata.target_id, context.page.target_id);
     assert!(
         context
             .incomplete

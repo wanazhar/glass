@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::browser::session::InteractionMode;
+use crate::browser::session::{InteractionMode, VisualClip, VisualFormat};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -135,6 +135,18 @@ pub enum Commands {
     Screenshot {
         #[arg(short, long, default_value = "screenshot.png")]
         output: String,
+        #[arg(long, value_enum, default_value_t = VisualFormat::Png)]
+        format: VisualFormat,
+        #[arg(long)]
+        quality: Option<u8>,
+        #[arg(long, default_value_t = 1.0)]
+        scale: f64,
+        #[arg(long, conflicts_with_all = ["clip", "target"])]
+        full_page: bool,
+        #[arg(long, conflicts_with_all = ["full_page", "target"])]
+        clip: Option<VisualClip>,
+        #[arg(long, conflicts_with_all = ["full_page", "clip"])]
+        target: Option<String>,
     },
 
     /// Print the visible page text.
@@ -272,7 +284,7 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            Some(Commands::Screenshot { output }) if output == "page.png"
+            Some(Commands::Screenshot { output, .. }) if output == "page.png"
         ));
     }
 

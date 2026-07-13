@@ -481,21 +481,25 @@ impl CdpClient {
 
     /// Take a screenshot and return its base64-encoded image data.
     pub async fn screenshot(&self, format: &str) -> Result<String, CdpError> {
-        let mut result = self
-            .send(
-                "Page.captureScreenshot",
-                Some(serde_json::json!({
-                    "format": format,
-                    "optimizeForSpeed": true
-                })),
-            )
-            .await?;
+        self.screenshot_with_params(serde_json::json!({
+            "format": format,
+            "optimizeForSpeed": true
+        }))
+        .await
+    }
+
+    pub async fn screenshot_with_params(&self, params: Value) -> Result<String, CdpError> {
+        let mut result = self.send("Page.captureScreenshot", Some(params)).await?;
         match result.get_mut("data").map(Value::take) {
             Some(Value::String(data)) => Ok(data),
             _ => Err(CdpError::transport(
                 "CDP screenshot response contained no data",
             )),
         }
+    }
+
+    pub async fn get_layout_metrics(&self) -> Result<Value, CdpError> {
+        self.send("Page.getLayoutMetrics", None).await
     }
 
     /// Get the accessibility tree.

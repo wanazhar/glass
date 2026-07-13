@@ -1,4 +1,4 @@
-use glass::browser::chrome::detect_chrome;
+use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
     ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
     WaitCondition, WaitTimeout,
@@ -94,6 +94,12 @@ fn glass_binary_path() -> PathBuf {
                 .join("debug")
                 .join(binary_name)
         })
+}
+
+fn required_chrome() -> PathBuf {
+    resolve_chrome_path(None).expect(
+        "GLASS_E2E=1 requires a discoverable Chrome; install the release-pinned browser first",
+    )
 }
 
 async fn mcp_responses(mut child: Child, requests: &[Value]) -> Vec<Value> {
@@ -221,10 +227,7 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
     let binary = glass_binary_path();
     let mut port = 20_000 + (std::process::id() % 5_000) as u16;
     loop {
@@ -430,10 +433,7 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -484,10 +484,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
 
     let binary = glass_binary_path();
     assert!(
@@ -634,10 +631,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
 
     let binary = glass_binary_path();
     assert!(
@@ -743,10 +737,7 @@ async fn browser_session_drives_a_local_fixture() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1647,10 +1638,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    let Some(chrome_path) = detect_chrome() else {
-        eprintln!("skipping browser smoke test; Chrome/Chromium is unavailable");
-        return;
-    };
+    let chrome_path = required_chrome();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);

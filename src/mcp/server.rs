@@ -1267,6 +1267,14 @@ async fn read_message<R: AsyncBufRead + Unpin>(
     }
 }
 
+/// Exercise the production MCP frame reader without exposing frame contents.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub async fn fuzz_frame(data: &[u8]) {
+    let mut reader = BufReader::new(data);
+    let _ = read_message(&mut reader).await;
+}
+
 async fn read_initial_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     limit: usize,

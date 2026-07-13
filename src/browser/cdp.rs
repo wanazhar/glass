@@ -1149,6 +1149,17 @@ fn handle_incoming_message(
     }
 }
 
+/// Exercise the production CDP envelope and event payload decoders.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_incoming_message(text: &str) {
+    if let Ok(message) = serde_json::from_str::<IncomingMessage>(text)
+        && message.method.is_some()
+    {
+        let _ = serde_json::from_str::<IncomingEventParams>(text);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

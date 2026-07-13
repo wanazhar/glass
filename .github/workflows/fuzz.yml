@@ -1,0 +1,27 @@
+name: Parser fuzz smoke
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: "17 3 * * 1"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [mcp_frame, cdp_message, ax_dom, locator, url_policy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Run bounded fuzz target
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            cargo fuzz run "${{ matrix.target }}" fuzz/corpus/${{ matrix.target }} -- -max_total_time=120
+          else
+            cargo fuzz run "${{ matrix.target }}" fuzz/corpus/${{ matrix.target }} -- -runs=512
+          fi

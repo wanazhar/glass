@@ -1,0 +1,44 @@
+[package]
+name = "glass-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+glass = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "mcp_frame"
+path = "fuzz_targets/mcp_frame.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cdp_message"
+path = "fuzz_targets/cdp_message.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ax_dom"
+path = "fuzz_targets/ax_dom.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "locator"
+path = "fuzz_targets/locator.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "url_policy"
+path = "fuzz_targets/url_policy.rs"
+test = false
+doc = false

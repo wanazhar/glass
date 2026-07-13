@@ -1,11 +1,13 @@
 use fs2::FileExt;
+use futures_util::StreamExt;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -16,6 +18,10 @@ const PORT_LAUNCH_LOCK_RETRY: Duration = Duration::from_millis(25);
 const CHROME_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHROME_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CHROME_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const PINNED_CHROME_VERSION: &str = "150.0.7871.115";
+const MAX_CHROME_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CHROME_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_CHROME_ARCHIVE_ENTRIES: usize = 20_000;
 
 /// An advisory, cross-process lock for an owned Chrome launch on one CDP port.
 ///
@@ -166,7 +172,6 @@ pub fn chromium_install_dir() -> PathBuf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedChromePlatform {
     LinuxX64,
-    LinuxArm64,
     MacX64,
     MacArm64,
     WindowsX64,
@@ -181,7 +186,6 @@ impl ManagedChromePlatform {
     fn for_target(os: &str, architecture: &str) -> Option<Self> {
         match (os, architecture) {
             ("linux", "x86_64") => Some(Self::LinuxX64),
-            ("linux", "aarch64") => Some(Self::LinuxArm64),
             ("macos", "x86_64") => Some(Self::MacX64),
             ("macos", "aarch64") => Some(Self::MacArm64),
             ("windows", "x86_64") => Some(Self::WindowsX64),
@@ -193,7 +197,6 @@ impl ManagedChromePlatform {
     fn download_platform(self) -> &'static str {
         match self {
             Self::LinuxX64 => "linux64",
-            Self::LinuxArm64 => "linux-arm64",
             Self::MacX64 => "mac-x64",
             Self::MacArm64 => "mac-arm64",
             Self::WindowsX64 => "win64",
@@ -204,7 +207,6 @@ impl ManagedChromePlatform {
     fn executable_relative_path(self) -> &'static str {
         match self {
             Self::LinuxX64 => "chrome-linux64/chrome",
-            Self::LinuxArm64 => "chrome-linux-arm64/chrome",
             Self::MacX64 => {
                 "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
             }
@@ -215,10 +217,50 @@ impl ManagedChromePlatform {
             Self::WindowsX86 => "chrome-win32/chrome.exe",
         }
     }
+
+    fn pinned_archive(self) -> Option<(&'static str, u64)> {
+        match self {
+            Self::LinuxX64 => Some((
+                "1be2db033133c5e2dd1a4e8664bf67b19a61bcf6ed28d2b00f433b3f0b4f9585",
+                187_332_810,
+            )),
+            Self::MacX64 => Some((
+                "1ede6b48b674a0ac0189f77debbc9bca21881d129eefa30252060117df705cf7",
+                191_275_197,
+            )),
+            Self::MacArm64 => Some((
+                "c418e4a29046bb62e340dfd9479b329bdf53ddd14a127b1362444a1e1b734a48",
+                180_511_523,
+            )),
+            Self::WindowsX64 => Some((
+                "90e0d112cb2f2743a7fd723f030c15b6421940be61dcbda7758563f821dd81da",
+                194_764_577,
+            )),
+            Self::WindowsX86 => Some((
+                "7df8d60ff06fb9a6bf7728091fd9b816e9b172ebce665de3a36cdd924e958628",
+                168_049_061,
+            )),
+        }
+    }
 }
 
 fn managed_chrome_path_in(install_dir: &Path, platform: ManagedChromePlatform) -> Option<PathBuf> {
-    let path = install_dir.join(platform.executable_relative_path());
+    let records = std::fs::read_dir(install_dir.join("current")).ok()?;
+    let version_name = records
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .max_by_key(|entry| entry.file_name())
+        .and_then(|entry| std::fs::read_to_string(entry.path()).ok())?;
+    let version_name = version_name.trim();
+    if !version_name.starts_with(&format!("{PINNED_CHROME_VERSION}-")) {
+        return None;
+    }
+    let root = install_dir.join("versions").join(version_name);
+    let marker = std::fs::read_to_string(root.join(".complete")).ok()?;
+    if marker.trim() != PINNED_CHROME_VERSION {
+        return None;
+    }
+    let path = root.join(platform.executable_relative_path());
     path.is_file().then_some(path)
 }
 
@@ -243,75 +285,93 @@ fn choose_chrome_path(
     explicit.or(managed).or(detected)
 }
 
-/// Download the latest stable Chrome for Testing build for this platform.
-///
-/// This remains a convenience fallback. Production deployments should prefer
-/// a system-managed Chrome/Chromium installation so the browser is updated
-/// independently from the Glass binary. Extraction uses the platform's
-/// `unzip` command to keep the Glass executable small.
-pub async fn download_chromium() -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Atomically install the Chrome for Testing version pinned by this release.
+pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let install_dir = chromium_install_dir();
     let platform = ManagedChromePlatform::current()
         .ok_or("Chrome for Testing is unavailable for this platform")?;
+    let (expected_sha256, expected_size) = platform
+        .pinned_archive()
+        .ok_or("Chrome for Testing publishes no managed build for this target")?;
 
     std::fs::create_dir_all(&install_dir)?;
-    if let Some(path) = managed_chrome_path_in(&install_dir, platform) {
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(install_dir.join("install.lock"))?;
+    lock_file.lock_exclusive()?;
+    cleanup_install_staging(&install_dir)?;
+    if !update && let Some(path) = managed_chrome_path_in(&install_dir, platform) {
+        prune_managed_chrome(&install_dir)?;
         info!(path = %path.display(), "Chromium already installed");
         return Ok(path);
     }
-    let metadata_url = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
-    let metadata: serde_json::Value = reqwest::Client::new()
-        .get(metadata_url)
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let download_url = metadata["channels"]["Stable"]["downloads"]["chrome"]
-        .as_array()
-        .and_then(|downloads| {
-            downloads
-                .iter()
-                .find(|download| download["platform"] == platform.download_platform())
-        })
-        .and_then(|download| download["url"].as_str())
-        .ok_or_else(|| {
-            format!(
-                "no stable Chrome for Testing download for {}",
-                platform.download_platform()
-            )
-        })?;
-
-    info!(
-        platform = platform.download_platform(),
-        "downloading Chrome for Testing"
+    let nonce = format!(
+        "{}-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        std::process::id()
     );
-    let archive_path = install_dir.join("chrome-for-testing.zip");
-    let bytes = reqwest::Client::new()
-        .get(download_url)
+    let staging = install_dir.join(format!(".staging-{nonce}"));
+    std::fs::create_dir(&staging)?;
+    let guard = InstallStagingGuard(staging.clone());
+    let archive_path = staging.join("chrome.zip.part");
+    let download_url = format!(
+        "https://storage.googleapis.com/chrome-for-testing-public/{PINNED_CHROME_VERSION}/{}/chrome-{}.zip",
+        platform.download_platform(),
+        platform.download_platform()
+    );
+    info!(
+        version = PINNED_CHROME_VERSION,
+        platform = platform.download_platform(),
+        "downloading pinned Chrome for Testing"
+    );
+    let response = reqwest::Client::new()
+        .get(&download_url)
         .timeout(Duration::from_secs(120))
         .send()
         .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    tokio::fs::write(&archive_path, &bytes).await?;
-
-    let status = Command::new("unzip")
-        .args(["-q", "-o"])
-        .arg(&archive_path)
-        .arg("-d")
-        .arg(&install_dir)
-        .status()
-        .await
-        .map_err(|error| format!("failed to run unzip: {error}"))?;
-    tokio::fs::remove_file(&archive_path).await.ok();
-    if !status.success() {
-        return Err("failed to extract Chrome for Testing archive; install unzip and retry".into());
+        .error_for_status()?;
+    if response.content_length() != Some(expected_size) || expected_size > MAX_CHROME_ARCHIVE_BYTES
+    {
+        return Err("pinned Chrome archive length did not match the release manifest".into());
     }
-
-    let path = managed_chrome_path_in(&install_dir, platform)
+    let mut archive = tokio::fs::File::create(&archive_path).await?;
+    let mut stream = response.bytes_stream();
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        downloaded = downloaded
+            .checked_add(chunk.len() as u64)
+            .ok_or("Chrome archive length overflowed")?;
+        if downloaded > expected_size || downloaded > MAX_CHROME_ARCHIVE_BYTES {
+            return Err("Chrome archive exceeded its pinned byte budget".into());
+        }
+        hasher.update(&chunk);
+        archive.write_all(&chunk).await?;
+    }
+    archive.flush().await?;
+    archive.sync_all().await?;
+    if downloaded != expected_size {
+        return Err("Chrome archive was truncated".into());
+    }
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    if actual_sha256 != expected_sha256 {
+        return Err("Chrome archive integrity digest did not match the release manifest".into());
+    }
+    let extract_root = staging.join("payload");
+    std::fs::create_dir(&extract_root)?;
+    let archive_for_extract = archive_path.clone();
+    let root_for_extract = extract_root.clone();
+    tokio::task::spawn_blocking(move || {
+        extract_chrome_zip(&archive_for_extract, &root_for_extract)
+    })
+    .await?
+    .map_err(|error| format!("Chrome archive extraction failed: {error}"))?;
+    tokio::fs::remove_file(&archive_path).await?;
+    let path = managed_chrome_path_in_payload(&extract_root, platform)
         .ok_or("Chrome archive did not contain a browser executable")?;
     #[cfg(unix)]
     {
@@ -320,8 +380,206 @@ pub async fn download_chromium() -> Result<PathBuf, Box<dyn std::error::Error>> 
         permissions.set_mode(0o755);
         tokio::fs::set_permissions(&path, permissions).await?;
     }
-    info!(path = %path.display(), "Chrome for Testing installed");
+    let mut marker = File::create(extract_root.join(".complete"))?;
+    use std::io::Write as _;
+    marker.write_all(format!("{PINNED_CHROME_VERSION}\n").as_bytes())?;
+    marker.sync_all()?;
+    sync_directory(&extract_root)?;
+    let versions = install_dir.join("versions");
+    std::fs::create_dir_all(&versions)?;
+    let final_dir = versions.join(format!("{PINNED_CHROME_VERSION}-{nonce}"));
+    std::fs::rename(&extract_root, &final_dir)?;
+    sync_directory(&versions)?;
+    let current = install_dir.join("current");
+    std::fs::create_dir_all(&current)?;
+    let generation = next_current_generation(&current)?;
+    let pending_record = staging.join("current-record");
+    let mut record = File::create(&pending_record)?;
+    record.write_all(final_dir.file_name().unwrap().to_string_lossy().as_bytes())?;
+    record.sync_all()?;
+    std::fs::rename(&pending_record, current.join(format!("{generation:020}")))?;
+    sync_directory(&current)?;
+    drop(guard);
+    prune_managed_chrome(&install_dir)?;
+    let path = managed_chrome_path_in(&install_dir, platform)
+        .ok_or("installed Chrome executable was not discoverable")?;
+    info!(path = %path.display(), version = PINNED_CHROME_VERSION, "Chrome for Testing installed atomically");
     Ok(path)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    // Windows does not permit opening directories with ordinary std file
+    // handles. File and marker contents are synced; publication still uses an
+    // atomic same-volume rename, while directory metadata durability is left
+    // to the filesystem.
+    Ok(())
+}
+
+fn next_current_generation(current: &Path) -> std::io::Result<u64> {
+    let greatest = std::fs::read_dir(current)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    greatest
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("managed Chrome generation overflowed"))
+}
+
+fn prune_managed_chrome(install_dir: &Path) -> std::io::Result<()> {
+    let current = install_dir.join("current");
+    let mut records = std::fs::read_dir(&current)?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    records.sort_by_key(|entry| entry.file_name());
+    let retained = records
+        .iter()
+        .rev()
+        .take(2)
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .map(|name| name.trim().to_owned())
+        .collect::<std::collections::HashSet<_>>();
+    for entry in records.into_iter().rev().skip(2) {
+        std::fs::remove_file(entry.path())?;
+    }
+    for entry in std::fs::read_dir(install_dir.join("versions"))? {
+        let entry = entry?;
+        if !retained.contains(&entry.file_name().to_string_lossy().into_owned()) {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+    }
+    sync_directory(&current)?;
+    sync_directory(&install_dir.join("versions"))?;
+    Ok(())
+}
+
+struct InstallStagingGuard(PathBuf);
+
+impl Drop for InstallStagingGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn cleanup_install_staging(install_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(install_dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(".staging-") {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn managed_chrome_path_in_payload(root: &Path, platform: ManagedChromePlatform) -> Option<PathBuf> {
+    let path = root.join(platform.executable_relative_path());
+    path.is_file().then_some(path)
+}
+
+fn extract_chrome_zip(
+    archive: &Path,
+    destination: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = File::open(archive)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    if archive.len() > MAX_CHROME_ARCHIVE_ENTRIES {
+        return Err("Chrome archive contained too many entries".into());
+    }
+    let mut extracted = 0_u64;
+    let mut symlinks = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let relative = entry
+            .enclosed_name()
+            .ok_or("Chrome archive contained an unsafe path")?;
+        let is_symlink = entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000);
+        extracted = extracted
+            .checked_add(entry.size())
+            .ok_or("Chrome extracted size overflowed")?;
+        if extracted > MAX_CHROME_EXTRACTED_BYTES {
+            return Err("Chrome archive exceeded the extracted byte budget".into());
+        }
+        let output = destination.join(&relative);
+        if is_symlink {
+            #[cfg(not(unix))]
+            return Err("Chrome archive contained a symbolic link on a non-Unix target".into());
+            #[cfg(unix)]
+            {
+                use std::io::Read as _;
+                if entry.size() > 4096 {
+                    return Err("Chrome archive symlink target was too long".into());
+                }
+                let mut target = String::new();
+                entry.read_to_string(&mut target)?;
+                let target = PathBuf::from(target);
+                if !safe_relative_symlink(&relative, &target) {
+                    return Err("Chrome archive symlink escaped the extraction root".into());
+                }
+                symlinks.push((output, target));
+                continue;
+            }
+        }
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output)?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = File::create(&output)?;
+        std::io::copy(&mut entry, &mut file)?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&output, std::fs::Permissions::from_mode(mode & 0o777))?;
+        }
+    }
+    #[cfg(unix)]
+    for (link, target) in symlinks {
+        if let Some(parent) = link.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(target, link)?;
+    }
+    sync_directory_tree(destination)?;
+    Ok(())
+}
+
+fn sync_directory_tree(root: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_directory_tree(&entry.path())?;
+        }
+    }
+    sync_directory(root)
+}
+
+fn safe_relative_symlink(link: &Path, target: &Path) -> bool {
+    if target.is_absolute() {
+        return false;
+    }
+    let mut depth = link
+        .parent()
+        .map_or(0, |parent| parent.components().count());
+    for component in target.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 /// Launch Chrome with remote debugging enabled in headless mode.
@@ -720,7 +978,6 @@ mod tests {
     fn managed_chrome_discovery_uses_each_supported_platform_layout() {
         let layouts = [
             ("linux", "x86_64", "chrome-linux64/chrome"),
-            ("linux", "aarch64", "chrome-linux-arm64/chrome"),
             (
                 "macos",
                 "x86_64",
@@ -738,9 +995,18 @@ mod tests {
         for (os, architecture, expected_relative_path) in layouts {
             let root = test_directory();
             let platform = ManagedChromePlatform::for_target(os, architecture).unwrap();
-            let executable = root.join(expected_relative_path);
+            let version_name = format!("{PINNED_CHROME_VERSION}-test");
+            let version_root = root.join("versions").join(&version_name);
+            let executable = version_root.join(expected_relative_path);
             std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
             std::fs::write(&executable, "managed chrome").unwrap();
+            std::fs::write(
+                version_root.join(".complete"),
+                format!("{PINNED_CHROME_VERSION}\n"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join("current")).unwrap();
+            std::fs::write(root.join("current/1"), version_name).unwrap();
 
             assert_eq!(platform.executable_relative_path(), expected_relative_path);
             assert_eq!(managed_chrome_path_in(&root, platform), Some(executable));
@@ -752,10 +1018,64 @@ mod tests {
     #[test]
     fn managed_chrome_platform_rejects_unsupported_targets() {
         assert_eq!(ManagedChromePlatform::for_target("freebsd", "x86_64"), None);
+        assert_eq!(ManagedChromePlatform::for_target("linux", "aarch64"), None);
         assert_eq!(
             ManagedChromePlatform::for_target("windows", "aarch64"),
             None
         );
+    }
+
+    #[test]
+    fn managed_discovery_ignores_incomplete_installations() {
+        let root = test_directory();
+        let executable = root.join("versions/150-incomplete/chrome-linux64/chrome");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "partial").unwrap();
+        assert_eq!(
+            managed_chrome_path_in(&root, ManagedChromePlatform::LinuxX64),
+            None
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn zip_extraction_rejects_parent_traversal() {
+        use std::io::Write;
+        let root = test_directory();
+        std::fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("malicious.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("../escape", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"escape").unwrap();
+        writer.finish().unwrap();
+        let output = root.join("output");
+        std::fs::create_dir(&output).unwrap();
+        assert!(extract_chrome_zip(&archive_path, &output).is_err());
+        assert!(!root.join("escape").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn symlink_targets_must_remain_inside_the_archive_root() {
+        assert!(safe_relative_symlink(
+            Path::new("App/Framework/Versions/Current"),
+            Path::new("150.0.0")
+        ));
+        assert!(safe_relative_symlink(
+            Path::new("App/Framework/Resources"),
+            Path::new("Versions/Current/Resources")
+        ));
+        assert!(!safe_relative_symlink(
+            Path::new("App/link"),
+            Path::new("../../escape")
+        ));
+        assert!(!safe_relative_symlink(
+            Path::new("App/link"),
+            Path::new("/tmp/escape")
+        ));
     }
 
     #[test]

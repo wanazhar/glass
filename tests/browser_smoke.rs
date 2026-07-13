@@ -984,6 +984,25 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(clip_capture.metadata.encoded_bytes > 0);
     let viewport_capture = session.capture_visual(&Default::default()).await.unwrap();
     assert!(viewport_capture.metadata.width > 0 && viewport_capture.metadata.height > 0);
+    session
+        .cdp()
+        .send(
+            "Emulation.setDeviceMetricsOverride",
+            Some(json!({"width":400,"height":300,"deviceScaleFactor":2,"mobile":false})),
+        )
+        .await
+        .unwrap();
+    let hidpi_capture = session.capture_visual(&Default::default()).await.unwrap();
+    assert_eq!(
+        (hidpi_capture.metadata.width, hidpi_capture.metadata.height),
+        (800, 600)
+    );
+    assert_eq!(hidpi_capture.metadata.device_scale_factor, 2.0);
+    session
+        .cdp()
+        .send("Emulation.clearDeviceMetricsOverride", None)
+        .await
+        .unwrap();
     let jpeg_capture = session
         .capture_visual(&glass::browser::session::VisualCaptureOptions {
             format: glass::browser::session::VisualFormat::Jpeg,

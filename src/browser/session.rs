@@ -74,7 +74,9 @@ const MAX_DIAGNOSTIC_DURATION: Duration = Duration::from_secs(30);
 const MAX_DIAGNOSTIC_EVENTS: usize = 128;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 const MAX_DIAGNOSTIC_URL_BYTES: usize = 4 * 1024;
-const MAX_VISUAL_PIXELS: f64 = 64.0 * 1024.0 * 1024.0;
+// Eight megapixels bounds worst-case 4-byte pixels plus base64 below 64 MiB
+// before Chrome is asked to encode or the generic CDP actor receives JSON.
+const MAX_VISUAL_PIXELS: f64 = 8.0 * 1024.0 * 1024.0;
 const MAX_VISUAL_BASE64_BYTES: usize = 64 * 1024 * 1024;
 const VISUAL_HEADER_BASE64_BYTES: usize = 64 * 1024;
 const HIT_TEST_FUNCTION: &str = r#"async function() {
@@ -1767,6 +1769,28 @@ impl BrowserSession {
                         "scale": options.scale
                     });
                 }
+                if options.full_page {
+                    let latest = self.cdp.get_layout_metrics().await?;
+                    let latest_clip = visual_rect(&latest["cssContentSize"])?;
+                    if !visual_clips_match(clip.expect("full-page capture has a clip"), latest_clip) {
+                        return Err("full-page geometry changed during capture preparation".into());
+                    }
+                } else if let Some(target) = options.target.as_deref() {
+                    let element = self.resolve_element(target).await?;
+                    let model = match (element.node_id, element.backend_dom_node_id) {
+                        (Some(node_id), _) => self.cdp.get_box_model(node_id).await?,
+                        (_, Some(backend_id)) => self.cdp.get_box_model_for_backend(backend_id).await?,
+                        _ => return Err("visual target has no DOM node identity".into()),
+                    };
+                    let latest_metrics = self.cdp.get_layout_metrics().await?;
+                    let viewport = visual_viewport_rect(&latest_metrics["cssVisualViewport"])?;
+                    let mut latest_clip = visual_quad_rect(&model["model"]["border"])?;
+                    latest_clip.x += viewport.x;
+                    latest_clip.y += viewport.y;
+                    if !visual_clips_match(clip.expect("element capture has a clip"), latest_clip) {
+                        return Err("element geometry changed during capture preparation".into());
+                    }
+                }
                 let data = self.cdp.screenshot_with_params(params).await?;
                 if data.len() > MAX_VISUAL_BASE64_BYTES {
                     return Err("visual base64 payload exceeded 64 MiB".into());
@@ -3153,9 +3177,20 @@ fn validate_effective_visual_clip(clip: Option<VisualClip>, scale: f64) -> Brows
     let width = clip.width * scale;
     let height = clip.height * scale;
     if width > 16_384.0 || height > 16_384.0 || width * height > MAX_VISUAL_PIXELS {
-        return Err("visual output exceeds the 16384-axis or 64-megapixel budget".into());
+        return Err("visual output exceeds the 16384-axis or 8-megapixel budget".into());
     }
     Ok(())
+}
+
+fn visual_clips_match(first: VisualClip, second: VisualClip) -> bool {
+    [
+        (first.x, second.x),
+        (first.y, second.y),
+        (first.width, second.width),
+        (first.height, second.height),
+    ]
+    .into_iter()
+    .all(|(first, second)| (first - second).abs() <= 0.5)
 }
 
 fn visual_rect(value: &Value) -> BrowserResult<VisualClip> {
@@ -4940,6 +4975,13 @@ mod tests {
             .is_err()
         );
         assert_eq!(decoded_base64_len("aGVsbG8=").unwrap(), 5);
+        assert!(!visual_clips_match(
+            viewport,
+            VisualClip {
+                x: 16.0,
+                ..viewport
+            }
+        ));
     }
 
     #[test]

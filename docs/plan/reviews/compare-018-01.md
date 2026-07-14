@@ -501,3 +501,55 @@ the missing bounded topology stabilization phase, now reproduced in the real
 integrated scorecard. Do not treat the popup operation as acceptance-ready until
 that scorecard popup scenario passes while retaining final fail-closed
 uniqueness, destruction, and loss checks.
+
+---
+
+## Popup topology stabilization re-review: `7154989`
+
+Reviewed the stabilization-only delta against the sole blocker above and reran
+the focused and bounded real-browser checks.
+
+### Findings
+
+- The candidate enters a 50 ms quiet window inside the existing two-second
+  evidence deadline. The sampled state contains both topology sequence and loss
+  epoch; any change resets the quiet-window start.
+- Each poll reruns the fail-closed topology assessment. Candidate replacement,
+  multiple opener matches, destruction, or event loss therefore does not become
+  a stabilization retry or success.
+- A topology that never becomes quiet exits at the shared deadline as the typed,
+  bounded `TopologyLagged` failure. The focused moving-topology test verifies
+  both the deadline behavior and error kind.
+- The prior final verification remains after attachment and readiness. It still
+  performs authoritative `Target.getTargets` uniqueness, then immediately
+  rejects any sequence/loss movement during that discovery and re-assesses the
+  candidate before returning. No popup is selected as part of verification.
+- The real integrated popup scenario that previously reproduced the race now
+  succeeds as `popup-controlled`. This is the decisive regression evidence;
+  the overall one-iteration scorecard remains red only because its unrelated
+  download scenario reports `download-canceled` instead of `download-complete`.
+
+### Focused verification
+
+- `cargo test --locked popup_` — passed 14 focused tests.
+- `cargo test --locked click_expect_popup` — passed 2 focused tests.
+- `cargo test --locked backend_identity` — passed 2 focused tests.
+- `cargo test --locked protocol_errors_are_not_typed_as_response_timeouts` —
+  passed.
+- `GLASS_POPUP_BENCH_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run
+  --locked --release --example popup_benchmark` — passed with no failures;
+  healthy ACK 6.03 ms and missing-ACK recovery 676.01 ms. One sample remains
+  explicitly not claim-eligible.
+- `GLASS_SCORECARD_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run --locked
+  --release --example scorecard` — popup passed in 635.95 ms. The overall hard
+  gate remained false solely for the out-of-scope download mismatch.
+
+### Verdict
+
+**pass**
+
+The bounded stabilization blocker is resolved without weakening the final
+authoritative uniqueness, destruction, or loss checks. The popup contract is
+ready for the retained full acceptance rerun. This verdict is scoped to popup
+hardening; it does not waive the independent download scorecard failure or
+constitute a multi-iteration performance claim.

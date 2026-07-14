@@ -44,6 +44,16 @@ pub struct CdpError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+    #[serde(skip)]
+    kind: CdpErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum CdpErrorKind {
+    #[default]
+    Protocol,
+    Transport,
+    ResponseTimeout,
 }
 
 impl CdpError {
@@ -52,7 +62,25 @@ impl CdpError {
             code: -32_000,
             message: message.into(),
             data: None,
+            kind: CdpErrorKind::Transport,
         }
+    }
+
+    fn response_timeout(timeout: Duration) -> Self {
+        Self {
+            code: -32_000,
+            message: format!(
+                "CDP response timeout after {} seconds",
+                timeout.as_secs_f64()
+            ),
+            data: None,
+            kind: CdpErrorKind::ResponseTimeout,
+        }
+    }
+
+    /// Whether this error is the locally typed expiry of an unanswered CDP request.
+    pub fn is_response_timeout(&self) -> bool {
+        self.kind == CdpErrorKind::ResponseTimeout
     }
 }
 
@@ -435,10 +463,7 @@ impl CdpClient {
                 pending_guard.disarm();
                 Err(CdpError::transport("CDP response channel closed"))
             }
-            Err(_) => Err(CdpError::transport(format!(
-                "CDP response timeout after {} seconds",
-                self.timeout.as_secs_f64()
-            ))),
+            Err(_) => Err(CdpError::response_timeout(self.timeout)),
         }
     }
 
@@ -1569,7 +1594,18 @@ mod tests {
                 .unwrap();
         let error = client.send("never", None).await.unwrap_err();
         assert!(error.message.contains("timeout"));
+        assert!(error.is_response_timeout());
         client.close().await;
         server.await.unwrap();
+    }
+
+    #[test]
+    fn protocol_errors_are_not_typed_as_response_timeouts() {
+        let error: CdpError = serde_json::from_value(serde_json::json!({
+            "code": -32000,
+            "message": "some protocol failure"
+        }))
+        .unwrap();
+        assert!(!error.is_response_timeout());
     }
 }

@@ -67,6 +67,10 @@ const TOPOLOGY_MAX_FRAMES: usize = 128;
 const TOPOLOGY_ID_MAX_BYTES: usize = 256;
 const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
 const TOPOLOGY_MAX_EVENTS: usize = 64;
+const POPUP_WITNESS_BINDING: &str = "__glass_popup_witness";
+const POPUP_WITNESS_LIFETIME_MS: u64 = 5_000;
+const POPUP_EVIDENCE_DEADLINE: Duration = Duration::from_secs(2);
+const POPUP_VERIFY_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
@@ -238,8 +242,15 @@ pub struct FrameInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyEventSummary {
+    pub sequence: u64,
     pub kind: String,
     pub id: String,
+}
+
+#[derive(Debug, Clone)]
+struct DestroyedPageTarget {
+    target: PageTargetInfo,
+    observed_sequence: u64,
 }
 
 #[derive(Default)]
@@ -253,6 +264,10 @@ struct TopologyRegistry {
     frame_sessions: HashMap<String, String>,
     frame_parents: HashMap<String, String>,
     events: VecDeque<TopologyEventSummary>,
+    sequence: u64,
+    event_loss_count: u64,
+    target_sequences: HashMap<String, u64>,
+    destroyed_targets: VecDeque<DestroyedPageTarget>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -749,6 +764,7 @@ pub enum ObservationIncompleteReason {
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     Click,
+    ClickExpectPopup,
     DoubleClick,
     Hover,
     Drag,
@@ -787,6 +803,73 @@ pub struct ActionOutcome {
     pub frame_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Value>,
+}
+
+/// Evidence returned by [`BrowserSession::click_expect_popup`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PopupClickOutcome {
+    pub action: ActionKind,
+    pub target: ActionTarget,
+    pub revision: u64,
+    pub target_id: String,
+    pub frame_id: String,
+    pub causally_verified_popup: bool,
+    pub popup_id: String,
+    pub opener_id: String,
+    pub evidence: PopupVerificationEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PopupVerificationEvidence {
+    pub trusted_click_witness: bool,
+    pub release_acknowledged: bool,
+    pub topology_sequence_before_release: u64,
+    pub popup_observed_sequence: u64,
+    pub attached: bool,
+    pub ready_state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PopupClickErrorKind {
+    ReleaseFailed,
+    WitnessMissing,
+    TopologyLagged,
+    PopupMissing,
+    PopupAmbiguous,
+    PopupDestroyed,
+    PopupOpenerMismatch,
+    PopupUnreadable,
+}
+
+/// A fail-closed popup-click failure with a stable machine-readable kind.
+#[derive(Debug)]
+pub struct PopupClickError {
+    pub kind: PopupClickErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for PopupClickError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "popup click {:?}: {}", self.kind, self.message)
+    }
+}
+
+impl Error for PopupClickError {}
+
+#[derive(Debug, Clone)]
+struct PopupTopologySnapshot {
+    original_target_id: String,
+    original_frame_id: String,
+    preexisting_target_ids: HashSet<String>,
+    sequence: u64,
+    event_loss_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PopupCandidate {
+    target: PageTargetInfo,
+    observed_sequence: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -864,6 +947,9 @@ pub struct BrowserSession {
     diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     download_scope: Arc<Mutex<()>>,
     topology: Arc<Mutex<TopologyRegistry>>,
+    popup_witness_sequence: AtomicU64,
+    popup_witness_sessions: Mutex<HashSet<String>>,
+    popup_click_scope: Mutex<()>,
     upload_root: PathBuf,
     policy: BrowserPolicy,
     policy_interception: Option<PolicyInterception>,
@@ -1333,6 +1419,7 @@ impl BrowserSession {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        topology_for_events.lock().await.event_loss_count += 1;
                         let _ = resync_topology(&cdp_for_events, &topology_for_events).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1363,6 +1450,9 @@ impl BrowserSession {
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             download_scope: Arc::new(Mutex::new(())),
             topology,
+            popup_witness_sequence: AtomicU64::new(1),
+            popup_witness_sessions: Mutex::new(HashSet::new()),
+            popup_click_scope: Mutex::new(()),
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
             policy,
             policy_interception,
@@ -2740,6 +2830,408 @@ impl BrowserSession {
     /// Click an element and return its structured action outcome.
     pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.pointer_click(target, false).await
+    }
+
+    /// Click one element that is expected to synchronously open exactly one popup.
+    ///
+    /// This operation never selects the popup. An unanswered `mouseReleased`
+    /// request is accepted only with the causal evidence documented by the
+    /// automation contract; ordinary [`Self::click`] retains strict ACK behavior.
+    pub async fn click_expect_popup(&self, target: &str) -> BrowserResult<PopupClickOutcome> {
+        let _scope = self.popup_click_scope.lock().await;
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await
+                    .map_err(|error| {
+                        tracing::debug!(%error, "popup target node could not be resolved");
+                        TargetError {
+                            kind: TargetErrorKind::NotActionable,
+                            reason: Some(TargetActionabilityReason::NodeUnavailable),
+                            candidates: Vec::new(),
+                        }
+                    })?;
+                let remote = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id,
+                };
+                let original_session_id = self
+                    .cdp
+                    .current_session_id()
+                    .ok_or("popup click requires an attached page session")?;
+                let witness_id = self.popup_witness_sequence.fetch_add(1, Ordering::Relaxed);
+                let mut witness_events = self.cdp.subscribe_events_with_params();
+                self.arm_popup_witness(&original_session_id, &remote.object_id, witness_id)
+                    .await?;
+
+                let operation = self
+                    .perform_popup_click(
+                        &remote.object_id,
+                        &element,
+                        &original_session_id,
+                        witness_id,
+                        &mut witness_events,
+                    )
+                    .await;
+                self.cleanup_popup_witness(&remote.object_id).await;
+                operation
+            })
+            .await
+    }
+
+    async fn arm_popup_witness(
+        &self,
+        session_id: &str,
+        object_id: &str,
+        witness_id: u64,
+    ) -> BrowserResult<()> {
+        let mut installed = self.popup_witness_sessions.lock().await;
+        if !installed.contains(session_id) {
+            self.cdp
+                .send_to_session(
+                    session_id,
+                    "Runtime.addBinding",
+                    Some(serde_json::json!({"name": POPUP_WITNESS_BINDING})),
+                )
+                .await?;
+            installed.insert(session_id.to_string());
+        }
+        drop(installed);
+
+        let function = format!(
+            r#"function() {{
+                const element = this;
+                const binding = globalThis.{POPUP_WITNESS_BINDING};
+                if (typeof binding !== 'function') return false;
+                const previous = element.__glassPopupWitnessCleanup;
+                if (typeof previous === 'function') previous();
+                const listener = function(event) {{
+                    if (event.isTrusted && event.currentTarget === element) binding('{witness_id}');
+                }};
+                const cleanup = function() {{
+                    clearTimeout(timer);
+                    element.removeEventListener('click', listener, true);
+                    if (element.__glassPopupWitnessCleanup === cleanup)
+                        delete element.__glassPopupWitnessCleanup;
+                }};
+                const timer = setTimeout(cleanup, {POPUP_WITNESS_LIFETIME_MS});
+                element.__glassPopupWitnessCleanup = cleanup;
+                element.addEventListener('click', listener, {{capture:true, once:true}});
+                return true;
+            }}"#
+        );
+        let armed = runtime_value(&self.cdp.call_on_object(object_id, &function).await?)?;
+        if armed.as_bool() != Some(true) {
+            return Err(popup_error(
+                PopupClickErrorKind::WitnessMissing,
+                "trusted-click witness could not be armed",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn cleanup_popup_witness(&self, object_id: &str) {
+        let cleanup = self.cdp.call_on_object(
+            object_id,
+            "function(){ const cleanup=this.__glassPopupWitnessCleanup; if(typeof cleanup==='function') cleanup(); return true; }",
+        );
+        let _ = tokio::time::timeout(POPUP_VERIFY_CALL_TIMEOUT, cleanup).await;
+    }
+
+    async fn perform_popup_click(
+        &self,
+        object_id: &str,
+        element: &ResolvedElement,
+        original_session_id: &str,
+        witness_id: u64,
+        witness_events: &mut tokio::sync::broadcast::Receiver<CdpEventWithParams>,
+    ) -> BrowserResult<PopupClickOutcome> {
+        let local_point = self.verified_action_point(object_id).await?;
+        let point = self.target_viewport_point(local_point).await?;
+        let mut pointer = self.pointer.lock().await;
+        let start = match (self.interaction_mode, *pointer) {
+            (_, Some(point)) => point,
+            (InteractionMode::Human, None) => self
+                .viewport_center()
+                .await
+                .unwrap_or(Point { x: 640.0, y: 360.0 }),
+            (InteractionMode::Fast, None) => point,
+        };
+        let path = interaction_path(self.interaction_mode, &self.mouse, start, point);
+        if self.interaction_mode == InteractionMode::Human && pointer.is_none() {
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", start.x, start.y, None, None)
+                .await?;
+        }
+        for window in path.windows(2) {
+            let next = window[1];
+            if self.interaction_mode == InteractionMode::Human {
+                tokio::time::sleep(self.mouse.move_delay(window[0], next)).await;
+            }
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
+                .await?;
+        }
+        let press_point = self.verified_action_point(object_id).await?;
+        if (press_point.x - local_point.x).abs() > 1.0
+            || (press_point.y - local_point.y).abs() > 1.0
+        {
+            return Err(TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(TargetActionabilityReason::GeometryChanged),
+                candidates: Vec::new(),
+            }
+            .into());
+        }
+        self.cdp
+            .dispatch_mouse_event("mousePressed", point.x, point.y, Some("left"), Some(1))
+            .await?;
+        let mut pressed = PressedButtonGuard {
+            cdp: self.cdp.clone(),
+            point,
+            click_count: 1,
+            armed: true,
+        };
+        if self.interaction_mode == InteractionMode::Human {
+            tokio::time::sleep(self.mouse.click_delay()).await;
+        }
+
+        // This snapshot is intentionally adjacent to and before the release.
+        let snapshot = self.popup_topology_snapshot().await?;
+        let release = self
+            .cdp
+            .dispatch_mouse_event("mouseReleased", point.x, point.y, Some("left"), Some(1))
+            .await;
+        let release_acknowledged = match release {
+            Ok(_) => true,
+            Err(error) if error.is_response_timeout() => false,
+            Err(error) => {
+                return Err(popup_error(
+                    PopupClickErrorKind::ReleaseFailed,
+                    format!("mouseReleased failed without a response timeout: {error}"),
+                ));
+            }
+        };
+        // The release was either acknowledged or causally witnessed. Never emit
+        // the guard's second, fire-and-forget release for the timeout case.
+        pressed.armed = false;
+
+        let (candidate, witnessed) = self
+            .wait_for_causal_popup(&snapshot, original_session_id, witness_id, witness_events)
+            .await?;
+        let ready_state = self.verify_popup_readiness(&snapshot, &candidate).await?;
+        *pointer = Some(point);
+        Ok(PopupClickOutcome {
+            action: ActionKind::ClickExpectPopup,
+            target: ActionTarget {
+                label: element.label.clone(),
+                reference: element.reference.clone(),
+            },
+            revision: self.invalidate_observation(),
+            target_id: snapshot.original_target_id.clone(),
+            frame_id: snapshot.original_frame_id.clone(),
+            causally_verified_popup: true,
+            popup_id: candidate.target.id.clone(),
+            opener_id: snapshot.original_target_id.clone(),
+            evidence: PopupVerificationEvidence {
+                trusted_click_witness: witnessed,
+                release_acknowledged,
+                topology_sequence_before_release: snapshot.sequence,
+                popup_observed_sequence: candidate.observed_sequence,
+                attached: true,
+                ready_state,
+            },
+        })
+    }
+
+    async fn popup_topology_snapshot(&self) -> BrowserResult<PopupTopologySnapshot> {
+        let raw_targets = popup_verification_call(
+            self.cdp.send_browser("Target.getTargets", None),
+            "pre-release target snapshot",
+        )
+        .await?;
+        let mut preexisting_target_ids = HashSet::new();
+        for info in raw_targets["targetInfos"].as_array().into_iter().flatten() {
+            if info["type"].as_str() != Some("page") {
+                continue;
+            }
+            let id = info["targetId"].as_str().ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "pre-release target snapshot contained a page without an ID",
+                )
+            })?;
+            validate_topology_id(id)?;
+            preexisting_target_ids.insert(id.to_string());
+        }
+        let topology = self.topology.lock().await;
+        let original_target_id = topology
+            .active_target_id
+            .clone()
+            .ok_or("popup click has no active target")?;
+        let original_frame_id = topology
+            .active_frame_id
+            .clone()
+            .ok_or("popup click has no active frame")?;
+        Ok(PopupTopologySnapshot {
+            original_target_id,
+            original_frame_id,
+            preexisting_target_ids,
+            sequence: topology.sequence,
+            event_loss_count: topology.event_loss_count,
+        })
+    }
+
+    async fn wait_for_causal_popup(
+        &self,
+        snapshot: &PopupTopologySnapshot,
+        original_session_id: &str,
+        witness_id: u64,
+        events: &mut tokio::sync::broadcast::Receiver<CdpEventWithParams>,
+    ) -> BrowserResult<(PopupCandidate, bool)> {
+        let deadline = tokio::time::Instant::now() + POPUP_EVIDENCE_DEADLINE;
+        let expected_payload = witness_id.to_string();
+        let mut witnessed = false;
+        loop {
+            loop {
+                match events.try_recv() {
+                    Ok(event)
+                        if event.method == "Runtime.bindingCalled"
+                            && event.session_id.as_deref() == Some(original_session_id)
+                            && event.params["name"].as_str() == Some(POPUP_WITNESS_BINDING)
+                            && event.params["payload"].as_str()
+                                == Some(expected_payload.as_str()) =>
+                    {
+                        witnessed = true;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
+                        return Err(popup_error(
+                            PopupClickErrorKind::TopologyLagged,
+                            format!("popup witness event stream dropped {count} events"),
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        return Err(popup_error(
+                            PopupClickErrorKind::TopologyLagged,
+                            "popup witness event stream closed",
+                        ));
+                    }
+                }
+            }
+
+            let assessment = {
+                let topology = self.topology.lock().await;
+                assess_popup_topology(snapshot, &topology, witnessed)
+            };
+            match assessment {
+                Ok(candidate) => return Ok((candidate, true)),
+                Err(error)
+                    if matches!(
+                        error.kind,
+                        PopupClickErrorKind::TopologyLagged
+                            | PopupClickErrorKind::PopupAmbiguous
+                            | PopupClickErrorKind::PopupDestroyed
+                    ) =>
+                {
+                    return Err(error.into());
+                }
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error.into());
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    async fn verify_popup_readiness(
+        &self,
+        snapshot: &PopupTopologySnapshot,
+        candidate: &PopupCandidate,
+    ) -> BrowserResult<String> {
+        let info = popup_verification_call(
+            self.cdp.send_browser(
+                "Target.getTargetInfo",
+                Some(serde_json::json!({"targetId": candidate.target.id})),
+            ),
+            "target liveness verification",
+        )
+        .await?;
+        let target_info = &info["targetInfo"];
+        if target_info["type"].as_str() != Some("page")
+            || target_info["targetId"].as_str() != Some(candidate.target.id.as_str())
+            || target_info["openerId"].as_str() != Some(snapshot.original_target_id.as_str())
+        {
+            return Err(popup_error(
+                PopupClickErrorKind::PopupOpenerMismatch,
+                "live target no longer matches the causal popup identity",
+            ));
+        }
+
+        let attached = popup_verification_call(
+            self.cdp.send_browser(
+                "Target.attachToTarget",
+                Some(serde_json::json!({"targetId": candidate.target.id, "flatten": true})),
+            ),
+            "popup attach",
+        )
+        .await?;
+        let session_id = attached["sessionId"]
+            .as_str()
+            .ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "popup attach returned no session ID",
+                )
+            })?
+            .to_string();
+
+        let verification = async {
+            popup_verification_call(
+                self.cdp
+                    .send_to_session(&session_id, "Runtime.runIfWaitingForDebugger", None),
+                "popup debugger resume",
+            )
+            .await?;
+            let result = popup_verification_call(
+                self.cdp.send_to_session(
+                    &session_id,
+                    "Runtime.evaluate",
+                    Some(serde_json::json!({
+                        "expression": "document.readyState",
+                        "returnByValue": true,
+                        "awaitPromise": false
+                    })),
+                ),
+                "popup readiness evaluation",
+            )
+            .await?;
+            result["result"]["value"]
+                .as_str()
+                .filter(|state| matches!(*state, "loading" | "interactive" | "complete"))
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    popup_error(
+                        PopupClickErrorKind::PopupUnreadable,
+                        "popup returned no valid document.readyState",
+                    )
+                })
+        }
+        .await;
+
+        let _ = tokio::time::timeout(
+            POPUP_VERIFY_CALL_TIMEOUT,
+            self.cdp.send_browser(
+                "Target.detachFromTarget",
+                Some(serde_json::json!({"sessionId": session_id})),
+            ),
+        )
+        .await;
+        verification.map_err(Into::into)
     }
 
     /// Double-click an element with the same target, scroll, and pointer
@@ -4521,14 +5013,21 @@ fn collect_frames(
     Ok(())
 }
 
-fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) {
+fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) -> u64 {
+    topology.sequence = topology
+        .sequence
+        .checked_add(1)
+        .expect("topology sequence exhausted");
+    let sequence = topology.sequence;
     topology.events.push_back(TopologyEventSummary {
+        sequence,
         kind: kind.to_string(),
         id: bounded_topology_id(id),
     });
     while topology.events.len() > TOPOLOGY_MAX_EVENTS {
         topology.events.pop_front();
     }
+    sequence
 }
 
 fn bounded_topology_id(value: &str) -> String {
@@ -4549,6 +5048,105 @@ fn retained_optional_topology_id(value: Option<&str>) -> BrowserResult<Option<St
             Ok(id.to_string())
         })
         .transpose()
+}
+
+fn popup_typed_error(kind: PopupClickErrorKind, message: impl Into<String>) -> PopupClickError {
+    PopupClickError {
+        kind,
+        message: message.into(),
+    }
+}
+
+fn popup_error(kind: PopupClickErrorKind, message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(popup_typed_error(kind, message))
+}
+
+fn assess_popup_topology(
+    snapshot: &PopupTopologySnapshot,
+    topology: &TopologyRegistry,
+    witnessed: bool,
+) -> Result<PopupCandidate, PopupClickError> {
+    if !witnessed {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::WitnessMissing,
+            "trusted-click witness was not observed",
+        ));
+    }
+    if topology.event_loss_count != snapshot.event_loss_count {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::TopologyLagged,
+            "topology event stream lagged after mouseReleased",
+        ));
+    }
+
+    let later_targets = topology.targets.iter().filter_map(|target| {
+        let sequence = *topology.target_sequences.get(&target.id)?;
+        (!snapshot.preexisting_target_ids.contains(&target.id) && sequence > snapshot.sequence)
+            .then_some((target, sequence))
+    });
+    let mut matching = Vec::new();
+    let mut nonmatching_count = 0usize;
+    for (target, sequence) in later_targets {
+        if target.opener_id.as_deref() == Some(snapshot.original_target_id.as_str()) {
+            matching.push(PopupCandidate {
+                target: target.clone(),
+                observed_sequence: sequence,
+            });
+        } else {
+            nonmatching_count += 1;
+        }
+    }
+    if matching.len() > 1 {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupAmbiguous,
+            format!(
+                "trusted click produced {} opener-matching page targets",
+                matching.len()
+            ),
+        ));
+    }
+    if let Some(candidate) = matching.pop() {
+        return Ok(candidate);
+    }
+    if topology.destroyed_targets.iter().any(|destroyed| {
+        destroyed.observed_sequence > snapshot.sequence
+            && !snapshot
+                .preexisting_target_ids
+                .contains(&destroyed.target.id)
+            && destroyed.target.opener_id.as_deref() == Some(snapshot.original_target_id.as_str())
+    }) {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupDestroyed,
+            "the opener-matching popup was destroyed before verification",
+        ));
+    }
+    if nonmatching_count > 0 {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupOpenerMismatch,
+            "later page targets did not name the original target as opener",
+        ));
+    }
+    Err(popup_typed_error(
+        PopupClickErrorKind::PopupMissing,
+        "no later opener-matching popup was observed",
+    ))
+}
+
+async fn popup_verification_call<F>(future: F, step: &str) -> BrowserResult<Value>
+where
+    F: std::future::Future<Output = Result<Value, super::cdp::CdpError>>,
+{
+    match tokio::time::timeout(POPUP_VERIFY_CALL_TIMEOUT, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(popup_error(
+            PopupClickErrorKind::PopupUnreadable,
+            format!("{step} failed: {error}"),
+        )),
+        Err(_) => Err(popup_error(
+            PopupClickErrorKind::PopupUnreadable,
+            format!("{step} exceeded its bounded deadline"),
+        )),
+    }
 }
 
 /// Apply one bounded lifecycle notification. Returns true when the selected
@@ -4586,14 +5184,30 @@ fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithPar
                 push_topology_event(topology, "rejected-target-budget", id);
                 return false;
             }
-            push_topology_event(topology, "target-updated", id);
+            let sequence = push_topology_event(topology, "target-updated", id);
+            topology.target_sequences.insert(id.to_string(), sequence);
         }
         "Target.targetDestroyed" | "Target.targetCrashed" => {
             let Some(id) = event.params["targetId"].as_str() else {
                 return false;
             };
+            let removed = topology
+                .targets
+                .iter()
+                .find(|target| target.id == id)
+                .cloned();
             topology.targets.retain(|target| target.id != id);
-            push_topology_event(topology, event.method.as_str(), id);
+            topology.target_sequences.remove(id);
+            let sequence = push_topology_event(topology, event.method.as_str(), id);
+            if let Some(target) = removed {
+                topology.destroyed_targets.push_back(DestroyedPageTarget {
+                    target,
+                    observed_sequence: sequence,
+                });
+                while topology.destroyed_targets.len() > TOPOLOGY_MAX_EVENTS {
+                    topology.destroyed_targets.pop_front();
+                }
+            }
             if topology.active_target_id.as_deref() == Some(id) {
                 topology.active_target_id = None;
                 topology.active_target_session_id = None;
@@ -4773,7 +5387,12 @@ async fn resync_topology(
     let mut topology = registry.lock().await;
     topology.targets = targets;
     topology.frames = frames;
-    push_topology_event(&mut topology, "resynchronized", "topology");
+    let sequence = push_topology_event(&mut topology, "resynchronized", "topology");
+    topology.target_sequences = topology
+        .targets
+        .iter()
+        .map(|target| (target.id.clone(), sequence))
+        .collect();
     Ok(())
 }
 
@@ -4894,6 +5513,9 @@ mod tests {
                 active_frame_id: Some("test-frame".to_string()),
                 ..TopologyRegistry::default()
             })),
+            popup_witness_sequence: AtomicU64::new(1),
+            popup_witness_sessions: Mutex::new(HashSet::new()),
+            popup_click_scope: Mutex::new(()),
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
             policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
             policy_interception: None,
@@ -5897,6 +6519,136 @@ mod tests {
         interception.shutdown().await;
         cdp.close().await;
         server.await.unwrap();
+    }
+
+    fn popup_test_snapshot() -> PopupTopologySnapshot {
+        PopupTopologySnapshot {
+            original_target_id: "original".to_string(),
+            original_frame_id: "frame".to_string(),
+            preexisting_target_ids: HashSet::from([
+                "original".to_string(),
+                "preexisting".to_string(),
+            ]),
+            sequence: 10,
+            event_loss_count: 0,
+        }
+    }
+
+    fn popup_test_target(id: &str, opener: Option<&str>) -> PageTargetInfo {
+        PageTargetInfo {
+            id: id.to_string(),
+            url: "about:blank".to_string(),
+            title: String::new(),
+            opener_id: opener.map(str::to_string),
+            active: false,
+        }
+    }
+
+    fn popup_topology_with(targets: Vec<(&str, Option<&str>, u64)>) -> TopologyRegistry {
+        let mut topology = TopologyRegistry::default();
+        for (id, opener, sequence) in targets {
+            topology.targets.push(popup_test_target(id, opener));
+            topology.target_sequences.insert(id.to_string(), sequence);
+            topology.sequence = topology.sequence.max(sequence);
+        }
+        topology
+    }
+
+    #[test]
+    fn popup_topology_accepts_exactly_one_later_live_matching_opener() {
+        let topology = popup_topology_with(vec![
+            ("original", None, 1),
+            ("preexisting", Some("original"), 9),
+            ("popup", Some("original"), 11),
+        ]);
+        let candidate = assess_popup_topology(&popup_test_snapshot(), &topology, true).unwrap();
+        assert_eq!(candidate.target.id, "popup");
+        assert_eq!(candidate.observed_sequence, 11);
+    }
+
+    #[test]
+    fn popup_topology_rejects_missing_witness_preexisting_and_unrelated_targets() {
+        let topology = popup_topology_with(vec![("unrelated", None, 11)]);
+        assert_eq!(
+            assess_popup_topology(&popup_test_snapshot(), &topology, false)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::WitnessMissing
+        );
+        assert_eq!(
+            assess_popup_topology(
+                &popup_test_snapshot(),
+                &popup_topology_with(vec![("preexisting", Some("original"), 12)]),
+                true,
+            )
+            .unwrap_err()
+            .kind,
+            PopupClickErrorKind::PopupMissing
+        );
+        assert_eq!(
+            assess_popup_topology(&popup_test_snapshot(), &topology, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupOpenerMismatch
+        );
+    }
+
+    #[test]
+    fn popup_topology_rejects_wrong_opener_ambiguity_lag_and_destroyed_target() {
+        let snapshot = popup_test_snapshot();
+        let wrong = popup_topology_with(vec![("popup", Some("other"), 11)]);
+        assert_eq!(
+            assess_popup_topology(&snapshot, &wrong, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupOpenerMismatch
+        );
+        let ambiguous = popup_topology_with(vec![
+            ("popup-1", Some("original"), 11),
+            ("popup-2", Some("original"), 12),
+        ]);
+        assert_eq!(
+            assess_popup_topology(&snapshot, &ambiguous, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupAmbiguous
+        );
+        let mut lagged = popup_topology_with(vec![("popup", Some("original"), 11)]);
+        lagged.event_loss_count = 1;
+        assert_eq!(
+            assess_popup_topology(&snapshot, &lagged, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        let mut destroyed = TopologyRegistry::default();
+        destroyed.destroyed_targets.push_back(DestroyedPageTarget {
+            target: popup_test_target("popup", Some("original")),
+            observed_sequence: 11,
+        });
+        assert_eq!(
+            assess_popup_topology(&snapshot, &destroyed, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupDestroyed
+        );
+    }
+
+    #[tokio::test]
+    async fn popup_readiness_maps_protocol_failure_to_typed_unreadable_error() {
+        let protocol_error: super::super::cdp::CdpError =
+            serde_json::from_value(serde_json::json!({
+                "code": -32000,
+                "message": "target closed"
+            }))
+            .unwrap();
+        let error = popup_verification_call(async { Err(protocol_error) }, "readiness")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::PopupUnreadable
+        );
     }
 
     #[cfg(feature = "visual-compare")]

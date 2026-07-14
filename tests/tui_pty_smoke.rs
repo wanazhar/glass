@@ -1,7 +1,12 @@
 #![cfg(target_os = "linux")]
 
 use std::{
-    io::Write,
+    fs::File,
+    io::{self, Read, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    },
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -9,41 +14,116 @@ use std::{
 
 #[test]
 fn tui_enters_and_leaves_a_real_terminal_cleanly() {
-    let binary = env!("CARGO_BIN_EXE_glass");
-    let command = format!("exec {}", shell_quote(binary));
-    let mut child = Command::new("script")
-        .args(["-qec", &command, "/dev/null"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+    let (mut master, slave) = open_pty();
+    let controlling_terminal = slave.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_glass"));
+    command
+        .stdin(Stdio::from(
+            slave.try_clone().expect("PTY slave must clone"),
+        ))
+        .stdout(Stdio::from(
+            slave.try_clone().expect("PTY slave must clone"),
+        ))
+        .stderr(Stdio::from(
+            slave.try_clone().expect("PTY slave must clone"),
+        ));
+    // SAFETY: this closure calls only async-signal-safe libc functions between
+    // fork and exec. The PTY descriptor remains open in the child at this point.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(controlling_terminal, libc::TIOCSCTTY, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .spawn()
-        .expect("util-linux script must be installed for the Linux PTY smoke test");
-
-    child
-        .stdin
-        .take()
-        .expect("script stdin must be piped")
+        .expect("Glass must start on the pseudo-terminal");
+    drop(slave);
+    master
         .write_all(b"q")
         .expect("quit key must reach the pseudo-terminal");
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
+    let status = loop {
         if let Some(status) = child.try_wait().expect("PTY child status must be readable") {
-            assert!(
-                status.success(),
-                "TUI did not leave the pseudo-terminal cleanly: {status}"
-            );
-            break;
+            break status;
         }
         if Instant::now() >= deadline {
-            child.kill().expect("timed-out PTY child must be killable");
+            // Glass called setsid, so its PID is also the process-group ID.
+            // SAFETY: the negative PID targets only the child process group.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.wait();
             panic!("TUI did not handle the quit key within five seconds");
         }
         thread::sleep(Duration::from_millis(20));
-    }
+    };
+    assert!(
+        status.success(),
+        "TUI did not leave the pseudo-terminal cleanly: {status}"
+    );
+
+    let output = read_available(&mut master);
+    assert_sequence(&output, b"\x1b[?1049h", "enter alternate screen");
+    assert_sequence(&output, b"\x1b[?25l", "hide cursor");
+    assert_sequence(&output, b"\x1b[?1049l", "leave alternate screen");
+    assert_sequence(&output, b"\x1b[?25h", "show cursor");
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+fn open_pty() -> (File, File) {
+    let mut master = -1;
+    let mut slave = -1;
+    let size = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: all pointers refer to initialized storage valid for this call.
+    let result = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &size,
+        )
+    };
+    assert_eq!(result, 0, "openpty failed: {}", io::Error::last_os_error());
+    // SAFETY: openpty returned two newly owned descriptors.
+    unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
+}
+
+fn read_available(master: &mut File) -> Vec<u8> {
+    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0, "PTY flags must be readable");
+    assert_eq!(
+        unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+    let mut output = Vec::new();
+    loop {
+        let mut chunk = [0_u8; 4096];
+        match master.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(length) => output.extend_from_slice(&chunk[..length]),
+            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock) => break,
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) => panic!("PTY output must be readable: {error}"),
+        }
+    }
+    output
+}
+
+fn assert_sequence(output: &[u8], expected: &[u8], label: &str) {
+    assert!(
+        output
+            .windows(expected.len())
+            .any(|window| window == expected),
+        "missing {label} sequence"
+    );
 }

@@ -103,11 +103,14 @@ deadline may enter recovery, and only when the trusted witness fired.
 
 Recovery requires exactly one later live page target that names the original
 target as `openerId`, followed by bounded attach and readiness verification.
-Immediately before success, Glass repeats authoritative target discovery and
-requires the candidate to remain the only live later opener match; it also
-rechecks the topology sequence and loss epoch so a second popup, destruction,
-or late event loss cannot race the decision. Cleanup and these final checks run
-without changing the active target or frame. The result records
+Before accepting the candidate, its topology sequence and loss epoch must remain
+unchanged for a 50 ms quiet interval within the existing two-second recovery
+deadline; every late topology event resets that interval. Immediately before
+success, Glass repeats authoritative target discovery and requires the candidate
+to remain the only live later opener match; it also rechecks the topology
+sequence and loss epoch so a second popup, destruction, or late event loss cannot
+race the decision. Cleanup and these final checks run without changing the active
+target or frame. The result records
 `causally_verified_popup`, popup ID, opener ID, release acknowledgement state,
 and verification evidence. Missing, multiple, lagged, destroyed, mismatched,
 unreadable, cancelled, or cleanup-failed outcomes—and every non-timeout CDP

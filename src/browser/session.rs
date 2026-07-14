@@ -69,6 +69,8 @@ const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
 const TOPOLOGY_MAX_EVENTS: usize = 64;
 const POPUP_WITNESS_LIFETIME_MS: u64 = 5_000;
 const POPUP_EVIDENCE_DEADLINE: Duration = Duration::from_secs(2);
+const POPUP_TOPOLOGY_QUIET_INTERVAL: Duration = Duration::from_millis(50);
+const POPUP_TOPOLOGY_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const POPUP_VERIFY_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 const POPUP_RELEASE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 const POPUP_ERROR_MESSAGE_MAX_BYTES: usize = 512;
@@ -3093,7 +3095,17 @@ impl BrowserSession {
                 assess_popup_topology(snapshot, &topology, witnessed)
             };
             match assessment {
-                Ok(candidate) => return Ok(candidate),
+                Ok(candidate) => {
+                    return wait_for_stable_popup_topology(
+                        &self.topology,
+                        snapshot,
+                        &candidate,
+                        deadline,
+                        POPUP_TOPOLOGY_QUIET_INTERVAL,
+                    )
+                    .await
+                    .map_err(Into::into);
+                }
                 Err(error)
                     if matches!(
                         error.kind,
@@ -3998,6 +4010,53 @@ impl BrowserSession {
             .as_f64()
             .ok_or("verified target y was not numeric")?;
         Ok(Point { x, y })
+    }
+}
+
+async fn wait_for_stable_popup_topology(
+    topology: &Arc<Mutex<TopologyRegistry>>,
+    snapshot: &PopupTopologySnapshot,
+    candidate: &PopupCandidate,
+    deadline: tokio::time::Instant,
+    quiet_interval: Duration,
+) -> Result<PopupCandidate, PopupClickError> {
+    let mut quiet_since = tokio::time::Instant::now();
+    let mut stable_state = None;
+    loop {
+        let (current, state) = {
+            let topology = topology.lock().await;
+            let current = assess_popup_topology(snapshot, &topology, true)?;
+            (current, (topology.sequence, topology.event_loss_count))
+        };
+        if current.target.id != candidate.target.id {
+            return Err(popup_typed_error(
+                PopupClickErrorKind::PopupAmbiguous,
+                "popup candidate changed during topology stabilization",
+            ));
+        }
+
+        let now = tokio::time::Instant::now();
+        if stable_state != Some(state) {
+            stable_state = Some(state);
+            quiet_since = now;
+        } else if now.duration_since(quiet_since) >= quiet_interval {
+            return Ok(current);
+        }
+        if now >= deadline {
+            return Err(popup_typed_error(
+                PopupClickErrorKind::TopologyLagged,
+                "popup topology did not stabilize before the evidence deadline",
+            ));
+        }
+
+        let quiet_remaining = quiet_interval.saturating_sub(now.duration_since(quiet_since));
+        let deadline_remaining = deadline.saturating_duration_since(now);
+        tokio::time::sleep(
+            POPUP_TOPOLOGY_POLL_INTERVAL
+                .min(quiet_remaining)
+                .min(deadline_remaining),
+        )
+        .await;
     }
 }
 
@@ -6892,6 +6951,78 @@ mod tests {
         let candidate = assess_popup_topology(&popup_test_snapshot(), &topology, true).unwrap();
         assert_eq!(candidate.target.id, "popup");
         assert_eq!(candidate.observed_sequence, 11);
+    }
+
+    #[tokio::test]
+    async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let late_topology = Arc::clone(&topology);
+        let late_event = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            late_topology.lock().await.sequence += 1;
+        });
+
+        let started = tokio::time::Instant::now();
+        let stable = wait_for_stable_popup_topology(
+            &topology,
+            &snapshot,
+            &candidate,
+            started + Duration::from_millis(150),
+            Duration::from_millis(30),
+        )
+        .await
+        .unwrap();
+
+        late_event.await.unwrap();
+        assert_eq!(stable.target.id, "popup");
+        assert!(started.elapsed() >= Duration::from_millis(40));
+        assert_eq!(topology.lock().await.sequence, 12);
+    }
+
+    #[tokio::test]
+    async fn popup_topology_that_never_becomes_quiet_fails_closed_at_deadline() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let moving_topology = Arc::clone(&topology);
+        let movement = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(5));
+            for _ in 0..20 {
+                interval.tick().await;
+                moving_topology.lock().await.sequence += 1;
+            }
+        });
+        let started = tokio::time::Instant::now();
+
+        let error = wait_for_stable_popup_topology(
+            &topology,
+            &snapshot,
+            &candidate,
+            started + Duration::from_millis(60),
+            Duration::from_millis(15),
+        )
+        .await
+        .unwrap_err();
+
+        movement.abort();
+        assert_eq!(error.kind, PopupClickErrorKind::TopologyLagged);
+        assert!(started.elapsed() >= Duration::from_millis(55));
     }
 
     #[test]

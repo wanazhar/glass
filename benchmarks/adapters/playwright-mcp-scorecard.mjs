@@ -139,6 +139,8 @@ async function downloadWithPublicTools(mcp) {
   const text = response.content?.filter(({ type }) => type === "text").map(({ text }) => text).join("\n") ?? "";
   if (!/^### Events\n[\s\S]*^- Downloaded file glass\.txt to /m.test(text))
     throw new Error("Playwright MCP did not report a completed download artifact");
+  if (fs.readFileSync(`${outputDir}/glass.txt`, "utf8") !== "glass")
+    throw new Error("Playwright MCP download artifact content did not match the fixture");
   return "download-complete";
 }
 function parseResult(value) {

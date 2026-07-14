@@ -83,7 +83,8 @@ the runner validates every scenario/iteration pair and recomputes summaries.
 The Playwright MCP download scenario uses only its negotiated public tool
 surface: `browser_click` triggers the authored download, and success requires
 the server response to report a completed copy into its configured output
-directory. The adapter must not open or race the server-owned temporary
+directory and the configured artifact to contain the expected fixture bytes.
+The adapter must not open or race the server-owned temporary
 Playwright artifact through unsafe runner code.
 Eligibility fails closed without revision-bound evidence for every ratified
 performance, protocol, release-validation, and real-browser platform gate.

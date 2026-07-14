@@ -97,3 +97,28 @@ the next reset encountered the modal. The MCP adapter now awaits an explicit
 dialog-handled promise. No Glass core workaround was accepted because the
 existing task-local route invariant already holds and fire-and-forget input
 would weaken correctness.
+
+## Popup recovery review contract
+
+The first causally verified popup implementation reached the real Chromium
+missing-ack path, but adversarial review `5ff5d9a` blocked it: page code could
+forge the witness, uniqueness and event-loss checks could race readiness,
+cancellation could leak witness or attachment state, and MCP erased typed popup
+failures. Those findings must pass independent re-review before another full
+acceptance run.
+
+The approved correction uses a 500 ms `click_expect_popup`-specific
+`mouseReleased` acknowledgement window. Ordinary `click` and the global CDP
+timeout do not change. Recovery uses an isolated-world, exact-backend-node
+trusted-click witness that page code cannot call or monkeypatch; all witness and
+temporary-attachment resources have cancellation-safe bounded cleanup. After
+readiness, success requires a final authoritative target-set uniqueness,
+liveness, and opener check plus a final topology sequence/loss-epoch check.
+Every failure remains typed through MCP and no recovery step changes the active
+route.
+
+Focused popup measurements must report both the healthy release-ack latency
+distribution and missing-ack recovery latency. Recovery is expected to complete
+in under one second. One sample may diagnose the path but cannot support a
+performance claim. The diagnostic run must remain popup-specific; the retained
+100-iteration competitive acceptance gate stays blocked until review passes.

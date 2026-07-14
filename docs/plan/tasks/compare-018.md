@@ -179,3 +179,20 @@ download failures, and zero wrong actions. The incomplete required matrix
 blocks acceptance. This establishes that the current ceiling cannot contain
 the public MCP workflow at its measured throughput; it is not hang evidence.
 No downstream evidence stage ran.
+
+## Fresh-observation performance blocker
+
+Three 50-iteration measurements on reviewed release candidate `9981414`
+reported fresh compact-observation p95 between 8.95 and 9.11 ms, above the
+ratified 5 ms budget. Cached observation remained between 0.020 and 0.034 ms
+p95. The threshold is not relaxed.
+
+The approved optimization may reuse the named observation isolated world only
+for the exact selected target and frame. It must never reuse an execution
+context across a route change. A context invalidated by navigation may trigger
+one bounded recreation and retry; all other protocol failures remain errors.
+The two page-state samples must continue to bracket the accessibility read, so
+mutation-race detection and structured-first correctness do not weaken.
+Measured release-mode improvement, focused stale-context/route-isolation tests,
+the full test and lint suite, and independent review are required before the
+optimization can enter a release candidate.

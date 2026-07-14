@@ -86,6 +86,18 @@ chosen point. Layout movement triggers a bounded re-resolution or an explicit
 failure. Glass does not claim that smooth pointer motion defeats automation
 detection.
 
+Popup-producing clicks use the explicit `click_expect_popup` operation. Glass
+pre-arms a trusted-click witness on the uniquely resolved element and snapshots
+the original target, frame, target IDs, and monotonic topology sequence before
+`mouseReleased`. The normal CDP input acknowledgement remains authoritative.
+Only when that exact release response times out may Glass recover completion,
+and only when the witness fired, exactly one later live page target names the
+original target as `openerId`, and bounded attach plus readiness verification
+succeeds. The result records `causally_verified_popup`, popup ID, opener ID,
+and verification evidence. Missing, multiple, lagged, destroyed, mismatched,
+or unreadable targets—and every non-timeout CDP error—remain typed failures.
+Ordinary `click` never suppresses an input timeout or pays this witness cost.
+
 ## Wait contract
 
 Actions do not acquire hidden universal delays. Callers choose a typed
@@ -118,7 +130,8 @@ The complete intended primitive set is:
 
 - navigate, reload, back, and forward;
 - observe, screenshot, DOM, console, and scoped network evidence;
-- click, double-click, hover, drag, wheel, key, shortcut, type, and clear;
+- click, click-and-expect-popup, double-click, hover, drag, wheel, key,
+  shortcut, type, and clear;
 - check/uncheck, select, and file upload;
 - list/create/select/close target and select frame;
 - accept/dismiss dialog and monitor downloads; and

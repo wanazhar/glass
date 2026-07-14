@@ -3,6 +3,7 @@ import os from "node:os";
 import process from "node:process";
 import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { atomicWriteJson } from "../checkpoint.mjs";
 
 const corpus = JSON.parse(fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"));
 const fixture = fs.readFileSync(new URL("../../tests/fixtures/scorecard.html", import.meta.url), "utf8");
@@ -10,6 +11,8 @@ const iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLA
 const chromePath = requiredEnv("CHROME_PATH");
 const command = requiredEnv("PLAYWRIGHT_MCP_COMMAND");
 const expectedVersion = requiredEnv("PLAYWRIGHT_MCP_VERSION");
+const gitRevision = requiredEnv("GLASS_SCORECARD_GIT_REVISION");
+const checkpointPath = requiredEnv("GLASS_SCORECARD_CHECKPOINT_PATH");
 const requestTimeoutMs = positiveInteger("PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS", process.env.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS ?? "30000");
 const outputDir = fs.mkdtempSync(`${os.tmpdir()}/glass-playwright-mcp-`);
 const startupStarted = performance.now();
@@ -41,12 +44,14 @@ try {
       try {
         actual = await runScenario(client, scenario.id);
       } catch (caught) {
-        error = String(caught?.message ?? caught);
+        error = boundedText(caught?.message ?? caught);
       }
+      if (typeof actual === "string") actual = boundedText(actual);
       const status = actual === scenario.expected ? "success" : scenario.forbidden.includes(actual) ? "wrong_action" : "failure";
       outcomes.push({ id: scenario.id, category: scenario.category, iteration, expected: scenario.expected,
         actual, status, error, latency_ms: performance.now() - started, cdp_requests: null });
     }
+    writeCheckpoint(iteration);
   }
 } finally {
   await client.close();
@@ -150,7 +155,30 @@ function parseResult(value) {
   return JSON.parse(match[1]);
 }
 function count(status) { return outcomes.filter((outcome) => outcome.status === status).length; }
+function writeCheckpoint(completedIterations) {
+  const successes = count("success");
+  const failures = count("failure");
+  const wrongActions = count("wrong_action");
+  const unsupported = count("unsupported");
+  const checkpoint = {
+    schema_version: 1,
+    partial: true,
+    git_revision: gitRevision,
+    tool: { name: "playwright-mcp", version: expectedVersion },
+    configuration: { mcp_command: command, chrome_path: chromePath, request_timeout_ms: requestTimeoutMs,
+      headless: true, isolated: true },
+    run: { corpus: corpus.corpus, corpus_fixture: corpus.fixture, iterations, temperature: "warm",
+      profile: process.env.GLASS_SCORECARD_PROFILE ?? "fresh-ephemeral-single-session", viewport: { width: 1280, height: 720 } },
+    progress: { completed_iterations: completedIterations, total_iterations: iterations,
+      completed_rows: outcomes.length, total_rows: corpus.scenarios.length * iterations },
+    summary: { successes, failures, wrong_actions: wrongActions, unsupported,
+      task_success_rate: outcomes.length ? successes / outcomes.length : 0, hard_gate_passed: false },
+    scenarios: outcomes,
+  };
+  atomicWriteJson(checkpointPath, checkpoint);
+}
 function positiveInteger(name, value) { const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
+function boundedText(value) { const text = String(value); return Buffer.byteLength(text) <= 4096 ? text : `${Buffer.from(text).subarray(0, 4070).toString("utf8")}…[truncated]`; }
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
 function commandVersion(command) { try { return execFileSync(command, ["--version"], { encoding: "utf8" }).trim(); } catch { return null; } }
 function processRss(pid) {

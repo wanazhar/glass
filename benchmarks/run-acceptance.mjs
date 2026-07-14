@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { retainCheckpointOnTimeout } from "./checkpoint.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const contract = readJson(path.join(root, "benchmarks/acceptance-v1.json"));
@@ -14,6 +15,7 @@ fs.mkdirSync(rawDir, { recursive: true });
 
 let iterations = contract.iterations;
 let commandDeadlineMs = 600000;
+const playwrightMcpDeadlineMs = 1200000;
 let configurationError = null;
 try {
   iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLASS_SCORECARD_ITERATIONS ?? String(contract.iterations));
@@ -48,7 +50,8 @@ try {
   });
   await runAdapter("playwright-mcp", process.execPath, [path.join(root, "benchmarks/adapters/playwright-mcp-scorecard.mjs")], {
     CHROME_PATH: chromePath, PLAYWRIGHT_MCP_COMMAND: path.join(npmPrefix, "node_modules/.bin/playwright-mcp"), PLAYWRIGHT_MCP_VERSION: "0.0.78",
-  });
+    PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS: "30000",
+  }, playwrightMcpDeadlineMs);
 } catch (error) {
   fatalError = String(error.message ?? error);
 } finally {
@@ -100,31 +103,53 @@ writeJson(path.join(outputDir, "acceptance.json"), acceptance);
 process.stdout.write(`${JSON.stringify(acceptance, null, 2)}\n`);
 if (!bestInClassEligible && process.env.GLASS_ACCEPTANCE_ALLOW_FAILURE !== "1") process.exitCode = 2;
 
-async function runAdapter(id, command, args, extraEnv) {
+async function runAdapter(id, command, args, extraEnv, deadlineMs = commandDeadlineMs) {
   const stdoutFile = path.join(rawDir, `${id}.json`);
   const stderrFile = path.join(rawDir, `${id}.stderr.log`);
+  const checkpointFile = path.join(rawDir, `${id}.checkpoint.json`);
   try {
-    await run(command, args, { env: { ...extraEnv, GLASS_SCORECARD_ITERATIONS: String(iterations), GLASS_SCORECARD_PROFILE: contract.profile_semantics }, stdoutFile, stderrFile });
+    await run(command, args, { deadlineMs, env: { ...extraEnv, GLASS_SCORECARD_ITERATIONS: String(iterations),
+      GLASS_SCORECARD_PROFILE: contract.profile_semantics, GLASS_SCORECARD_GIT_REVISION: gitRevision,
+      GLASS_SCORECARD_CHECKPOINT_PATH: checkpointFile }, stdoutFile, stderrFile });
     const report = readJson(stdoutFile);
     const derived = validateReport(report, id);
     reports.set(id, { report, derived });
+    fs.rmSync(checkpointFile, { force: true });
     adapters.push({ id, status: "completed", report: path.relative(outputDir, stdoutFile), reason: null });
   } catch (error) {
-    adapters.push({ id, status: "failed", report: fs.existsSync(stdoutFile) ? path.relative(outputDir, stdoutFile) : null, reason: String(error.message ?? error) });
+    let checkpoint = null;
+    let checkpointReason = null;
+    if (error.timedOut && fs.existsSync(checkpointFile)) {
+      try {
+        const retained = retainCheckpointOnTimeout({ timedOut: error.timedOut, file: checkpointFile, expected: checkpointExpectation(id, extraEnv) });
+        checkpoint = path.relative(outputDir, retained.file);
+      } catch (checkpointError) {
+        checkpoint = path.relative(outputDir, checkpointFile);
+        checkpointReason = `; invalid partial checkpoint: ${String(checkpointError.message ?? checkpointError)}`;
+      }
+    }
+    if (!error.timedOut) fs.rmSync(checkpointFile, { force: true });
+    adapters.push({ id, status: "failed", report: fs.existsSync(stdoutFile) ? path.relative(outputDir, stdoutFile) : null,
+      checkpoint, reason: `${String(error.message ?? error)}${checkpointReason ?? ""}` });
   }
 }
 
 async function run(command, args, options = {}) {
-  commands.push({ command: path.basename(command), args: sanitizeArgs(args), timeout_ms: commandDeadlineMs });
+  const deadlineMs = options.deadlineMs ?? commandDeadlineMs;
+  commands.push({ command: path.basename(command), args: sanitizeArgs(args), timeout_ms: deadlineMs });
   const child = spawn(command, args, { cwd: root, env: { ...process.env, ...options.env }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
   const stdout = boundedSink(child.stdout, options.stdoutFile, 16 * 1024 * 1024);
   const stderr = boundedSink(child.stderr, options.stderrFile, 8 * 1024 * 1024);
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; terminate(child); }, commandDeadlineMs);
+  const timer = setTimeout(() => { timedOut = true; terminate(child); }, deadlineMs);
   const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
   clearTimeout(timer);
   const [out, err] = await Promise.all([stdout.done, stderr.done]);
-  if (timedOut) throw new Error(`${path.basename(command)} exceeded ${commandDeadlineMs} ms`);
+  if (timedOut) {
+    const error = new Error(`${path.basename(command)} exceeded ${deadlineMs} ms`);
+    error.timedOut = true;
+    throw error;
+  }
   if (out.truncated || err.truncated) throw new Error(`${path.basename(command)} output exceeded its capture budget`);
   if (code !== 0) throw new Error(`${path.basename(command)} exited ${code}; see ${options.stderrFile ?? "captured stderr"}`);
   return out.text;
@@ -200,6 +225,15 @@ function validateReport(report, id) {
     unsupported: counts.unsupported, task_success_rate: counts.success / total, hard_gate_passed: counts.success === total };
   for (const [key, value] of Object.entries(derived)) if (report.summary?.[key] !== value) throw new Error(`${id} summary disagrees with raw scenarios for ${key}`);
   return derived;
+}
+
+function checkpointExpectation(id, extraEnv) {
+  return { id, version: expectedTools()[id], gitRevision, configuration: {
+      mcp_command: extraEnv.PLAYWRIGHT_MCP_COMMAND, chrome_path: extraEnv.CHROME_PATH,
+      request_timeout_ms: Number(extraEnv.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS),
+      headless: true, isolated: true },
+    run: { corpus: contract.corpus, corpus_fixture: corpus.fixture, iterations, temperature: contract.temperature,
+      profile: contract.profile_semantics, viewport: contract.viewport }, scenarios: corpus.scenarios };
 }
 
 function controlGates(rows) {

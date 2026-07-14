@@ -553,3 +553,76 @@ authoritative uniqueness, destruction, or loss checks. The popup contract is
 ready for the retained full acceptance rerun. This verdict is scoped to popup
 hardening; it does not waive the independent download scorecard failure or
 constitute a multi-iteration performance claim.
+
+---
+
+## Incognito download compatibility review: `3c5f8d7` + `1a28dd1`
+
+Reviewed the compatibility bridge against its ownership/privacy contract and
+ran focused protocol tests plus the bounded real-browser scorecard.
+
+### Blocking findings
+
+1. **P1 — CDP-created browser contexts are not excluded by the runtime gate.**
+
+   `use_page_download_compatibility` receives only `self.chrome.is_some()` and
+   `self.disposable_profile.is_some()` (`src/browser/session.rs:2793-2796`,
+   `src/browser/session.rs:5602-5604`). Those values prove that the browser was
+   launched by Glass with a disposable command-line-incognito profile, but they
+   do not prove that the currently selected target belongs to that command-line
+   off-the-record context. The public raw CDP client can create a browser
+   context and target, and `select_target` can select it; topology does not retain
+   or validate `TargetInfo.browserContextId`. The bridge would then send
+   `Page.setDownloadBehavior` to a CDP-created context, contrary to the explicit
+   contract. Capture and validate the selected target's authoritative context
+   identity before enabling either scope, and fail closed or skip the bridge for
+   every CDP-created context. Add a protocol test that creates/models a target
+   with `browserContextId` and proves no Page fallback is issued.
+
+2. **P1 — typed download failures are erased at the MCP boundary.**
+
+   `DownloadError` is bounded and serializable, and library/CLI callers retain
+   `AuthorizationFailed` or `RestorationFailed`. However, MCP's
+   `typed_browser_error` handles `TargetError`, `WaitTimeout`, `PolicyError`, and
+   `PopupClickError` only (`src/mcp/server.rs:580-603`). Both download-specific
+   error kinds therefore become generic `browser tool failed` content for the
+   shipped `download` tool. Include `DownloadError` in that serializer and add
+   MCP coverage for both kinds.
+
+### Confirmed contract pieces
+
+- The happy-path bridge is limited to an owned session with a disposable
+  command-line-incognito profile; attached, default, and persistent-profile
+  sessions do not qualify under the current gate.
+- The active top-level target session is copied before authorization and passed
+  immutably into the guard. Page allow/deny calls use that captured session even
+  if the active route later changes.
+- Browser-domain `downloadWillBegin` and `downloadProgress` remain the only
+  lifecycle evidence. Page behavior grants/denies compatibility permission but
+  is not treated as completion evidence.
+- Authorization is Browser allow followed by Page allow. Normal restoration and
+  cancellation cleanup are Page deny followed by Browser deny. Partial Page
+  enable restores Browser deny; partial Page restoration still attempts Browser
+  deny; both normal failure paths return bounded typed errors.
+- Guard acquisition is worker-owned, so cancellation during partial enable
+  drops the completed guard and restores both scopes. The acquired guard also
+  restores both scopes when the caller cancels the download wait.
+
+### Focused verification
+
+- `cargo test --locked download_` — passed 5 focused tests.
+- `GLASS_SCORECARD_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run --locked
+  --release --example scorecard` — passed all 11 scenarios; download returned
+  `download-complete` in 32.65 ms and the one-iteration hard gate passed. This
+  bounded run is functional evidence, not a performance claim.
+- No full acceptance run was performed.
+
+### Verdict
+
+**blocked**
+
+The compatibility mechanism fixes the real command-line-incognito download and
+its authorization/restoration lifecycle is substantially correct. It is not yet
+contract-complete because it can cross into a CDP-created context and its typed
+fail-closed errors do not survive MCP. Both are release-boundary issues even
+though the owned-incognito happy-path scorecard passes.

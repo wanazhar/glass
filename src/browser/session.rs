@@ -962,6 +962,7 @@ pub struct BrowserSession {
     cdp: CdpClient,
     chrome: Option<ChromeProcess>,
     disposable_profile: Option<DisposableProfileDir>,
+    launched_incognito_context_id: Option<String>,
     profile: String,
     interaction_mode: InteractionMode,
     mouse: MouseEngine,
@@ -1357,6 +1358,20 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+        let launched_incognito_context_id = if !options.attach && options.incognito {
+            match target_browser_context_id(&cdp, &target_id, true).await {
+                Ok(context_id) => context_id,
+                Err(error) => {
+                    cdp.close().await;
+                    if let Some(process) = chrome.as_mut() {
+                        let _ = process.shutdown().await;
+                    }
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
 
         cdp.send_browser(
             "Target.setDiscoverTargets",
@@ -1463,6 +1478,7 @@ impl BrowserSession {
             cdp,
             chrome,
             disposable_profile,
+            launched_incognito_context_id,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
             mouse: MouseEngine::new(),
@@ -2813,9 +2829,26 @@ impl BrowserSession {
         };
         let _download_scope = self.download_scope.lock().await;
         let mut events = self.cdp.subscribe_events_with_params();
-        let mut download_guard =
-            DownloadBehaviorGuard::acquire(self.cdp.clone(), destination.clone(), page_session_id)
-                .await?;
+        let mut download_guard = match page_session_id {
+            Some(page_session_id) => {
+                DownloadBehaviorGuard::acquire_for_incognito(
+                    self.cdp.clone(),
+                    destination.clone(),
+                    target_id.clone(),
+                    page_session_id,
+                    self.launched_incognito_context_id.clone().ok_or_else(|| {
+                        download_error(
+                            DownloadErrorKind::AuthorizationFailed,
+                            "owned incognito session has no original browser context ID",
+                        )
+                    })?,
+                )
+                .await?
+            }
+            None => {
+                DownloadBehaviorGuard::acquire(self.cdp.clone(), destination.clone(), None).await?
+            }
+        };
         let result = tokio::time::timeout(deadline, async {
             let mut guid = None;
             let mut filename = String::new();
@@ -4751,6 +4784,24 @@ impl Drop for DiagnosticDomainGuard {
 }
 
 impl DownloadBehaviorGuard {
+    async fn acquire_for_incognito(
+        cdp: CdpClient,
+        destination: PathBuf,
+        target_id: String,
+        page_session_id: String,
+        launched_context_id: String,
+    ) -> BrowserResult<Self> {
+        let selected_context_id = target_browser_context_id(&cdp, &target_id, true).await?;
+        if selected_context_id.as_deref() != Some(launched_context_id.as_str()) {
+            return Err(download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                "selected target does not belong to the launched incognito context",
+            )
+            .into());
+        }
+        Self::acquire(cdp, destination, Some(page_session_id)).await
+    }
+
     async fn acquire(
         cdp: CdpClient,
         destination: PathBuf,
@@ -5599,6 +5650,56 @@ fn download_error(kind: DownloadErrorKind, message: impl Into<String>) -> Downlo
     }
 }
 
+async fn target_browser_context_id(
+    cdp: &CdpClient,
+    target_id: &str,
+    required: bool,
+) -> Result<Option<String>, DownloadError> {
+    let response = cdp
+        .send_browser(
+            "Target.getTargetInfo",
+            Some(serde_json::json!({"targetId": target_id})),
+        )
+        .await
+        .map_err(|error| {
+            download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!("download target context lookup failed: {error}"),
+            )
+        })?;
+    let target_info = response["targetInfo"].as_object().ok_or_else(|| {
+        download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned no targetInfo",
+        )
+    })?;
+    if target_info.get("targetId").and_then(Value::as_str) != Some(target_id) {
+        return Err(download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned a mismatched target ID",
+        ));
+    }
+    let context_id = target_info
+        .get("browserContextId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if required && context_id.is_none() {
+        return Err(download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned no browser context ID",
+        ));
+    }
+    if let Some(context_id) = context_id.as_deref() {
+        validate_topology_id(context_id).map_err(|error| {
+            download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!("download target returned an invalid browser context ID: {error}"),
+            )
+        })?;
+    }
+    Ok(context_id)
+}
+
 fn use_page_download_compatibility(owned: bool, command_line_incognito: bool) -> bool {
     owned && command_line_incognito
 }
@@ -6047,6 +6148,7 @@ mod tests {
             cdp,
             chrome: None,
             disposable_profile: None,
+            launched_incognito_context_id: None,
             profile: "test".to_string(),
             interaction_mode: InteractionMode::Fast,
             mouse: MouseEngine::new(),
@@ -6446,6 +6548,59 @@ mod tests {
                 };
                 websocket
                     .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        (format!("ws://{address}"), server)
+    }
+
+    async fn download_context_server(
+        context_id: &str,
+        behavior_requests: usize,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let context_id = context_id.to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let lookup = websocket.next().await.unwrap().unwrap();
+            let lookup: Value = match lookup {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text CDP request"),
+            };
+            assert_eq!(lookup["method"], "Target.getTargetInfo");
+            assert_eq!(lookup["params"]["targetId"], "selected-target");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": lookup["id"],
+                        "result": {"targetInfo": {
+                            "targetId": "selected-target",
+                            "browserContextId": context_id
+                        }}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let mut requests = Vec::new();
+            for _ in 0..behavior_requests {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
                     .await
                     .unwrap();
                 requests.push(request);
@@ -6978,6 +7133,53 @@ mod tests {
         assert!(!use_page_download_compatibility(false, true));
         assert!(!use_page_download_compatibility(true, false));
         assert!(!use_page_download_compatibility(false, false));
+    }
+
+    #[tokio::test]
+    async fn incognito_download_context_mismatch_fails_before_behavior_mutation() {
+        let (url, server) = download_context_server("other-context", 0).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let error = match DownloadBehaviorGuard::acquire_for_incognito(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            "selected-target".to_string(),
+            "captured-page-session".to_string(),
+            "launched-context".to_string(),
+        )
+        .await
+        {
+            Ok(_) => panic!("mismatched context was authorized"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::AuthorizationFailed
+        );
+        assert!(server.await.unwrap().is_empty());
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn incognito_download_context_match_reaches_captured_behavior_bridge() {
+        let (url, server) = download_context_server("launched-context", 4).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire_for_incognito(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            "selected-target".to_string(),
+            "captured-page-session".to_string(),
+            "launched-context".to_string(),
+        )
+        .await
+        .unwrap();
+        guard.disable().await.unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[1]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[1]["sessionId"], "captured-page-session");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        cdp.close().await;
     }
 
     #[tokio::test]

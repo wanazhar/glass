@@ -15,8 +15,8 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, PopupClickError, SessionOptions, TargetError,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    ActionOutcome, BrowserResult, BrowserSession, DownloadError, PopupClickError, SessionOptions,
+    TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 
@@ -594,6 +594,11 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         .or_else(|| {
             error
                 .downcast_ref::<PopupClickError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<DownloadError>()
                 .and_then(|error| serde_json::to_string(error).ok())
         })
 }
@@ -1596,6 +1601,33 @@ mod tests {
                 "message": "two opener-matching popups"
             })
         );
+    }
+
+    #[test]
+    fn serializes_download_failures_as_typed_mcp_content() {
+        for (kind, expected) in [
+            (
+                crate::browser::session::DownloadErrorKind::AuthorizationFailed,
+                "authorization_failed",
+            ),
+            (
+                crate::browser::session::DownloadErrorKind::RestorationFailed,
+                "restoration_failed",
+            ),
+        ] {
+            let error = DownloadError {
+                kind,
+                message: "bounded download failure".to_string(),
+            };
+            let text = typed_browser_error(&error).expect("download error should remain typed");
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                json!({
+                    "kind": expected,
+                    "message": "bounded download failure"
+                })
+            );
+        }
     }
 
     #[test]

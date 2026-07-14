@@ -25,7 +25,7 @@ try {
   if (initialized.serverInfo?.name !== "Playwright") throw new Error("unexpected MCP server identity");
   const listed = await client.request("tools/list", {});
   const availableTools = new Set(listed.tools.map(({ name }) => name));
-  for (const required of ["browser_navigate", "browser_click", "browser_evaluate", "browser_fill_form", "browser_run_code_unsafe"]) {
+  for (const required of ["browser_navigate", "browser_click", "browser_evaluate", "browser_fill_form", "browser_handle_dialog", "browser_run_code_unsafe"]) {
     if (!availableTools.has(required)) throw new Error(`released MCP surface is missing ${required}`);
   }
   await client.tool("browser_resize", { width: 1280, height: 720 });
@@ -105,7 +105,9 @@ async function runScenario(mcp, id) {
     case "frame":
       return runCode(mcp, "async (page) => { await page.frameLocator('#frame').locator('#frame-action').click(); return 'frame-clicked'; }");
     case "dialog":
-      return runCode(mcp, "async (page) => { const handled = new Promise((resolve, reject) => page.once('dialog', dialog => dialog.accept().then(resolve, reject))); await page.locator('#dialog').click(); await handled; return await page.locator('#result').evaluate(node => node.value); }");
+      await mcp.tool("browser_click", { element: "Dialog", target: "#dialog" });
+      await mcp.tool("browser_handle_dialog", { accept: true });
+      return waitForDialogCompletion(mcp);
     case "download":
       return runCode(mcp, "async (page) => { const event = page.waitForEvent('download'); await page.locator('#download').click(); const download = await event; await download.createReadStream(); return 'download-complete'; }");
     case "failure-recovery":
@@ -117,6 +119,21 @@ async function runScenario(mcp, id) {
 async function result(mcp) { return evaluate(mcp, "() => document.querySelector('#result').value"); }
 async function evaluate(mcp, fn) { return parseResult(await mcp.tool("browser_evaluate", { function: fn })); }
 async function runCode(mcp, code) { return parseResult(await mcp.tool("browser_run_code_unsafe", { code })); }
+async function waitForDialogCompletion(mcp) {
+  const attempts = 20;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const value = await result(mcp);
+      if (value === "dialog-accepted") return value;
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (!message.includes("does not handle the modal state")) throw error;
+      await mcp.tool("browser_handle_dialog", { accept: true });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("dialog did not reach accepted state within 500 ms");
+}
 function parseResult(value) {
   const text = value.content?.find(({ type }) => type === "text")?.text;
   const match = text?.match(/^### Result\n([^\n]*)/m);

@@ -361,6 +361,8 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
     if actual_sha256 != expected_sha256 {
         return Err("Chrome archive integrity digest did not match the release manifest".into());
     }
+    // Windows denies removal while this writer still owns the archive handle.
+    drop(archive);
     let extract_root = staging.join("payload");
     std::fs::create_dir(&extract_root)?;
     let archive_for_extract = archive_path.clone();
@@ -758,6 +760,9 @@ fn chrome_arguments(
         args.push("--headless=new".to_string());
         args.push("--hide-scrollbars".to_string());
     }
+    if chrome_sandbox_disabled(std::env::var_os("GLASS_DISABLE_CHROME_SANDBOX").as_deref()) {
+        args.push("--no-sandbox".to_string());
+    }
     if let Some(profile) = profile_dir {
         args.push(format!("--user-data-dir={}", profile.display()));
     }
@@ -766,6 +771,10 @@ fn chrome_arguments(
     }
     args.push("about:blank".to_string());
     args
+}
+
+fn chrome_sandbox_disabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
 }
 
 /// Check if Chrome is running and responsive on the given port.
@@ -1087,6 +1096,16 @@ mod tests {
 
         assert!(args.contains(&"--incognito".to_string()));
         assert!(args.contains(&"--user-data-dir=/tmp/glass-incognito".to_string()));
+    }
+
+    #[test]
+    fn chrome_sandbox_requires_exact_explicit_opt_out() {
+        use std::ffi::OsStr;
+
+        assert!(!chrome_sandbox_disabled(None));
+        assert!(!chrome_sandbox_disabled(Some(OsStr::new("0"))));
+        assert!(!chrome_sandbox_disabled(Some(OsStr::new("true"))));
+        assert!(chrome_sandbox_disabled(Some(OsStr::new("1"))));
     }
 
     #[test]

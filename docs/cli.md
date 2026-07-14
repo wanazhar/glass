@@ -24,6 +24,11 @@ Set `GLASS_CONFIG_HOME` to place Glass configuration and named profiles under
 an explicit root on every platform. When unset, Glass uses the operating
 system's standard configuration directory.
 
+Chrome's process sandbox remains enabled by default. In a container or CI
+kernel that cannot provide Chrome's sandbox, set `GLASS_DISABLE_CHROME_SANDBOX=1`
+only inside that already-isolated environment; do not use it for ordinary
+browsing.
+
 ## Browser commands
 
 ```text

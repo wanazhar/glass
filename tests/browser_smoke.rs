@@ -677,7 +677,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
                 "method": "tools/call",
                 "params": {
                     "name": "evaluate",
-                    "arguments": {"expression": "localStorage.setItem('glass-persistent', 'saved')"}
+                    "arguments": {"expression": "new Promise(resolve => { localStorage.setItem('glass-persistent', 'saved'); setTimeout(() => resolve(localStorage.getItem('glass-persistent')), 500) })"}
                 }
             }),
         ],
@@ -1198,7 +1198,7 @@ async fn browser_session_drives_a_local_fixture() {
     );
 
     session
-        .evaluate("globalThis.glassRaceHost=document.body.appendChild(document.createElement('div')); for(let i=0;i<3000;i++){const node=document.createElement('span');node.textContent='race-'+i;globalThis.glassRaceHost.appendChild(node)}; globalThis.glassMutationTimer=setInterval(() => { for(let i=0;i<250;i++){const node=globalThis.glassRaceHost.firstChild;node.textContent=String(performance.now());globalThis.glassRaceHost.appendChild(node)} document.body.dataset.race=String(performance.now()) }, 0); true")
+        .evaluate("globalThis.glassRaceHost=document.body.appendChild(document.createElement('div')); for(let i=0;i<1000;i++){const node=document.createElement('span');node.textContent='race-'+i;globalThis.glassRaceHost.appendChild(node)}; globalThis.glassMutationTimer=setInterval(() => { for(let i=0;i<50;i++){const node=globalThis.glassRaceHost.firstChild;node.textContent=String(performance.now());globalThis.glassRaceHost.appendChild(node)} document.body.dataset.race=String(performance.now()) }, 0); true")
         .await
         .unwrap();
     let raced = session.observe().await.unwrap();

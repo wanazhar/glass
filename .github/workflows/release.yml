@@ -82,6 +82,9 @@ jobs:
       - name: Native browser smoke
         env:
           GLASS_E2E: "1"
+          # GitHub's hosted Linux kernel does not expose Chrome's sandbox.
+          # Keep the production default secure and scope this exception here.
+          GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
         run: cargo test --locked --target ${{ matrix.target }} --test browser_smoke -- --nocapture --test-threads=1
       - name: Smoke release CLI
         shell: bash

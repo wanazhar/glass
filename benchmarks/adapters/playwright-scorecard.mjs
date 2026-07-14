@@ -99,7 +99,7 @@ const report = {
   },
   resources: {
     scope:
-      "Runner RSS is Node only; Chrome process-tree RSS and raw CDP request count are unavailable through the public Playwright adapter and reported as null",
+      "primary-non-browser-runner-process-rss-v1",
     runner: {
       pid: process.pid,
       rss_start_bytes: runnerRssStart,

@@ -21,6 +21,8 @@ export function comparativeGates({ reports, adapterStatuses, requiredAdapterIds 
   };
 }
 
+const PRIMARY_NON_BROWSER_RUNNER_RSS_V1 = "primary-non-browser-runner-process-rss-v1";
+
 function declaredEfficiencyWin(glass, comparators) {
   const metric = "peak_non_browser_runner_rss_bytes";
   const glassScope = comparableRunnerScope(glass?.report);
@@ -28,7 +30,7 @@ function declaredEfficiencyWin(glass, comparators) {
   const comparisons = comparators.filter(Boolean).map((row) => {
     const scope = comparableRunnerScope(row.report);
     const value = row.report.resources.runner.peak_rss_bytes;
-    const comparable = glassScope !== null && scope === glassScope && Number.isFinite(glassValue) && Number.isFinite(value);
+    const comparable = glassScope !== null && scope === glassScope && positiveFinite(glassValue) && positiveFinite(value);
     return { comparator: row.report.tool.name, comparable, glass_value: glassValue ?? null, comparator_value: value ?? null,
       scope: comparable ? glassScope : null, glass_wins: comparable && glassValue < value };
   });
@@ -38,9 +40,8 @@ function declaredEfficiencyWin(glass, comparators) {
 function comparableRunnerScope(report) {
   if (!report) return null;
   const scope = report.resources.scope;
-  if (report.tool.name === "glass" && scope === "Runner and owned Chrome process trees are disjoint; bytes are RSS")
-    return "primary_non_browser_runner_process_rss";
-  if (report.tool.name === "playwright" && scope.startsWith("Runner RSS is Node only; Chrome process-tree RSS"))
-    return "primary_non_browser_runner_process_rss";
+  if ((report.tool.name === "glass" || report.tool.name === "playwright") && scope === PRIMARY_NON_BROWSER_RUNNER_RSS_V1)
+    return PRIMARY_NON_BROWSER_RUNNER_RSS_V1;
   return null;
 }
+function positiveFinite(value) { return Number.isFinite(value) && value > 0; }

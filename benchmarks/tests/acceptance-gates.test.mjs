@@ -39,15 +39,29 @@ test("incomparable resource scopes cannot create an efficiency win", () => {
   assert.equal(result.gates.glass_declared_efficiency_win, false);
 });
 
+test("contradictory scope suffix cannot qualify by prefix", () => {
+  const reports = baselineReports();
+  reports.get("playwright").report.resources.scope = "primary-non-browser-runner-process-rss-v1-but-includes-chrome";
+  assert.equal(comparativeGates({ reports, adapterStatuses: statuses(), requiredAdapterIds }).gates.glass_declared_efficiency_win, false);
+});
+
+for (const value of [0, -1, null]) {
+  test(`invalid comparator RSS ${value} cannot create an efficiency win`, () => {
+    const reports = baselineReports();
+    reports.get("playwright").report.resources.runner.peak_rss_bytes = value;
+    assert.equal(comparativeGates({ reports, adapterStatuses: statuses(), requiredAdapterIds }).gates.glass_declared_efficiency_win, false);
+  });
+}
+
 function derive(options = {}) {
   return comparativeGates({ reports: baselineReports(options), adapterStatuses: statuses(), requiredAdapterIds });
 }
 function statuses() { return new Map(requiredAdapterIds.map((id) => [id, "completed"])); }
 function baselineReports({ glassRate = 1, glassPerfect = true, playwrightRate = 1, playwrightWrong = 0 } = {}) {
   return new Map([
-    ["glass", row("glass", glassRate, glassPerfect, 0, 8_000_000, "Runner and owned Chrome process trees are disjoint; bytes are RSS")],
+    ["glass", row("glass", glassRate, glassPerfect, 0, 8_000_000, "primary-non-browser-runner-process-rss-v1")],
     ["playwright", row("playwright", playwrightRate, playwrightRate === 1, playwrightWrong, 100_000_000,
-      "Runner RSS is Node only; Chrome process-tree RSS and raw CDP request count are unavailable through the public Playwright adapter and reported as null")],
+      "primary-non-browser-runner-process-rss-v1")],
     ["playwright-mcp", row("playwright-mcp", 0.9, false, 1, 80_000_000,
       "Runner RSS is the released MCP server process only; client and Chrome process-tree metrics are unavailable and reported as null")],
   ]);

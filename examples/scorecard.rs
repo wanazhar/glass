@@ -154,7 +154,7 @@ async fn main() -> BrowserResult<()> {
             "machine": machine_name(),
         },
         "resources": {
-            "scope": "Runner and owned Chrome process trees are disjoint; bytes are RSS",
+            "scope": "primary-non-browser-runner-process-rss-v1",
             "runner": {"pid": std::process::id(), "rss_start_bytes": glass_rss_start, "rss_end_bytes": glass_rss_end, "peak_rss_bytes": memory.glass_peak},
             "chrome": {"root_pid": chrome_pid, "rss_end_bytes": chrome_rss_end, "peak_process_tree_rss_bytes": memory.chrome_peak},
             "binary_size_bytes": binary_size_bytes(),

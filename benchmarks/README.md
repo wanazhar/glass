@@ -65,7 +65,8 @@ the published outcome summaries without becoming Glass failures. Glass must
 also meet or exceed every comparator's task-success rate. The declared
 efficiency gate currently compares peak RSS only between Glass and the direct
 Playwright adapter because both report the primary non-browser runner process
-while excluding Chrome. Playwright MCP excludes its separate client process,
+while excluding Chrome under the exact versioned scope identity
+`primary-non-browser-runner-process-rss-v1`. Playwright MCP excludes its separate client process,
 so its RSS scope is explicitly incomparable and cannot create an efficiency
 win. Without at least one strict comparable-scope win, a Glass resource-budget
 failure, full release validation, or real-browser platform-matrix evidence,

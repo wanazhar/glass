@@ -130,6 +130,9 @@ enum ToolInvocation<'a> {
     Click {
         target: Cow<'a, str>,
     },
+    ClickExpectPopup {
+        target: Cow<'a, str>,
+    },
     DoubleClick {
         target: Cow<'a, str>,
     },
@@ -603,6 +606,9 @@ async fn call_tool(
             serialized_result(&page)
         }
         ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
+        ToolInvocation::ClickExpectPopup { target } => {
+            serialized_result(&session.click_expect_popup(target.as_ref()).await?)
+        }
         ToolInvocation::DoubleClick { target } => {
             action_result(session.double_click(target.as_ref()).await?)
         }
@@ -744,6 +750,9 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
         }),
+        "clickExpectPopup" => Ok(ToolInvocation::ClickExpectPopup {
+            target: required_target(arguments)?,
+        }),
         "doubleClick" => Ok(ToolInvocation::DoubleClick {
             target: required_target(arguments)?,
         }),
@@ -866,6 +875,15 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "click",
             description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
+            }),
+        },
+        Tool {
+            name: "clickExpectPopup",
+            description: "Click one target and return exactly one causally verified popup without selecting it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
@@ -1427,7 +1445,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 32);
+        assert_eq!(tools.len(), 33);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1439,6 +1457,18 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
+        let popup_click = tools
+            .iter()
+            .find(|tool| tool["name"] == "clickExpectPopup")
+            .unwrap();
+        assert_eq!(
+            popup_click["inputSchema"],
+            json!({
+                "type": "object",
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
+            })
+        );
         for name in [
             "listTargets",
             "createTarget",
@@ -1527,6 +1557,20 @@ mod tests {
             .err()
             .expect("invalid boolean option should fail");
         assert!(error.to_string().contains("includeDom must be a boolean"));
+    }
+
+    #[test]
+    fn parses_click_expect_popup_target_and_legacy_selector() {
+        for (arguments, expected) in [
+            (json!({"target": "css=#popup"}), "css=#popup"),
+            (json!({"selector": "#popup"}), "css=#popup"),
+        ] {
+            let params = json!({"name": "clickExpectPopup", "arguments": arguments});
+            assert!(matches!(
+                parse_tool_invocation(&params).unwrap(),
+                ToolInvocation::ClickExpectPopup { target } if target == expected
+            ));
+        }
     }
 
     #[test]

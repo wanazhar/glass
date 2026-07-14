@@ -265,9 +265,11 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
                 .into_iter()
                 .find(|target| target.active)
                 .ok_or("scorecard has no active target")?;
-            session.click("css=#popup").await?;
-            let popup = wait_for_popup(session, &original.id).await?;
-            session.select_target(&popup).await?;
+            let popup = session.click_expect_popup("css=#popup").await?;
+            if popup.opener_id != original.id || !popup.causally_verified_popup {
+                return Err("popup click did not return causal evidence".into());
+            }
+            session.select_target(&popup.popup_id).await?;
             session.select_target(&original.id).await?;
             Ok(ScenarioRun("popup-controlled".to_string()))
         }
@@ -329,18 +331,6 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
         }
         unknown => Err(format!("unknown scenario {unknown}").into()),
     }
-}
-
-async fn wait_for_popup(session: &BrowserSession, original_id: &str) -> BrowserResult<String> {
-    for _ in 0..50 {
-        if let Some(target) = session.list_targets().await?.into_iter().find(|target| {
-            target.id != original_id && target.opener_id.as_deref() == Some(original_id)
-        }) {
-            return Ok(target.id);
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    Err("popup target was not discovered within 500 ms".into())
 }
 
 async fn reset(session: &BrowserSession) -> BrowserResult<()> {

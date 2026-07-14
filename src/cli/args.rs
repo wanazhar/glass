@@ -113,6 +113,9 @@ pub enum Commands {
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click { target: String },
 
+    /// Click an element expected to open exactly one causally verified popup.
+    ClickExpectPopup { target: String },
+
     /// Double-click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     DoubleClick { target: String },
 
@@ -324,6 +327,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::DoubleClick { target }) if target == "r7:b42"
+        ));
+    }
+
+    #[test]
+    fn click_expect_popup_is_an_explicit_action_command() {
+        let cli = Cli::try_parse_from(["glass", "click-expect-popup", "css=#popup"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ClickExpectPopup { target }) if target == "css=#popup"
         ));
     }
 

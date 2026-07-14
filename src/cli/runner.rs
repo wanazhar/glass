@@ -96,6 +96,9 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Click { target } => {
             print_json(&session.click(target).await?)?;
         }
+        Commands::ClickExpectPopup { target } => {
+            print_json(&session.click_expect_popup(target).await?)?;
+        }
         Commands::DoubleClick { target } => {
             print_json(&session.double_click(target).await?)?;
         }

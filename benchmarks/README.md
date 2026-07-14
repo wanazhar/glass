@@ -58,9 +58,18 @@ pinned independently at `1.61.1`. Neither dependency enters `Cargo.toml` or the
 checkout. Codex browser automation is explicitly unsupported because this
 harness has no callable, versioned black-box invocation contract for it.
 
-Missing adapters, mismatched controls, any wrong action, incomplete task
-success, a Glass resource-budget failure, missing full release validation, or
-missing real-browser platform-matrix evidence blocks best-in-class language.
+Missing or incomplete adapters and mismatched controls block comparison.
+Correctness and safety gates require Glass itself to have zero wrong actions
+and perfect deterministic task success; comparator failures remain visible in
+the published outcome summaries without becoming Glass failures. Glass must
+also meet or exceed every comparator's task-success rate. The declared
+efficiency gate currently compares peak RSS only between Glass and the direct
+Playwright adapter because both report the primary non-browser runner process
+while excluding Chrome. Playwright MCP excludes its separate client process,
+so its RSS scope is explicitly incomparable and cannot create an efficiency
+win. Without at least one strict comparable-scope win, a Glass resource-budget
+failure, full release validation, or real-browser platform-matrix evidence,
+best-in-class language remains blocked.
 The latter evidence files use `{ "schema_version": 1, "git_revision": "...",
 "passed": true }` and are supplied through `GLASS_RELEASE_VALIDATION_REPORT`
 and `GLASS_PLATFORM_MATRIX_REPORT`; the runner copies them into `raw/` and

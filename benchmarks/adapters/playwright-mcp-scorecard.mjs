@@ -5,6 +5,8 @@ import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { atomicWriteJson } from "../checkpoint.mjs";
 
+class TransportError extends Error {}
+
 const corpus = JSON.parse(fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"));
 const fixture = fs.readFileSync(new URL("../../tests/fixtures/scorecard.html", import.meta.url), "utf8");
 const iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLASS_SCORECARD_ITERATIONS ?? "10");
@@ -45,6 +47,7 @@ try {
       try {
         actual = await runScenario(client, scenario.id);
       } catch (caught) {
+        if (caught instanceof TransportError) throw caught;
         error = boundedText(caught?.message ?? caught);
       }
       if (typeof actual === "string") actual = boundedText(actual);
@@ -229,7 +232,9 @@ function createMcpClient(command, args) {
       const id = ++this.nextId;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`MCP ${method} exceeded ${requestTimeoutMs} ms`));
+        const error = new TransportError(`MCP ${method} exceeded ${requestTimeoutMs} ms`);
+        reject(error);
+        this.fail(error);
         this.child.kill("SIGKILL");
       }, requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
@@ -238,8 +243,8 @@ function createMcpClient(command, args) {
   }
   fail(error) {
     if (this.failed) return;
-    this.failed = error;
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    this.failed = error instanceof TransportError ? error : new TransportError(String(error?.message ?? error));
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(this.failed); }
     this.pending.clear();
   }
   async initialize() {
@@ -254,6 +259,7 @@ function createMcpClient(command, args) {
   }
   async close() {
     clearInterval(this.sampler);
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
     if (!this.child.killed) this.child.kill("SIGTERM");
     await Promise.race([new Promise((resolve) => this.child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 2000))]);
     if (this.child.exitCode === null) this.child.kill("SIGKILL");

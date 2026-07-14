@@ -5,6 +5,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { prepareCheckpointInvocation, retainCheckpointOnTimeout } from "./checkpoint.mjs";
+import { comparativeGates } from "./acceptance-gates.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const contract = readJson(path.join(root, "benchmarks/acceptance-v1.json"));
@@ -72,15 +73,16 @@ const prerequisites = {
 const controls = controlGates([...reports.values()].map(({ report }) => report));
 const glass = reports.get("glass");
 const external = prerequisiteGates(prerequisites);
+const requiredAdapterIds = contract.adapters.filter(({ required }) => required).map(({ id }) => id);
+const comparative = comparativeGates({ reports,
+  adapterStatuses: new Map(adapters.map(({ id, status }) => [id, status])), requiredAdapterIds });
 const gates = {
   ...external,
-  required_adapters_ran: contract.adapters.filter(({ required }) => required).every(({ id }) => adapters.some((row) => row.id === id && row.status === "completed")),
-  controlled_environment: controls.ok,
-  zero_wrong_actions: reports.size === 3 && [...reports.values()].every(({ derived }) => derived.wrong_actions === 0),
-  deterministic_task_success: reports.size === 3 && [...reports.values()].every(({ derived }) => derived.hard_gate_passed),
-  peak_default_workflow_rss: budget(glass?.report?.resources?.runner?.peak_rss_bytes, contract.glass_budgets.peak_runner_rss_bytes),
-  compact_context: budget(glass?.report?.resources?.compact_context_bytes, contract.glass_budgets.compact_context_bytes),
-  release_binary_size: budget(glass?.report?.resources?.binary_size_bytes, contract.glass_budgets.binary_size_bytes),
+  ...comparative.gates,
+  controlled_comparison_environment: controls.ok,
+  glass_peak_default_workflow_rss: budget(glass?.report?.resources?.runner?.peak_rss_bytes, contract.glass_budgets.peak_runner_rss_bytes),
+  glass_compact_context: budget(glass?.report?.resources?.compact_context_bytes, contract.glass_budgets.compact_context_bytes),
+  glass_release_binary_size: budget(glass?.report?.resources?.binary_size_bytes, contract.glass_budgets.binary_size_bytes),
 };
 const bestInClassEligible = Object.values(gates).every((passed) => passed === true);
 const environment = {
@@ -94,7 +96,7 @@ const environment = {
 writeJson(path.join(outputDir, "environment.json"), environment);
 const acceptance = {
   schema_version: 1, contract: "benchmarks/acceptance-v1.json", environment: "environment.json",
-  adapters, prerequisites, controls: controls.details, gates, best_in_class_eligible: bestInClassEligible,
+  adapters, prerequisites, controls: controls.details, comparison: comparative.comparison, gates, best_in_class_eligible: bestInClassEligible,
   claim: bestInClassEligible
     ? "All declared hard gates passed; comparative leadership still requires interpreting the published efficiency evidence."
     : "Glass is not eligible for a best-in-class claim because one or more hard gates failed or lacks revision-bound evidence.",

@@ -86,6 +86,41 @@ chosen point. Layout movement triggers a bounded re-resolution or an explicit
 failure. Glass does not claim that smooth pointer motion defeats automation
 detection.
 
+Popup-producing clicks use the explicit `click_expect_popup` operation. Glass
+pre-arms a trusted-click witness in an isolated execution world on the uniquely
+resolved backend node. Page script cannot read, call, predict, or replace the
+witness state or callback: installation uses native `EventTarget` behavior and
+only an `isTrusted` event on that exact node counts. Witness and temporary popup
+attachment state use cancellation-safe guards with bounded cleanup; they do not
+leave page-visible bindings or retain an unbounded session registry.
+
+Glass snapshots the original target, frame, authoritative target IDs, monotonic
+topology sequence, and loss epoch immediately before `mouseReleased`. This
+operation gives that exact release request a 500 ms acknowledgement deadline;
+ordinary `click` and the global CDP response timeout remain unchanged. A normal
+acknowledgement remains authoritative. Only expiry of this operation-specific
+deadline may enter recovery, and only when the trusted witness fired.
+
+Recovery requires exactly one later live page target that names the original
+target as `openerId`, followed by bounded attach and readiness verification.
+Before accepting the candidate, its topology sequence and loss epoch must remain
+unchanged for a 50 ms quiet interval within the existing two-second recovery
+deadline; every late topology event resets that interval. Immediately before
+success, Glass repeats authoritative target discovery and requires the candidate
+to remain the only live later opener match; it also rechecks the topology
+sequence and loss epoch so a second popup, destruction, or late event loss cannot
+race the decision. If the sequence changes during that authoritative query while
+the loss epoch is unchanged and there is still exactly one live opener match
+with no ambiguity or destruction, Glass restarts the bounded quiet interval and
+repeats the authoritative query. Event loss, ambiguity, destruction, or failure
+to settle before the existing evidence deadline remains a typed failure. Cleanup
+and these final checks run without changing the active target or frame. The result records
+`causally_verified_popup`, popup ID, opener ID, release acknowledgement state,
+and verification evidence. Missing, multiple, lagged, destroyed, mismatched,
+unreadable, cancelled, or cleanup-failed outcomes—and every non-timeout CDP
+error—remain bounded typed failures, including through MCP. Ordinary `click`
+never suppresses an input timeout or pays this witness cost.
+
 ## Wait contract
 
 Actions do not acquire hidden universal delays. Callers choose a typed
@@ -118,7 +153,8 @@ The complete intended primitive set is:
 
 - navigate, reload, back, and forward;
 - observe, screenshot, DOM, console, and scoped network evidence;
-- click, double-click, hover, drag, wheel, key, shortcut, type, and clear;
+- click, click-and-expect-popup, double-click, hover, drag, wheel, key,
+  shortcut, type, and clear;
 - check/uncheck, select, and file upload;
 - list/create/select/close target and select frame;
 - accept/dismiss dialog and monitor downloads; and
@@ -126,6 +162,17 @@ The complete intended primitive set is:
 
 Each primitive returns a typed outcome containing target/frame identity,
 resulting revision, and only the evidence required to decide the next step.
+
+Browser-domain download events and lifecycle state are authoritative. For a
+Glass-owned browser launched with command-line incognito only, Glass also binds
+the approved destination to the captured active top-level page session with
+`Page.setDownloadBehavior`; Chromium's browser-context command cannot address
+that command-line-created off-the-record context. The compatibility bridge is
+never used for attached, default, persistent-profile, or CDP-created browser
+contexts. Its target and session route are immutable for the operation. Cleanup
+restores page-scoped `deny` before browser-scoped `deny`, including after caller
+cancellation. A partial authorization or restoration is a typed fail-closed
+download error, never a completed operation.
 
 ## Safety policy
 

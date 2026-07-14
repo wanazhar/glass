@@ -1,5 +1,31 @@
 # Backlog
 
+## Input: popup-opening mouse release completion
+
+The compare-018 diagnostic proves that an ordinary pointer click whose authored
+handler calls `window.open` receives the `mousePressed` response but not the
+`Input.dispatchMouseEvent(mouseReleased)` response before the 30-second CDP
+deadline. The operation route is already task-local and response delivery is
+request-ID keyed, so do not mask this with fire-and-forget input or an unrelated
+route rewrite. Establish the Chromium/Target-auto-attach protocol behavior and
+add a real-browser regression before changing input completion semantics. The
+same-process frame scorecard path remains unassessed because it follows the
+poisoned popup route.
+
+## Comparative acceptance: broader corpus and complete resource scopes
+
+After the local v1 gate, add a versioned representative workflow corpus rather
+than treating deterministic fixtures as external task success. Define portable
+process-tree accounting for Node clients, MCP servers, and Chrome so competitor
+memory can be compared without nullable scopes. Add a callable Codex adapter
+only if Codex exposes a versioned black-box automation contract to the harness;
+do not infer behavior from an interactive product surface.
+
+The released Playwright MCP baseline exposes complex workflows through a tool
+explicitly named `browser_run_code_unsafe`. Add a second agent baseline with a
+non-RCE task surface, and separate privileged-tool usability and safety
+evidence before making broad agent-friendliness claims.
+
 ## Lifecycle: cleanup after implicit incognito-session drop
 
 `BrowserSession::close()` correctly stops a Glass-owned Chrome process before

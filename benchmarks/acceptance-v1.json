@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "glass-competitive-acceptance-v1",
+  "corpus": "glass-local-v1",
+  "iterations": 100,
+  "viewport": {"width": 1280, "height": 720},
+  "temperature": "warm",
+  "profile_semantics": "fresh-ephemeral-single-session",
+  "required_prerequisites": ["ratified_gates", "release_validation", "real_browser_platform_matrix"],
+  "release_checks": ["fmt", "test", "clippy", "docs", "build", "package", "deny", "audit", "fuzz-check"],
+  "platform_targets": [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "i686-pc-windows-msvc"
+  ],
+  "adapters": [
+    {"id": "glass", "required": true, "version": "workspace"},
+    {"id": "playwright", "required": true, "version": "1.61.1"},
+    {"id": "playwright-mcp", "required": true, "version": "0.0.78"},
+    {
+      "id": "codex-browser",
+      "required": false,
+      "version": null,
+      "unsupported_reason": "No callable, versioned Codex browser-automation harness contract is exposed to this repository."
+    }
+  ],
+  "glass_budgets": {
+    "wrong_actions": 0,
+    "task_success_rate": 1.0,
+    "peak_runner_rss_bytes": 16777216,
+    "compact_context_bytes": 24576,
+    "binary_size_bytes": 6291456
+  },
+  "ratified_gates": {
+    "representative_task_success_rate_min": 0.95,
+    "fresh_compact_observe_p95_ms_max": 5.0,
+    "cached_compact_observe_p95_ms_max": 0.1,
+    "fast_action_client_overhead_p95_ms_max": 5.0,
+    "idle_glass_rss_bytes_max": 8388608,
+    "mcp_malformed_input_survival_rate_min": 1.0
+  }
+}

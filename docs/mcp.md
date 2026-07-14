@@ -103,6 +103,7 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 |---|---|---|
 | `navigate` | `url` | Navigate and return page state. |
 | `click` | `target` or `selector` | Click one element. |
+| `clickExpectPopup` | `target` or `selector` | Click and return one causally verified popup target. |
 | `doubleClick` | `target` or `selector` | Double-click one element. |
 | `hover` | `target` | Move over one element. |
 | `drag` | `source`, `destination` | Drag between two verified elements. |

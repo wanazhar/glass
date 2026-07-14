@@ -34,6 +34,57 @@ chooses the wrong duplicate-label target, which must produce `wrong_action`, a
 failed hard gate, and a non-zero failure count. Competitor adapters follow
 `adapters/README.md` and keep their dependencies outside the Glass repository.
 
+### Competitive acceptance
+
+The release comparison is pinned by `acceptance-v1.json`. The runner builds
+Glass, installs competitor adapters into a temporary npm prefix, drives all
+three runnable adapters with one explicitly selected Chromium executable, and
+retains raw reports, stderr logs, environment metadata, and the gate decision:
+
+```sh
+CHROME_PATH=/absolute/path/to/chromium \
+  node benchmarks/run-acceptance.mjs
+```
+
+The default release run uses 100 iterations and writes to
+`benchmarks/results/compare-018/`. `GLASS_SCORECARD_ITERATIONS` may shorten a
+diagnostic run, but such a run is not release evidence. A failed gate exits
+with status 2 after writing the report; `GLASS_ACCEPTANCE_ALLOW_FAILURE=1` is
+only for inspecting known local failures.
+
+The mature agent baseline is Microsoft's released `@playwright/mcp@0.0.78`,
+called over stdio MCP with `--isolated` and `--executable-path`. Playwright is
+pinned independently at `1.61.1`. Neither dependency enters `Cargo.toml` or the
+checkout. Codex browser automation is explicitly unsupported because this
+harness has no callable, versioned black-box invocation contract for it.
+
+Missing or incomplete adapters and mismatched controls block comparison.
+Correctness and safety gates require Glass itself to have zero wrong actions
+and perfect deterministic task success; comparator failures remain visible in
+the published outcome summaries without becoming Glass failures. Glass must
+also meet or exceed every comparator's task-success rate. The declared
+efficiency gate currently compares peak RSS only between Glass and the direct
+Playwright adapter because both report the primary non-browser runner process
+while excluding Chrome under the exact versioned scope identity
+`primary-non-browser-runner-process-rss-v1`. Playwright MCP excludes its separate client process,
+so its RSS scope is explicitly incomparable and cannot create an efficiency
+win. Without at least one strict comparable-scope win, a Glass resource-budget
+failure, full release validation, or real-browser platform-matrix evidence,
+best-in-class language remains blocked.
+The latter evidence files use `{ "schema_version": 1, "git_revision": "...",
+"passed": true }` and are supplied through `GLASS_RELEASE_VALIDATION_REPORT`
+and `GLASS_PLATFORM_MATRIX_REPORT`; the runner copies them into `raw/` and
+rejects evidence for another revision. Even when every boolean gate passes,
+the retained comparison still needs interpretation before a leadership claim.
+The remaining ratified thresholds use the same envelope plus a `metrics`
+object and `GLASS_RATIFIED_GATES_REPORT`; absent or malformed metrics fail
+closed. Every command has a deadline and bounded file capture. Setup and
+adapter failures still produce `environment.json` and `acceptance.json`.
+All prerequisite files follow `prerequisite-evidence-schema.json`, identify
+their producer and run URL, and link each required check or platform row to its
+raw result. The runner additionally enforces the exact release-check and target
+sets in `acceptance-v1.json`; a top-level `passed` assertion alone is rejected.
+
 Run the Playwright adapter from a temporary installation:
 
 ```sh
@@ -46,6 +97,22 @@ NODE_PATH="$tmp_dir/node_modules" \
 ```
 
 ## Core browser workflow
+
+### Popup completion diagnostic
+
+Use the popup-only runner to separate healthy `mouseReleased` acknowledgement
+waits from causally verified missing-ack recovery. It never runs the competitive
+acceptance corpus:
+
+```sh
+CHROME_PATH=/absolute/path/to/chromium \
+  GLASS_POPUP_BENCH_ITERATIONS=20 \
+  cargo run --release --example popup_benchmark > popup-benchmark.json
+```
+
+The report publishes p50/p95/max distributions for each path and checks the
+missing-ack recovery expectation of under one second. A path needs at least 20
+samples to become claim-eligible; a one-iteration run is diagnostic only.
 
 Build the optimized binary first, then write one JSON report per run:
 

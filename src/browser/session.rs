@@ -67,6 +67,13 @@ const TOPOLOGY_MAX_FRAMES: usize = 128;
 const TOPOLOGY_ID_MAX_BYTES: usize = 256;
 const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
 const TOPOLOGY_MAX_EVENTS: usize = 64;
+const POPUP_WITNESS_LIFETIME_MS: u64 = 5_000;
+const POPUP_EVIDENCE_DEADLINE: Duration = Duration::from_secs(2);
+const POPUP_TOPOLOGY_QUIET_INTERVAL: Duration = Duration::from_millis(50);
+const POPUP_TOPOLOGY_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const POPUP_VERIFY_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+const POPUP_RELEASE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+const POPUP_ERROR_MESSAGE_MAX_BYTES: usize = 512;
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_LAST_STATE_MAX_BYTES: usize = 512;
 const NETWORK_IN_FLIGHT_LIMIT: usize = 1024;
@@ -238,8 +245,15 @@ pub struct FrameInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyEventSummary {
+    pub sequence: u64,
     pub kind: String,
     pub id: String,
+}
+
+#[derive(Debug, Clone)]
+struct DestroyedPageTarget {
+    target: PageTargetInfo,
+    observed_sequence: u64,
 }
 
 #[derive(Default)]
@@ -253,6 +267,10 @@ struct TopologyRegistry {
     frame_sessions: HashMap<String, String>,
     frame_parents: HashMap<String, String>,
     events: VecDeque<TopologyEventSummary>,
+    sequence: u64,
+    event_loss_count: u64,
+    target_sequences: HashMap<String, u64>,
+    destroyed_targets: VecDeque<DestroyedPageTarget>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -464,6 +482,27 @@ pub struct DownloadOutcome {
     pub target_id: String,
     pub frame_id: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadErrorKind {
+    AuthorizationFailed,
+    RestorationFailed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadError {
+    pub kind: DownloadErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "download {:?}: {}", self.kind, self.message)
+    }
+}
+
+impl Error for DownloadError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -749,6 +788,7 @@ pub enum ObservationIncompleteReason {
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     Click,
+    ClickExpectPopup,
     DoubleClick,
     Hover,
     Drag,
@@ -787,6 +827,74 @@ pub struct ActionOutcome {
     pub frame_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Value>,
+}
+
+/// Evidence returned by [`BrowserSession::click_expect_popup`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PopupClickOutcome {
+    pub action: ActionKind,
+    pub target: ActionTarget,
+    pub revision: u64,
+    pub target_id: String,
+    pub frame_id: String,
+    pub causally_verified_popup: bool,
+    pub popup_id: String,
+    pub opener_id: String,
+    pub evidence: PopupVerificationEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PopupVerificationEvidence {
+    pub trusted_click_witness: bool,
+    pub release_acknowledged: bool,
+    pub release_ack_wait_ms: f64,
+    pub topology_sequence_before_release: u64,
+    pub popup_observed_sequence: u64,
+    pub attached: bool,
+    pub ready_state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PopupClickErrorKind {
+    ReleaseFailed,
+    WitnessMissing,
+    TopologyLagged,
+    PopupMissing,
+    PopupAmbiguous,
+    PopupDestroyed,
+    PopupOpenerMismatch,
+    PopupUnreadable,
+}
+
+/// A fail-closed popup-click failure with a stable machine-readable kind.
+#[derive(Debug, Clone, Serialize)]
+pub struct PopupClickError {
+    pub kind: PopupClickErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for PopupClickError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "popup click {:?}: {}", self.kind, self.message)
+    }
+}
+
+impl Error for PopupClickError {}
+
+#[derive(Debug, Clone)]
+struct PopupTopologySnapshot {
+    original_target_id: String,
+    original_frame_id: String,
+    preexisting_target_ids: HashSet<String>,
+    sequence: u64,
+    event_loss_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PopupCandidate {
+    target: PageTargetInfo,
+    observed_sequence: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -854,6 +962,7 @@ pub struct BrowserSession {
     cdp: CdpClient,
     chrome: Option<ChromeProcess>,
     disposable_profile: Option<DisposableProfileDir>,
+    launched_incognito_context_id: Option<String>,
     profile: String,
     interaction_mode: InteractionMode,
     mouse: MouseEngine,
@@ -864,6 +973,7 @@ pub struct BrowserSession {
     diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     download_scope: Arc<Mutex<()>>,
     topology: Arc<Mutex<TopologyRegistry>>,
+    popup_click_scope: Mutex<()>,
     upload_root: PathBuf,
     policy: BrowserPolicy,
     policy_interception: Option<PolicyInterception>,
@@ -1248,6 +1358,20 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+        let launched_incognito_context_id = if !options.attach && options.incognito {
+            match target_browser_context_id(&cdp, &target_id, true).await {
+                Ok(context_id) => context_id,
+                Err(error) => {
+                    cdp.close().await;
+                    if let Some(process) = chrome.as_mut() {
+                        let _ = process.shutdown().await;
+                    }
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
 
         cdp.send_browser(
             "Target.setDiscoverTargets",
@@ -1333,6 +1457,7 @@ impl BrowserSession {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        topology_for_events.lock().await.event_loss_count += 1;
                         let _ = resync_topology(&cdp_for_events, &topology_for_events).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1353,6 +1478,7 @@ impl BrowserSession {
             cdp,
             chrome,
             disposable_profile,
+            launched_incognito_context_id,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
             mouse: MouseEngine::new(),
@@ -1363,6 +1489,7 @@ impl BrowserSession {
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             download_scope: Arc::new(Mutex::new(())),
             topology,
+            popup_click_scope: Mutex::new(()),
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
             policy,
             policy_interception,
@@ -2679,10 +2806,49 @@ impl BrowserSession {
             );
         }
         let (target_id, frame_id) = self.route_identity().await?;
+        let page_session_id = if use_page_download_compatibility(
+            self.chrome.is_some(),
+            self.disposable_profile.is_some(),
+        ) {
+            let topology = self.topology.lock().await;
+            if topology.active_target_id.as_deref() != Some(target_id.as_str()) {
+                return Err(download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "incognito download route changed during capture",
+                )
+                .into());
+            }
+            Some(topology.active_target_session_id.clone().ok_or_else(|| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "incognito download has no captured top-level page session",
+                )
+            })?)
+        } else {
+            None
+        };
         let _download_scope = self.download_scope.lock().await;
         let mut events = self.cdp.subscribe_events_with_params();
-        let mut download_guard =
-            DownloadBehaviorGuard::acquire(self.cdp.clone(), &destination).await?;
+        let mut download_guard = match page_session_id {
+            Some(page_session_id) => {
+                DownloadBehaviorGuard::acquire_for_incognito(
+                    self.cdp.clone(),
+                    destination.clone(),
+                    target_id.clone(),
+                    page_session_id,
+                    self.launched_incognito_context_id.clone().ok_or_else(|| {
+                        download_error(
+                            DownloadErrorKind::AuthorizationFailed,
+                            "owned incognito session has no original browser context ID",
+                        )
+                    })?,
+                )
+                .await?
+            }
+            None => {
+                DownloadBehaviorGuard::acquire(self.cdp.clone(), destination.clone(), None).await?
+            }
+        };
         let result = tokio::time::timeout(deadline, async {
             let mut guid = None;
             let mut filename = String::new();
@@ -2740,6 +2906,519 @@ impl BrowserSession {
     /// Click an element and return its structured action outcome.
     pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.pointer_click(target, false).await
+    }
+
+    /// Click one element that is expected to synchronously open exactly one popup.
+    ///
+    /// This operation never selects the popup. An unanswered `mouseReleased`
+    /// request is accepted only with the causal evidence documented by the
+    /// automation contract; ordinary [`Self::click`] retains strict ACK behavior.
+    pub async fn click_expect_popup(&self, target: &str) -> BrowserResult<PopupClickOutcome> {
+        let _scope = self.popup_click_scope.lock().await;
+        self.cdp
+            .with_current_route(async {
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await
+                    .map_err(|error| {
+                        tracing::debug!(%error, "popup target node could not be resolved");
+                        TargetError {
+                            kind: TargetErrorKind::NotActionable,
+                            reason: Some(TargetActionabilityReason::NodeUnavailable),
+                            candidates: Vec::new(),
+                        }
+                    })?;
+                let remote = RemoteObjectGuard {
+                    cdp: self.cdp.clone(),
+                    object_id,
+                };
+                let original_session_id = self
+                    .cdp
+                    .current_session_id()
+                    .ok_or("popup click requires an attached page session")?;
+                let original_frame_id = self
+                    .cdp
+                    .active_frame()
+                    .ok_or("popup click requires an active frame")?;
+                let backend_node_id = match (element.backend_dom_node_id, element.node_id) {
+                    (Some(backend_node_id), _) => backend_node_id,
+                    (None, Some(node_id)) => self
+                        .cdp
+                        .backend_node_id_for_node(node_id)
+                        .await
+                        .map_err(|error| {
+                            popup_error(
+                                PopupClickErrorKind::WitnessMissing,
+                                format!(
+                                    "resolved popup target has no readable backend identity: {error}"
+                                ),
+                            )
+                        })?,
+                    (None, None) => {
+                        return Err(popup_error(
+                            PopupClickErrorKind::WitnessMissing,
+                            "popup target has no exact node identity",
+                        ));
+                    }
+                };
+                let mut witness = self
+                    .arm_popup_witness(&original_session_id, &original_frame_id, backend_node_id)
+                    .await?;
+                let operation = self
+                    .perform_popup_click(&remote.object_id, &element, &mut witness)
+                    .await;
+                let cleanup = witness.cleanup().await;
+                match (operation, cleanup) {
+                    (Ok(outcome), Ok(())) => Ok(outcome),
+                    (Err(error), _) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                }
+            })
+            .await
+    }
+
+    async fn arm_popup_witness(
+        &self,
+        session_id: &str,
+        frame_id: &str,
+        backend_node_id: i64,
+    ) -> BrowserResult<PopupWitnessGuard> {
+        let cdp = self.cdp.clone();
+        let session_id = session_id.to_string();
+        let frame_id = frame_id.to_string();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = arm_popup_witness_owned(cdp, session_id, frame_id, backend_node_id).await;
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| {
+                popup_error(
+                    PopupClickErrorKind::WitnessMissing,
+                    "popup witness worker ended without a result",
+                )
+            })?
+            .map_err(Into::into)
+    }
+
+    async fn perform_popup_click(
+        &self,
+        object_id: &str,
+        element: &ResolvedElement,
+        witness: &mut PopupWitnessGuard,
+    ) -> BrowserResult<PopupClickOutcome> {
+        let local_point = self.verified_action_point(object_id).await?;
+        let point = self.target_viewport_point(local_point).await?;
+        let mut pointer = self.pointer.lock().await;
+        let start = match (self.interaction_mode, *pointer) {
+            (_, Some(point)) => point,
+            (InteractionMode::Human, None) => self
+                .viewport_center()
+                .await
+                .unwrap_or(Point { x: 640.0, y: 360.0 }),
+            (InteractionMode::Fast, None) => point,
+        };
+        let path = interaction_path(self.interaction_mode, &self.mouse, start, point);
+        if self.interaction_mode == InteractionMode::Human && pointer.is_none() {
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", start.x, start.y, None, None)
+                .await?;
+        }
+        for window in path.windows(2) {
+            let next = window[1];
+            if self.interaction_mode == InteractionMode::Human {
+                tokio::time::sleep(self.mouse.move_delay(window[0], next)).await;
+            }
+            self.cdp
+                .dispatch_mouse_event("mouseMoved", next.x, next.y, None, None)
+                .await?;
+        }
+        let press_point = self.verified_action_point(object_id).await?;
+        if (press_point.x - local_point.x).abs() > 1.0
+            || (press_point.y - local_point.y).abs() > 1.0
+        {
+            return Err(TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(TargetActionabilityReason::GeometryChanged),
+                candidates: Vec::new(),
+            }
+            .into());
+        }
+        self.cdp
+            .dispatch_mouse_event("mousePressed", point.x, point.y, Some("left"), Some(1))
+            .await?;
+        let mut pressed = PressedButtonGuard {
+            cdp: self.cdp.clone(),
+            point,
+            click_count: 1,
+            armed: true,
+        };
+        if self.interaction_mode == InteractionMode::Human {
+            tokio::time::sleep(self.mouse.click_delay()).await;
+        }
+
+        // This snapshot is intentionally adjacent to and before the release.
+        let snapshot = self.popup_topology_snapshot().await?;
+        let release_started = std::time::Instant::now();
+        let release = self
+            .cdp
+            .dispatch_mouse_event_with_timeout(
+                "mouseReleased",
+                point.x,
+                point.y,
+                Some("left"),
+                Some(1),
+                POPUP_RELEASE_ACK_TIMEOUT,
+            )
+            .await;
+        let release_ack_wait_ms = release_started.elapsed().as_secs_f64() * 1_000.0;
+        let release_acknowledged = match release {
+            Ok(_) => true,
+            Err(error) if error.is_response_timeout() => false,
+            Err(error) => {
+                return Err(popup_error(
+                    PopupClickErrorKind::ReleaseFailed,
+                    format!("mouseReleased failed without a response timeout: {error}"),
+                ));
+            }
+        };
+        // The release was either acknowledged or causally witnessed. Never emit
+        // the guard's second, fire-and-forget release for the timeout case.
+        pressed.armed = false;
+
+        let evidence_deadline = tokio::time::Instant::now() + POPUP_EVIDENCE_DEADLINE;
+        let candidate = self
+            .wait_for_causal_popup(&snapshot, witness, evidence_deadline)
+            .await?;
+        let ready_state = self
+            .verify_popup_readiness(&snapshot, &candidate, evidence_deadline)
+            .await?;
+        *pointer = Some(point);
+        Ok(PopupClickOutcome {
+            action: ActionKind::ClickExpectPopup,
+            target: ActionTarget {
+                label: element.label.clone(),
+                reference: element.reference.clone(),
+            },
+            revision: self.invalidate_observation(),
+            target_id: snapshot.original_target_id.clone(),
+            frame_id: snapshot.original_frame_id.clone(),
+            causally_verified_popup: true,
+            popup_id: candidate.target.id.clone(),
+            opener_id: snapshot.original_target_id.clone(),
+            evidence: PopupVerificationEvidence {
+                trusted_click_witness: true,
+                release_acknowledged,
+                release_ack_wait_ms,
+                topology_sequence_before_release: snapshot.sequence,
+                popup_observed_sequence: candidate.observed_sequence,
+                attached: true,
+                ready_state,
+            },
+        })
+    }
+
+    async fn popup_topology_snapshot(&self) -> BrowserResult<PopupTopologySnapshot> {
+        let raw_targets = popup_verification_call(
+            self.cdp.send_browser("Target.getTargets", None),
+            "pre-release target snapshot",
+        )
+        .await?;
+        let mut preexisting_target_ids = HashSet::new();
+        for info in raw_targets["targetInfos"].as_array().into_iter().flatten() {
+            if info["type"].as_str() != Some("page") {
+                continue;
+            }
+            let id = info["targetId"].as_str().ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "pre-release target snapshot contained a page without an ID",
+                )
+            })?;
+            validate_topology_id(id)?;
+            preexisting_target_ids.insert(id.to_string());
+        }
+        let topology = self.topology.lock().await;
+        let original_target_id = topology
+            .active_target_id
+            .clone()
+            .ok_or("popup click has no active target")?;
+        let original_frame_id = topology
+            .active_frame_id
+            .clone()
+            .ok_or("popup click has no active frame")?;
+        Ok(PopupTopologySnapshot {
+            original_target_id,
+            original_frame_id,
+            preexisting_target_ids,
+            sequence: topology.sequence,
+            event_loss_count: topology.event_loss_count,
+        })
+    }
+
+    async fn wait_for_causal_popup(
+        &self,
+        snapshot: &PopupTopologySnapshot,
+        witness: &PopupWitnessGuard,
+        deadline: tokio::time::Instant,
+    ) -> BrowserResult<PopupCandidate> {
+        let mut witnessed = false;
+        loop {
+            if !witnessed {
+                witnessed = witness.fired().await?;
+            }
+
+            let assessment = {
+                let topology = self.topology.lock().await;
+                assess_popup_topology(snapshot, &topology, witnessed)
+            };
+            match assessment {
+                Ok(candidate) => {
+                    return wait_for_stable_popup_topology(
+                        &self.topology,
+                        snapshot,
+                        &candidate,
+                        deadline,
+                        POPUP_TOPOLOGY_QUIET_INTERVAL,
+                    )
+                    .await
+                    .map_err(Into::into);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind,
+                        PopupClickErrorKind::TopologyLagged
+                            | PopupClickErrorKind::PopupAmbiguous
+                            | PopupClickErrorKind::PopupDestroyed
+                    ) =>
+                {
+                    return Err(error.into());
+                }
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error.into());
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    async fn verify_popup_readiness(
+        &self,
+        snapshot: &PopupTopologySnapshot,
+        candidate: &PopupCandidate,
+        deadline: tokio::time::Instant,
+    ) -> BrowserResult<String> {
+        let mut attachment = self.attach_popup(&candidate.target.id).await?;
+        popup_verification_call(
+            self.cdp.send_to_session(
+                &attachment.session_id,
+                "Runtime.runIfWaitingForDebugger",
+                None,
+            ),
+            "popup debugger resume",
+        )
+        .await?;
+        let result = popup_verification_call(
+            self.cdp.send_to_session(
+                &attachment.session_id,
+                "Runtime.evaluate",
+                Some(serde_json::json!({
+                    "expression": "document.readyState",
+                    "returnByValue": true,
+                    "awaitPromise": false
+                })),
+            ),
+            "popup readiness evaluation",
+        )
+        .await?;
+        let ready_state = result["result"]["value"]
+            .as_str()
+            .filter(|state| matches!(*state, "loading" | "interactive" | "complete"))
+            .map(str::to_string)
+            .ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "popup returned no valid document.readyState",
+                )
+            })?;
+        self.final_popup_verification(snapshot, candidate, deadline)
+            .await?;
+        attachment.detach().await?;
+        Ok(ready_state)
+    }
+
+    async fn attach_popup(&self, target_id: &str) -> BrowserResult<PopupAttachmentGuard> {
+        let cdp = self.cdp.clone();
+        let target_id = target_id.to_string();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                POPUP_VERIFY_CALL_TIMEOUT,
+                cdp.send_browser(
+                    "Target.attachToTarget",
+                    Some(serde_json::json!({"targetId": target_id, "flatten": true})),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(value)) => value["sessionId"]
+                    .as_str()
+                    .map(|session_id| PopupAttachmentGuard {
+                        cdp: cdp.clone(),
+                        session_id: session_id.to_string(),
+                        armed: true,
+                    })
+                    .ok_or_else(|| {
+                        popup_typed_error(
+                            PopupClickErrorKind::PopupUnreadable,
+                            "popup attach returned no session ID",
+                        )
+                    }),
+                Ok(Err(error)) => Err(popup_typed_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    format!("popup attach failed: {error}"),
+                )),
+                Err(_) => Err(popup_typed_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "popup attach exceeded its bounded deadline",
+                )),
+            };
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "popup attach worker ended without a result",
+                )
+            })?
+            .map_err(Into::into)
+    }
+
+    async fn final_popup_verification(
+        &self,
+        snapshot: &PopupTopologySnapshot,
+        candidate: &PopupCandidate,
+        deadline: tokio::time::Instant,
+    ) -> BrowserResult<()> {
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology did not settle before final verification deadline",
+                ));
+            }
+            let (stable_sequence, stable_loss) = {
+                let topology = self.topology.lock().await;
+                let current = assess_popup_topology(snapshot, &topology, true)?;
+                if current.target.id != candidate.target.id {
+                    return Err(popup_error(
+                        PopupClickErrorKind::PopupAmbiguous,
+                        "popup candidate changed during readiness verification",
+                    ));
+                }
+                (topology.sequence, topology.event_loss_count)
+            };
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology deadline expired before authoritative discovery",
+                ));
+            }
+            let targets = match tokio::time::timeout(
+                remaining,
+                self.cdp.send_browser("Target.getTargets", None),
+            )
+            .await
+            {
+                Ok(Ok(targets)) => targets,
+                Ok(Err(error)) => {
+                    return Err(popup_error(
+                        PopupClickErrorKind::PopupUnreadable,
+                        format!("final authoritative popup target discovery failed: {error}"),
+                    ));
+                }
+                Err(_) => {
+                    return Err(popup_error(
+                        PopupClickErrorKind::TopologyLagged,
+                        "final authoritative popup target discovery exceeded the evidence deadline",
+                    ));
+                }
+            };
+            let mut matches = Vec::new();
+            for info in targets["targetInfos"].as_array().ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "final target discovery returned no target list",
+                )
+            })? {
+                if info["type"].as_str() != Some("page") {
+                    continue;
+                }
+                let id = info["targetId"].as_str().ok_or_else(|| {
+                    popup_error(
+                        PopupClickErrorKind::PopupUnreadable,
+                        "final target discovery contained a page without an ID",
+                    )
+                })?;
+                validate_topology_id(id)?;
+                if !snapshot.preexisting_target_ids.contains(id)
+                    && info["openerId"].as_str() == Some(snapshot.original_target_id.as_str())
+                {
+                    matches.push(id);
+                }
+            }
+            if matches.len() != 1 || matches[0] != candidate.target.id {
+                return Err(popup_error(
+                    if matches.len() > 1 {
+                        PopupClickErrorKind::PopupAmbiguous
+                    } else {
+                        PopupClickErrorKind::PopupDestroyed
+                    },
+                    format!(
+                        "final target discovery found {} live later opener matches",
+                        matches.len()
+                    ),
+                ));
+            }
+            let topology = self.topology.lock().await;
+            if topology.event_loss_count != stable_loss {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology event loss changed during final verification",
+                ));
+            }
+            let current = assess_popup_topology(snapshot, &topology, true)?;
+            if current.target.id != candidate.target.id {
+                return Err(popup_error(
+                    PopupClickErrorKind::PopupAmbiguous,
+                    "popup candidate changed at final topology verification",
+                ));
+            }
+            if topology.sequence == stable_sequence {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(popup_error(
+                        PopupClickErrorKind::TopologyLagged,
+                        "popup topology deadline expired before final success",
+                    ));
+                }
+                return Ok(());
+            }
+            drop(topology);
+            wait_for_stable_popup_topology(
+                &self.topology,
+                snapshot,
+                candidate,
+                deadline,
+                POPUP_TOPOLOGY_QUIET_INTERVAL,
+            )
+            .await?;
+        }
     }
 
     /// Double-click an element with the same target, scroll, and pointer
@@ -3465,6 +4144,53 @@ impl BrowserSession {
     }
 }
 
+async fn wait_for_stable_popup_topology(
+    topology: &Arc<Mutex<TopologyRegistry>>,
+    snapshot: &PopupTopologySnapshot,
+    candidate: &PopupCandidate,
+    deadline: tokio::time::Instant,
+    quiet_interval: Duration,
+) -> Result<PopupCandidate, PopupClickError> {
+    let mut quiet_since = tokio::time::Instant::now();
+    let mut stable_state = None;
+    loop {
+        let (current, state) = {
+            let topology = topology.lock().await;
+            let current = assess_popup_topology(snapshot, &topology, true)?;
+            (current, (topology.sequence, topology.event_loss_count))
+        };
+        if current.target.id != candidate.target.id {
+            return Err(popup_typed_error(
+                PopupClickErrorKind::PopupAmbiguous,
+                "popup candidate changed during topology stabilization",
+            ));
+        }
+
+        let now = tokio::time::Instant::now();
+        if stable_state != Some(state) {
+            stable_state = Some(state);
+            quiet_since = now;
+        } else if now.duration_since(quiet_since) >= quiet_interval {
+            return Ok(current);
+        }
+        if now >= deadline {
+            return Err(popup_typed_error(
+                PopupClickErrorKind::TopologyLagged,
+                "popup topology did not stabilize before the evidence deadline",
+            ));
+        }
+
+        let quiet_remaining = quiet_interval.saturating_sub(now.duration_since(quiet_since));
+        let deadline_remaining = deadline.saturating_duration_since(now);
+        tokio::time::sleep(
+            POPUP_TOPOLOGY_POLL_INTERVAL
+                .min(quiet_remaining)
+                .min(deadline_remaining),
+        )
+        .await;
+    }
+}
+
 fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<InteractiveElement> {
     find_interactive_elements(roots)
         .into_iter()
@@ -3943,6 +4669,20 @@ struct RemoteObjectGuard {
     object_id: String,
 }
 
+struct PopupWitnessGuard {
+    cdp: CdpClient,
+    session_id: String,
+    state_object_id: String,
+    element_object_id: String,
+    armed: bool,
+}
+
+struct PopupAttachmentGuard {
+    cdp: CdpClient,
+    session_id: String,
+    armed: bool,
+}
+
 struct NetworkDomainGuard {
     cdp: CdpClient,
     leases: Arc<Mutex<NetworkLeaseState>>,
@@ -3960,6 +4700,7 @@ struct DiagnosticDomainGuard {
 
 struct DownloadBehaviorGuard {
     cdp: CdpClient,
+    page_session_id: Option<String>,
     armed: bool,
 }
 
@@ -4098,16 +4839,121 @@ impl Drop for DiagnosticDomainGuard {
 }
 
 impl DownloadBehaviorGuard {
-    async fn acquire(cdp: CdpClient, destination: &Path) -> BrowserResult<Self> {
+    async fn acquire_for_incognito(
+        cdp: CdpClient,
+        destination: PathBuf,
+        target_id: String,
+        page_session_id: String,
+        launched_context_id: String,
+    ) -> BrowserResult<Self> {
+        let selected_context_id = target_browser_context_id(&cdp, &target_id, true).await?;
+        if selected_context_id.as_deref() != Some(launched_context_id.as_str()) {
+            return Err(download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                "selected target does not belong to the launched incognito context",
+            )
+            .into());
+        }
+        Self::acquire(cdp, destination, Some(page_session_id)).await
+    }
+
+    async fn acquire(
+        cdp: CdpClient,
+        destination: PathBuf,
+        page_session_id: Option<String>,
+    ) -> BrowserResult<Self> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = Self::acquire_owned(cdp, &destination, page_session_id).await;
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "download authorization worker ended without a result",
+                )
+            })?
+            .map_err(Into::into)
+    }
+
+    async fn acquire_owned(
+        cdp: CdpClient,
+        destination: &Path,
+        page_session_id: Option<String>,
+    ) -> Result<Self, DownloadError> {
         cdp.set_download_behavior("allow", Some(destination), true)
-            .await?;
-        Ok(Self { cdp, armed: true })
+            .await
+            .map_err(|error| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    format!("browser download authorization failed: {error}"),
+                )
+            })?;
+        if let Some(session_id) = page_session_id.as_deref()
+            && let Err(error) = cdp
+                .send_to_session(
+                    session_id,
+                    "Page.setDownloadBehavior",
+                    Some(serde_json::json!({
+                        "behavior": "allow",
+                        "downloadPath": destination.to_string_lossy()
+                    })),
+                )
+                .await
+        {
+            let restoration = cdp.set_download_behavior("deny", None, false).await;
+            return Err(download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!(
+                    "incognito page download authorization failed: {error}; browser deny restoration: {}",
+                    restoration
+                        .map(|_| "completed".to_string())
+                        .unwrap_or_else(|restore| restore.to_string())
+                ),
+            ));
+        }
+        Ok(Self {
+            cdp,
+            page_session_id,
+            armed: true,
+        })
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
-        self.cdp.set_download_behavior("deny", None, false).await?;
-        self.armed = false;
-        Ok(())
+        let page_result = match self.page_session_id.as_deref() {
+            Some(session_id) => self
+                .cdp
+                .send_to_session(
+                    session_id,
+                    "Page.setDownloadBehavior",
+                    Some(serde_json::json!({"behavior": "deny"})),
+                )
+                .await
+                .map(|_| ()),
+            None => Ok(()),
+        };
+        let browser_result = self
+            .cdp
+            .set_download_behavior("deny", None, false)
+            .await
+            .map(|_| ());
+        match (page_result, browser_result) {
+            (Ok(()), Ok(())) => {
+                self.armed = false;
+                Ok(())
+            }
+            (page, browser) => Err(download_error(
+                DownloadErrorKind::RestorationFailed,
+                format!(
+                    "download deny restoration failed (page: {}; browser: {})",
+                    protocol_result_summary(page),
+                    protocol_result_summary(browser)
+                ),
+            )
+            .into()),
+        }
     }
 }
 
@@ -4117,7 +4963,17 @@ impl Drop for DownloadBehaviorGuard {
             return;
         }
         let cdp = self.cdp.clone();
+        let page_session_id = self.page_session_id.clone();
         tokio::spawn(async move {
+            if let Some(session_id) = page_session_id.as_deref() {
+                let _ = cdp
+                    .send_to_session(
+                        session_id,
+                        "Page.setDownloadBehavior",
+                        Some(serde_json::json!({"behavior": "deny"})),
+                    )
+                    .await;
+            }
             let _ = cdp.set_download_behavior("deny", None, false).await;
         });
     }
@@ -4166,6 +5022,94 @@ impl Drop for RemoteObjectGuard {
         let object_id = self.object_id.clone();
         tokio::spawn(async move {
             let _ = cdp.release_object(&object_id).await;
+        });
+    }
+}
+
+impl PopupWitnessGuard {
+    async fn fired(&self) -> BrowserResult<bool> {
+        let value = popup_verification_call(
+            self.cdp.send_to_session(
+                &self.session_id,
+                "Runtime.callFunctionOn",
+                Some(serde_json::json!({
+                    "objectId": self.state_object_id,
+                    "functionDeclaration": "function(){return this.read();}",
+                    "returnByValue": true,
+                    "awaitPromise": false
+                })),
+            ),
+            "popup witness read",
+        )
+        .await?;
+        value["result"]["value"].as_bool().ok_or_else(|| {
+            popup_error(
+                PopupClickErrorKind::WitnessMissing,
+                "popup witness returned no trusted-click state",
+            )
+        })
+    }
+
+    async fn cleanup(&mut self) -> BrowserResult<()> {
+        cleanup_popup_witness(
+            &self.cdp,
+            &self.session_id,
+            &self.state_object_id,
+            &self.element_object_id,
+        )
+        .await?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for PopupWitnessGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        let state_object_id = self.state_object_id.clone();
+        let element_object_id = self.element_object_id.clone();
+        tokio::spawn(async move {
+            let _ = cleanup_popup_witness(&cdp, &session_id, &state_object_id, &element_object_id)
+                .await;
+        });
+    }
+}
+
+impl PopupAttachmentGuard {
+    async fn detach(&mut self) -> BrowserResult<()> {
+        popup_verification_call(
+            self.cdp.send_browser(
+                "Target.detachFromTarget",
+                Some(serde_json::json!({"sessionId": self.session_id})),
+            ),
+            "popup detach",
+        )
+        .await?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for PopupAttachmentGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                POPUP_VERIFY_CALL_TIMEOUT,
+                cdp.send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": session_id})),
+                ),
+            )
+            .await;
         });
     }
 }
@@ -4521,14 +5465,21 @@ fn collect_frames(
     Ok(())
 }
 
-fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) {
+fn push_topology_event(topology: &mut TopologyRegistry, kind: &str, id: &str) -> u64 {
+    topology.sequence = topology
+        .sequence
+        .checked_add(1)
+        .expect("topology sequence exhausted");
+    let sequence = topology.sequence;
     topology.events.push_back(TopologyEventSummary {
+        sequence,
         kind: kind.to_string(),
         id: bounded_topology_id(id),
     });
     while topology.events.len() > TOPOLOGY_MAX_EVENTS {
         topology.events.pop_front();
     }
+    sequence
 }
 
 fn bounded_topology_id(value: &str) -> String {
@@ -4549,6 +5500,357 @@ fn retained_optional_topology_id(value: Option<&str>) -> BrowserResult<Option<St
             Ok(id.to_string())
         })
         .transpose()
+}
+
+fn popup_typed_error(kind: PopupClickErrorKind, message: impl Into<String>) -> PopupClickError {
+    let message = message.into();
+    PopupClickError {
+        kind,
+        message: truncate_utf8_bytes(&message, POPUP_ERROR_MESSAGE_MAX_BYTES),
+    }
+}
+
+fn popup_witness_install_function() -> String {
+    format!(
+        r#"function() {{
+            const element = this;
+            const nativeAdd = EventTarget.prototype.addEventListener;
+            const nativeRemove = EventTarget.prototype.removeEventListener;
+            const nativeApply = Reflect.apply;
+            const nativeSetTimeout = setTimeout;
+            const nativeClearTimeout = clearTimeout;
+            const state = {{fired:false, cleaned:false}};
+            const listener = function(event) {{
+                if (event.isTrusted === true && event.currentTarget === element) state.fired = true;
+            }};
+            let timer;
+            const cleanup = function() {{
+                if (state.cleaned) return true;
+                state.cleaned = true;
+                nativeApply(nativeRemove, element, ['click', listener, true]);
+                nativeClearTimeout(timer);
+                return true;
+            }};
+            Object.defineProperties(state, {{
+                read: {{value:function(){{return state.fired;}}, enumerable:false}},
+                cleanup: {{value:cleanup, enumerable:false}}
+            }});
+            nativeApply(nativeAdd, element, ['click', listener, {{capture:true, once:true}}]);
+            timer = nativeSetTimeout(cleanup, {POPUP_WITNESS_LIFETIME_MS});
+            return state;
+        }}"#
+    )
+}
+
+async fn popup_witness_call<F>(future: F, step: &str) -> Result<Value, PopupClickError>
+where
+    F: std::future::Future<Output = Result<Value, super::cdp::CdpError>>,
+{
+    match tokio::time::timeout(POPUP_VERIFY_CALL_TIMEOUT, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(popup_typed_error(
+            PopupClickErrorKind::WitnessMissing,
+            format!("{step} failed: {error}"),
+        )),
+        Err(_) => Err(popup_typed_error(
+            PopupClickErrorKind::WitnessMissing,
+            format!("{step} exceeded its bounded deadline"),
+        )),
+    }
+}
+
+async fn arm_popup_witness_owned(
+    cdp: CdpClient,
+    session_id: String,
+    frame_id: String,
+    backend_node_id: i64,
+) -> Result<PopupWitnessGuard, PopupClickError> {
+    let world = popup_witness_call(
+        cdp.send_to_session(
+            &session_id,
+            "Page.createIsolatedWorld",
+            Some(serde_json::json!({
+                "frameId": frame_id,
+                "worldName": "glass-popup-witness"
+            })),
+        ),
+        "popup witness isolated world",
+    )
+    .await?;
+    let context_id = world["executionContextId"].as_i64().ok_or_else(|| {
+        popup_typed_error(
+            PopupClickErrorKind::WitnessMissing,
+            "popup witness isolated world returned no context ID",
+        )
+    })?;
+    let resolved = popup_witness_call(
+        cdp.send_to_session(
+            &session_id,
+            "DOM.resolveNode",
+            Some(serde_json::json!({
+                "backendNodeId": backend_node_id,
+                "executionContextId": context_id
+            })),
+        ),
+        "popup witness exact-node resolution",
+    )
+    .await?;
+    let element_object_id = resolved["object"]["objectId"]
+        .as_str()
+        .ok_or_else(|| {
+            popup_typed_error(
+                PopupClickErrorKind::WitnessMissing,
+                "popup witness exact-node resolution returned no object",
+            )
+        })?
+        .to_string();
+    let install = popup_witness_call(
+        cdp.send_to_session(
+            &session_id,
+            "Runtime.callFunctionOn",
+            Some(serde_json::json!({
+                "objectId": element_object_id,
+                "functionDeclaration": popup_witness_install_function(),
+                "returnByValue": false,
+                "awaitPromise": false
+            })),
+        ),
+        "popup witness installation",
+    )
+    .await;
+    let state_object_id = match install {
+        Ok(value) => match value["result"]["objectId"].as_str() {
+            Some(id) => id.to_string(),
+            None => {
+                let _ = tokio::time::timeout(
+                    POPUP_VERIFY_CALL_TIMEOUT,
+                    cdp.release_object_for_session(&session_id, &element_object_id),
+                )
+                .await;
+                return Err(popup_typed_error(
+                    PopupClickErrorKind::WitnessMissing,
+                    "popup witness installation returned no private state",
+                ));
+            }
+        },
+        Err(error) => {
+            let _ = tokio::time::timeout(
+                POPUP_VERIFY_CALL_TIMEOUT,
+                cdp.release_object_for_session(&session_id, &element_object_id),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    Ok(PopupWitnessGuard {
+        cdp,
+        session_id,
+        state_object_id,
+        element_object_id,
+        armed: true,
+    })
+}
+
+async fn cleanup_popup_witness(
+    cdp: &CdpClient,
+    session_id: &str,
+    state_object_id: &str,
+    element_object_id: &str,
+) -> BrowserResult<()> {
+    let cleanup = tokio::time::timeout(
+        POPUP_VERIFY_CALL_TIMEOUT,
+        cdp.send_to_session(
+            session_id,
+            "Runtime.callFunctionOn",
+            Some(serde_json::json!({
+                "objectId": state_object_id,
+                "functionDeclaration": "function(){return this.cleanup();}",
+                "returnByValue": true,
+                "awaitPromise": false
+            })),
+        ),
+    )
+    .await;
+    let release_state = tokio::time::timeout(
+        POPUP_VERIFY_CALL_TIMEOUT,
+        cdp.release_object_for_session(session_id, state_object_id),
+    )
+    .await;
+    let release_element = tokio::time::timeout(
+        POPUP_VERIFY_CALL_TIMEOUT,
+        cdp.release_object_for_session(session_id, element_object_id),
+    )
+    .await;
+    if !matches!(cleanup, Ok(Ok(_)))
+        || !matches!(release_state, Ok(Ok(_)))
+        || !matches!(release_element, Ok(Ok(_)))
+    {
+        return Err(popup_error(
+            PopupClickErrorKind::PopupUnreadable,
+            "popup witness remote-object cleanup failed",
+        ));
+    }
+    Ok(())
+}
+
+fn popup_error(kind: PopupClickErrorKind, message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(popup_typed_error(kind, message))
+}
+
+fn download_error(kind: DownloadErrorKind, message: impl Into<String>) -> DownloadError {
+    let message = message.into();
+    DownloadError {
+        kind,
+        message: truncate_utf8_bytes(&message, POPUP_ERROR_MESSAGE_MAX_BYTES),
+    }
+}
+
+async fn target_browser_context_id(
+    cdp: &CdpClient,
+    target_id: &str,
+    required: bool,
+) -> Result<Option<String>, DownloadError> {
+    let response = cdp
+        .send_browser(
+            "Target.getTargetInfo",
+            Some(serde_json::json!({"targetId": target_id})),
+        )
+        .await
+        .map_err(|error| {
+            download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!("download target context lookup failed: {error}"),
+            )
+        })?;
+    let target_info = response["targetInfo"].as_object().ok_or_else(|| {
+        download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned no targetInfo",
+        )
+    })?;
+    if target_info.get("targetId").and_then(Value::as_str) != Some(target_id) {
+        return Err(download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned a mismatched target ID",
+        ));
+    }
+    let context_id = target_info
+        .get("browserContextId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if required && context_id.is_none() {
+        return Err(download_error(
+            DownloadErrorKind::AuthorizationFailed,
+            "download target context lookup returned no browser context ID",
+        ));
+    }
+    if let Some(context_id) = context_id.as_deref() {
+        validate_topology_id(context_id).map_err(|error| {
+            download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!("download target returned an invalid browser context ID: {error}"),
+            )
+        })?;
+    }
+    Ok(context_id)
+}
+
+fn use_page_download_compatibility(owned: bool, command_line_incognito: bool) -> bool {
+    owned && command_line_incognito
+}
+
+fn protocol_result_summary(result: Result<(), super::cdp::CdpError>) -> String {
+    result
+        .map(|_| "completed".to_string())
+        .unwrap_or_else(|error| error.to_string())
+}
+
+fn assess_popup_topology(
+    snapshot: &PopupTopologySnapshot,
+    topology: &TopologyRegistry,
+    witnessed: bool,
+) -> Result<PopupCandidate, PopupClickError> {
+    if !witnessed {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::WitnessMissing,
+            "trusted-click witness was not observed",
+        ));
+    }
+    if topology.event_loss_count != snapshot.event_loss_count {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::TopologyLagged,
+            "topology event stream lagged after mouseReleased",
+        ));
+    }
+
+    let later_targets = topology.targets.iter().filter_map(|target| {
+        let sequence = *topology.target_sequences.get(&target.id)?;
+        (!snapshot.preexisting_target_ids.contains(&target.id) && sequence > snapshot.sequence)
+            .then_some((target, sequence))
+    });
+    let mut matching = Vec::new();
+    let mut nonmatching_count = 0usize;
+    for (target, sequence) in later_targets {
+        if target.opener_id.as_deref() == Some(snapshot.original_target_id.as_str()) {
+            matching.push(PopupCandidate {
+                target: target.clone(),
+                observed_sequence: sequence,
+            });
+        } else {
+            nonmatching_count += 1;
+        }
+    }
+    if matching.len() > 1 {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupAmbiguous,
+            format!(
+                "trusted click produced {} opener-matching page targets",
+                matching.len()
+            ),
+        ));
+    }
+    if let Some(candidate) = matching.pop() {
+        return Ok(candidate);
+    }
+    if topology.destroyed_targets.iter().any(|destroyed| {
+        destroyed.observed_sequence > snapshot.sequence
+            && !snapshot
+                .preexisting_target_ids
+                .contains(&destroyed.target.id)
+            && destroyed.target.opener_id.as_deref() == Some(snapshot.original_target_id.as_str())
+    }) {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupDestroyed,
+            "the opener-matching popup was destroyed before verification",
+        ));
+    }
+    if nonmatching_count > 0 {
+        return Err(popup_typed_error(
+            PopupClickErrorKind::PopupOpenerMismatch,
+            "later page targets did not name the original target as opener",
+        ));
+    }
+    Err(popup_typed_error(
+        PopupClickErrorKind::PopupMissing,
+        "no later opener-matching popup was observed",
+    ))
+}
+
+async fn popup_verification_call<F>(future: F, step: &str) -> BrowserResult<Value>
+where
+    F: std::future::Future<Output = Result<Value, super::cdp::CdpError>>,
+{
+    match tokio::time::timeout(POPUP_VERIFY_CALL_TIMEOUT, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(popup_error(
+            PopupClickErrorKind::PopupUnreadable,
+            format!("{step} failed: {error}"),
+        )),
+        Err(_) => Err(popup_error(
+            PopupClickErrorKind::PopupUnreadable,
+            format!("{step} exceeded its bounded deadline"),
+        )),
+    }
 }
 
 /// Apply one bounded lifecycle notification. Returns true when the selected
@@ -4586,14 +5888,30 @@ fn apply_topology_event(topology: &mut TopologyRegistry, event: &CdpEventWithPar
                 push_topology_event(topology, "rejected-target-budget", id);
                 return false;
             }
-            push_topology_event(topology, "target-updated", id);
+            let sequence = push_topology_event(topology, "target-updated", id);
+            topology.target_sequences.insert(id.to_string(), sequence);
         }
         "Target.targetDestroyed" | "Target.targetCrashed" => {
             let Some(id) = event.params["targetId"].as_str() else {
                 return false;
             };
+            let removed = topology
+                .targets
+                .iter()
+                .find(|target| target.id == id)
+                .cloned();
             topology.targets.retain(|target| target.id != id);
-            push_topology_event(topology, event.method.as_str(), id);
+            topology.target_sequences.remove(id);
+            let sequence = push_topology_event(topology, event.method.as_str(), id);
+            if let Some(target) = removed {
+                topology.destroyed_targets.push_back(DestroyedPageTarget {
+                    target,
+                    observed_sequence: sequence,
+                });
+                while topology.destroyed_targets.len() > TOPOLOGY_MAX_EVENTS {
+                    topology.destroyed_targets.pop_front();
+                }
+            }
             if topology.active_target_id.as_deref() == Some(id) {
                 topology.active_target_id = None;
                 topology.active_target_session_id = None;
@@ -4773,7 +6091,12 @@ async fn resync_topology(
     let mut topology = registry.lock().await;
     topology.targets = targets;
     topology.frames = frames;
-    push_topology_event(&mut topology, "resynchronized", "topology");
+    let sequence = push_topology_event(&mut topology, "resynchronized", "topology");
+    topology.target_sequences = topology
+        .targets
+        .iter()
+        .map(|target| (target.id.clone(), sequence))
+        .collect();
     Ok(())
 }
 
@@ -4880,6 +6203,7 @@ mod tests {
             cdp,
             chrome: None,
             disposable_profile: None,
+            launched_incognito_context_id: None,
             profile: "test".to_string(),
             interaction_mode: InteractionMode::Fast,
             mouse: MouseEngine::new(),
@@ -4894,6 +6218,7 @@ mod tests {
                 active_frame_id: Some("test-frame".to_string()),
                 ..TopologyRegistry::default()
             })),
+            popup_click_scope: Mutex::new(()),
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
             policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
             policy_interception: None,
@@ -5244,6 +6569,149 @@ mod tests {
                     .unwrap();
             }
             methods
+        });
+        (format!("ws://{address}"), server)
+    }
+
+    async fn download_bridge_server(
+        delay_page_allow: bool,
+        request_count: usize,
+        error_indices: Vec<usize>,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut requests = Vec::new();
+            for index in 0..request_count {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                if delay_page_allow && index == 1 {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                let response = if error_indices.contains(&index) {
+                    serde_json::json!({
+                        "id": request["id"],
+                        "error": {"code": -32000, "message": "diagnostic failure"}
+                    })
+                } else {
+                    serde_json::json!({"id": request["id"], "result": {}})
+                };
+                websocket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        (format!("ws://{address}"), server)
+    }
+
+    async fn download_context_server(
+        context_id: &str,
+        behavior_requests: usize,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let context_id = context_id.to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let lookup = websocket.next().await.unwrap().unwrap();
+            let lookup: Value = match lookup {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text CDP request"),
+            };
+            assert_eq!(lookup["method"], "Target.getTargetInfo");
+            assert_eq!(lookup["params"]["targetId"], "selected-target");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": lookup["id"],
+                        "result": {"targetInfo": {
+                            "targetId": "selected-target",
+                            "browserContextId": context_id
+                        }}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let mut requests = Vec::new();
+            for _ in 0..behavior_requests {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        (format!("ws://{address}"), server)
+    }
+
+    async fn final_popup_server(
+        topology: Arc<Mutex<TopologyRegistry>>,
+        move_first_query: bool,
+        move_every_query: bool,
+        query_delay: Option<Duration>,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut queries = 0;
+            while let Ok(Some(Ok(request))) =
+                tokio::time::timeout(Duration::from_millis(250), websocket.next()).await
+            {
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+                assert_eq!(request["method"], "Target.getTargets");
+                queries += 1;
+                if move_every_query || move_first_query && queries == 1 {
+                    topology.lock().await.sequence += 1;
+                }
+                if let Some(delay) = query_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                if websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "id": request["id"],
+                            "result": {"targetInfos": [
+                                {"type": "page", "targetId": "original"},
+                                {"type": "page", "targetId": "popup", "openerId": "original"}
+                            ]}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            queries
         });
         (format!("ws://{address}"), server)
     }
@@ -5765,6 +7233,170 @@ mod tests {
         }
     }
 
+    #[test]
+    fn page_download_bridge_is_scoped_only_to_owned_command_line_incognito() {
+        assert!(use_page_download_compatibility(true, true));
+        assert!(!use_page_download_compatibility(false, true));
+        assert!(!use_page_download_compatibility(true, false));
+        assert!(!use_page_download_compatibility(false, false));
+    }
+
+    #[tokio::test]
+    async fn incognito_download_context_mismatch_fails_before_behavior_mutation() {
+        let (url, server) = download_context_server("other-context", 0).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let error = match DownloadBehaviorGuard::acquire_for_incognito(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            "selected-target".to_string(),
+            "captured-page-session".to_string(),
+            "launched-context".to_string(),
+        )
+        .await
+        {
+            Ok(_) => panic!("mismatched context was authorized"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::AuthorizationFailed
+        );
+        assert!(server.await.unwrap().is_empty());
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn incognito_download_context_match_reaches_captured_behavior_bridge() {
+        let (url, server) = download_context_server("launched-context", 4).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire_for_incognito(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            "selected-target".to_string(),
+            "captured-page-session".to_string(),
+            "launched-context".to_string(),
+        )
+        .await
+        .unwrap();
+        guard.disable().await.unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[1]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[1]["sessionId"], "captured-page-session");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn incognito_download_bridge_allows_and_restores_the_captured_page_route() {
+        let (url, server) = download_bridge_server(false, 4, Vec::new()).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let destination = std::env::current_dir().unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            destination.clone(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        .unwrap();
+        guard.disable().await.unwrap();
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[0]["params"]["behavior"], "allow");
+        assert_eq!(requests[0]["params"]["eventsEnabled"], true);
+        assert_eq!(
+            requests[0]["params"]["downloadPath"],
+            destination.to_string_lossy().as_ref()
+        );
+        assert_eq!(requests[1]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[1]["sessionId"], "captured-page-session");
+        assert_eq!(requests[1]["params"]["behavior"], "allow");
+        assert_eq!(requests[2]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[2]["sessionId"], "captured-page-session");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["params"]["eventsEnabled"], false);
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_incognito_download_authorization_restores_both_scopes() {
+        let (url, server) = download_bridge_server(true, 4, Vec::new()).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let acquire = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), acquire)
+                .await
+                .is_err()
+        );
+
+        let requests = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(requests[0]["params"]["behavior"], "allow");
+        assert_eq!(requests[1]["params"]["behavior"], "allow");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[2]["sessionId"], "captured-page-session");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn partial_incognito_download_enable_is_typed_and_restores_browser_deny() {
+        let (url, server) = download_bridge_server(false, 3, vec![1]).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let error = match DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        {
+            Ok(_) => panic!("partial authorization unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::AuthorizationFailed
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests[2]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn partial_incognito_download_restoration_is_typed_and_still_denies_browser() {
+        let (url, server) = download_bridge_server(false, 4, vec![2]).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        .unwrap();
+        let error = guard.disable().await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::RestorationFailed
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests[2]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[3]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        guard.armed = false;
+        cdp.close().await;
+    }
+
     #[tokio::test]
     async fn deep_dom_observation_is_explicit_and_not_cached() {
         let (url, server) = observation_server(true).await;
@@ -5897,6 +7529,406 @@ mod tests {
         interception.shutdown().await;
         cdp.close().await;
         server.await.unwrap();
+    }
+
+    fn popup_test_snapshot() -> PopupTopologySnapshot {
+        PopupTopologySnapshot {
+            original_target_id: "original".to_string(),
+            original_frame_id: "frame".to_string(),
+            preexisting_target_ids: HashSet::from([
+                "original".to_string(),
+                "preexisting".to_string(),
+            ]),
+            sequence: 10,
+            event_loss_count: 0,
+        }
+    }
+
+    fn popup_test_target(id: &str, opener: Option<&str>) -> PageTargetInfo {
+        PageTargetInfo {
+            id: id.to_string(),
+            url: "about:blank".to_string(),
+            title: String::new(),
+            opener_id: opener.map(str::to_string),
+            active: false,
+        }
+    }
+
+    fn popup_topology_with(targets: Vec<(&str, Option<&str>, u64)>) -> TopologyRegistry {
+        let mut topology = TopologyRegistry::default();
+        for (id, opener, sequence) in targets {
+            topology.targets.push(popup_test_target(id, opener));
+            topology.target_sequences.insert(id.to_string(), sequence);
+            topology.sequence = topology.sequence.max(sequence);
+        }
+        topology
+    }
+
+    #[test]
+    fn popup_topology_accepts_exactly_one_later_live_matching_opener() {
+        let topology = popup_topology_with(vec![
+            ("original", None, 1),
+            ("preexisting", Some("original"), 9),
+            ("popup", Some("original"), 11),
+        ]);
+        let candidate = assess_popup_topology(&popup_test_snapshot(), &topology, true).unwrap();
+        assert_eq!(candidate.target.id, "popup");
+        assert_eq!(candidate.observed_sequence, 11);
+    }
+
+    #[tokio::test]
+    async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let late_topology = Arc::clone(&topology);
+        let late_event = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            late_topology.lock().await.sequence += 1;
+        });
+
+        let started = tokio::time::Instant::now();
+        let stable = wait_for_stable_popup_topology(
+            &topology,
+            &snapshot,
+            &candidate,
+            started + Duration::from_millis(150),
+            Duration::from_millis(30),
+        )
+        .await
+        .unwrap();
+
+        late_event.await.unwrap();
+        assert_eq!(stable.target.id, "popup");
+        assert!(started.elapsed() >= Duration::from_millis(40));
+        assert_eq!(topology.lock().await.sequence, 12);
+    }
+
+    #[tokio::test]
+    async fn popup_topology_that_never_becomes_quiet_fails_closed_at_deadline() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let moving_topology = Arc::clone(&topology);
+        let movement = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(5));
+            for _ in 0..20 {
+                interval.tick().await;
+                moving_topology.lock().await.sequence += 1;
+            }
+        });
+        let started = tokio::time::Instant::now();
+
+        let error = wait_for_stable_popup_topology(
+            &topology,
+            &snapshot,
+            &candidate,
+            started + Duration::from_millis(60),
+            Duration::from_millis(15),
+        )
+        .await
+        .unwrap_err();
+
+        movement.abort();
+        assert_eq!(error.kind, PopupClickErrorKind::TopologyLagged);
+        assert!(started.elapsed() >= Duration::from_millis(55));
+    }
+
+    #[tokio::test]
+    async fn popup_event_during_final_query_restarts_quiet_then_succeeds() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(Arc::clone(&topology), true, false, None).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+
+        session
+            .final_popup_verification(
+                &snapshot,
+                &candidate,
+                tokio::time::Instant::now() + Duration::from_millis(250),
+            )
+            .await
+            .unwrap();
+        cdp.close().await;
+        assert_eq!(server.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn popup_events_during_every_final_query_fail_at_shared_deadline() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(Arc::clone(&topology), true, true, None).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+        let started = tokio::time::Instant::now();
+
+        let error = session
+            .final_popup_verification(&snapshot, &candidate, started + Duration::from_millis(120))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        assert!(started.elapsed() >= Duration::from_millis(110));
+        cdp.close().await;
+        assert!(server.await.unwrap() >= 2);
+    }
+
+    #[tokio::test]
+    async fn popup_stable_final_query_delayed_past_deadline_fails_typed() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(
+            Arc::clone(&topology),
+            false,
+            false,
+            Some(Duration::from_millis(50)),
+        )
+        .await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+
+        let error = session
+            .final_popup_verification(
+                &snapshot,
+                &candidate,
+                tokio::time::Instant::now() + Duration::from_millis(15),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        cdp.close().await;
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[test]
+    fn popup_witness_uses_only_isolated_native_event_state() {
+        let source = popup_witness_install_function();
+        assert!(source.contains("EventTarget.prototype.addEventListener"));
+        assert!(source.contains("EventTarget.prototype.removeEventListener"));
+        assert!(source.contains("nativeApply(nativeAdd"));
+        assert!(source.contains("event.isTrusted === true"));
+        assert!(source.contains("event.currentTarget === element"));
+        assert!(!source.contains("Runtime.addBinding"));
+        assert!(!source.contains("__glass"));
+        assert!(!source.contains("element.addEventListener"));
+    }
+
+    #[test]
+    fn popup_errors_are_bounded_and_serializable() {
+        let error = popup_typed_error(PopupClickErrorKind::PopupMissing, "x".repeat(2_000));
+        assert!(error.message.len() <= POPUP_ERROR_MESSAGE_MAX_BYTES);
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["kind"],
+            "popup_missing"
+        );
+    }
+
+    #[test]
+    fn popup_timing_evidence_is_explicitly_serializable() {
+        let evidence = PopupVerificationEvidence {
+            trusted_click_witness: true,
+            release_acknowledged: false,
+            release_ack_wait_ms: 500.5,
+            topology_sequence_before_release: 1,
+            popup_observed_sequence: 2,
+            attached: true,
+            ready_state: "complete".to_string(),
+        };
+        let value = serde_json::to_value(evidence).unwrap();
+        assert_eq!(value["release_ack_wait_ms"], 500.5);
+    }
+
+    #[tokio::test]
+    async fn cancelled_popup_attach_detaches_a_late_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let attach = websocket.next().await.unwrap().unwrap();
+            let attach: Value = match attach {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text CDP request"),
+            };
+            assert_eq!(attach["method"], "Target.attachToTarget");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": attach["id"],
+                        "result": {"sessionId": "late-popup-session"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let detach = tokio::time::timeout(Duration::from_secs(1), websocket.next())
+                .await
+                .expect("late attachment was not detached")
+                .unwrap()
+                .unwrap();
+            let detach: Value = match detach {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text CDP request"),
+            };
+            assert_eq!(detach["method"], "Target.detachFromTarget");
+            assert_eq!(detach["params"]["sessionId"], "late-popup-session");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": detach["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let session = test_session(cdp.clone());
+        {
+            let attach = session.attach_popup("popup");
+            tokio::pin!(attach);
+            tokio::select! {
+                _ = &mut attach => panic!("attach unexpectedly completed"),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+        server.await.unwrap();
+        cdp.close().await;
+    }
+
+    #[test]
+    fn popup_topology_rejects_missing_witness_preexisting_and_unrelated_targets() {
+        let topology = popup_topology_with(vec![("unrelated", None, 11)]);
+        assert_eq!(
+            assess_popup_topology(&popup_test_snapshot(), &topology, false)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::WitnessMissing
+        );
+        assert_eq!(
+            assess_popup_topology(
+                &popup_test_snapshot(),
+                &popup_topology_with(vec![("preexisting", Some("original"), 12)]),
+                true,
+            )
+            .unwrap_err()
+            .kind,
+            PopupClickErrorKind::PopupMissing
+        );
+        assert_eq!(
+            assess_popup_topology(&popup_test_snapshot(), &topology, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupOpenerMismatch
+        );
+    }
+
+    #[test]
+    fn popup_topology_rejects_wrong_opener_ambiguity_lag_and_destroyed_target() {
+        let snapshot = popup_test_snapshot();
+        let wrong = popup_topology_with(vec![("popup", Some("other"), 11)]);
+        assert_eq!(
+            assess_popup_topology(&snapshot, &wrong, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupOpenerMismatch
+        );
+        let ambiguous = popup_topology_with(vec![
+            ("popup-1", Some("original"), 11),
+            ("popup-2", Some("original"), 12),
+        ]);
+        assert_eq!(
+            assess_popup_topology(&snapshot, &ambiguous, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupAmbiguous
+        );
+        let mut lagged = popup_topology_with(vec![("popup", Some("original"), 11)]);
+        lagged.event_loss_count = 1;
+        assert_eq!(
+            assess_popup_topology(&snapshot, &lagged, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        let mut destroyed = TopologyRegistry::default();
+        destroyed.destroyed_targets.push_back(DestroyedPageTarget {
+            target: popup_test_target("popup", Some("original")),
+            observed_sequence: 11,
+        });
+        assert_eq!(
+            assess_popup_topology(&snapshot, &destroyed, true)
+                .unwrap_err()
+                .kind,
+            PopupClickErrorKind::PopupDestroyed
+        );
+    }
+
+    #[tokio::test]
+    async fn popup_readiness_maps_protocol_failure_to_typed_unreadable_error() {
+        let protocol_error: super::super::cdp::CdpError =
+            serde_json::from_value(serde_json::json!({
+                "code": -32000,
+                "message": "target closed"
+            }))
+            .unwrap();
+        let error = popup_verification_call(async { Err(protocol_error) }, "readiness")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::PopupUnreadable
+        );
     }
 
     #[cfg(feature = "visual-compare")]

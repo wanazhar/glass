@@ -1,0 +1,4 @@
+   Compiling glass v0.1.0 (<workspace>/.worktrees/compare-018)
+    Finished `release` profile [optimized] target(s) in 26.21s
+     Running `target/release/examples/scorecard`
+Error: CdpError { code: -32000, message: "CDP response timeout after 30 seconds", data: None }

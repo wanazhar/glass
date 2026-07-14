@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
-use glass::browser::session::{BrowserResult, BrowserSession, InteractionMode, SessionOptions};
+use glass::browser::session::{
+    BrowserResult, BrowserSession, InteractionMode, SessionOptions, WaitCondition,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -9,7 +11,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
 const DEFAULT_ITERATIONS: usize = 10;
@@ -30,10 +32,7 @@ struct Scenario {
     forbidden: Vec<String>,
 }
 
-enum ScenarioRun {
-    Actual(String),
-    Unsupported(&'static str),
-}
+struct ScenarioRun(String);
 
 #[tokio::main]
 async fn main() -> BrowserResult<()> {
@@ -41,7 +40,17 @@ async fn main() -> BrowserResult<()> {
     if corpus.schema_version != 1 {
         return Err(format!("unsupported corpus schema {}", corpus.schema_version).into());
     }
-    let chrome_path = detect_chrome().ok_or("Chrome/Chromium is required for the scorecard")?;
+    let chrome_path = std::env::var_os("CHROME_PATH")
+        .map(PathBuf::from)
+        .or_else(detect_chrome)
+        .ok_or("Chrome/Chromium is required for the scorecard")?;
+    if !chrome_path.is_file() {
+        return Err(format!(
+            "CHROME_PATH does not name a file: {}",
+            chrome_path.display()
+        )
+        .into());
+    }
     let iterations = positive_env("GLASS_SCORECARD_ITERATIONS", DEFAULT_ITERATIONS)?;
     let profile = std::env::var("GLASS_SCORECARD_PROFILE")
         .unwrap_or_else(|_| "ephemeral-incognito".to_string());
@@ -61,6 +70,24 @@ async fn main() -> BrowserResult<()> {
         interaction_mode: InteractionMode::Fast,
     })
     .await?;
+    session
+        .raw_cdp()?
+        .send(
+            "Emulation.setDeviceMetricsOverride",
+            Some(json!({
+                "width": 1280,
+                "height": 720,
+                "deviceScaleFactor": 1,
+                "mobile": false
+            })),
+        )
+        .await?;
+    let viewport = session
+        .evaluate("({width: innerWidth, height: innerHeight})")
+        .await?;
+    if viewport != json!({"width": 1280, "height": 720}) {
+        return Err(format!("scorecard viewport control failed: {viewport}").into());
+    }
     let startup_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let chrome_pid = session
         .owned_chrome_pid()
@@ -127,7 +154,7 @@ async fn main() -> BrowserResult<()> {
             "machine": machine_name(),
         },
         "resources": {
-            "scope": "Runner and owned Chrome process trees are disjoint; bytes are RSS",
+            "scope": "primary-non-browser-runner-process-rss-v1",
             "runner": {"pid": std::process::id(), "rss_start_bytes": glass_rss_start, "rss_end_bytes": glass_rss_end, "peak_rss_bytes": memory.glass_peak},
             "chrome": {"root_pid": chrome_pid, "rss_end_bytes": chrome_rss_end, "peak_process_tree_rss_bytes": memory.chrome_peak},
             "binary_size_bytes": binary_size_bytes(),
@@ -153,15 +180,13 @@ fn classify_run(
     scenario: &Scenario,
     run: ScenarioRun,
 ) -> (&'static str, Option<String>, Option<String>) {
-    match run {
-        ScenarioRun::Actual(actual) if actual == scenario.expected => {
-            ("success", Some(actual), None)
-        }
-        ScenarioRun::Actual(actual) if scenario.forbidden.contains(&actual) => {
-            ("wrong_action", Some(actual), None)
-        }
-        ScenarioRun::Actual(actual) => ("failure", Some(actual), None),
-        ScenarioRun::Unsupported(reason) => ("unsupported", None, Some(reason.to_string())),
+    let actual = run.0;
+    if actual == scenario.expected {
+        ("success", Some(actual), None)
+    } else if scenario.forbidden.contains(&actual) {
+        ("wrong_action", Some(actual), None)
+    } else {
+        ("failure", Some(actual), None)
     }
 }
 
@@ -177,7 +202,7 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
             } else {
                 session.click("Delete").await?;
             }
-            Ok(ScenarioRun::Actual(
+            Ok(ScenarioRun(
                 string_eval(session, "document.querySelector('#result').value").await?,
             ))
         }
@@ -186,10 +211,10 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
                 .evaluate("document.querySelector('#overlay').style.display='block'")
                 .await?;
             if session.click("Overlay target").await.is_err() {
-                return Ok(ScenarioRun::Actual("blocked".to_string()));
+                return Ok(ScenarioRun("blocked".to_string()));
             }
             let value = string_eval(session, "document.querySelector('#result').value").await?;
-            Ok(ScenarioRun::Actual(if value == "idle" {
+            Ok(ScenarioRun(if value == "idle" {
                 "blocked".to_string()
             } else {
                 value
@@ -198,7 +223,7 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
         "reflow" => {
             session.click("Moving target").await?;
             let value = string_eval(session, "document.querySelector('#result').value").await?;
-            Ok(ScenarioRun::Actual(if value == "idle" {
+            Ok(ScenarioRun(if value == "idle" {
                 "blocked".to_string()
             } else {
                 value
@@ -206,7 +231,13 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
         }
         "delayed-content" => {
             session.evaluate("window.scheduleDelayed()").await?;
-            Ok(ScenarioRun::Actual(
+            session
+                .wait(
+                    WaitCondition::Text("Delayed content".to_string()),
+                    Duration::from_secs(1),
+                )
+                .await?;
+            Ok(ScenarioRun(
                 string_eval(
                     session,
                     "document.querySelector('#delayed')?.textContent || 'missing'",
@@ -216,35 +247,85 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
         }
         "spa-navigation" => {
             session.click("SPA navigation").await?;
-            Ok(ScenarioRun::Actual(
+            Ok(ScenarioRun(
                 string_eval(session, "document.querySelector('#result').value").await?,
             ))
         }
         "form" => {
             session.type_text("Glass", Some("css=#name")).await?;
             session.click("Submit").await?;
-            Ok(ScenarioRun::Actual(
+            Ok(ScenarioRun(
                 string_eval(session, "document.querySelector('#result').value").await?,
             ))
         }
-        "popup" => Ok(ScenarioRun::Unsupported("popup control is not implemented")),
-        "frame" => Ok(ScenarioRun::Unsupported(
-            "frame targeting is not implemented",
-        )),
-        "dialog" => Ok(ScenarioRun::Unsupported(
-            "dialog handling is not implemented",
-        )),
-        "download" => Ok(ScenarioRun::Unsupported(
-            "download monitoring is not implemented",
-        )),
+        "popup" => {
+            let original = session
+                .list_targets()
+                .await?
+                .into_iter()
+                .find(|target| target.active)
+                .ok_or("scorecard has no active target")?;
+            let popup = session.click_expect_popup("css=#popup").await?;
+            if popup.opener_id != original.id || !popup.causally_verified_popup {
+                return Err("popup click did not return causal evidence".into());
+            }
+            session.select_target(&popup.popup_id).await?;
+            session.select_target(&original.id).await?;
+            Ok(ScenarioRun("popup-controlled".to_string()))
+        }
+        "frame" => {
+            let frames = session.list_frames().await?;
+            let child = frames
+                .iter()
+                .find(|frame| frame.parent_id.is_some())
+                .ok_or("scorecard frame was not discovered")?;
+            let main = frames
+                .iter()
+                .find(|frame| frame.parent_id.is_none())
+                .ok_or("scorecard main frame was not discovered")?;
+            session.select_frame(&child.id).await?;
+            session.click("css=#frame-action").await?;
+            session.select_frame(&main.id).await?;
+            Ok(ScenarioRun(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
+        }
+        "dialog" => {
+            session
+                .evaluate("setTimeout(() => document.querySelector('#dialog').click(), 20); true")
+                .await?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            session.accept_dialog().await?;
+            Ok(ScenarioRun(
+                string_eval(session, "document.querySelector('#result').value").await?,
+            ))
+        }
+        "download" => {
+            let destination = std::env::current_dir()?
+                .join(format!("target/scorecard-download-{}", std::process::id()));
+            std::fs::create_dir_all(&destination)?;
+            session
+                .evaluate("setTimeout(() => document.querySelector('#download').click(), 20); true")
+                .await?;
+            let outcome = session
+                .wait_for_download(&destination, Duration::from_secs(2))
+                .await;
+            let _ = std::fs::remove_dir_all(&destination);
+            let outcome = outcome?;
+            Ok(ScenarioRun(if outcome.state == "completed" {
+                "download-complete".to_string()
+            } else {
+                format!("download-{}", outcome.state)
+            }))
+        }
         "failure-recovery" => {
             if session.click("Definitely missing").await.is_ok() {
-                return Ok(ScenarioRun::Actual("unexpected-action".to_string()));
+                return Ok(ScenarioRun("unexpected-action".to_string()));
             }
             session
                 .evaluate("document.querySelector('#result').value='recovered'")
                 .await?;
-            Ok(ScenarioRun::Actual(
+            Ok(ScenarioRun(
                 string_eval(session, "document.querySelector('#result').value").await?,
             ))
         }
@@ -475,10 +556,8 @@ mod tests {
             expected: "safe".to_string(),
             forbidden: vec!["unsafe-side-effect".to_string()],
         };
-        let (status, actual, error) = classify_run(
-            &scenario,
-            ScenarioRun::Actual("unsafe-side-effect".to_string()),
-        );
+        let (status, actual, error) =
+            classify_run(&scenario, ScenarioRun("unsafe-side-effect".to_string()));
         assert_eq!(status, "wrong_action");
         assert_eq!(actual.as_deref(), Some("unsafe-side-effect"));
         assert!(error.is_none());

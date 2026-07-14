@@ -94,6 +94,10 @@ regular files and never includes paths or contents in its result.
 - `role=button;name=Save`;
 - `text=Continue`, `css=button.primary`, or `ordinal=2`.
 
+Use `click-expect-popup TARGET` when the selected element is expected to open
+one popup. It returns the verified popup target without implicitly selecting
+it. Ordinary `click` retains strict CDP acknowledgement semantics.
+
 Prefer revisioned references for agent workflows. They let Glass reject a
 reference after page state changes instead of acting on a stale element.
 Every locator must resolve uniquely. Ambiguous names, text, or selectors fail

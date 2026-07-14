@@ -44,6 +44,16 @@ pub struct CdpError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+    #[serde(skip)]
+    kind: CdpErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum CdpErrorKind {
+    #[default]
+    Protocol,
+    Transport,
+    ResponseTimeout,
 }
 
 impl CdpError {
@@ -52,7 +62,25 @@ impl CdpError {
             code: -32_000,
             message: message.into(),
             data: None,
+            kind: CdpErrorKind::Transport,
         }
+    }
+
+    fn response_timeout(timeout: Duration) -> Self {
+        Self {
+            code: -32_000,
+            message: format!(
+                "CDP response timeout after {} seconds",
+                timeout.as_secs_f64()
+            ),
+            data: None,
+            kind: CdpErrorKind::ResponseTimeout,
+        }
+    }
+
+    /// Whether this error is the locally typed expiry of an unanswered CDP request.
+    pub fn is_response_timeout(&self) -> bool {
+        self.kind == CdpErrorKind::ResponseTimeout
     }
 }
 
@@ -368,14 +396,16 @@ impl CdpClient {
         enabled: bool,
     ) -> Result<(), CdpError> {
         let method = format!("{domain}.{}", if enabled { "enable" } else { "disable" });
-        self.send_routed(&method, None, session_id).await?;
+        self.send_routed(&method, None, session_id, self.timeout)
+            .await?;
         Ok(())
     }
 
     /// Send a CDP command and wait for the response.
     pub async fn send(&self, method: &str, params: Option<Value>) -> Result<Value, CdpError> {
         let session_id = self.current_route().session_id;
-        self.send_routed(method, params, session_id).await
+        self.send_routed(method, params, session_id, self.timeout)
+            .await
     }
 
     pub async fn send_browser(
@@ -383,7 +413,7 @@ impl CdpClient {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, CdpError> {
-        self.send_routed(method, params, None).await
+        self.send_routed(method, params, None, self.timeout).await
     }
 
     pub async fn send_to_session(
@@ -392,8 +422,20 @@ impl CdpClient {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, CdpError> {
-        self.send_routed(method, params, Some(session_id.to_string()))
+        self.send_routed(method, params, Some(session_id.to_string()), self.timeout)
             .await
+    }
+
+    /// Send one operation-scoped command without changing the connection's
+    /// default response deadline or active route.
+    pub async fn send_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value, CdpError> {
+        let session_id = self.current_route().session_id;
+        self.send_routed(method, params, session_id, timeout).await
     }
 
     async fn send_routed(
@@ -401,6 +443,7 @@ impl CdpClient {
         method: &str,
         params: Option<Value>,
         session_id: Option<String>,
+        timeout: Duration,
     ) -> Result<Value, CdpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = CdpRequest {
@@ -426,7 +469,7 @@ impl CdpClient {
             armed: true,
         };
 
-        match tokio::time::timeout(self.timeout, response_rx).await {
+        match tokio::time::timeout(timeout, response_rx).await {
             Ok(Ok(result)) => {
                 pending_guard.disarm();
                 result
@@ -435,10 +478,7 @@ impl CdpClient {
                 pending_guard.disarm();
                 Err(CdpError::transport("CDP response channel closed"))
             }
-            Err(_) => Err(CdpError::transport(format!(
-                "CDP response timeout after {} seconds",
-                self.timeout.as_secs_f64()
-            ))),
+            Err(_) => Err(CdpError::response_timeout(timeout)),
         }
     }
 
@@ -649,6 +689,21 @@ impl CdpClient {
             .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))
     }
 
+    /// Translate one already-resolved frontend node into its immutable backend
+    /// identity without repeating the caller's locator query.
+    pub async fn backend_node_id_for_node(&self, node_id: i64) -> Result<i64, CdpError> {
+        let described = self
+            .send(
+                "DOM.describeNode",
+                Some(serde_json::json!({"nodeId": node_id, "depth": 0})),
+            )
+            .await?;
+        described["node"]["backendNodeId"]
+            .as_i64()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| CdpError::transport("DOM.describeNode returned no backendNodeId"))
+    }
+
     /// Invoke a function on a previously resolved remote object.
     pub async fn call_on_object(
         &self,
@@ -671,6 +726,19 @@ impl CdpClient {
         self.send(
             "Runtime.releaseObject",
             Some(serde_json::json!({ "objectId": object_id })),
+        )
+        .await
+    }
+
+    pub async fn release_object_for_session(
+        &self,
+        session_id: &str,
+        object_id: &str,
+    ) -> Result<Value, CdpError> {
+        self.send_to_session(
+            session_id,
+            "Runtime.releaseObject",
+            Some(serde_json::json!({"objectId": object_id})),
         )
         .await
     }
@@ -859,6 +927,29 @@ impl CdpClient {
             params["clickCount"] = Value::from(click_count);
         }
         self.send("Input.dispatchMouseEvent", Some(params)).await
+    }
+
+    /// Dispatch one mouse event with a caller-owned response window.
+    ///
+    /// This does not alter the connection default used by ordinary input.
+    pub async fn dispatch_mouse_event_with_timeout(
+        &self,
+        event_type: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+        click_count: Option<u32>,
+        timeout: Duration,
+    ) -> Result<Value, CdpError> {
+        let mut params = serde_json::json!({"type": event_type, "x": x, "y": y});
+        if let Some(button) = button {
+            params["button"] = Value::from(button);
+        }
+        if let Some(click_count) = click_count {
+            params["clickCount"] = Value::from(click_count);
+        }
+        self.send_with_timeout("Input.dispatchMouseEvent", Some(params), timeout)
+            .await
     }
 
     /// Dispatch a keyboard event via CDP Input.
@@ -1446,6 +1537,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backend_identity_describes_the_existing_frontend_node_without_a_second_query() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(request["method"], "DOM.describeNode");
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"nodeId": 17, "depth": 0})
+            );
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": request["id"],
+                        "result": {"node": {"backendNodeId": 91}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(25), websocket.next())
+                    .await
+                    .is_err(),
+                "backend translation must not repeat the selector query"
+            );
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert_eq!(client.backend_node_id_for_node(17).await.unwrap(), 91);
+        server.await.unwrap();
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn backend_identity_rejects_a_describe_response_without_backend_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": {"node": {}}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let error = client.backend_node_id_for_node(17).await.unwrap_err();
+        assert!(error.message.contains("no backendNodeId"));
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn scroll_into_view_uses_the_backend_node_without_a_layout_probe() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1569,7 +1733,63 @@ mod tests {
                 .unwrap();
         let error = client.send("never", None).await.unwrap_err();
         assert!(error.message.contains("timeout"));
+        assert!(error.is_response_timeout());
         client.close().await;
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn operation_timeout_is_short_and_does_not_change_the_connection_default() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let first = websocket.next().await.unwrap().unwrap();
+            let first: Value = match first {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(first["method"], "short");
+            let second = websocket.next().await.unwrap().unwrap();
+            let second: Value = match second {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(second["method"], "ordinary");
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": second["id"], "result": {"ok": true}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client =
+            CdpClient::connect_with_timeout(&format!("ws://{address}"), Duration::from_millis(500))
+                .await
+                .unwrap();
+        let started = tokio::time::Instant::now();
+        let error = client
+            .send_with_timeout("short", None, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error.is_response_timeout());
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(client.send("ordinary", None).await.unwrap()["ok"], true);
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn protocol_errors_are_not_typed_as_response_timeouts() {
+        let error: CdpError = serde_json::from_value(serde_json::json!({
+            "code": -32000,
+            "message": "some protocol failure"
+        }))
+        .unwrap();
+        assert!(!error.is_response_timeout());
     }
 }

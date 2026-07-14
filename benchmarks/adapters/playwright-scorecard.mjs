@@ -87,7 +87,7 @@ const report = {
     corpus_fixture: corpus.fixture,
     iterations,
     temperature: "warm",
-    profile: "ephemeral-incognito",
+    profile: process.env.GLASS_SCORECARD_PROFILE ?? "fresh-ephemeral-single-session",
     viewport: { width: 1280, height: 720 },
   },
   environment: {
@@ -99,7 +99,7 @@ const report = {
   },
   resources: {
     scope:
-      "Runner RSS is Node only; Chrome process-tree RSS and raw CDP request count are unavailable through the public Playwright adapter and reported as null",
+      "primary-non-browser-runner-process-rss-v1",
     runner: {
       pid: process.pid,
       rss_start_bytes: runnerRssStart,
@@ -137,7 +137,7 @@ async function reset(targetPage) {
 }
 
 async function result(targetPage) {
-  return targetPage.locator("#result").inputValue();
+  return targetPage.locator("#result").evaluate((node) => node.value);
 }
 
 async function runScenario(targetPage, id) {

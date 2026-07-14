@@ -15,8 +15,8 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    ActionOutcome, BrowserResult, BrowserSession, DownloadError, PopupClickError, SessionOptions,
+    TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 
@@ -128,6 +128,9 @@ enum ToolInvocation<'a> {
         timeout_ms: u64,
     },
     Click {
+        target: Cow<'a, str>,
+    },
+    ClickExpectPopup {
         target: Cow<'a, str>,
     },
     DoubleClick {
@@ -552,19 +555,7 @@ async fn handle_request(
         "tools/call" => match call_tool(request, session, options, policy).await {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
-                let text = error
-                    .downcast_ref::<TargetError>()
-                    .and_then(|error| serde_json::to_string(error).ok())
-                    .or_else(|| {
-                        error
-                            .downcast_ref::<WaitTimeout>()
-                            .and_then(|error| serde_json::to_string(error).ok())
-                    })
-                    .or_else(|| {
-                        error
-                            .downcast_ref::<PolicyError>()
-                            .and_then(|error| serde_json::to_string(error).ok())
-                    })
+                let text = typed_browser_error(error.as_ref())
                     .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut response = success_response(
                     request.id.response_value(),
@@ -586,6 +577,32 @@ async fn handle_request(
     Some(response)
 }
 
+fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    error
+        .downcast_ref::<TargetError>()
+        .and_then(|error| serde_json::to_string(error).ok())
+        .or_else(|| {
+            error
+                .downcast_ref::<WaitTimeout>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<PolicyError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<PopupClickError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<DownloadError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+}
+
 async fn call_tool(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
@@ -603,6 +620,9 @@ async fn call_tool(
             serialized_result(&page)
         }
         ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
+        ToolInvocation::ClickExpectPopup { target } => {
+            serialized_result(&session.click_expect_popup(target.as_ref()).await?)
+        }
         ToolInvocation::DoubleClick { target } => {
             action_result(session.double_click(target.as_ref()).await?)
         }
@@ -744,6 +764,9 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
         }),
+        "clickExpectPopup" => Ok(ToolInvocation::ClickExpectPopup {
+            target: required_target(arguments)?,
+        }),
         "doubleClick" => Ok(ToolInvocation::DoubleClick {
             target: required_target(arguments)?,
         }),
@@ -866,6 +889,15 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "click",
             description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
+            }),
+        },
+        Tool {
+            name: "clickExpectPopup",
+            description: "Click one target and return exactly one causally verified popup without selecting it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
@@ -1427,7 +1459,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 32);
+        assert_eq!(tools.len(), 33);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1439,6 +1471,18 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
+        let popup_click = tools
+            .iter()
+            .find(|tool| tool["name"] == "clickExpectPopup")
+            .unwrap();
+        assert_eq!(
+            popup_click["inputSchema"],
+            json!({
+                "type": "object",
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
+            })
+        );
         for name in [
             "listTargets",
             "createTarget",
@@ -1527,6 +1571,63 @@ mod tests {
             .err()
             .expect("invalid boolean option should fail");
         assert!(error.to_string().contains("includeDom must be a boolean"));
+    }
+
+    #[test]
+    fn parses_click_expect_popup_target_and_legacy_selector() {
+        for (arguments, expected) in [
+            (json!({"target": "css=#popup"}), "css=#popup"),
+            (json!({"selector": "#popup"}), "css=#popup"),
+        ] {
+            let params = json!({"name": "clickExpectPopup", "arguments": arguments});
+            assert!(matches!(
+                parse_tool_invocation(&params).unwrap(),
+                ToolInvocation::ClickExpectPopup { target } if target == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn serializes_popup_failures_as_typed_mcp_content() {
+        let error = PopupClickError {
+            kind: crate::browser::session::PopupClickErrorKind::PopupAmbiguous,
+            message: "two opener-matching popups".to_string(),
+        };
+        let text = typed_browser_error(&error).expect("popup error should remain typed");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({
+                "kind": "popup_ambiguous",
+                "message": "two opener-matching popups"
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_download_failures_as_typed_mcp_content() {
+        for (kind, expected) in [
+            (
+                crate::browser::session::DownloadErrorKind::AuthorizationFailed,
+                "authorization_failed",
+            ),
+            (
+                crate::browser::session::DownloadErrorKind::RestorationFailed,
+                "restoration_failed",
+            ),
+        ] {
+            let error = DownloadError {
+                kind,
+                message: "bounded download failure".to_string(),
+            };
+            let text = typed_browser_error(&error).expect("download error should remain typed");
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                json!({
+                    "kind": expected,
+                    "message": "bounded download failure"
+                })
+            );
+        }
     }
 
     #[test]

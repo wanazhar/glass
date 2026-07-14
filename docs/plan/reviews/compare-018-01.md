@@ -822,3 +822,66 @@ regression. The benchmark can now produce complete, clean, revision-bound raw
 evidence. This approves the popup deadline/provenance fixes; it does not
 retroactively make the older metadata-free 30-sample file revision-bound or
 waive the separate MCP download `ENOENT` acceptance defect.
+
+---
+
+## Public MCP download evidence review: `5b93ee9` + `14246f8` + `2ceb457`
+
+Reviewed the documented race diagnosis, public adapter parser, exact-artifact
+follow-up, server trace, and supplied one-iteration result.
+
+### Confirmed behavior
+
+- The root-cause diagnosis matches the trace. The former
+  `browser_run_code_unsafe` path waited for Playwright's download and called
+  `createReadStream` while the released MCP server independently copied the same
+  temporary artifact into its configured output directory. The resulting
+  ownership race produced the observed `ENOENT`.
+- The committed download scenario no longer uses unsafe runner code or direct
+  Playwright APIs. It invokes the already negotiated public `browser_click` tool
+  on the authored download link and waits for that bounded MCP request to
+  complete.
+- The released server trace shows `browser_click`, creation of
+  `<unique-output-dir>/glass.txt`, and a response event stating that
+  `glass.txt` was downloaded to that directory. The supplied one-iteration
+  report completed all 11 scenarios, with download success in 543.01 ms, zero
+  wrong actions, and `hard_gate_passed: true`.
+- Adapter shutdown remains in the top-level `finally`: it terminates the MCP
+  child with bounded escalation and recursively removes the unique output
+  directory.
+
+### Acceptance evidence
+
+The initial `14246f8` predicate alone accepted the completed-event line without
+binding its arbitrary textual destination suffix to the configured directory.
+Follow-up `2ceb457` closes the acceptance gap by synchronously reading the exact
+unique `${outputDir}/glass.txt` after the completed event and requiring its full
+UTF-8 contents to equal the fixture bytes `glass`. A missing path, wrong path,
+directory, unreadable file, or wrong content throws before scenario success.
+
+The textual predicate is bounded by the client's one-MiB response ceiling and
+requires a completed `glass.txt` line under an Events heading in the current
+tool response. Text alone cannot forge success because the separately configured
+unique output path must exist with exact fixture content. The adapter never
+opens the server-owned temporary Playwright artifact; it reads only the completed
+copy it owns and deletes that directory in `finally`.
+
+### Focused verification
+
+- `node --check` on the exact current adapter through `2ceb457` — passed.
+- Reviewed `/tmp/glass-mcp-download-public.json` and
+  `/tmp/glass-mcp-download-public.stderr`; the functional run passed 11/11 and
+  the trace contains the real server-created output path.
+- Reviewed `/tmp/glass-mcp-download-repro.json` and its trace for the original
+  unsafe ownership race.
+- No full acceptance run was performed.
+
+### Verdict
+
+**pass**
+
+The unsafe artifact race is removed. Success now requires the negotiated public
+click response's completed download event plus exact configured-path fixture
+content, with bounded protocol handling and deterministic temporary cleanup. The
+supplied one-iteration adapter result passes all scenarios. This scoped approval
+does not replace the required multi-iteration acceptance rerun.

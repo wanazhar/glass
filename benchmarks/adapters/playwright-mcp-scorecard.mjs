@@ -13,6 +13,7 @@ const command = requiredEnv("PLAYWRIGHT_MCP_COMMAND");
 const expectedVersion = requiredEnv("PLAYWRIGHT_MCP_VERSION");
 const gitRevision = requiredEnv("GLASS_SCORECARD_GIT_REVISION");
 const checkpointPath = requiredEnv("GLASS_SCORECARD_CHECKPOINT_PATH");
+const invocation = { run_id: requiredEnv("GLASS_SCORECARD_RUN_ID"), started_at: requiredEnv("GLASS_SCORECARD_STARTED_AT") };
 const requestTimeoutMs = positiveInteger("PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS", process.env.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS ?? "30000");
 const outputDir = fs.mkdtempSync(`${os.tmpdir()}/glass-playwright-mcp-`);
 const startupStarted = performance.now();
@@ -164,6 +165,7 @@ function writeCheckpoint(completedIterations) {
     schema_version: 1,
     partial: true,
     git_revision: gitRevision,
+    invocation,
     tool: { name: "playwright-mcp", version: expectedVersion },
     configuration: { mcp_command: command, chrome_path: chromePath, request_timeout_ms: requestTimeoutMs,
       headless: true, isolated: true },

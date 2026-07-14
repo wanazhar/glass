@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { retainCheckpointOnTimeout } from "./checkpoint.mjs";
+import { prepareCheckpointInvocation, retainCheckpointOnTimeout } from "./checkpoint.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const contract = readJson(path.join(root, "benchmarks/acceptance-v1.json"));
@@ -107,10 +107,12 @@ async function runAdapter(id, command, args, extraEnv, deadlineMs = commandDeadl
   const stdoutFile = path.join(rawDir, `${id}.json`);
   const stderrFile = path.join(rawDir, `${id}.stderr.log`);
   const checkpointFile = path.join(rawDir, `${id}.checkpoint.json`);
+  const invocation = prepareCheckpointInvocation(checkpointFile);
   try {
     await run(command, args, { deadlineMs, env: { ...extraEnv, GLASS_SCORECARD_ITERATIONS: String(iterations),
       GLASS_SCORECARD_PROFILE: contract.profile_semantics, GLASS_SCORECARD_GIT_REVISION: gitRevision,
-      GLASS_SCORECARD_CHECKPOINT_PATH: checkpointFile }, stdoutFile, stderrFile });
+      GLASS_SCORECARD_CHECKPOINT_PATH: checkpointFile, GLASS_SCORECARD_RUN_ID: invocation.run_id,
+      GLASS_SCORECARD_STARTED_AT: invocation.started_at }, stdoutFile, stderrFile });
     const report = readJson(stdoutFile);
     const derived = validateReport(report, id);
     reports.set(id, { report, derived });
@@ -121,7 +123,8 @@ async function runAdapter(id, command, args, extraEnv, deadlineMs = commandDeadl
     let checkpointReason = null;
     if (error.timedOut && fs.existsSync(checkpointFile)) {
       try {
-        const retained = retainCheckpointOnTimeout({ timedOut: error.timedOut, file: checkpointFile, expected: checkpointExpectation(id, extraEnv) });
+        const retained = retainCheckpointOnTimeout({ timedOut: error.timedOut, file: checkpointFile,
+          expected: checkpointExpectation(id, extraEnv, invocation) });
         checkpoint = path.relative(outputDir, retained.file);
       } catch (checkpointError) {
         checkpoint = path.relative(outputDir, checkpointFile);
@@ -227,8 +230,8 @@ function validateReport(report, id) {
   return derived;
 }
 
-function checkpointExpectation(id, extraEnv) {
-  return { id, version: expectedTools()[id], gitRevision, configuration: {
+function checkpointExpectation(id, extraEnv, invocation) {
+  return { id, version: expectedTools()[id], gitRevision, invocation, configuration: {
       mcp_command: extraEnv.PLAYWRIGHT_MCP_COMMAND, chrome_path: extraEnv.CHROME_PATH,
       request_timeout_ms: Number(extraEnv.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS),
       headless: true, isolated: true },

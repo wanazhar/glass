@@ -36,3 +36,6 @@ publishes revision-bound partial evidence there. A timeout retains a valid
 checkpoint for diagnosis, but it remains explicitly partial and cannot pass an
 acceptance gate. A complete run removes the superseded checkpoint and emits the
 unchanged final report on stdout.
+Before spawning an adapter, the runner removes any prior checkpoint and binds
+the new one to a fresh cryptographic run ID and invocation start time so a
+same-revision retry cannot inherit stale progress.

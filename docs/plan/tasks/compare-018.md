@@ -95,7 +95,8 @@ than the direct adapters. Its per-request deadline, corpus, iteration count,
 viewport, profile semantics, and correctness classification remain identical;
 all latency remains measured and compared. After every complete iteration it
 atomically replaces a caller-provided checkpoint containing the exact Git
-revision and controlled configuration, the completed matrix rows, recomputed
+revision, fresh cryptographic invocation identity, start time, and controlled
+configuration, the completed matrix rows, recomputed
 partial summaries, and explicit progress. Temporary checkpoint files are
 cleaned after publication. A timed-out runner retains and validates this
 checkpoint as partial diagnostic evidence, but partial evidence can never

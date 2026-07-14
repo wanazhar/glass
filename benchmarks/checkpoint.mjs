@@ -1,5 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+export function prepareCheckpointInvocation(file) {
+  fs.rmSync(file, { force: true });
+  return { run_id: randomUUID(), started_at: new Date().toISOString() };
+}
 
 export function atomicWriteJson(file, value, maximumBytes = 8 * 1024 * 1024) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -17,15 +23,17 @@ export function atomicWriteJson(file, value, maximumBytes = 8 * 1024 * 1024) {
 }
 
 export function validatePartialCheckpoint(checkpoint, expected) {
-  exactKeys(checkpoint, ["schema_version", "partial", "git_revision", "tool", "configuration", "run", "progress", "summary", "scenarios"], `${expected.id} checkpoint`);
+  exactKeys(checkpoint, ["schema_version", "partial", "git_revision", "invocation", "tool", "configuration", "run", "progress", "summary", "scenarios"], `${expected.id} checkpoint`);
   if (checkpoint.schema_version !== 1 || checkpoint.partial !== true || checkpoint.git_revision !== expected.gitRevision || !Array.isArray(checkpoint.scenarios))
     throw new Error(`${expected.id} checkpoint has invalid identity metadata`);
   exactKeys(checkpoint.tool, ["name", "version"], `${expected.id} checkpoint tool`);
+  exactKeys(checkpoint.invocation, ["run_id", "started_at"], `${expected.id} checkpoint invocation`);
   exactKeys(checkpoint.configuration, ["mcp_command", "chrome_path", "request_timeout_ms", "headless", "isolated"], `${expected.id} checkpoint configuration`);
   exactKeys(checkpoint.run, ["corpus", "corpus_fixture", "iterations", "temperature", "profile", "viewport"], `${expected.id} checkpoint run`);
   exactKeys(checkpoint.progress, ["completed_iterations", "total_iterations", "completed_rows", "total_rows"], `${expected.id} checkpoint progress`);
   exactKeys(checkpoint.summary, ["successes", "failures", "wrong_actions", "unsupported", "task_success_rate", "hard_gate_passed"], `${expected.id} checkpoint summary`);
-  if (checkpoint.tool.name !== expected.id || checkpoint.tool.version !== expected.version ||
+  if (checkpoint.invocation.run_id !== expected.invocation.run_id || checkpoint.invocation.started_at !== expected.invocation.started_at ||
+      checkpoint.tool.name !== expected.id || checkpoint.tool.version !== expected.version ||
       !sameConfiguration(checkpoint.configuration, expected.configuration) || !sameRun(checkpoint.run, expected.run))
     throw new Error(`${expected.id} checkpoint violates controlled run metadata`);
   const completed = checkpoint.progress.completed_iterations;

@@ -98,9 +98,13 @@ Playwright artifact through unsafe runner code.
 Eligibility fails closed without revision-bound evidence for every ratified
 performance, protocol, release-validation, and real-browser platform gate.
 
-The released Playwright MCP 0.0.78 adapter has a 20-minute total process
-ceiling because its negotiated public JSON-RPC workflow is materially slower
-than the direct adapters. Its per-request deadline, corpus, iteration count,
+The released Playwright MCP 0.0.78 adapter has a bounded, iteration-scaled
+process ceiling because its negotiated public JSON-RPC workflow is materially
+slower than the direct adapters. The ceiling is two minutes of setup and
+shutdown headroom plus 30 seconds per controlled iteration (52 minutes for the
+ratified 100-iteration run). This budget exceeds the measured healthy runtime
+without granting any individual request more time. Its per-request deadline,
+corpus, iteration count,
 viewport, profile semantics, and correctness classification remain identical;
 all latency remains measured and compared. After every complete iteration it
 atomically replaces a caller-provided checkpoint containing the exact Git

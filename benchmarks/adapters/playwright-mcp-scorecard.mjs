@@ -109,7 +109,7 @@ async function runScenario(mcp, id) {
       await mcp.tool("browser_handle_dialog", { accept: true });
       return waitForDialogCompletion(mcp);
     case "download":
-      return runCode(mcp, "async (page) => { const event = page.waitForEvent('download'); await page.locator('#download').click(); const download = await event; await download.createReadStream(); return 'download-complete'; }");
+      return downloadWithPublicTools(mcp);
     case "failure-recovery":
       return runCode(mcp, "async (page) => { try { await page.getByText('Definitely missing', { exact: true }).click({ timeout: 100 }); return 'unexpected-action'; } catch { await page.locator('#result').evaluate(node => node.value='recovered'); return 'recovered'; } }");
     default: throw new Error(`unknown scenario ${id}`);
@@ -133,6 +133,13 @@ async function waitForDialogCompletion(mcp) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("dialog did not reach accepted state within 500 ms");
+}
+async function downloadWithPublicTools(mcp) {
+  const response = await mcp.tool("browser_click", { element: "Download", target: "#download" });
+  const text = response.content?.filter(({ type }) => type === "text").map(({ text }) => text).join("\n") ?? "";
+  if (!/^### Events\n[\s\S]*^- Downloaded file glass\.txt to /m.test(text))
+    throw new Error("Playwright MCP did not report a completed download artifact");
+  return "download-complete";
 }
 function parseResult(value) {
   const text = value.content?.find(({ type }) => type === "text")?.text;

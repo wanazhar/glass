@@ -142,3 +142,15 @@ distribution and missing-ack recovery latency. Recovery is expected to complete
 in under one second. One sample may diagnose the path but cannot support a
 performance claim. The diagnostic run must remain popup-specific; the retained
 100-iteration competitive acceptance gate stays blocked until review passes.
+
+## Attempt 05 checkpoint
+
+Reviewed revision `c334b446890473d63104dea04c90d0490f712ba3` passed all 1,100
+Glass rows and all 1,100 Playwright 1.61.1 rows with zero wrong actions.
+Playwright MCP 0.0.78 then failed the download scenario in each of its first
+two completed iterations: the public click tool returned `isError` with an
+empty error section. The revision-, configuration-, and invocation-bound
+checkpoint retains 20 successes and two failures. The adapter was stopped once
+the hard gate was irrecoverable, so no downstream ratified benchmark,
+fuzz/build envelope, or platform run followed. Attempt 05 remains fail-closed
+and is not best-in-class evidence.

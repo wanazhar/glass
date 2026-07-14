@@ -1,0 +1,289 @@
+{
+  "schema_version": 1,
+  "partial": true,
+  "git_revision": "c334b446890473d63104dea04c90d0490f712ba3",
+  "invocation": {
+    "run_id": "ec8f0f63-2a3b-4cb9-ae70-7c12283f38e0",
+    "started_at": "2026-07-14T07:03:58.682Z"
+  },
+  "tool": {
+    "name": "playwright-mcp",
+    "version": "0.0.78"
+  },
+  "configuration": {
+    "mcp_command": "/tmp/glass-acceptance-9JVT9y/npm/node_modules/.bin/playwright-mcp",
+    "chrome_path": "/snap/bin/chromium",
+    "request_timeout_ms": 30000,
+    "headless": true,
+    "isolated": true
+  },
+  "run": {
+    "corpus": "glass-local-v1",
+    "corpus_fixture": "tests/fixtures/scorecard.html",
+    "iterations": 100,
+    "temperature": "warm",
+    "profile": "fresh-ephemeral-single-session",
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "progress": {
+    "completed_iterations": 2,
+    "total_iterations": 100,
+    "completed_rows": 22,
+    "total_rows": 1100
+  },
+  "summary": {
+    "successes": 20,
+    "failures": 2,
+    "wrong_actions": 0,
+    "unsupported": 0,
+    "task_success_rate": 0.9090909090909091,
+    "hard_gate_passed": false
+  },
+  "scenarios": [
+    {
+      "id": "duplicate-label",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "right-target",
+      "actual": "right-target",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1081.482043,
+      "cdp_requests": null
+    },
+    {
+      "id": "overlay",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 6034.455518999999,
+      "cdp_requests": null
+    },
+    {
+      "id": "reflow",
+      "category": "targeting",
+      "iteration": 1,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1046.6479459999991,
+      "cdp_requests": null
+    },
+    {
+      "id": "delayed-content",
+      "category": "wait",
+      "iteration": 1,
+      "expected": "Delayed content",
+      "actual": "Delayed content",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1225.9551190000002,
+      "cdp_requests": null
+    },
+    {
+      "id": "spa-navigation",
+      "category": "navigation",
+      "iteration": 1,
+      "expected": "spa-complete",
+      "actual": "spa-complete",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1073.9008310000008,
+      "cdp_requests": null
+    },
+    {
+      "id": "form",
+      "category": "input",
+      "iteration": 1,
+      "expected": "submitted:Glass",
+      "actual": "submitted:Glass",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1083.9320069999994,
+      "cdp_requests": null
+    },
+    {
+      "id": "popup",
+      "category": "topology",
+      "iteration": 1,
+      "expected": "popup-controlled",
+      "actual": "popup-controlled",
+      "status": "success",
+      "error": null,
+      "latency_ms": 620.8004919999985,
+      "cdp_requests": null
+    },
+    {
+      "id": "frame",
+      "category": "topology",
+      "iteration": 1,
+      "expected": "frame-clicked",
+      "actual": "frame-clicked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 556.8946680000008,
+      "cdp_requests": null
+    },
+    {
+      "id": "dialog",
+      "category": "diagnostic",
+      "iteration": 1,
+      "expected": "dialog-accepted",
+      "actual": "dialog-accepted",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1050.7226320000009,
+      "cdp_requests": null
+    },
+    {
+      "id": "download",
+      "category": "diagnostic",
+      "iteration": 1,
+      "expected": "download-complete",
+      "actual": null,
+      "status": "failure",
+      "error": "### Error\n\n### Ran Playwright code\n```js\nawait page.locator('#download').click();\n```\n### Page\n- Page URL: data:text/html;base64,PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KICA8aGVhZD4KICAgIDxtZXRhIGNoYXJzZXQ9InV0Zi04Ij4KICAgIDx0aXRsZT5HbGFzcyBTY29yZWNhcmQgRml4dHVyZSB2MTwvdGl0bGU+CiAgICA8c3R5bGU+CiAgICAgICNvdmVybGF5IHsgcG9zaXRpb246IGZpeGVkOyBpbnNldDogMDsgZGlzcGxheTogbm9uZTsgei1pbmRleDogMTA7IGJhY2tncm91bmQ6ICNmZmY4OyB9CiAgICAgICNtb3ZpbmcgeyBwb3NpdGlvbjogcmVsYXRpdmU7IH0KICAgICAgaWZyYW1lIHsgd2lkdGg6IDMwMHB4OyBoZWlnaHQ6IDEwMHB4OyB9CiAgICA8L3N0eWxlPgogIDwvaGVhZD4KICA8Ym9keT4KICAgIDxtYWluPgogICAgICA8YnV0dG9uIGlkPSJkdXBsaWNhdGUtd3JvbmciPkRlbGV0ZSBkcmFmdDwvYnV0dG9uPgogICAgICA8YnV0dG9uIGlkPSJkdXBsaWNhdGUtcmlnaHQiPkRlbGV0ZTwvYnV0dG9uPgogICAgICA8YnV0dG9uIGlkPSJvdmVybGF5LXRhcmdldCI+T3ZlcmxheSB0YXJnZXQ8L2J1dHRvbj4KICAgICAgPGRpdiBpZD0ib3ZlcmxheSI+QmxvY2tpbmcgb3ZlcmxheTwvZGl2PgogICAgICA8YnV0dG9uIGlkPSJtb3ZpbmciPk1vdmluZyB0YXJnZXQ8L2J1dHRvbj4KICAgICAgPGJ1dHRvbiBpZD0ic3BhIj5TUEEgbmF2aWdhdGlvbjwvYnV0dG9uPgogICAgICA8Zm9ybSBpZD0iZm9ybSI+PGxhYmVsPk5hbWUgPGlucHV0IGlkPSJuYW1lIj48L2xhYmVsPjxidXR0b24+U3VibWl0PC9idXR0b24+PC9mb3JtPgogICAgICA8YnV0dG9uIGlkPSJwb3B1cCI+UG9wdXA8L2J1dHRvbj4KICAgICAgPGJ1dHRvbiBpZD0iZGlhbG9nIj5EaWFsb2c8L2J1dHRvbj4KICAgICAgPGEgaWQ9ImRvd25sb2FkIiBkb3dubG9hZD0iZ2xhc3MudHh0IiBocmVmPSJkYXRhOnRleHQvcGxhaW4sZ2xhc3MiPkRvd25sb2FkPC9hPgogICAgICA8aWZyYW1lIGlkPSJmcmFtZSIgc3JjZG9jPSI8YnV0dG9uIGlkPSdmcmFtZS1hY3Rpb24nIG9uY2xpY2s9JnF1b3Q7cGFyZW50LmRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoJyNyZXN1bHQnKS52YWx1ZT0nZnJhbWUtY2xpY2tlZCcmcXVvdDs+RnJhbWUgYWN0aW9uPC9idXR0b24+Ij48L2lmcmFtZT4KICAgICAgPG91dHB1dCBpZD0icmVzdWx0Ij5pZGxlPC9vdXRwdXQ+CiAgICA8L21haW4+CiAgICA8c2NyaXB0PgogICAgICBjb25zdCByZXN1bHQgPSBkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCIjcmVzdWx0Iik7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkdXBsaWNhdGUtd3JvbmciKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gIndyb25nLXRhcmdldCI7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkdXBsaWNhdGUtcmlnaHQiKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gInJpZ2h0LXRhcmdldCI7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNvdmVybGF5LXRhcmdldCIpLm9uY2xpY2sgPSAoKSA9PiByZXN1bHQudmFsdWUgPSAib3ZlcmxheS1jbGlja2VkIjsKICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI21vdmluZyIpLm9ucG9pbnRlcmRvd24gPSAoKSA9PiB7CiAgICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI21vdmluZyIpLnN0eWxlLmxlZnQgPSAiMjQwcHgiOwogICAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNvdmVybGF5Iikuc3R5bGUuZGlzcGxheSA9ICJibG9jayI7CiAgICAgIH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNtb3ZpbmciKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gInJlZmxvdy1jbGlja2VkIjsKICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI3NwYSIpLm9uY2xpY2sgPSAoKSA9PiB7IGhpc3RvcnkucHVzaFN0YXRlKHt9LCAiIiwgIiNzcGEtY29tcGxldGUiKTsgcmVzdWx0LnZhbHVlID0gInNwYS1jb21wbGV0ZSI7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNmb3JtIikub25zdWJtaXQgPSBldmVudCA9PiB7IGV2ZW50LnByZXZlbnREZWZhdWx0KCk7IHJlc3VsdC52YWx1ZSA9ICJzdWJtaXR0ZWQ6IiArIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNuYW1lIikudmFsdWU7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNwb3B1cCIpLm9uY2xpY2sgPSAoKSA9PiB7IHdpbmRvdy5maXh0dXJlUG9wdXAgPSB3aW5kb3cub3BlbigiYWJvdXQ6YmxhbmsiLCAiZml4dHVyZS1wb3B1cCIpOyByZXN1bHQudmFsdWUgPSB3aW5kb3cuZml4dHVyZVBvcHVwID8gInBvcHVwLW9wZW5lZCIgOiAicG9wdXAtYmxvY2tlZCI7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkaWFsb2ciKS5vbmNsaWNrID0gKCkgPT4geyBpZiAoY29uZmlybSgiQ29udGludWU/IikpIHJlc3VsdC52YWx1ZSA9ICJkaWFsb2ctYWNjZXB0ZWQiOyB9OwogICAgICBkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCIjZG93bmxvYWQiKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gImRvd25sb2FkLXJlcXVlc3RlZCI7CiAgICAgIHdpbmRvdy5zY2hlZHVsZURlbGF5ZWQgPSAoKSA9PiB7CiAgICAgICAgY2xlYXJUaW1lb3V0KHdpbmRvdy5kZWxheWVkVGltZXIpOwogICAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkZWxheWVkIik/LnJlbW92ZSgpOwogICAgICAgIHdpbmRvdy5kZWxheWVkVGltZXIgPSBzZXRUaW1lb3V0KCgpID0+IHsgY29uc3Qgbm9kZSA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoInAiKTsgbm9kZS5pZCA9ICJkZWxheWVkIjsgbm9kZS50ZXh0Q29udGVudCA9ICJEZWxheWVkIGNvbnRlbnQiOyBkb2N1bWVudC5ib2R5LmFwcGVuZChub2RlKTsgfSwgMTUwKTsKICAgICAgfTsKICAgICAgd2luZG93LnJlc2V0Rml4dHVyZSA9ICgpID0+IHsKICAgICAgICByZXN1bHQudmFsdWUgPSAiaWRsZSI7CiAgICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI292ZXJsYXkiKS5zdHlsZS5kaXNwbGF5ID0gI…[truncated]",
+      "latency_ms": 541.6956430000027,
+      "cdp_requests": null
+    },
+    {
+      "id": "failure-recovery",
+      "category": "recovery",
+      "iteration": 1,
+      "expected": "recovered",
+      "actual": "recovered",
+      "status": "success",
+      "error": null,
+      "latency_ms": 619.7871300000006,
+      "cdp_requests": null
+    },
+    {
+      "id": "duplicate-label",
+      "category": "targeting",
+      "iteration": 2,
+      "expected": "right-target",
+      "actual": "right-target",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1056.879162000001,
+      "cdp_requests": null
+    },
+    {
+      "id": "overlay",
+      "category": "targeting",
+      "iteration": 2,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 6030.639427000002,
+      "cdp_requests": null
+    },
+    {
+      "id": "reflow",
+      "category": "targeting",
+      "iteration": 2,
+      "expected": "blocked",
+      "actual": "blocked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1039.3323729999975,
+      "cdp_requests": null
+    },
+    {
+      "id": "delayed-content",
+      "category": "wait",
+      "iteration": 2,
+      "expected": "Delayed content",
+      "actual": "Delayed content",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1224.3353549999993,
+      "cdp_requests": null
+    },
+    {
+      "id": "spa-navigation",
+      "category": "navigation",
+      "iteration": 2,
+      "expected": "spa-complete",
+      "actual": "spa-complete",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1066.4543369999956,
+      "cdp_requests": null
+    },
+    {
+      "id": "form",
+      "category": "input",
+      "iteration": 2,
+      "expected": "submitted:Glass",
+      "actual": "submitted:Glass",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1089.8088560000033,
+      "cdp_requests": null
+    },
+    {
+      "id": "popup",
+      "category": "topology",
+      "iteration": 2,
+      "expected": "popup-controlled",
+      "actual": "popup-controlled",
+      "status": "success",
+      "error": null,
+      "latency_ms": 587.3469560000012,
+      "cdp_requests": null
+    },
+    {
+      "id": "frame",
+      "category": "topology",
+      "iteration": 2,
+      "expected": "frame-clicked",
+      "actual": "frame-clicked",
+      "status": "success",
+      "error": null,
+      "latency_ms": 547.7539319999996,
+      "cdp_requests": null
+    },
+    {
+      "id": "dialog",
+      "category": "diagnostic",
+      "iteration": 2,
+      "expected": "dialog-accepted",
+      "actual": "dialog-accepted",
+      "status": "success",
+      "error": null,
+      "latency_ms": 1047.614066999995,
+      "cdp_requests": null
+    },
+    {
+      "id": "download",
+      "category": "diagnostic",
+      "iteration": 2,
+      "expected": "download-complete",
+      "actual": null,
+      "status": "failure",
+      "error": "### Error\n\n### Ran Playwright code\n```js\nawait page.locator('#download').click();\n```\n### Page\n- Page URL: data:text/html;base64,PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KICA8aGVhZD4KICAgIDxtZXRhIGNoYXJzZXQ9InV0Zi04Ij4KICAgIDx0aXRsZT5HbGFzcyBTY29yZWNhcmQgRml4dHVyZSB2MTwvdGl0bGU+CiAgICA8c3R5bGU+CiAgICAgICNvdmVybGF5IHsgcG9zaXRpb246IGZpeGVkOyBpbnNldDogMDsgZGlzcGxheTogbm9uZTsgei1pbmRleDogMTA7IGJhY2tncm91bmQ6ICNmZmY4OyB9CiAgICAgICNtb3ZpbmcgeyBwb3NpdGlvbjogcmVsYXRpdmU7IH0KICAgICAgaWZyYW1lIHsgd2lkdGg6IDMwMHB4OyBoZWlnaHQ6IDEwMHB4OyB9CiAgICA8L3N0eWxlPgogIDwvaGVhZD4KICA8Ym9keT4KICAgIDxtYWluPgogICAgICA8YnV0dG9uIGlkPSJkdXBsaWNhdGUtd3JvbmciPkRlbGV0ZSBkcmFmdDwvYnV0dG9uPgogICAgICA8YnV0dG9uIGlkPSJkdXBsaWNhdGUtcmlnaHQiPkRlbGV0ZTwvYnV0dG9uPgogICAgICA8YnV0dG9uIGlkPSJvdmVybGF5LXRhcmdldCI+T3ZlcmxheSB0YXJnZXQ8L2J1dHRvbj4KICAgICAgPGRpdiBpZD0ib3ZlcmxheSI+QmxvY2tpbmcgb3ZlcmxheTwvZGl2PgogICAgICA8YnV0dG9uIGlkPSJtb3ZpbmciPk1vdmluZyB0YXJnZXQ8L2J1dHRvbj4KICAgICAgPGJ1dHRvbiBpZD0ic3BhIj5TUEEgbmF2aWdhdGlvbjwvYnV0dG9uPgogICAgICA8Zm9ybSBpZD0iZm9ybSI+PGxhYmVsPk5hbWUgPGlucHV0IGlkPSJuYW1lIj48L2xhYmVsPjxidXR0b24+U3VibWl0PC9idXR0b24+PC9mb3JtPgogICAgICA8YnV0dG9uIGlkPSJwb3B1cCI+UG9wdXA8L2J1dHRvbj4KICAgICAgPGJ1dHRvbiBpZD0iZGlhbG9nIj5EaWFsb2c8L2J1dHRvbj4KICAgICAgPGEgaWQ9ImRvd25sb2FkIiBkb3dubG9hZD0iZ2xhc3MudHh0IiBocmVmPSJkYXRhOnRleHQvcGxhaW4sZ2xhc3MiPkRvd25sb2FkPC9hPgogICAgICA8aWZyYW1lIGlkPSJmcmFtZSIgc3JjZG9jPSI8YnV0dG9uIGlkPSdmcmFtZS1hY3Rpb24nIG9uY2xpY2s9JnF1b3Q7cGFyZW50LmRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoJyNyZXN1bHQnKS52YWx1ZT0nZnJhbWUtY2xpY2tlZCcmcXVvdDs+RnJhbWUgYWN0aW9uPC9idXR0b24+Ij48L2lmcmFtZT4KICAgICAgPG91dHB1dCBpZD0icmVzdWx0Ij5pZGxlPC9vdXRwdXQ+CiAgICA8L21haW4+CiAgICA8c2NyaXB0PgogICAgICBjb25zdCByZXN1bHQgPSBkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCIjcmVzdWx0Iik7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkdXBsaWNhdGUtd3JvbmciKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gIndyb25nLXRhcmdldCI7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkdXBsaWNhdGUtcmlnaHQiKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gInJpZ2h0LXRhcmdldCI7CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNvdmVybGF5LXRhcmdldCIpLm9uY2xpY2sgPSAoKSA9PiByZXN1bHQudmFsdWUgPSAib3ZlcmxheS1jbGlja2VkIjsKICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI21vdmluZyIpLm9ucG9pbnRlcmRvd24gPSAoKSA9PiB7CiAgICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI21vdmluZyIpLnN0eWxlLmxlZnQgPSAiMjQwcHgiOwogICAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNvdmVybGF5Iikuc3R5bGUuZGlzcGxheSA9ICJibG9jayI7CiAgICAgIH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNtb3ZpbmciKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gInJlZmxvdy1jbGlja2VkIjsKICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI3NwYSIpLm9uY2xpY2sgPSAoKSA9PiB7IGhpc3RvcnkucHVzaFN0YXRlKHt9LCAiIiwgIiNzcGEtY29tcGxldGUiKTsgcmVzdWx0LnZhbHVlID0gInNwYS1jb21wbGV0ZSI7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNmb3JtIikub25zdWJtaXQgPSBldmVudCA9PiB7IGV2ZW50LnByZXZlbnREZWZhdWx0KCk7IHJlc3VsdC52YWx1ZSA9ICJzdWJtaXR0ZWQ6IiArIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNuYW1lIikudmFsdWU7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNwb3B1cCIpLm9uY2xpY2sgPSAoKSA9PiB7IHdpbmRvdy5maXh0dXJlUG9wdXAgPSB3aW5kb3cub3BlbigiYWJvdXQ6YmxhbmsiLCAiZml4dHVyZS1wb3B1cCIpOyByZXN1bHQudmFsdWUgPSB3aW5kb3cuZml4dHVyZVBvcHVwID8gInBvcHVwLW9wZW5lZCIgOiAicG9wdXAtYmxvY2tlZCI7IH07CiAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkaWFsb2ciKS5vbmNsaWNrID0gKCkgPT4geyBpZiAoY29uZmlybSgiQ29udGludWU/IikpIHJlc3VsdC52YWx1ZSA9ICJkaWFsb2ctYWNjZXB0ZWQiOyB9OwogICAgICBkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCIjZG93bmxvYWQiKS5vbmNsaWNrID0gKCkgPT4gcmVzdWx0LnZhbHVlID0gImRvd25sb2FkLXJlcXVlc3RlZCI7CiAgICAgIHdpbmRvdy5zY2hlZHVsZURlbGF5ZWQgPSAoKSA9PiB7CiAgICAgICAgY2xlYXJUaW1lb3V0KHdpbmRvdy5kZWxheWVkVGltZXIpOwogICAgICAgIGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNkZWxheWVkIik/LnJlbW92ZSgpOwogICAgICAgIHdpbmRvdy5kZWxheWVkVGltZXIgPSBzZXRUaW1lb3V0KCgpID0+IHsgY29uc3Qgbm9kZSA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoInAiKTsgbm9kZS5pZCA9ICJkZWxheWVkIjsgbm9kZS50ZXh0Q29udGVudCA9ICJEZWxheWVkIGNvbnRlbnQiOyBkb2N1bWVudC5ib2R5LmFwcGVuZChub2RlKTsgfSwgMTUwKTsKICAgICAgfTsKICAgICAgd2luZG93LnJlc2V0Rml4dHVyZSA9ICgpID0+IHsKICAgICAgICByZXN1bHQudmFsdWUgPSAiaWRsZSI7CiAgICAgICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiI292ZXJsYXkiKS5zdHlsZS5kaXNwbGF5ID0gI…[truncated]",
+      "latency_ms": 542.5027239999981,
+      "cdp_requests": null
+    },
+    {
+      "id": "failure-recovery",
+      "category": "recovery",
+      "iteration": 2,
+      "expected": "recovered",
+      "actual": "recovered",
+      "status": "success",
+      "error": null,
+      "latency_ms": 617.6230460000006,
+      "cdp_requests": null
+    }
+  ]
+}

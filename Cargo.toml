@@ -23,8 +23,8 @@ tokio = {
 tokio-tungstenite = "0.26"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2"

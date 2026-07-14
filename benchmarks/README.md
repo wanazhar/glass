@@ -88,6 +88,22 @@ NODE_PATH="$tmp_dir/node_modules" \
 
 ## Core browser workflow
 
+### Popup completion diagnostic
+
+Use the popup-only runner to separate healthy `mouseReleased` acknowledgement
+waits from causally verified missing-ack recovery. It never runs the competitive
+acceptance corpus:
+
+```sh
+CHROME_PATH=/absolute/path/to/chromium \
+  GLASS_POPUP_BENCH_ITERATIONS=20 \
+  cargo run --release --example popup_benchmark > popup-benchmark.json
+```
+
+The report publishes p50/p95/max distributions for each path and checks the
+missing-ack recovery expectation of under one second. A path needs at least 20
+samples to become claim-eligible; a one-iteration run is diagnostic only.
+
 Build the optimized binary first, then write one JSON report per run:
 
 ```sh

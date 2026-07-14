@@ -824,6 +824,7 @@ pub struct PopupClickOutcome {
 pub struct PopupVerificationEvidence {
     pub trusted_click_witness: bool,
     pub release_acknowledged: bool,
+    pub release_ack_wait_ms: f64,
     pub topology_sequence_before_release: u64,
     pub popup_observed_sequence: u64,
     pub attached: bool,
@@ -2968,6 +2969,7 @@ impl BrowserSession {
 
         // This snapshot is intentionally adjacent to and before the release.
         let snapshot = self.popup_topology_snapshot().await?;
+        let release_started = std::time::Instant::now();
         let release = self
             .cdp
             .dispatch_mouse_event_with_timeout(
@@ -2979,6 +2981,7 @@ impl BrowserSession {
                 POPUP_RELEASE_ACK_TIMEOUT,
             )
             .await;
+        let release_ack_wait_ms = release_started.elapsed().as_secs_f64() * 1_000.0;
         let release_acknowledged = match release {
             Ok(_) => true,
             Err(error) if error.is_response_timeout() => false,
@@ -3011,6 +3014,7 @@ impl BrowserSession {
             evidence: PopupVerificationEvidence {
                 trusted_click_witness: true,
                 release_acknowledged,
+                release_ack_wait_ms,
                 topology_sequence_before_release: snapshot.sequence,
                 popup_observed_sequence: candidate.observed_sequence,
                 attached: true,
@@ -6896,6 +6900,21 @@ mod tests {
             serde_json::to_value(error).unwrap()["kind"],
             "popup_missing"
         );
+    }
+
+    #[test]
+    fn popup_timing_evidence_is_explicitly_serializable() {
+        let evidence = PopupVerificationEvidence {
+            trusted_click_witness: true,
+            release_acknowledged: false,
+            release_ack_wait_ms: 500.5,
+            topology_sequence_before_release: 1,
+            popup_observed_sequence: 2,
+            attached: true,
+            ready_state: "complete".to_string(),
+        };
+        let value = serde_json::to_value(evidence).unwrap();
+        assert_eq!(value["release_ack_wait_ms"], 500.5);
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, SessionOptions, TargetError,
+    ActionOutcome, BrowserResult, BrowserSession, PopupClickError, SessionOptions, TargetError,
     VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
@@ -555,19 +555,7 @@ async fn handle_request(
         "tools/call" => match call_tool(request, session, options, policy).await {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
-                let text = error
-                    .downcast_ref::<TargetError>()
-                    .and_then(|error| serde_json::to_string(error).ok())
-                    .or_else(|| {
-                        error
-                            .downcast_ref::<WaitTimeout>()
-                            .and_then(|error| serde_json::to_string(error).ok())
-                    })
-                    .or_else(|| {
-                        error
-                            .downcast_ref::<PolicyError>()
-                            .and_then(|error| serde_json::to_string(error).ok())
-                    })
+                let text = typed_browser_error(error.as_ref())
                     .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut response = success_response(
                     request.id.response_value(),
@@ -587,6 +575,27 @@ async fn handle_request(
         ),
     };
     Some(response)
+}
+
+fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    error
+        .downcast_ref::<TargetError>()
+        .and_then(|error| serde_json::to_string(error).ok())
+        .or_else(|| {
+            error
+                .downcast_ref::<WaitTimeout>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<PolicyError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<PopupClickError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
 }
 
 async fn call_tool(
@@ -1571,6 +1580,22 @@ mod tests {
                 ToolInvocation::ClickExpectPopup { target } if target == expected
             ));
         }
+    }
+
+    #[test]
+    fn serializes_popup_failures_as_typed_mcp_content() {
+        let error = PopupClickError {
+            kind: crate::browser::session::PopupClickErrorKind::PopupAmbiguous,
+            message: "two opener-matching popups".to_string(),
+        };
+        let text = typed_browser_error(&error).expect("popup error should remain typed");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({
+                "kind": "popup_ambiguous",
+                "message": "two opener-matching popups"
+            })
+        );
     }
 
     #[test]

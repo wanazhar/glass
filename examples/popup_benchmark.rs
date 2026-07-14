@@ -1,8 +1,10 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+use chrono::Utc;
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{BrowserResult, BrowserSession, InteractionMode, SessionOptions};
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -109,7 +111,28 @@ async fn main() -> BrowserResult<()> {
     let report = json!({
         "schema_version": 1,
         "benchmark": "glass-popup-completion-v1",
-        "chrome_path": chrome_path,
+        "generated_at_utc": Utc::now().to_rfc3339(),
+        "git_revision": command_output("git", &["rev-parse", "HEAD"]),
+        "git_worktree_clean": command_output("git", &["status", "--porcelain"])
+            .as_deref() == Some(""),
+        "raw_artifact_path": std::env::var("GLASS_POPUP_BENCH_ARTIFACT")
+            .unwrap_or_else(|_| "stdout".to_string()),
+        "command": {
+            "program": "cargo",
+            "arguments": ["run", "--locked", "--release", "--example", "popup_benchmark"],
+            "environment": {
+                "CHROME_PATH": chrome_path,
+                "GLASS_POPUP_BENCH_ITERATIONS": iterations.to_string()
+            }
+        },
+        "environment": {
+            "os": std::env::consts::OS,
+            "architecture": std::env::consts::ARCH,
+            "host": std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
+            "chrome_version": command_output(chrome_path.to_string_lossy().as_ref(), &["--version"]),
+            "rust": command_output("rustc", &["--version"]),
+            "glass_version": env!("CARGO_PKG_VERSION")
+        },
         "iterations": iterations,
         "healthy_release_ack_control": distribution(&mut healthy_ack_ms),
         "missing_ack_recovery": {
@@ -128,6 +151,14 @@ async fn main() -> BrowserResult<()> {
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn command_output(command: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(arguments).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn distribution(samples: &mut [f64]) -> serde_json::Value {

@@ -205,3 +205,20 @@ Adversarial review rejected it, and the implementation was reverted. The next
 candidate must target the dominant 4.1–5.1 ms Chrome accessibility-tree call
 through a correctness-preserving event-driven design; depth caps, unbracketed
 parallel reads, and threshold relaxation remain disallowed.
+
+## First native release-matrix blockers
+
+Release run `29316895156` passed verification, supply-chain checks, and the
+five fuzz targets, then exposed platform defects before artifact publication.
+Both Windows targets fail to compile Unix-only archive bookkeeping. Parallel
+browser smoke exhausts Linux runner resources, macOS profile assertions encode
+Linux paths, the mutation-race fixture is timing-dependent on faster hosts, and
+macOS clear does not reliably select all through an OS-specific modifier.
+
+The corrective contract is to compile every native target, serialize the
+resource-intensive browser smoke within each runner, derive profile assertions
+from the configured platform directory, make the race fixture structurally
+long enough to overlap both observation attempts, and use Chromium's explicit
+`SelectAll` editing command before the verified Backspace action. No failing
+assertion is removed, and every target must rerun a real managed browser before
+platform evidence can pass.

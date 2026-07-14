@@ -885,3 +885,39 @@ click response's completed download event plus exact configured-path fixture
 content, with bounded protocol handling and deterministic temporary cleanup. The
 supplied one-iteration adapter result passes all scenarios. This scoped approval
 does not replace the required multi-iteration acceptance rerun.
+
+---
+
+## MCP checkpoint invocation re-review: `904d685`
+
+Re-reviewed the focused fix for stale same-revision checkpoint attribution.
+
+### Confirmed behavior
+
+- The runner removes the deterministic checkpoint path before spawning the
+  adapter and creates a fresh cryptographic UUID plus UTC start time for every
+  invocation.
+- The exact invocation identity is passed to the adapter, written into every
+  atomic checkpoint, and matched byte-for-byte during timeout validation in
+  addition to the Git revision and controlled configuration.
+- A timeout before the first checkpoint publication finds no file, so a stale
+  checkpoint cannot be retained as current partial diagnostic evidence.
+- The lifecycle regression pre-seeds a valid stale checkpoint, prepares a new
+  invocation, verifies both fresh identity and unlinking, and confirms that a
+  pre-publication timeout retains nothing.
+
+### Focused verification
+
+- `node --test benchmarks/tests/checkpoint.test.mjs` - passed 4 tests.
+- `node --check benchmarks/checkpoint.mjs` - passed.
+- `node --check benchmarks/run-acceptance.mjs` - passed.
+- `node --check benchmarks/adapters/playwright-mcp-scorecard.mjs` - passed.
+- No browser or full acceptance run was performed.
+
+### Verdict
+
+**pass**
+
+The stale-checkpoint provenance blocker and its lifecycle-test gap are closed.
+No new blocker was found in this bounded scope. Partial checkpoint evidence
+remains diagnostic-only and cannot satisfy an acceptance or best-in-class gate.

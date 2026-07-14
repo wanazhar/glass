@@ -3323,11 +3323,33 @@ impl BrowserSession {
                 }
                 (topology.sequence, topology.event_loss_count)
             };
-            let targets = popup_verification_call(
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology deadline expired before authoritative discovery",
+                ));
+            }
+            let targets = match tokio::time::timeout(
+                remaining,
                 self.cdp.send_browser("Target.getTargets", None),
-                "final authoritative popup target discovery",
             )
-            .await?;
+            .await
+            {
+                Ok(Ok(targets)) => targets,
+                Ok(Err(error)) => {
+                    return Err(popup_error(
+                        PopupClickErrorKind::PopupUnreadable,
+                        format!("final authoritative popup target discovery failed: {error}"),
+                    ));
+                }
+                Err(_) => {
+                    return Err(popup_error(
+                        PopupClickErrorKind::TopologyLagged,
+                        "final authoritative popup target discovery exceeded the evidence deadline",
+                    ));
+                }
+            };
             let mut matches = Vec::new();
             for info in targets["targetInfos"].as_array().ok_or_else(|| {
                 popup_error(
@@ -3379,6 +3401,12 @@ impl BrowserSession {
                 ));
             }
             if topology.sequence == stable_sequence {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(popup_error(
+                        PopupClickErrorKind::TopologyLagged,
+                        "popup topology deadline expired before final success",
+                    ));
+                }
                 return Ok(());
             }
             drop(topology);
@@ -6639,7 +6667,9 @@ mod tests {
 
     async fn final_popup_server(
         topology: Arc<Mutex<TopologyRegistry>>,
+        move_first_query: bool,
         move_every_query: bool,
+        query_delay: Option<Duration>,
     ) -> (String, tokio::task::JoinHandle<usize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -6657,10 +6687,13 @@ mod tests {
                 };
                 assert_eq!(request["method"], "Target.getTargets");
                 queries += 1;
-                if move_every_query || queries == 1 {
+                if move_every_query || move_first_query && queries == 1 {
                     topology.lock().await.sequence += 1;
                 }
-                websocket
+                if let Some(delay) = query_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                if websocket
                     .send(Message::Text(
                         serde_json::json!({
                             "id": request["id"],
@@ -6673,7 +6706,10 @@ mod tests {
                         .into(),
                     ))
                     .await
-                    .unwrap();
+                    .is_err()
+                {
+                    break;
+                }
             }
             queries
         });
@@ -7624,7 +7660,7 @@ mod tests {
             let topology = topology.lock().await;
             assess_popup_topology(&snapshot, &topology, true).unwrap()
         };
-        let (url, server) = final_popup_server(Arc::clone(&topology), false).await;
+        let (url, server) = final_popup_server(Arc::clone(&topology), true, false, None).await;
         let cdp = CdpClient::connect(&url).await.unwrap();
         let mut session = test_session(cdp.clone());
         session.topology = topology;
@@ -7653,7 +7689,7 @@ mod tests {
             let topology = topology.lock().await;
             assess_popup_topology(&snapshot, &topology, true).unwrap()
         };
-        let (url, server) = final_popup_server(Arc::clone(&topology), true).await;
+        let (url, server) = final_popup_server(Arc::clone(&topology), true, true, None).await;
         let cdp = CdpClient::connect(&url).await.unwrap();
         let mut session = test_session(cdp.clone());
         session.topology = topology;
@@ -7670,6 +7706,45 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(110));
         cdp.close().await;
         assert!(server.await.unwrap() >= 2);
+    }
+
+    #[tokio::test]
+    async fn popup_stable_final_query_delayed_past_deadline_fails_typed() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(
+            Arc::clone(&topology),
+            false,
+            false,
+            Some(Duration::from_millis(50)),
+        )
+        .await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+
+        let error = session
+            .final_popup_verification(
+                &snapshot,
+                &candidate,
+                tokio::time::Instant::now() + Duration::from_millis(15),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        cdp.close().await;
+        assert_eq!(server.await.unwrap(), 1);
     }
 
     #[test]

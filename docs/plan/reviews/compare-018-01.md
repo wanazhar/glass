@@ -678,3 +678,92 @@ before mutation, raw-CDP context mismatch fails closed, the intended lifecycle
 still completes, and typed failures survive MCP. The download compatibility
 contract is ready for the retained full acceptance rerun; one iteration is not
 a performance claim.
+
+---
+
+## Measured popup retry and MCP dialog adapter review: `d12d125` + `139e665` + `8ea8853`
+
+Reviewed the popup retry contract, focused tests, the supplied 30-sample popup
+report, and the public Playwright MCP dialog path plus its one-iteration report.
+
+### Popup finding
+
+1. **P1 — the shared evidence deadline is checked before, but not after, the
+   final authoritative query.**
+
+   `final_popup_verification` rejects an already-expired deadline at the top of
+   its loop, then calls `Target.getTargets` through the independent two-second
+   `popup_verification_call` timeout (`src/browser/session.rs:3303-3333`). If
+   that query begins just before the evidence deadline, returns after the
+   deadline, and the topology sequence and loss epoch remain unchanged, the
+   function returns success without rechecking the shared deadline
+   (`src/browser/session.rs:3370-3388`). This contradicts the documented rule
+   that failure to settle before the existing evidence deadline remains typed
+   failure. Bound the final query to the remaining shared deadline and/or
+   recheck the deadline before the success return. Add a delayed stable-query
+   test proving an after-deadline response cannot succeed.
+
+The retry is otherwise appropriately narrow: authoritative discovery must still
+contain exactly one later live opener match for the same candidate; any event
+loss change fails `TopologyLagged`; topology re-assessment preserves ambiguity
+and destruction failures; and only benign sequence movement under the same loss
+epoch enters another quiet interval and query.
+
+The supplied `/tmp/glass-popup-final-retry-30.json` reports 30/30 healthy ACK
+samples and 30/30 missing-ACK recoveries with no failures, p95 recovery 605.84
+ms, and no expectation breaches. It contains Chrome path and sample policy but
+no git revision, generated timestamp, command, host identity, or artifact link.
+It is useful measured diagnostic evidence but is not revision-bound acceptance
+evidence and cannot by itself ratify `139e665`.
+
+### MCP adapter findings
+
+- The dialog action uses negotiated released public tools:
+  `browser_click`, `browser_handle_dialog`, and `browser_evaluate`. Dialog
+  acceptance is performed only by `browser_handle_dialog`; neither unsafe code
+  nor evaluated JavaScript accepts the modal. Evaluation only reads the authored
+  postcondition.
+- Tool negotiation now explicitly requires `browser_handle_dialog` before the
+  corpus starts. The adapter also retains negotiation for every other tool it
+  uses, including the released unsafe runner used by non-dialog scenarios.
+- Retry is bounded to 20 attempts with 25 ms inter-attempt delay, and every tool
+  call is bounded by the configured MCP request timeout. It retries only the
+  released server's specific modal-state rejection and fails other errors
+  immediately. The message's 500 ms describes sleep budget rather than an exact
+  wall-clock bound because tool-call time is additional, but total work remains
+  bounded.
+- The top-level `finally` closes the MCP child and recursively removes its unique
+  temporary output directory. The client drains/rejects pending requests on
+  failure and escalates from TERM to KILL after two seconds.
+- `/tmp/glass-mcp-dialog-fixed.json` confirms the dialog scenario completed as
+  `dialog-accepted` using Playwright MCP 0.0.78. The supplied trace file reflects
+  the older unsafe dialog implementation and is not evidence for `8ea8853`.
+
+### Separate newly exposed defect
+
+The fixed one-iteration MCP report is not an acceptance pass: its download
+scenario failed with `ENOENT` while copying the Playwright artifact into the
+adapter output directory, yielding 10/11 successes and `hard_gate_passed: false`.
+This is distinct from dialog completion and must be diagnosed and fixed before
+the MCP adapter or aggregate acceptance gate is approved. No result was silently
+synthesized or waived.
+
+### Focused verification
+
+- `cargo test --locked popup_` — passed 16 focused tests.
+- `node --check benchmarks/adapters/playwright-mcp-scorecard.mjs` — passed.
+- Reviewed `/tmp/glass-popup-final-retry-30.json`,
+  `/tmp/glass-mcp-dialog-fixed.json`, and
+  `/tmp/glass-mcp-dialog-trace.stderr` directly.
+- No full acceptance run was performed.
+
+### Verdict
+
+**blocked**
+
+The MCP dialog fix passes its scoped review, but adapter acceptance remains
+blocked by the separate download `ENOENT`. The popup retry correctly preserves
+loss, ambiguity, destruction, and identity checks, but its after-deadline stable
+query can still succeed and the 30-sample report is not revision-bound. Fix and
+test that deadline edge before approving the popup contract or rerunning the
+full gate.

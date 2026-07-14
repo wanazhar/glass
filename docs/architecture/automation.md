@@ -109,8 +109,12 @@ deadline; every late topology event resets that interval. Immediately before
 success, Glass repeats authoritative target discovery and requires the candidate
 to remain the only live later opener match; it also rechecks the topology
 sequence and loss epoch so a second popup, destruction, or late event loss cannot
-race the decision. Cleanup and these final checks run without changing the active
-target or frame. The result records
+race the decision. If the sequence changes during that authoritative query while
+the loss epoch is unchanged and there is still exactly one live opener match
+with no ambiguity or destruction, Glass restarts the bounded quiet interval and
+repeats the authoritative query. Event loss, ambiguity, destruction, or failure
+to settle before the existing evidence deadline remains a typed failure. Cleanup
+and these final checks run without changing the active target or frame. The result records
 `causally_verified_popup`, popup ID, opener ID, release acknowledgement state,
 and verification evidence. Missing, multiple, lagged, destroyed, mismatched,
 unreadable, cancelled, or cleanup-failed outcomes—and every non-timeout CDP

@@ -29,6 +29,7 @@ Analysis and scorecard:
 | 10 | [policy-016](tasks/policy-016.md) | Enforceable safety profiles and side-effect controls. |
 | 11 | [release-017](tasks/release-017.md) | Supply-chain, fuzz, crash, and multi-platform hardening. |
 | 12 | [compare-018](tasks/compare-018.md) | Final comparative task-success and efficiency gate. |
+| 13 | [observe-019](tasks/observe-019.md) | Event-driven accessibility rejected against pinned Chromium semantics. |
 
 Tasks are developed and independently reviewed in dependency order. A phase
 does not advance while correctness or safety gates from an earlier task fail.

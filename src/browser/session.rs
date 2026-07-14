@@ -13,7 +13,7 @@ use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
-use super::cdp::{CdpClient, CdpError, CdpEventWithParams};
+use super::cdp::{CdpClient, CdpEventWithParams};
 use super::chrome::{
     ChromeProcess, PortLaunchLock, check_chrome_health, get_browser_ws_url, get_ws_url,
     is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
@@ -969,7 +969,6 @@ pub struct BrowserSession {
     pointer: Mutex<Option<Point>>,
     page_revision: Arc<AtomicU64>,
     observation_cache: Mutex<Option<CachedObservation>>,
-    observation_world: Mutex<Option<ObservationWorld>>,
     network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     download_scope: Arc<Mutex<()>>,
@@ -985,34 +984,7 @@ struct CachedObservation {
     context: CompactPageContext,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct ObservationWorld {
-    target_id: String,
-    frame_id: String,
-    context_id: i64,
-}
-
-struct CollectedCompactObservation {
-    attempts: u8,
-    consistent: bool,
-    start_revision: u64,
-    end_revision: u64,
-    start_state: EvaluatedPageState,
-    accessibility: Value,
-    end_state: EvaluatedPageState,
-}
-
 type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
-
-fn missing_execution_context(error: &(dyn Error + 'static)) -> bool {
-    error.downcast_ref::<CdpError>().is_some_and(|error| {
-        error.code == -32_000
-            && error
-                .message
-                .to_ascii_lowercase()
-                .contains("cannot find context with specified id")
-    })
-}
 
 struct PolicyInterception {
     cdp: CdpClient,
@@ -1513,7 +1485,6 @@ impl BrowserSession {
             pointer: Mutex::new(None),
             page_revision,
             observation_cache: Mutex::new(None),
-            observation_world: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             download_scope: Arc::new(Mutex::new(())),
@@ -2159,26 +2130,48 @@ impl BrowserSession {
         }
 
         let (target_id, frame_id) = self.route_identity().await?;
-        let mut context_id = self.observation_context(&target_id, &frame_id).await?;
-        let collected = match self.collect_compact_observation(context_id).await {
-            Ok(collected) => collected,
-            Err(error) if missing_execution_context(error.as_ref()) => {
-                self.discard_observation_context(&target_id, &frame_id, context_id)
-                    .await;
-                context_id = self.observation_context(&target_id, &frame_id).await?;
-                self.collect_compact_observation(context_id).await?
+        let world = self
+            .cdp
+            .send(
+                "Page.createIsolatedWorld",
+                Some(serde_json::json!({"frameId": frame_id, "worldName": "glass-observation"})),
+            )
+            .await?;
+        let context_id = world["executionContextId"]
+            .as_i64()
+            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
+        let mut collected = None;
+        for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
+            let start_revision = self.page_revision.load(Ordering::Relaxed);
+            let attempt_result = tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
+                let start = self.compact_page_state(context_id).await?;
+                let accessibility = self.cdp.get_accessibility_tree().await?;
+                let end = self.compact_page_state(context_id).await?;
+                BrowserResult::Ok((start, accessibility, end))
+            })
+            .await
+            .map_err(|_| "compact observation attempt exceeded its one-second deadline")??;
+            let end_revision = self.page_revision.load(Ordering::Relaxed);
+            let consistent = start_revision == end_revision
+                && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision;
+            collected = Some((
+                attempt,
+                consistent,
+                start_revision,
+                end_revision,
+                attempt_result,
+            ));
+            if consistent {
+                break;
             }
-            Err(error) => return Err(error),
-        };
-        let CollectedCompactObservation {
+        }
+        let (
             attempts,
             consistent,
             start_revision,
             end_revision,
-            start_state,
-            accessibility: accessibility_raw,
-            end_state: page_state,
-        } = collected;
+            (start_state, accessibility_raw, page_state),
+        ) = collected.expect("observation always performs at least one attempt");
         let page = PageInfo {
             url: page_state.url,
             title: page_state.title,
@@ -2255,88 +2248,6 @@ impl BrowserSession {
             });
         }
         Ok(context)
-    }
-
-    async fn collect_compact_observation(
-        &self,
-        context_id: i64,
-    ) -> BrowserResult<CollectedCompactObservation> {
-        let mut collected = None;
-        for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
-            let start_revision = self.page_revision.load(Ordering::Relaxed);
-            let attempt_result = tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
-                let start = self.compact_page_state(context_id).await?;
-                let accessibility = self.cdp.get_accessibility_tree().await?;
-                let end = self.compact_page_state(context_id).await?;
-                BrowserResult::Ok((start, accessibility, end))
-            })
-            .await
-            .map_err(|_| "compact observation attempt exceeded its one-second deadline")??;
-            let end_revision = self.page_revision.load(Ordering::Relaxed);
-            let consistent = start_revision == end_revision
-                && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision;
-            collected = Some((
-                attempt,
-                consistent,
-                start_revision,
-                end_revision,
-                attempt_result,
-            ));
-            if consistent {
-                break;
-            }
-        }
-        let (attempts, consistent, start_revision, end_revision, states) =
-            collected.expect("observation always performs at least one attempt");
-        Ok(CollectedCompactObservation {
-            attempts,
-            consistent,
-            start_revision,
-            end_revision,
-            start_state: states.0,
-            accessibility: states.1,
-            end_state: states.2,
-        })
-    }
-
-    async fn observation_context(&self, target_id: &str, frame_id: &str) -> BrowserResult<i64> {
-        if let Some(context_id) = self
-            .observation_world
-            .lock()
-            .await
-            .as_ref()
-            .filter(|world| world.target_id == target_id && world.frame_id == frame_id)
-            .map(|world| world.context_id)
-        {
-            return Ok(context_id);
-        }
-        let world = self
-            .cdp
-            .send(
-                "Page.createIsolatedWorld",
-                Some(serde_json::json!({"frameId": frame_id, "worldName": "glass-observation"})),
-            )
-            .await?;
-        let context_id = world["executionContextId"]
-            .as_i64()
-            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
-        *self.observation_world.lock().await = Some(ObservationWorld {
-            target_id: target_id.to_string(),
-            frame_id: frame_id.to_string(),
-            context_id,
-        });
-        Ok(context_id)
-    }
-
-    async fn discard_observation_context(&self, target_id: &str, frame_id: &str, context_id: i64) {
-        let mut world = self.observation_world.lock().await;
-        if world.as_ref().is_some_and(|world| {
-            world.target_id == target_id
-                && world.frame_id == frame_id
-                && world.context_id == context_id
-        }) {
-            *world = None;
-        }
     }
 
     async fn compact_page_state(&self, context_id: i64) -> BrowserResult<EvaluatedPageState> {
@@ -6299,7 +6210,6 @@ mod tests {
             pointer: Mutex::new(None),
             page_revision: Arc::new(AtomicU64::new(1)),
             observation_cache: Mutex::new(None),
-            observation_world: Mutex::new(None),
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             download_scope: Arc::new(Mutex::new(())),
@@ -6583,69 +6493,6 @@ mod tests {
             assert!(saw_runtime);
             assert!(saw_accessibility);
             assert_eq!(saw_deep_dom, include_dom);
-        });
-        (format!("ws://{address}"), server)
-    }
-
-    async fn observation_world_server(
-        request_count: usize,
-        stale_on_third_evaluation: bool,
-    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut websocket = accept_async(stream).await.unwrap();
-            let mut requests = Vec::new();
-            let mut evaluations = 0;
-            let mut worlds = 0;
-            for _ in 0..request_count {
-                let request = websocket.next().await.unwrap().unwrap();
-                let request: Value = match request {
-                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
-                    _ => panic!("expected text CDP request"),
-                };
-                let response = match request["method"].as_str() {
-                    Some("Page.createIsolatedWorld") => {
-                        worlds += 1;
-                        serde_json::json!({"id": request["id"], "result": {
-                            "executionContextId": 80 + worlds
-                        }})
-                    }
-                    Some("Runtime.evaluate") => {
-                        evaluations += 1;
-                        if stale_on_third_evaluation && evaluations == 3 {
-                            serde_json::json!({"id": request["id"], "error": {
-                                "code": -32000,
-                                "message": "Cannot find context with specified id"
-                            }})
-                        } else {
-                            serde_json::json!({"id": request["id"], "result": {"result": {
-                                "value": serde_json::json!({
-                                    "url": "https://example.test",
-                                    "title": "Example",
-                                    "ready_state": "complete",
-                                    "text": "stable",
-                                    "mutation_revision": 0,
-                                    "boundaries": {"scanned_elements": 1, "scan_limit": 512,
-                                        "shadow_roots": 0, "child_frames": 0, "canvases": 0,
-                                        "truncated": false}
-                                }).to_string()
-                            }}})
-                        }
-                    }
-                    Some("Accessibility.getFullAXTree") => {
-                        serde_json::json!({"id": request["id"], "result": {"nodes": []}})
-                    }
-                    method => panic!("unexpected observation-world command: {method:?}"),
-                };
-                requests.push(request);
-                websocket
-                    .send(Message::Text(response.to_string().into()))
-                    .await
-                    .unwrap();
-            }
-            requests
         });
         (format!("ws://{address}"), server)
     }
@@ -7564,49 +7411,6 @@ mod tests {
 
         session.close().await.unwrap();
         server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn fresh_observation_reuses_world_only_for_the_exact_route() {
-        let (url, server) = observation_world_server(11, false).await;
-        let session = test_session(CdpClient::connect(&url).await.unwrap());
-
-        session.observe_fresh().await.unwrap();
-        session.observe_fresh().await.unwrap();
-        session.cdp.set_active_target_route(
-            Some("other-target".to_string()),
-            None,
-            Some("other-frame".to_string()),
-            None,
-        );
-        session.observe_fresh().await.unwrap();
-
-        session.close().await.unwrap();
-        let requests = server.await.unwrap();
-        let worlds = requests
-            .iter()
-            .filter(|request| request["method"] == "Page.createIsolatedWorld")
-            .collect::<Vec<_>>();
-        assert_eq!(worlds.len(), 2);
-        assert_eq!(worlds[0]["params"]["frameId"], "test-frame");
-        assert_eq!(worlds[1]["params"]["frameId"], "other-frame");
-    }
-
-    #[tokio::test]
-    async fn stale_observation_world_is_recreated_once() {
-        let (url, server) = observation_world_server(9, true).await;
-        let session = test_session(CdpClient::connect(&url).await.unwrap());
-
-        session.observe_fresh().await.unwrap();
-        session.observe_fresh().await.unwrap();
-
-        session.close().await.unwrap();
-        let requests = server.await.unwrap();
-        let worlds = requests
-            .iter()
-            .filter(|request| request["method"] == "Page.createIsolatedWorld")
-            .count();
-        assert_eq!(worlds, 2);
     }
 
     #[tokio::test]

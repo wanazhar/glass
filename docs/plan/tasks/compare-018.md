@@ -196,3 +196,12 @@ mutation-race detection and structured-first correctness do not weaken.
 Measured release-mode improvement, focused stale-context/route-isolation tests,
 the full test and lint suite, and independent review are required before the
 optimization can enter a release candidate.
+
+The first implementation cached the isolated-world context while preserving
+the two state samples and full accessibility read. It improved one 50-iteration
+fresh-observe p95 from 9.04 ms to 8.28 ms, but still missed the 5 ms gate and
+introduced unresolved single-flight and concurrent-route cache complexity.
+Adversarial review rejected it, and the implementation was reverted. The next
+candidate must target the dominant 4.1–5.1 ms Chrome accessibility-tree call
+through a correctness-preserving event-driven design; depth caps, unbracketed
+parallel reads, and threshold relaxation remain disallowed.

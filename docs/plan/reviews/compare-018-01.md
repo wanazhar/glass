@@ -921,3 +921,57 @@ Re-reviewed the focused fix for stale same-revision checkpoint attribution.
 The stale-checkpoint provenance blocker and its lifecycle-test gap are closed.
 No new blocker was found in this bounded scope. Partial checkpoint evidence
 remains diagnostic-only and cannot satisfy an acceptance or best-in-class gate.
+
+---
+
+## Comparative winner gate review: `6c8d29f` + `de79d7f`
+
+Reviewed exact-matrix enforcement, Glass-only correctness and safety,
+comparator outcome publication, task-success ranking, efficiency scope, and MCP
+scenario-versus-transport failure handling.
+
+### Confirmed behavior
+
+- Every required adapter must have completed and supplied a report already
+  validated as the exact corpus-by-iteration matrix.
+- Comparator scenario failures and wrong actions remain published without
+  becoming Glass correctness failures; Glass independently requires zero wrong
+  actions and a perfect deterministic matrix.
+- Glass must not trail either required comparator on task-success rate.
+- Missing reports, null efficiency metrics, incomparable MCP scope, transport
+  loss, and incomplete matrices fail their relevant gates closed.
+- Ordinary MCP tool errors become scored scenario failures and continue through
+  all requested rows, while transport failure aborts the adapter.
+
+### Blocking finding
+
+**P1 - resource-scope compatibility is accepted by textual prefix.**
+
+`comparableRunnerScope` accepts any Playwright scope beginning with
+`Runner RSS is Node only; Chrome process-tree RSS`. A contradictory declaration
+such as one continuing with `is included` therefore maps to the same scope as
+Glass and can create the strict efficiency win even though the measurements are
+not comparable. The report validator only requires a non-empty scope, so this
+is reachable from an otherwise schema-valid report. Eligibility must use an
+exact versioned scope identifier or exact allowlisted declaration, not a prose
+prefix. The efficiency check should also require positive peak RSS values;
+currently finite zero is accepted as a winning measurement.
+
+Add regressions for a shared-prefix contradictory scope and zero-valued peak
+RSS. Both must leave `glass_declared_efficiency_win` false.
+
+### Focused verification
+
+- `node --test benchmarks/tests/acceptance-gates.test.mjs
+  benchmarks/tests/mcp-adapter-loop.test.mjs` - passed 7 tests.
+- `node --check` passed for the gate, runner, MCP adapter, and both focused test
+  files.
+- No browser or full acceptance run was performed.
+
+### Verdict
+
+**blocked**
+
+The comparative correctness, matrix, and MCP failure semantics pass review, but
+the declared efficiency win remains fail-open for ambiguous or invalid scope
+metadata and therefore cannot support best-in-class eligibility yet.

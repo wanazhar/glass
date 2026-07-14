@@ -3089,8 +3089,13 @@ impl BrowserSession {
         // the guard's second, fire-and-forget release for the timeout case.
         pressed.armed = false;
 
-        let candidate = self.wait_for_causal_popup(&snapshot, witness).await?;
-        let ready_state = self.verify_popup_readiness(&snapshot, &candidate).await?;
+        let evidence_deadline = tokio::time::Instant::now() + POPUP_EVIDENCE_DEADLINE;
+        let candidate = self
+            .wait_for_causal_popup(&snapshot, witness, evidence_deadline)
+            .await?;
+        let ready_state = self
+            .verify_popup_readiness(&snapshot, &candidate, evidence_deadline)
+            .await?;
         *pointer = Some(point);
         Ok(PopupClickOutcome {
             action: ActionKind::ClickExpectPopup,
@@ -3158,8 +3163,8 @@ impl BrowserSession {
         &self,
         snapshot: &PopupTopologySnapshot,
         witness: &PopupWitnessGuard,
+        deadline: tokio::time::Instant,
     ) -> BrowserResult<PopupCandidate> {
-        let deadline = tokio::time::Instant::now() + POPUP_EVIDENCE_DEADLINE;
         let mut witnessed = false;
         loop {
             if !witnessed {
@@ -3204,6 +3209,7 @@ impl BrowserSession {
         &self,
         snapshot: &PopupTopologySnapshot,
         candidate: &PopupCandidate,
+        deadline: tokio::time::Instant,
     ) -> BrowserResult<String> {
         let mut attachment = self.attach_popup(&candidate.target.id).await?;
         popup_verification_call(
@@ -3238,7 +3244,8 @@ impl BrowserSession {
                     "popup returned no valid document.readyState",
                 )
             })?;
-        self.final_popup_verification(snapshot, candidate).await?;
+        self.final_popup_verification(snapshot, candidate, deadline)
+            .await?;
         attachment.detach().await?;
         Ok(ready_state)
     }
@@ -3296,74 +3303,94 @@ impl BrowserSession {
         &self,
         snapshot: &PopupTopologySnapshot,
         candidate: &PopupCandidate,
+        deadline: tokio::time::Instant,
     ) -> BrowserResult<()> {
-        let (stable_sequence, stable_loss) = {
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology did not settle before final verification deadline",
+                ));
+            }
+            let (stable_sequence, stable_loss) = {
+                let topology = self.topology.lock().await;
+                let current = assess_popup_topology(snapshot, &topology, true)?;
+                if current.target.id != candidate.target.id {
+                    return Err(popup_error(
+                        PopupClickErrorKind::PopupAmbiguous,
+                        "popup candidate changed during readiness verification",
+                    ));
+                }
+                (topology.sequence, topology.event_loss_count)
+            };
+            let targets = popup_verification_call(
+                self.cdp.send_browser("Target.getTargets", None),
+                "final authoritative popup target discovery",
+            )
+            .await?;
+            let mut matches = Vec::new();
+            for info in targets["targetInfos"].as_array().ok_or_else(|| {
+                popup_error(
+                    PopupClickErrorKind::PopupUnreadable,
+                    "final target discovery returned no target list",
+                )
+            })? {
+                if info["type"].as_str() != Some("page") {
+                    continue;
+                }
+                let id = info["targetId"].as_str().ok_or_else(|| {
+                    popup_error(
+                        PopupClickErrorKind::PopupUnreadable,
+                        "final target discovery contained a page without an ID",
+                    )
+                })?;
+                validate_topology_id(id)?;
+                if !snapshot.preexisting_target_ids.contains(id)
+                    && info["openerId"].as_str() == Some(snapshot.original_target_id.as_str())
+                {
+                    matches.push(id);
+                }
+            }
+            if matches.len() != 1 || matches[0] != candidate.target.id {
+                return Err(popup_error(
+                    if matches.len() > 1 {
+                        PopupClickErrorKind::PopupAmbiguous
+                    } else {
+                        PopupClickErrorKind::PopupDestroyed
+                    },
+                    format!(
+                        "final target discovery found {} live later opener matches",
+                        matches.len()
+                    ),
+                ));
+            }
             let topology = self.topology.lock().await;
+            if topology.event_loss_count != stable_loss {
+                return Err(popup_error(
+                    PopupClickErrorKind::TopologyLagged,
+                    "popup topology event loss changed during final verification",
+                ));
+            }
             let current = assess_popup_topology(snapshot, &topology, true)?;
             if current.target.id != candidate.target.id {
                 return Err(popup_error(
                     PopupClickErrorKind::PopupAmbiguous,
-                    "popup candidate changed during readiness verification",
+                    "popup candidate changed at final topology verification",
                 ));
             }
-            (topology.sequence, topology.event_loss_count)
-        };
-        let targets = popup_verification_call(
-            self.cdp.send_browser("Target.getTargets", None),
-            "final authoritative popup target discovery",
-        )
-        .await?;
-        let mut matches = Vec::new();
-        for info in targets["targetInfos"].as_array().ok_or_else(|| {
-            popup_error(
-                PopupClickErrorKind::PopupUnreadable,
-                "final target discovery returned no target list",
+            if topology.sequence == stable_sequence {
+                return Ok(());
+            }
+            drop(topology);
+            wait_for_stable_popup_topology(
+                &self.topology,
+                snapshot,
+                candidate,
+                deadline,
+                POPUP_TOPOLOGY_QUIET_INTERVAL,
             )
-        })? {
-            if info["type"].as_str() != Some("page") {
-                continue;
-            }
-            let id = info["targetId"].as_str().ok_or_else(|| {
-                popup_error(
-                    PopupClickErrorKind::PopupUnreadable,
-                    "final target discovery contained a page without an ID",
-                )
-            })?;
-            validate_topology_id(id)?;
-            if !snapshot.preexisting_target_ids.contains(id)
-                && info["openerId"].as_str() == Some(snapshot.original_target_id.as_str())
-            {
-                matches.push(id);
-            }
+            .await?;
         }
-        if matches.len() != 1 || matches[0] != candidate.target.id {
-            return Err(popup_error(
-                if matches.len() > 1 {
-                    PopupClickErrorKind::PopupAmbiguous
-                } else {
-                    PopupClickErrorKind::PopupDestroyed
-                },
-                format!(
-                    "final target discovery found {} live later opener matches",
-                    matches.len()
-                ),
-            ));
-        }
-        let topology = self.topology.lock().await;
-        if topology.sequence != stable_sequence || topology.event_loss_count != stable_loss {
-            return Err(popup_error(
-                PopupClickErrorKind::TopologyLagged,
-                "popup topology changed during final authoritative verification",
-            ));
-        }
-        let current = assess_popup_topology(snapshot, &topology, true)?;
-        if current.target.id != candidate.target.id {
-            return Err(popup_error(
-                PopupClickErrorKind::PopupAmbiguous,
-                "popup candidate changed at final topology verification",
-            ));
-        }
-        Ok(())
     }
 
     /// Double-click an element with the same target, scroll, and pointer
@@ -6610,6 +6637,49 @@ mod tests {
         (format!("ws://{address}"), server)
     }
 
+    async fn final_popup_server(
+        topology: Arc<Mutex<TopologyRegistry>>,
+        move_every_query: bool,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut queries = 0;
+            while let Ok(Some(Ok(request))) =
+                tokio::time::timeout(Duration::from_millis(250), websocket.next()).await
+            {
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+                assert_eq!(request["method"], "Target.getTargets");
+                queries += 1;
+                if move_every_query || queries == 1 {
+                    topology.lock().await.sequence += 1;
+                }
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "id": request["id"],
+                            "result": {"targetInfos": [
+                                {"type": "page", "targetId": "original"},
+                                {"type": "page", "targetId": "popup", "openerId": "original"}
+                            ]}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            queries
+        });
+        (format!("ws://{address}"), server)
+    }
+
     async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
         let huge_text = "x".repeat(33 * 1024);
         let tree = serde_json::json!({
@@ -7540,6 +7610,66 @@ mod tests {
         movement.abort();
         assert_eq!(error.kind, PopupClickErrorKind::TopologyLagged);
         assert!(started.elapsed() >= Duration::from_millis(55));
+    }
+
+    #[tokio::test]
+    async fn popup_event_during_final_query_restarts_quiet_then_succeeds() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(Arc::clone(&topology), false).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+
+        session
+            .final_popup_verification(
+                &snapshot,
+                &candidate,
+                tokio::time::Instant::now() + Duration::from_millis(250),
+            )
+            .await
+            .unwrap();
+        cdp.close().await;
+        assert_eq!(server.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn popup_events_during_every_final_query_fail_at_shared_deadline() {
+        let snapshot = popup_test_snapshot();
+        let topology = Arc::new(Mutex::new(popup_topology_with(vec![(
+            "popup",
+            Some("original"),
+            11,
+        )])));
+        let candidate = {
+            let topology = topology.lock().await;
+            assess_popup_topology(&snapshot, &topology, true).unwrap()
+        };
+        let (url, server) = final_popup_server(Arc::clone(&topology), true).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut session = test_session(cdp.clone());
+        session.topology = topology;
+        let started = tokio::time::Instant::now();
+
+        let error = session
+            .final_popup_verification(&snapshot, &candidate, started + Duration::from_millis(120))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<PopupClickError>().unwrap().kind,
+            PopupClickErrorKind::TopologyLagged
+        );
+        assert!(started.elapsed() >= Duration::from_millis(110));
+        cdp.close().await;
+        assert!(server.await.unwrap() >= 2);
     }
 
     #[test]

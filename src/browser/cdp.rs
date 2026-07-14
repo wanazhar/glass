@@ -689,6 +689,21 @@ impl CdpClient {
             .ok_or_else(|| CdpError::transport("DOM.resolveNode returned no objectId"))
     }
 
+    /// Translate one already-resolved frontend node into its immutable backend
+    /// identity without repeating the caller's locator query.
+    pub async fn backend_node_id_for_node(&self, node_id: i64) -> Result<i64, CdpError> {
+        let described = self
+            .send(
+                "DOM.describeNode",
+                Some(serde_json::json!({"nodeId": node_id, "depth": 0})),
+            )
+            .await?;
+        described["node"]["backendNodeId"]
+            .as_i64()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| CdpError::transport("DOM.describeNode returned no backendNodeId"))
+    }
+
     /// Invoke a function on a previously resolved remote object.
     pub async fn call_on_object(
         &self,
@@ -1517,6 +1532,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client.query_selector("#save").await.unwrap()["nodeId"], 7);
+        client.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_identity_describes_the_existing_frontend_node_without_a_second_query() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            assert_eq!(request["method"], "DOM.describeNode");
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"nodeId": 17, "depth": 0})
+            );
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": request["id"],
+                        "result": {"node": {"backendNodeId": 91}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(25), websocket.next())
+                    .await
+                    .is_err(),
+                "backend translation must not repeat the selector query"
+            );
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert_eq!(client.backend_node_id_for_node(17).await.unwrap(), 91);
+        server.await.unwrap();
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn backend_identity_rejects_a_describe_response_without_backend_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text frame"),
+            };
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": {"node": {}}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let error = client.backend_node_id_for_node(17).await.unwrap_err();
+        assert!(error.message.contains("no backendNodeId"));
         client.close().await;
         server.await.unwrap();
     }

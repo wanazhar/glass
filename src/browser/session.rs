@@ -2864,12 +2864,27 @@ impl BrowserSession {
                     .cdp
                     .active_frame()
                     .ok_or("popup click requires an active frame")?;
-                let backend_node_id = element.backend_dom_node_id.ok_or_else(|| {
-                    popup_error(
-                        PopupClickErrorKind::WitnessMissing,
-                        "popup target has no exact backend-node identity",
-                    )
-                })?;
+                let backend_node_id = match (element.backend_dom_node_id, element.node_id) {
+                    (Some(backend_node_id), _) => backend_node_id,
+                    (None, Some(node_id)) => self
+                        .cdp
+                        .backend_node_id_for_node(node_id)
+                        .await
+                        .map_err(|error| {
+                            popup_error(
+                                PopupClickErrorKind::WitnessMissing,
+                                format!(
+                                    "resolved popup target has no readable backend identity: {error}"
+                                ),
+                            )
+                        })?,
+                    (None, None) => {
+                        return Err(popup_error(
+                            PopupClickErrorKind::WitnessMissing,
+                            "popup target has no exact node identity",
+                        ));
+                    }
+                };
                 let mut witness = self
                     .arm_popup_witness(&original_session_id, &original_frame_id, backend_node_id)
                     .await?;

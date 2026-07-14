@@ -626,3 +626,55 @@ its authorization/restoration lifecycle is substantially correct. It is not yet
 contract-complete because it can cross into a CDP-created context and its typed
 fail-closed errors do not survive MCP. Both are release-boundary issues even
 though the owned-incognito happy-path scorecard passes.
+
+---
+
+## Incognito download boundary re-review: `ba1328b`
+
+Reviewed the two P1 fixes against the preceding blocked verdict and reran the
+focused protocol and bounded real-browser checks.
+
+### Findings
+
+- Startup captures the authoritative `browserContextId` from the exact original
+  target only for a Glass-owned command-line-incognito launch. Missing,
+  malformed, mismatched-target, or failed context lookup aborts startup after
+  closing CDP and shutting down the owned browser.
+- Before any `Browser.setDownloadBehavior` or `Page.setDownloadBehavior`
+  mutation, the incognito acquisition path repeats `Target.getTargetInfo` for
+  the captured selected target ID and requires its context ID to exactly equal
+  the originally launched incognito context ID.
+- A target in a raw-CDP-created context therefore fails closed as bounded typed
+  `AuthorizationFailed`. The mismatch protocol test observes only the context
+  lookup and zero behavior mutations. The matching test reaches the same
+  captured page-session allow/deny lifecycle and preserves Page-deny before
+  Browser-deny cleanup.
+- Attached, default, and persistent-profile sessions still do not enter the Page
+  compatibility path. The new identity validation narrows the prior owned plus
+  disposable gate rather than broadening it.
+- MCP's typed browser error serializer now includes bounded serializable
+  `DownloadError`. Focused coverage verifies both `authorization_failed` and
+  `restoration_failed` JSON content instead of generic tool failure text.
+
+### Focused verification
+
+- `cargo test --locked download_` — passed 8 focused tests, including context
+  mismatch before mutation, matching lifecycle, partial enable/restoration, and
+  cancellation cleanup.
+- `cargo test --locked serializes_download_failures_as_typed_mcp_content` —
+  passed.
+- `GLASS_SCORECARD_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run --locked
+  --release --example scorecard` — passed all 11 scenarios; download returned
+  `download-complete` in 42.06 ms and the bounded one-iteration hard gate passed.
+- No full acceptance run was performed.
+
+### Verdict
+
+**pass**
+
+Both P1 boundary failures from `34756ce` are resolved. The Page compatibility
+bridge is now restricted to the exact originally launched incognito context
+before mutation, raw-CDP context mismatch fails closed, the intended lifecycle
+still completes, and typed failures survive MCP. The download compatibility
+contract is ready for the retained full acceptance rerun; one iteration is not
+a performance claim.

@@ -128,7 +128,9 @@ async fn main() -> BrowserResult<()> {
         "environment": {
             "os": std::env::consts::OS,
             "architecture": std::env::consts::ARCH,
-            "host": std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
+            "host": std::env::var("HOSTNAME").ok()
+                .or_else(|| command_output("hostname", &[]))
+                .unwrap_or_else(|| "unknown".to_string()),
             "chrome_version": command_output(chrome_path.to_string_lossy().as_ref(), &["--version"]),
             "rust": command_output("rustc", &["--version"]),
             "glass_version": env!("CARGO_PKG_VERSION")

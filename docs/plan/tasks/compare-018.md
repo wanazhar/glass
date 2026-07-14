@@ -89,6 +89,19 @@ Playwright artifact through unsafe runner code.
 Eligibility fails closed without revision-bound evidence for every ratified
 performance, protocol, release-validation, and real-browser platform gate.
 
+The released Playwright MCP 0.0.78 adapter has a 20-minute total process
+ceiling because its negotiated public JSON-RPC workflow is materially slower
+than the direct adapters. Its per-request deadline, corpus, iteration count,
+viewport, profile semantics, and correctness classification remain identical;
+all latency remains measured and compared. After every complete iteration it
+atomically replaces a caller-provided checkpoint containing the exact Git
+revision and controlled configuration, the completed matrix rows, recomputed
+partial summaries, and explicit progress. Temporary checkpoint files are
+cleaned after publication. A timed-out runner retains and validates this
+checkpoint as partial diagnostic evidence, but partial evidence can never
+satisfy an adapter, control, correctness, or best-in-class gate. The complete
+adapter report and its schema remain unchanged.
+
 Focused Linux aarch64 verification covers Node syntax and scorecard unit tests.
 The interrupted one-iteration diagnostic produced no adapter report and is not
 release evidence. This task remains in progress until the 100-iteration run and

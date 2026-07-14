@@ -174,6 +174,14 @@ Score outcomes in this order:
 6. Glass/runner RSS and peak memory; and
 7. installation and binary footprint.
 
+The release gate applies correctness and safety requirements to Glass, not to
+its competitors: a comparator's failed task is evidence that Glass may win,
+not a reason to make the claim mathematically impossible. Every required
+adapter must nevertheless finish the exact matrix so failures cannot be hidden
+by early termination. Glass must be perfect on the deterministic corpus, must
+not trail any completed comparator on task success, and must show at least one
+predeclared efficiency win with equivalent process/resource scope.
+
 ## Principal risks
 
 | Risk | Mitigation |

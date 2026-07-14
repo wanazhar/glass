@@ -57,6 +57,15 @@ agent-focused baseline must drive the corpus through a released MCP/browser
 integration, not through Glass internals. Codex is an additional black-box row
 only when its browser automation surface is callable by the harness.
 
+Required comparator adapters must complete every corpus row under the same
+controls, but their task failures do not disqualify Glass. Eligibility requires
+Glass itself to achieve zero wrong actions, 100% deterministic fixture success,
+every safety/protocol/resource prerequisite, task success greater than or equal
+to every completed comparator, and at least one declared efficiency win using
+comparable resource scopes. Comparator errors remain scored failures and the
+adapter continues through the corpus; transport loss or an incomplete matrix
+still fails the required-adapter gate.
+
 ## Evidence blocker
 
 The reproducible harness and fail-closed evidence validators pass independent

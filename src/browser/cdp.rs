@@ -1103,7 +1103,6 @@ impl CdpClient {
         behavior: &str,
         download_path: Option<&Path>,
         events_enabled: bool,
-        browser_context_id: Option<&str>,
     ) -> Result<Value, CdpError> {
         let mut params = serde_json::json!({
             "behavior": behavior,
@@ -1111,9 +1110,6 @@ impl CdpClient {
         });
         if let Some(path) = download_path {
             params["downloadPath"] = Value::from(path.to_string_lossy().into_owned());
-        }
-        if let Some(browser_context_id) = browser_context_id {
-            params["browserContextId"] = Value::from(browser_context_id);
         }
         self.send_browser("Browser.setDownloadBehavior", Some(params))
             .await

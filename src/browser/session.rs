@@ -2771,13 +2771,8 @@ impl BrowserSession {
         let (target_id, frame_id) = self.route_identity().await?;
         let _download_scope = self.download_scope.lock().await;
         let mut events = self.cdp.subscribe_events_with_params();
-        let mut download_guard = DownloadBehaviorGuard::acquire(
-            self.cdp.clone(),
-            target_id.clone(),
-            destination.clone(),
-            self.disposable_profile.is_some(),
-        )
-        .await?;
+        let mut download_guard =
+            DownloadBehaviorGuard::acquire(self.cdp.clone(), &destination).await?;
         let result = tokio::time::timeout(deadline, async {
             let mut guid = None;
             let mut filename = String::new();
@@ -4574,7 +4569,6 @@ struct DiagnosticDomainGuard {
 
 struct DownloadBehaviorGuard {
     cdp: CdpClient,
-    browser_context_id: Option<String>,
     armed: bool,
 }
 
@@ -4713,72 +4707,14 @@ impl Drop for DiagnosticDomainGuard {
 }
 
 impl DownloadBehaviorGuard {
-    async fn acquire(
-        cdp: CdpClient,
-        target_id: String,
-        destination: PathBuf,
-        require_browser_context: bool,
-    ) -> BrowserResult<Self> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let result =
-                Self::acquire_owned(cdp, &target_id, &destination, require_browser_context).await;
-            let _ = sender.send(result);
-        });
-        receiver
-            .await
-            .map_err(|_| "download authorization worker ended without a result")?
-            .map_err(Into::into)
-    }
-
-    async fn acquire_owned(
-        cdp: CdpClient,
-        target_id: &str,
-        destination: &Path,
-        require_browser_context: bool,
-    ) -> Result<Self, String> {
-        let target = cdp
-            .send_browser(
-                "Target.getTargetInfo",
-                Some(serde_json::json!({"targetId": target_id})),
-            )
-            .await
-            .map_err(|error| format!("could not resolve download target context: {error}"))?;
-        let target_info = target["targetInfo"]
-            .as_object()
-            .ok_or_else(|| "download target lookup returned no targetInfo".to_string())?;
-        if target_info.get("targetId").and_then(Value::as_str) != Some(target_id) {
-            return Err("download target lookup returned a mismatched target ID".to_string());
-        }
-        let browser_context_id = target_info
-            .get("browserContextId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        if require_browser_context && browser_context_id.is_none() {
-            return Err("incognito download target returned no browser context ID".to_string());
-        }
-        if let Some(browser_context_id) = browser_context_id.as_deref() {
-            validate_topology_id(browser_context_id).map_err(|error| error.to_string())?;
-        }
-        cdp.set_download_behavior(
-            "allowAndName",
-            Some(destination),
-            true,
-            browser_context_id.as_deref(),
-        )
-        .await
-        .map_err(|error| format!("could not authorize target-context download: {error}"))?;
-        Ok(Self {
-            cdp,
-            browser_context_id,
-            armed: true,
-        })
+    async fn acquire(cdp: CdpClient, destination: &Path) -> BrowserResult<Self> {
+        cdp.set_download_behavior("allow", Some(destination), true)
+            .await?;
+        Ok(Self { cdp, armed: true })
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
-        self.cdp
-            .set_download_behavior("deny", None, false, self.browser_context_id.as_deref())
-            .await?;
+        self.cdp.set_download_behavior("deny", None, false).await?;
         self.armed = false;
         Ok(())
     }
@@ -4790,11 +4726,8 @@ impl Drop for DownloadBehaviorGuard {
             return;
         }
         let cdp = self.cdp.clone();
-        let browser_context_id = self.browser_context_id.clone();
         tokio::spawn(async move {
-            let _ = cdp
-                .set_download_behavior("deny", None, false, browser_context_id.as_deref())
-                .await;
+            let _ = cdp.set_download_behavior("deny", None, false).await;
         });
     }
 }
@@ -6324,60 +6257,6 @@ mod tests {
         (format!("ws://{address}"), server)
     }
 
-    async fn download_behavior_server(
-        browser_context_id: Option<&str>,
-        behavior_requests: usize,
-    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let browser_context_id = browser_context_id.map(str::to_string);
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut websocket = accept_async(stream).await.unwrap();
-            let target = websocket.next().await.unwrap().unwrap();
-            let target: Value = match target {
-                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
-                _ => panic!("expected text CDP request"),
-            };
-            assert_eq!(target["method"], "Target.getTargetInfo");
-            let mut target_info = serde_json::json!({"targetId": "target-1"});
-            if let Some(browser_context_id) = browser_context_id {
-                target_info["browserContextId"] = Value::from(browser_context_id);
-            }
-            websocket
-                .send(Message::Text(
-                    serde_json::json!({
-                        "id": target["id"],
-                        "result": {"targetInfo": target_info}
-                    })
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .unwrap();
-
-            let mut requests = Vec::new();
-            for _ in 0..behavior_requests {
-                let request = websocket.next().await.unwrap().unwrap();
-                let request: Value = match request {
-                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
-                    _ => panic!("expected text CDP request"),
-                };
-                websocket
-                    .send(Message::Text(
-                        serde_json::json!({"id": request["id"], "result": {}})
-                            .to_string()
-                            .into(),
-                    ))
-                    .await
-                    .unwrap();
-                requests.push(request);
-            }
-            requests
-        });
-        (format!("ws://{address}"), server)
-    }
-
     async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
         let huge_text = "x".repeat(33 * 1024);
         let tree = serde_json::json!({
@@ -6893,85 +6772,6 @@ mod tests {
                 "missing {method}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn incognito_download_restores_deny_on_the_exact_browser_context() {
-        let (url, server) = download_behavior_server(Some("incognito-1"), 2).await;
-        let cdp = CdpClient::connect(&url).await.unwrap();
-        let destination = std::env::current_dir().unwrap();
-        let guard = DownloadBehaviorGuard::acquire(
-            cdp.clone(),
-            "target-1".to_string(),
-            destination.clone(),
-            true,
-        )
-        .await
-        .unwrap();
-        drop(guard);
-
-        let requests = tokio::time::timeout(Duration::from_secs(1), server)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(requests[0]["method"], "Browser.setDownloadBehavior");
-        assert_eq!(requests[0]["params"]["behavior"], "allowAndName");
-        assert_eq!(requests[0]["params"]["eventsEnabled"], true);
-        assert_eq!(
-            requests[0]["params"]["downloadPath"],
-            destination.to_string_lossy().as_ref()
-        );
-        assert_eq!(requests[0]["params"]["browserContextId"], "incognito-1");
-        assert_eq!(requests[1]["params"]["behavior"], "deny");
-        assert_eq!(requests[1]["params"]["eventsEnabled"], false);
-        assert_eq!(requests[1]["params"]["browserContextId"], "incognito-1");
-        assert!(requests[1]["params"].get("downloadPath").is_none());
-        cdp.close().await;
-    }
-
-    #[tokio::test]
-    async fn incognito_download_without_a_context_id_fails_before_authorization() {
-        let (url, server) = download_behavior_server(None, 0).await;
-        let cdp = CdpClient::connect(&url).await.unwrap();
-        let error = match DownloadBehaviorGuard::acquire(
-            cdp.clone(),
-            "target-1".to_string(),
-            std::env::current_dir().unwrap(),
-            true,
-        )
-        .await
-        {
-            Ok(_) => panic!("missing incognito context was authorized"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("no browser context ID"));
-        assert!(server.await.unwrap().is_empty());
-        cdp.close().await;
-    }
-
-    #[tokio::test]
-    async fn default_context_download_omits_an_invented_context_id() {
-        let (url, server) = download_behavior_server(None, 2).await;
-        let cdp = CdpClient::connect(&url).await.unwrap();
-        let mut guard = DownloadBehaviorGuard::acquire(
-            cdp.clone(),
-            "target-1".to_string(),
-            std::env::current_dir().unwrap(),
-            false,
-        )
-        .await
-        .unwrap();
-        guard.disable().await.unwrap();
-
-        let requests = server.await.unwrap();
-        assert_eq!(requests[0]["params"]["behavior"], "allowAndName");
-        assert_eq!(requests[1]["params"]["behavior"], "deny");
-        assert!(
-            requests
-                .iter()
-                .all(|request| request["params"].get("browserContextId").is_none())
-        );
-        cdp.close().await;
     }
 
     #[tokio::test]

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "contract": "benchmarks/acceptance-v1.json",
+  "environment": "environment.json",
+  "adapters": [
+    {
+      "id": "glass",
+      "status": "completed",
+      "report": "raw/glass.json",
+      "reason": null
+    },
+    {
+      "id": "playwright",
+      "status": "completed",
+      "report": "raw/playwright.json",
+      "reason": null
+    },
+    {
+      "id": "playwright-mcp",
+      "status": "failed",
+      "report": "raw/playwright-mcp.json",
+      "reason": "node exited 1; see <workspace>/.worktrees/compare-018/benchmarks/results/compare-018/attempt-03-linux-final/raw/playwright-mcp.stderr.log"
+    },
+    {
+      "id": "codex-browser",
+      "status": "unsupported",
+      "report": null,
+      "reason": "No callable, versioned Codex browser-automation harness contract is exposed to this repository."
+    }
+  ],
+  "prerequisites": {
+    "ratified_gates": {
+      "status": "missing",
+      "passed": false,
+      "report": null,
+      "reason": "Set GLASS_RATIFIED_GATES_REPORT to revision-bound evidence."
+    },
+    "release_validation": {
+      "status": "missing",
+      "passed": false,
+      "report": null,
+      "reason": "Set GLASS_RELEASE_VALIDATION_REPORT to revision-bound evidence."
+    },
+    "real_browser_platform_matrix": {
+      "status": "missing",
+      "passed": false,
+      "report": null,
+      "reason": "Set GLASS_PLATFORM_MATRIX_REPORT to revision-bound evidence."
+    }
+  },
+  "controls": [
+    {
+      "tool": "glass",
+      "corpus": "glass-local-v1",
+      "iterations": 100,
+      "temperature": "warm",
+      "profile": "fresh-ephemeral-single-session",
+      "viewport": {
+        "height": 720,
+        "width": 1280
+      },
+      "chrome": "Chromium 150.0.7871.46 snap"
+    },
+    {
+      "tool": "playwright",
+      "corpus": "glass-local-v1",
+      "iterations": 100,
+      "temperature": "warm",
+      "profile": "fresh-ephemeral-single-session",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "chrome": "Chromium 150.0.7871.46 snap"
+    }
+  ],
+  "gates": {
+    "representative_task_success": false,
+    "fresh_compact_observe_latency": false,
+    "cached_compact_observe_latency": false,
+    "fast_action_client_overhead": false,
+    "idle_glass_rss": false,
+    "mcp_malformed_input_survival": false,
+    "release_validation": false,
+    "real_browser_platform_matrix": false,
+    "required_adapters_ran": false,
+    "controlled_environment": false,
+    "zero_wrong_actions": false,
+    "deterministic_task_success": false,
+    "peak_default_workflow_rss": true,
+    "compact_context": true,
+    "release_binary_size": true
+  },
+  "best_in_class_eligible": false,
+  "claim": "Glass is not eligible for a best-in-class claim because one or more hard gates failed or lacks revision-bound evidence."
+}

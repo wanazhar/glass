@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-14T06:11:58.283Z",
+  "git_revision": "5a687a31ab8d8fee22d83fd45c824814ebb494b1",
+  "chrome_path": "/snap/bin/chromium",
+  "chrome_version": "Chromium 150.0.7871.46 snap",
+  "os": "linux",
+  "architecture": "arm64",
+  "machine": "wanazhar 6.17.0-1011-oracle",
+  "node": "v24.16.0",
+  "rust": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+  "corpus": "glass-local-v1",
+  "iterations": 100,
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "profile_semantics": "fresh-ephemeral-single-session",
+  "temperature": "warm",
+  "adapter_versions": {
+    "glass": "0.1.0",
+    "playwright": "1.61.1",
+    "playwright-mcp": "0.0.78",
+    "codex-browser": null
+  },
+  "commands": [
+    {
+      "command": "git",
+      "args": [
+        "rev-parse",
+        "HEAD"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "cargo",
+      "args": [
+        "build",
+        "--release",
+        "--locked"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "npm",
+      "args": [
+        "install",
+        "--prefix",
+        "<temporary>/npm",
+        "--no-save",
+        "playwright@1.61.1",
+        "@playwright/mcp@0.0.78"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "cargo",
+      "args": [
+        "run",
+        "--release",
+        "--locked",
+        "--example",
+        "scorecard"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "node",
+      "args": [
+        "<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-scorecard.mjs"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "node",
+      "args": [
+        "<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "chromium",
+      "args": [
+        "--version"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "rustc",
+      "args": [
+        "--version"
+      ],
+      "timeout_ms": 600000
+    },
+    {
+      "command": "cargo",
+      "args": [
+        "--version"
+      ],
+      "timeout_ms": 600000
+    }
+  ],
+  "fatal_error": null
+}

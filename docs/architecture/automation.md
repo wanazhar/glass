@@ -158,6 +158,10 @@ The complete intended primitive set is:
 
 Each primitive returns a typed outcome containing target/frame identity,
 resulting revision, and only the evidence required to decide the next step.
+Download authorization is bound to the active target's exact browser context,
+including disposable incognito contexts. Glass enables lifecycle events and the
+approved destination only for that context, then restores `deny` on the same
+context before returning or during cancellation cleanup.
 
 ## Safety policy
 

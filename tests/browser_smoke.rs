@@ -400,6 +400,10 @@ fn temporary_profile_home() -> TemporaryProfileHome {
     TemporaryProfileHome { path }
 }
 
+fn expected_profile_config_dir(home: &Path) -> PathBuf {
+    home.join("config")
+}
+
 fn named_profile_mcp(
     binary: &Path,
     chrome_path: &Path,
@@ -411,6 +415,7 @@ fn named_profile_mcp(
     Command::new(binary)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("GLASS_CONFIG_HOME", home.join("config"))
         .arg("--mcp")
         .arg("--chrome-path")
         .arg(chrome_path)
@@ -680,8 +685,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
     .await;
     assert_eq!(first_responses[0]["result"]["serverInfo"]["name"], "glass");
     assert!(
-        home.path()
-            .join("config")
+        expected_profile_config_dir(home.path())
             .join("glass")
             .join("profiles")
             .join("data")
@@ -1194,7 +1198,7 @@ async fn browser_session_drives_a_local_fixture() {
     );
 
     session
-        .evaluate("globalThis.glassMutationTimer=setInterval(() => document.body.dataset.race=String(performance.now()), 0); true")
+        .evaluate("globalThis.glassRaceHost=document.body.appendChild(document.createElement('div')); for(let i=0;i<3000;i++){const node=document.createElement('span');node.textContent='race-'+i;globalThis.glassRaceHost.appendChild(node)}; globalThis.glassMutationTimer=setInterval(() => { for(let i=0;i<250;i++){const node=globalThis.glassRaceHost.firstChild;node.textContent=String(performance.now());globalThis.glassRaceHost.appendChild(node)} document.body.dataset.race=String(performance.now()) }, 0); true")
         .await
         .unwrap();
     let raced = session.observe().await.unwrap();
@@ -1207,7 +1211,7 @@ async fn browser_session_drives_a_local_fixture() {
     );
     session
         .evaluate(
-            "clearInterval(globalThis.glassMutationTimer); delete document.body.dataset.race; true",
+            "clearInterval(globalThis.glassMutationTimer); globalThis.glassRaceHost.remove(); delete globalThis.glassRaceHost; delete document.body.dataset.race; true",
         )
         .await
         .unwrap();

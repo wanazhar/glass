@@ -1003,6 +1003,20 @@ impl CdpClient {
         .await
     }
 
+    /// Invoke Blink's platform-independent editing command on the focused node.
+    pub async fn dispatch_select_all(&self) -> Result<Value, CdpError> {
+        self.send(
+            "Input.dispatchKeyEvent",
+            Some(serde_json::json!({
+                "type": "rawKeyDown",
+                "key": "a",
+                "code": "KeyA",
+                "commands": ["selectAll"]
+            })),
+        )
+        .await
+    }
+
     pub async fn set_file_input_files(
         &self,
         node_id: Option<i64>,

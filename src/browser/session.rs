@@ -3603,12 +3603,7 @@ impl BrowserSession {
                 let editable = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable}").await?)?;
                 if editable.as_bool() != Some(true) { return Err("clear target is not editable".into()); }
                 let clicked = self.click(target).await?;
-                self.shortcut(if cfg!(target_os = "macos") {
-                    "Meta+A"
-                } else {
-                    "Control+A"
-                })
-                .await?;
+                self.cdp.dispatch_select_all().await?;
                 self.key_press("Backspace").await?;
                 let empty = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement ? this.value === '' : this.textContent === ''}").await?)?;
                 if empty.as_bool() != Some(true) { return Err("clear target did not become empty".into()); }

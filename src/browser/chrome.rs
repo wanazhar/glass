@@ -380,6 +380,8 @@ pub async fn download_chromium(update: bool) -> Result<PathBuf, Box<dyn std::err
         permissions.set_mode(0o755);
         tokio::fs::set_permissions(&path, permissions).await?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     let mut marker = File::create(extract_root.join(".complete"))?;
     use std::io::Write as _;
     marker.write_all(format!("{PINNED_CHROME_VERSION}\n").as_bytes())?;
@@ -492,7 +494,7 @@ fn extract_chrome_zip(
         return Err("Chrome archive contained too many entries".into());
     }
     let mut extracted = 0_u64;
-    let mut symlinks = Vec::new();
+    let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let relative = entry

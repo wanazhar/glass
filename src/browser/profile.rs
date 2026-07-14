@@ -13,7 +13,9 @@ pub struct ProfileManager {
 
 impl ProfileManager {
     pub fn new() -> Self {
-        let profiles_dir = dirs::config_dir()
+        let profiles_dir = std::env::var_os("GLASS_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(dirs::config_dir)
             .unwrap_or_else(|| PathBuf::from("."))
             .join("glass")
             .join("profiles");

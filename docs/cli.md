@@ -20,6 +20,10 @@ for the installed version.
 
 Global options can be written before or after a subcommand.
 
+Set `GLASS_CONFIG_HOME` to place Glass configuration and named profiles under
+an explicit root on every platform. When unset, Glass uses the operating
+system's standard configuration directory.
+
 ## Browser commands
 
 ```text

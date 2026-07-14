@@ -163,3 +163,15 @@ checkpoint retains 20 successes and two failures. The adapter was stopped once
 the hard gate was irrecoverable, so no downstream ratified benchmark,
 fuzz/build envelope, or platform run followed. Attempt 05 remains fail-closed
 and is not best-in-class evidence.
+
+## Attempt 06 checkpoint
+
+Reviewed revision `f7705415407dfb4bc0630aa3cfb8b989657013f5` again passed all
+1,100 Glass and Playwright rows. The exact comparable runner-RSS gate records
+8,970,240 bytes for Glass and 196,788,224 bytes for Playwright, a strict Glass
+win. Playwright MCP remained healthy and checkpointed 58/100 iterations
+(638 rows) before the declared 1,200,000 ms ceiling: 580 successes, 58 repeated
+download failures, and zero wrong actions. The incomplete required matrix
+blocks acceptance. This establishes that the current ceiling cannot contain
+the public MCP workflow at its measured throughput; it is not hang evidence.
+No downstream evidence stage ran.

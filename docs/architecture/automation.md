@@ -159,6 +159,17 @@ The complete intended primitive set is:
 Each primitive returns a typed outcome containing target/frame identity,
 resulting revision, and only the evidence required to decide the next step.
 
+Browser-domain download events and lifecycle state are authoritative. For a
+Glass-owned browser launched with command-line incognito only, Glass also binds
+the approved destination to the captured active top-level page session with
+`Page.setDownloadBehavior`; Chromium's browser-context command cannot address
+that command-line-created off-the-record context. The compatibility bridge is
+never used for attached, default, persistent-profile, or CDP-created browser
+contexts. Its target and session route are immutable for the operation. Cleanup
+restores page-scoped `deny` before browser-scoped `deny`, including after caller
+cancellation. A partial authorization or restoration is a typed fail-closed
+download error, never a completed operation.
+
 ## Safety policy
 
 Policy is evaluated before browser or filesystem side effects. It can restrict:

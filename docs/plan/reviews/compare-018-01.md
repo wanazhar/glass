@@ -424,3 +424,80 @@ The surface is complete and the timeout distinction is sound, but the current
 witness can be forged, uniqueness/loss can race after assessment, cancellation
 leaks state, and MCP erases the required typed failures. It is not safe to
 rerun or rely on the full acceptance gate until these blockers are fixed.
+
+---
+
+## Popup hardening re-review: `5469e71` + `be06e4e` + `406a49f`
+
+Reviewed the complete hardening delta against the popup contract in
+`docs/architecture/automation.md`, including the exact CSS-resolved backend
+identity follow-up.
+
+### Resolved findings
+
+- The witness is private isolated-world state installed with captured native
+  `EventTarget` and `Reflect.apply` functions. There is no page-visible binding,
+  predictable nonce, or page-world callback to forge. Only an `isTrusted` click
+  whose `currentTarget` is the exact resolved element can set the state.
+- CSS resolution preserves identity. When the resolved element has only a
+  frontend `nodeId`, `DOM.describeNode` translates that same node to its
+  `backendNodeId`; the locator is not queried a second time. The witness then
+  resolves that backend identity in the isolated world.
+- Witness and popup attachment ownership use drop guards. Cancellation before a
+  worker returns also drops the worker-owned guard, and remote witness state has
+  a five-second self-cleanup fallback. The former unbounded witness-session set
+  is gone.
+- The release deadline is operation-local and exactly 500 ms. Ordinary CDP calls
+  retain the client deadline, ordinary `click` still uses `pointer_click`, and
+  only a typed response timeout on the explicit release enters recovery.
+- Popup failures are bounded, serializable, and included in MCP's typed browser
+  error path. Final discovery repeats authoritative live-target uniqueness and
+  compares topology sequence and loss epoch without selecting the popup.
+
+### Blocking finding
+
+1. **P1 — bounded topology stabilization is not implemented, and a healthy
+   integrated popup fails closed.**
+
+   `wait_for_causal_popup` returns on the first valid candidate
+   (`src/browser/session.rs:3079-3113`). After attach/readiness,
+   `final_popup_verification` samples the current sequence once, immediately
+   calls `Target.getTargets`, and rejects any sequence movement during that call
+   (`src/browser/session.rs:3207-3276`). There is no bounded quiet/stabilization
+   phase before the final authoritative check, despite the architecture contract
+   requiring one. In the one-iteration real-Chromium scorecard, the valid popup
+   failed with `TopologyLagged: popup topology changed during final authoritative
+   verification` after about 567 ms. The popup-only runner passed because its
+   fixture/timing did not expose this late topology delivery. Add a bounded
+   stabilization loop that waits for topology sequence and loss epoch to remain
+   unchanged for a declared quiet interval, then perform the existing final
+   authoritative uniqueness/loss checks immediately before success. New target,
+   destruction, ambiguity, or loss must still fail closed.
+
+### Focused verification
+
+- `cargo test --locked popup_` — passed 12 focused tests.
+- `cargo test --locked click_expect_popup` — passed 2 focused tests.
+- `cargo test --locked backend_identity` — passed 2 focused tests.
+- `cargo test --locked protocol_errors_are_not_typed_as_response_timeouts` —
+  passed.
+- `GLASS_POPUP_BENCH_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run
+  --locked --release --example popup_benchmark` — passed with no failures;
+  healthy ACK 0.77 ms and missing-ACK recovery 556.76 ms. One sample is
+  explicitly not claim-eligible.
+- `GLASS_SCORECARD_ITERATIONS=1 CHROME_PATH=/snap/bin/chromium cargo run --locked
+  --release --example scorecard` — hard gate failed; popup was one of two
+  failures and specifically failed on the final topology race above. The other
+  failure was the pre-existing download expectation mismatch and is outside this
+  popup review.
+
+### Verdict
+
+**blocked**
+
+The earlier witness-forgery, identity, cancellation, timeout-isolation, bounded
+state, and MCP typing blockers are resolved. The sole popup-contract blocker is
+the missing bounded topology stabilization phase, now reproduced in the real
+integrated scorecard. Do not treat the popup operation as acceptance-ready until
+that scorecard popup scenario passes while retaining final fail-closed
+uniqueness, destruction, and loss checks.

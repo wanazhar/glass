@@ -767,3 +767,58 @@ loss, ambiguity, destruction, and identity checks, but its after-deadline stable
 query can still succeed and the 30-sample report is not revision-bound. Fix and
 test that deadline edge before approving the popup contract or rerunning the
 full gate.
+
+---
+
+## Popup deadline and provenance re-review: `1e18bd9` + `2b74e94` + `6d18075`
+
+Reviewed the remaining shared-deadline P1 and exercised the provenance fields
+from a clean current-revision worktree.
+
+### Findings
+
+- Final authoritative discovery now computes the remaining shared evidence
+  budget immediately before `Target.getTargets` and wraps that exact request in
+  the remaining duration. Zero remaining time and query expiry both return
+  bounded typed `TopologyLagged`; a protocol error remains typed
+  `PopupUnreadable`.
+- After parsing authoritative uniqueness and rechecking loss epoch, candidate,
+  ambiguity, and destruction state, the stable-sequence success branch performs
+  a second deadline check immediately before returning. A response that arrives
+  at or after the deadline cannot succeed even if topology is otherwise stable.
+- The delayed stable-query regression holds the response for 50 ms against a
+  15 ms shared deadline and verifies typed `TopologyLagged`. Existing focused
+  tests still cover benign final-query movement retry, perpetual movement at the
+  shared deadline, event loss, ambiguity, destruction, and exact candidate
+  identity.
+- Popup benchmark reports now include UTC generation time, exact git revision,
+  worktree-clean boolean, declared artifact path, reproducible program,
+  arguments and environment, OS, architecture, host, Chrome version, Rust
+  version, and Glass version alongside the existing sample policy and results.
+- A bounded one-sample run from the clean worktree emitted revision
+  `6d18075e4fc6393de2b046579d4ee57d33c9a732`, `git_worktree_clean: true`, host
+  `wanazhar`, Linux/aarch64, Chromium 150.0.7871.46, Rust 1.97.0, the exact
+  command environment, and `/tmp/glass-popup-provenance-check.json` as its
+  artifact path. The report correctly marked one sample non-claim-eligible.
+
+### Focused verification
+
+- `cargo test --locked popup_` — passed 17 focused tests.
+- `cargo test --locked --example popup_benchmark` — passed.
+- `GLASS_POPUP_BENCH_ITERATIONS=1
+  GLASS_POPUP_BENCH_ARTIFACT=/tmp/glass-popup-provenance-check.json
+  CHROME_PATH=/snap/bin/chromium cargo run --locked --release --example
+  popup_benchmark` — passed with no failures and complete clean-revision
+  provenance.
+- `git status --porcelain` — empty before and after the run.
+- No full acceptance run was performed.
+
+### Verdict
+
+**pass**
+
+The after-deadline success edge is closed and covered by a typed delayed-query
+regression. The benchmark can now produce complete, clean, revision-bound raw
+evidence. This approves the popup deadline/provenance fixes; it does not
+retroactively make the older metadata-free 30-sample file revision-bound or
+waive the separate MCP download `ENOENT` acceptance defect.

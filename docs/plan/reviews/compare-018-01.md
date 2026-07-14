@@ -311,3 +311,116 @@ failures are addressed through real current surfaces. This is a code-readiness
 decision, not evidence that the 100-iteration gate will pass; the retained full
 rerun remains authoritative for timing, cleanup, task success, and resource
 outcomes.
+
+---
+
+## Adversarial popup-click review: `116740b` + `b4e50d8`
+
+Reviewed the complete `b298edf..b4e50d8` diff against the approved
+`click_expect_popup` contract. Commit `c751823` remains an ancestor of the
+milestones.
+
+### Findings
+
+1. **P1 — blocking — the trusted-click witness is forgeable by page code.**
+
+   The witness payload is a predictable process-local `AtomicU64` starting at
+   one (`src/browser/session.rs:950`, `src/browser/session.rs:1453`,
+   `src/browser/session.rs:2865`). `Runtime.addBinding` exposes
+   `globalThis.__glass_popup_witness` to the page, so page script can call the
+   binding directly with the expected small integer without any trusted click
+   (`src/browser/session.rs:2891-2901`). The listener is also installed through
+   the page-overridable `element.addEventListener`; a hostile element/page can
+   capture the callback and invoke it with an ordinary object whose
+   `isTrusted` and `currentTarget` properties satisfy the check
+   (`src/browser/session.rs:2904-2923`). The resulting `Runtime.bindingCalled`
+   event is indistinguishable from the intended callback at
+   `src/browser/session.rs:3099-3109`. Use an unguessable per-operation nonce
+   and native, non-overridable EventTarget methods, and ensure direct binding
+   calls cannot constitute witness evidence.
+
+2. **P1 — blocking — exactly-one and no-event-loss are decided too early.**
+
+   `wait_for_causal_popup` returns as soon as the registry contains its first
+   matching target (`src/browser/session.rs:3127-3133`). A click that opens two
+   page targets can therefore succeed after the first `Target.targetCreated`
+   is processed but before the second event is delivered. Readiness then
+   verifies only the selected candidate and never repeats the authoritative
+   target-set, topology-sequence, or `event_loss_count` checks
+   (`src/browser/session.rs:3151-3224`). Event loss or a second opener match
+   during attach/readiness can likewise occur after the only assessment and
+   still return success. Require bounded stabilization followed by a final
+   authoritative live-target uniqueness and event-loss check immediately
+   before success.
+
+3. **P1 — blocking — cancellation does not clean up the witness or verification
+   attachment.**
+
+   Witness cleanup is an awaited statement after `perform_popup_click`; dropping
+   the operation future skips it (`src/browser/session.rs:2870-2880`). The page
+   listener then survives until its five-second timer, the Runtime binding is
+   never removed, and `popup_witness_sessions` retains every observed session
+   ID without a declared bound (`src/browser/session.rs:2891-2922`). Similarly,
+   after `Target.attachToTarget`, detach is only reached on normal control flow;
+   cancellation while debugger-resume/readiness is pending leaves the attached
+   session live (`src/browser/session.rs:3175-3224`). Replace both with
+   cancellation-safe guards whose drops perform bounded cleanup, and bound or
+   eliminate the retained session set.
+
+4. **P1 — blocking — popup negative outcomes lose their typed contract at the
+   MCP boundary.**
+
+   `PopupClickErrorKind` is serializable, but `PopupClickError` itself is not
+   (`src/browser/session.rs:832-858`). MCP error handling serializes only
+   `TargetError`, `WaitTimeout`, and `PolicyError`; every popup-specific
+   `ReleaseFailed`, `WitnessMissing`, `TopologyLagged`, `PopupMissing`,
+   `PopupAmbiguous`, `PopupDestroyed`, `PopupOpenerMismatch`, or
+   `PopupUnreadable` failure becomes the generic text `browser tool failed`
+   (`src/mcp/server.rs:557-571`). Serialize a bounded popup error object and
+   include it in the same typed MCP error path.
+
+### Confirmed contract pieces
+
+- Ordinary `click` still calls the unchanged `pointer_click` path and does not
+  arm a witness (`src/browser/session.rs:2830-2833`).
+- Only the locally constructed `CdpErrorKind::ResponseTimeout` on the explicit
+  `mouseReleased` call is suppressible; protocol and transport errors become
+  `ReleaseFailed` (`src/browser/cdp.rs:51-84`, `src/browser/cdp.rs:457-467`,
+  `src/browser/session.rs:3002-3017`).
+- The pre-release `Target.getTargets` snapshot is taken before release, target
+  sequence and loss counters are monotonic/bounded, and ordinary topology
+  discovery does not select a popup (`src/browser/session.rs:3002-3007`,
+  `src/browser/session.rs:3050-3085`, `src/browser/session.rs:5016-5031`).
+- Normal-path popup liveness, temporary attach, debugger resume, readiness,
+  and detach calls are bounded and do not mutate Glass's active route
+  (`src/browser/session.rs:3151-3236`). The returned success object includes
+  explicit witness, release-acknowledgement, sequence, attachment, and
+  ready-state evidence (`src/browser/session.rs:3027-3047`).
+- CLI command parsing/dispatch and MCP list/schema/parser/dispatch are wired to
+  the same `BrowserSession::click_expect_popup` operation. The scorecard now
+  calls that operation and checks its causal flag/opener before selecting the
+  popup (`src/cli/args.rs:113-119`, `src/cli/runner.rs:96-104`,
+  `src/mcp/server.rs:606-612`, `src/mcp/server.rs:750-756`,
+  `src/mcp/server.rs:881-889`, `examples/scorecard.rs:261-275`).
+
+### Focused verification
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --locked popup_` — passed 7 focused tests.
+- `cargo test --locked click_expect_popup` — passed 2 focused tests.
+- `cargo test --locked protocol_errors_are_not_typed_as_response_timeouts` —
+  passed.
+- `cargo test --locked mcp_dialog_actions_await_browser_completion` matched no
+  test, but `git merge-base --is-ancestor c751823 b4e50d8` returned success,
+  confirming the retained dialog fix is in history.
+- No full acceptance run was performed. Existing retained reports predate the
+  new operation and are not runtime proof for this contract.
+
+### Verdict
+
+**blocked**
+
+The surface is complete and the timeout distinction is sound, but the current
+witness can be forged, uniqueness/loss can race after assessment, cancellation
+leaks state, and MCP erases the required typed failures. It is not safe to
+rerun or rely on the full acceptance gate until these blockers are fixed.

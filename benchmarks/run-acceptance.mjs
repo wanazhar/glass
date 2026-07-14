@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { playwrightMcpProcessDeadlineMs } from "./acceptance-budget.mjs";
 import { prepareCheckpointInvocation, retainCheckpointOnTimeout } from "./checkpoint.mjs";
 import { comparativeGates } from "./acceptance-gates.mjs";
 
@@ -16,11 +17,12 @@ fs.mkdirSync(rawDir, { recursive: true });
 
 let iterations = contract.iterations;
 let commandDeadlineMs = 600000;
-const playwrightMcpDeadlineMs = 1200000;
+let playwrightMcpDeadlineMs = playwrightMcpProcessDeadlineMs(iterations);
 let configurationError = null;
 try {
   iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLASS_SCORECARD_ITERATIONS ?? String(contract.iterations));
   commandDeadlineMs = positiveInteger("GLASS_ACCEPTANCE_COMMAND_TIMEOUT_MS", process.env.GLASS_ACCEPTANCE_COMMAND_TIMEOUT_MS ?? "600000");
+  playwrightMcpDeadlineMs = playwrightMcpProcessDeadlineMs(iterations);
 } catch (error) {
   configurationError = String(error.message ?? error);
 }

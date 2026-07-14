@@ -483,6 +483,27 @@ pub struct DownloadOutcome {
     pub frame_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadErrorKind {
+    AuthorizationFailed,
+    RestorationFailed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadError {
+    pub kind: DownloadErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "download {:?}: {}", self.kind, self.message)
+    }
+}
+
+impl Error for DownloadError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum VisualFormat {
@@ -2769,10 +2790,32 @@ impl BrowserSession {
             );
         }
         let (target_id, frame_id) = self.route_identity().await?;
+        let page_session_id = if use_page_download_compatibility(
+            self.chrome.is_some(),
+            self.disposable_profile.is_some(),
+        ) {
+            let topology = self.topology.lock().await;
+            if topology.active_target_id.as_deref() != Some(target_id.as_str()) {
+                return Err(download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "incognito download route changed during capture",
+                )
+                .into());
+            }
+            Some(topology.active_target_session_id.clone().ok_or_else(|| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "incognito download has no captured top-level page session",
+                )
+            })?)
+        } else {
+            None
+        };
         let _download_scope = self.download_scope.lock().await;
         let mut events = self.cdp.subscribe_events_with_params();
         let mut download_guard =
-            DownloadBehaviorGuard::acquire(self.cdp.clone(), &destination).await?;
+            DownloadBehaviorGuard::acquire(self.cdp.clone(), destination.clone(), page_session_id)
+                .await?;
         let result = tokio::time::timeout(deadline, async {
             let mut guid = None;
             let mut filename = String::new();
@@ -4569,6 +4612,7 @@ struct DiagnosticDomainGuard {
 
 struct DownloadBehaviorGuard {
     cdp: CdpClient,
+    page_session_id: Option<String>,
     armed: bool,
 }
 
@@ -4707,16 +4751,103 @@ impl Drop for DiagnosticDomainGuard {
 }
 
 impl DownloadBehaviorGuard {
-    async fn acquire(cdp: CdpClient, destination: &Path) -> BrowserResult<Self> {
+    async fn acquire(
+        cdp: CdpClient,
+        destination: PathBuf,
+        page_session_id: Option<String>,
+    ) -> BrowserResult<Self> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = Self::acquire_owned(cdp, &destination, page_session_id).await;
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    "download authorization worker ended without a result",
+                )
+            })?
+            .map_err(Into::into)
+    }
+
+    async fn acquire_owned(
+        cdp: CdpClient,
+        destination: &Path,
+        page_session_id: Option<String>,
+    ) -> Result<Self, DownloadError> {
         cdp.set_download_behavior("allow", Some(destination), true)
-            .await?;
-        Ok(Self { cdp, armed: true })
+            .await
+            .map_err(|error| {
+                download_error(
+                    DownloadErrorKind::AuthorizationFailed,
+                    format!("browser download authorization failed: {error}"),
+                )
+            })?;
+        if let Some(session_id) = page_session_id.as_deref()
+            && let Err(error) = cdp
+                .send_to_session(
+                    session_id,
+                    "Page.setDownloadBehavior",
+                    Some(serde_json::json!({
+                        "behavior": "allow",
+                        "downloadPath": destination.to_string_lossy()
+                    })),
+                )
+                .await
+        {
+            let restoration = cdp.set_download_behavior("deny", None, false).await;
+            return Err(download_error(
+                DownloadErrorKind::AuthorizationFailed,
+                format!(
+                    "incognito page download authorization failed: {error}; browser deny restoration: {}",
+                    restoration
+                        .map(|_| "completed".to_string())
+                        .unwrap_or_else(|restore| restore.to_string())
+                ),
+            ));
+        }
+        Ok(Self {
+            cdp,
+            page_session_id,
+            armed: true,
+        })
     }
 
     async fn disable(&mut self) -> BrowserResult<()> {
-        self.cdp.set_download_behavior("deny", None, false).await?;
-        self.armed = false;
-        Ok(())
+        let page_result = match self.page_session_id.as_deref() {
+            Some(session_id) => self
+                .cdp
+                .send_to_session(
+                    session_id,
+                    "Page.setDownloadBehavior",
+                    Some(serde_json::json!({"behavior": "deny"})),
+                )
+                .await
+                .map(|_| ()),
+            None => Ok(()),
+        };
+        let browser_result = self
+            .cdp
+            .set_download_behavior("deny", None, false)
+            .await
+            .map(|_| ());
+        match (page_result, browser_result) {
+            (Ok(()), Ok(())) => {
+                self.armed = false;
+                Ok(())
+            }
+            (page, browser) => Err(download_error(
+                DownloadErrorKind::RestorationFailed,
+                format!(
+                    "download deny restoration failed (page: {}; browser: {})",
+                    protocol_result_summary(page),
+                    protocol_result_summary(browser)
+                ),
+            )
+            .into()),
+        }
     }
 }
 
@@ -4726,7 +4857,17 @@ impl Drop for DownloadBehaviorGuard {
             return;
         }
         let cdp = self.cdp.clone();
+        let page_session_id = self.page_session_id.clone();
         tokio::spawn(async move {
+            if let Some(session_id) = page_session_id.as_deref() {
+                let _ = cdp
+                    .send_to_session(
+                        session_id,
+                        "Page.setDownloadBehavior",
+                        Some(serde_json::json!({"behavior": "deny"})),
+                    )
+                    .await;
+            }
             let _ = cdp.set_download_behavior("deny", None, false).await;
         });
     }
@@ -5448,6 +5589,24 @@ async fn cleanup_popup_witness(
 
 fn popup_error(kind: PopupClickErrorKind, message: impl Into<String>) -> Box<dyn Error> {
     Box::new(popup_typed_error(kind, message))
+}
+
+fn download_error(kind: DownloadErrorKind, message: impl Into<String>) -> DownloadError {
+    let message = message.into();
+    DownloadError {
+        kind,
+        message: truncate_utf8_bytes(&message, POPUP_ERROR_MESSAGE_MAX_BYTES),
+    }
+}
+
+fn use_page_download_compatibility(owned: bool, command_line_incognito: bool) -> bool {
+    owned && command_line_incognito
+}
+
+fn protocol_result_summary(result: Result<(), super::cdp::CdpError>) -> String {
+    result
+        .map(|_| "completed".to_string())
+        .unwrap_or_else(|error| error.to_string())
 }
 
 fn assess_popup_topology(
@@ -6257,6 +6416,45 @@ mod tests {
         (format!("ws://{address}"), server)
     }
 
+    async fn download_bridge_server(
+        delay_page_allow: bool,
+        request_count: usize,
+        error_indices: Vec<usize>,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut requests = Vec::new();
+            for index in 0..request_count {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text CDP request"),
+                };
+                if delay_page_allow && index == 1 {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                let response = if error_indices.contains(&index) {
+                    serde_json::json!({
+                        "id": request["id"],
+                        "error": {"code": -32000, "message": "diagnostic failure"}
+                    })
+                } else {
+                    serde_json::json!({"id": request["id"], "result": {}})
+                };
+                websocket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        (format!("ws://{address}"), server)
+    }
+
     async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, String) {
         let huge_text = "x".repeat(33 * 1024);
         let tree = serde_json::json!({
@@ -6772,6 +6970,123 @@ mod tests {
                 "missing {method}"
             );
         }
+    }
+
+    #[test]
+    fn page_download_bridge_is_scoped_only_to_owned_command_line_incognito() {
+        assert!(use_page_download_compatibility(true, true));
+        assert!(!use_page_download_compatibility(false, true));
+        assert!(!use_page_download_compatibility(true, false));
+        assert!(!use_page_download_compatibility(false, false));
+    }
+
+    #[tokio::test]
+    async fn incognito_download_bridge_allows_and_restores_the_captured_page_route() {
+        let (url, server) = download_bridge_server(false, 4, Vec::new()).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let destination = std::env::current_dir().unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            destination.clone(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        .unwrap();
+        guard.disable().await.unwrap();
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[0]["params"]["behavior"], "allow");
+        assert_eq!(requests[0]["params"]["eventsEnabled"], true);
+        assert_eq!(
+            requests[0]["params"]["downloadPath"],
+            destination.to_string_lossy().as_ref()
+        );
+        assert_eq!(requests[1]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[1]["sessionId"], "captured-page-session");
+        assert_eq!(requests[1]["params"]["behavior"], "allow");
+        assert_eq!(requests[2]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[2]["sessionId"], "captured-page-session");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        assert_eq!(requests[3]["params"]["eventsEnabled"], false);
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_incognito_download_authorization_restores_both_scopes() {
+        let (url, server) = download_bridge_server(true, 4, Vec::new()).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let acquire = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), acquire)
+                .await
+                .is_err()
+        );
+
+        let requests = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(requests[0]["params"]["behavior"], "allow");
+        assert_eq!(requests[1]["params"]["behavior"], "allow");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        assert_eq!(requests[2]["sessionId"], "captured-page-session");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn partial_incognito_download_enable_is_typed_and_restores_browser_deny() {
+        let (url, server) = download_bridge_server(false, 3, vec![1]).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let error = match DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        {
+            Ok(_) => panic!("partial authorization unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::AuthorizationFailed
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests[2]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[2]["params"]["behavior"], "deny");
+        cdp.close().await;
+    }
+
+    #[tokio::test]
+    async fn partial_incognito_download_restoration_is_typed_and_still_denies_browser() {
+        let (url, server) = download_bridge_server(false, 4, vec![2]).await;
+        let cdp = CdpClient::connect(&url).await.unwrap();
+        let mut guard = DownloadBehaviorGuard::acquire(
+            cdp.clone(),
+            std::env::current_dir().unwrap(),
+            Some("captured-page-session".to_string()),
+        )
+        .await
+        .unwrap();
+        let error = guard.disable().await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<DownloadError>().unwrap().kind,
+            DownloadErrorKind::RestorationFailed
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests[2]["method"], "Page.setDownloadBehavior");
+        assert_eq!(requests[3]["method"], "Browser.setDownloadBehavior");
+        assert_eq!(requests[3]["params"]["behavior"], "deny");
+        guard.armed = false;
+        cdp.close().await;
     }
 
     #[tokio::test]

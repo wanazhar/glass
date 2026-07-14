@@ -8,6 +8,7 @@ test("MCP process deadline scales with the controlled iteration count", () => {
 });
 
 test("MCP process deadline rejects invalid and overflowing iteration counts", () => {
-  for (const iterations of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER])
+  assert.equal(playwrightMcpProcessDeadlineMs(71_578), 2_147_460_000);
+  for (const iterations of [0, -1, 1.5, Number.NaN, 71_579, Number.MAX_SAFE_INTEGER])
     assert.throws(() => playwrightMcpProcessDeadlineMs(iterations));
 });

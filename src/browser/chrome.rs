@@ -17,7 +17,7 @@ const PORT_LAUNCH_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 const PORT_LAUNCH_LOCK_RETRY: Duration = Duration::from_millis(25);
 const CHROME_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHROME_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CHROME_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const CHROME_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const PINNED_CHROME_VERSION: &str = "150.0.7871.115";
 const MAX_CHROME_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CHROME_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -455,6 +455,7 @@ fn prune_managed_chrome(install_dir: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(install_dir.join("versions"))? {
         let entry = entry?;
         if !retained.contains(&entry.file_name().to_string_lossy().into_owned()) {
+            make_removable(&entry.path())?;
             std::fs::remove_dir_all(entry.path())?;
         }
     }
@@ -467,6 +468,7 @@ struct InstallStagingGuard(PathBuf);
 
 impl Drop for InstallStagingGuard {
     fn drop(&mut self) {
+        let _ = make_removable(&self.0);
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -475,6 +477,7 @@ fn cleanup_install_staging(install_dir: &Path) -> Result<(), Box<dyn std::error:
     for entry in std::fs::read_dir(install_dir)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with(".staging-") {
+            let _ = make_removable(&entry.path());
             std::fs::remove_dir_all(entry.path())?;
         }
     }
@@ -546,6 +549,15 @@ fn extract_chrome_zip(
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&output, std::fs::Permissions::from_mode(mode & 0o777))?;
         }
+        #[cfg(windows)]
+        {
+            let metadata = std::fs::metadata(&output)?;
+            if metadata.permissions().readonly() {
+                let mut perms = metadata.permissions();
+                perms.set_readonly(false);
+                std::fs::set_permissions(&output, perms)?;
+            }
+        }
     }
     #[cfg(unix)]
     for (link, target) in symlinks {
@@ -566,6 +578,31 @@ fn sync_directory_tree(root: &Path) -> std::io::Result<()> {
         }
     }
     sync_directory(root)
+}
+
+/// On Windows, recursively clear the read-only attribute from all files so
+/// that `remove_dir_all` can delete them. On Unix this is a no-op because
+/// directory write permission is sufficient for deletion.
+#[cfg(windows)]
+fn make_removable(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            make_removable(&entry.path())?;
+        }
+    }
+    let metadata = std::fs::metadata(path)?;
+    if metadata.permissions().readonly() {
+        let mut perms = metadata.permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn make_removable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn safe_relative_symlink(link: &Path, target: &Path) -> bool {
@@ -752,6 +789,7 @@ fn chrome_arguments(
         "--disable-translate".to_string(),
         "--disable-extensions".to_string(),
         "--disable-default-apps".to_string(),
+        "--disable-session-crashed-bubble".to_string(),
         "--disable-features=Translate,BackForwardCache".to_string(),
         "--window-size=1280,720".to_string(),
     ];

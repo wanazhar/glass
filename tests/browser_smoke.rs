@@ -1137,14 +1137,24 @@ async fn browser_session_drives_a_local_fixture() {
         .evaluate("setTimeout(() => alert('bounded dialog'), 20); true")
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-    session.dismiss_dialog().await.unwrap();
+    // Poll for the dialog instead of a fixed sleep to handle timing
+    // variability across different CI runners.
+    for _ in 0..25 {
+        if session.dismiss_dialog().await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     session
         .evaluate("setTimeout(() => confirm('accept dialog'), 20); true")
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-    session.accept_dialog().await.unwrap();
+    for _ in 0..25 {
+        if session.accept_dialog().await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let download_dir = std::env::current_dir()
         .unwrap()

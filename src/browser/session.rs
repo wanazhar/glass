@@ -59,7 +59,7 @@ const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
             return new TextDecoder().decode(bytes.subarray(0, encoded.written)); })(),
         mutation_revision:state.revision, boundaries:summary});
 })()"#;
-const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
 const TOPOLOGY_MAX_TARGETS: usize = 32;

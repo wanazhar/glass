@@ -1,22 +1,77 @@
 use super::*;
 
+/// Maximum number of locator segments in a fallback chain.
+const MAX_FALLBACK_SEGMENTS: usize = 8;
+/// Maximum UTF-8 byte length of a single locator segment.
+const MAX_SEGMENT_BYTES: usize = 1024;
+
 impl BrowserSession {
     pub(crate) async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
-        let locator = Locator::parse(target)?;
-        match self.resolve_locator(&locator).await? {
-            TargetResolution::Unique(element) => Ok(element),
-            TargetResolution::Ambiguous(candidates) => Err(TargetError {
-                kind: TargetErrorKind::Ambiguous,
-                reason: None,
-                candidates,
+        // Fallback chain: split on " | " (pipe with surrounding spaces)
+        if let Some(_pipe_pos) = target.find(" | ") {
+            let segments: Vec<&str> = target.split(" | ").collect();
+            if segments.len() > MAX_FALLBACK_SEGMENTS {
+                return Err(format!(
+                    "locator fallback chain exceeds max {} segments",
+                    MAX_FALLBACK_SEGMENTS
+                )
+                .into());
             }
-            .into()),
-            TargetResolution::NotFound => Err(TargetError {
+            for segment in &segments {
+                if segment.len() > MAX_SEGMENT_BYTES {
+                    return Err(format!(
+                        "locator segment exceeds {} bytes: {}",
+                        MAX_SEGMENT_BYTES,
+                        &segment[..segment.len().min(80)]
+                    )
+                    .into());
+                }
+            }
+
+            for segment in &segments {
+                let locator = Locator::parse(segment)?;
+                match self.resolve_locator(&locator).await? {
+                    TargetResolution::Unique(element) => return Ok(element),
+                    TargetResolution::Ambiguous(candidates) => {
+                        // Stop immediately on ambiguity — never try next segment
+                        return Err(TargetError {
+                            kind: TargetErrorKind::Ambiguous,
+                            reason: None,
+                            candidates,
+                        }
+                        .into());
+                    }
+                    TargetResolution::NotFound => {
+                        // Continue to next segment
+                    }
+                }
+            }
+
+            // All segments exhausted without Unique match
+            Err(TargetError {
                 kind: TargetErrorKind::NotFound,
                 reason: None,
                 candidates: Vec::new(),
             }
-            .into()),
+            .into())
+        } else {
+            // Single locator — no behavioral change
+            let locator = Locator::parse(target)?;
+            match self.resolve_locator(&locator).await? {
+                TargetResolution::Unique(element) => Ok(element),
+                TargetResolution::Ambiguous(candidates) => Err(TargetError {
+                    kind: TargetErrorKind::Ambiguous,
+                    reason: None,
+                    candidates,
+                }
+                .into()),
+                TargetResolution::NotFound => Err(TargetError {
+                    kind: TargetErrorKind::NotFound,
+                    reason: None,
+                    candidates: Vec::new(),
+                }
+                .into()),
+            }
         }
     }
 

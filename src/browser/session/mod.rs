@@ -1014,17 +1014,17 @@ impl BrowserSession {
             error_text.truncate(MAX_ERROR_BYTES);
         }
 
-        let last_observation = self
-            .observation_cache
-            .lock()
-            .await
-            .as_ref()
-            .map(|cached| CompactObservationTrace {
-                page: cached.context.page.clone(),
-                revision: cached.revision,
-                interactive: cached.context.accessibility.interactive.clone(),
-                completeness: cached.context.accessibility.completeness.clone(),
-            });
+        let last_observation =
+            self.observation_cache
+                .lock()
+                .await
+                .as_ref()
+                .map(|cached| CompactObservationTrace {
+                    page: cached.context.page.clone(),
+                    revision: cached.revision,
+                    interactive: cached.context.accessibility.interactive.clone(),
+                    completeness: cached.context.accessibility.completeness.clone(),
+                });
 
         let topology = {
             let t = self.topology.lock().await;
@@ -2341,6 +2341,15 @@ impl BrowserSession {
                 })
             })
             .await
+    }
+
+    /// Return the currently pending JavaScript dialog content, if any.
+    ///
+    /// Agents should read this before calling [`accept_dialog`] or
+    /// [`dismiss_dialog`] to determine the dialog type, message, and
+    /// default value. The dialog is cleared when it is handled or closed.
+    pub async fn pending_dialog(&self) -> Option<PendingDialog> {
+        self.topology.lock().await.pending_dialog.clone()
     }
 
     pub async fn accept_dialog(&self) -> BrowserResult<()> {

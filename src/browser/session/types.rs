@@ -459,6 +459,23 @@ pub(crate) struct TopologyRegistry {
     pub(crate) event_loss_count: u64,
     pub(crate) target_sequences: HashMap<String, u64>,
     pub(crate) destroyed_targets: VecDeque<DestroyedPageTarget>,
+    /// Most recently opened JavaScript dialog, if any.
+    pub(crate) pending_dialog: Option<PendingDialog>,
+}
+
+/// JavaScript dialog content surfaced to agents before resolution.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingDialog {
+    /// `alert`, `confirm`, `prompt`, or `beforeunload`.
+    #[serde(rename = "type")]
+    pub dialog_type: String,
+    /// Dialog message text (bounded to 256 bytes).
+    pub message: String,
+    /// Default prompt value (only for `prompt` dialogs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    /// Page URL that opened the dialog.
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3589,6 +3606,24 @@ pub(crate) fn apply_topology_event(
             {
                 topology.active_frame_id = None;
             }
+        }
+        "Page.javascriptDialogOpening" => {
+            let dialog_type = event.params["type"].as_str().unwrap_or("alert").to_string();
+            let message =
+                bounded_topology_text(event.params["message"].as_str().unwrap_or_default());
+            let default_value = event.params["defaultPrompt"].as_str().map(String::from);
+            let url = bounded_topology_text(event.params["url"].as_str().unwrap_or_default());
+            topology.pending_dialog = Some(PendingDialog {
+                dialog_type,
+                message,
+                default_value,
+                url,
+            });
+            push_topology_event(topology, "Page.javascriptDialogOpening", "dialog");
+        }
+        "Page.javascriptDialogClosed" => {
+            topology.pending_dialog = None;
+            push_topology_event(topology, "Page.javascriptDialogClosed", "dialog");
         }
         _ => {}
     }

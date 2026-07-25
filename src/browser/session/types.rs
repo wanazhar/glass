@@ -559,6 +559,85 @@ impl std::fmt::Display for TargetError {
 
 impl Error for TargetError {}
 
+/// Machine-readable topology failure with an agent-facing recovery hint.
+///
+/// When an agent receives this error, the [`recovery`](TopologyError::recovery) field
+/// holds a stable enumeration value the agent can match on to choose its next
+/// action without parsing free-text messages.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyError {
+    pub kind: TopologyErrorKind,
+    pub message: String,
+    /// Stable hint telling an agent what recovery action to take next.
+    pub recovery: TopologyRecoveryHint,
+}
+
+/// Stable, machine-readable kind for [`TopologyError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopologyErrorKind {
+    /// No active page target is selected; agent should call `listTargets` and
+    /// (re-)select one.
+    NoTargetSelected,
+    /// The active target is no longer reachable (detached, crashed, or destroyed).
+    StaleTarget,
+    /// The active frame is no longer present in the current target's frame tree.
+    StaleFrame,
+    /// The requested frame was not found in the current target.
+    NoSuchFrame,
+    /// The active target has no open CDP session (internal routing loss).
+    NoPageSession,
+    /// Topology budget exceeded (too many targets, frames, or events).
+    BudgetExceeded,
+    /// CDP routing was lost and the session must be re-synchronised.
+    RoutingLost,
+}
+
+/// Action an agent should take after receiving a [`TopologyError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopologyRecoveryHint {
+    /// Call `listTargets` to refresh the page-target inventory and then select one.
+    ListTargets,
+    /// Call `observe` to obtain a fresh view of the current page.
+    ReObserve,
+    /// Call `listFrames` and then `selectFrame` with a valid frame ID.
+    ListFrames,
+    /// The session may need to be re-established; recreate the session.
+    Reconnect,
+}
+
+impl TopologyError {
+    pub(crate) fn new(kind: TopologyErrorKind, message: impl Into<String>) -> Self {
+        let recovery = match kind {
+            TopologyErrorKind::NoTargetSelected => TopologyRecoveryHint::ListTargets,
+            TopologyErrorKind::StaleTarget => TopologyRecoveryHint::ListTargets,
+            TopologyErrorKind::StaleFrame => TopologyRecoveryHint::ListFrames,
+            TopologyErrorKind::NoSuchFrame => TopologyRecoveryHint::ListFrames,
+            TopologyErrorKind::NoPageSession => TopologyRecoveryHint::Reconnect,
+            TopologyErrorKind::BudgetExceeded => TopologyRecoveryHint::ReObserve,
+            TopologyErrorKind::RoutingLost => TopologyRecoveryHint::Reconnect,
+        };
+        Self {
+            kind,
+            message: message.into(),
+            recovery,
+        }
+    }
+}
+
+impl std::fmt::Display for TopologyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "topology {:?}: {} (recovery: {:?})",
+            self.kind, self.message, self.recovery
+        )
+    }
+}
+
+impl Error for TopologyError {}
+
 #[derive(Debug)]
 pub(crate) enum TargetResolution {
     Unique(ResolvedElement),
@@ -3516,7 +3595,11 @@ pub(crate) async fn resync_topology(
             .ok_or("Target.getTargets returned a page without an ID")?;
         validate_topology_id(id)?;
         if targets.len() == TOPOLOGY_MAX_TARGETS {
-            return Err("page target limit exceeded during topology resync".into());
+            return Err(TopologyError::new(
+                TopologyErrorKind::BudgetExceeded,
+                "page target limit exceeded during topology resync; consider closing unused targets",
+            )
+            .into());
         }
         targets.push(PageTargetInfo {
             id: id.to_string(),

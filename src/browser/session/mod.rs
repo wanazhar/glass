@@ -844,9 +844,18 @@ impl BrowserSession {
             )
         };
         if target_id.is_none() {
-            return Err("no active target is selected".into());
+            return Err(TopologyError::new(
+                TopologyErrorKind::NoTargetSelected,
+                "no active target is selected; call listTargets to discover available pages",
+            )
+            .into());
         }
-        let target_session = target_session.ok_or("active target has no CDP session")?;
+        let target_session = target_session.ok_or_else(|| {
+            TopologyError::new(
+                TopologyErrorKind::NoPageSession,
+                "active target has no CDP session; the session may need to be re-established",
+            )
+        })?;
         let raw = self
             .cdp
             .send_to_session(&target_session, "Page.getFrameTree", None)
@@ -911,7 +920,12 @@ impl BrowserSession {
             .await?
             .into_iter()
             .find(|frame| frame.id == frame_id)
-            .ok_or("frame was not found")?;
+            .ok_or_else(|| {
+                TopologyError::new(
+                    TopologyErrorKind::NoSuchFrame,
+                    format!("frame {frame_id} was not found; call listFrames to discover available frames"),
+                )
+            })?;
         let session_id = {
             let topology = self.topology.lock().await;
             topology
@@ -919,7 +933,12 @@ impl BrowserSession {
                 .get(frame_id)
                 .cloned()
                 .or_else(|| topology.active_target_session_id.clone())
-                .ok_or("active target has no CDP session")?
+                .ok_or_else(|| {
+                    TopologyError::new(
+                        TopologyErrorKind::NoPageSession,
+                        "active target has no CDP session; the session may need to be re-established",
+                    )
+                })?
         };
         let context_id = if frame.parent_id.is_none() {
             None
@@ -2406,11 +2425,21 @@ impl BrowserSession {
                 let original_session_id = self
                     .cdp
                     .current_session_id()
-                    .ok_or("popup click requires an attached page session")?;
+                    .ok_or_else(|| {
+                        TopologyError::new(
+                            TopologyErrorKind::NoPageSession,
+                            "popup click requires an attached page session; the session may need to be re-established",
+                        )
+                    })?;
                 let original_frame_id = self
                     .cdp
                     .active_frame()
-                    .ok_or("popup click requires an active frame")?;
+                    .ok_or_else(|| {
+                        TopologyError::new(
+                            TopologyErrorKind::StaleFrame,
+                            "popup click requires an active frame; call listFrames to discover available frames",
+                        )
+                    })?;
                 let backend_node_id = match (element.backend_dom_node_id, element.node_id) {
                     (Some(backend_node_id), _) => backend_node_id,
                     (None, Some(node_id)) => self
@@ -2611,14 +2640,18 @@ impl BrowserSession {
             preexisting_target_ids.insert(id.to_string());
         }
         let topology = self.topology.lock().await;
-        let original_target_id = topology
-            .active_target_id
-            .clone()
-            .ok_or("popup click has no active target")?;
-        let original_frame_id = topology
-            .active_frame_id
-            .clone()
-            .ok_or("popup click has no active frame")?;
+        let original_target_id = topology.active_target_id.clone().ok_or_else(|| {
+            TopologyError::new(
+                TopologyErrorKind::NoTargetSelected,
+                "popup click has no active target; call listTargets to discover available pages",
+            )
+        })?;
+        let original_frame_id = topology.active_frame_id.clone().ok_or_else(|| {
+            TopologyError::new(
+                TopologyErrorKind::StaleFrame,
+                "popup click has no active frame; call listFrames to discover available frames",
+            )
+        })?;
         Ok(PopupTopologySnapshot {
             original_target_id,
             original_frame_id,
@@ -5286,5 +5319,61 @@ mod tests {
             (bounds.x, bounds.y, bounds.width, bounds.height),
             (1.0, 0.0, 1.0, 1.0)
         );
+    }
+
+    #[test]
+    fn topology_error_maps_kind_to_correct_recovery_hint() {
+        use super::TopologyErrorKind;
+        use super::TopologyRecoveryHint;
+
+        let cases: &[(TopologyErrorKind, TopologyRecoveryHint)] = &[
+            (
+                TopologyErrorKind::NoTargetSelected,
+                TopologyRecoveryHint::ListTargets,
+            ),
+            (
+                TopologyErrorKind::StaleTarget,
+                TopologyRecoveryHint::ListTargets,
+            ),
+            (
+                TopologyErrorKind::StaleFrame,
+                TopologyRecoveryHint::ListFrames,
+            ),
+            (
+                TopologyErrorKind::NoSuchFrame,
+                TopologyRecoveryHint::ListFrames,
+            ),
+            (
+                TopologyErrorKind::NoPageSession,
+                TopologyRecoveryHint::Reconnect,
+            ),
+            (
+                TopologyErrorKind::BudgetExceeded,
+                TopologyRecoveryHint::ReObserve,
+            ),
+            (
+                TopologyErrorKind::RoutingLost,
+                TopologyRecoveryHint::Reconnect,
+            ),
+        ];
+
+        for (kind, expected_hint) in cases {
+            let error = super::TopologyError::new(*kind, "test");
+            assert_eq!(error.kind, *kind);
+            assert_eq!(error.recovery, *expected_hint);
+            assert!(!error.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn topology_error_display_includes_kind_and_recovery() {
+        let error = super::TopologyError::new(
+            super::TopologyErrorKind::NoTargetSelected,
+            "no active target",
+        );
+        let display = error.to_string();
+        assert!(display.contains("NoTargetSelected"));
+        assert!(display.contains("no active target"));
+        assert!(display.contains("ListTargets"));
     }
 }

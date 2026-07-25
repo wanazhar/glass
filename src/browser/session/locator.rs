@@ -133,10 +133,15 @@ impl BrowserSession {
                 reason: Some(TargetActionabilityReason::NodeUnavailable),
                 candidates: Vec::new(),
             })?;
+        // Guard the remote handle so it is released even if call_on_object fails.
+        let remote = RemoteObjectGuard {
+            cdp: self.cdp.clone(),
+            object_id,
+        };
 
         let raw = self
             .cdp
-            .call_on_object(&object_id, HIT_TEST_FUNCTION)
+            .call_on_object(&remote.object_id, HIT_TEST_FUNCTION)
             .await
             .map_err(|_| TargetError {
                 kind: TargetErrorKind::NotActionable,

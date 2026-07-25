@@ -239,6 +239,13 @@ enum ToolInvocation<'a> {
     SelectFrame {
         id: &'a str,
     },
+    Cookies,
+    SetCookies {
+        cookies: Value,
+    },
+    ClearCookies,
+    LocalStorage,
+    SessionStorage,
 }
 
 struct Outbound {
@@ -835,6 +842,20 @@ async fn call_tool(
         }
         ToolInvocation::ListFrames => serialized_result(&session.list_frames().await?),
         ToolInvocation::SelectFrame { id } => serialized_result(&session.select_frame(id).await?),
+        ToolInvocation::Cookies => serialized_result(&session.cookies().await?),
+        ToolInvocation::SetCookies { cookies } => {
+            let parsed: Vec<crate::browser::session::storage::Cookie> =
+                serde_json::from_value(cookies.clone())
+                    .map_err(|e| format!("invalid cookies: {e}"))?;
+            session.set_cookies(&parsed).await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::ClearCookies => {
+            session.clear_cookies().await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::LocalStorage => serialized_result(&session.local_storage().await?),
+        ToolInvocation::SessionStorage => serialized_result(&session.session_storage().await?),
     }
 }
 
@@ -964,6 +985,13 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "selectFrame" => Ok(ToolInvocation::SelectFrame {
             id: required_string(arguments, "id")?,
         }),
+        "cookies" => Ok(ToolInvocation::Cookies),
+        "setCookies" => Ok(ToolInvocation::SetCookies {
+            cookies: arguments["cookies"].clone(),
+        }),
+        "clearCookies" => Ok(ToolInvocation::ClearCookies),
+        "localStorage" => Ok(ToolInvocation::LocalStorage),
+        "sessionStorage" => Ok(ToolInvocation::SessionStorage),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
 }
@@ -1247,6 +1275,31 @@ fn tools() -> Vec<Tool> {
             name: "selectFrame",
             description: "Explicitly select the frame used by subsequent tools.",
             input_schema: json!({"type":"object", "properties":{"id":{"type":"string"}}, "required":["id"]}),
+        },
+        Tool {
+            name: "cookies",
+            description: "Read all browser cookies for the current page URL. Requires persistent profile.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "setCookies",
+            description: "Set browser cookies. Requires persistent profile.",
+            input_schema: json!({"type":"object","properties":{"cookies":{"type":"array"}},"required":["cookies"]}),
+        },
+        Tool {
+            name: "clearCookies",
+            description: "Clear all browser cookies. Requires persistent profile.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "localStorage",
+            description: "Read localStorage items (bounded to 64 entries, 1 KiB per value). Requires persistent profile.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "sessionStorage",
+            description: "Read sessionStorage items (bounded to 64 entries, 1 KiB per value). Requires persistent profile.",
+            input_schema: json!({"type":"object","properties":{}}),
         },
     ]
 }
@@ -1645,7 +1698,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 37);
+        assert_eq!(tools.len(), 42);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],

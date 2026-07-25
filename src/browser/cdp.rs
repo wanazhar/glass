@@ -1064,6 +1064,10 @@ impl CdpClient {
         .await
     }
 
+    pub async fn clear_browser_cookies(&self) -> Result<(), CdpError> {
+        self.send("Network.clearBrowserCookies", None).await?;
+        Ok(())
+    }
     pub async fn enable_page(&self) -> Result<(), CdpError> {
         self.send("Page.enable", None).await?;
         Ok(())

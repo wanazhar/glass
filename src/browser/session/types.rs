@@ -475,9 +475,7 @@ impl ObservationCompleteness {
         };
 
         // shadow factor
-        let shadow_factor = if shadow_hosts == 0 {
-            1.0
-        } else if shadow_hosts_pierced >= shadow_hosts {
+        let shadow_factor = if shadow_hosts == 0 || shadow_hosts_pierced >= shadow_hosts {
             1.0
         } else if shadow_hosts_pierced > 0 {
             0.7

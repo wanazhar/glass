@@ -1303,10 +1303,10 @@ impl BrowserSession {
             completeness: Some(ObservationCompleteness::compute(
                 compact_accessibility.interactive_discovered,
                 interactive_len,
-                page_state.boundaries.shadow_roots as usize,
+                page_state.boundaries.shadow_roots,
                 0, // shadow_hosts_pierced (zero until #8 shadow piercing)
-                page_state.boundaries.canvases as usize,
-                page_state.boundaries.child_frames as usize,
+                page_state.boundaries.canvases,
+                page_state.boundaries.child_frames,
                 !consistent,
             )),
         };

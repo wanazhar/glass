@@ -309,7 +309,7 @@ pub struct TargetError {
 }
 /// Outcome of a side-effect-free preflight target resolution and actionability check.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct PreflightOutcome {
+pub struct PreflightOutcome {
     /// Whether the target resolved uniquely.
     pub unique: bool,
     /// The resolved element (only present when unique).
@@ -1896,11 +1896,11 @@ pub(crate) fn context_event_invalidates_observation(method: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ResolvedElement {
-    pub(crate) node_id: Option<i64>,
-    pub(crate) backend_dom_node_id: Option<i64>,
-    pub(crate) label: String,
-    pub(crate) reference: Option<String>,
+pub struct ResolvedElement {
+    pub node_id: Option<i64>,
+    pub backend_dom_node_id: Option<i64>,
+    pub label: String,
+    pub reference: Option<String>,
 }
 
 pub(crate) struct PressedButtonGuard {

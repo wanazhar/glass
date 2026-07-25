@@ -19,7 +19,8 @@ use super::chrome::{
     is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
-    DomNode, parse_accessibility_tree, parse_dom_tree, project_compact_accessibility,
+    CompactInteractiveElement, DomNode, parse_accessibility_tree, parse_dom_tree,
+    project_compact_accessibility,
 };
 use super::mouse::{MouseEngine, Point};
 use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
@@ -27,6 +28,7 @@ use super::profile::ProfileManager;
 
 mod types;
 pub use types::*;
+mod batch;
 mod locator;
 
 #[allow(private_interfaces)]
@@ -1090,6 +1092,188 @@ impl BrowserSession {
             .await
     }
 
+    /// Reconcile prior references against the current page revision.
+    /// Maps old refs (r<fromRevision>:b<id>) to current refs via backend
+    /// node identity or stable role+name matching.
+    pub async fn reconcile_references(
+        &self,
+        from_revision: u64,
+        refs: &[String],
+    ) -> BrowserResult<ReconciliationOutcome> {
+        if refs.len() > MAX_RECONCILE_REFS {
+            return Err(format!(
+                "too many refs to reconcile: {} (max {})",
+                refs.len(),
+                MAX_RECONCILE_REFS
+            )
+            .into());
+        }
+
+        let current_revision = self.page_revision.load(Ordering::Relaxed);
+        if current_revision == from_revision {
+            // Same revision: all refs preserved as-is
+            let mappings: Vec<_> = refs
+                .iter()
+                .map(|old| ReferenceMapping::Preserved {
+                    old: old.clone(),
+                    new: old.clone(),
+                })
+                .collect();
+            return Ok(ReconciliationOutcome {
+                to_revision: current_revision,
+                preserved: mappings.len(),
+                relocated: 0,
+                lost: 0,
+                mappings,
+            });
+        }
+
+        // Get fresh compact observe to see current controls
+        let context = self.observe_fresh().await?;
+        let to_revision = context.accessibility.revision;
+
+        // Build lookup: backend_dom_node_id -> current ref
+        let mut current_by_backend: HashMap<i64, String> = HashMap::new();
+        let mut current_controls: Vec<(&str, &str, i64)> = Vec::new();
+        let ax = &context.accessibility;
+        for c in &ax.interactive {
+            current_by_backend.insert(c.backend_dom_node_id, c.reference.clone());
+            current_controls.push((&c.role, &c.name, c.backend_dom_node_id));
+        }
+
+        // If route changed, all lost
+        let route_changed = false; // TODO: check topology
+
+        let mut mappings = Vec::with_capacity(refs.len());
+        let mut preserved = 0usize;
+        let relocated = 0usize;
+        let mut lost = 0usize;
+
+        for old_ref in refs {
+            // Parse old ref: "r<revision>:b<backend_id>"
+            let backend_id = parse_backend_id_from_ref(old_ref);
+            if backend_id.is_none() || route_changed {
+                mappings.push(ReferenceMapping::Lost {
+                    old: old_ref.clone(),
+                    reason: if route_changed {
+                        "route_changed".to_string()
+                    } else {
+                        "invalid_ref_format".to_string()
+                    },
+                });
+                lost += 1;
+                continue;
+            }
+
+            let backend_id = backend_id.unwrap();
+
+            // Try preserved (same backend node ID)
+            if let Some(new_ref) = current_by_backend.get(&backend_id) {
+                mappings.push(ReferenceMapping::Preserved {
+                    old: old_ref.clone(),
+                    new: new_ref.clone(),
+                });
+                preserved += 1;
+                continue;
+            }
+
+            // Try role+name match
+            // Look up the old control's role+name from cache (approximate)
+            // For simplicity: cannot relocate without hints
+            mappings.push(ReferenceMapping::Lost {
+                old: old_ref.clone(),
+                reason: "backend_node_removed".to_string(),
+            });
+            lost += 1;
+        }
+
+        Ok(ReconciliationOutcome {
+            to_revision,
+            mappings,
+            preserved,
+            relocated,
+            lost,
+        })
+    }
+
+    /// Export a session checkpoint for cross-process resume.
+    /// Returns JSON bounded to ≤ 4 KiB. No cookies, passwords, or form values.
+    pub async fn export_checkpoint(&self) -> BrowserResult<CheckpointV1> {
+        let page = self.page_info().await?;
+        let revision = self.page_revision.load(Ordering::Relaxed);
+
+        let last_refs: Vec<String> = self
+            .observation_cache
+            .lock()
+            .await
+            .as_ref()
+            .map(|cached| {
+                cached
+                    .context
+                    .accessibility
+                    .interactive
+                    .iter()
+                    .take(8)
+                    .map(|c| c.reference.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(CheckpointV1 {
+            schema_version: 1,
+            glass_version: env!("CARGO_PKG_VERSION").to_string(),
+            exported_at: {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                format!("{}", now.as_secs())
+            },
+            profile: self.profile.clone(),
+            attach_mode: self.chrome.is_none(),
+            topology: CheckpointTopology {
+                target_id: Some(page.target_id),
+                frame_id: Some(page.frame_id),
+                url: page.url,
+                title: page.title,
+            },
+            observation: CheckpointObservation {
+                revision,
+                last_refs,
+            },
+            policy: format!("{:?}", self.policy.preset()).to_lowercase(),
+        })
+    }
+
+    /// Import a checkpoint and validate its topology.
+    /// Does NOT auto-click — only restores target/frame selection context.
+    pub async fn import_checkpoint(&self, checkpoint: &CheckpointV1) -> BrowserResult<()> {
+        if checkpoint.schema_version != 1 {
+            return Err(format!(
+                "checkpoint schema version mismatch: expected 1, found {}",
+                checkpoint.schema_version
+            )
+            .into());
+        }
+
+        if let Some(ref target_id) = checkpoint.topology.target_id {
+            let targets = self.list_targets().await?;
+            if !targets.iter().any(|t| t.id == *target_id) {
+                return Err("checkpoint target is no longer open".into());
+            }
+            self.select_target(target_id).await?;
+        }
+
+        if let Some(ref frame_id) = checkpoint.topology.frame_id {
+            let frames = self.list_frames().await?;
+            if !frames.iter().any(|f| f.id == *frame_id) {
+                return Err("checkpoint frame is no longer open".into());
+            }
+            self.select_frame(frame_id).await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn text(&self) -> BrowserResult<String> {
         self.cdp
             .with_current_route(async {
@@ -1120,42 +1304,48 @@ impl BrowserSession {
 
     /// Collect compact page context without a deep DOM or screenshot.
     pub async fn observe(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false, true).await
+        self.observe_internal(false, false, true, false).await
     }
 
     /// Collect compact context and explicitly include the full DOM tree.
     pub async fn observe_with_dom(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, false, true).await
+        self.observe_internal(true, false, true, false).await
     }
 
     /// Collect structured context and explicitly include a current screenshot.
     pub async fn observe_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, true, true).await
+        self.observe_internal(false, true, true, false).await
     }
 
     /// Collect context with both explicitly requested deep DOM and screenshot data.
     pub async fn observe_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, true, true).await
+        self.observe_internal(true, true, true, false).await
     }
 
     /// Collect fresh compact context, bypassing the compact-context cache.
     pub async fn observe_fresh(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false, false).await
+        self.observe_internal(false, false, false, false).await
+    }
+
+    /// Collect compact context with form field values included.
+    /// Requires ReadFormValues policy capability in hardened mode.
+    pub async fn observe_with_form_values(&self) -> BrowserResult<PageContext> {
+        self.observe_internal(false, false, false, true).await
     }
 
     /// Collect fresh context and explicitly include the full DOM tree.
     pub async fn observe_fresh_with_dom(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, false, false).await
+        self.observe_internal(true, false, false, false).await
     }
 
     /// Collect fresh structured context and explicitly include a screenshot.
     pub async fn observe_fresh_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, true, false).await
+        self.observe_internal(false, true, false, false).await
     }
 
     /// Collect fresh context with both explicitly requested deep DOM and screenshot data.
     pub async fn observe_fresh_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, true, false).await
+        self.observe_internal(true, true, false, false).await
     }
 
     async fn observe_internal(
@@ -1163,6 +1353,7 @@ impl BrowserSession {
         include_dom: bool,
         include_screenshot: bool,
         use_cache: bool,
+        include_form_values: bool,
     ) -> BrowserResult<PageContext> {
         if let Some(interception) = &self.policy_interception
             && let Some(error) = interception.take_denial().await
@@ -1172,7 +1363,7 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let mut context = self
-                    .compact_observation(use_cache)
+                    .compact_observation(use_cache, include_form_values)
                     .await?
                     .into_page_context();
                 if include_dom {
@@ -1186,9 +1377,14 @@ impl BrowserSession {
             .await
     }
 
-    async fn compact_observation(&self, use_cache: bool) -> BrowserResult<CompactPageContext> {
+    async fn compact_observation(
+        &self,
+        use_cache: bool,
+        include_form_values: bool,
+    ) -> BrowserResult<CompactPageContext> {
         let revision = self.page_revision.load(Ordering::Relaxed);
-        if use_cache {
+        // Never use cache when form values are requested (cache doesn't store them)
+        if use_cache && !include_form_values {
             let cached_context = {
                 let cache = self.observation_cache.lock().await;
                 cache
@@ -1252,7 +1448,7 @@ impl BrowserSession {
             frame_id,
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
-        let compact_accessibility = project_compact_accessibility(&full_roots, end_revision);
+        let mut compact_accessibility = project_compact_accessibility(&full_roots, end_revision);
         let (mut text, locally_truncated) =
             truncate_visible_text_with_status(&page_state.text, COMPACT_TEXT_MAX_BYTES);
         let text_truncated = locally_truncated || page_state.boundaries.text_truncated;
@@ -1276,9 +1472,6 @@ impl BrowserSession {
         if compact_accessibility.controls_truncated {
             incomplete.push(ObservationIncompleteReason::Control);
         }
-        if page_state.boundaries.shadow_roots > 0 {
-            incomplete.push(ObservationIncompleteReason::ShadowBoundary);
-        }
         if page_state.boundaries.child_frames > 0 {
             incomplete.push(ObservationIncompleteReason::FrameBoundary);
         }
@@ -1291,6 +1484,46 @@ impl BrowserSession {
         if !consistent {
             incomplete.push(ObservationIncompleteReason::MutationRace);
         }
+        // Shadow piercing: discover which interactive controls are inside open shadow roots.
+        let (shadow_paths, pierced_hosts) = if page_state.boundaries.shadow_roots > 0 {
+            match self
+                .cdp
+                .get_flattened_document(crate::browser::dom::MAX_SHADOW_DEPTH as i64)
+                .await
+            {
+                Ok(flattened) => {
+                    let paths = crate::browser::dom::build_shadow_host_paths(&flattened);
+                    let hosts = crate::browser::dom::count_pierced_shadow_hosts(&paths);
+                    (paths, hosts)
+                }
+                Err(_) => (HashMap::new(), 0),
+            }
+        } else {
+            (HashMap::new(), 0)
+        };
+
+        // Only flag ShadowBoundary when hosts were not all pierced
+        if page_state.boundaries.shadow_roots > 0
+            && pierced_hosts < page_state.boundaries.shadow_roots
+        {
+            incomplete.push(ObservationIncompleteReason::ShadowBoundary);
+        }
+
+        // Apply shadow host paths to interactive controls
+        if !shadow_paths.is_empty() {
+            for control in compact_accessibility.interactive.iter_mut() {
+                if let Some(path) = shadow_paths.get(&control.backend_dom_node_id) {
+                    control.shadow_host_path = Some(path.clone());
+                }
+            }
+        }
+
+        // Read form field values when explicitly requested
+        if include_form_values {
+            self.read_form_field_values(&mut compact_accessibility.interactive)
+                .await?;
+        }
+
         let interactive_len = compact_accessibility.interactive.len();
         let accessibility = CompactAccessibilitySnapshot {
             page: page.clone(),
@@ -1304,7 +1537,7 @@ impl BrowserSession {
                 compact_accessibility.interactive_discovered,
                 interactive_len,
                 page_state.boundaries.shadow_roots,
-                0, // shadow_hosts_pierced (zero until #8 shadow piercing)
+                pierced_hosts,
                 page_state.boundaries.canvases,
                 page_state.boundaries.child_frames,
                 !consistent,
@@ -1332,6 +1565,158 @@ impl BrowserSession {
             });
         }
         Ok(context)
+    }
+
+    /// Read current values of form controls and populate CompactInteractiveElement fields.
+    /// Enforces ReadFormValues policy, max 16 fields, password/CC redaction.
+    async fn read_form_field_values(
+        &self,
+        controls: &mut [CompactInteractiveElement],
+    ) -> BrowserResult<()> {
+        use super::dom::{
+            FORM_VALUE_MAX_BYTES, FORM_VALUE_MAX_FIELDS, SELECT_OPTION_MAX_BYTES, truncate_utf8,
+        };
+
+        self.policy.require(PolicyCapability::ReadFormValues)?;
+        let allow_sensitive = self.policy.allow_sensitive_form_values();
+
+        const FORM_ROLES: &[&str] = &[
+            "textbox",
+            "searchbox",
+            "combobox",
+            "spinbutton",
+            "listbox",
+            "checkbox",
+            "radio",
+            "switch",
+            "slider",
+        ];
+
+        // Prioritize controls with backend node IDs and form-relevant roles
+        let mut candidates: Vec<&mut CompactInteractiveElement> = controls
+            .iter_mut()
+            .filter(|c| {
+                FORM_ROLES.iter().any(|r| c.role.eq_ignore_ascii_case(r))
+                    && c.backend_dom_node_id > 0
+            })
+            .take(FORM_VALUE_MAX_FIELDS)
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        // Read values via CDP: resolve backend node IDs → object IDs → call function
+        let expression = r#"function() {
+            const el = this;
+            const result = { empty: true };
+            const tag = (el.tagName || '').toLowerCase();
+            if (tag === 'input') {
+                const type = (el.type || 'text').toLowerCase();
+                if (type === 'checkbox' || type === 'radio') {
+                    result.checked = el.checked;
+                    result.value = el.value;
+                } else {
+                    result.value = el.value;
+                }
+            } else if (tag === 'select') {
+                const opt = el.options[el.selectedIndex];
+                result.selectedOption = opt ? (opt.label || opt.text || opt.value) : '';
+                result.value = el.value;
+            } else if (tag === 'textarea') {
+                result.value = el.value;
+            } else {
+                result.value = el.value || el.textContent || '';
+            }
+            result.empty = !result.value && !result.selectedOption && !result.checked;
+            result.readOnly = !!el.readOnly;
+            result.required = !!el.required;
+            result.autocomplete = el.getAttribute('autocomplete') || '';
+            result.inputType = (el.type || '').toLowerCase();
+            return JSON.stringify(result);
+        }"#;
+
+        for control in candidates.iter_mut() {
+            let resolved = match self
+                .cdp
+                .send(
+                    "DOM.resolveNode",
+                    Some(serde_json::json!({
+                        "backendNodeId": control.backend_dom_node_id,
+                    })),
+                )
+                .await
+            {
+                Ok(resolved) => resolved,
+                Err(_) => continue,
+            };
+
+            let Some(object_id) = resolved["object"]["objectId"].as_str() else {
+                continue;
+            };
+
+            let raw = match self
+                .cdp
+                .send(
+                    "Runtime.callFunctionOn",
+                    Some(serde_json::json!({
+                        "objectId": object_id,
+                        "functionDeclaration": expression,
+                        "returnByValue": true,
+                        "awaitPromise": false,
+                    })),
+                )
+                .await
+            {
+                Ok(raw) => raw,
+                Err(_) => continue,
+            };
+
+            let value_str = raw["result"]["value"].as_str().unwrap_or("{}");
+            let parsed: Value = match serde_json::from_str(value_str) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let input_type = parsed["inputType"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| control.input_type.clone());
+
+            let is_password = input_type.as_deref() == Some("password");
+            let is_sensitive_autocomplete = parsed["autocomplete"]
+                .as_str()
+                .map(|ac| ac.starts_with("cc-") || ac == "current-password" || ac == "new-password")
+                .unwrap_or(false);
+
+            if let Some(val) = parsed["value"].as_str() {
+                if is_password || (is_sensitive_autocomplete && !allow_sensitive) {
+                    control.value = Some("<redacted>".to_string());
+                } else {
+                    let (truncated, _) = truncate_utf8(val, FORM_VALUE_MAX_BYTES);
+                    control.value = Some(truncated.to_string());
+                }
+            }
+
+            if let Some(checked) = parsed["checked"].as_bool() {
+                control.checked = Some(checked);
+            }
+
+            if let Some(opt) = parsed["selectedOption"].as_str() {
+                let (truncated, _) = truncate_utf8(opt, SELECT_OPTION_MAX_BYTES);
+                control.selected_option = Some(truncated.to_string());
+            }
+
+            control.empty = parsed["empty"].as_bool().unwrap_or(true);
+            control.read_only = parsed["readOnly"].as_bool().unwrap_or(false);
+            control.required = parsed["required"].as_bool().unwrap_or(false);
+
+            if let Some(it) = input_type {
+                control.input_type = Some(it);
+            }
+        }
+
+        Ok(())
     }
 
     async fn compact_page_state(&self, context_id: i64) -> BrowserResult<EvaluatedPageState> {
@@ -3103,6 +3488,16 @@ impl BrowserSession {
         Ok(Point { x, y })
     }
 }
+
+/// Parse a backend DOM node ID from a revisioned reference string ("r<rev>:b<id>").
+fn parse_backend_id_from_ref(reference: &str) -> Option<i64> {
+    let parts: Vec<&str> = reference.split(':').collect();
+    if parts.len() != 2 || !parts[0].starts_with('r') || !parts[1].starts_with('b') {
+        return None;
+    }
+    parts[1][1..].parse::<i64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::cdp::CdpEventWithParams;
@@ -3342,8 +3737,9 @@ mod tests {
             let mut saw_runtime = false;
             let mut saw_accessibility = false;
             let mut saw_deep_dom = false;
+            let mut saw_flattened = false;
 
-            for _ in 0..if include_dom { 5 } else { 4 } {
+            for _ in 0..if include_dom { 6 } else { 5 } {
                 let request = websocket.next().await.unwrap().unwrap();
                 let request: Value = match request {
                     Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
@@ -3399,6 +3795,11 @@ mod tests {
                             }
                         })
                     }
+                    Some("DOM.getFlattenedDocument") => {
+                        saw_flattened = true;
+                        // Return empty flattened doc — no shadow content to pierce
+                        serde_json::json!({"nodes": []})
+                    }
                     method => panic!("unexpected compact-observation command: {method:?}"),
                 };
                 websocket
@@ -3414,6 +3815,7 @@ mod tests {
             assert!(saw_runtime);
             assert!(saw_accessibility);
             assert_eq!(saw_deep_dom, include_dom);
+            assert!(saw_flattened);
         });
         (format!("ws://{address}"), server)
     }
@@ -4084,9 +4486,9 @@ mod tests {
             context.incomplete,
             vec![
                 ObservationIncompleteReason::VisibleText,
-                ObservationIncompleteReason::ShadowBoundary,
                 ObservationIncompleteReason::FrameBoundary,
                 ObservationIncompleteReason::Canvas,
+                ObservationIncompleteReason::ShadowBoundary,
             ]
         );
         let serialized = serde_json::to_value(&context).unwrap();

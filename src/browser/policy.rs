@@ -15,6 +15,8 @@ pub enum PolicyCapability {
     Download,
     Screenshot,
     RawCdp,
+    ReadFormValues,
+    ReadSensitiveFormValues,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
@@ -294,6 +296,14 @@ impl BrowserPolicy {
         }
     }
 
+    /// Whether sensitive form values (passwords, CC numbers) may be read.
+    /// This capability is denied in ALL presets by default and must be
+    /// explicitly added to `allowed_capabilities`.
+    pub fn allow_sensitive_form_values(&self) -> bool {
+        self.allowed_capabilities
+            .contains(&PolicyCapability::ReadSensitiveFormValues)
+    }
+
     pub async fn require_url(&self, value: &str) -> Result<Url, PolicyError> {
         let url = Url::parse(value).map_err(|error| PolicyError::Denied {
             operation: "navigate".to_string(),
@@ -397,6 +407,8 @@ fn capability_name(capability: PolicyCapability) -> &'static str {
         PolicyCapability::Download => "download",
         PolicyCapability::Screenshot => "screenshot",
         PolicyCapability::RawCdp => "raw_cdp",
+        PolicyCapability::ReadFormValues => "read_form_values",
+        PolicyCapability::ReadSensitiveFormValues => "read_sensitive_form_values",
     }
 }
 

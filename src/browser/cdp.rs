@@ -637,6 +637,16 @@ impl CdpClient {
         .await
     }
 
+    /// Get a flattened document tree including shadow DOM content.
+    /// Uses `pierce: true` to include open shadow roots up to the given depth.
+    pub async fn get_flattened_document(&self, depth: i64) -> Result<Value, CdpError> {
+        self.send(
+            "DOM.getFlattenedDocument",
+            Some(serde_json::json!({ "depth": depth, "pierce": true })),
+        )
+        .await
+    }
+
     /// Get the full document tree for an explicit deep-DOM inspection.
     pub async fn get_deep_document(&self) -> Result<Value, CdpError> {
         self.send("DOM.getDocument", Some(serde_json::json!({ "depth": -1 })))

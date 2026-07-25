@@ -12,6 +12,12 @@ const COMPACT_AX_OUTLINE_TEXT_MAX_BYTES: usize =
     COMPACT_AX_TEXT_MAX_BYTES - COMPACT_AX_INTERACTIVE_TEXT_MAX_BYTES;
 const COMPACT_AX_TRUNCATION_MARKER: &str = "…";
 
+/// Shadow piercing limits for compact observation.
+pub const MAX_SHADOW_DEPTH: u8 = 3;
+pub const MAX_SHADOW_HOSTS: usize = 8;
+pub const MAX_SHADOW_PATH_ENTRIES: usize = 3;
+pub const MAX_SHADOW_PATH_ENTRY_BYTES: usize = 64;
+
 /// A simplified accessibility tree node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxNode {
@@ -47,7 +53,39 @@ pub struct CompactInteractiveElement {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub backend_dom_node_id: i64,
+    /// Role+name breadcrumbs for shadow-host ancestry (max 3 entries, 64 bytes each).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_host_path: Option<Vec<String>>,
+    /// HTML input type for form controls (text, email, password, checkbox, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    // --- Form value fields (populated only when includeFormValues is set) ---
+    /// Current value of the form control, bounded to 256 bytes. Redacted for passwords.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Checked state for checkbox/radio controls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    /// Selected option label for <select> elements, bounded to 128 bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_option: Option<String>,
+    /// Whether the field is empty (no user input).
+    #[serde(skip_serializing_if = "is_false")]
+    pub empty: bool,
+    /// Whether the field is read-only.
+    #[serde(skip_serializing_if = "is_false")]
+    pub read_only: bool,
+    /// Whether the field has the required attribute.
+    #[serde(skip_serializing_if = "is_false")]
+    pub required: bool,
 }
+
+/// Maximum UTF-8 byte length for a form field value in compact observe.
+pub const FORM_VALUE_MAX_BYTES: usize = 256;
+/// Maximum UTF-8 byte length for a <select> option label.
+pub const SELECT_OPTION_MAX_BYTES: usize = 128;
+/// Maximum number of form fields whose values are read per observe.
+pub const FORM_VALUE_MAX_FIELDS: usize = 16;
 
 /// Compact accessibility data with no unbounded text fields.
 #[derive(Debug, Clone)]
@@ -64,6 +102,19 @@ pub struct CompactAccessibilityProjection {
     pub omitted_count: usize,
     /// Whether the interactive list was relevance-ranked before truncation.
     pub ranking_applied: bool,
+    /// Shadow piercing summary.
+    pub shadow_pierced: ShadowPiercedSummary,
+}
+
+/// Summary of shadow-root piercing during a compact observation.
+#[derive(Debug, Clone, Default)]
+pub struct ShadowPiercedSummary {
+    /// Number of open shadow hosts visited during piercing.
+    pub hosts_visited: usize,
+    /// Number of interactive controls discovered inside shadow roots.
+    pub controls_found: usize,
+    /// Whether piercing was truncated by budget (depth > 3 or hosts > 8).
+    pub truncated: bool,
 }
 
 struct CompactProjectionState {
@@ -274,6 +325,7 @@ pub fn project_compact_accessibility(
             interactive_discovered: total_discovered,
             omitted_count: omitted.min(999),
             ranking_applied: true,
+            shadow_pierced: ShadowPiercedSummary::default(),
         }
     } else {
         CompactAccessibilityProjection {
@@ -286,6 +338,7 @@ pub fn project_compact_accessibility(
             interactive_discovered: total_discovered,
             omitted_count: 0,
             ranking_applied: false,
+            shadow_pierced: ShadowPiercedSummary::default(),
         }
     }
 }
@@ -319,6 +372,14 @@ fn project_compact_node(
                 role: role.clone(),
                 name: control_name,
                 backend_dom_node_id,
+                shadow_host_path: None,
+                input_type: None,
+                value: None,
+                checked: None,
+                selected_option: None,
+                empty: false,
+                read_only: false,
+                required: false,
             });
         } else {
             state.truncated = true;
@@ -363,7 +424,7 @@ fn take_compact_text(text: &str, remaining: &mut usize, truncated: &mut bool) ->
     value
 }
 
-fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
+pub(crate) fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);
     }
@@ -422,7 +483,151 @@ pub fn format_tree(nodes: &[AxNode], indent: usize) -> String {
     output
 }
 
-/// Parse a `DOM.getDocument` response into a simplified node structure.
+/// Build a mapping from backend DOM node IDs to their shadow host path breadcrumbs
+/// by walking a flattened DOM document response.
+pub fn build_shadow_host_paths(flattened_doc: &Value) -> HashMap<i64, Vec<String>> {
+    let mut paths: HashMap<i64, Vec<String>> = HashMap::new();
+    let Some(nodes) = flattened_doc["nodes"].as_array() else {
+        return paths;
+    };
+
+    // Build lookup tables: nodeId -> (backendNodeId, parentNodeId, isShadowRoot, label)
+    struct NodeMeta {
+        parent_id: Option<i64>,
+        is_shadow_root: bool,
+        label: String,
+    }
+    let mut node_meta: HashMap<i64, NodeMeta> = HashMap::new();
+
+    for node in nodes {
+        let Some(node_id) = node["nodeId"].as_i64() else {
+            continue;
+        };
+        // Skip nodes without a backendNodeId — they can't be interactive controls
+        if node["backendNodeId"].as_i64().is_none() {
+            continue;
+        };
+
+        let is_shadow_root = node["shadowRootType"].as_str() == Some("open");
+        let parent_id = node["parentId"].as_i64();
+
+        // Build a human-readable label for the node
+        let tag = node["localName"]
+            .as_str()
+            .or_else(|| node["nodeName"].as_str())
+            .filter(|n| !n.starts_with('#'))
+            .unwrap_or("");
+        let role_attr = node["attributes"]
+            .as_array()
+            .iter()
+            .flat_map(|a| a.iter())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| w[0].as_str() == Some("role"))
+            .and_then(|w| w[1].as_str());
+        let label = if let Some(role) = role_attr {
+            truncate_utf8(role, MAX_SHADOW_PATH_ENTRY_BYTES).0
+        } else if !tag.is_empty() {
+            truncate_utf8(tag, MAX_SHADOW_PATH_ENTRY_BYTES).0
+        } else {
+            "shadow-host".to_string()
+        };
+
+        node_meta.insert(
+            node_id,
+            NodeMeta {
+                parent_id,
+                is_shadow_root,
+                label,
+            },
+        );
+    }
+
+    if node_meta.is_empty() {
+        return paths;
+    }
+
+    // For each leaf node (potential interactive control), trace up to find shadow boundaries
+    for node in nodes {
+        let Some(backend_id) = node["backendNodeId"].as_i64() else {
+            continue;
+        };
+        let Some(mut current_parent) = node["parentId"].as_i64() else {
+            continue;
+        };
+
+        let mut breadcrumbs: Vec<String> = Vec::new();
+        let mut visited = HashSet::new();
+        let mut hosts_found = 0usize;
+
+        loop {
+            if !visited.insert(current_parent) || breadcrumbs.len() >= MAX_SHADOW_PATH_ENTRIES {
+                break;
+            }
+
+            let Some(meta) = node_meta.get(&current_parent) else {
+                // Parent not in our metadata — walk up further
+                if let Some(parent_of_parent) =
+                    node_meta.get(&current_parent).and_then(|m| m.parent_id)
+                {
+                    current_parent = parent_of_parent;
+                    continue;
+                }
+                break;
+            };
+
+            if meta.is_shadow_root {
+                hosts_found += 1;
+                breadcrumbs.push(meta.label.clone());
+                // Move past the shadow root to its host's parent
+                if let Some(next) = meta.parent_id {
+                    current_parent = next;
+                } else {
+                    break;
+                }
+            } else if hosts_found > 0 {
+                // Once we've found at least one shadow boundary, continue up for nested shadows
+                if let Some(next) = meta.parent_id {
+                    current_parent = next;
+                } else {
+                    break;
+                }
+            } else {
+                break; // Not inside a shadow tree
+            }
+        }
+
+        if !breadcrumbs.is_empty() {
+            breadcrumbs.reverse();
+            paths.insert(backend_id, breadcrumbs);
+        }
+    }
+
+    paths
+}
+
+/// Count unique shadow hosts that have pierced controls in the interactive list.
+/// Each host's backendNodeId in the shadow_host_paths map represents one pierced host.
+pub fn count_pierced_shadow_hosts(shadow_paths: &HashMap<i64, Vec<String>>) -> usize {
+    // Each path entry represents nesting; count unique first breadcrumb as host
+    let mut hosts = HashSet::new();
+    for path in shadow_paths.values() {
+        if let Some(first) = path.last() {
+            hosts.insert(first.clone());
+        }
+    }
+    hosts.len().min(MAX_SHADOW_HOSTS)
+}
+
+/// Extract the HTML input type from AX node properties if available.
+pub fn extract_input_type(raw_ax_node: &Value) -> Option<String> {
+    raw_ax_node["properties"]
+        .as_array()?
+        .iter()
+        .find(|prop| prop["name"].as_str() == Some("inputType"))
+        .and_then(|prop| prop["value"]["value"].as_str())
+        .map(String::from)
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomNode {
     pub node_id: i64,

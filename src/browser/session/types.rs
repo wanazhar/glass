@@ -26,6 +26,197 @@ use crate::browser::profile::ProfileManager;
 
 pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
 
+/// Maximum number of steps in a single batch operation.
+pub const MAX_BATCH_STEPS: usize = 32;
+
+/// A single step in a typed batch operation.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum BatchStep {
+    #[serde(rename = "navigate")]
+    Navigate {
+        url: String,
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
+    },
+    #[serde(rename = "click")]
+    Click { target: String },
+    #[serde(rename = "type")]
+    Type {
+        text: String,
+        #[serde(default)]
+        target: Option<String>,
+    },
+    #[serde(rename = "check")]
+    Check { target: String },
+    #[serde(rename = "uncheck")]
+    Uncheck { target: String },
+    #[serde(rename = "select")]
+    Select { target: String, value: String },
+    #[serde(rename = "clear")]
+    Clear { target: String },
+    #[serde(rename = "scroll")]
+    Scroll {
+        #[serde(default)]
+        dx: f64,
+        #[serde(default)]
+        dy: f64,
+    },
+    #[serde(rename = "wait")]
+    Wait {
+        condition: String,
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
+    },
+    #[serde(rename = "observe")]
+    Observe {
+        #[serde(default)]
+        include_dom: bool,
+        #[serde(default)]
+        include_screenshot: bool,
+        #[serde(default)]
+        include_form_values: bool,
+    },
+    #[serde(rename = "screenshot")]
+    Screenshot,
+    #[serde(rename = "evaluate")]
+    Evaluate { expression: String },
+    #[serde(rename = "acceptDialog")]
+    AcceptDialog,
+    #[serde(rename = "dismissDialog")]
+    DismissDialog,
+}
+
+const fn default_timeout_ms() -> u64 {
+    20_000
+}
+
+/// Outcome of a single step in a batch.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BatchStepOutcome {
+    Success {
+        index: usize,
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_bytes: Option<usize>,
+    },
+    Error {
+        index: usize,
+        action: String,
+        message: String,
+    },
+}
+
+/// Aggregate batch result.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchOutcome {
+    pub steps: Vec<BatchStepOutcome>,
+    pub completed: usize,
+    pub failed: usize,
+    pub total: usize,
+    pub success: bool,
+}
+
+/// Error returned when batch policy pre-flight fails.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchPolicyDenial {
+    pub step_index: usize,
+    pub action: String,
+    pub reason: String,
+}
+
+// ── Reference Reconciliation ──────────────────────────────────────────
+
+/// Maximum number of refs that can be reconciled in a single call.
+pub const MAX_RECONCILE_REFS: usize = 16;
+
+/// Mapping of a prior reference to its current identity.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReferenceMapping {
+    /// Same backend node ID still present and uniquely actionable.
+    Preserved { old: String, new: String },
+    /// Backend node changed but a unique stable identity match exists.
+    Relocated {
+        old: String,
+        new: String,
+        #[serde(rename = "matchedBy")]
+        matched_by: String,
+    },
+    /// No safe mapping; agent must re-observe.
+    Lost { old: String, reason: String },
+}
+
+/// Outcome of a reconcileReferences call.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconciliationOutcome {
+    #[serde(rename = "toRevision")]
+    pub to_revision: u64,
+    pub mappings: Vec<ReferenceMapping>,
+    pub preserved: usize,
+    pub relocated: usize,
+    pub lost: usize,
+}
+
+/// Recovery hint included in StaleReference errors.
+#[derive(Debug, Clone, Serialize)]
+pub struct StaleReferenceRecovery {
+    pub suggestion: &'static str,
+    #[serde(rename = "fromRevision")]
+    pub from_revision: u64,
+    #[serde(rename = "staleRef")]
+    pub stale_ref: String,
+}
+
+// ── Session Checkpoint ─────────────────────────────────────────────────
+
+/// Versioned checkpoint for cross-process agent workflow resume.
+/// Bounded to ≤ 4 KiB JSON; no cookies, passwords, or form values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointV1 {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u8,
+    #[serde(rename = "glassVersion")]
+    pub glass_version: String,
+    #[serde(rename = "exportedAt")]
+    pub exported_at: String,
+    pub profile: String,
+    #[serde(rename = "attachMode")]
+    pub attach_mode: bool,
+    pub topology: CheckpointTopology,
+    pub observation: CheckpointObservation,
+    pub policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointTopology {
+    #[serde(rename = "targetId", skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    #[serde(rename = "frameId", skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<String>,
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointObservation {
+    pub revision: u64,
+    /// Capped at 8 entries.
+    #[serde(rename = "lastRefs")]
+    pub last_refs: Vec<String>,
+}
+
+/// Error when a checkpoint cannot be imported.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckpointError {
+    SchemaVersionMismatch { expected: u8, found: u8 },
+    TargetClosed,
+    Stale,
+    InvalidJson(String),
+}
+
 /// Maximum UTF-8 byte length of visible text returned by a compact observation.
 pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";

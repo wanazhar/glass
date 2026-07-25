@@ -415,10 +415,116 @@ pub struct CompactAccessibilitySnapshot {
     /// Whether the interactive list was relevance-ranked before truncation.
     #[serde(skip_serializing_if = "is_false")]
     pub ranking_applied: bool,
+    /// Completeness assessment for agent escalation decisions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<ObservationCompleteness>,
 }
 
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+/// Deterministic completeness score for compact observations.
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservationCompleteness {
+    /// 0.0–1.0 score indicating how much of the interactive surface is represented.
+    pub score: f64,
+    /// Advisory escalation suggestion for agents.
+    pub suggest_escalation: EscalationSuggestion,
+    /// Input signals used to compute the score.
+    pub signals: CompletenessSignals,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CompletenessSignals {
+    pub interactive_discovered: usize,
+    pub interactive_returned: usize,
+    pub shadow_hosts: usize,
+    pub shadow_hosts_pierced: usize,
+    pub canvases: usize,
+    pub child_frames: usize,
+    pub mutation_race: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationSuggestion {
+    None,
+    #[serde(rename = "getDOM")]
+    GetDom,
+    Coordinate,
+    SelectFrame,
+    Reobserve,
+}
+
+impl ObservationCompleteness {
+    pub fn compute(
+        interactive_discovered: usize,
+        interactive_returned: usize,
+        shadow_hosts: usize,
+        shadow_hosts_pierced: usize,
+        canvases: usize,
+        child_frames: usize,
+        mutation_race: bool,
+    ) -> Self {
+        // interactive factor
+        let interactive_factor = if interactive_discovered > 0 {
+            (interactive_returned as f64 / interactive_discovered as f64).min(1.0)
+        } else {
+            1.0
+        };
+
+        // shadow factor
+        let shadow_factor = if shadow_hosts == 0 {
+            1.0
+        } else if shadow_hosts_pierced >= shadow_hosts {
+            1.0
+        } else if shadow_hosts_pierced > 0 {
+            0.7
+        } else {
+            0.5
+        };
+
+        // frame factor
+        let frame_factor = if child_frames == 0 { 1.0 } else { 0.8 };
+
+        // consistency factor
+        let consistency_factor = if mutation_race { 0.0 } else { 1.0 };
+
+        let score = (interactive_factor * shadow_factor * frame_factor * consistency_factor)
+            .clamp(0.0, 1.0);
+        let score = (score * 100.0).round() / 100.0; // round to 2 decimal places
+
+        let has_shadow_boundary = shadow_hosts > 0 && shadow_hosts_pierced < shadow_hosts;
+
+        let suggest_escalation = if mutation_race {
+            EscalationSuggestion::Reobserve
+        } else if score >= 0.85 && !has_shadow_boundary {
+            EscalationSuggestion::None
+        } else if has_shadow_boundary || score < 0.6 {
+            EscalationSuggestion::GetDom
+        } else if canvases > 0 && interactive_returned < 8 {
+            EscalationSuggestion::Coordinate
+        } else if child_frames > 0 {
+            EscalationSuggestion::SelectFrame
+        } else {
+            EscalationSuggestion::None
+        };
+
+        Self {
+            score,
+            suggest_escalation,
+            signals: CompletenessSignals {
+                interactive_discovered,
+                interactive_returned,
+                shadow_hosts,
+                shadow_hosts_pierced,
+                canvases,
+                child_frames,
+                mutation_race,
+            },
+        }
+    }
 }
 
 /// Structured page state. Default observations omit optional deep data.

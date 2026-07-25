@@ -1291,6 +1291,7 @@ impl BrowserSession {
         if !consistent {
             incomplete.push(ObservationIncompleteReason::MutationRace);
         }
+        let interactive_len = compact_accessibility.interactive.len();
         let accessibility = CompactAccessibilitySnapshot {
             page: page.clone(),
             revision: end_revision,
@@ -1299,6 +1300,15 @@ impl BrowserSession {
             truncated: compact_accessibility.truncated,
             omitted_count: compact_accessibility.omitted_count,
             ranking_applied: compact_accessibility.ranking_applied,
+            completeness: Some(ObservationCompleteness::compute(
+                compact_accessibility.interactive_discovered,
+                interactive_len,
+                page_state.boundaries.shadow_roots as usize,
+                0, // shadow_hosts_pierced (zero until #8 shadow piercing)
+                page_state.boundaries.canvases as usize,
+                page_state.boundaries.child_frames as usize,
+                !consistent,
+            )),
         };
         let context = CompactPageContext {
             page,
@@ -3801,6 +3811,7 @@ mod tests {
                 truncated: false,
                 omitted_count: 0,
                 ranking_applied: false,
+                completeness: None,
             },
             consistency: ObservationConsistency {
                 consistent: true,

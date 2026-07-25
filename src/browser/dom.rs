@@ -58,6 +58,8 @@ pub struct CompactAccessibilityProjection {
     pub nodes_truncated: bool,
     pub labels_truncated: bool,
     pub controls_truncated: bool,
+    /// Total interactive controls discovered (before truncation/ranking).
+    pub interactive_discovered: usize,
     /// Number of interactive controls discovered but omitted due to the 32-control budget.
     pub omitted_count: usize,
     /// Whether the interactive list was relevance-ranked before truncation.
@@ -269,6 +271,7 @@ pub fn project_compact_accessibility(
             nodes_truncated: state.nodes_truncated,
             labels_truncated: state.labels_truncated,
             controls_truncated: true,
+            interactive_discovered: total_discovered,
             omitted_count: omitted.min(999),
             ranking_applied: true,
         }
@@ -280,6 +283,7 @@ pub fn project_compact_accessibility(
             nodes_truncated: state.nodes_truncated,
             labels_truncated: state.labels_truncated,
             controls_truncated: state.controls_truncated,
+            interactive_discovered: total_discovered,
             omitted_count: 0,
             ranking_applied: false,
         }

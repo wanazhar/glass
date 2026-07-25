@@ -19,6 +19,8 @@ use crate::browser::session::{
     TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
+use crate::mcp::prompts;
+use crate::mcp::resources;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -525,7 +527,11 @@ fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
         request.id.response_value(),
         json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {"tools": {"listChanged": false}},
+            "capabilities": {
+                "tools": {"listChanged": false},
+                "prompts": {"listChanged": false},
+                "resources": {"subscribe": false, "listChanged": false}
+            },
             "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
         }),
     )
@@ -552,6 +558,52 @@ async fn handle_request(
         "initialize" => initialize_response(request),
         "ping" => success_response(request.id.response_value(), json!({})),
         "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
+        "prompts/list" => match prompts::list_prompts() {
+            Ok(result) => success_response(request.id.response_value(), result),
+            Err(error) => error_response(
+                request.id.response_value(),
+                -32603,
+                format!("prompts/list failed: {error}"),
+            ),
+        },
+        "prompts/get" => match request.params.get("name").and_then(Value::as_str) {
+            Some(name) => match prompts::get_prompt(name) {
+                Ok(result) => success_response(request.id.response_value(), result),
+                Err(error) => error_response(
+                    request.id.response_value(),
+                    -32602,
+                    format!("prompts/get failed: {error}"),
+                ),
+            },
+            None => error_response(
+                request.id.response_value(),
+                -32602,
+                "prompts/get requires a string `name` parameter",
+            ),
+        },
+        "resources/list" => match resources::list_resources() {
+            Ok(result) => success_response(request.id.response_value(), result),
+            Err(error) => error_response(
+                request.id.response_value(),
+                -32603,
+                format!("resources/list failed: {error}"),
+            ),
+        },
+        "resources/read" => match request.params.get("uri").and_then(Value::as_str) {
+            Some(uri) => match resources::read_resource(uri) {
+                Ok(result) => success_response(request.id.response_value(), result),
+                Err(error) => error_response(
+                    request.id.response_value(),
+                    -32602,
+                    format!("resources/read failed: {error}"),
+                ),
+            },
+            None => error_response(
+                request.id.response_value(),
+                -32602,
+                "resources/read requires a string `uri` parameter",
+            ),
+        },
         "tools/call" => match call_tool(request, session, options, policy).await {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
@@ -1451,7 +1503,15 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(initialized.result.unwrap()["serverInfo"]["name"], "glass");
+        let caps = &initialized.result.as_ref().unwrap()["capabilities"];
+        assert_eq!(
+            initialized.result.as_ref().unwrap()["serverInfo"]["name"],
+            "glass"
+        );
+        assert_eq!(caps["tools"]["listChanged"], false);
+        assert_eq!(caps["prompts"]["listChanged"], false);
+        assert_eq!(caps["resources"]["subscribe"], false);
+        assert_eq!(caps["resources"]["listChanged"], false);
         assert!(session.is_none());
 
         let result = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
@@ -1782,6 +1842,163 @@ mod tests {
         assert_eq!(value["id"], 9);
         assert_eq!(value["error"]["code"], -32001);
         assert!(!encoded.contains(&"x".repeat(128)));
+    }
+
+    #[tokio::test]
+    async fn prompts_list_returns_all_agent_prompts() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/list"
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        let result = response.result.unwrap();
+        let prompts = result["prompts"].as_array().unwrap();
+        assert_eq!(prompts.len(), 4);
+        let names: Vec<&str> = prompts
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"glass-safe-navigation"));
+        assert!(names.contains(&"glass-target-selection"));
+        assert!(names.contains(&"glass-topology"));
+        assert!(names.contains(&"glass-recovery"));
+    }
+
+    #[tokio::test]
+    async fn prompts_get_returns_specific_prompt_content() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/get",
+            "params": {"name": "glass-safe-navigation"}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        let result = response.result.unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let text = messages[0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains("Glass Safe Navigation Loop"));
+    }
+
+    #[tokio::test]
+    async fn prompts_get_rejects_missing_name_param() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/get",
+            "params": {}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn resources_list_returns_all_contract_resources() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/list"
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        let result = response.result.unwrap();
+        let resources = result["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 4);
+        let uris: Vec<&str> = resources
+            .iter()
+            .map(|r| r["uri"].as_str().unwrap())
+            .collect();
+        assert!(uris.contains(&"glass://contract/locators"));
+        assert!(uris.contains(&"glass://contract/errors"));
+        assert!(uris.contains(&"glass://contract/limits"));
+        assert!(uris.contains(&"glass://contract/topology"));
+    }
+
+    #[tokio::test]
+    async fn resources_read_returns_markdown_content() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {"uri": "glass://contract/locators"}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        let result = response.result.unwrap();
+        let contents = result["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0]["mimeType"], "text/markdown");
+        let text = contents[0]["text"].as_str().unwrap();
+        assert!(text.contains("Glass Locator Grammar"));
+    }
+
+    #[tokio::test]
+    async fn resources_read_rejects_unknown_uri_with_32602() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {"uri": "glass://nonexistent"}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn resources_read_rejects_missing_uri_param() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
+            .await
+            .unwrap();
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
     }
 
     #[test]

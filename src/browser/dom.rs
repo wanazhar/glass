@@ -58,6 +58,10 @@ pub struct CompactAccessibilityProjection {
     pub nodes_truncated: bool,
     pub labels_truncated: bool,
     pub controls_truncated: bool,
+    /// Number of interactive controls discovered but omitted due to the 32-control budget.
+    pub omitted_count: usize,
+    /// Whether the interactive list was relevance-ranked before truncation.
+    pub ranking_applied: bool,
 }
 
 struct CompactProjectionState {
@@ -214,6 +218,28 @@ pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
     result
 }
 
+/// Deterministic relevance score for interactive controls.
+/// Higher score = more important to include when truncating.
+fn control_relevance_score(control: &CompactInteractiveElement) -> i32 {
+    match control.role.as_str() {
+        "button" | "link" => 20,
+        "textbox" | "combobox" | "searchbox" | "spinbutton" => 18,
+        "checkbox" | "radio" | "switch" | "menuitem" | "option" => 15,
+        "listbox" | "menu" | "tab" | "treeitem" => 10,
+        _ => 0,
+    }
+}
+
+/// Rank interactive controls by relevance, keeping the most important ones first.
+/// Stable sort preserves document order for equal scores (tie-break).
+fn rank_interactive_controls(controls: &mut [CompactInteractiveElement]) {
+    controls.sort_by(|a, b| {
+        let score_a = control_relevance_score(a);
+        let score_b = control_relevance_score(b);
+        score_b.cmp(&score_a)
+    });
+}
+
 /// Project a full accessibility tree into bounded semantic context.
 ///
 /// Every published control has a backend DOM node and a revisioned reference,
@@ -227,13 +253,36 @@ pub fn project_compact_accessibility(
         .iter()
         .filter_map(|node| project_compact_node(node, revision, &mut state))
         .collect();
-    CompactAccessibilityProjection {
-        roots,
-        interactive: state.interactive,
-        truncated: state.truncated,
-        nodes_truncated: state.nodes_truncated,
-        labels_truncated: state.labels_truncated,
-        controls_truncated: state.controls_truncated,
+    let total_discovered = state.interactive.len();
+    let ranking_applied = total_discovered > COMPACT_AX_MAX_INTERACTIVE;
+
+    if ranking_applied {
+        rank_interactive_controls(&mut state.interactive);
+        let omitted = total_discovered.saturating_sub(COMPACT_AX_MAX_INTERACTIVE);
+        state.interactive.truncate(COMPACT_AX_MAX_INTERACTIVE);
+        state.controls_truncated = true;
+
+        CompactAccessibilityProjection {
+            roots,
+            interactive: state.interactive,
+            truncated: state.truncated,
+            nodes_truncated: state.nodes_truncated,
+            labels_truncated: state.labels_truncated,
+            controls_truncated: true,
+            omitted_count: omitted.min(999),
+            ranking_applied: true,
+        }
+    } else {
+        CompactAccessibilityProjection {
+            roots,
+            interactive: state.interactive,
+            truncated: state.truncated,
+            nodes_truncated: state.nodes_truncated,
+            labels_truncated: state.labels_truncated,
+            controls_truncated: state.controls_truncated,
+            omitted_count: 0,
+            ranking_applied: false,
+        }
     }
 }
 
@@ -254,26 +303,19 @@ fn project_compact_node(
     state.labels_truncated |= role_truncated;
     let mut name = String::new();
     if node.interactive {
-        if state.interactive.len() < COMPACT_AX_MAX_INTERACTIVE {
-            let control_name = take_compact_text(
-                &node.name,
-                &mut state.interactive_text_remaining,
-                &mut state.truncated,
-            );
-            state.controls_truncated |= control_name.len() < node.name.len();
-            if let Some(backend_dom_node_id) = node.backend_dom_node_id {
-                state.interactive.push(CompactInteractiveElement {
-                    reference: backend_node_reference(revision, backend_dom_node_id),
-                    role: role.clone(),
-                    name: control_name,
-                    backend_dom_node_id,
-                });
-            } else {
-                // A control without a backend node cannot be acted on through
-                // CDP, so do not publish a reference that would fail later.
-                state.truncated = true;
-                state.controls_truncated = true;
-            }
+        let control_name = take_compact_text(
+            &node.name,
+            &mut state.interactive_text_remaining,
+            &mut state.truncated,
+        );
+        state.controls_truncated |= control_name.len() < node.name.len();
+        if let Some(backend_dom_node_id) = node.backend_dom_node_id {
+            state.interactive.push(CompactInteractiveElement {
+                reference: backend_node_reference(revision, backend_dom_node_id),
+                role: role.clone(),
+                name: control_name,
+                backend_dom_node_id,
+            });
         } else {
             state.truncated = true;
             state.controls_truncated = true;

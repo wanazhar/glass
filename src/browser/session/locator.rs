@@ -20,7 +20,10 @@ impl BrowserSession {
         }
     }
 
-    pub(crate) async fn resolve_locator(&self, locator: &Locator) -> BrowserResult<TargetResolution> {
+    pub(crate) async fn resolve_locator(
+        &self,
+        locator: &Locator,
+    ) -> BrowserResult<TargetResolution> {
         if let Locator::Reference(target) = locator {
             let reference = parse_revisioned_reference(target)?
                 .ok_or_else(|| format!("invalid revisioned element reference: {target}"))?;
@@ -119,5 +122,4 @@ impl BrowserSession {
             | Locator::Ordinal(_) => Ok(TargetResolution::NotFound),
         }
     }
-
 }

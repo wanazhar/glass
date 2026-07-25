@@ -409,6 +409,16 @@ pub struct CompactAccessibilitySnapshot {
     pub interactive: Vec<CompactInteractiveElement>,
     #[serde(skip_serializing_if = "is_false")]
     pub truncated: bool,
+    /// Number of interactive controls discovered but omitted due to the 32-control budget.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub omitted_count: usize,
+    /// Whether the interactive list was relevance-ranked before truncation.
+    #[serde(skip_serializing_if = "is_false")]
+    pub ranking_applied: bool,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Structured page state. Default observations omit optional deep data.

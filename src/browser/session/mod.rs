@@ -26,10 +26,10 @@ use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 mod types;
-pub(crate) use types::*;
+pub use types::*;
 mod locator;
 
-#[allow(clippy::private_interfaces)]
+#[allow(private_interfaces)]
 pub struct BrowserSession {
     pub(crate) cdp: CdpClient,
     pub(crate) chrome: Option<ChromeProcess>,
@@ -1297,6 +1297,8 @@ impl BrowserSession {
             roots: compact_accessibility.roots,
             interactive: compact_accessibility.interactive,
             truncated: compact_accessibility.truncated,
+            omitted_count: compact_accessibility.omitted_count,
+            ranking_applied: compact_accessibility.ranking_applied,
         };
         let context = CompactPageContext {
             page,
@@ -3797,6 +3799,8 @@ mod tests {
                 roots: Vec::new(),
                 interactive: Vec::new(),
                 truncated: false,
+                omitted_count: 0,
+                ranking_applied: false,
             },
             consistency: ObservationConsistency {
                 consistent: true,

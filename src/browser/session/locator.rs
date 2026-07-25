@@ -75,6 +75,89 @@ impl BrowserSession {
         }
     }
 
+    pub async fn preflight(&self, target: &str) -> PreflightOutcome {
+        let revision = self.page_revision.load(Ordering::Relaxed);
+
+        let element = match self.resolve_element(target).await {
+            Ok(element) => element,
+            Err(error) => {
+                let error_kind = error.downcast_ref::<TargetError>().map(|e| e.kind);
+                return PreflightOutcome {
+                    unique: false,
+                    element: None,
+                    actionable: None,
+                    actionability_reason: None,
+                    candidates: error
+                        .downcast_ref::<TargetError>()
+                        .map(|e| e.candidates.clone())
+                        .unwrap_or_default(),
+                    error_kind,
+                    revision,
+                };
+            }
+        };
+
+        // Try actionability check (side-effect-free where possible)
+        let (actionable, actionability_reason) =
+            match self.check_element_actionability(&element).await {
+                Ok(()) => (true, None),
+                Err(error) => {
+                    let reason = error.downcast_ref::<TargetError>().and_then(|e| e.reason);
+                    (false, reason)
+                }
+            };
+
+        PreflightOutcome {
+            unique: true,
+            element: Some(element),
+            actionable: Some(actionable),
+            actionability_reason,
+            candidates: Vec::new(),
+            error_kind: None,
+            revision,
+        }
+    }
+
+    /// Check whether a resolved element is actionable without performing the action.
+    async fn check_element_actionability(&self, element: &ResolvedElement) -> BrowserResult<()> {
+        let backend_node_id = element
+            .backend_dom_node_id
+            .ok_or_else(|| "element has no backend node id")?;
+
+        let object_id = self
+            .cdp
+            .resolve_node_object(None, Some(backend_node_id))
+            .await
+            .map_err(|_| TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(TargetActionabilityReason::NodeUnavailable),
+                candidates: Vec::new(),
+            })?;
+
+        let raw = self
+            .cdp
+            .call_on_object(&object_id, HIT_TEST_FUNCTION)
+            .await
+            .map_err(|_| TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(TargetActionabilityReason::NodeUnavailable),
+                candidates: Vec::new(),
+            })?;
+
+        let value = runtime_value(&raw)?;
+        if value["ok"].as_bool() != Some(true) {
+            let reason = value["reason"].as_str().unwrap_or("verification_failed");
+            return Err(TargetError {
+                kind: TargetErrorKind::NotActionable,
+                reason: Some(actionability_reason(reason)),
+                candidates: Vec::new(),
+            }
+            .into());
+        }
+
+        Ok(())
+    }
+
     pub(crate) async fn resolve_locator(
         &self,
         locator: &Locator,

@@ -1156,6 +1156,32 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Override device metrics for viewport emulation.
+    pub async fn set_device_metrics_override(
+        &self,
+        width: i64,
+        height: i64,
+        device_scale_factor: f64,
+        mobile: bool,
+    ) -> Result<Value, CdpError> {
+        self.send(
+            "Emulation.setDeviceMetricsOverride",
+            Some(serde_json::json!({
+                "width": width,
+                "height": height,
+                "deviceScaleFactor": device_scale_factor,
+                "mobile": mobile,
+            })),
+        )
+        .await
+    }
+
+    /// Clear device metrics override.
+    pub async fn clear_device_metrics_override(&self) -> Result<Value, CdpError> {
+        self.send("Emulation.clearDeviceMetricsOverride", None)
+            .await
+    }
+
     /// Ask the connection task to close its WebSocket.
     pub async fn close(&self) {
         let _ = self.tx.send(Command::Close);

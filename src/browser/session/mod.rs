@@ -1000,6 +1000,32 @@ impl BrowserSession {
         self.chrome.is_some()
     }
 
+    /// Override the viewport metrics for device emulation.
+    ///
+    /// Uses CDP `Emulation.setDeviceMetricsOverride`. Reset on session close
+    /// or call with `width: 0, height: 0` to clear.
+    pub async fn set_viewport(
+        &self,
+        width: i64,
+        height: i64,
+        device_scale_factor: Option<f64>,
+        is_mobile: Option<bool>,
+    ) -> BrowserResult<()> {
+        if width == 0 && height == 0 {
+            self.cdp.clear_device_metrics_override().await?;
+        } else {
+            self.cdp
+                .set_device_metrics_override(
+                    width,
+                    height,
+                    device_scale_factor.unwrap_or(1.0),
+                    is_mobile.unwrap_or(false),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Build a bounded failure-trace pack suitable for agent self-correction.
     ///
     /// The returned bundle includes the last compact observation, an action outcome,
@@ -2502,6 +2528,7 @@ impl BrowserSession {
                                 total_bytes: finite_nonnegative_u64(&event.params["totalBytes"]),
                                 target_id: target_id.clone(),
                                 frame_id: frame_id.clone(),
+                                sha256: None,
                             });
                         }
                     }

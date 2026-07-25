@@ -921,6 +921,9 @@ pub struct DownloadOutcome {
     pub total_bytes: u64,
     pub target_id: String,
     pub frame_id: String,
+    /// SHA-256 hash of the downloaded file content, if the download completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

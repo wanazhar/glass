@@ -29,6 +29,22 @@ pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
 /// Maximum number of steps in a single batch operation.
 pub const MAX_BATCH_STEPS: usize = 32;
 
+/// Maximum audit entries retained per session.
+pub const MAX_AUDIT_ENTRIES: usize = 512;
+
+/// A bounded, redacted audit entry for a high-risk session operation.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEntry {
+    /// Monotonic sequence number within the session.
+    pub sequence: u64,
+    /// Operation kind: navigate, evaluate, upload, download, attach.
+    pub operation: String,
+    /// Bounded, redacted detail (URLs truncated, expressions summarized).
+    pub detail: String,
+    /// Policy preset active at the time of the operation.
+    pub policy_preset: String,
+}
+
 /// A single step in a typed batch operation.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
@@ -334,6 +350,8 @@ pub struct SessionOptions {
     pub frame_id: Option<String>,
     pub headed: bool,
     pub interaction_mode: InteractionMode,
+    /// Whether the session audit log is enabled.
+    pub audit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -354,6 +372,7 @@ impl Default for SessionOptions {
             frame_id: None,
             headed: false,
             interaction_mode: InteractionMode::Human,
+            audit: false,
         }
     }
 }
@@ -1441,6 +1460,9 @@ pub struct BrowserSession {
     pub(crate) upload_root: PathBuf,
     pub(crate) policy: BrowserPolicy,
     pub(crate) policy_interception: Option<PolicyInterception>,
+    pub(crate) audit_log: std::sync::Mutex<VecDeque<AuditEntry>>,
+    pub(crate) audit_sequence: AtomicU64,
+    pub(crate) audit_enabled: bool,
 }
 
 pub(crate) struct CachedObservation {

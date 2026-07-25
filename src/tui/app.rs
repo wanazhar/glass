@@ -1258,6 +1258,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
         interaction_mode: cli.interaction,
+        audit: cli.audit,
     };
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let local = LocalSet::new();

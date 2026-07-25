@@ -39,6 +39,7 @@ async fn main() -> BrowserResult<()> {
         frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
+        audit: false,
     })
     .await?;
     let cold_start_ms = startup_started.elapsed().as_secs_f64() * 1000.0;
@@ -54,6 +55,7 @@ async fn main() -> BrowserResult<()> {
         frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
+        audit: false,
     })
     .await?;
     let rss_after_sessions_start = process_rss_bytes();

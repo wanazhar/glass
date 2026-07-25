@@ -2,7 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -51,6 +51,9 @@ pub struct BrowserSession {
     pub(crate) upload_root: PathBuf,
     pub(crate) policy: BrowserPolicy,
     pub(crate) policy_interception: Option<PolicyInterception>,
+    pub(crate) audit_log: std::sync::Mutex<VecDeque<AuditEntry>>,
+    pub(crate) audit_sequence: AtomicU64,
+    pub(crate) audit_enabled: bool,
 }
 
 struct CachedObservation {
@@ -571,8 +574,11 @@ impl BrowserSession {
             topology,
             popup_click_scope: Mutex::new(()),
             upload_root: std::fs::canonicalize(std::env::current_dir()?)?,
-            policy,
+            policy: policy.clone(),
             policy_interception,
+            audit_log: std::sync::Mutex::new(VecDeque::new()),
+            audit_sequence: AtomicU64::new(1),
+            audit_enabled: options.audit,
         };
         let initialize_frame = async {
             let frame_id = match options.frame_id.as_deref() {
@@ -1059,6 +1065,43 @@ impl BrowserSession {
                 last_observation: None,
                 trace_bytes: 0,
                 ..pack
+            }
+        }
+    }
+
+    /// Return a snapshot of the current session audit log.
+    ///
+    /// The log records high-risk operations (navigate, evaluate, upload,
+    /// download, attach) with bounded, redacted detail. It is only populated
+    /// when `--audit` is set on session start. Entries are bounded to
+    /// [`MAX_AUDIT_ENTRIES`]; the oldest are dropped on overflow.
+    pub fn audit_log(&self) -> Vec<AuditEntry> {
+        self.audit_log
+            .lock()
+            .map(|log| log.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn record_audit(&self, operation: &str, detail: impl Into<String>) {
+        if !self.audit_enabled {
+            return;
+        }
+        let sequence = self.audit_sequence.fetch_add(1, Ordering::Relaxed);
+        let mut detail_text = detail.into();
+        const MAX_AUDIT_DETAIL_BYTES: usize = 256;
+        if detail_text.len() > MAX_AUDIT_DETAIL_BYTES {
+            detail_text.truncate(MAX_AUDIT_DETAIL_BYTES);
+        }
+        let preset = format!("{:?}", self.policy.preset());
+        if let Ok(mut log) = self.audit_log.lock() {
+            log.push_back(AuditEntry {
+                sequence,
+                operation: operation.to_string(),
+                detail: detail_text,
+                policy_preset: preset,
+            });
+            while log.len() > MAX_AUDIT_ENTRIES {
+                log.pop_front();
             }
         }
     }
@@ -3658,6 +3701,9 @@ mod tests {
             upload_root: std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
             policy: BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap(),
             policy_interception: None,
+            audit_log: std::sync::Mutex::new(VecDeque::new()),
+            audit_sequence: AtomicU64::new(1),
+            audit_enabled: false,
         }
     }
 

@@ -69,6 +69,10 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = InteractionMode::Human)]
     pub interaction: InteractionMode,
 
+    /// Enable bounded session audit log of high-risk operations.
+    #[arg(long, global = true)]
+    pub audit: bool,
+
     /// Path to a Chrome/Chromium binary.
     #[arg(long = "chrome-path", alias = "chrome", global = true)]
     pub chrome_path: Option<PathBuf>,

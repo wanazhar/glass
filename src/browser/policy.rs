@@ -23,7 +23,11 @@ pub enum PolicyCapability {
 #[serde(rename_all = "snake_case")]
 pub enum PolicyPreset {
     Development,
+    #[clap(name = "ci")]
+    Ci,
     Hardened,
+    #[clap(name = "untrusted-mcp")]
+    UntrustedMcp,
 }
 
 impl std::str::FromStr for PolicyPreset {
@@ -31,10 +35,14 @@ impl std::str::FromStr for PolicyPreset {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "development" => Ok(Self::Development),
+            "development" | "dev" => Ok(Self::Development),
+            "ci" => Ok(Self::Ci),
             "hardened" => Ok(Self::Hardened),
+            "untrusted-mcp" | "untrusted_mcp" => Ok(Self::UntrustedMcp),
             _ => Err(PolicyError::InvalidConfiguration {
-                reason: "policy preset must be development or hardened".to_string(),
+                reason: format!(
+                    "policy preset must be dev, ci, hardened, or untrusted-mcp, got: {value}"
+                ),
             }),
         }
     }
@@ -94,8 +102,16 @@ impl BrowserPolicy {
         Self::new(PolicyPreset::Development, workspace_root, [], [])
     }
 
+    pub fn ci(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
+        Self::new(PolicyPreset::Ci, workspace_root, [], [])
+    }
+
     pub fn hardened(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
         Self::new(PolicyPreset::Hardened, workspace_root, [], [])
+    }
+
+    pub fn untrusted_mcp(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
+        Self::new(PolicyPreset::UntrustedMcp, workspace_root, [], [])
     }
 
     pub fn new(
@@ -197,12 +213,14 @@ impl BrowserPolicy {
         &mut self,
         attached: bool,
     ) -> Result<Option<String>, PolicyError> {
-        if self.preset == PolicyPreset::Development {
+        // Development and CI do not require host allowlisting
+        if matches!(self.preset, PolicyPreset::Development | PolicyPreset::Ci) {
             return Ok(None);
         }
         if self.allowed_hosts.is_empty() {
             return Err(PolicyError::InvalidConfiguration {
-                reason: "hardened mode requires at least one exact --policy-allow-host".to_string(),
+                reason: "hardened and untrusted-mcp modes require at least one exact --policy-allow-host"
+                    .to_string(),
             });
         }
         let mut resolver_rules = Vec::with_capacity(self.allowed_hosts.len());
@@ -254,6 +272,47 @@ impl BrowserPolicy {
     }
 
     pub fn decide(&self, capability: PolicyCapability) -> PolicyDecision {
+        // Untrusted MCP: everything requires confirmation (or is denied)
+        if self.preset == PolicyPreset::UntrustedMcp {
+            if self.allowed_capabilities.contains(&capability) {
+                return PolicyDecision::Allow;
+            }
+            // Always-deny capabilities in untrusted MCP
+            if matches!(
+                capability,
+                PolicyCapability::RawCdp | PolicyCapability::PersistentProfile
+            ) {
+                return PolicyDecision::Deny {
+                    reason: format!("{capability:?} is disabled in untrusted-mcp mode"),
+                };
+            }
+            if self.confirmed_capabilities.contains(&capability) {
+                return PolicyDecision::RequireConfirmation {
+                    reason: format!("{capability:?} requires confirmation in untrusted-mcp mode"),
+                };
+            }
+            return PolicyDecision::Deny {
+                reason: format!("{capability:?} is disabled by the untrusted-mcp preset"),
+            };
+        }
+
+        // CI: allow most capabilities but deny raw CDP and persistent profiles
+        if self.preset == PolicyPreset::Ci {
+            if matches!(
+                capability,
+                PolicyCapability::RawCdp | PolicyCapability::PersistentProfile
+            ) {
+                return PolicyDecision::Deny {
+                    reason: format!("{capability:?} is disabled in CI mode"),
+                };
+            }
+            if self.allowed_capabilities.contains(&capability) {
+                return PolicyDecision::Allow;
+            }
+            return PolicyDecision::Allow;
+        }
+
+        // Development: allow everything
         if self.preset == PolicyPreset::Development
             || self.allowed_capabilities.contains(&capability)
         {

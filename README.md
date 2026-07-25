@@ -97,6 +97,58 @@ standard input and output. Do not wrap this command in a shell that prints
 startup text to stdout. See the [MCP guide](docs/mcp.md) for configuration,
 available tools, and security considerations.
 
+### MCP Client Recipes
+
+Add Glass to your MCP client in one copy-paste step.
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows, or
+`~/.config/Claude/claude_desktop_config.json` on Linux):
+
+```json
+{
+  "mcpServers": {
+    "glass": {
+      "command": "glass",
+      "args": ["--mcp", "--policy", "hardened"]
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json` in your project root, or
+`~/.cursor/mcp.json` for all projects):
+
+```json
+{
+  "mcpServers": {
+    "glass": {
+      "command": "glass",
+      "args": ["--mcp", "--policy", "dev"]
+    }
+  }
+}
+```
+
+**Generic MCP host** (any client that speaks JSON-RPC over stdio):
+
+```json
+{
+  "mcpServers": {
+    "glass": {
+      "command": "glass",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+> **Important:** Glass writes to stderr only; stdout is reserved for MCP
+> messages. Do not add shell wrappers that print to stdout. Use absolute
+> paths if `glass` is not on the client's `PATH`. The `--policy hardened`
+> preset denies `evaluate` and network interception; `--policy dev` allows
+> everything. See `glass --help` for policy presets.
+
 ## Behavior and safety
 
 - Compact observations contain the URL, title, bounded visible text, and
@@ -117,6 +169,7 @@ or sensitive data.
 - [Installation and operations](docs/installation.md)
 - [CLI reference](docs/cli.md)
 - [MCP integration](docs/mcp.md)
+- [Positioning & comparison](docs/positioning.md)
 - [Architecture](docs/architecture/README.md)
 - [Benchmarks](benchmarks/README.md)
 - [Contributing](CONTRIBUTING.md)

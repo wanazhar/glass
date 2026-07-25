@@ -477,7 +477,10 @@ impl BrowserSession {
             }
             return Err(Box::new(error));
         }
-        let policy_interception = if policy.preset() == PolicyPreset::Hardened {
+        let policy_interception = if matches!(
+            policy.preset(),
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        ) {
             Some(PolicyInterception::start(cdp.clone(), policy.clone(), session_id.clone()).await?)
         } else {
             None
@@ -542,7 +545,10 @@ impl BrowserSession {
             "Target.setAutoAttach",
             Some(serde_json::json!({
                 "autoAttach": true,
-                "waitForDebuggerOnStart": policy.preset() == PolicyPreset::Hardened,
+                "waitForDebuggerOnStart": matches!(
+                    policy.preset(),
+                    PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+                ),
                 "flatten": true
             })),
         )
@@ -730,7 +736,10 @@ impl BrowserSession {
                 "Target.setAutoAttach",
                 Some(serde_json::json!({
                     "autoAttach": true,
-                    "waitForDebuggerOnStart": self.policy.preset() == PolicyPreset::Hardened,
+                    "waitForDebuggerOnStart": matches!(
+                        self.policy.preset(),
+                        PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+                    ),
                     "flatten": true
                 })),
             )

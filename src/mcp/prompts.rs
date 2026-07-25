@@ -78,12 +78,18 @@ pattern for every task.
 - The task requires exact pixel positioning (canvas, maps) — use
   `click-at(x, y)` if available, otherwise `screenshot` + `getDOM`.
 
-## Policy awareness
+Glass sessions run under a named policy preset:
 
-- `hardened` policy denies `evaluate`, screenshots, uploads, downloads,
-  profiles, attach, and raw CDP.
+| Preset | Evaluate | Screenshot | Upload | Download | Raw CDP | Profiles |
+|--------|----------|------------|--------|----------|---------|----------|
+| `dev` | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed |
+| `ci` | Allowed | Allowed | Allowed | Allowed | Denied | Denied |
+| `hardened` | Confirm | Denied | Denied | Denied | Denied | Confirm |
+| `untrusted-mcp` | Confirm | Confirm | Confirm | Confirm | Denied | Denied |
+
 - Policy denials are typed JSON errors with `kind: "denied"`.
 - Do not retry a denied operation — adjust the task to work within policy.
+- Use `listPolicy` to inspect the current session's policy state.
 "#;
 
 const PROMPT_TARGET_SELECTION: &str = r#"# Glass Target Selection & Locator Grammar

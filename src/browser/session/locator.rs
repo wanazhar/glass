@@ -122,7 +122,7 @@ impl BrowserSession {
     async fn check_element_actionability(&self, element: &ResolvedElement) -> BrowserResult<()> {
         let backend_node_id = element
             .backend_dom_node_id
-            .ok_or_else(|| "element has no backend node id")?;
+            .ok_or("element has no backend node id")?;
 
         let object_id = self
             .cdp

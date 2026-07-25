@@ -309,7 +309,7 @@ pub struct TargetError {
 }
 /// Outcome of a side-effect-free preflight target resolution and actionability check.
 #[derive(Debug, Clone, Serialize)]
-pub struct PreflightOutcome {
+pub(crate) struct PreflightOutcome {
     /// Whether the target resolved uniquely.
     pub unique: bool,
     /// The resolved element (only present when unique).

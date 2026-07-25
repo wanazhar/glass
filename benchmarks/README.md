@@ -187,3 +187,66 @@ GLASS_SCREENCAST_FRAMES=120 cargo run --release --example screencast_benchmark
 
 See [capture-report.md](capture-report.md) for capture-specific methodology and
 results.
+
+## Public Scoreboard & Competitive Evidence
+
+### Wrong-Action Adversarial Suite (B.5)
+
+The v1 scenario corpus is a **public adversarial benchmark** for agent browser
+automation. It is designed to catch:
+
+- **Duplicate-label ambiguity** — two elements sharing an accessible name
+- **Overlay blocking** — a modal or banner covering the intended target
+- **Reflow displacement** — an element that moves on interaction
+- **Delayed content** — DOM mutations after navigation
+- **SPA navigation** — client-side routing without full page loads
+- **Form submission** — typed input through accessibility-driven form fill
+- **Popup causality** — verified popup opening from a click
+- **Frame interaction** — clicking inside an iframe
+- **Dialog handling** — JavaScript `alert`/`confirm`/`prompt`
+- **Download integrity** — file download with content verification
+- **Failure recovery** — continuing after a targeting failure
+
+Glass's gate is **zero wrong actions**. Competitors may score lower; their
+failures are published, not hidden.
+
+### Token / Context Scoreboard (B.4)
+
+Glass publishes median and p95 compact observe bytes alongside the competitive
+acceptance results. This is the token-cost proxy: every byte becomes context
+tokens the agent pays for.
+
+Measurement methodology:
+- Serialised `observe()` response JSON only (no JSON-RPC envelope, no MCP
+  content wrapper)
+- Warm session: page already loaded with cached observation available
+- Same fixture, same Chrome build, same viewport as acceptance run
+
+### Public Scorecard Package (B.3)
+
+The scorecard is published as a versioned, reproducible package:
+
+| Artifact | Location | Description |
+|----------|----------|-------------|
+| Scenario definitions | `benchmarks/scenarios/v1.json` | Versioned corpus with expected outcomes |
+| Report schema | `benchmarks/report-schema.json` | JSON Schema for scorecard reports |
+| Methodology | This document | Reproducibility requirements |
+| Fixture | `tests/fixtures/scorecard.html` | Standalone HTML fixture |
+
+Third parties can re-run and reproduce the structure by building Glass from
+source and running the scorecard example. No credentials or external services
+are required.
+
+### Representative Corpus Plan (B.6)
+
+The v1 corpus uses a deterministic fixture HTML file. A future v2 corpus will
+add representative external workflows (login-free public pages) as a
+complement to the fixture-based adversarial suite. The v2 corpus:
+
+- Will **not** replace v1's deterministic fixture
+- Will serve as a real-world complement, not a release hard gate
+- Will document cold vs warm lifecycle explicitly
+- Will use only login-free public pages
+
+This plan is documented here for transparency; the methodology and scenario
+selection are not yet stabilised.

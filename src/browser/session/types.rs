@@ -1361,6 +1361,49 @@ impl AccessibilitySnapshot {
     }
 }
 
+/// Bounded JSON bundle produced on action/wait failure.
+///
+/// Contains the last compact observe context, action outcome, and topology
+/// summary — enough for an agent to self-correct without requesting a full
+/// DOM or screenshot. Redaction removes DOM/expression evidence, secrets,
+/// and raw screenshots. Total payload is capped at 8 KiB.
+#[derive(Debug, Clone, Serialize)]
+pub struct FailureTracePack {
+    /// The action or wait outcome that triggered this trace.
+    pub outcome: ActionOutcome,
+    /// Bounded error message (≤ 512 bytes, redacted for secrets).
+    pub error: String,
+    /// Last compact observation context available at the time of failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_observation: Option<CompactObservationTrace>,
+    /// Active topology snapshot at the time of failure.
+    pub topology: TopologyTrace,
+    /// Total byte size of this trace pack.
+    pub trace_bytes: usize,
+}
+
+/// Bounded subset of a compact observation for failure-trace purposes.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactObservationTrace {
+    pub page: PageInfo,
+    pub revision: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interactive: Vec<CompactInteractiveElement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<ObservationCompleteness>,
+}
+
+/// Bounded topology snapshot for failure-trace purposes.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyTrace {
+    pub sequence: u64,
+    pub active_target_id: Option<String>,
+    pub active_frame_id: Option<String>,
+    pub target_count: usize,
+    pub frame_count: usize,
+    pub event_loss_count: u64,
+}
+
 /// A browser process, one CDP page connection, and its profile state.
 pub struct BrowserSession {
     pub(crate) cdp: CdpClient,

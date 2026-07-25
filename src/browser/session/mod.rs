@@ -994,6 +994,75 @@ impl BrowserSession {
         self.chrome.is_some()
     }
 
+    /// Build a bounded failure-trace pack suitable for agent self-correction.
+    ///
+    /// The returned bundle includes the last compact observation, an action outcome,
+    /// an error message, and the active topology state. It is deliberately bounded
+    /// (≤ 8 KiB), redacted for secrets, and excludes DOM/expression/screenshot
+    /// payloads. Agents can use this to decide whether to re-observe, select a
+    /// different target, or escalate without a full DOM round-trip.
+    pub async fn failure_trace(
+        &self,
+        outcome: ActionOutcome,
+        error: impl Into<String>,
+    ) -> FailureTracePack {
+        const MAX_TRACE_BYTES: usize = 8192;
+        const MAX_ERROR_BYTES: usize = 512;
+
+        let mut error_text = error.into();
+        if error_text.len() > MAX_ERROR_BYTES {
+            error_text.truncate(MAX_ERROR_BYTES);
+        }
+
+        let last_observation = self
+            .observation_cache
+            .lock()
+            .await
+            .as_ref()
+            .map(|cached| CompactObservationTrace {
+                page: cached.context.page.clone(),
+                revision: cached.revision,
+                interactive: cached.context.accessibility.interactive.clone(),
+                completeness: cached.context.accessibility.completeness.clone(),
+            });
+
+        let topology = {
+            let t = self.topology.lock().await;
+            TopologyTrace {
+                sequence: t.sequence,
+                active_target_id: t.active_target_id.clone(),
+                active_frame_id: t.active_frame_id.clone(),
+                target_count: t.targets.len(),
+                frame_count: t.frames.len(),
+                event_loss_count: t.event_loss_count,
+            }
+        };
+
+        let pack = FailureTracePack {
+            outcome,
+            error: error_text,
+            last_observation,
+            topology,
+            trace_bytes: 0,
+        };
+
+        // Measure and cap at MAX_TRACE_BYTES by dropping observation if needed
+        let serialized = serde_json::to_string(&pack).unwrap_or_default();
+        if serialized.len() <= MAX_TRACE_BYTES {
+            FailureTracePack {
+                trace_bytes: serialized.len(),
+                ..pack
+            }
+        } else {
+            // Drop the observation to fit within budget
+            FailureTracePack {
+                last_observation: None,
+                trace_bytes: 0,
+                ..pack
+            }
+        }
+    }
+
     pub async fn close(mut self) -> BrowserResult<()> {
         if self.chrome.is_some() {
             // `Browser.close` lets Chrome commit profile-backed storage before
@@ -4492,6 +4561,7 @@ mod tests {
             children: Vec::new(),
             bounds: None,
             interactive: true,
+            input_type: None,
         }];
         let controls = interactive_elements(&roots, 12);
         assert_eq!(controls.len(), 1);

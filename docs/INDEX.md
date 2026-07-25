@@ -7,10 +7,16 @@
 - [CLI reference](cli.md) — global options, commands, targets, and output.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
+- [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
+  and design principles for keeping the surface lean.
+- [Logged-in session ergonomics](profile-ergonomics.md) — using persistent
+  profiles to carry authenticated state without pasting credentials.
 - [Policy reference](policy.md) — named presets, capabilities, confirmation
   tokens, and host allowlisting.
 - [Positioning](positioning.md) — where Glass fits: control plane vs planner
   vs cloud browser, and when to use each tool.
+- [Category metric](category-metric.md) — wrong-action count, runner RSS,
+  and observe-bytes scoreboard.
 - [Bot-protection & consent walls](bot-protection.md) — legitimate access paths
   when sites challenge CDP automation.
 - [Detection-surface report](detection-surface.md) — what stock CDP-driven

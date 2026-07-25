@@ -31,6 +31,8 @@ pub struct AxNode {
     /// Bounding box: [x, y, width, height]. Filled by the session when needed.
     pub bounds: Option<[f64; 4]>,
     pub interactive: bool,
+    /// HTML input type extracted from AX properties (text, email, checkbox, etc.).
+    pub input_type: Option<String>,
 }
 
 /// A bounded semantic accessibility node used only by compact observations.
@@ -231,6 +233,7 @@ fn build_ax_node(
         children,
         bounds: None,
         interactive,
+        input_type: extract_input_type(raw),
     })
 }
 
@@ -373,7 +376,7 @@ fn project_compact_node(
                 name: control_name,
                 backend_dom_node_id,
                 shadow_host_path: None,
-                input_type: None,
+                input_type: node.input_type.clone(),
                 value: None,
                 checked: None,
                 selected_option: None,
@@ -705,6 +708,7 @@ mod tests {
             children: Vec::new(),
             bounds: None,
             interactive: true,
+            input_type: Some("text".to_string()),
         };
         assert!(format_tree(&[node], 0).contains("日本語"));
     }
@@ -729,6 +733,7 @@ mod tests {
                     children: Vec::new(),
                     bounds: None,
                     interactive: true,
+                    input_type: None,
                 },
                 AxNode {
                     ax_node_id: "unresolved".to_string(),
@@ -740,10 +745,12 @@ mod tests {
                     children: Vec::new(),
                     bounds: None,
                     interactive: true,
+                    input_type: None,
                 },
             ],
             bounds: None,
             interactive: false,
+            input_type: None,
         }];
 
         let projection = project_compact_accessibility(&nodes, 5);

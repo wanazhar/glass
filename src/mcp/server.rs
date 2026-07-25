@@ -15,8 +15,9 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, DownloadError, PopupClickError, SessionOptions,
-    TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1, DownloadError,
+    PopupClickError, SessionOptions, TargetError, VisualCaptureOptions, VisualClip, VisualFormat,
+    WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -189,11 +190,23 @@ enum ToolInvocation<'a> {
     Observe {
         include_dom: bool,
         include_screenshot: bool,
+        include_form_values: bool,
     },
     GetDom,
     GetText,
     Evaluate {
         expression: &'a str,
+    },
+    Batch {
+        steps: Value,
+    },
+    ReconcileReferences {
+        from_revision: u64,
+        refs: Vec<String>,
+    },
+    ExportCheckpoint,
+    ImportCheckpoint {
+        checkpoint: Value,
     },
     Scroll {
         dx: f64,
@@ -730,12 +743,19 @@ async fn call_tool(
         ToolInvocation::Observe {
             include_dom,
             include_screenshot,
+            include_form_values,
         } => {
-            let mut context = match (include_dom, include_screenshot) {
-                (false, false) => session.observe().await?,
-                (true, false) => session.observe_with_dom().await?,
-                (false, true) => session.observe_with_screenshot().await?,
-                (true, true) => session.observe_with_dom_and_screenshot().await?,
+            let mut context = match (include_dom, include_screenshot, include_form_values) {
+                (false, false, false) => session.observe().await?,
+                (true, false, false) => session.observe_with_dom().await?,
+                (false, true, false) => session.observe_with_screenshot().await?,
+                (true, true, false) => session.observe_with_dom_and_screenshot().await?,
+                (false, false, true) => session.observe_with_form_values().await?,
+                _ => {
+                    return Err(
+                        "form values may only be combined with default compact observe".into(),
+                    );
+                }
             };
             let screenshot = context.screenshot.take();
             let context_json = serde_json::to_string(&context)?;
@@ -753,6 +773,22 @@ async fn call_tool(
         ToolInvocation::GetText => Ok(text_result(session.text().await?)),
         ToolInvocation::Evaluate { expression } => {
             serialized_result(&session.evaluate(expression).await?)
+        }
+        ToolInvocation::Batch { steps } => {
+            let parsed: Vec<BatchStep> = serde_json::from_value(steps.clone())
+                .map_err(|e| format!("invalid batch steps: {e}"))?;
+            serialized_result(&session.run_batch(&parsed).await?)
+        }
+        ToolInvocation::ReconcileReferences {
+            from_revision,
+            refs,
+        } => serialized_result(&session.reconcile_references(from_revision, &refs).await?),
+        ToolInvocation::ExportCheckpoint => serialized_result(&session.export_checkpoint().await?),
+        ToolInvocation::ImportCheckpoint { checkpoint } => {
+            let ckpt: CheckpointV1 = serde_json::from_value(checkpoint.clone())
+                .map_err(|e| format!("invalid checkpoint: {e}"))?;
+            session.import_checkpoint(&ckpt).await?;
+            serialized_result(&json!({"status": "checkpoint_imported"}))
         }
         ToolInvocation::Scroll { dx, dy } => action_result(session.scroll(dx, dy).await?),
         ToolInvocation::Wait {
@@ -875,11 +911,26 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "observe" => Ok(ToolInvocation::Observe {
             include_dom: optional_bool(arguments, "includeDom")?,
             include_screenshot: optional_bool(arguments, "includeScreenshot")?,
+            include_form_values: optional_bool(arguments, "includeFormValues")?,
         }),
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
         "evaluate" => Ok(ToolInvocation::Evaluate {
             expression: required_string(arguments, "expression")?,
+        }),
+        "batch" => Ok(ToolInvocation::Batch {
+            steps: arguments["steps"].clone(),
+        }),
+        "reconcileReferences" => Ok(ToolInvocation::ReconcileReferences {
+            from_revision: required_u64(arguments, "fromRevision")?,
+            refs: required_string_array(arguments, "refs")?
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        }),
+        "exportCheckpoint" => Ok(ToolInvocation::ExportCheckpoint),
+        "importCheckpoint" => Ok(ToolInvocation::ImportCheckpoint {
+            checkpoint: arguments.clone(),
         }),
         "scroll" => Ok(ToolInvocation::Scroll {
             dx: optional_number(arguments, "dx", 0.0)?,
@@ -1043,12 +1094,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "observe",
-            description: "Return compact accessibility and visible-text context; full DOM and screenshots are opt-in.",
+            description: "Return compact accessibility and visible-text context; full DOM, screenshots, and form values are opt-in.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "includeDom": {"type": "boolean", "default": false},
-                    "includeScreenshot": {"type": "boolean", "default": false}
+                    "includeScreenshot": {"type": "boolean", "default": false},
+                    "includeFormValues": {"type": "boolean", "default": false}
                 }
             }),
         },
@@ -1063,12 +1115,63 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
+            name: "reconcileReferences",
+            description: "Reconcile prior revisioned refs against the current page to find Preserved/Relocated/Lost mappings.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "fromRevision": {"type": "integer", "minimum": 0},
+                    "refs": {"type": "array", "items": {"type": "string"}, "maxItems": 16}
+                },
+                "required": ["fromRevision", "refs"]
+            }),
+        },
+        Tool {
+            name: "exportCheckpoint",
+            description: "Export a session checkpoint (≤ 4 KiB) for cross-process resume.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "importCheckpoint",
+            description: "Import a checkpoint and restore target/frame context.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "checkpoint": {"type": "object"}
+                },
+                "required": ["checkpoint"]
+            }),
+        },
+        Tool {
             name: "evaluate",
             description: "Evaluate JavaScript in the current page.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"expression": {"type": "string"}},
                 "required": ["expression"]
+            }),
+        },
+        Tool {
+            name: "batch",
+            description: "Execute an ordered batch of typed operations (max 32 steps). Policy is pre-flighted before any step runs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["navigate", "click", "type", "check", "uncheck", "select", "clear", "scroll", "wait", "observe", "screenshot", "evaluate", "acceptDialog", "dismissDialog"]
+                                }
+                            },
+                            "required": ["action"]
+                        }
+                    }
+                },
+                "required": ["steps"]
             }),
         },
         Tool {
@@ -1153,6 +1256,28 @@ fn target_schema() -> Value {
 
 fn string_schema(name: &str) -> Value {
     json!({"type":"object","properties":{(name):{"type":"string"}},"required":[name]})
+}
+
+fn required_u64(arguments: &Value, name: &str) -> BrowserResult<u64> {
+    arguments
+        .get(name)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{name} must be a non-negative integer").into())
+}
+
+fn required_string_array<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Vec<&'a str>> {
+    arguments
+        .get(name)
+        .and_then(Value::as_array)
+        .filter(|arr| !arr.is_empty() && arr.len() <= 32)
+        .ok_or_else(|| format!("{name} must be a non-empty array with at most 32 entries"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{name} entries must be non-empty strings").into())
+        })
+        .collect()
 }
 
 fn required_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<&'a str> {
@@ -1519,7 +1644,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 33);
+        assert_eq!(tools.len(), 37);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -1619,7 +1744,8 @@ mod tests {
             parse_tool_invocation(&params).unwrap(),
             ToolInvocation::Observe {
                 include_dom: true,
-                include_screenshot: false
+                include_screenshot: false,
+                ..
             }
         ));
 

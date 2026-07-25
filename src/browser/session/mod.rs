@@ -39,6 +39,7 @@ mod locator;
 mod navigate;
 mod observe;
 mod popup;
+mod retry;
 pub mod storage;
 mod target;
 mod visual;

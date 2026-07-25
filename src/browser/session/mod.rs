@@ -682,10 +682,12 @@ impl BrowserSession {
             .ok_or("Target.createTarget returned no targetId")?;
         validate_topology_id(id)?;
         let targets = self.list_targets().await?;
-        targets
+        let target = targets
             .into_iter()
             .find(|target| target.id == id)
-            .ok_or_else(|| "created target was not discoverable".into())
+            .ok_or_else(|| -> Box<dyn Error> { "created target was not discoverable".into() })?;
+        self.record_audit("attach", &url);
+        Ok(target)
     }
 
     pub async fn select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
@@ -1230,6 +1232,7 @@ impl BrowserSession {
                         .await
                         .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
                     self.invalidate_observation();
+                    self.record_audit("navigate", url);
                     Ok(page)
                 }
                 .await;
@@ -1253,6 +1256,7 @@ impl BrowserSession {
                 // Invalidate synchronously so the next cached observation cannot race
                 // the asynchronous CDP mutation event stream.
                 self.invalidate_observation();
+                self.record_audit("evaluate", expression);
                 result
             })
             .await
@@ -2518,6 +2522,10 @@ impl BrowserSession {
                         }
                         let state = event.params["state"].as_str().unwrap_or("inProgress");
                         if matches!(state, "completed" | "canceled") {
+                            self.record_audit(
+                                "download",
+                                format!("{} (state={})", filename, state),
+                            );
                             return BrowserResult::Ok(DownloadOutcome {
                                 guid: active_guid.to_string(),
                                 suggested_filename: filename,
@@ -3313,7 +3321,9 @@ impl BrowserSession {
             self.cdp.set_file_input_files(element.node_id, element.backend_dom_node_id, &files).await?;
             let verified = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this.files.length}").await?)?;
             if verified.as_u64() != Some(files.len() as u64) { return Err("file input did not retain the requested file count".into()); }
-            self.action_outcome(ActionKind::Upload, Some(element), Some(serde_json::json!({"file_count": files.len()}))).await
+            let outcome = self.action_outcome(ActionKind::Upload, Some(element), Some(serde_json::json!({"file_count": files.len()}))).await?;
+            self.record_audit("upload", format!("{} files", files.len()));
+            Ok(outcome)
         }).await
     }
 

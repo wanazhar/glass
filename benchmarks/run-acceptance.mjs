@@ -55,6 +55,22 @@ try {
     CHROME_PATH: chromePath, PLAYWRIGHT_MCP_COMMAND: path.join(npmPrefix, "node_modules/.bin/playwright-mcp"), PLAYWRIGHT_MCP_VERSION: "0.0.78",
     PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS: "30000",
   }, playwrightMcpDeadlineMs);
+
+  // agent-browser: install and run if the adapter is listed in the contract
+  const agentBrowserContract = contract.adapters.find(({ id }) => id === "agent-browser");
+  const agentBrowserCmd = process.env.AGENT_BROWSER_COMMAND;
+  if (agentBrowserContract && agentBrowserCmd) {
+    const agentBrowserVersion = agentBrowserContract.version ?? "1.3.30";
+    await runAdapter("agent-browser", process.execPath, [path.join(root, "benchmarks/adapters/agent-browser-scorecard.mjs")], {
+      CHROME_PATH: chromePath,
+      AGENT_BROWSER_COMMAND: agentBrowserCmd,
+      AGENT_BROWSER_VERSION: agentBrowserVersion,
+      AGENT_BROWSER_REQUEST_TIMEOUT_MS: "30000",
+    }, commandDeadlineMs);
+  } else if (agentBrowserContract) {
+    adapters.push({ id: "agent-browser", status: "not_run", report: null,
+      reason: "AGENT_BROWSER_COMMAND is not set; install agent-browser globally and set this env var." });
+  }
 } catch (error) {
   fatalError = String(error.message ?? error);
 } finally {
@@ -326,7 +342,7 @@ function validateRows(rows, expectedIds, kind, label) {
   return { passed: true };
 }
 
-function expectedTools() { return { glass: readCargoVersion(), playwright: "1.61.1", "playwright-mcp": "0.0.78", "codex-browser": null }; }
+function expectedTools() { return { glass: readCargoVersion(), playwright: "1.61.1", "playwright-mcp": "0.0.78", "agent-browser": "1.3.30", "codex-browser": null }; }
 function exactKeys(value, expected, label) { if (!value || typeof value !== "object" || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) throw new Error(`${label} has unexpected or missing keys`); }
 function budget(value, maximum) { return Number.isFinite(value) && value <= maximum; }
 function atLeast(value, minimum) { return Number.isFinite(value) && value >= minimum; }

@@ -20,6 +20,12 @@
     {"id": "playwright", "required": true, "version": "1.61.1"},
     {"id": "playwright-mcp", "required": true, "version": "0.0.78"},
     {
+      "id": "agent-browser",
+      "required": false,
+      "version": "1.3.30",
+      "unsupported_reason": "Agent-browser MCP surface does not publish typed primitives for causal popup verification and download-integrity assertions. Popup and download scenarios report unsupported."
+    },
+    {
       "id": "codex-browser",
       "required": false,
       "version": null,

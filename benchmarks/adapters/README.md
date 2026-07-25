@@ -41,3 +41,37 @@ unchanged final report on stdout.
 Before spawning an adapter, the runner removes any prior checkpoint and binds
 the new one to a fresh cryptographic run ID and invocation start time so a
 same-revision retry cannot inherit stale progress.
+
+`agent-browser-scorecard.mjs` is the agent-browser comparator adapter. It is a
+dependency-free MCP client that invokes a separately installed, exactly pinned
+`agent-browser` executable (from npm) in MCP server mode. The adapter uses
+`agent-browser mcp --tools all --no-auto-dialog` and validates the required
+tool surface (`navigate`, `click`, `fill`, `snapshot`, `evaluate`) before
+running. Popup and download scenarios are reported as `unsupported` because
+agent-browser's MCP surface has no published typed primitives for causal popup
+verification or download-integrity assertions; the matrix fails closed.
+
+**Installation (outside the Glass crate):**
+
+```sh
+npm install -g agent-browser@1.3.30
+agent-browser install  # download managed Chromium
+```
+
+Set `AGENT_BROWSER_COMMAND` and `AGENT_BROWSER_VERSION` in the acceptance
+environment. The runner supplies these if the adapter is listed in
+`acceptance-v1.json`.
+
+**Running standalone:**
+
+```sh
+AGENT_BROWSER_COMMAND=$(which agent-browser) \
+AGENT_BROWSER_VERSION=1.3.30 \
+CHROME_PATH=/path/to/chromium \
+GLASS_SCORECARD_GIT_REVISION=$(git rev-parse HEAD) \
+GLASS_SCORECARD_CHECKPOINT_PATH=/tmp/agent-browser-checkpoint.json \
+GLASS_SCORECARD_RUN_ID=$(uuidgen) \
+GLASS_SCORECARD_STARTED_AT=$(date -Iseconds) \
+GLASS_SCORECARD_ITERATIONS=10 \
+node benchmarks/adapters/agent-browser-scorecard.mjs
+```

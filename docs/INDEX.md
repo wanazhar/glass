@@ -7,6 +7,10 @@
 - [CLI reference](cli.md) — global options, commands, targets, and output.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
+- [Bot-protection & consent walls](bot-protection.md) — legitimate access paths
+  when sites challenge CDP automation.
+- [Detection-surface report](detection-surface.md) — what stock CDP-driven
+  Chrome exposes and what Glass does (and does not) attempt to hide.
 - [Security policy](../SECURITY.md) — trust boundaries and vulnerability
   reporting.
 - [Changelog](../CHANGELOG.md) — user-visible release changes.

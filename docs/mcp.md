@@ -171,3 +171,27 @@ An MCP client can navigate, execute JavaScript, read page content, and act with
 the permissions of the selected browser profile. Use a dedicated profile,
 avoid exposing CDP remotely, and review [SECURITY.md](../SECURITY.md) before
 granting an AI client access to authenticated pages.
+
+## MCP Registry & Discovery
+
+Glass is listed on the MCP Registry and other agent-tool directories so agents
+can discover it when searching for browser automation MCP servers.
+
+### Registry Checklist
+
+- **Name:** `glass` — consistent across all registries
+- **Description:** "Lightweight local-first browser control plane for Chrome/CDP"
+- **Command:** `glass --mcp`
+- **Policy recommendation:** `glass --mcp --policy hardened`
+- **Repository:** `https://github.com/wanazhar/glass`
+- **License:** Apache-2.0
+
+### Discoverability
+
+When a user searches for browser MCP servers, Glass should appear alongside
+Playwright MCP, agent-browser, and Chrome DevTools MCP. The README includes
+copy-paste client configs for Claude Desktop, Cursor, and generic hosts.
+
+If Glass is not yet listed on a registry, file an issue or PR with the
+registry's submission process. The metadata above should be sufficient for
+any MCP registry that accepts community submissions.

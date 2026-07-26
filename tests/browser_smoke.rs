@@ -731,10 +731,18 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
         ],
     )
     .await;
-    let persisted = second_responses[2]["result"]["content"][0]["text"]
+    let persisted_text = second_responses[2]["result"]["content"][0]["text"]
         .as_str()
-        .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(persisted).unwrap(), "saved");
+        .unwrap_or_else(|| {
+            panic!("second-session evaluate response was not text: {second_responses:?}")
+        });
+    let persisted = serde_json::from_str::<Value>(persisted_text).unwrap_or_else(|error| {
+        panic!("second-session evaluate payload was invalid JSON ({error}): {persisted_text:?}")
+    });
+    assert_eq!(
+        persisted, "saved",
+        "second-session evaluate response: {second_responses:?}"
+    );
 
     fixture_server.close().await;
 }

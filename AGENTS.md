@@ -37,7 +37,10 @@ Name tests after the behavior they verify, such as `parse_accessibility_tree_han
 
 ## Commit & Pull Request Guidelines
 
-No Git history is present in this workspace, so no existing commit convention can be verified. Use short, imperative, focused messages, for example `browser: handle CDP timeouts`. Pull requests should explain the behavior change, list validation commands, link the relevant issue, and include a terminal screenshot or recording for TUI changes.
+Use short, imperative, focused conventional commits, for example
+`fix: handle CDP timeouts`. Pull requests should explain the behavior change,
+list validation commands, link the relevant issue, and include a terminal
+screenshot or recording for TUI changes.
 
 ## Security & Configuration Tips
 

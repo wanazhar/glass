@@ -6,7 +6,7 @@
   "chrome_version": "Chromium 150.0.7871.46 snap",
   "os": "linux",
   "architecture": "arm64",
-  "machine": "wanazhar 6.17.0-1011-oracle",
+  "machine": "redacted-host 6.17.0-1011-oracle",
   "node": "v24.16.0",
   "rust": "rustc 1.97.0 (2d8144b78 2026-07-07)",
   "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
@@ -68,14 +68,14 @@
     {
       "command": "node",
       "args": [
-        "<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-scorecard.mjs"
+        "<workspace>/benchmarks/adapters/playwright-scorecard.mjs"
       ],
       "timeout_ms": 600000
     },
     {
       "command": "node",
       "args": [
-        "<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs"
+        "<workspace>/benchmarks/adapters/playwright-mcp-scorecard.mjs"
       ],
       "timeout_ms": 600000
     },

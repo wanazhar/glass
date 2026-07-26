@@ -20,12 +20,12 @@
     "architecture": "arm64",
     "rust": null,
     "chrome": "Chromium 150.0.7871.46 snap",
-    "machine": "wanazhar 6.17.0-1011-oracle"
+    "machine": "redacted-host 6.17.0-1011-oracle"
   },
   "resources": {
     "scope": "Runner RSS is Node only; Chrome process-tree RSS and raw CDP request count are unavailable through the public Playwright adapter and reported as null",
     "runner": {
-      "pid": 3788176,
+      "pid": null,
       "rss_start_bytes": 132620288,
       "rss_end_bytes": 200675328,
       "peak_rss_bytes": 200675328

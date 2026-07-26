@@ -797,7 +797,7 @@ from a clean current-revision worktree.
   version, and Glass version alongside the existing sample policy and results.
 - A bounded one-sample run from the clean worktree emitted revision
   `6d18075e4fc6393de2b046579d4ee57d33c9a732`, `git_worktree_clean: true`, host
-  `wanazhar`, Linux/aarch64, Chromium 150.0.7871.46, Rust 1.97.0, the exact
+  `redacted-host`, Linux/aarch64, Chromium 150.0.7871.46, Rust 1.97.0, the exact
   command environment, and `/tmp/glass-popup-provenance-check.json` as its
   artifact path. The report correctly marked one sample non-claim-eligible.
 

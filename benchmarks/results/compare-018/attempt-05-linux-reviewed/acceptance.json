@@ -20,7 +20,7 @@
       "status": "failed",
       "report": "raw/playwright-mcp.json",
       "checkpoint": null,
-      "reason": "node exited null; see <workspace>/.worktrees/compare-018/benchmarks/results/compare-018/attempt-05-linux-reviewed/raw/playwright-mcp.stderr.log"
+      "reason": "node exited null; see <workspace>/benchmarks/results/compare-018/attempt-05-linux-reviewed/raw/playwright-mcp.stderr.log"
     },
     {
       "id": "codex-browser",

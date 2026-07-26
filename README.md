@@ -46,6 +46,20 @@ cargo install --path . --locked
 glass --help
 ```
 
+After the first release, install the published binary with:
+
+```console
+cargo install glass-browser --locked
+```
+
+To embed the Rust library, keep the familiar `glass` import name while using
+the published package:
+
+```toml
+[dependencies]
+glass = { package = "glass-browser", version = "0.1" }
+```
+
 If Chrome is not already installed, Glass can download Chrome for Testing:
 
 ```console

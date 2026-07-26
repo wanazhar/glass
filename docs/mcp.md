@@ -190,7 +190,7 @@ checkout.
 - **Command:** `glass --mcp`
 - **Policy recommendation:** `glass --mcp --policy hardened`
 - **Repository:** `https://github.com/wanazhar/glass`
-- **License:** Apache-2.0
+- **License:** MIT
 
 ### Discoverability
 

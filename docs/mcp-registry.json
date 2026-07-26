@@ -3,7 +3,7 @@
   "displayName": "Glass Browser Control Plane",
   "description": "Lightweight local-first browser control plane for Chrome/CDP.",
   "repository": "https://github.com/wanazhar/glass",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "transport": {
     "type": "stdio",
     "command": "glass",

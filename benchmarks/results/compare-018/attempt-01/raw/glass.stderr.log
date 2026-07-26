@@ -1,6 +1,6 @@
    Compiling vsimd v0.8.0
    Compiling outref v0.5.2
    Compiling base64-simd v0.8.0
-   Compiling glass v0.1.0 (<workspace>/.worktrees/compare-018)
+   Compiling glass v0.1.0 (<workspace>)
     Finished `release` profile [optimized] target(s) in 22.05s
      Running `target/release/examples/scorecard`

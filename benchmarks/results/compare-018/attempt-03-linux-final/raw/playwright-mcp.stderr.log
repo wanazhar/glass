@@ -1,4 +1,4 @@
-file://<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs:196
+file://<workspace>/benchmarks/adapters/playwright-mcp-scorecard.mjs:196
     if (result.isError) throw new Error(result.content?.map(({ text }) => text).filter(Boolean).join("\n") || `${name} failed`);
                               ^
 
@@ -6,8 +6,8 @@ Error: ### Error
 Error: Tool "browser_evaluate" does not handle the modal state.
 ### Modal state
 - ["confirm" dialog with message "Continue?"]: can be handled by browser_handle_dialog
-    at McpClient.tool (file://<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs:196:31)
+    at McpClient.tool (file://<workspace>/benchmarks/adapters/playwright-mcp-scorecard.mjs:196:31)
     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async file://<workspace>/.worktrees/compare-018/benchmarks/adapters/playwright-mcp-scorecard.mjs:37:7
+    at async file://<workspace>/benchmarks/adapters/playwright-mcp-scorecard.mjs:37:7
 
 Node.js v24.16.0

@@ -20,12 +20,12 @@
     "architecture": "arm64",
     "rust": null,
     "chrome": "Chromium 150.0.7871.46 snap",
-    "machine": "wanazhar 6.17.0-1011-oracle"
+    "machine": "redacted-host 6.17.0-1011-oracle"
   },
   "resources": {
     "scope": "primary-non-browser-runner-process-rss-v1",
     "runner": {
-      "pid": 3792424,
+      "pid": null,
       "rss_start_bytes": 132190208,
       "rss_end_bytes": 196788224,
       "peak_rss_bytes": 196788224

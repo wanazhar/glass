@@ -1,14 +1,34 @@
 [package]
-name = "glass"
+name = "glass-browser"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Lightweight browser agent for AI — raw CDP, no Playwright"
 license = "MIT"
 readme = "README.md"
-documentation = "https://docs.rs/glass"
+documentation = "https://docs.rs/glass-browser"
 homepage = "https://github.com/wanazhar/glass"
 repository = "https://github.com/wanazhar/glass"
+keywords = ["browser-automation", "chrome", "cdp", "mcp", "ai"]
+categories = ["api-bindings", "command-line-utilities", "development-tools::testing"]
+exclude = [
+  ".github/",
+  "AGENTS.md",
+  "benchmarks/",
+  "clients/",
+  "deny.toml",
+  "docs/plan/",
+  "fuzz/",
+  "scripts/",
+]
+
+[lib]
+name = "glass"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glass"
+path = "src/main.rs"
 
 [features]
 default = []

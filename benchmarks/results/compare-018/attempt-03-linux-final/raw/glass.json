@@ -2,7 +2,7 @@
   "environment": {
     "architecture": "aarch64",
     "chrome": "Chromium 150.0.7871.46 snap",
-    "machine": "Linux wanazhar 6.17.0-1011-oracle #11~24.04.1-Ubuntu SMP Fri Apr 10 02:09:09 UTC 2026 aarch64",
+    "machine": "Linux redacted-host 6.17.0-1011-oracle #11~24.04.1-Ubuntu SMP Fri Apr 10 02:09:09 UTC 2026 aarch64",
     "os": "linux",
     "rust": "rustc 1.97.0 (2d8144b78 2026-07-07)"
   },
@@ -11,13 +11,13 @@
     "cdp_requests": 16520,
     "chrome": {
       "peak_process_tree_rss_bytes": 1203392512,
-      "root_pid": 3771224,
+      "root_pid": null,
       "rss_end_bytes": 1190223872
     },
     "compact_context_bytes": 12260,
     "runner": {
       "peak_rss_bytes": 8904704,
-      "pid": 3771213,
+      "pid": null,
       "rss_end_bytes": 8925184,
       "rss_start_bytes": 3338240
     },

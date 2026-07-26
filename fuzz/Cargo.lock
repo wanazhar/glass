@@ -745,7 +745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "glass"
+name = "glass-browser"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -776,7 +776,7 @@ dependencies = [
 name = "glass-fuzz"
 version = "0.0.0"
 dependencies = [
- "glass",
+ "glass-browser",
  "libfuzzer-sys",
  "serde_json",
  "tokio",

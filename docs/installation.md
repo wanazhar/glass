@@ -16,6 +16,12 @@ install from a checkout:
 cargo install --path . --locked
 ```
 
+After publication, install the released binary from crates.io:
+
+```console
+cargo install glass-browser --locked
+```
+
 Published native releases are also available through the zero-dependency npm
 launcher (Node.js 18+; it downloads and verifies the platform binary):
 

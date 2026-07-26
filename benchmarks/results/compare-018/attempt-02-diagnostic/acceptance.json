@@ -7,7 +7,7 @@
       "id": "glass",
       "status": "failed",
       "report": "raw/glass.json",
-      "reason": "cargo exited 1; see <workspace>/.worktrees/compare-018/benchmarks/results/compare-018/attempt-02-diagnostic/raw/glass.stderr.log"
+      "reason": "cargo exited 1; see <workspace>/benchmarks/results/compare-018/attempt-02-diagnostic/raw/glass.stderr.log"
     },
     {
       "id": "playwright",
@@ -19,7 +19,7 @@
       "id": "playwright-mcp",
       "status": "failed",
       "report": "raw/playwright-mcp.json",
-      "reason": "node exited 1; see <workspace>/.worktrees/compare-018/benchmarks/results/compare-018/attempt-02-diagnostic/raw/playwright-mcp.stderr.log"
+      "reason": "node exited 1; see <workspace>/benchmarks/results/compare-018/attempt-02-diagnostic/raw/playwright-mcp.stderr.log"
     },
     {
       "id": "codex-browser",

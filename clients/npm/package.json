@@ -1,0 +1,9 @@
+{
+  "name": "@glass-browser/cli",
+  "version": "0.1.0",
+  "description": "Native Glass browser-agent binary launcher",
+  "bin": { "glass": "bin/glass.js" },
+  "scripts": { "postinstall": "node scripts/install.mjs" },
+  "engines": { "node": ">=18" },
+  "files": ["bin", "scripts", "README.md"]
+}

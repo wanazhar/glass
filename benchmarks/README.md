@@ -36,6 +36,17 @@ failed hard gate, and a non-zero failure count. Competitor adapters follow
 
 ### Competitive acceptance
 
+Measure the MCP schema footprint independently of browser startup:
+
+```sh
+GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
+```
+
+The report records tool count, serialized schema bytes, and a conservative
+four-bytes-per-token estimate. The external workflow corpus is versioned in
+[`external-corpus-plan.json`](external-corpus-plan.json); it supplements rather
+than replaces the deterministic fixture gate.
+
 The release comparison is pinned by `acceptance-v1.json`. The runner builds
 Glass, installs competitor adapters into a temporary npm prefix, drives all
 three runnable adapters with one explicitly selected Chromium executable, and

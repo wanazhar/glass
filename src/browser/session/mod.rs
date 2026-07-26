@@ -744,7 +744,7 @@ impl BrowserSession {
         const MAX_TRACE_BYTES: usize = 8192;
         const MAX_ERROR_BYTES: usize = 512;
 
-        let mut error_text = error.into();
+        let mut error_text = redact_diagnostic_text(&error.into());
         if error_text.len() > MAX_ERROR_BYTES {
             let mut end = MAX_ERROR_BYTES;
             while end > 0 && !error_text.is_char_boundary(end) {
@@ -759,7 +759,10 @@ impl BrowserSession {
                 .await
                 .as_ref()
                 .map(|cached| CompactObservationTrace {
-                    page: cached.context.page.clone(),
+                    page: PageInfo {
+                        url: redact_diagnostic_url(&cached.context.page.url),
+                        ..cached.context.page.clone()
+                    },
                     revision: cached.revision,
                     interactive: cached.context.accessibility.interactive.clone(),
                     completeness: cached.context.accessibility.completeness.clone(),
@@ -800,6 +803,34 @@ impl BrowserSession {
                 ..pack
             }
         }
+    }
+
+    /// Build a failure trace for an operation that did not produce an
+    /// [`ActionOutcome`], such as navigation, waiting, or invalid input.
+    pub async fn failure_trace_for(
+        &self,
+        action: ActionKind,
+        error: impl Into<String>,
+    ) -> FailureTracePack {
+        let (target_id, frame_id) = {
+            let topology = self.topology.lock().await;
+            (
+                topology.active_target_id.clone().unwrap_or_default(),
+                topology.active_frame_id.clone().unwrap_or_default(),
+            )
+        };
+        self.failure_trace(
+            ActionOutcome {
+                action,
+                target: None,
+                revision: self.page_revision.load(Ordering::Relaxed),
+                target_id,
+                frame_id,
+                evidence: None,
+            },
+            error,
+        )
+        .await
     }
 
     /// Return a snapshot of the current session audit log.

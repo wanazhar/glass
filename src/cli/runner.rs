@@ -7,7 +7,7 @@ use super::args::{CheckpointCommand, Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    BatchStep, BrowserResult, BrowserSession, CheckpointV1, Locator, PdfOptions,
+    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Locator, PdfOptions,
     ReconciliationOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
 };
 use base64::Engine;
@@ -67,9 +67,56 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     } else {
         Ok(())
     };
+    if let Err(error) = &result
+        && cli.trace_on_error
+    {
+        let trace = session
+            .failure_trace_for(
+                cli_trace_action(cli.command.as_ref(), cli.prompt.as_deref()),
+                error.to_string(),
+            )
+            .await;
+        eprintln!("{}", serde_json::to_string(&trace)?);
+    }
     let close_result = session.close().await;
     result?;
     close_result
+}
+
+fn cli_trace_action(command: Option<&Commands>, prompt: Option<&str>) -> ActionKind {
+    if let Some(prompt) = prompt {
+        let lower = prompt.trim().to_ascii_lowercase();
+        return if lower.starts_with("double click ") {
+            ActionKind::DoubleClick
+        } else if lower.starts_with("click ") {
+            ActionKind::Click
+        } else if lower.starts_with("type ") {
+            ActionKind::Type
+        } else {
+            ActionKind::Click
+        };
+    }
+    match command {
+        Some(Commands::DoubleClick { .. }) => ActionKind::DoubleClick,
+        Some(Commands::ClickExpectPopup { .. }) => ActionKind::ClickExpectPopup,
+        Some(Commands::Click { .. })
+        | Some(Commands::Preflight { .. })
+        | Some(Commands::ClickAt { .. }) => ActionKind::Click,
+        Some(Commands::Hover { .. }) => ActionKind::Hover,
+        Some(Commands::Drag { .. }) => ActionKind::Drag,
+        Some(Commands::Type { .. }) => ActionKind::Type,
+        Some(Commands::Key { .. }) => ActionKind::KeyPress,
+        Some(Commands::KeyDown { .. }) => ActionKind::KeyDown,
+        Some(Commands::KeyUp { .. }) => ActionKind::KeyUp,
+        Some(Commands::Shortcut { .. }) => ActionKind::Shortcut,
+        Some(Commands::Clear { .. }) => ActionKind::Clear,
+        Some(Commands::Check { .. }) => ActionKind::Check,
+        Some(Commands::Uncheck { .. }) => ActionKind::Uncheck,
+        Some(Commands::Select { .. }) => ActionKind::Select,
+        Some(Commands::Upload { .. }) => ActionKind::Upload,
+        Some(Commands::Scroll { .. }) => ActionKind::Scroll,
+        _ => ActionKind::Click,
+    }
 }
 
 fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {

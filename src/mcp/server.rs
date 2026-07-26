@@ -21,9 +21,10 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator,
-    PopupClickError, PreflightAction, ReconciliationOptions, SessionOptions, TargetError,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    ActionKind, ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1,
+    DownloadError, Locator, PopupClickError, PreflightAction, ReconciliationOptions,
+    SessionOptions, TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
+    WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -686,10 +687,25 @@ async fn handle_request(
             Err(error) => {
                 let text = typed_browser_error(error.as_ref())
                     .unwrap_or_else(|| "browser tool failed".to_string());
+                let mut content = vec![json!({"type": "text", "text": text})];
+                if requested_failure_trace(request)
+                    && let Some(browser_session) = session.as_ref()
+                {
+                    let trace = browser_session
+                        .failure_trace_for(
+                            mcp_trace_action(request.params.get("name").and_then(Value::as_str)),
+                            error.to_string(),
+                        )
+                        .await;
+                    content.push(json!({
+                        "type": "text",
+                        "text": serde_json::to_string(&trace).unwrap_or_else(|_| "{}".to_string())
+                    }));
+                }
                 let mut response = success_response(
                     request.id.response_value(),
                     json!({
-                        "content": [{"type": "text", "text": text}],
+                        "content": content,
                         "isError": true
                     }),
                 );
@@ -704,6 +720,36 @@ async fn handle_request(
         ),
     };
     Some(response)
+}
+
+fn requested_failure_trace(request: &JsonRpcRequest) -> bool {
+    request
+        .params
+        .get("arguments")
+        .and_then(|arguments| arguments.get("includeTrace"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn mcp_trace_action(tool: Option<&str>) -> ActionKind {
+    match tool {
+        Some("clickExpectPopup") => ActionKind::ClickExpectPopup,
+        Some("doubleClick") => ActionKind::DoubleClick,
+        Some("hover") => ActionKind::Hover,
+        Some("drag") => ActionKind::Drag,
+        Some("type") => ActionKind::Type,
+        Some("key") => ActionKind::KeyPress,
+        Some("keyDown") => ActionKind::KeyDown,
+        Some("keyUp") => ActionKind::KeyUp,
+        Some("shortcut") => ActionKind::Shortcut,
+        Some("clear") => ActionKind::Clear,
+        Some("check") => ActionKind::Check,
+        Some("uncheck") => ActionKind::Uncheck,
+        Some("select") => ActionKind::Select,
+        Some("upload") => ActionKind::Upload,
+        Some("scroll") => ActionKind::Scroll,
+        _ => ActionKind::Click,
+    }
 }
 
 fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
@@ -1263,7 +1309,7 @@ fn tools() -> Vec<Tool> {
             description: "Navigate the browser to a URL.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}},
+                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}, "includeTrace": {"type":"boolean", "default":false}},
                 "required": ["url"]
             }),
         },
@@ -1272,7 +1318,7 @@ fn tools() -> Vec<Tool> {
             description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1281,7 +1327,7 @@ fn tools() -> Vec<Tool> {
             description: "Click one target and return exactly one causally verified popup without selecting it.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1290,7 +1336,7 @@ fn tools() -> Vec<Tool> {
             description: "Double-click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1302,7 +1348,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "drag",
             description: "Drag one actionable target to another.",
-            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"]}),
+            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["source","destination"]}),
         },
         Tool {
             name: "key",
@@ -1342,19 +1388,19 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "select",
             description: "Select one exact option value.",
-            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"}},"required":["target","value"]}),
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["target","value"]}),
         },
         Tool {
             name: "upload",
             description: "Set bounded local regular files on one file input; contents are never returned.",
-            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}}},"required":["target","files"]}),
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}},"includeTrace":{"type":"boolean","default":false}},"required":["target","files"]}),
         },
         Tool {
             name: "type",
             description: "Insert text into the focused element, optionally clicking a target.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"text": {"type": "string"}, "target": {"type": "string"}},
+                "properties": {"text": {"type": "string"}, "target": {"type": "string"}, "includeTrace": {"type":"boolean","default":false}},
                 "required": ["text"]
             }),
         },
@@ -1367,7 +1413,7 @@ fn tools() -> Vec<Tool> {
                 "scale":{"type":"number","minimum":0.1,"maximum":4.0,"default":1.0},
                 "fullPage":{"type":"boolean","default":false},
                 "clip":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number"},"height":{"type":"number"}},"required":["x","y","width","height"]},
-                "target":{"type":"string"}
+                "target":{"type":"string"}, "includeTrace":{"type":"boolean","default":false}
             }}),
         },
         Tool {
@@ -1533,7 +1579,8 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "condition": {"type": "string"},
-                    "timeoutMs": {"type": "integer", "minimum": 1, "default": 10000}
+                    "timeoutMs": {"type": "integer", "minimum": 1, "default": 10000},
+                    "includeTrace": {"type":"boolean","default":false}
                 },
                 "required": ["condition"]
             }),
@@ -1657,11 +1704,11 @@ fn tools() -> Vec<Tool> {
 }
 
 fn target_schema() -> Value {
-    json!({"type":"object","properties":{"target":{"type":"string"}},"required":["target"]})
+    json!({"type":"object","properties":{"target":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["target"]})
 }
 
 fn string_schema(name: &str) -> Value {
-    json!({"type":"object","properties":{(name):{"type":"string"}},"required":[name]})
+    json!({"type":"object","properties":{(name):{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":[name]})
 }
 
 fn required_u64(arguments: &Value, name: &str) -> BrowserResult<u64> {
@@ -2110,7 +2157,7 @@ mod tests {
             popup_click["inputSchema"],
             json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default": false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             })
         );

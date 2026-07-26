@@ -4,25 +4,6 @@ set -euo pipefail
 echo "=== Glass Release Validator ==="
 echo ""
 
-# ── Required environment variables ──────────────────────────────────────────
-
-required_vars=("GLASS_RATIFIED_GATES_REPORT")
-missing=()
-
-for var in "${required_vars[@]}"; do
-  if [[ -z "${!var:-}" ]]; then
-    missing+=("$var")
-  fi
-done
-
-if [[ ${#missing[@]} -gt 0 ]]; then
-  echo "[!] Missing required environment variables: ${missing[*]}"
-  echo "[!] Generating stub GLASS_RATIFIED_GATES_REPORT ..."
-  export GLASS_RATIFIED_GATES_REPORT="glass-ratified-gates-report.json"
-fi
-
-echo "[✓] GLASS_RATIFIED_GATES_REPORT = ${GLASS_RATIFIED_GATES_REPORT:-}"
-
 # ── Cargo package version ───────────────────────────────────────────────────
 
 package_version=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
@@ -67,30 +48,8 @@ echo "  Rust target:   $(rustc -vV 2>/dev/null | grep 'host:' | awk '{print $2}'
 echo "  Rust version:  $(rustc --version 2>/dev/null || echo 'not installed')"
 echo ""
 
-# ── Stub GLASS_RATIFIED_GATES_REPORT ────────────────────────────────────────
-
-echo "=== GLASS_RATIFIED_GATES_REPORT (stub) ==="
-cat <<REPORT
-{
-  "report": "${GLASS_RATIFIED_GATES_REPORT:-glass-ratified-gates-report.json}",
-  "glass_version": "${package_version}",
-  "gates": {
-    "gate_1_acceptance": "ratified",
-    "gate_2_platform_release_hardening": "in_progress"
-  },
-  "binary": {
-    "path": "${binary_path}",
-    "profile": "release-size",
-    "size_bytes": ${size_bytes:-0}
-  },
-  "platform_matrix": {
-    "ubuntu-latest": { "target": "x86_64-unknown-linux-gnu", "status": "pending" },
-    "macos-latest": { "target": "aarch64-apple-darwin", "status": "pending" },
-    "windows-latest": { "target": "x86_64-pc-windows-msvc", "status": "pending" }
-  },
-  "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-REPORT
+echo "--- Generating revision-bound evidence ---"
+scripts/generate-validation-evidence.sh "${GLASS_VALIDATION_OUTPUT_DIR:-benchmarks/results/validation/$(git rev-parse --short HEAD)}"
 
 echo ""
 echo "=== Release validation complete ==="

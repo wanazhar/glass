@@ -82,6 +82,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub audit: bool,
 
+    /// Emit a bounded JSON failure-trace pack when a browser operation fails.
+    #[arg(long, global = true)]
+    pub trace_on_error: bool,
+
     /// Path to a Chrome/Chromium binary.
     #[arg(long = "chrome-path", alias = "chrome", global = true)]
     pub chrome_path: Option<PathBuf>,

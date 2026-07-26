@@ -16,6 +16,18 @@ The optimized executable is `target/release/glass` on Unix-like systems and
 cargo install --path . --locked
 ```
 
+Published native releases are also available through the zero-dependency npm
+launcher (Node.js 18+; it downloads and verifies the platform binary):
+
+```console
+npm install -g @glass-browser/cli
+glass --version
+```
+
+Release binaries and SHA-256 checksum files are published for Linux x86-64,
+macOS x86-64/arm64, and Windows x86/x86-64. The npm launcher is optional; it
+does not install Playwright or a browser runtime.
+
 ## Browser selection
 
 Glass resolves the browser in this order:

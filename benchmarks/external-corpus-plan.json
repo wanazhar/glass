@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "glass-external-workflow-corpus-v1",
+  "status": "plan",
+  "scope": "login-free, publicly reachable workflows only; deterministic fixtures remain the release gate",
+  "lifecycle": {
+    "cold": "new owned Glass process plus Chrome launch and first observe",
+    "warm": "one already-running session with fixture navigation excluded from startup timing"
+  },
+  "categories": ["documentation", "search", "pagination", "form", "consent", "authenticated-profile-opt-in"],
+  "safety": {
+    "no_credentials": true,
+    "no_destructive_actions": true,
+    "robots_respected": true,
+    "wrong_action_gate": "zero"
+  },
+  "promotion": "A workflow becomes release evidence only after a public URL, versioned fixture snapshot, expected outcome, and reproducible environment record are reviewed."
+}

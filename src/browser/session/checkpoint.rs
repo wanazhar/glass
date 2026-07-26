@@ -163,7 +163,7 @@ impl BrowserSession {
         };
         if current_revision == from_revision {
             if prior.is_none() {
-                return Ok(ReconciliationOutcome {
+                return bounded_reconciliation_outcome(ReconciliationOutcome {
                     status: ReconciliationStatus::Complete,
                     to_revision: current_revision,
                     preserved: 0,
@@ -215,7 +215,7 @@ impl BrowserSession {
                 .filter(|mapping| matches!(mapping, ReferenceMapping::Preserved { .. }))
                 .count();
             let lost = mappings.len() - preserved;
-            return Ok(ReconciliationOutcome {
+            return bounded_reconciliation_outcome(ReconciliationOutcome {
                 status: ReconciliationStatus::Complete,
                 to_revision: current_revision,
                 preserved,
@@ -257,6 +257,7 @@ impl BrowserSession {
             parse_revisioned_reference(scope_ref)
                 .ok()
                 .flatten()
+                .filter(|scope| scope.revision == from_revision)
                 .and_then(|scope| {
                     current_controls
                         .iter()
@@ -291,22 +292,35 @@ impl BrowserSession {
             }
             let backend_id = reference.backend_dom_node_id;
 
-            // Try preserved (same backend node ID)
-            if let Some(new_ref) = current_by_backend.get(&backend_id) {
-                mappings.push(ReferenceMapping::Preserved {
-                    old: old_ref.clone(),
-                    new: new_ref.clone(),
-                });
-                preserved += 1;
-                continue;
-            }
-
             if scope_invalid {
                 mappings.push(ReferenceMapping::Lost {
                     old: old_ref.clone(),
                     reason: ReferenceLostReason::OutOfScope,
                 });
                 lost += 1;
+                continue;
+            }
+
+            // Try preserved (same backend node ID), while honoring scope.
+            if let Some(new_ref) = current_by_backend.get(&backend_id) {
+                if let Some(scope) = scope_label.as_deref()
+                    && !current_controls
+                        .iter()
+                        .find(|control| control.3 == new_ref)
+                        .is_some_and(|control| control.4.iter().any(|ancestor| ancestor == scope))
+                {
+                    mappings.push(ReferenceMapping::Lost {
+                        old: old_ref.clone(),
+                        reason: ReferenceLostReason::OutOfScope,
+                    });
+                    lost += 1;
+                    continue;
+                }
+                mappings.push(ReferenceMapping::Preserved {
+                    old: old_ref.clone(),
+                    new: new_ref.clone(),
+                });
+                preserved += 1;
                 continue;
             }
 
@@ -407,7 +421,7 @@ impl BrowserSession {
                     && prior.title == context.page.title,
             })
             .unwrap_or_default();
-        Ok(ReconciliationOutcome {
+        bounded_reconciliation_outcome(ReconciliationOutcome {
             status: if route_changed {
                 ReconciliationStatus::RouteChanged
             } else {
@@ -499,6 +513,20 @@ impl BrowserSession {
 
         Ok(())
     }
+}
+
+fn bounded_reconciliation_outcome(
+    outcome: ReconciliationOutcome,
+) -> BrowserResult<ReconciliationOutcome> {
+    let bytes = serde_json::to_vec(&outcome)?.len();
+    if bytes > MAX_RECONCILIATION_BYTES {
+        return Err(format!(
+            "reconciliation response exceeds {} bytes; retry with fewer refs",
+            MAX_RECONCILIATION_BYTES
+        )
+        .into());
+    }
+    Ok(outcome)
 }
 
 fn locator_matches_compact(

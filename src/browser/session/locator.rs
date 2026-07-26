@@ -66,6 +66,7 @@ impl BrowserSession {
                             kind: TargetErrorKind::Ambiguous,
                             reason: None,
                             candidates,
+                            recovery: None,
                         }
                         .into());
                     }
@@ -80,6 +81,7 @@ impl BrowserSession {
                 kind: TargetErrorKind::NotFound,
                 reason: None,
                 candidates: Vec::new(),
+                recovery: None,
             }
             .into())
         } else {
@@ -91,12 +93,14 @@ impl BrowserSession {
                     kind: TargetErrorKind::Ambiguous,
                     reason: None,
                     candidates,
+                    recovery: None,
                 }
                 .into()),
                 TargetResolution::NotFound => Err(TargetError {
                     kind: TargetErrorKind::NotFound,
                     reason: None,
                     candidates: Vec::new(),
+                    recovery: None,
                 }
                 .into()),
             }
@@ -251,6 +255,11 @@ impl BrowserSession {
                     kind: TargetErrorKind::StaleReference,
                     reason: None,
                     candidates: Vec::new(),
+                    recovery: Some(StaleReferenceRecovery {
+                        suggestion: "reconcileReferences",
+                        from_revision: reference.revision,
+                        stale_ref: target.to_string(),
+                    }),
                 }
                 .into());
             }

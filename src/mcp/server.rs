@@ -912,7 +912,6 @@ async fn call_tool(
                     .map(|hint| Locator::parse(hint))
                     .collect::<BrowserResult<Vec<_>>>()?,
                 scope_ref,
-                include_delta: false,
             };
             serialized_result(
                 &session

@@ -176,6 +176,7 @@ impl BrowserSession {
                         kind: TargetErrorKind::NotActionable,
                         reason: Some(TargetActionabilityReason::GeometryChanged),
                         candidates: Vec::new(),
+                        recovery: None,
                     }
                     .into());
                 }
@@ -219,6 +220,7 @@ impl BrowserSession {
                         kind: TargetErrorKind::NotActionable,
                         reason: Some(TargetActionabilityReason::GeometryChanged),
                         candidates: Vec::new(),
+                        recovery: None,
                     }
                     .into());
                 }
@@ -397,6 +399,7 @@ impl BrowserSession {
                             kind: TargetErrorKind::NotActionable,
                             reason: Some(TargetActionabilityReason::NodeUnavailable),
                             candidates: Vec::new(),
+                            recovery: None,
                         }
                     })?;
                 let remote = RemoteObjectGuard {
@@ -471,6 +474,7 @@ impl BrowserSession {
                 kind: TargetErrorKind::NotActionable,
                 reason: Some(TargetActionabilityReason::GeometryChanged),
                 candidates: Vec::new(),
+                recovery: None,
             }
             .into());
         }
@@ -721,6 +725,7 @@ impl BrowserSession {
                     kind: TargetErrorKind::NotActionable,
                     reason: Some(TargetActionabilityReason::NodeUnavailable),
                     candidates: Vec::new(),
+                    recovery: None,
                 }
                 .into());
             }
@@ -733,6 +738,7 @@ impl BrowserSession {
                 kind: TargetErrorKind::NotActionable,
                 reason: Some(actionability_reason(reason)),
                 candidates: Vec::new(),
+                recovery: None,
             }
             .into());
         }

@@ -159,6 +159,7 @@ mod tests {
             kind: TargetErrorKind::Ambiguous,
             reason: None,
             candidates: vec![],
+            recovery: None,
         };
         assert!(!is_retryable_default(&target_error));
     }
@@ -169,6 +170,7 @@ mod tests {
             kind: TargetErrorKind::StaleReference,
             reason: None,
             candidates: vec![],
+            recovery: None,
         };
         assert!(!is_retryable_default(&target_error));
     }
@@ -179,6 +181,7 @@ mod tests {
             kind: TargetErrorKind::NotActionable,
             reason: None,
             candidates: vec![],
+            recovery: None,
         };
         assert!(!is_retryable_default(&target_error));
     }

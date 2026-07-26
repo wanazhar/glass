@@ -193,7 +193,6 @@ pub enum ReconciliationStatus {
 pub struct ReconciliationOptions {
     pub hints: Vec<Locator>,
     pub scope_ref: Option<String>,
-    pub include_delta: bool,
 }
 
 /// Mapping of a prior reference to its current identity.
@@ -879,6 +878,8 @@ pub struct TargetError {
     pub reason: Option<TargetActionabilityReason>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<StaleReferenceRecovery>,
 }
 /// Outcome of a side-effect-free preflight target resolution and actionability check.
 #[derive(Debug, Clone, Serialize)]

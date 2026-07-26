@@ -335,7 +335,6 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .map(|hint| Locator::parse(hint))
                     .collect::<BrowserResult<Vec<_>>>()?,
                 scope_ref: scope.clone(),
-                include_delta: false,
             };
             print_json(
                 &session

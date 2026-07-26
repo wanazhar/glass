@@ -3,14 +3,16 @@
 //! Routes parsed CLI arguments to the appropriate runner: one-shot browser
 //! commands, interactive TUI, or the MCP stdio server.
 
-use super::args::{Cli, Commands, ProfileCommand};
+use super::args::{CheckpointCommand, Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    BrowserResult, BrowserSession, PdfOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
+    BatchStep, BrowserResult, BrowserSession, CheckpointV1, PdfOptions, SessionOptions,
+    VisualCaptureOptions, WaitCondition,
 };
 use base64::Engine;
 use serde::Serialize;
+use std::io::Read;
 use std::time::Duration;
 
 /// Top-level command-line entry point: parses CLI arguments and dispatches
@@ -106,6 +108,12 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Click { target } => {
             print_json(&session.click(target).await?)?;
         }
+        Commands::Preflight { target, action } => {
+            print_json(&session.preflight_with_action(target, *action).await)?;
+        }
+        Commands::ClickAt { x, y } => {
+            print_json(&session.click_at(*x, *y).await?)?;
+        }
         Commands::ClickExpectPopup { target } => {
             print_json(&session.click_expect_popup(target).await?)?;
         }
@@ -171,12 +179,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Observe {
             deep_dom,
             screenshot,
+            form_values,
         } => {
-            let context = match (*deep_dom, *screenshot) {
-                (false, false) => session.observe().await?,
-                (true, false) => session.observe_with_dom().await?,
-                (false, true) => session.observe_with_screenshot().await?,
-                (true, true) => session.observe_with_dom_and_screenshot().await?,
+            let context = match (*deep_dom, *screenshot, *form_values) {
+                (false, false, false) => session.observe().await?,
+                (true, false, false) => session.observe_with_dom().await?,
+                (false, true, false) => session.observe_with_screenshot().await?,
+                (true, true, false) => session.observe_with_dom_and_screenshot().await?,
+                (false, false, true) => session.observe_with_form_values().await?,
+                _ => return Err("form values can only be combined with compact observe".into()),
             };
             print_json(&context)?;
         }
@@ -257,6 +268,32 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 .collect();
             print_json(&session.fill_form(&field_slices).await?)?;
         }
+        Commands::Batch { input, atomic } => {
+            let payload = read_json_input(input.as_ref())?;
+            let steps_value = payload.get("steps").cloned().unwrap_or(payload);
+            let steps: Vec<BatchStep> = serde_json::from_value(steps_value)
+                .map_err(|error| format!("invalid batch document: {error}"))?;
+            print_json(&session.run_batch_with_options(&steps, *atomic).await?)?;
+        }
+        Commands::ReconcileRefs {
+            from_revision,
+            refs,
+        } => {
+            print_json(&session.reconcile_references(*from_revision, refs).await?)?;
+        }
+        Commands::ObserveDelta => {
+            print_json(&session.observe_delta().await?)?;
+        }
+        Commands::Checkpoint { action } => match action {
+            CheckpointCommand::Export => print_json(&session.export_checkpoint().await?)?,
+            CheckpointCommand::Import { input } => {
+                let checkpoint: CheckpointV1 =
+                    serde_json::from_value(read_json_input(input.as_ref())?)
+                        .map_err(|error| format!("invalid checkpoint: {error}"))?;
+                session.import_checkpoint(&checkpoint).await?;
+                print_json(&serde_json::json!({"status": "checkpoint_imported"}))?;
+            }
+        },
         Commands::ClipboardRead => {
             let text = session.clipboard_read().await?;
             println!("{text}");
@@ -273,6 +310,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
     }
     Ok(())
+}
+
+fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_json::Value> {
+    let mut input = String::new();
+    match path {
+        Some(path) => std::fs::File::open(path)?.read_to_string(&mut input)?,
+        None => std::io::stdin().read_to_string(&mut input)?,
+    };
+    Ok(serde_json::from_str(&input)?)
 }
 
 pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
@@ -354,7 +400,19 @@ fn print_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<()> {
 }
 
 fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
-    Ok(serde_json::to_string(value)?)
+    let mut value = serde_json::to_value(value)?;
+    let payload = serde_json::to_vec(&value)?;
+    let payload_bytes = payload.len();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "contextCost".to_string(),
+            serde_json::json!({
+                "payloadBytes": payload_bytes,
+                "estimatedTokens": payload_bytes.div_ceil(4)
+            }),
+        );
+    }
+    Ok(serde_json::to_string(&value)?)
 }
 
 #[cfg(test)]
@@ -370,10 +428,10 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(!output.contains('n'));
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&output).unwrap()["items"],
-            json!([1, 2])
-        );
+        let parsed = serde_json::from_str::<serde_json::Value>(&output).unwrap();
+        assert!(!output.contains('\n'));
+        assert_eq!(parsed["items"], json!([1, 2]));
+        assert!(parsed["contextCost"]["payloadBytes"].as_u64().unwrap() > 0);
+        assert!(parsed["contextCost"]["estimatedTokens"].as_u64().unwrap() > 0);
     }
 }

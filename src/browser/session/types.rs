@@ -188,6 +188,39 @@ pub struct ReconciliationOutcome {
     pub lost: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MutationSummary {
+    #[serde(rename = "urlChanged")]
+    pub url_changed: bool,
+    #[serde(rename = "titleChanged")]
+    pub title_changed: bool,
+    #[serde(rename = "revisionDelta")]
+    pub revision_delta: u64,
+    #[serde(rename = "softNavigationSuspected")]
+    pub soft_navigation_suspected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeltaControl {
+    pub reference: String,
+    pub role: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservationDelta {
+    #[serde(rename = "fromRevision")]
+    pub from_revision: u64,
+    #[serde(rename = "toRevision")]
+    pub to_revision: u64,
+    pub mutation_summary: MutationSummary,
+    pub added: Vec<DeltaControl>,
+    pub removed: Vec<DeltaControl>,
+    pub changed: Vec<DeltaControl>,
+    pub prior_incomplete: Vec<ObservationIncompleteReason>,
+    pub current_incomplete: Vec<ObservationIncompleteReason>,
+}
+
 /// Recovery hint included in StaleReference errors.
 #[derive(Debug, Clone, Serialize)]
 pub struct StaleReferenceRecovery {
@@ -249,6 +282,24 @@ pub enum CheckpointError {
     Stale,
     InvalidJson(String),
 }
+
+impl std::fmt::Display for CheckpointError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SchemaVersionMismatch { expected, found } => {
+                write!(
+                    formatter,
+                    "checkpoint schema version mismatch: expected {expected}, found {found}"
+                )
+            }
+            Self::TargetClosed => formatter.write_str("checkpoint target is no longer open"),
+            Self::Stale => formatter.write_str("checkpoint frame or route is stale"),
+            Self::InvalidJson(message) => write!(formatter, "invalid checkpoint JSON: {message}"),
+        }
+    }
+}
+
+impl Error for CheckpointError {}
 
 /// Maximum UTF-8 byte length of visible text returned by a compact observation.
 pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
@@ -338,6 +389,38 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
     if (!hit || (hit !== element && !element.contains(hit)))
         return {ok:false, reason:'hit_test_blocked'};
     return {ok:true, x, y};
+}"#;
+/// Read-only actionability probe used by `preflight`. Unlike the action probe,
+/// this function never calls scrollIntoView and therefore cannot change page
+/// scroll position while answering a dry-run request.
+pub(crate) const PREFLIGHT_FUNCTION: &str = r#"function() {
+    let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
+    if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
+    if (!element || !element.isConnected) return {ok:false, reason:'detached'};
+    const rect = element.getBoundingClientRect();
+    const geometry = {
+        x: Math.round(rect.left * 10) / 10,
+        y: Math.round(rect.top * 10) / 10,
+        width: Math.round(rect.width * 10) / 10,
+        height: Math.round(rect.height * 10) / 10
+    };
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0)
+        return {ok:false, reason:'not_visible', geometry};
+    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
+        return {ok:false, reason:'disabled', geometry};
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const inViewport = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
+    const hit = inViewport ? document.elementFromPoint(x, y) : null;
+    const hints = {
+        likelyNavigation: element.matches('a[href], [role="link"]'),
+        likelyPopup: element.matches('[target="_blank"], [rel~="noopener"], [aria-haspopup]'),
+        likelyFormSubmit: element.matches('button[type="submit"], input[type="submit"]')
+    };
+    if (!inViewport) return {ok:false, reason:'outside_viewport', geometry, hints};
+    if (!hit || (hit !== element && !element.contains(hit))) return {ok:false, reason:'hit_test_blocked', geometry, hints};
+    return {ok:true, geometry, hints};
 }"#;
 pub(crate) const WAIT_TARGET_STATE_FUNCTION: &str = r#"function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
@@ -757,6 +840,8 @@ pub struct TargetError {
 /// Outcome of a side-effect-free preflight target resolution and actionability check.
 #[derive(Debug, Clone, Serialize)]
 pub struct PreflightOutcome {
+    /// Action for which the target was preflighted.
+    pub action: PreflightAction,
     /// Whether the target resolved uniquely.
     pub unique: bool,
     /// The resolved element (only present when unique).
@@ -776,6 +861,48 @@ pub struct PreflightOutcome {
     pub error_kind: Option<TargetErrorKind>,
     /// Current page revision.
     pub revision: u64,
+    /// Frame-local CSS geometry observed by the read-only probe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<PreflightGeometry>,
+    /// Advisory action hints; they never override `actionable`.
+    pub hints: PreflightHints,
+    pub target_id: Option<String>,
+    pub frame_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PreflightGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct PreflightHints {
+    pub likely_navigation: bool,
+    pub likely_popup: bool,
+    pub likely_form_submit: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightAction {
+    #[default]
+    Click,
+    Hover,
+    Type,
+    Check,
+    Select,
+}
+
+/// Ordering used when compact observe must truncate interactive controls.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum ObservationRanking {
+    #[default]
+    Relevance,
+    DocumentOrder,
 }
 
 /// Reason why an element failed the actionability verification.
@@ -991,6 +1118,8 @@ fn is_zero(value: &usize) -> bool {
 pub struct ObservationCompleteness {
     /// 0.0–1.0 score indicating how much of the interactive surface is represented.
     pub score: f64,
+    /// Confidence in the score based on mutation consistency and boundary data.
+    pub confidence: &'static str,
     /// Advisory escalation suggestion for agents.
     pub suggest_escalation: EscalationSuggestion,
     /// Input signals used to compute the score.
@@ -1058,6 +1187,13 @@ impl ObservationCompleteness {
         let score = (score * 100.0).round() / 100.0; // round to 2 decimal places
 
         let has_shadow_boundary = shadow_hosts > 0 && shadow_hosts_pierced < shadow_hosts;
+        let confidence = if mutation_race {
+            "low"
+        } else if has_shadow_boundary || child_frames > 0 {
+            "medium"
+        } else {
+            "high"
+        };
 
         let suggest_escalation = if mutation_race {
             EscalationSuggestion::Reobserve
@@ -1075,6 +1211,7 @@ impl ObservationCompleteness {
 
         Self {
             score,
+            confidence,
             suggest_escalation,
             signals: CompletenessSignals {
                 interactive_discovered,
@@ -1537,6 +1674,25 @@ pub struct ActionOutcome {
     pub frame_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Value>,
+}
+
+/// Result of a policy-gated coordinate click. The hit-test description is
+/// informational; the requested coordinates are never changed or guessed.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoordinateClickOutcome {
+    pub x: f64,
+    pub y: f64,
+    pub hit: Option<CoordinateHit>,
+    pub revision: u64,
+    pub target_id: String,
+    pub frame_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CoordinateHit {
+    pub tag: String,
+    pub role: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Evidence returned by `BrowserSession::click_expect_popup`.

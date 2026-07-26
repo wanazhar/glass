@@ -41,48 +41,70 @@ impl BrowserSession {
 
     /// Collect compact page context without a deep DOM or screenshot.
     pub async fn observe(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false, true, false).await
+        self.observe_internal(false, false, true, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect compact context and explicitly include the full DOM tree.
     pub async fn observe_with_dom(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, false, true, false).await
+        self.observe_internal(true, false, true, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect structured context and explicitly include a current screenshot.
     pub async fn observe_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, true, true, false).await
+        self.observe_internal(false, true, true, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect context with both explicitly requested deep DOM and screenshot data.
     pub async fn observe_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, true, true, false).await
+        self.observe_internal(true, true, true, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect fresh compact context, bypassing the compact-context cache.
     pub async fn observe_fresh(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false, false, false).await
+        self.observe_internal(false, false, false, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect compact context with form field values included.
     /// Requires ReadFormValues policy capability in hardened mode.
     pub async fn observe_with_form_values(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, false, false, true).await
+        self.observe_internal(false, false, false, true, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect fresh context and explicitly include the full DOM tree.
     pub async fn observe_fresh_with_dom(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, false, false, false).await
+        self.observe_internal(true, false, false, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect fresh structured context and explicitly include a screenshot.
     pub async fn observe_fresh_with_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(false, true, false, false).await
+        self.observe_internal(false, true, false, false, CompactRanking::Relevance)
+            .await
     }
 
     /// Collect fresh context with both explicitly requested deep DOM and screenshot data.
     pub async fn observe_fresh_with_dom_and_screenshot(&self) -> BrowserResult<PageContext> {
-        self.observe_internal(true, true, false, false).await
+        self.observe_internal(true, true, false, false, CompactRanking::Relevance)
+            .await
+    }
+
+    /// Collect compact context with an explicit truncation ordering.
+    pub async fn observe_with_ranking(
+        &self,
+        ranking: ObservationRanking,
+    ) -> BrowserResult<PageContext> {
+        let ranking = match ranking {
+            ObservationRanking::Relevance => CompactRanking::Relevance,
+            ObservationRanking::DocumentOrder => CompactRanking::DocumentOrder,
+        };
+        self.observe_internal(false, false, false, false, ranking)
+            .await
     }
 
     async fn observe_internal(
@@ -91,6 +113,7 @@ impl BrowserSession {
         include_screenshot: bool,
         use_cache: bool,
         include_form_values: bool,
+        ranking: CompactRanking,
     ) -> BrowserResult<PageContext> {
         if let Some(interception) = &self.policy_interception
             && let Some(error) = interception.take_denial().await
@@ -100,7 +123,7 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let mut context = self
-                    .compact_observation(use_cache, include_form_values)
+                    .compact_observation(use_cache, include_form_values, ranking)
                     .await?
                     .into_page_context();
                 if include_dom {
@@ -118,6 +141,7 @@ impl BrowserSession {
         &self,
         use_cache: bool,
         include_form_values: bool,
+        ranking: CompactRanking,
     ) -> BrowserResult<CompactPageContext> {
         let revision = self.page_revision.load(Ordering::Relaxed);
         // Never use cache when form values are requested (cache doesn't store them)
@@ -185,7 +209,12 @@ impl BrowserSession {
             frame_id,
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
-        let mut compact_accessibility = project_compact_accessibility(&full_roots, end_revision);
+        let mut compact_accessibility =
+            crate::browser::dom::project_compact_accessibility_with_ranking(
+                &full_roots,
+                end_revision,
+                ranking,
+            );
         let (mut text, locally_truncated) =
             truncate_visible_text_with_status(&page_state.text, COMPACT_TEXT_MAX_BYTES);
         let text_truncated = locally_truncated || page_state.boundaries.text_truncated;
@@ -392,7 +421,7 @@ impl BrowserSession {
                 continue;
             };
 
-            let raw = match self
+            let raw_result = self
                 .cdp
                 .send(
                     "Runtime.callFunctionOn",
@@ -403,8 +432,12 @@ impl BrowserSession {
                         "awaitPromise": false,
                     })),
                 )
-                .await
-            {
+                .await;
+            // DOM.resolveNode creates a remote object even when the following
+            // call fails. Release it on every path; form snapshots are bounded
+            // but must not turn each observe into a remote-handle leak.
+            let _ = self.cdp.release_object(object_id).await;
+            let raw = match raw_result {
                 Ok(raw) => raw,
                 Err(_) => continue,
             };
@@ -427,7 +460,7 @@ impl BrowserSession {
                 .unwrap_or(false);
 
             if let Some(val) = parsed["value"].as_str() {
-                if is_password || (is_sensitive_autocomplete && !allow_sensitive) {
+                if (is_password || is_sensitive_autocomplete) && !allow_sensitive {
                     control.value = Some("<redacted>".to_string());
                 } else {
                     let (truncated, _) = truncate_utf8(val, FORM_VALUE_MAX_BYTES);

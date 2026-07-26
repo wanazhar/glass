@@ -125,6 +125,12 @@ pub struct ShadowPiercedSummary {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactRanking {
+    Relevance,
+    DocumentOrder,
+}
+
 struct CompactProjectionState {
     node_count: usize,
     interactive_text_remaining: usize,
@@ -312,16 +318,30 @@ pub fn project_compact_accessibility(
     nodes: &[AxNode],
     revision: u64,
 ) -> CompactAccessibilityProjection {
+    project_compact_accessibility_with_ranking(nodes, revision, CompactRanking::Relevance)
+}
+
+/// Project compact accessibility with an explicit truncation order. The
+/// document-order mode is a compatibility escape hatch for regression tests
+/// and callers comparing pre-ranking observations.
+pub fn project_compact_accessibility_with_ranking(
+    nodes: &[AxNode],
+    revision: u64,
+    ranking: CompactRanking,
+) -> CompactAccessibilityProjection {
     let mut state = CompactProjectionState::new();
     let roots = nodes
         .iter()
         .filter_map(|node| project_compact_node(node, revision, &mut state))
         .collect();
     let total_discovered = state.interactive.len();
-    let ranking_applied = total_discovered > COMPACT_AX_MAX_INTERACTIVE;
+    let ranking_applied =
+        total_discovered > COMPACT_AX_MAX_INTERACTIVE && ranking == CompactRanking::Relevance;
 
-    if ranking_applied {
-        rank_interactive_controls(&mut state.interactive);
+    if total_discovered > COMPACT_AX_MAX_INTERACTIVE {
+        if ranking == CompactRanking::Relevance {
+            rank_interactive_controls(&mut state.interactive);
+        }
         let omitted = total_discovered.saturating_sub(COMPACT_AX_MAX_INTERACTIVE);
         state.interactive.truncate(COMPACT_AX_MAX_INTERACTIVE);
         state.controls_truncated = true;
@@ -335,7 +355,7 @@ pub fn project_compact_accessibility(
             controls_truncated: true,
             interactive_discovered: total_discovered,
             omitted_count: omitted.min(999),
-            ranking_applied: true,
+            ranking_applied,
             shadow_pierced: ShadowPiercedSummary::default(),
         }
     } else {

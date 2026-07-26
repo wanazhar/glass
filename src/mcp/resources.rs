@@ -146,9 +146,18 @@ const RESOURCE_LIMITS: &str = r#"# Glass Observation Budgets & Limits
 ## `controls_truncated: true`
 
 When the page has more than 32 interactive controls, Glass ranks them by
-relevance (viewport visibility, focus, form membership, role priority)
-and returns the top 32. The `omittedCount` field reports how many were
-excluded.
+deterministic role priority and stable document order, then returns the top
+32. The `omittedCount` field reports how many were excluded. Use
+`ranking=document-order` in the library API when comparing against legacy
+traversal order.
+
+When `includeFormValues` is enabled, at most 16 known form controls are read;
+values are capped at 256 bytes, select labels at 128 bytes, and sensitive
+fields are redacted unless `ReadSensitiveFormValues` is explicitly allowed.
+
+`preflight` performs a read-only resolution and hit test without pointer
+events, focus, or scrolling. `clickAt` is the policy-gated exact-coordinate
+escape hatch for canvas and map surfaces.
 
 ## `incomplete` reasons
 

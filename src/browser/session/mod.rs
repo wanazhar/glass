@@ -52,8 +52,7 @@ use super::chrome::{
     is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
 };
 use super::dom::{
-    CompactInteractiveElement, DomNode, parse_accessibility_tree, parse_dom_tree,
-    project_compact_accessibility,
+    CompactInteractiveElement, CompactRanking, DomNode, parse_accessibility_tree, parse_dom_tree,
 };
 use super::mouse::{MouseEngine, Point};
 use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
@@ -61,7 +60,7 @@ use super::profile::ProfileManager;
 
 mod types;
 pub use diff::{AccessibilityDiff, DiffChange, DiffElement, diff_accessibility};
-pub use emulation::{GeoLocation, PdfOptions};
+pub use emulation::{GeoLocation, NetworkConditions, PdfOptions};
 pub use fill::{FillFieldResult, FillFormOutcome};
 pub use har::{NetworkEntry, NetworkRecorder, NetworkRecording};
 pub use intercept::{InterceptGuard, RequestPattern};
@@ -101,6 +100,7 @@ pub struct BrowserSession {
     pub(crate) launched_incognito_context_id: Option<String>,
     pub(crate) profile: String,
     pub(crate) interaction_mode: InteractionMode,
+    pub(crate) user_agent_original: Mutex<Option<String>>,
     pub(crate) mouse: MouseEngine,
     pub(crate) pointer: Mutex<Option<Point>>,
     pub(crate) page_revision: Arc<AtomicU64>,
@@ -629,6 +629,7 @@ impl BrowserSession {
             launched_incognito_context_id,
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
+            user_agent_original: Mutex::new(None),
             mouse: MouseEngine::new(),
             pointer: Mutex::new(None),
             page_revision,
@@ -830,6 +831,31 @@ impl BrowserSession {
     }
 
     pub async fn close(mut self) -> BrowserResult<()> {
+        // Emulation overrides are session-scoped even when attaching to a
+        // caller-owned browser. Clear them before detaching so the next
+        // consumer never inherits Glass's test conditions.
+        let _ = self.set_user_agent(None, None, None).await;
+        let _ = self
+            .cdp
+            .send(
+                "Network.emulateNetworkConditions",
+                Some(serde_json::json!({
+                    "offline": false,
+                    "latency": 0,
+                    "downloadThroughput": -1,
+                    "uploadThroughput": -1,
+                    "connectionType": "none"
+                })),
+            )
+            .await;
+        let _ = self
+            .cdp
+            .send(
+                "Emulation.setCPUThrottlingRate",
+                Some(serde_json::json!({"rate": 1.0})),
+            )
+            .await;
+        let _ = self.cdp.clear_device_metrics_override().await;
         if self.chrome.is_some() {
             // `Browser.close` lets Chrome commit profile-backed storage before
             // the owned child process falls back to termination below. A page
@@ -853,15 +879,6 @@ impl BrowserSession {
         drop(self.disposable_profile.take());
         shutdown_result
     }
-}
-
-/// Parse a backend DOM node ID from a revisioned reference string ("r<rev>:b<id>").
-fn parse_backend_id_from_ref(reference: &str) -> Option<i64> {
-    let parts: Vec<&str> = reference.split(':').collect();
-    if parts.len() != 2 || !parts[0].starts_with('r') || !parts[1].starts_with('b') {
-        return None;
-    }
-    parts[1][1..].parse::<i64>().ok()
 }
 
 #[cfg(test)]

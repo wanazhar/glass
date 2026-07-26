@@ -19,6 +19,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         launched_incognito_context_id: None,
         profile: "test".to_string(),
         interaction_mode: InteractionMode::Fast,
+        user_agent_original: Mutex::new(None),
         mouse: MouseEngine::new(),
         pointer: Mutex::new(None),
         page_revision: Arc::new(AtomicU64::new(1)),

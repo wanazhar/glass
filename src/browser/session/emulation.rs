@@ -68,7 +68,153 @@ pub struct GeoLocation {
     pub accuracy: Option<f64>,
 }
 
+/// Named or explicit network emulation settings for one session.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NetworkConditions {
+    pub offline: bool,
+    pub latency_ms: f64,
+    pub download_throughput_bytes: f64,
+    pub upload_throughput_bytes: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_type: Option<String>,
+}
+
+impl NetworkConditions {
+    pub fn preset(name: &str) -> BrowserResult<Self> {
+        match name {
+            "slow-3g" => Ok(Self {
+                offline: false,
+                latency_ms: 400.0,
+                download_throughput_bytes: 50_000.0,
+                upload_throughput_bytes: 50_000.0,
+                connection_type: Some("cellular3g".to_string()),
+            }),
+            "fast-3g" => Ok(Self {
+                offline: false,
+                latency_ms: 100.0,
+                download_throughput_bytes: 1_500_000.0,
+                upload_throughput_bytes: 750_000.0,
+                connection_type: Some("cellular3g".to_string()),
+            }),
+            "offline" => Ok(Self {
+                offline: true,
+                latency_ms: 0.0,
+                download_throughput_bytes: 0.0,
+                upload_throughput_bytes: 0.0,
+                connection_type: Some("none".to_string()),
+            }),
+            _ => Err("network preset must be slow-3g, fast-3g, or offline".into()),
+        }
+    }
+}
+
 impl BrowserSession {
+    /// Apply session-scoped network throttling. Call with `None` to reset.
+    pub async fn set_network_conditions(
+        &self,
+        conditions: Option<&NetworkConditions>,
+    ) -> BrowserResult<()> {
+        self.cdp
+            .with_current_route(async {
+                let params = if let Some(conditions) = conditions {
+                    serde_json::json!({
+                        "offline": conditions.offline,
+                        "latency": conditions.latency_ms,
+                        "downloadThroughput": conditions.download_throughput_bytes,
+                        "uploadThroughput": conditions.upload_throughput_bytes,
+                        "connectionType": conditions.connection_type.clone().unwrap_or_else(|| "none".to_string())
+                    })
+                } else {
+                    serde_json::json!({
+                        "offline": false,
+                        "latency": 0,
+                        "downloadThroughput": -1,
+                        "uploadThroughput": -1,
+                        "connectionType": "none"
+                    })
+                };
+                self.cdp.send("Network.emulateNetworkConditions", Some(params)).await?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Apply a session-scoped CPU throttling multiplier. `None` resets to 1.
+    pub async fn set_cpu_throttling(&self, rate: Option<f64>) -> BrowserResult<()> {
+        let rate = rate.unwrap_or(1.0);
+        if !rate.is_finite() || rate <= 0.0 || rate > 20.0 {
+            return Err("CPU throttling rate must be in (0, 20]".into());
+        }
+        self.cdp
+            .with_current_route(async {
+                self.cdp
+                    .send(
+                        "Emulation.setCPUThrottlingRate",
+                        Some(serde_json::json!({"rate": rate})),
+                    )
+                    .await?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Override the user agent and optional Accept-Language for this session.
+    /// Passing `None` restores Chrome's default user agent.
+    pub async fn set_user_agent(
+        &self,
+        user_agent: Option<&str>,
+        accept_language: Option<&str>,
+        platform: Option<&str>,
+    ) -> BrowserResult<()> {
+        if user_agent.is_some_and(|value| value.len() > 512)
+            || accept_language.is_some_and(|value| value.len() > 128)
+            || platform.is_some_and(|value| value.len() > 128)
+        {
+            return Err("user-agent override is too long".into());
+        }
+        let restore = user_agent.is_none();
+        let original = if restore {
+            self.user_agent_original.lock().await.clone()
+        } else {
+            let existing = self.user_agent_original.lock().await.clone();
+            if let Some(existing) = existing {
+                Some(existing)
+            } else {
+                let current = self
+                    .evaluate_value("navigator.userAgent")
+                    .await?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                *self.user_agent_original.lock().await = Some(current.clone());
+                Some(current)
+            }
+        };
+        if restore && original.is_none() {
+            return Ok(());
+        }
+        self.cdp
+            .with_current_route(async {
+                let user_agent = user_agent.or(original.as_deref()).unwrap_or_default();
+                let mut params = serde_json::json!({"userAgent": user_agent});
+                if let Some(language) = accept_language {
+                    params["acceptLanguage"] = serde_json::Value::String(language.to_string());
+                }
+                if let Some(platform) = platform {
+                    params["platform"] = serde_json::Value::String(platform.to_string());
+                }
+                self.cdp
+                    .send("Network.setUserAgentOverride", Some(params))
+                    .await?;
+                Ok::<(), crate::browser::cdp::CdpError>(())
+            })
+            .await?;
+        if restore {
+            *self.user_agent_original.lock().await = None;
+        }
+        Ok(())
+    }
+
     /// Generate a PDF of the current page. Returns base64-encoded PDF data.
     ///
     /// Uses CDP `Page.printToPDF`. All [`PdfOptions`] fields are optional;

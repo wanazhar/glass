@@ -13,6 +13,15 @@ impl BrowserSession {
     /// Policy is pre-flighted for every step before any step executes.
     /// Fails fast on the first error; ambiguity always fails closed.
     pub async fn run_batch(&self, steps: &[BatchStep]) -> BrowserResult<BatchOutcome> {
+        self.run_batch_with_options(steps, false).await
+    }
+
+    /// Execute a batch with optional atomic locator pre-resolution.
+    pub async fn run_batch_with_options(
+        &self,
+        steps: &[BatchStep],
+        atomic: bool,
+    ) -> BrowserResult<BatchOutcome> {
         let total = steps.len();
         if total > MAX_BATCH_STEPS {
             return Err(format!(
@@ -32,6 +41,16 @@ impl BrowserSession {
             }
         }
 
+        if atomic {
+            for (index, step) in steps.iter().enumerate() {
+                if let Some(target) = batch_target(step) {
+                    self.resolve_element(target).await.map_err(|error| {
+                        format!("atomic batch target resolution failed at step {index}: {error}")
+                    })?;
+                }
+            }
+        }
+
         let mut outcomes: Vec<BatchStepOutcome> = Vec::with_capacity(total);
         let mut completed = 0usize;
         let mut failed = 0usize;
@@ -48,7 +67,7 @@ impl BrowserSession {
                     completed += 1;
                 }
                 Err(error) => {
-                    let message = format!("{error:#}");
+                    let message = bounded_batch_text(&format!("{error:#}"), 512);
                     outcomes.push(BatchStepOutcome::Error {
                         index,
                         action,
@@ -76,20 +95,47 @@ async fn check_batch_step_policy(
 ) -> Result<(), PolicyError> {
     match step {
         BatchStep::Navigate { url, .. } => session.policy.require_url(url).await.map(|_| ()),
-        BatchStep::Evaluate { .. } => session.policy.require(PolicyCapability::Evaluate),
+        BatchStep::Evaluate { .. } => session.policy.require_for_batch(PolicyCapability::Evaluate),
         BatchStep::Observe {
             include_form_values,
             ..
         } => {
             if *include_form_values {
-                session.policy.require(PolicyCapability::ReadFormValues)
+                session
+                    .policy
+                    .require_for_batch(PolicyCapability::ReadFormValues)
             } else {
                 Ok(())
             }
         }
-        BatchStep::Screenshot => session.policy.require(PolicyCapability::Screenshot),
+        BatchStep::Screenshot => session
+            .policy
+            .require_for_batch(PolicyCapability::Screenshot),
         _ => Ok(()),
     }
+}
+
+fn batch_target(step: &BatchStep) -> Option<&str> {
+    match step {
+        BatchStep::Click { target }
+        | BatchStep::Check { target }
+        | BatchStep::Uncheck { target }
+        | BatchStep::Select { target, .. }
+        | BatchStep::Clear { target } => Some(target),
+        BatchStep::Type { target, .. } => target.as_deref(),
+        _ => None,
+    }
+}
+
+fn bounded_batch_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(15);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[truncated]", &value[..end])
 }
 
 async fn execute_batch_step(

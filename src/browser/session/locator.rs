@@ -6,6 +6,21 @@
 
 use super::*;
 
+#[derive(Debug)]
+struct PreflightProbeError {
+    reason: TargetActionabilityReason,
+    geometry: Option<PreflightGeometry>,
+    hints: PreflightHints,
+}
+
+impl std::fmt::Display for PreflightProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "preflight probe failed: {:?}", self.reason)
+    }
+}
+
+impl std::error::Error for PreflightProbeError {}
+
 /// Maximum number of locator segments in a fallback chain.
 const MAX_FALLBACK_SEGMENTS: usize = 8;
 /// Maximum UTF-8 byte length of a single locator segment.
@@ -25,10 +40,17 @@ impl BrowserSession {
             }
             for segment in &segments {
                 if segment.len() > MAX_SEGMENT_BYTES {
+                    let preview_end = segment
+                        .char_indices()
+                        .take_while(|(index, _)| *index < 80)
+                        .map(|(index, ch)| index + ch.len_utf8())
+                        .last()
+                        .unwrap_or(0)
+                        .min(segment.len());
                     return Err(format!(
                         "locator segment exceeds {} bytes: {}",
                         MAX_SEGMENT_BYTES,
-                        &segment[..segment.len().min(80)]
+                        &segment[..preview_end]
                     )
                     .into());
                 }
@@ -82,13 +104,29 @@ impl BrowserSession {
     }
 
     pub async fn preflight(&self, target: &str) -> PreflightOutcome {
+        self.preflight_with_action(target, PreflightAction::Click)
+            .await
+    }
+
+    pub async fn preflight_with_action(
+        &self,
+        target: &str,
+        action: PreflightAction,
+    ) -> PreflightOutcome {
         let revision = self.page_revision.load(Ordering::Relaxed);
+        let (target_id, frame_id) = self
+            .route_identity()
+            .await
+            .ok()
+            .map(|(target, frame)| (Some(target), Some(frame)))
+            .unwrap_or((None, None));
 
         let element = match self.resolve_element(target).await {
             Ok(element) => element,
             Err(error) => {
                 let error_kind = error.downcast_ref::<TargetError>().map(|e| e.kind);
                 return PreflightOutcome {
+                    action,
                     unique: false,
                     element: None,
                     actionable: None,
@@ -99,21 +137,34 @@ impl BrowserSession {
                         .unwrap_or_default(),
                     error_kind,
                     revision,
+                    geometry: None,
+                    hints: PreflightHints::default(),
+                    target_id,
+                    frame_id,
                 };
             }
         };
 
-        // Try actionability check (side-effect-free where possible)
-        let (actionable, actionability_reason) =
-            match self.check_element_actionability(&element).await {
-                Ok(()) => (true, None),
+        // Use a distinct read-only probe. The normal action probe may scroll
+        // the target into view, which is correct before a click but violates
+        // preflight's side-effect-free contract.
+        let (actionable, actionability_reason, geometry, hints) =
+            match self.check_element_preflight(&element).await {
+                Ok((geometry, hints)) => (true, None, Some(geometry), hints),
                 Err(error) => {
-                    let reason = error.downcast_ref::<TargetError>().and_then(|e| e.reason);
-                    (false, reason)
+                    let target_error = error.downcast_ref::<TargetError>();
+                    let probe_error = error.downcast_ref::<PreflightProbeError>();
+                    let reason = probe_error
+                        .map(|e| e.reason)
+                        .or_else(|| target_error.and_then(|e| e.reason));
+                    let geometry = probe_error.and_then(|e| e.geometry);
+                    let hints = probe_error.map(|e| e.hints).unwrap_or_default();
+                    (false, reason, geometry, hints)
                 }
             };
 
         PreflightOutcome {
+            action,
             unique: true,
             element: Some(element),
             actionable: Some(actionable),
@@ -121,52 +172,70 @@ impl BrowserSession {
             candidates: Vec::new(),
             error_kind: None,
             revision,
+            geometry,
+            hints,
+            target_id,
+            frame_id,
         }
     }
 
-    /// Check whether a resolved element is actionable without performing the action.
-    async fn check_element_actionability(&self, element: &ResolvedElement) -> BrowserResult<()> {
+    async fn check_element_preflight(
+        &self,
+        element: &ResolvedElement,
+    ) -> BrowserResult<(PreflightGeometry, PreflightHints)> {
         let backend_node_id = element
             .backend_dom_node_id
             .ok_or("element has no backend node id")?;
-
         let object_id = self
             .cdp
             .resolve_node_object(None, Some(backend_node_id))
             .await
-            .map_err(|_| TargetError {
-                kind: TargetErrorKind::NotActionable,
-                reason: Some(TargetActionabilityReason::NodeUnavailable),
-                candidates: Vec::new(),
+            .map_err(|_| PreflightProbeError {
+                reason: TargetActionabilityReason::NodeUnavailable,
+                geometry: None,
+                hints: PreflightHints::default(),
             })?;
-        // Guard the remote handle so it is released even if call_on_object fails.
         let remote = RemoteObjectGuard {
             cdp: self.cdp.clone(),
             object_id,
         };
-
         let raw = self
             .cdp
-            .call_on_object(&remote.object_id, HIT_TEST_FUNCTION)
+            .call_on_object(&remote.object_id, PREFLIGHT_FUNCTION)
             .await
-            .map_err(|_| TargetError {
-                kind: TargetErrorKind::NotActionable,
-                reason: Some(TargetActionabilityReason::NodeUnavailable),
-                candidates: Vec::new(),
+            .map_err(|_| PreflightProbeError {
+                reason: TargetActionabilityReason::NodeUnavailable,
+                geometry: None,
+                hints: PreflightHints::default(),
             })?;
-
         let value = runtime_value(&raw)?;
+        let geometry = value["geometry"].as_object().and_then(|geometry| {
+            Some(PreflightGeometry {
+                x: geometry.get("x")?.as_f64()?,
+                y: geometry.get("y")?.as_f64()?,
+                width: geometry.get("width")?.as_f64()?,
+                height: geometry.get("height")?.as_f64()?,
+            })
+        });
+        let hints = PreflightHints {
+            likely_navigation: value["hints"]["likelyNavigation"]
+                .as_bool()
+                .unwrap_or(false),
+            likely_popup: value["hints"]["likelyPopup"].as_bool().unwrap_or(false),
+            likely_form_submit: value["hints"]["likelyFormSubmit"]
+                .as_bool()
+                .unwrap_or(false),
+        };
         if value["ok"].as_bool() != Some(true) {
             let reason = value["reason"].as_str().unwrap_or("verification_failed");
-            return Err(TargetError {
-                kind: TargetErrorKind::NotActionable,
-                reason: Some(actionability_reason(reason)),
-                candidates: Vec::new(),
+            return Err(PreflightProbeError {
+                reason: actionability_reason(reason),
+                geometry,
+                hints,
             }
             .into());
         }
-
-        Ok(())
+        Ok((geometry.ok_or("preflight returned no geometry")?, hints))
     }
 
     pub(crate) async fn resolve_locator(

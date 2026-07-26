@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::browser::policy::{PolicyCapability, PolicyPreset};
-use crate::browser::session::{InteractionMode, VisualClip, VisualFormat};
+use crate::browser::session::{InteractionMode, PreflightAction, VisualClip, VisualFormat};
 
 /// Top-level CLI configuration parsed from command-line arguments.
 ///
@@ -126,6 +126,16 @@ pub enum Commands {
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click { target: String },
 
+    /// Resolve a target and report clickability without performing an action.
+    Preflight {
+        target: String,
+        #[arg(long, value_enum, default_value_t = PreflightAction::Click)]
+        action: PreflightAction,
+    },
+
+    /// Click exact viewport coordinates for canvas/map surfaces.
+    ClickAt { x: f64, y: f64 },
+
     /// Click an element expected to open exactly one causally verified popup.
     ClickExpectPopup { target: String },
 
@@ -208,6 +218,9 @@ pub enum Commands {
         /// Include a PNG screenshot in the structured context.
         #[arg(long)]
         screenshot: bool,
+        /// Include bounded, policy-gated form field values.
+        #[arg(long)]
+        form_values: bool,
     },
 
     /// Scroll the page by CSS pixels.
@@ -283,6 +296,31 @@ pub enum Commands {
         fields: String,
     },
 
+    /// Execute a bounded typed batch from a JSON array or stdin.
+    Batch {
+        /// JSON file containing the batch steps; omit to read stdin.
+        input: Option<PathBuf>,
+        #[arg(long)]
+        atomic: bool,
+    },
+
+    /// Reconcile revisioned references against the current observation.
+    ReconcileRefs {
+        #[arg(long)]
+        from_revision: u64,
+        #[arg(required = true)]
+        refs: Vec<String>,
+    },
+
+    /// Report a bounded delta from the last compact observation.
+    ObserveDelta,
+
+    /// Export or import a bounded workflow checkpoint.
+    Checkpoint {
+        #[command(subcommand)]
+        action: CheckpointCommand,
+    },
+
     /// Read text from the system clipboard.
     ClipboardRead,
 
@@ -300,6 +338,12 @@ pub enum ProfileCommand {
     Delete { name: String },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum CheckpointCommand {
+    Export,
+    Import { input: Option<PathBuf> },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,7 +357,8 @@ mod tests {
             cli.command,
             Some(Commands::Observe {
                 deep_dom: false,
-                screenshot: false
+                screenshot: false,
+                form_values: false
             })
         ));
     }
@@ -329,7 +374,8 @@ mod tests {
             cli.command,
             Some(Commands::Observe {
                 deep_dom: false,
-                screenshot: true
+                screenshot: true,
+                form_values: false
             })
         ));
     }
@@ -342,7 +388,8 @@ mod tests {
             cli.command,
             Some(Commands::Observe {
                 deep_dom: true,
-                screenshot: false
+                screenshot: false,
+                form_values: false
             })
         ));
     }

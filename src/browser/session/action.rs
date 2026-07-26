@@ -7,6 +7,58 @@
 use super::*;
 
 impl BrowserSession {
+    /// Click exact frame-local viewport coordinates. This is an explicit,
+    /// policy-gated escape hatch for canvas and map surfaces where no DOM
+    /// control can be published. Coordinates are validated against the live
+    /// viewport and are never adjusted to a nearby element.
+    pub async fn click_at(&self, x: f64, y: f64) -> BrowserResult<CoordinateClickOutcome> {
+        self.policy
+            .require(crate::browser::policy::PolicyCapability::CoordinateClick)?;
+        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+            return Err("click-at coordinates must be finite and non-negative".into());
+        }
+
+        self.cdp
+            .with_current_route(async {
+                let hit = self
+                    .evaluate_value(&format!(
+                        "(() => {{ if ({x} >= innerWidth || {y} >= innerHeight) return null; const e = document.elementFromPoint({x}, {y}); if (!e) return null; return {{tag:e.tagName.toLowerCase(), role:e.getAttribute('role'), name:e.getAttribute('aria-label') || e.textContent?.trim().slice(0, 160) || null}}; }})()"
+                    ))
+                    .await?;
+                let hit = if hit.is_null() {
+                    None
+                } else {
+                    Some(CoordinateHit {
+                        tag: hit["tag"].as_str().unwrap_or("unknown").to_string(),
+                        role: hit["role"].as_str().map(str::to_string),
+                        name: hit["name"].as_str().map(str::to_string),
+                    })
+                };
+                if hit.is_none() {
+                    return Err("click-at coordinates are outside the viewport or hit no element".into());
+                }
+                self.cdp
+                    .dispatch_mouse_event("mouseMoved", x, y, None, None)
+                    .await?;
+                self.cdp
+                    .dispatch_mouse_event("mousePressed", x, y, Some("left"), Some(1))
+                    .await?;
+                self.cdp
+                    .dispatch_mouse_event("mouseReleased", x, y, Some("left"), Some(1))
+                    .await?;
+                let (target_id, frame_id) = self.ensured_route_identity().await?;
+                Ok(CoordinateClickOutcome {
+                    x,
+                    y,
+                    hit,
+                    revision: self.invalidate_observation(),
+                    target_id,
+                    frame_id,
+                })
+            })
+            .await
+    }
+
     /// Scroll the viewport by the given pixel offsets.
     ///
     /// Positive `dy` scrolls down; positive `dx` scrolls right.

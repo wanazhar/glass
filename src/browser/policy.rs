@@ -24,6 +24,7 @@ pub enum PolicyCapability {
     RawCdp,
     ReadFormValues,
     ReadSensitiveFormValues,
+    CoordinateClick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
@@ -375,6 +376,25 @@ impl BrowserPolicy {
         }
     }
 
+    /// Check a capability without consuming a confirmation token. Batch
+    /// preflight uses this so a token cannot be spent before the batch starts
+    /// or be smuggled into a multi-step request.
+    pub fn require_for_batch(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
+        match self.decide(capability) {
+            PolicyDecision::Allow => Ok(()),
+            PolicyDecision::Deny { reason } => Err(PolicyError::Denied {
+                operation: capability_name(capability).to_string(),
+                reason,
+            }),
+            PolicyDecision::RequireConfirmation { reason } => {
+                Err(PolicyError::ConfirmationRequired {
+                    operation: capability_name(capability).to_string(),
+                    reason,
+                })
+            }
+        }
+    }
+
     /// Whether sensitive form values (passwords, CC numbers) may be read.
     /// This capability is denied in ALL presets by default and must be
     /// explicitly added to `allowed_capabilities`.
@@ -488,6 +508,7 @@ fn capability_name(capability: PolicyCapability) -> &'static str {
         PolicyCapability::RawCdp => "raw_cdp",
         PolicyCapability::ReadFormValues => "read_form_values",
         PolicyCapability::ReadSensitiveFormValues => "read_sensitive_form_values",
+        PolicyCapability::CoordinateClick => "coordinate_click",
     }
 }
 

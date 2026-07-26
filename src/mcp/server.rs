@@ -22,8 +22,8 @@ use tracing::{debug, info};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1, DownloadError,
-    PopupClickError, SessionOptions, TargetError, VisualCaptureOptions, VisualClip, VisualFormat,
-    WaitCondition, WaitTimeout,
+    PopupClickError, PreflightAction, SessionOptions, TargetError, VisualCaptureOptions,
+    VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -139,6 +139,14 @@ enum ToolInvocation<'a> {
     Click {
         target: Cow<'a, str>,
     },
+    Preflight {
+        target: Cow<'a, str>,
+        action: PreflightAction,
+    },
+    ClickAt {
+        x: f64,
+        y: f64,
+    },
     ClickExpectPopup {
         target: Cow<'a, str>,
     },
@@ -205,11 +213,31 @@ enum ToolInvocation<'a> {
     },
     Batch {
         steps: Value,
+        atomic: bool,
     },
     ReconcileReferences {
         from_revision: u64,
         refs: Vec<String>,
     },
+    ObserveDelta,
+    SetNetworkConditions {
+        preset: Option<String>,
+        offline: bool,
+        latency_ms: f64,
+        download_throughput: f64,
+        upload_throughput: f64,
+    },
+    ClearNetworkConditions,
+    SetCpuThrottling {
+        rate: f64,
+    },
+    ClearCpuThrottling,
+    SetUserAgent {
+        user_agent: String,
+        accept_language: Option<String>,
+        platform: Option<String>,
+    },
+    ClearUserAgent,
     ExportCheckpoint,
     ImportCheckpoint {
         checkpoint: Value,
@@ -718,6 +746,10 @@ async fn call_tool(
             serialized_result(&page)
         }
         ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
+        ToolInvocation::Preflight { target, action } => {
+            serialized_result(&session.preflight_with_action(target.as_ref(), action).await)
+        }
+        ToolInvocation::ClickAt { x, y } => serialized_result(&session.click_at(x, y).await?),
         ToolInvocation::ClickExpectPopup { target } => {
             serialized_result(&session.click_expect_popup(target.as_ref()).await?)
         }
@@ -792,6 +824,7 @@ async fn call_tool(
             };
             let screenshot = context.screenshot.take();
             let context_json = serde_json::to_string(&context)?;
+            let context_bytes = context_json.len();
             let mut content = vec![json!({"type": "text", "text": context_json})];
             if let Some(data) = screenshot {
                 content.push(json!({
@@ -800,22 +833,80 @@ async fn call_tool(
                     "mimeType": "image/png"
                 }));
             }
-            Ok(json!({"content": content}))
+            Ok(json!({
+                "content": content,
+                "_meta": {"contextCost": {
+                    "payloadBytes": context_bytes,
+                    "estimatedTokens": context_bytes.div_ceil(4)
+                }}
+            }))
         }
         ToolInvocation::GetDom => serialized_result(&session.deep_dom().await?),
         ToolInvocation::GetText => Ok(text_result(session.text().await?)),
         ToolInvocation::Evaluate { expression } => {
             serialized_result(&session.evaluate(expression).await?)
         }
-        ToolInvocation::Batch { steps } => {
+        ToolInvocation::Batch { steps, atomic } => {
             let parsed: Vec<BatchStep> = serde_json::from_value(steps.clone())
                 .map_err(|e| format!("invalid batch steps: {e}"))?;
-            serialized_result(&session.run_batch(&parsed).await?)
+            serialized_result(&session.run_batch_with_options(&parsed, atomic).await?)
         }
         ToolInvocation::ReconcileReferences {
             from_revision,
             refs,
         } => serialized_result(&session.reconcile_references(from_revision, &refs).await?),
+        ToolInvocation::ObserveDelta => serialized_result(&session.observe_delta().await?),
+        ToolInvocation::SetNetworkConditions {
+            preset,
+            offline,
+            latency_ms,
+            download_throughput,
+            upload_throughput,
+        } => {
+            let conditions = if let Some(preset) = preset {
+                crate::browser::session::NetworkConditions::preset(&preset)?
+            } else {
+                crate::browser::session::NetworkConditions {
+                    offline,
+                    latency_ms,
+                    download_throughput_bytes: download_throughput,
+                    upload_throughput_bytes: upload_throughput,
+                    connection_type: None,
+                }
+            };
+            session.set_network_conditions(Some(&conditions)).await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::ClearNetworkConditions => {
+            session.set_network_conditions(None).await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::SetCpuThrottling { rate } => {
+            session.set_cpu_throttling(Some(rate)).await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::ClearCpuThrottling => {
+            session.set_cpu_throttling(None).await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::SetUserAgent {
+            user_agent,
+            accept_language,
+            platform,
+        } => {
+            session
+                .set_user_agent(
+                    Some(&user_agent),
+                    accept_language.as_deref(),
+                    platform.as_deref(),
+                )
+                .await?;
+            serialized_result(&json!({"ok": true}))
+        }
+        ToolInvocation::ClearUserAgent => {
+            session.set_user_agent(None, None, None).await?;
+            serialized_result(&json!({"ok": true}))
+        }
         ToolInvocation::ExportCheckpoint => serialized_result(&session.export_checkpoint().await?),
         ToolInvocation::ImportCheckpoint { checkpoint } => {
             let ckpt: CheckpointV1 = serde_json::from_value(checkpoint.clone())
@@ -939,6 +1030,21 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
         }),
+        "preflight" => Ok(ToolInvocation::Preflight {
+            target: required_target(arguments)?,
+            action: match optional_string(arguments, "action")?.unwrap_or("click") {
+                "click" => PreflightAction::Click,
+                "hover" => PreflightAction::Hover,
+                "type" => PreflightAction::Type,
+                "check" => PreflightAction::Check,
+                "select" => PreflightAction::Select,
+                _ => return Err("action must be click, hover, type, check, or select".into()),
+            },
+        }),
+        "clickAt" => Ok(ToolInvocation::ClickAt {
+            x: required_number(arguments, "x")?,
+            y: required_number(arguments, "y")?,
+        }),
         "clickExpectPopup" => Ok(ToolInvocation::ClickExpectPopup {
             target: required_target(arguments)?,
         }),
@@ -1007,6 +1113,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "batch" => Ok(ToolInvocation::Batch {
             steps: arguments["steps"].clone(),
+            atomic: optional_bool(arguments, "atomic")?,
         }),
         "reconcileReferences" => Ok(ToolInvocation::ReconcileReferences {
             from_revision: required_u64(arguments, "fromRevision")?,
@@ -1015,6 +1122,25 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .map(String::from)
                 .collect(),
         }),
+        "observeDelta" => Ok(ToolInvocation::ObserveDelta),
+        "setNetworkConditions" => Ok(ToolInvocation::SetNetworkConditions {
+            preset: optional_string(arguments, "preset")?.map(str::to_string),
+            offline: optional_bool(arguments, "offline")?,
+            latency_ms: optional_number(arguments, "latencyMs", 0.0)?,
+            download_throughput: optional_number(arguments, "downloadThroughput", -1.0)?,
+            upload_throughput: optional_number(arguments, "uploadThroughput", -1.0)?,
+        }),
+        "clearNetworkConditions" => Ok(ToolInvocation::ClearNetworkConditions),
+        "setCpuThrottling" => Ok(ToolInvocation::SetCpuThrottling {
+            rate: required_number(arguments, "rate")?,
+        }),
+        "clearCpuThrottling" => Ok(ToolInvocation::ClearCpuThrottling),
+        "setUserAgent" => Ok(ToolInvocation::SetUserAgent {
+            user_agent: required_string(arguments, "userAgent")?.to_string(),
+            accept_language: optional_string(arguments, "acceptLanguage")?.map(str::to_string),
+            platform: optional_string(arguments, "platform")?.map(str::to_string),
+        }),
+        "clearUserAgent" => Ok(ToolInvocation::ClearUserAgent),
         "exportCheckpoint" => Ok(ToolInvocation::ExportCheckpoint),
         "importCheckpoint" => Ok(ToolInvocation::ImportCheckpoint {
             checkpoint: arguments.clone(),
@@ -1231,6 +1357,27 @@ fn tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "preflight",
+            description: "Dry-run target resolution and clickability without pointer events, focus, scrolling, or revision changes.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "action": {"type": "string", "enum": ["click", "hover", "type", "check", "select"], "default": "click"}
+                },
+                "required": ["target"]
+            }),
+        },
+        Tool {
+            name: "clickAt",
+            description: "Click exact viewport coordinates for canvas or map surfaces; policy-gated and never retargeted.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                "required": ["x", "y"]
+            }),
+        },
+        Tool {
             name: "getDOM",
             description: "Return the full DOM tree. This is an explicit deep-inspection request.",
             input_schema: json!({"type": "object", "properties": {}}),
@@ -1251,6 +1398,45 @@ fn tools() -> Vec<Tool> {
                 },
                 "required": ["fromRevision", "refs"]
             }),
+        },
+        Tool {
+            name: "observeDelta",
+            description: "Compare the last compact observation with a fresh same-route observation using bounded added/removed/changed controls.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "setNetworkConditions",
+            description: "Apply bounded session-scoped network conditions using slow-3g, fast-3g, offline, or explicit values.",
+            input_schema: json!({"type":"object","properties":{
+                "preset":{"type":"string","enum":["slow-3g","fast-3g","offline"]},
+                "offline":{"type":"boolean"},"latencyMs":{"type":"number"},
+                "downloadThroughput":{"type":"number"},"uploadThroughput":{"type":"number"}
+            }}),
+        },
+        Tool {
+            name: "clearNetworkConditions",
+            description: "Reset session network conditions.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "setCpuThrottling",
+            description: "Set a bounded session CPU throttling multiplier.",
+            input_schema: json!({"type":"object","properties":{"rate":{"type":"number","exclusiveMinimum":0,"maximum":20}},"required":["rate"]}),
+        },
+        Tool {
+            name: "clearCpuThrottling",
+            description: "Reset CPU throttling to 1x.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "setUserAgent",
+            description: "Apply a declared session user-agent and optional Accept-Language/platform override.",
+            input_schema: json!({"type":"object","properties":{"userAgent":{"type":"string","maxLength":512},"acceptLanguage":{"type":"string","maxLength":128},"platform":{"type":"string","maxLength":128}},"required":["userAgent"]}),
+        },
+        Tool {
+            name: "clearUserAgent",
+            description: "Restore the user agent captured before Glass's override.",
+            input_schema: json!({"type":"object","properties":{}}),
         },
         Tool {
             name: "exportCheckpoint",
@@ -1283,6 +1469,7 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "atomic": {"type": "boolean", "default": false},
                     "steps": {
                         "type": "array",
                         "items": {
@@ -1527,6 +1714,14 @@ fn optional_number(arguments: &Value, name: &str, default: f64) -> BrowserResult
     }
 }
 
+fn required_number(arguments: &Value, name: &str) -> BrowserResult<f64> {
+    arguments
+        .get(name)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{name} must be a finite number").into())
+}
+
 fn optional_u64(arguments: &Value, name: &str, default: u64) -> BrowserResult<u64> {
     match arguments.get(name) {
         None => Ok(default),
@@ -1576,7 +1771,15 @@ fn optional_visual_clip(arguments: &Value) -> BrowserResult<Option<VisualClip>> 
 }
 
 fn text_result(text: impl Into<String>) -> Value {
-    json!({"content": [{"type": "text", "text": text.into()}]})
+    let text = text.into();
+    let payload_bytes = text.len();
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "_meta": {"contextCost": {
+            "payloadBytes": payload_bytes,
+            "estimatedTokens": payload_bytes.div_ceil(4)
+        }}
+    })
 }
 
 fn action_result(outcome: ActionOutcome) -> BrowserResult<Value> {
@@ -1830,7 +2033,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 58);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],

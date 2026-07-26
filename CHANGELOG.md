@@ -3,6 +3,14 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-07-26
+
+### Fixed
+
+- Recover frame routing cleanly when a selected target closes during teardown.
+- Keep release smoke tests compatible with hosted Linux Chrome sandboxes and
+  serialized target lifecycle checks.
+
 ## [0.1.2] - 2026-07-26
 
 ### Fixed

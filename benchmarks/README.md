@@ -96,7 +96,64 @@ NODE_PATH="$tmp_dir/node_modules" \
   node benchmarks/adapters/playwright-scorecard.mjs > playwright-scorecard.json
 ```
 
-## Core browser workflow
+### Glass MCP adapter
+
+The `glass-scorecard.mjs` adapter drives Glass through its own MCP server
+interface (`glass --mcp`), exercising the same JSON-RPC stdio transport that
+external agent clients use. It is a zero-dependency Node.js script that treats
+Glass as a black-box MCP server, validating the public tool surface before
+running every v1 corpus scenario.
+
+**Prerequisites:** Rust toolchain (`cargo`, `rustc`), a release build of Glass,
+Chrome/Chromium, and Node.js ≥ 18. Glass must be built first:
+
+```sh
+cargo build --release
+```
+
+**Running standalone:**
+
+```sh
+GLASS_BINARY_PATH=target/release/glass \
+  CHROME_PATH=/absolute/path/to/chromium \
+  GLASS_SCORECARD_ITERATIONS=100 \
+  node benchmarks/adapters/glass-scorecard.mjs > glass-mcp-scorecard.json
+```
+
+The adapter reads `GLASS_BINARY_PATH` (defaults to `target/release/glass`) and
+`CHROME_PATH` (required). It launches Glass with `--mcp --incognito
+--interaction fast --profile scorecard` and communicates over newline-delimited
+JSON-RPC. The required MCP tools are `navigate`, `click`, `evaluate`, `fillForm`,
+`getText`, `observe`, `clickExpectPopup`, `listFrames`, `selectFrame`,
+`acceptDialog`, `download`, and `wait`.
+
+**Checkpoint support:** When run through the acceptance runner, the adapter
+receives `GLASS_SCORECARD_CHECKPOINT_PATH` and writes revision-bound partial
+evidence after every iteration using the same checkpoint schema as the other MCP
+adapters.
+
+**E2E gate:** Set `GLASS_E2E=1` to enable opt-in Glass-through-its-own-MCP
+validation as part of the acceptance run. The acceptance runner distinguishes
+this adapter (`tool.name: "glass-mcp"`) from the native Rust scorecard
+(`tool.name: "glass"`).
+
+### Adapter comparison
+
+| Adapter | `tool.name` | Transport | Required tools | Checkpoint | RSS scope |
+|---------|-------------|-----------|----------------|------------|-----------|
+| Rust scorecard | `glass` | Direct Rust API | — | — | Primary runner process |
+| Glass MCP | `glass-mcp` | JSON-RPC stdio | 12 MCP tools | Yes | MCP server process |
+| Playwright | `playwright` | Direct Playwright API | — | — | Primary runner process |
+| Playwright MCP | `playwright-mcp` | JSON-RPC stdio | 6 MCP tools | Yes | MCP server process |
+| Agent Browser | `agent-browser` | JSON-RPC stdio | 5 MCP tools | Yes | MCP server process |
+| Codex Browser | `codex-browser` | — | — | — | Unsupported |
+
+The Rust scorecard adapter remains the primary Glass acceptance vehicle because
+it reports `primary-non-browser-runner-process-rss-v1` and enables the declared
+efficiency gate. The Glass MCP adapter provides independent validation that
+Glass's own MCP surface can drive the full v1 adversarial corpus.
+
+
 
 ### Popup completion diagnostic
 

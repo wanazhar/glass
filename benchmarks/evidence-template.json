@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "type": "release_validation",
+  "git_revision": "",
+  "producer": {
+    "name": "glass-acceptance-runner",
+    "version": "1",
+    "command": "node benchmarks/run-acceptance.mjs",
+    "run_url": ""
+  },
+  "checks": [
+    { "id": "fmt",               "status": "not_run", "raw_report": "" },
+    { "id": "test",              "status": "not_run", "raw_report": "" },
+    { "id": "clippy",            "status": "not_run", "raw_report": "" },
+    { "id": "docs",              "status": "not_run", "raw_report": "" },
+    { "id": "build",             "status": "not_run", "raw_report": "" },
+    { "id": "package",           "status": "not_run", "raw_report": "" },
+    { "id": "deny",              "status": "not_run", "raw_report": "" },
+    { "id": "audit",             "status": "not_run", "raw_report": "" },
+    { "id": "fuzz-check",        "status": "not_run", "raw_report": "" }
+  ]
+}

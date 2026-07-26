@@ -1,7 +1,6 @@
 use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;
-use base64::engine::general_purpose::STANDARD;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};

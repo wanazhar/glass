@@ -1,3 +1,10 @@
+//! Multi-target (parallel page) operations.
+//!
+//! Provides [`BrowserSession::with_targets`] for opening multiple
+//! page targets, executing a closure with concurrent access, and
+//! automatically cleaning up. The active target before the call is
+//! restored afterward.
+
 use super::*;
 
 /// Maximum number of concurrent targets for parallel operations.

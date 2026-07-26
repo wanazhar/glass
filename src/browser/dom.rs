@@ -68,7 +68,7 @@ pub struct CompactInteractiveElement {
     /// Checked state for checkbox/radio controls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
-    /// Selected option label for <select> elements, bounded to 128 bytes.
+    /// Selected option label for `<select>` elements, bounded to 128 bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_option: Option<String>,
     /// Whether the field is empty (no user input).
@@ -84,7 +84,7 @@ pub struct CompactInteractiveElement {
 
 /// Maximum UTF-8 byte length for a form field value in compact observe.
 pub const FORM_VALUE_MAX_BYTES: usize = 256;
-/// Maximum UTF-8 byte length for a <select> option label.
+/// Maximum UTF-8 byte length for a `<select>` option label.
 pub const SELECT_OPTION_MAX_BYTES: usize = 128;
 /// Maximum number of form fields whose values are read per observe.
 pub const FORM_VALUE_MAX_FIELDS: usize = 16;

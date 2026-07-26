@@ -1274,7 +1274,7 @@ pub struct ActionOutcome {
     pub evidence: Option<Value>,
 }
 
-/// Evidence returned by [`BrowserSession::click_expect_popup`].
+/// Evidence returned by `BrowserSession::click_expect_popup`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PopupClickOutcome {
     pub action: ActionKind,

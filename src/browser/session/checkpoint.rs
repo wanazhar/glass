@@ -2,7 +2,7 @@ use super::*;
 
 impl BrowserSession {
     /// Reconcile prior references against the current page revision.
-    /// Maps old refs (r<fromRevision>:b<id>) to current refs via backend
+    /// Maps old refs (`r<fromRevision>:b<id>`) to current refs via backend
     /// node identity or stable role+name matching.
     pub async fn reconcile_references(
         &self,

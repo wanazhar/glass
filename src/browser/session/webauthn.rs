@@ -1,14 +1,26 @@
+//! Virtual WebAuthn authenticator support via CDP.
+//!
+//! Enables automated testing of WebAuthn / passkey flows by creating
+//! a virtual authenticator through the CDP `WebAuthn` domain. Use
+//! [`BrowserSession::enable_webauthn`] to start and obtain a
+//! [`WebAuthnGuard`] for credential management.
+
 use super::*;
 
 /// Options for a virtual WebAuthn authenticator.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebAuthnOptions {
+    /// Protocol version: `"ctap2"` (default) or `"u2f"`.
     pub protocol: String,
+    /// Transport type: `"internal"`, `"usb"`, `"nfc"`, or `"ble"`.
     pub transport: String,
+    /// Whether the authenticator supports resident keys (discoverable credentials).
     #[serde(default)]
     pub has_resident_key: bool,
+    /// Whether the authenticator supports user verification.
     #[serde(default)]
     pub has_user_verification: bool,
+    /// Whether this is a user-verifying platform authenticator.
     #[serde(default)]
     pub is_user_verifying_platform_authenticator: bool,
 }
@@ -25,6 +37,15 @@ impl Default for WebAuthnOptions {
     }
 }
 
+/// Scoped guard managing a virtual WebAuthn authenticator.
+///
+/// Created by [`BrowserSession::enable_webauthn`]. While this guard is
+/// alive, a virtual authenticator is registered in the browser. Use
+/// [`add_credential`](Self::add_credential) to provision credentials
+/// for testing, and [`disable`](Self::disable) to remove it explicitly.
+///
+/// On drop, the virtual authenticator is removed and the WebAuthn
+/// domain is disabled (best-effort via a spawned task).
 pub struct WebAuthnGuard {
     cdp: CdpClient,
     authenticator_id: String,
@@ -32,6 +53,7 @@ pub struct WebAuthnGuard {
 }
 
 impl WebAuthnGuard {
+    /// Enable the WebAuthn domain and create a virtual authenticator.
     pub(crate) async fn start(cdp: CdpClient, options: &WebAuthnOptions) -> BrowserResult<Self> {
         cdp.send("WebAuthn.enable", None).await?;
         let result = cdp.send("WebAuthn.addVirtualAuthenticator", Some(serde_json::json!({
@@ -54,10 +76,18 @@ impl WebAuthnGuard {
         })
     }
 
+    /// Return the CDP authenticator ID for this virtual authenticator.
     pub fn authenticator_id(&self) -> &str {
         &self.authenticator_id
     }
 
+    /// Add a resident credential to the virtual authenticator.
+    ///
+    /// `credential_id` is an arbitrary identifier for the credential.
+    /// `rp_id` is the relying party ID (typically the domain).
+    /// `user_handle` is the user identifier associated with the credential.
+    /// `private_key_pem` must be a PEM-encoded private key.
+    /// `sign_count` is the initial signature counter value.
     pub async fn add_credential(
         &self,
         credential_id: &str,
@@ -85,6 +115,11 @@ impl WebAuthnGuard {
         Ok(())
     }
 
+    /// Remove the virtual authenticator and disable the WebAuthn domain.
+    ///
+    /// After calling this, no further credential operations are possible.
+    /// This is called automatically on drop, but explicit calls let you
+    /// handle errors synchronously.
     pub async fn disable(mut self) -> BrowserResult<()> {
         self.armed = false;
         let _ = self
@@ -118,9 +153,44 @@ impl Drop for WebAuthnGuard {
 }
 
 impl BrowserSession {
+    /// Enable a virtual WebAuthn authenticator for the session.
+    ///
+    /// Returns a `WebAuthnGuard` scoped to this session. Use
+    /// `WebAuthnGuard::add_credential` to provision credentials before
+    /// navigating to the page under test.
     pub async fn enable_webauthn(&self, options: &WebAuthnOptions) -> BrowserResult<WebAuthnGuard> {
         self.cdp
             .with_current_route(async { WebAuthnGuard::start(self.cdp.clone(), options).await })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webauthn_options_default_uses_ctap2_and_internal_transport() {
+        let opts = WebAuthnOptions::default();
+        assert_eq!(opts.protocol, "ctap2");
+        assert_eq!(opts.transport, "internal");
+    }
+
+    #[test]
+    fn webauthn_options_default_has_all_booleans_false() {
+        let opts = WebAuthnOptions::default();
+        assert!(!opts.has_resident_key);
+        assert!(!opts.has_user_verification);
+        assert!(!opts.is_user_verifying_platform_authenticator);
+    }
+
+    #[test]
+    fn webauthn_options_serializes_to_json() {
+        let opts = WebAuthnOptions::default();
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["protocol"], "ctap2");
+        assert_eq!(json["transport"], "internal");
+        assert!(!json["has_resident_key"].as_bool().unwrap());
+        assert!(!json["has_user_verification"].as_bool().unwrap());
     }
 }

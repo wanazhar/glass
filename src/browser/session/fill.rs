@@ -1,23 +1,42 @@
+//! High-level form filling.
+//!
+//! Provides atomically-resolved multi-field form fill via
+//! [`BrowserSession::fill_form`]. Each field is resolved, then
+//! the appropriate action (type, check, uncheck, select, click) is
+//! applied based on the element's accessibility role.
+
 use super::*;
 
 /// Outcome of a high-level form fill operation.
+///
+/// Returned by [`BrowserSession::fill_form`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FillFormOutcome {
+    /// Number of fields successfully filled.
     pub filled: usize,
+    /// Total number of fields submitted.
     pub total: usize,
+    /// Per-field result with action taken and status.
     pub fields: Vec<FillFieldResult>,
 }
 
+/// Result for a single field within a form fill operation.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FillFieldResult {
+    /// Locator target that was resolved.
     pub target: String,
+    /// Action applied: `"type"`, `"select"`, `"check"`, `"uncheck"`, `"click"`.
     pub action: String,
+    /// Accessible label of the element, if available.
     pub label: Option<String>,
+    /// Whether the action succeeded.
     pub success: bool,
+    /// Error message if the action failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+/// Maximum fields accepted in a single [`BrowserSession::fill_form`] call.
 const FILL_FORM_MAX_FIELDS: usize = 16;
 
 impl BrowserSession {
@@ -118,5 +137,77 @@ impl BrowserSession {
                 Err(e) => ("type".to_string(), false, Some(e.to_string())),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_field_result_success_serializes_without_error() {
+        let result = FillFieldResult {
+            target: "username".to_string(),
+            action: "type".to_string(),
+            label: Some("Username".to_string()),
+            success: true,
+            error: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["target"], "username");
+        assert_eq!(json["action"], "type");
+        assert_eq!(json["label"], "Username");
+        assert_eq!(json["success"], true);
+        assert!(json.get("error").is_none());
+    }
+
+    #[test]
+    fn fill_field_result_failure_includes_error() {
+        let result = FillFieldResult {
+            target: "missing-field".to_string(),
+            action: "none".to_string(),
+            label: None,
+            success: false,
+            error: Some("element has no reference".to_string()),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"], "element has no reference");
+        assert!(json["label"].is_null());
+    }
+
+    #[test]
+    fn fill_form_outcome_counts_filled_and_total() {
+        let outcome = FillFormOutcome {
+            filled: 2,
+            total: 3,
+            fields: vec![
+                FillFieldResult {
+                    target: "a".to_string(),
+                    action: "type".to_string(),
+                    label: None,
+                    success: true,
+                    error: None,
+                },
+                FillFieldResult {
+                    target: "b".to_string(),
+                    action: "check".to_string(),
+                    label: None,
+                    success: true,
+                    error: None,
+                },
+                FillFieldResult {
+                    target: "c".to_string(),
+                    action: "none".to_string(),
+                    label: None,
+                    success: false,
+                    error: Some("not found".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(json["filled"], 2);
+        assert_eq!(json["total"], 3);
+        assert_eq!(json["fields"].as_array().unwrap().len(), 3);
     }
 }

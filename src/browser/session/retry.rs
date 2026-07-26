@@ -1,3 +1,11 @@
+//! Retry policies for browser operations.
+//!
+//! Provides [`RetryPolicy`] and retry-aware wrappers around common
+//! browser operations. Transport and CDP protocol errors are retried;
+//! targeting ambiguity (element not found, ambiguous selector, stale
+//! reference) always fails immediately — Glass never guesses a
+//! destructive target.
+
 use super::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +55,10 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Create a retry policy with the given max attempts and backoff.
+    ///
+    /// `max_attempts` is clamped to a minimum of 1. No custom predicate
+    /// is set — use the struct directly if you need one.
     pub fn new(max_attempts: usize, backoff: Duration) -> Self {
         Self {
             max_attempts: max_attempts.max(1),

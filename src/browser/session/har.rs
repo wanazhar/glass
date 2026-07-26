@@ -1,25 +1,57 @@
+//! Network recording (HTTP Archive) capture.
+//!
+//! Provides bounded network event recording via CDP `Network` domain
+//! integration. Use [`BrowserSession::start_network_recording`] to
+//! begin capture and [`NetworkRecorder::stop`] to retrieve a
+//! [`NetworkRecording`] with collected entries.
+
 use super::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// A single recorded network request / response entry.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NetworkEntry {
+    /// CDP request ID assigned by the browser.
     pub request_id: String,
+    /// HTTP method (e.g. GET, POST).
     pub method: String,
+    /// Request URL.
     pub url: String,
+    /// HTTP status code, if the response was received.
     pub status: Option<u16>,
+    /// Failure reason (e.g. "net::ERR_CONNECTION_REFUSED").
     pub failure: Option<String>,
+    /// Number of redirects for this request chain.
     pub redirect_count: u16,
 }
 
+/// The result of a completed network recording.
+///
+/// Returned by [`NetworkRecorder::stop`]. Contains all captured
+/// entries, approximate duration, and a count of dropped events.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NetworkRecording {
+    /// Captured network request/response entries.
     pub entries: Vec<NetworkEntry>,
+    /// Approximate duration of the recording in milliseconds.
     pub duration_ms: u64,
+    /// Number of events dropped due to the 128-entry cap.
     pub dropped_events: u64,
 }
 
+/// Scoped lease for network recording.
+///
+/// Created by [`BrowserSession::start_network_recording`]. While this
+/// guard is alive, `Network.requestWillBeSent`, `Network.responseReceived`,
+/// and `Network.loadingFailed` events are collected into an internal buffer
+/// (capped at 128 entries).
+///
+/// Call [`drain`](Self::drain) periodically to process events, then
+/// [`stop`](Self::stop) to finalize and retrieve the recording.
+///
+/// On drop, `Network.disable` is sent for best-effort cleanup.
 pub struct NetworkRecorder {
     cdp: CdpClient,
     session_id: String,
@@ -31,6 +63,7 @@ pub struct NetworkRecorder {
 }
 
 impl NetworkRecorder {
+    /// Enable the Network domain and begin recording.
     pub(crate) async fn start(cdp: CdpClient) -> BrowserResult<Self> {
         let session_id = cdp
             .current_session_id()
@@ -49,6 +82,7 @@ impl NetworkRecorder {
         })
     }
 
+    /// Stop recording, disable the Network domain, and return captured entries.
     pub async fn stop(mut self) -> BrowserResult<NetworkRecording> {
         self.armed = false;
         disable_fetch_for(&self.cdp, Some(&self.session_id)).await?;
@@ -60,6 +94,11 @@ impl NetworkRecorder {
         })
     }
 
+    /// Process any pending network events into the internal buffer.
+    ///
+    /// Call this periodically during recording (e.g. in a loop) to
+    /// collect events. Idempotent — safe to call after the recording
+    /// is done.
     pub async fn drain(&mut self) {
         let mut entries = self.entries.lock().await;
         let mut indexes = self.request_indexes.lock().await;
@@ -128,9 +167,65 @@ impl Drop for NetworkRecorder {
 }
 
 impl BrowserSession {
+    /// Start recording network traffic for the active page session.
+    ///
+    /// Returns a `NetworkRecorder` guard. Call `NetworkRecorder::drain`
+    /// to collect events and `NetworkRecorder::stop` to finalize.
     pub async fn start_network_recording(&self) -> BrowserResult<NetworkRecorder> {
         self.cdp
             .with_current_route(async { NetworkRecorder::start(self.cdp.clone()).await })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_entry_serializes_to_json() {
+        let entry = NetworkEntry {
+            request_id: "req-1".to_string(),
+            method: "GET".to_string(),
+            url: "https://example.com".to_string(),
+            status: Some(200),
+            failure: None,
+            redirect_count: 0,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["request_id"], "req-1");
+        assert_eq!(json["method"], "GET");
+        assert_eq!(json["url"], "https://example.com");
+        assert_eq!(json["status"], 200);
+        assert!(json["failure"].is_null());
+        assert_eq!(json["redirect_count"], 0);
+    }
+
+    #[test]
+    fn network_entry_serializes_failure_when_present() {
+        let entry = NetworkEntry {
+            request_id: "req-2".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/api".to_string(),
+            status: None,
+            failure: Some("net::ERR_CONNECTION_REFUSED".to_string()),
+            redirect_count: 0,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["failure"], "net::ERR_CONNECTION_REFUSED");
+        assert!(json["status"].is_null());
+    }
+
+    #[test]
+    fn network_recording_serializes_to_json() {
+        let recording = NetworkRecording {
+            entries: vec![],
+            duration_ms: 1500,
+            dropped_events: 3,
+        };
+        let json = serde_json::to_value(&recording).unwrap();
+        assert_eq!(json["duration_ms"], 1500);
+        assert_eq!(json["dropped_events"], 3);
+        assert!(json["entries"].as_array().unwrap().is_empty());
     }
 }

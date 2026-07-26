@@ -1,10 +1,19 @@
+//! System clipboard read/write via CDP.
+//!
+//! Provides access to the system clipboard through browser permissions
+//! and JavaScript evaluation. All operations are bounded to 8 KiB.
+
 use super::*;
 
+/// Maximum bytes read or written in a single clipboard operation.
 const CLIPBOARD_MAX_BYTES: usize = 8192;
 
 impl BrowserSession {
     /// Read text from the system clipboard.
-    /// Returns up to 8 KiB of text.
+    ///
+    /// Grants the `clipboardReadWrite` permission temporarily, then
+    /// evaluates `navigator.clipboard.readText()`. Returns up to
+    /// 8 KiB of text.
     pub async fn clipboard_read(&self) -> BrowserResult<String> {
         self.cdp.with_current_route(async {
             let _ = self.cdp.send("Browser.grantPermissions", Some(serde_json::json!({
@@ -19,7 +28,11 @@ impl BrowserSession {
         }).await
     }
 
-    /// Write text to the system clipboard. Truncated to 8 KiB.
+    /// Write text to the system clipboard.
+    ///
+    /// Grants the `clipboardReadWrite` permission temporarily, then
+    /// writes via `navigator.clipboard.writeText()`. Text is truncated
+    /// to 8 KiB before writing.
     pub async fn clipboard_write(&self, text: &str) -> BrowserResult<()> {
         let bounded = if text.len() > CLIPBOARD_MAX_BYTES {
             &text[..CLIPBOARD_MAX_BYTES]

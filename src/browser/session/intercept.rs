@@ -1,3 +1,13 @@
+//! CDP Fetch domain request interception.
+//!
+//! Provides scoped network request interception via the CDP `Fetch`
+//! domain. Use [`BrowserSession::intercept_request`] to enable
+//! interception with a [`RequestPattern`] and obtain an
+//! [`InterceptGuard`] that disables interception on drop.
+//!
+//! This is distinct from the built-in policy Fetch interception used
+//! for URL filtering.
+
 use super::*;
 
 /// Pattern for intercepting network requests via CDP Fetch domain.
@@ -36,6 +46,7 @@ pub struct InterceptGuard {
 }
 
 impl InterceptGuard {
+    /// Enable the Fetch domain and begin interception with the given pattern.
     async fn enable(cdp: CdpClient, pattern: &RequestPattern) -> BrowserResult<Self> {
         let session_id = cdp
             .current_session_id()

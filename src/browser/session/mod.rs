@@ -398,7 +398,10 @@ impl BrowserSession {
     }
 
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
-        let policy = BrowserPolicy::development(std::env::current_dir()?)?;
+        let policy = match &options.policy {
+            Some(policy) => policy.clone(),
+            None => BrowserPolicy::development(std::env::current_dir()?)?,
+        };
         Self::start_with_policy(options, policy).await
     }
 

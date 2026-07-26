@@ -358,22 +358,40 @@ pub(crate) fn is_false(value: &bool) -> bool {
 /// Controls whether Glass launches its own Chrome or attaches to an
 /// existing CDP endpoint, session identity (profile, incognito), and
 /// browser UI / interaction behaviour.
+///
+/// Prefer [`SessionOptions::builder()`] for ergonomic construction.
+/// Direct struct literals are supported for backward compatibility.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
+    #[doc(hidden)]
     pub port: u16,
+    #[doc(hidden)]
     pub chrome_path: Option<PathBuf>,
+    #[doc(hidden)]
     pub profile: String,
+    #[doc(hidden)]
     pub incognito: bool,
     /// Attach to an existing Chrome CDP endpoint instead of launching Chrome.
+    #[doc(hidden)]
     pub attach: bool,
     /// Explicit Chrome page target ID, required whenever the endpoint has more
     /// than one page target.
+    #[doc(hidden)]
     pub target_id: Option<String>,
+    #[doc(hidden)]
     pub frame_id: Option<String>,
+    #[doc(hidden)]
     pub headed: bool,
+    #[doc(hidden)]
     pub interaction_mode: InteractionMode,
     /// Whether the session audit log is enabled.
+    #[doc(hidden)]
     pub audit: bool,
+    /// Optional policy override for the session. When `None`,
+    /// [`BrowserSession::start`] creates a development policy
+    /// from the current directory.
+    #[doc(hidden)]
+    pub policy: Option<BrowserPolicy>,
 }
 
 /// Pointer movement strategy for mouse interactions.
@@ -399,11 +417,29 @@ impl Default for SessionOptions {
             headed: false,
             interaction_mode: InteractionMode::Human,
             audit: false,
+            policy: None,
         }
     }
 }
 
 impl SessionOptions {
+    /// Create a [`SessionOptionsBuilder`] with sensible defaults.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use glass::browser::session::SessionOptions;
+    ///
+    /// let options = SessionOptions::builder()
+    ///     .port(9222)
+    ///     .incognito(true)
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn builder() -> SessionOptionsBuilder {
+        SessionOptionsBuilder::default()
+    }
+
     /// Validate combinations that cannot be honored by an attached session.
     pub fn validate(&self) -> BrowserResult<()> {
         if self
@@ -441,6 +477,154 @@ impl SessionOptions {
             ProfileManager::validate_name(&self.profile)?;
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionOptionsBuilder
+// ---------------------------------------------------------------------------
+
+/// Builder for [`SessionOptions`] with fluent methods.
+///
+/// All fields default to the same values as [`SessionOptions::default`].
+/// Call [`build`](Self::build) to validate and produce a [`SessionOptions`].
+#[derive(Debug, Clone)]
+pub struct SessionOptionsBuilder {
+    port: u16,
+    chrome_path: Option<PathBuf>,
+    profile: String,
+    incognito: bool,
+    attach: bool,
+    target_id: Option<String>,
+    frame_id: Option<String>,
+    headed: bool,
+    interaction_mode: InteractionMode,
+    audit: bool,
+    policy: Option<BrowserPolicy>,
+}
+
+impl Default for SessionOptionsBuilder {
+    fn default() -> Self {
+        let defaults = SessionOptions::default();
+        Self {
+            port: defaults.port,
+            chrome_path: defaults.chrome_path,
+            profile: defaults.profile,
+            incognito: defaults.incognito,
+            attach: defaults.attach,
+            target_id: defaults.target_id,
+            frame_id: defaults.frame_id,
+            headed: defaults.headed,
+            interaction_mode: defaults.interaction_mode,
+            audit: defaults.audit,
+            policy: defaults.policy,
+        }
+    }
+}
+
+impl SessionOptionsBuilder {
+    /// Set the CDP debug port (default: `9222`).
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Set the path to the Chrome/Chromium executable.
+    pub fn chrome_path(mut self, chrome_path: impl Into<PathBuf>) -> Self {
+        self.chrome_path = Some(chrome_path.into());
+        self
+    }
+
+    /// Set the profile name (default: `"default"`).
+    pub fn profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = profile.into();
+        self
+    }
+
+    /// Enable or disable incognito mode (default: `false`).
+    pub fn incognito(mut self, incognito: bool) -> Self {
+        self.incognito = incognito;
+        self
+    }
+
+    /// Attach to an existing Chrome CDP endpoint (default: `false`).
+    pub fn attach(mut self, attach: bool) -> Self {
+        self.attach = attach;
+        self
+    }
+
+    /// Set an explicit page target ID.
+    pub fn target_id(mut self, target_id: impl Into<String>) -> Self {
+        self.target_id = Some(target_id.into());
+        self
+    }
+
+    /// Set an explicit frame ID within the target.
+    pub fn frame_id(mut self, frame_id: impl Into<String>) -> Self {
+        self.frame_id = Some(frame_id.into());
+        self
+    }
+
+    /// Show the browser window (default: `false`, headless).
+    pub fn headed(mut self, headed: bool) -> Self {
+        self.headed = headed;
+        self
+    }
+
+    /// Set the pointer movement strategy (default: [`InteractionMode::Human`]).
+    pub fn interaction_mode(mut self, mode: InteractionMode) -> Self {
+        self.interaction_mode = mode;
+        self
+    }
+
+    /// Enable the session audit log (default: `false`).
+    pub fn audit(mut self, audit: bool) -> Self {
+        self.audit = audit;
+        self
+    }
+
+    /// Set an explicit [`BrowserPolicy`] for the session.
+    ///
+    /// When set, [`BrowserSession::start`] will use this policy instead of
+    /// creating a development policy. Equivalent to calling
+    /// [`BrowserSession::start_with_policy`] directly.
+    pub fn policy(mut self, policy: BrowserPolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Set the policy from a [`PolicyPreset`] using the given workspace root.
+    ///
+    /// This is a convenience wrapper around [`BrowserPolicy::from_preset`].
+    /// When the builder already has a policy set, this replaces it.
+    pub fn policy_preset(
+        mut self,
+        preset: crate::browser::policy::PolicyPreset,
+        workspace_root: impl AsRef<Path>,
+    ) -> Result<Self, Box<dyn Error>> {
+        self.policy = Some(BrowserPolicy::from_preset(preset, workspace_root)?);
+        Ok(self)
+    }
+
+    /// Validate the accumulated options and return a [`SessionOptions`].
+    ///
+    /// This calls [`SessionOptions::validate`] internally.
+    pub fn build(self) -> BrowserResult<SessionOptions> {
+        let options = SessionOptions {
+            port: self.port,
+            chrome_path: self.chrome_path,
+            profile: self.profile,
+            incognito: self.incognito,
+            attach: self.attach,
+            target_id: self.target_id,
+            frame_id: self.frame_id,
+            headed: self.headed,
+            interaction_mode: self.interaction_mode,
+            audit: self.audit,
+            policy: self.policy,
+        };
+        options.validate()?;
+        Ok(options)
     }
 }
 

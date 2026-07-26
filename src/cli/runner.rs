@@ -55,6 +55,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
         audit: cli.audit,
+        policy: None,
     };
     let session = BrowserSession::start_with_policy(&options, policy).await?;
     let result = if let Some(prompt) = &cli.prompt {

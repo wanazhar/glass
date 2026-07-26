@@ -63,6 +63,7 @@ async fn main() -> BrowserResult<()> {
         headed: false,
         interaction_mode: InteractionMode::Fast,
         audit: false,
+        policy: None,
     })
     .await?;
     session

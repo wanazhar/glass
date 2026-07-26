@@ -455,6 +455,7 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
         headed: false,
         interaction_mode: InteractionMode::Fast,
         audit: false,
+        policy: None,
     };
     let second_options = SessionOptions {
         profile: "e2e-concurrent-second".to_string(),
@@ -513,6 +514,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         frame_id: None,
         headed: false,
         audit: false,
+        policy: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -760,6 +762,7 @@ async fn browser_session_drives_a_local_fixture() {
         target_id: None,
         frame_id: None,
         audit: false,
+        policy: None,
         headed: false,
         interaction_mode: InteractionMode::Human,
     })
@@ -776,6 +779,7 @@ async fn browser_session_drives_a_local_fixture() {
         attach: false,
         target_id: None,
         audit: false,
+        policy: None,
         frame_id: None,
         headed: false,
         interaction_mode: InteractionMode::Fast,
@@ -1574,6 +1578,7 @@ async fn browser_session_drives_a_local_fixture() {
         incognito: false,
         attach: true,
         audit: false,
+        policy: None,
         target_id: Some(page_target_id(port).await),
         frame_id: None,
         headed: false,
@@ -1600,6 +1605,7 @@ async fn browser_session_drives_a_local_fixture() {
         profile: "e2e-fast".to_string(),
         incognito: true,
         audit: false,
+        policy: None,
         attach: false,
         target_id: None,
         frame_id: None,
@@ -1677,6 +1683,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         chrome_path: Some(chrome_path),
         profile: "topology-e2e".to_string(),
         audit: false,
+        policy: None,
         incognito: true,
         attach: false,
         target_id: None,

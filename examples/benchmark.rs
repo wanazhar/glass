@@ -43,34 +43,30 @@ async fn main() -> BrowserResult<()> {
 
     let rss_before_start = process_rss_bytes();
     let startup_started = Instant::now();
-    let fast_session = BrowserSession::start(&SessionOptions {
-        port: available_port().await?,
-        chrome_path: Some(chrome_path.clone()),
-        profile: "benchmark-fast".to_string(),
-        incognito: true,
-        attach: false,
-        target_id: None,
-        frame_id: None,
-        headed: false,
-        interaction_mode: InteractionMode::Fast,
-        audit: false,
-    })
+    let fast_port = available_port().await?;
+    let fast_session = BrowserSession::start(
+        &SessionOptions::builder()
+            .port(fast_port)
+            .chrome_path(chrome_path.clone())
+            .profile("benchmark-fast")
+            .incognito(true)
+            .interaction_mode(InteractionMode::Fast)
+            .build()?,
+    )
     .await?;
     let warm_session_start_ms = startup_started.elapsed().as_secs_f64() * 1000.0;
     let rss_after_fast_start = process_rss_bytes();
 
-    let human_session = BrowserSession::start(&SessionOptions {
-        port: available_port().await?,
-        chrome_path: Some(chrome_path),
-        profile: "benchmark-human".to_string(),
-        incognito: true,
-        attach: false,
-        target_id: None,
-        frame_id: None,
-        headed: false,
-        interaction_mode: InteractionMode::Human,
-        audit: false,
-    })
+    let human_port = available_port().await?;
+    let human_session = BrowserSession::start(
+        &SessionOptions::builder()
+            .port(human_port)
+            .chrome_path(chrome_path)
+            .profile("benchmark-human")
+            .incognito(true)
+            .interaction_mode(InteractionMode::Human)
+            .build()?,
+    )
     .await?;
     let rss_after_sessions_start = process_rss_bytes();
 
@@ -299,18 +295,15 @@ async fn bench_cold_start(
     // ── fresh Chrome launch ───────────────────────────────────────────
     let port = available_port().await?;
     let launch_started = Instant::now();
-    let session = BrowserSession::start(&SessionOptions {
-        port,
-        chrome_path: Some(chrome_path.to_path_buf()),
-        profile: "benchmark-cold".to_string(),
-        incognito: true,
-        attach: false,
-        target_id: None,
-        frame_id: None,
-        headed: false,
-        interaction_mode: InteractionMode::Fast,
-        audit: false,
-    })
+    let session = BrowserSession::start(
+        &SessionOptions::builder()
+            .port(port)
+            .chrome_path(chrome_path.to_path_buf())
+            .profile("benchmark-cold")
+            .incognito(true)
+            .interaction_mode(InteractionMode::Fast)
+            .build()?,
+    )
     .await?;
     let chrome_launch_ms = launch_started.elapsed().as_secs_f64() * 1000.0;
 

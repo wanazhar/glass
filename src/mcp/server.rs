@@ -304,6 +304,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         headed: cli.headed,
         interaction_mode: cli.interaction,
         audit: cli.audit,
+        policy: None,
     };
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let stdin = tokio::io::stdin();

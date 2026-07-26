@@ -105,6 +105,19 @@ impl fmt::Display for PolicyError {
 impl std::error::Error for PolicyError {}
 
 impl BrowserPolicy {
+    /// Create a policy from a preset and workspace root.
+    pub fn from_preset(
+        preset: PolicyPreset,
+        workspace_root: impl AsRef<Path>,
+    ) -> Result<Self, PolicyError> {
+        match preset {
+            PolicyPreset::Development => Self::development(workspace_root),
+            PolicyPreset::Ci => Self::ci(workspace_root),
+            PolicyPreset::Hardened => Self::hardened(workspace_root),
+            PolicyPreset::UntrustedMcp => Self::untrusted_mcp(workspace_root),
+        }
+    }
+
     pub fn development(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
         Self::new(PolicyPreset::Development, workspace_root, [], [])
     }

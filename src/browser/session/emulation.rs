@@ -1,7 +1,7 @@
 use super::*;
 
 /// Options for page PDF generation via CDP Page.printToPDF.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PdfOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paper_width: Option<f64>,

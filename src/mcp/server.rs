@@ -246,6 +246,24 @@ enum ToolInvocation<'a> {
     ClearCookies,
     LocalStorage,
     SessionStorage,
+    PrintToPdf {
+        options: serde_json::Value,
+    },
+    FillForm {
+        fields: Vec<(String, String)>,
+    },
+    ClipboardRead,
+    ClipboardWrite {
+        text: String,
+    },
+    SetGeolocation {
+        latitude: f64,
+        longitude: f64,
+    },
+    ClearGeolocation,
+    SetTimezone {
+        timezone_id: String,
+    },
 }
 
 struct Outbound {
@@ -856,6 +874,46 @@ async fn call_tool(
         }
         ToolInvocation::LocalStorage => serialized_result(&session.local_storage().await?),
         ToolInvocation::SessionStorage => serialized_result(&session.session_storage().await?),
+        ToolInvocation::PrintToPdf { options } => {
+            let opts: crate::browser::session::PdfOptions =
+                serde_json::from_value(options).unwrap_or_default();
+            serialized_result(&session.print_to_pdf(&opts).await?)
+        }
+        ToolInvocation::FillForm { fields } => {
+            let refs: Vec<(&str, &str)> = fields
+                .iter()
+                .map(|(t, v)| (t.as_str(), v.as_str()))
+                .collect();
+            serialized_result(&session.fill_form(&refs).await?)
+        }
+        ToolInvocation::ClipboardRead => {
+            let text = session.clipboard_read().await?;
+            serialized_result(&serde_json::json!({"text": text}))
+        }
+        ToolInvocation::ClipboardWrite { text } => {
+            session.clipboard_write(&text).await?;
+            serialized_result(&serde_json::json!({"ok": true}))
+        }
+        ToolInvocation::SetGeolocation {
+            latitude,
+            longitude,
+        } => {
+            let loc = crate::browser::session::GeoLocation {
+                latitude,
+                longitude,
+                accuracy: None,
+            };
+            session.set_geolocation(Some(&loc)).await?;
+            serialized_result(&serde_json::json!({"ok": true}))
+        }
+        ToolInvocation::ClearGeolocation => {
+            session.set_geolocation(None).await?;
+            serialized_result(&serde_json::json!({"ok": true}))
+        }
+        ToolInvocation::SetTimezone { timezone_id } => {
+            session.set_timezone(Some(&timezone_id)).await?;
+            serialized_result(&serde_json::json!({"ok": true}))
+        }
     }
 }
 
@@ -992,6 +1050,38 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "clearCookies" => Ok(ToolInvocation::ClearCookies),
         "localStorage" => Ok(ToolInvocation::LocalStorage),
         "sessionStorage" => Ok(ToolInvocation::SessionStorage),
+        "printToPdf" => Ok(ToolInvocation::PrintToPdf {
+            options: arguments.clone(),
+        }),
+        "fillForm" => {
+            let arr = arguments["fields"]
+                .as_array()
+                .ok_or("fields must be an array")?;
+            let mut fields = Vec::new();
+            for entry in arr {
+                let target = entry["target"]
+                    .as_str()
+                    .ok_or("field target required")?
+                    .to_string();
+                let value = entry["value"].as_str().unwrap_or("").to_string();
+                fields.push((target, value));
+            }
+            Ok(ToolInvocation::FillForm { fields })
+        }
+        "clipboardRead" => Ok(ToolInvocation::ClipboardRead),
+        "clipboardWrite" => Ok(ToolInvocation::ClipboardWrite {
+            text: required_string(arguments, "text")?.to_string(),
+        }),
+        "setGeolocation" => Ok(ToolInvocation::SetGeolocation {
+            latitude: arguments["latitude"].as_f64().ok_or("latitude required")?,
+            longitude: arguments["longitude"]
+                .as_f64()
+                .ok_or("longitude required")?,
+        }),
+        "clearGeolocation" => Ok(ToolInvocation::ClearGeolocation),
+        "setTimezone" => Ok(ToolInvocation::SetTimezone {
+            timezone_id: required_string(arguments, "timezoneId")?.to_string(),
+        }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
 }
@@ -1300,6 +1390,41 @@ fn tools() -> Vec<Tool> {
             name: "sessionStorage",
             description: "Read sessionStorage items (bounded to 64 entries, 1 KiB per value). Requires persistent profile.",
             input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "printToPdf",
+            description: "Generate a PDF of the current page. Returns base64-encoded data.",
+            input_schema: json!({"type":"object","properties":{"paperWidth":{"type":"number"},"paperHeight":{"type":"number"},"printBackground":{"type":"boolean"}}}),
+        },
+        Tool {
+            name: "fillForm",
+            description: "Fill multiple form fields atomically (max 16). Resolves all locators first.",
+            input_schema: json!({"type":"object","properties":{"fields":{"type":"array","items":{"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"}},"required":["target"]}}},"required":["fields"]}),
+        },
+        Tool {
+            name: "clipboardRead",
+            description: "Read text from the system clipboard. Returns up to 8 KiB.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "clipboardWrite",
+            description: "Write text to the system clipboard. Truncated to 8 KiB.",
+            input_schema: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
+        },
+        Tool {
+            name: "setGeolocation",
+            description: "Override browser geolocation. Use clearGeolocation to reset.",
+            input_schema: json!({"type":"object","properties":{"latitude":{"type":"number"},"longitude":{"type":"number"}},"required":["latitude","longitude"]}),
+        },
+        Tool {
+            name: "clearGeolocation",
+            description: "Clear geolocation override.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "setTimezone",
+            description: "Override browser timezone (IANA ID like America/New_York).",
+            input_schema: json!({"type":"object","properties":{"timezoneId":{"type":"string"}},"required":["timezoneId"]}),
         },
     ]
 }
@@ -1698,7 +1823,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 42);
+        assert_eq!(tools.len(), 49);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],

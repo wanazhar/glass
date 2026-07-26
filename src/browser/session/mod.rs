@@ -35,6 +35,7 @@ mod diagnostic;
 mod dialog;
 mod download;
 mod frame;
+mod intercept;
 mod locator;
 mod navigate;
 mod observe;

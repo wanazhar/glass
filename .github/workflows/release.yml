@@ -8,6 +8,30 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install release audit tools
+        run: cargo install cargo-deny cargo-audit --locked
+
+      - name: Generate release validation evidence
+        run: scripts/generate-validation-evidence.sh dist/validation
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-validation-evidence
+          path: dist/validation/release-validation.json
+          if-no-files-found: error
+
   build:
     strategy:
       fail-fast: false
@@ -41,7 +65,19 @@ jobs:
         run: cargo run --release --locked -- install-chromium
 
       - name: Run browser smoke
-        run: GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
+        shell: bash
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture 2>&1 \
+            | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
+
+      - name: Write platform evidence
+        env:
+          GLASS_PLATFORM_TARGET: ${{ matrix.target }}
+          GLASS_PLATFORM_CHROME: managed-chromium-${{ matrix.target }}
+          GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-browser-smoke.log
+        run: python3 scripts/write-platform-evidence.py "dist/platform-${{ matrix.artifact }}.json"
 
       - name: Package artifact
         shell: bash
@@ -67,17 +103,45 @@ jobs:
           path: dist/${{ matrix.artifact }}.sha256
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-${{ matrix.artifact }}
+          path: |
+            dist/platform-${{ matrix.artifact }}.json
+            dist/${{ matrix.artifact }}-browser-smoke.log
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, validate]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: glass-*
           path: dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: platform-*
+          path: evidence/platform
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-validation-evidence
+          path: evidence/validation
+
+      - name: Merge release evidence
+        run: |
+          python3 scripts/merge-platform-evidence.py \
+            dist/platform-matrix.json \
+            evidence/platform/platform-*.json
+          cp evidence/validation/release-validation.json dist/release-validation.json
 
       - name: Verify artifact checksums
         shell: bash

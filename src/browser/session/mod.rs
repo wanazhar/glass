@@ -31,6 +31,7 @@ pub use types::*;
 mod action;
 mod batch;
 mod checkpoint;
+mod clipboard;
 mod diagnostic;
 mod dialog;
 mod diff;

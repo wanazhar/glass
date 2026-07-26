@@ -79,6 +79,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Verify artifact checksums
+        shell: bash
+        run: |
+          for checksum in dist/*.sha256; do
+            sha256sum -c "$checksum"
+          done
+
+      - name: Create checksum manifest
+        shell: bash
+        run: |
+          sha256sum \
+            dist/glass-linux-x86_64 \
+            dist/glass-macos-x86_64 \
+            dist/glass-macos-aarch64 \
+            > dist/SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

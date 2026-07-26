@@ -34,6 +34,7 @@ mod checkpoint;
 mod diagnostic;
 mod dialog;
 mod download;
+mod emulation;
 mod fill;
 mod frame;
 mod intercept;

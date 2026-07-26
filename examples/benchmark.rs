@@ -34,7 +34,11 @@ async fn main() -> BrowserResult<()> {
         .and_then(|value| value.parse().ok())
         .filter(|iterations| *iterations > 0)
         .unwrap_or(DEFAULT_ITERATIONS);
-    let expensive_iterations = (iterations / 5).max(5);
+    let expensive_iterations = std::env::var("GLASS_BENCH_EXPENSIVE_ITERATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|iterations| *iterations > 0)
+        .unwrap_or(iterations);
     let fixture = include_str!("../tests/fixtures/basic.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
 

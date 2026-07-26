@@ -191,6 +191,7 @@ Build the optimized binary first, then write one JSON report per run:
 cargo build --release
 GLASS_BINARY_PATH=target/release/glass \
   GLASS_BENCH_ITERATIONS=50 \
+  GLASS_BENCH_EXPENSIVE_ITERATIONS=50 \
   cargo run --release --example benchmark > benchmark.json
 ```
 
@@ -206,10 +207,13 @@ The benchmark uses the local fixture and reports:
 - the supplied Glass binary size, or `null` if no executable is available at
   `GLASS_BINARY_PATH` or `target/release/glass`.
 
-`GLASS_BENCH_ITERATIONS` controls normal operations. Deep DOM, screenshots, and
-human clicks use one fifth of that count (at least five samples) because they
-are deliberately more expensive. Use p50 and p95, not one average, and avoid
-claiming a regression or improvement from a single run.
+`GLASS_BENCH_ITERATIONS` controls normal operations. The expensive operations
+use the same count by default so a 50-iteration run provides the minimum
+sample count required for fresh-observation release evidence. Set
+`GLASS_BENCH_EXPENSIVE_ITERATIONS` to a smaller positive value only for a
+diagnostic run; such a run must not be used as release evidence. Use p50 and
+p95, not one average, and avoid claiming a regression or improvement from a
+single run.
 
 The payload fields measure serialized `PageContext` JSON only. They do not
 include the JSON-RPC envelope or MCP's separate image-content wrapper. The RSS

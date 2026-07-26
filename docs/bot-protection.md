@@ -1,8 +1,9 @@
-# Bot-Protection & Consent Walls: Honest Access Guide
+# Bot-Protection & Consent Walls: The Honest Lane
 
-When a Glass agent navigates to a page and encounters a challenge (CAPTCHA,
-bot-detection block, or consent wall), the right response is never stealth.
-This guide covers the legitimate access paths available through Glass.
+Glass takes an explicit **honest lane** through bot protection. It never spoofs
+fingerprints, evades detection, or solves CAPTCHAs. Instead it uses signed
+identity, verified-bot registration, authenticated profiles, and consent
+dismissal — the legitimate paths site operators expect from automation.
 
 ## Why CDP Automation Gets Challenged
 

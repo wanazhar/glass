@@ -19,6 +19,7 @@ under 4k tokens for the full `tools/list` response.
 | `doubleClick` | `target`, `selector` | one of | |
 | `hover` | `target` | `target` | |
 | `drag` | `source`, `destination` | both | |
+| `type` | `text`, `target` | `text` | |
 | `key` | `key` | `key` | |
 | `keyDown` | `key` | `key` | |
 | `keyUp` | `key` | `key` | |
@@ -27,10 +28,10 @@ under 4k tokens for the full `tools/list` response.
 | `check` | `target` | `target` | |
 | `uncheck` | `target` | `target` | |
 | `select` | `target`, `value` | `target` | |
-| `type` | `text`, `target` | `text` | |
+| `upload` | `target`, `files` | `target` | |
 | `screenshot` | `format`, `quality`, `scale`, `fullPage`, `clip`, `target` | none | Seven optional properties |
 | `observe` | `includeDom`, `includeScreenshot`, `includeFormValues` | none | Opt-in heavy payloads |
-| `getDOM` | (none) | — | |
+| `getDom` | (none) | — | |
 | `getText` | (none) | — | |
 | `reconcileReferences` | `fromRevision`, `refs` | both | Max 16 refs |
 | `exportCheckpoint` | (none) | — | ≤ 4 KiB output |
@@ -39,17 +40,30 @@ under 4k tokens for the full `tools/list` response.
 | `batch` | `steps` | `steps` | Max 32 steps; 14 action enum values |
 | `scroll` | `dx`, `dy` | none | |
 | `wait` | `condition`, `timeoutMs` | `condition` | |
-| `diagnostics` | `durationMs` | none | 1-30s range |
+| `diagnostics` | `durationMs` | none | 1–30s range |
 | `acceptDialog` | (none) | — | |
 | `dismissDialog` | (none) | — | |
 | `download` | `destination`, `timeoutMs` | `destination` | |
 | `listTargets` | (none) | — | |
 | `createTarget` | `url` | `url` | |
+| `selectTarget` | `id` | `id` | |
 | `closeTarget` | `id` | `id` | |
 | `listFrames` | (none) | — | |
 | `selectFrame` | `id` | `id` | |
+| `cookies` | (none) | — | Requires persistent profile |
+| `setCookies` | `cookies` | `cookies` | Array of cookie objects |
+| `clearCookies` | (none) | — | Requires persistent profile |
+| `localStorage` | (none) | — | Bounded: 64 entries, 1 KiB per value |
+| `sessionStorage` | (none) | — | Bounded: 64 entries, 1 KiB per value |
+| `printToPdf` | `paperWidth`, `paperHeight`, `printBackground` | none | Returns base64 data |
+| `fillForm` | `fields` | `fields` | Max 16 fields, atomic resolution |
+| `clipboardRead` | (none) | — | Returns up to 8 KiB |
+| `clipboardWrite` | `text` | `text` | Truncated to 8 KiB |
+| `setGeolocation` | `latitude`, `longitude` | both | Override browser geolocation |
+| `clearGeolocation` | (none) | — | Reset geolocation override |
+| `setTimezone` | `timezoneId` | `timezoneId` | IANA timezone ID |
 
-**Total: 33 tools.**
+**Total: 49 tools.**
 
 ## Schema Size Estimate
 

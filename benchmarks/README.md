@@ -307,3 +307,27 @@ complement to the fixture-based adversarial suite. The v2 corpus:
 
 This plan is documented here for transparency; the methodology and scenario
 selection are not yet stabilised.
+
+## MCP Schema Budget
+
+Glass ships 49 MCP tools with compact JSON Schema definitions. The complete
+`tools/list` response is ~10 KiB — well under the Chrome DevTools MCP
+~18k-token class. This keeps agent context costs low: every byte of tool
+definition is a byte the model does not spend on page content.
+
+| Metric | Glass | Chrome DevTools MCP |
+|--------|-------|---------------------|
+| MCP tools | 49 | ~33 |
+| `tools/list` response | ~10 KiB | ~18k tokens (~72 KiB) |
+| No-parameter tools | 15 | — |
+| Tools with bounded arrays | 2 (batch ≤ 32, fillForm ≤ 16) | — |
+
+Glass achieves this through:
+- **Stable verbs**: one fixed action set with typed parameters, not tool sprawl
+- **Locator consolidation**: `target` accepts all locator forms (ref, name,
+  role+name, text, CSS, ordinal) — one input, not six tools
+- **Opt-in heavy payloads**: DOM and screenshots require explicit boolean flags
+- **Documented caps**: every array parameter has a published maximum
+
+See [docs/mcp-schema-budget.md](../docs/mcp-schema-budget.md) for the full
+inventory, design principles, and rejection criteria for new tools.

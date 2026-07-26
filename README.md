@@ -97,14 +97,97 @@ glass --incognito observe
   interact with the system clipboard through the browser.
 - **WebAuthn**: `glass webauthn --protocol ctap2` enables a virtual authenticator
   for testing passkey and WebAuthn flows.
+- **Geolocation & timezone**: `glass geolocation set 40.7128 -74.0060` overrides
+  position; `glass timezone America/New_York` sets the timezone for testing
+  locale-dependent pages.
 - **Retry**: `glass click --retry 3 "button"` retries on transport/CDP errors
   while failing immediately on ambiguous targets.
 - **Network recording**: `glass network start` / `glass network stop` capture
   HAR-like request/response entries.
 - **Request interception**: `glass intercept "*.google-analytics.com/*"` enables
   CDP Fetch domain interception with scoped guards.
+- **Batch operations**: execute up to 32 ordered actions in a single policy
+  pre-flight, with typed outcomes per step.
+- **Session checkpoints**: `glass checkpoint export` / `glass checkpoint import`
+  serialize session state for cross-process handoff.
+- **Screenshots**: element, full-page, clip-region, and HiDPI captures via
+  `glass screenshot` with configurable format, quality, and scale.
+- **Drag & drop**: `glass drag source destination` for drag-based interactions.
+- **File upload**: `glass upload target file1.pdf file2.pdf` sets files on a file
+  input element.
+- **Dialogs**: `glass accept-dialog` and `glass dismiss-dialog` handle JavaScript
+  alerts, confirms, and prompts.
+- **Frame & target management**: `glass frames` lists frames; `glass select-frame`
+  switches context. `glass targets` lists page targets with explicit select/close.
+- **Popup witness**: `glass click-expect-popup target` verifies causal popup
+  opening from a click.
 
 See the [CLI reference](docs/cli.md) for all commands and session options.
+
+## Using an Existing Login
+
+Glass supports persistent browser profiles so agents can reuse authenticated
+sessions without pasting credentials into the model. See the
+[profile ergonomics guide](docs/profile-ergonomics.md) for lifecycle details.
+
+### Cookbook: Start from an existing login
+
+1. **Create a named profile and log in once** (use `--headed` to interact
+   with the browser):
+
+   ```console
+   glass --headed --profile work navigate https://app.example.com/login
+   ```
+
+   Complete the login flow manually, then close the browser. Cookies, local
+   storage, and session state persist in the profile.
+
+2. **Reuse the authenticated session** in any subsequent run:
+
+   ```console
+   glass --profile work "navigate to https://app.example.com/dashboard"
+   glass --profile work observe
+   ```
+
+### Inspect and manage cookies at runtime
+
+Glass exposes three MCP tools for cookie inspection within a profile session:
+
+| Tool | Description |
+|------|-------------|
+| `cookies` | Read all browser cookies for the current page |
+| `setCookies` | Set browser cookies (requires `name`, `value`, `domain`) |
+| `clearCookies` | Clear all browser cookies |
+
+Cookie operations are policy-gated: they require the `PersistentProfile`
+capability. In `hardened` policy mode, profiles are denied by default; use
+`--policy-allow persistent-profile` to enable them.
+
+### Inspect DOM storage
+
+| Tool | Description |
+|------|-------------|
+| `localStorage` | Read localStorage items (bounded to 64 entries, 1 KiB per value) |
+| `sessionStorage` | Read sessionStorage items (same bounds) |
+
+All storage operations use the active profile's origin-scoped data.
+
+### Example MCP workflow
+
+```
+# Agent initializes with a named profile, navigates, and reads session state:
+1. tools/call: navigate { url: "https://app.example.com" }
+2. tools/call: cookies
+3. tools/call: localStorage
+# ... perform authenticated actions ...
+4. tools/call: setCookies { cookies: [{ name: "pref", value: "dark", domain: "app.example.com" }] }
+# On teardown:
+5. tools/call: clearCookies
+```
+
+Profiles, cookies, and storage are covered in depth in the
+[profile ergonomics](docs/profile-ergonomics.md) and
+[MCP integration](docs/mcp.md) guides.
 
 ## MCP
 
@@ -171,6 +254,38 @@ on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows, or
 > preset denies `evaluate` and network interception; `--policy dev` allows
 > everything. See `glass --help` for policy presets.
 
+## Scoreboard
+
+Glass publishes and maintains a public scoreboard of category-defining metrics.
+These numbers are reproducible with the same fixtures and Chrome build.
+
+| Metric | Current value | Comparator |
+|--------|--------------|------------|
+| Runner RSS (peak) | ~8.9 MB | Playwright MCP ~196 MB |
+| Tests passing | 226 | — |
+| MCP tools | 49 | Chrome DevTools MCP ~33 |
+| Wrong actions | 0 (adversarial suite) | Playwright: 0 |
+| Session modules | 24 | — |
+
+See the [category metric guide](docs/category-metric.md) for methodology and
+reproduction steps. See the [benchmarks README](benchmarks/README.md) for
+competitive acceptance results.
+
+## MCP Schema Budget
+
+Glass maintains a bounded, audited MCP tool surface. With 49 tools using compact
+JSON Schema definitions, the full `tools/list` response fits within ~10 KiB —
+well under the Chrome DevTools MCP ~18k-token class.
+
+- **Stable verbs, not tool sprawl.** One fixed action set with typed parameters.
+- **Locator forms are a single parameter.** `target` accepts all locator forms
+  (ref, name, role+name, text, CSS, ordinal).
+- **Heavy payloads are opt-in.** Screenshots and DOM require explicit flags.
+- **All arrays have documented caps.** `batch.steps` ≤ 32, `fillForm.fields` ≤ 16.
+
+See the [MCP schema budget](docs/mcp-schema-budget.md) for the full tool
+inventory, design principles, and rejection criteria.
+
 ## Behavior and safety
 
 - Compact observations contain the URL, title, bounded visible text, and
@@ -191,6 +306,10 @@ or sensitive data.
 - [Installation and operations](docs/installation.md)
 - [CLI reference](docs/cli.md)
 - [MCP integration](docs/mcp.md)
+- [MCP schema budget](docs/mcp-schema-budget.md) — 49 tools, ~10 KiB
+- [Profile ergonomics](docs/profile-ergonomics.md) — logged-in session cookbook
+- [Bot protection & consent walls](docs/bot-protection.md) — honest access guide
+- [Category metric & scoreboard](docs/category-metric.md)
 - [Positioning & comparison](docs/positioning.md)
 - [Architecture](docs/architecture/README.md)
 - [Benchmarks](benchmarks/README.md)

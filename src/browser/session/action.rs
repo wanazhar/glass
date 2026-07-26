@@ -693,9 +693,22 @@ impl BrowserSession {
         let Some(frame_id) = self.cdp.active_frame() else {
             return Ok(point);
         };
-        let frames = self.list_frames().await?;
-        let Some(frame) = frames.iter().find(|frame| frame.id == frame_id) else {
-            return Err("selected frame is no longer attached".into());
+        let frame = {
+            let topology = self.topology.lock().await;
+            topology
+                .frames
+                .iter()
+                .find(|frame| frame.id == frame_id)
+                .cloned()
+        };
+        let frame = match frame {
+            Some(frame) => frame,
+            None => self
+                .list_frames()
+                .await?
+                .into_iter()
+                .find(|frame| frame.id == frame_id)
+                .ok_or("selected frame is no longer attached")?,
         };
         if frame.parent_id.is_none() {
             return Ok(point);

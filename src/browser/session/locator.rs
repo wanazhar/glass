@@ -273,16 +273,16 @@ impl BrowserSession {
             }));
         }
 
-        let snapshot = self.snapshot().await?;
+        let revision = self.page_revision.load(Ordering::Relaxed);
+        let roots = parse_accessibility_tree(&self.cdp.get_accessibility_tree().await?);
+        let interactive = interactive_elements(&roots, revision);
         let matches: Vec<&InteractiveElement> = match locator {
-            Locator::AccessibleName(name) => snapshot
-                .interactive
+            Locator::AccessibleName(name) => interactive
                 .iter()
                 .filter(|element| element.name.eq_ignore_ascii_case(name))
                 .take(AMBIGUOUS_CANDIDATE_LIMIT + 1)
                 .collect(),
-            Locator::RoleAndName { role, name } => snapshot
-                .interactive
+            Locator::RoleAndName { role, name } => interactive
                 .iter()
                 .filter(|element| {
                     element.role.eq_ignore_ascii_case(role)
@@ -290,7 +290,7 @@ impl BrowserSession {
                 })
                 .take(AMBIGUOUS_CANDIDATE_LIMIT + 1)
                 .collect(),
-            Locator::Ordinal(index) => snapshot.interactive.get(index - 1).into_iter().collect(),
+            Locator::Ordinal(index) => interactive.get(index - 1).into_iter().collect(),
             Locator::Reference(_) | Locator::Text(_) | Locator::Css(_) => Vec::new(),
         };
         if matches.len() == 1 {

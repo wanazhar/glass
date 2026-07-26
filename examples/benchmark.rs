@@ -324,15 +324,10 @@ async fn bench_cold_start(
     }))
 }
 
-/// Instrument click overhead: separate Glass client-side wrapper logic
-/// from estimated CDP round-trip time.
-///
-/// Strategy (non-invasive – no internal session changes):
-/// 1. Measure a baseline single-CDP-command round-trip via `evaluate("1+1")`.
-/// 2. For each click, count CDP requests issued and time the full
-///    `session.click()` call.
-/// 3. Estimate CDP time as `cdp_call_count × baseline_cdp_roundtrip`.
-/// 4. Estimate Glass overhead as `total_click_time − estimated_cdp_time`.
+/// Instrument click overhead: separate Glass client-side wrapper logic from
+/// time spent awaiting actual CDP responses. The CDP client records the
+/// response wait for every command, avoiding the distortion caused by using a
+/// lightweight-command median for heavier commands such as AX snapshots.
 ///
 /// Returns a JSON object with per-sample breakdowns and aggregated
 /// statistics.
@@ -340,18 +335,8 @@ async fn bench_client_overhead(
     session: &BrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
-    // Baseline: single lightweight CDP round-trip
-    let mut baseline_samples = Vec::with_capacity(10);
-    for _ in 0..10 {
-        let started = Instant::now();
-        let _ = session.evaluate("1 + 1").await?;
-        baseline_samples.push(started.elapsed().as_secs_f64() * 1000.0);
-    }
-    baseline_samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-    let baseline_cdp_ms = baseline_samples[baseline_samples.len() / 2]; // median
-
     let mut total_samples = Vec::with_capacity(iterations);
-    let mut cdp_estimated_samples = Vec::with_capacity(iterations);
+    let mut cdp_wait_samples = Vec::with_capacity(iterations);
     let mut overhead_samples = Vec::with_capacity(iterations);
     let mut cdp_call_counts = Vec::with_capacity(iterations);
 
@@ -362,26 +347,27 @@ async fn bench_client_overhead(
 
         let cdp_before = session.cdp_request_count();
         let started = Instant::now();
-        let _ = session.click(target).await?;
+        let (click_result, cdp_wait_nanos) = session.measure_cdp_wait(session.click(target)).await;
+        let _ = click_result?;
         let total_ms = started.elapsed().as_secs_f64() * 1000.0;
         let cdp_after = session.cdp_request_count();
 
         let cdp_calls = cdp_after.saturating_sub(cdp_before);
-        let estimated_cdp_ms = cdp_calls as f64 * baseline_cdp_ms;
-        let overhead_ms = if total_ms > estimated_cdp_ms {
-            total_ms - estimated_cdp_ms
+        let cdp_wait_ms = cdp_wait_nanos as f64 / 1_000_000.0;
+        let overhead_ms = if total_ms > cdp_wait_ms {
+            total_ms - cdp_wait_ms
         } else {
             0.0
         };
 
         total_samples.push(total_ms);
-        cdp_estimated_samples.push(estimated_cdp_ms);
+        cdp_wait_samples.push(cdp_wait_ms);
         overhead_samples.push(overhead_ms);
         cdp_call_counts.push(cdp_calls);
     }
 
     total_samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-    cdp_estimated_samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    cdp_wait_samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     overhead_samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
     let summarize_f64 = |label: &str, data: &[f64]| -> Value {
@@ -408,11 +394,10 @@ async fn bench_client_overhead(
     Ok(json!({
         "operation": "client_overhead",
         "iterations": iterations,
-        "baseline_cdp_roundtrip_ms": baseline_cdp_ms,
         "avg_cdp_calls_per_click": avg_cdp_calls,
         "total_click": summarize_f64("click_total", &total_samples),
-        "estimated_cdp_time": summarize_f64("click_cdp_estimated", &cdp_estimated_samples),
-        "estimated_glass_overhead": summarize_f64("click_glass_overhead", &overhead_samples),
+        "observed_cdp_wait": summarize_f64("click_cdp_wait", &cdp_wait_samples),
+        "glass_overhead": summarize_f64("click_glass_overhead", &overhead_samples),
     }))
 }
 

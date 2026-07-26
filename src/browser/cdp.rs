@@ -31,6 +31,7 @@ struct CdpRoute {
 
 tokio::task_local! {
     static OPERATION_ROUTE: CdpRoute;
+    static CDP_WAIT_SCOPE: Arc<AtomicU64>;
 }
 
 /// A CDP method call request.
@@ -201,6 +202,7 @@ pub struct CdpClient {
     screencast_sink: Arc<std::sync::Mutex<Option<ScreencastSink>>>,
     screencast_received: Arc<AtomicU64>,
     screencast_dropped: Arc<AtomicU64>,
+    cdp_wait_nanos: Arc<AtomicU64>,
     timeout: Duration,
     active_route: Arc<std::sync::Mutex<CdpRoute>>,
 }
@@ -253,6 +255,27 @@ impl CdpClient {
         self.next_id.load(Ordering::Relaxed).saturating_sub(1)
     }
 
+    /// Total time spent awaiting CDP responses on this connection.
+    ///
+    /// This is a monotonic diagnostic counter used by the benchmark to
+    /// separate protocol wait time from Glass-side orchestration work.
+    pub fn cdp_wait_nanos(&self) -> u64 {
+        self.cdp_wait_nanos.load(Ordering::Relaxed)
+    }
+
+    /// Measure CDP response wait time initiated by one async operation.
+    ///
+    /// The scope is task-local, so detached cleanup work does not get charged
+    /// to the operation that caused it.
+    pub async fn measure_cdp_wait<F>(&self, future: F) -> (F::Output, u64)
+    where
+        F: std::future::Future,
+    {
+        let wait_nanos = Arc::new(AtomicU64::new(0));
+        let output = CDP_WAIT_SCOPE.scope(Arc::clone(&wait_nanos), future).await;
+        (output, wait_nanos.load(Ordering::Relaxed))
+    }
+
     /// Connect to a Chrome CDP page WebSocket using the default timeout.
     pub async fn connect(ws_url: &str) -> Result<Self, Box<dyn Error>> {
         Self::connect_with_timeout(ws_url, Duration::from_secs(30)).await
@@ -277,6 +300,7 @@ impl CdpClient {
         let actor_screencast_received = Arc::clone(&screencast_received);
         let screencast_dropped = Arc::new(AtomicU64::new(0));
         let actor_screencast_dropped = Arc::clone(&screencast_dropped);
+        let cdp_wait_nanos = Arc::new(AtomicU64::new(0));
         let actor_tx = tx.clone();
         let actor_next_id = Arc::new(AtomicU64::new(1));
         let next_id = Arc::clone(&actor_next_id);
@@ -383,6 +407,7 @@ impl CdpClient {
             screencast_sink,
             screencast_received,
             screencast_dropped,
+            cdp_wait_nanos,
             timeout,
             active_route: Arc::new(std::sync::Mutex::new(CdpRoute::default())),
         })
@@ -553,8 +578,9 @@ impl CdpClient {
             id,
             armed: true,
         };
+        let started = std::time::Instant::now();
 
-        match tokio::time::timeout(timeout, response_rx).await {
+        let result = match tokio::time::timeout(timeout, response_rx).await {
             Ok(Ok(result)) => {
                 pending_guard.disarm();
                 result
@@ -564,7 +590,14 @@ impl CdpClient {
                 Err(CdpError::transport("CDP response channel closed"))
             }
             Err(_) => Err(CdpError::response_timeout(timeout)),
+        };
+        let elapsed_nanos = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.cdp_wait_nanos
+            .fetch_add(elapsed_nanos, Ordering::Relaxed);
+        if let Ok(scope) = CDP_WAIT_SCOPE.try_with(Arc::clone) {
+            scope.fetch_add(elapsed_nanos, Ordering::Relaxed);
         }
+        result
     }
 
     pub fn set_active_session(&self, session_id: Option<String>) {

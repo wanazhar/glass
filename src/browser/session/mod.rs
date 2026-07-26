@@ -411,6 +411,19 @@ impl BrowserSession {
         self.cdp.request_count()
     }
 
+    /// Total time spent awaiting responses from the page's CDP connection.
+    pub fn cdp_wait_nanos(&self) -> u64 {
+        self.cdp.cdp_wait_nanos()
+    }
+
+    /// Measure CDP response wait time initiated by one async operation.
+    pub async fn measure_cdp_wait<F>(&self, future: F) -> (F::Output, u64)
+    where
+        F: std::future::Future,
+    {
+        self.cdp.measure_cdp_wait(future).await
+    }
+
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
         let policy = match &options.policy {
             Some(policy) => policy.clone(),

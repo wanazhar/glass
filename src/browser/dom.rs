@@ -61,6 +61,10 @@ pub struct CompactInteractiveElement {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub backend_dom_node_id: i64,
+    /// Bounded accessibility ancestor labels used for scoped reconciliation.
+    /// This is an internal continuity hint and is not emitted on the wire.
+    #[serde(skip)]
+    pub(crate) ancestor_path: Vec<String>,
     /// Role+name breadcrumbs for shadow-host ancestry (max 3 entries, 64 bytes each).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow_host_path: Option<Vec<String>>,
@@ -291,13 +295,24 @@ pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
 /// Deterministic relevance score for interactive controls.
 /// Higher score = more important to include when truncating.
 fn control_relevance_score(control: &CompactInteractiveElement) -> i32 {
-    match control.role.as_str() {
-        "button" | "link" => 20,
-        "textbox" | "combobox" | "searchbox" | "spinbutton" => 18,
-        "checkbox" | "radio" | "switch" | "menuitem" | "option" => 15,
-        "listbox" | "menu" | "tab" | "treeitem" => 10,
-        _ => 0,
-    }
+    let role_score = match control.role.as_str() {
+        "button" | "link" => 36,
+        "textbox" | "combobox" | "searchbox" | "spinbutton" => 34,
+        "checkbox" | "radio" | "switch" | "menuitem" | "option" => 30,
+        "slider" => 28,
+        "listbox" | "menu" | "tab" | "treeitem" => 24,
+        _ => 12,
+    };
+    let form_score = if control.input_type.is_some() { 8 } else { 0 }
+        + i32::from(control.required) * 5
+        + i32::from(control.checked.is_some() || control.selected_option.is_some()) * 3;
+    let name_score = if control.name.is_empty() { 0 } else { 6 };
+    let shadow_score = if control.shadow_host_path.is_some() {
+        -2
+    } else {
+        0
+    };
+    role_score + form_score + name_score + shadow_score
 }
 
 /// Rank interactive controls by relevance, keeping the most important ones first.
@@ -332,7 +347,7 @@ pub fn project_compact_accessibility_with_ranking(
     let mut state = CompactProjectionState::new();
     let roots = nodes
         .iter()
-        .filter_map(|node| project_compact_node(node, revision, &mut state))
+        .filter_map(|node| project_compact_node(node, revision, &mut state, &[]))
         .collect();
     let total_discovered = state.interactive.len();
     let ranking_applied =
@@ -378,6 +393,7 @@ fn project_compact_node(
     node: &AxNode,
     revision: u64,
     state: &mut CompactProjectionState,
+    ancestors: &[String],
 ) -> Option<CompactAxNode> {
     if state.node_count >= COMPACT_AX_MAX_NODES {
         state.truncated = true;
@@ -403,6 +419,7 @@ fn project_compact_node(
                 role: role.clone(),
                 name: control_name,
                 backend_dom_node_id,
+                ancestor_path: ancestors.to_vec(),
                 shadow_host_path: None,
                 input_type: node.input_type.clone(),
                 value: None,
@@ -425,10 +442,19 @@ fn project_compact_node(
         state.labels_truncated |= name.len() < node.name.len();
     }
 
+    let mut child_ancestors = ancestors.to_vec();
+    let ancestor_label = format!("{}:{}", role, name);
+    if !ancestor_label.trim_end_matches(':').is_empty() {
+        let (label, _) = truncate_utf8(&ancestor_label, 96);
+        child_ancestors.push(label);
+        if child_ancestors.len() > 4 {
+            child_ancestors.remove(0);
+        }
+    }
     let children = node
         .children
         .iter()
-        .filter_map(|child| project_compact_node(child, revision, state))
+        .filter_map(|child| project_compact_node(child, revision, state, &child_ancestors))
         .collect();
     Some(CompactAxNode {
         role,

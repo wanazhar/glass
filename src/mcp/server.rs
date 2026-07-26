@@ -21,9 +21,9 @@ use tracing::{debug, info};
 
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1, DownloadError,
-    PopupClickError, PreflightAction, SessionOptions, TargetError, VisualCaptureOptions,
-    VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator,
+    PopupClickError, PreflightAction, ReconciliationOptions, SessionOptions, TargetError,
+    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -218,6 +218,8 @@ enum ToolInvocation<'a> {
     ReconcileReferences {
         from_revision: u64,
         refs: Vec<String>,
+        hints: Vec<String>,
+        scope_ref: Option<String>,
     },
     ObserveDelta,
     SetNetworkConditions {
@@ -854,7 +856,23 @@ async fn call_tool(
         ToolInvocation::ReconcileReferences {
             from_revision,
             refs,
-        } => serialized_result(&session.reconcile_references(from_revision, &refs).await?),
+            hints,
+            scope_ref,
+        } => {
+            let options = ReconciliationOptions {
+                hints: hints
+                    .iter()
+                    .map(|hint| Locator::parse(hint))
+                    .collect::<BrowserResult<Vec<_>>>()?,
+                scope_ref,
+                include_delta: false,
+            };
+            serialized_result(
+                &session
+                    .reconcile_references_with_options(from_revision, &refs, &options)
+                    .await?,
+            )
+        }
         ToolInvocation::ObserveDelta => serialized_result(&session.observe_delta().await?),
         ToolInvocation::SetNetworkConditions {
             preset,
@@ -1121,6 +1139,11 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            hints: optional_string_array(arguments, "hints", 8)?,
+            scope_ref: arguments
+                .get("scopeRef")
+                .and_then(Value::as_str)
+                .map(String::from),
         }),
         "observeDelta" => Ok(ToolInvocation::ObserveDelta),
         "setNetworkConditions" => Ok(ToolInvocation::SetNetworkConditions {
@@ -1394,7 +1417,9 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "fromRevision": {"type": "integer", "minimum": 0},
-                    "refs": {"type": "array", "items": {"type": "string"}, "maxItems": 16}
+                    "refs": {"type": "array", "items": {"type": "string"}, "maxItems": 16},
+                    "hints": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+                    "scopeRef": {"type": "string"}
                 },
                 "required": ["fromRevision", "refs"]
             }),
@@ -1648,6 +1673,30 @@ fn required_string_array<'a>(arguments: &'a Value, name: &str) -> BrowserResult<
         .map(|v| {
             v.as_str()
                 .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{name} entries must be non-empty strings").into())
+        })
+        .collect()
+}
+
+fn optional_string_array(
+    arguments: &Value,
+    name: &str,
+    max_entries: usize,
+) -> BrowserResult<Vec<String>> {
+    let Some(value) = arguments.get(name) else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .filter(|values| values.len() <= max_entries)
+        .ok_or_else(|| format!("{name} must be an array with at most {max_entries} entries"))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|entry| !entry.trim().is_empty())
+                .map(str::to_string)
                 .ok_or_else(|| format!("{name} entries must be non-empty strings").into())
         })
         .collect()

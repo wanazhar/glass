@@ -5,6 +5,7 @@
 //! session-scoped target management.
 
 use futures_util::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -82,6 +83,10 @@ impl CdpError {
             data: None,
             kind: CdpErrorKind::ResponseTimeout,
         }
+    }
+
+    fn decode(error: impl std::fmt::Display) -> Self {
+        Self::transport(format!("failed to decode typed CDP response: {error}"))
     }
 
     /// Whether this error is the locally typed expiry of an unanswered CDP request.
@@ -412,6 +417,41 @@ impl CdpClient {
         let session_id = self.current_route().session_id;
         self.send_routed(method, params, session_id, self.timeout)
             .await
+    }
+
+    /// Send a command and deserialize its response into a caller-owned type.
+    ///
+    /// The untyped [`send`](Self::send) method remains available at the CDP
+    /// boundary, while session code can use this helper for stable response
+    /// shapes without repeatedly indexing raw `serde_json::Value` objects.
+    pub async fn send_typed<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<R, CdpError> {
+        let value = self.send(method, params).await?;
+        serde_json::from_value(value).map_err(CdpError::decode)
+    }
+
+    /// Typed variant of [`send_browser`](Self::send_browser).
+    pub async fn send_browser_typed<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<R, CdpError> {
+        let value = self.send_browser(method, params).await?;
+        serde_json::from_value(value).map_err(CdpError::decode)
+    }
+
+    /// Typed variant of [`send_to_session`](Self::send_to_session).
+    pub async fn send_to_session_typed<R: DeserializeOwned>(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<R, CdpError> {
+        let value = self.send_to_session(session_id, method, params).await?;
+        serde_json::from_value(value).map_err(CdpError::decode)
     }
 
     pub async fn send_browser(

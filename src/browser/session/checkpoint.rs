@@ -92,6 +92,23 @@ impl BrowserSession {
         from_revision: u64,
         refs: &[String],
     ) -> BrowserResult<ReconciliationOutcome> {
+        self.reconcile_references_with_options(
+            from_revision,
+            refs,
+            &ReconciliationOptions::default(),
+        )
+        .await
+    }
+
+    /// Reconcile revisioned references with bounded stable hints and an
+    /// optional scope. Hints are only used after backend identity and the
+    /// prior role/name identity fail; ambiguity always remains a loss.
+    pub async fn reconcile_references_with_options(
+        &self,
+        from_revision: u64,
+        refs: &[String],
+        options: &ReconciliationOptions,
+    ) -> BrowserResult<ReconciliationOutcome> {
         if refs.len() > MAX_RECONCILE_REFS {
             return Err(format!(
                 "too many refs to reconcile: {} (max {})",
@@ -100,8 +117,23 @@ impl BrowserSession {
             )
             .into());
         }
+        if options.hints.len() > MAX_RECONCILE_HINTS {
+            return Err(format!(
+                "too many reconciliation hints: {} (max {})",
+                options.hints.len(),
+                MAX_RECONCILE_HINTS
+            )
+            .into());
+        }
 
         let current_revision = self.page_revision.load(Ordering::Relaxed);
+        let prior_page = self
+            .observation_cache
+            .lock()
+            .await
+            .as_ref()
+            .filter(|cached| cached.revision == from_revision)
+            .map(|cached| cached.context.page.clone());
         let prior = {
             let cache = self.observation_cache.lock().await;
             cache
@@ -122,6 +154,7 @@ impl BrowserSession {
                                     control.role.clone(),
                                     control.name.clone(),
                                     control.backend_dom_node_id,
+                                    control.ancestor_path.clone(),
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -131,6 +164,7 @@ impl BrowserSession {
         if current_revision == from_revision {
             if prior.is_none() {
                 return Ok(ReconciliationOutcome {
+                    status: ReconciliationStatus::Complete,
                     to_revision: current_revision,
                     preserved: 0,
                     relocated: 0,
@@ -139,9 +173,11 @@ impl BrowserSession {
                         .iter()
                         .map(|old| ReferenceMapping::Lost {
                             old: old.clone(),
-                            reason: "missing_prior_snapshot".to_string(),
+                            reason: ReferenceLostReason::StaleBoundary,
                         })
                         .collect(),
+                    mutation_summary: MutationSummary::default(),
+                    incomplete: vec![ObservationIncompleteReason::BoundaryScan],
                 });
             }
             // Same revision: validate the ref shape and revision before
@@ -152,7 +188,7 @@ impl BrowserSession {
                 .map(|(_, _, controls)| {
                     controls
                         .iter()
-                        .map(|(reference, _, _, _)| reference.as_str())
+                        .map(|(reference, _, _, _, _)| reference.as_str())
                         .collect()
                 })
                 .unwrap_or_default();
@@ -170,12 +206,7 @@ impl BrowserSession {
                     }
                     _ => ReferenceMapping::Lost {
                         old: old.clone(),
-                        reason: if known_refs.contains(old.as_str()) {
-                            "invalid_ref_format"
-                        } else {
-                            "not_in_snapshot"
-                        }
-                        .to_string(),
+                        reason: ReferenceLostReason::StaleBoundary,
                     },
                 })
                 .collect();
@@ -185,11 +216,14 @@ impl BrowserSession {
                 .count();
             let lost = mappings.len() - preserved;
             return Ok(ReconciliationOutcome {
+                status: ReconciliationStatus::Complete,
                 to_revision: current_revision,
                 preserved,
                 relocated: 0,
                 lost,
                 mappings,
+                mutation_summary: MutationSummary::default(),
+                incomplete: Vec::new(),
             });
         }
 
@@ -199,11 +233,17 @@ impl BrowserSession {
 
         // Build lookup: backend_dom_node_id -> current ref
         let mut current_by_backend: HashMap<i64, String> = HashMap::new();
-        let mut current_controls: Vec<(&str, &str, i64, &str)> = Vec::new();
+        let mut current_controls: Vec<(&str, &str, i64, &str, &[String])> = Vec::new();
         let ax = &context.accessibility;
         for c in &ax.interactive {
             current_by_backend.insert(c.backend_dom_node_id, c.reference.clone());
-            current_controls.push((&c.role, &c.name, c.backend_dom_node_id, &c.reference));
+            current_controls.push((
+                &c.role,
+                &c.name,
+                c.backend_dom_node_id,
+                &c.reference,
+                &c.ancestor_path,
+            ));
         }
 
         // A cached observation is the only safe source of the old route and
@@ -212,6 +252,19 @@ impl BrowserSession {
         let route_changed = prior.as_ref().is_none_or(|(old_target, old_frame, _)| {
             context.page.target_id != *old_target || context.page.frame_id != *old_frame
         });
+
+        let scope_label = options.scope_ref.as_ref().and_then(|scope_ref| {
+            parse_revisioned_reference(scope_ref)
+                .ok()
+                .flatten()
+                .and_then(|scope| {
+                    current_controls
+                        .iter()
+                        .find(|(_, _, backend, _, _)| *backend == scope.backend_dom_node_id)
+                        .map(|(role, name, _, _, _)| format!("{}:{}", role, name))
+                })
+        });
+        let scope_invalid = options.scope_ref.is_some() && scope_label.is_none();
 
         let mut mappings = Vec::with_capacity(refs.len());
         let mut preserved = 0usize;
@@ -223,7 +276,7 @@ impl BrowserSession {
             let Ok(Some(reference)) = parse_revisioned_reference(old_ref) else {
                 mappings.push(ReferenceMapping::Lost {
                     old: old_ref.clone(),
-                    reason: "invalid_ref_format".to_string(),
+                    reason: ReferenceLostReason::StaleBoundary,
                 });
                 lost += 1;
                 continue;
@@ -231,14 +284,7 @@ impl BrowserSession {
             if reference.revision != from_revision || route_changed {
                 mappings.push(ReferenceMapping::Lost {
                     old: old_ref.clone(),
-                    reason: if route_changed && prior.is_some() {
-                        "route_changed"
-                    } else if route_changed {
-                        "missing_prior_snapshot"
-                    } else {
-                        "stale_boundary"
-                    }
-                    .to_string(),
+                    reason: ReferenceLostReason::StaleBoundary,
                 });
                 lost += 1;
                 continue;
@@ -255,52 +301,125 @@ impl BrowserSession {
                 continue;
             }
 
-            // Try an exact role+name relocation only when the old reference
-            // came from the cached observation for this revision. Require one
-            // candidate; duplicate labels remain Lost/Ambiguous.
-            if let Some((_, _, old_controls)) = prior.as_ref()
-                && let Some((_, role, name, _)) = old_controls
+            if scope_invalid {
+                mappings.push(ReferenceMapping::Lost {
+                    old: old_ref.clone(),
+                    reason: ReferenceLostReason::OutOfScope,
+                });
+                lost += 1;
+                continue;
+            }
+
+            // First use the prior control's exact role/name identity.
+            let prior_control = prior.as_ref().and_then(|(_, _, controls)| {
+                controls
                     .iter()
-                    .find(|(reference, _, _, _)| reference == old_ref)
+                    .find(|(reference, _, _, _, _)| reference == old_ref)
+            });
+            let mut match_kind = ReferenceMatch::RoleAndName;
+            let mut matches: Vec<_> = prior_control
+                .map(|(_, role, name, _, _)| {
+                    current_controls
+                        .iter()
+                        .filter(|(current_role, current_name, _, _, _)| {
+                            current_role.eq_ignore_ascii_case(role)
+                                && current_name.eq_ignore_ascii_case(name)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Stable hints are positional and only run after backend and
+            // prior role/name identity fail. This keeps the API bounded and
+            // preserves locator-chain ambiguity semantics.
+            if matches.is_empty()
+                && let Some(hint) = options
+                    .hints
+                    .get(refs.iter().position(|r| r == old_ref).unwrap_or(usize::MAX))
             {
-                let matches: Vec<_> = current_controls
+                match_kind = match hint {
+                    Locator::AccessibleName(_) => ReferenceMatch::AccessibleName,
+                    _ => ReferenceMatch::Hint,
+                };
+                matches = current_controls
                     .iter()
-                    .filter(|(current_role, current_name, _, _)| {
-                        current_role.eq_ignore_ascii_case(role)
-                            && current_name.eq_ignore_ascii_case(name)
-                    })
+                    .filter(|control| locator_matches_compact(hint, control))
                     .collect();
-                if matches.len() == 1 {
-                    mappings.push(ReferenceMapping::Relocated {
-                        old: old_ref.clone(),
-                        new: matches[0].3.to_string(),
-                        matched_by: "role_and_name".to_string(),
-                    });
-                    relocated += 1;
-                    continue;
-                }
-                if matches.len() > 1 {
+            }
+
+            if let Some(scope) = scope_label.as_deref() {
+                matches.retain(|(_, _, _, _, ancestors)| {
+                    ancestors.iter().any(|ancestor| ancestor == scope)
+                });
+                if matches.is_empty() && prior_control.is_some() {
                     mappings.push(ReferenceMapping::Lost {
                         old: old_ref.clone(),
-                        reason: "ambiguous".to_string(),
+                        reason: ReferenceLostReason::OutOfScope,
                     });
                     lost += 1;
                     continue;
                 }
+                if !matches.is_empty() {
+                    match_kind = ReferenceMatch::ScopedHint;
+                }
+            }
+            if matches.len() == 1 {
+                mappings.push(ReferenceMapping::Relocated {
+                    old: old_ref.clone(),
+                    new: matches[0].3.to_string(),
+                    matched_by: match_kind,
+                });
+                relocated += 1;
+                continue;
+            }
+            if matches.len() > 1 {
+                mappings.push(ReferenceMapping::Lost {
+                    old: old_ref.clone(),
+                    reason: ReferenceLostReason::Ambiguous {
+                        candidates: matches
+                            .iter()
+                            .take(AMBIGUOUS_CANDIDATE_LIMIT)
+                            .map(|(role, name, _, reference, _)| CandidateSummary {
+                                label: bounded_candidate_label(&format!("{} {}", role, name)),
+                                reference: Some((*reference).to_string()),
+                            })
+                            .collect(),
+                    },
+                });
+                lost += 1;
+                continue;
             }
             mappings.push(ReferenceMapping::Lost {
                 old: old_ref.clone(),
-                reason: "backend_node_removed".to_string(),
+                reason: ReferenceLostReason::NotFound,
             });
             lost += 1;
         }
 
+        let mutation_summary = prior_page
+            .as_ref()
+            .map(|prior| MutationSummary {
+                url_changed: prior.url != context.page.url,
+                title_changed: prior.title != context.page.title,
+                revision_delta: to_revision.saturating_sub(from_revision),
+                soft_navigation_suspected: to_revision > from_revision
+                    && prior.url == context.page.url
+                    && prior.title == context.page.title,
+            })
+            .unwrap_or_default();
         Ok(ReconciliationOutcome {
+            status: if route_changed {
+                ReconciliationStatus::RouteChanged
+            } else {
+                ReconciliationStatus::Complete
+            },
             to_revision,
             mappings,
             preserved,
             relocated,
             lost,
+            mutation_summary,
+            incomplete: context.incomplete,
         })
     }
 
@@ -379,6 +498,21 @@ impl BrowserSession {
         }
 
         Ok(())
+    }
+}
+
+fn locator_matches_compact(
+    locator: &Locator,
+    control: &(&str, &str, i64, &str, &[String]),
+) -> bool {
+    match locator {
+        Locator::AccessibleName(name) => control.1.eq_ignore_ascii_case(name),
+        Locator::RoleAndName { role, name } => {
+            control.0.eq_ignore_ascii_case(role) && control.1.eq_ignore_ascii_case(name)
+        }
+        Locator::Text(text) => control.1.eq_ignore_ascii_case(text),
+        Locator::Reference(reference) => control.3 == reference,
+        Locator::Css(_) | Locator::Ordinal(_) => false,
     }
 }
 

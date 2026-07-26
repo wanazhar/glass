@@ -308,6 +308,12 @@ pub enum Commands {
     ReconcileRefs {
         #[arg(long)]
         from_revision: u64,
+        /// Stable locators tried positionally after backend identity is gone.
+        #[arg(long = "hint")]
+        hints: Vec<String>,
+        /// Current revisioned landmark/container ref used to narrow relocation.
+        #[arg(long)]
+        scope: Option<String>,
         #[arg(required = true)]
         refs: Vec<String>,
     },

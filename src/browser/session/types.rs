@@ -159,6 +159,42 @@ pub struct BatchPolicyDenial {
 
 /// Maximum number of refs that can be reconciled in a single call.
 pub const MAX_RECONCILE_REFS: usize = 16;
+pub const MAX_RECONCILE_HINTS: usize = 8;
+pub const MAX_RECONCILIATION_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceMatch {
+    BackendNode,
+    RoleAndName,
+    AccessibleName,
+    Hint,
+    ScopedHint,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReferenceLostReason {
+    NotFound,
+    Ambiguous { candidates: Vec<CandidateSummary> },
+    StaleBoundary,
+    OutOfScope,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationStatus {
+    Complete,
+    RouteChanged,
+}
+
+/// Optional bounded continuity hints for reference reconciliation.
+#[derive(Debug, Clone, Default)]
+pub struct ReconciliationOptions {
+    pub hints: Vec<Locator>,
+    pub scope_ref: Option<String>,
+    pub include_delta: bool,
+}
 
 /// Mapping of a prior reference to its current identity.
 #[derive(Debug, Clone, Serialize)]
@@ -171,24 +207,31 @@ pub enum ReferenceMapping {
         old: String,
         new: String,
         #[serde(rename = "matchedBy")]
-        matched_by: String,
+        matched_by: ReferenceMatch,
     },
     /// No safe mapping; agent must re-observe.
-    Lost { old: String, reason: String },
+    Lost {
+        old: String,
+        reason: ReferenceLostReason,
+    },
 }
 
 /// Outcome of a reconcileReferences call.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconciliationOutcome {
+    pub status: ReconciliationStatus,
     #[serde(rename = "toRevision")]
     pub to_revision: u64,
     pub mappings: Vec<ReferenceMapping>,
     pub preserved: usize,
     pub relocated: usize,
     pub lost: usize,
+    #[serde(rename = "mutationSummary")]
+    pub mutation_summary: MutationSummary,
+    pub incomplete: Vec<ObservationIncompleteReason>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MutationSummary {
     #[serde(rename = "urlChanged")]
     pub url_changed: bool,

@@ -176,6 +176,7 @@ mod tests {
             role: role.to_string(),
             name: name.to_string(),
             backend_dom_node_id: 1,
+            ancestor_path: Vec::new(),
             shadow_host_path: None,
             input_type: None,
             value: None,

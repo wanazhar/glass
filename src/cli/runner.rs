@@ -7,8 +7,8 @@ use super::args::{CheckpointCommand, Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    BatchStep, BrowserResult, BrowserSession, CheckpointV1, PdfOptions, SessionOptions,
-    VisualCaptureOptions, WaitCondition,
+    BatchStep, BrowserResult, BrowserSession, CheckpointV1, Locator, PdfOptions,
+    ReconciliationOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -277,9 +277,23 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::ReconcileRefs {
             from_revision,
+            hints,
+            scope,
             refs,
         } => {
-            print_json(&session.reconcile_references(*from_revision, refs).await?)?;
+            let options = ReconciliationOptions {
+                hints: hints
+                    .iter()
+                    .map(|hint| Locator::parse(hint))
+                    .collect::<BrowserResult<Vec<_>>>()?,
+                scope_ref: scope.clone(),
+                include_delta: false,
+            };
+            print_json(
+                &session
+                    .reconcile_references_with_options(*from_revision, refs, &options)
+                    .await?,
+            )?;
         }
         Commands::ObserveDelta => {
             print_json(&session.observe_delta().await?)?;

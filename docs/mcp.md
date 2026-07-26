@@ -91,18 +91,20 @@ browser operations are serialized through the single owned session. Requests
 beyond the active limit receive a bounded overload error.
 
 Targeting failures return bounded JSON with a typed `kind`, an optional
-actionability `reason`, and at most eight candidate summaries. These values are
-derived from the same bounded agent-facing target data as observations; raw
-targets/selectors are never echoed. Other tool failures return generic
-`browser tool failed` text. Evaluated source, typed text, and raw page/CDP
-errors never cross the MCP error surface. Local tracing remains metadata-only.
+actionability `reason`, and at most eight candidate summaries. Stale reference
+failures include a typed `recovery` object pointing to `reconcileReferences`.
+These values are derived from the same bounded agent-facing target data as
+observations; raw targets/selectors are never echoed. Any tool call may opt into
+an additional bounded failure-trace content item with `includeTrace: true`.
+Evaluated source, typed text, and raw page/CDP errors never cross the MCP error
+surface.
 
 ## Tools
 
 | Tool | Important arguments | Result or effect |
 |---|---|---|
 | `navigate` | `url` | Navigate and return page state. |
-| `click` | `target` or `selector` | Click one element. |
+| `click` | `target` or `selector`, optional `includeTrace` | Click one element. |
 | `clickExpectPopup` | `target` or `selector` | Click and return one causally verified popup target. |
 | `doubleClick` | `target` or `selector` | Double-click one element. |
 | `hover` | `target` | Move over one element. |
@@ -120,7 +122,7 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
 | `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
-| `wait` | `condition`, optional `timeoutMs` | Wait for one typed condition. |
+| `wait` | `condition`, optional `timeoutMs`, `includeTrace` | Wait for one typed condition. |
 | `diagnostics` | optional `durationMs` | Collect bounded redacted console/network evidence. |
 | `acceptDialog`, `dismissDialog` | none | Resolve the currently open JavaScript dialog. |
 | `dismissConsent` | none | Dismiss a recognized visible OneTrust/Cookiebot consent control. |

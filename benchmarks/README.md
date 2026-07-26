@@ -325,14 +325,14 @@ selection are not yet stabilised.
 ## MCP Schema Budget
 
 Glass ships 59 MCP tools with compact JSON Schema definitions. The complete
-`tools/list` response is ~12.7 KiB — well under the Chrome DevTools MCP
+`tools/list` response is ~13.6 KiB — well under the Chrome DevTools MCP
 ~18k-token class. This keeps agent context costs low: every byte of tool
 definition is a byte the model does not spend on page content.
 
 | Metric | Glass | Chrome DevTools MCP |
 |--------|-------|---------------------|
 | MCP tools | 59 | ~33 |
-| `tools/list` response | ~12.7 KiB (~3.2k estimated tokens) | ~18k tokens (~72 KiB) |
+| `tools/list` response | ~13.6 KiB (~3.5k estimated tokens) | ~18k tokens (~72 KiB) |
 | No-parameter tools | 15 | — |
 | Tools with bounded arrays | 2 (batch ≤ 32, fillForm ≤ 16) | — |
 

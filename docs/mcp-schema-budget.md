@@ -72,7 +72,7 @@ Each tool contributes:
 - `description`: ~40-80 bytes
 - `inputSchema`: ~80-300 bytes (typically `{"type":"object","properties":{...}}`)
 
-Measured `tools/list` response size: **~12.7 KiB** (about 3.2k tokens using
+Measured `tools/list` response size: **~13.6 KiB** (about 3.5k tokens using
 the repository's four-bytes-per-token estimate, well under the 18k-token
 reference for Chrome DevTools MCP). Re-measure with
 `GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs`.

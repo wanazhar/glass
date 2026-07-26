@@ -15,6 +15,7 @@ for the installed version.
 | `--port PORT` | `9222` | CDP debugging port. |
 | `--headed` | off | Display the Chrome window. |
 | `--interaction human|fast` | `human` | Smooth or direct pointer events. |
+| `--trace-on-error` | off | Emit one bounded JSON failure trace on stderr when an operation fails. |
 | `--chrome-path PATH` | discovered | Explicit Chrome/Chromium executable. |
 | `--mcp` | off | Run the MCP stdio server. |
 
@@ -88,7 +89,9 @@ restarting. Closing the active target leaves no implicit replacement.
 
 Navigation, action, observation, DOM, scroll, and evaluation results are
 compact JSON on stdout. `text` emits plain text. `screenshot` writes a PNG and
-prints its destination.
+prints its destination. With `--trace-on-error`, failures additionally emit a
+bounded trace pack on stderr containing the last compact observation and active
+target/frame topology.
 
 Keyboard commands emit browser key events; `type` remains the efficient plain
 text path. Shortcuts use `Control+A`/`Shift+Enter` syntax. Upload accepts 1–16

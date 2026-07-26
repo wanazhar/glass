@@ -40,7 +40,8 @@ and resistant to malformed input or interrupted lifecycle operations.
 
 ## Verification
 
-- Linux, macOS, and Windows release matrix passes real browser workflows.
+- The supported Linux x86-64 and macOS x86-64/arm64 release matrix passes real
+  browser workflows. Windows is outside the published release contract.
 - Corrupt/interrupted downloads never become executable installations.
 - Crash cleanup and parser fuzz targets run in CI with documented budgets.
 - Release artifacts reproduce documented version, help, and checksums.
@@ -78,6 +79,7 @@ failed report blocks publication rather than producing a partial release.
   bounded-batch crash recovery verified by a forced-process-exit test.
 - Five production-parser fuzz targets run bounded pull-request and scheduled
   budgets without committing generated fuzz artifacts.
-- Tagged CI fails closed across Linux x86-64, macOS x86-64/arm64, and Windows
-  x86/x86-64, then publishes packaged binaries, flat signed SHA-256 checksums,
-  provenance, and blocking dependency/license/vulnerability reports.
+- Tagged CI fails closed across Linux x86-64 and macOS x86-64/arm64, then
+  publishes packaged binaries, flat signed SHA-256 checksums, provenance, and
+  blocking dependency/license/vulnerability reports. Windows remains outside
+  the published release contract.

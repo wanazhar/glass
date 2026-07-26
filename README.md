@@ -273,7 +273,7 @@ These numbers are reproducible with the same fixtures and Chrome build.
 | Metric | Current value | Comparator |
 |--------|--------------|------------|
 | Runner RSS (peak) | ~8.9 MB | Playwright MCP ~196 MB |
-| Tests passing | 226 | — |
+| Tests passing | 227 | — |
 | MCP tools | 59 | Chrome DevTools MCP ~33 |
 | Wrong actions | 0 (adversarial suite) | Playwright: 0 |
 | Session modules | 24 | — |

@@ -513,7 +513,7 @@ pub struct SessionOptions {
     #[doc(hidden)]
     pub audit: bool,
     /// Optional policy override for the session. When `None`,
-    /// [`BrowserSession::start`] creates a development policy
+    /// [`crate::browser::session::BrowserSession::start`] creates a development policy
     /// from the current directory.
     #[doc(hidden)]
     pub policy: Option<BrowserPolicy>,
@@ -710,15 +710,15 @@ impl SessionOptionsBuilder {
 
     /// Set an explicit [`BrowserPolicy`] for the session.
     ///
-    /// When set, [`BrowserSession::start`] will use this policy instead of
+    /// When set, [`crate::browser::session::BrowserSession::start`] will use this policy instead of
     /// creating a development policy. Equivalent to calling
-    /// [`BrowserSession::start_with_policy`] directly.
+    /// [`crate::browser::session::BrowserSession::start_with_policy`] directly.
     pub fn policy(mut self, policy: BrowserPolicy) -> Self {
         self.policy = Some(policy);
         self
     }
 
-    /// Set the policy from a [`PolicyPreset`] using the given workspace root.
+    /// Set the policy from a [`crate::browser::policy::PolicyPreset`] using the given workspace root.
     ///
     /// This is a convenience wrapper around [`BrowserPolicy::from_preset`].
     /// When the builder already has a policy set, this replaces it.

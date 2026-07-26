@@ -1,0 +1,15 @@
+{
+  "name": "glass",
+  "displayName": "Glass Browser Control Plane",
+  "description": "Lightweight local-first browser control plane for Chrome/CDP.",
+  "repository": "https://github.com/wanazhar/glass",
+  "license": "Apache-2.0",
+  "transport": {
+    "type": "stdio",
+    "command": "glass",
+    "args": ["--mcp"]
+  },
+  "recommendedPolicy": ["--policy", "hardened"],
+  "protocolVersion": "2024-11-05",
+  "packageManagers": ["cargo", "npm"]
+}

@@ -192,22 +192,55 @@ impl BrowserSession {
                         .collect()
                 })
                 .unwrap_or_default();
+            let scope_label = options.scope_ref.as_ref().and_then(|scope_ref| {
+                parse_revisioned_reference(scope_ref)
+                    .ok()
+                    .flatten()
+                    .filter(|scope| scope.revision == from_revision)
+                    .and_then(|scope| {
+                        prior.as_ref().and_then(|(_, _, controls)| {
+                            controls
+                                .iter()
+                                .find(|(_, _, _, backend, _)| *backend == scope.backend_dom_node_id)
+                                .map(|(_, role, name, _, _)| format!("{}:{}", role, name))
+                        })
+                    })
+            });
+            let scope_invalid = options.scope_ref.is_some() && scope_label.is_none();
             let mappings: Vec<_> = refs
                 .iter()
-                .map(|old| match parse_revisioned_reference(old) {
-                    Ok(Some(reference))
-                        if reference.revision == from_revision
-                            && known_refs.contains(old.as_str()) =>
-                    {
-                        ReferenceMapping::Preserved {
+                .map(|old| {
+                    let valid = matches!(
+                        parse_revisioned_reference(old),
+                        Ok(Some(reference))
+                            if reference.revision == from_revision
+                                && known_refs.contains(old.as_str())
+                    );
+                    if !valid {
+                        return ReferenceMapping::Lost {
                             old: old.clone(),
-                            new: old.clone(),
-                        }
+                            reason: ReferenceLostReason::StaleBoundary,
+                        };
                     }
-                    _ => ReferenceMapping::Lost {
+                    if scope_invalid
+                        || scope_label.as_deref().is_some_and(|scope| {
+                            !prior.as_ref().is_some_and(|(_, _, controls)| {
+                                controls.iter().any(|(reference, _, _, _, ancestors)| {
+                                    reference == old
+                                        && ancestors.iter().any(|ancestor| ancestor == scope)
+                                })
+                            })
+                        })
+                    {
+                        return ReferenceMapping::Lost {
+                            old: old.clone(),
+                            reason: ReferenceLostReason::OutOfScope,
+                        };
+                    }
+                    ReferenceMapping::Preserved {
                         old: old.clone(),
-                        reason: ReferenceLostReason::StaleBoundary,
-                    },
+                        new: old.clone(),
+                    }
                 })
                 .collect();
             let preserved = mappings

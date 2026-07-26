@@ -175,8 +175,11 @@ granting an AI client access to authenticated pages.
 
 ## MCP Registry & Discovery
 
-Glass is listed on the MCP Registry and other agent-tool directories so agents
-can discover it when searching for browser automation MCP servers.
+The [registry submission metadata](mcp-registry.json) and copy-paste
+configuration needed to submit Glass to the MCP Registry and other agent-tool
+directories are checked in. External
+registry publication is a maintainer action and is not implied by this local
+checkout.
 
 ### Registry Checklist
 
@@ -189,9 +192,9 @@ can discover it when searching for browser automation MCP servers.
 
 ### Discoverability
 
-When a user searches for browser MCP servers, Glass should appear alongside
-Playwright MCP, agent-browser, and Chrome DevTools MCP. The README includes
-copy-paste client configs for Claude Desktop, Cursor, and generic hosts.
+After submission, Glass should appear alongside Playwright MCP, agent-browser,
+and Chrome DevTools MCP. The README includes copy-paste client configs for
+Claude Desktop, Cursor, and generic hosts.
 
 If Glass is not yet listed on a registry, file an issue or PR with the
 registry's submission process. The metadata above should be sufficient for

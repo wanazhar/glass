@@ -53,7 +53,7 @@ impl std::str::FromStr for PolicyPreset {
             "untrusted-mcp" | "untrusted_mcp" => Ok(Self::UntrustedMcp),
             _ => Err(PolicyError::InvalidConfiguration {
                 reason: format!(
-                    "policy preset must be dev, ci, hardened, or untrusted-mcp, got: {value}"
+                    "policy preset must be dev, ci, polite, hardened, or untrusted-mcp, got: {value}"
                 ),
             }),
         }

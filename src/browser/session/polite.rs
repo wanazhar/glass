@@ -11,14 +11,13 @@ impl BrowserSession {
             return Ok(());
         }
         let parsed = url::Url::parse(url)?;
-        let origin = format!(
-            "{}://{}",
-            parsed.scheme(),
-            parsed
-                .host_str()
-                .ok_or("polite navigation requires a host")?
-        );
-        let robots_url = format!("{origin}/robots.txt");
+        parsed
+            .host_str()
+            .ok_or("polite navigation requires a host")?;
+        let mut robots_url = parsed.clone();
+        robots_url.set_path("/robots.txt");
+        robots_url.set_query(None);
+        robots_url.set_fragment(None);
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(3))
@@ -101,5 +100,28 @@ impl RobotsRules {
 
     fn disallows(&self, path: &str) -> bool {
         self.disallow.iter().any(|prefix| path.starts_with(prefix))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_glass_rules_and_bounded_delay() {
+        let rules = RobotsRules::parse(
+            "User-agent: *\nDisallow: /private\nUser-agent: Glass\nCrawl-delay: 2.5\n",
+        );
+        assert!(rules.disallows("/private/page"));
+        assert!(!rules.disallows("/public"));
+        assert_eq!(rules.crawl_delay, Duration::from_secs_f64(2.5));
+    }
+
+    #[test]
+    fn ignores_other_user_agents_and_malformed_delays() {
+        let rules =
+            RobotsRules::parse("User-agent: OtherBot\nDisallow: /other\nCrawl-delay: nope\n");
+        assert!(!rules.disallows("/other"));
+        assert_eq!(rules.crawl_delay, Duration::ZERO);
     }
 }

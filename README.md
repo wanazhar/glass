@@ -285,7 +285,7 @@ competitive acceptance results.
 ## MCP Schema Budget
 
 Glass maintains a bounded, audited MCP tool surface. With 59 tools using compact
-JSON Schema definitions, the full `tools/list` response fits within ~10 KiB —
+JSON Schema definitions, the full `tools/list` response is about 12.7 KiB —
 well under the Chrome DevTools MCP ~18k-token class.
 
 - **Stable verbs, not tool sprawl.** One fixed action set with typed parameters.
@@ -317,7 +317,7 @@ or sensitive data.
 - [Installation and operations](docs/installation.md)
 - [CLI reference](docs/cli.md)
 - [MCP integration](docs/mcp.md)
-- [MCP schema budget](docs/mcp-schema-budget.md) — 49 tools, ~10 KiB
+- [MCP schema budget](docs/mcp-schema-budget.md) — 59 tools, ~12.7 KiB
 - [Profile ergonomics](docs/profile-ergonomics.md) — logged-in session cookbook
 - [Bot protection & consent walls](docs/bot-protection.md) — honest access guide
 - [Category metric & scoreboard](docs/category-metric.md)

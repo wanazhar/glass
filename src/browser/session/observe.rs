@@ -159,18 +159,38 @@ impl BrowserSession {
         }
 
         let (target_id, frame_id) = self.route_identity().await?;
-        let context_id = self.observation_context_id(&target_id, &frame_id).await?;
+        let mut context_id = self.observation_context_id(&target_id, &frame_id).await?;
         let mut collected = None;
-        for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
+        let mut attempt = 1;
+        let mut recovered_context = false;
+        while attempt <= COMPACT_OBSERVATION_MAX_ATTEMPTS {
             let start_revision = self.page_revision.load(Ordering::Relaxed);
-            let attempt_result = tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
-                let start = self.compact_page_state(context_id).await?;
-                let accessibility = self.cdp.get_accessibility_tree().await?;
-                let end = self.compact_page_state(context_id).await?;
-                BrowserResult::Ok((start, accessibility, end))
-            })
-            .await
-            .map_err(|_| "compact observation attempt exceeded its one-second deadline")??;
+            let attempt_result =
+                match tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
+                    let start = self.compact_page_state(context_id).await?;
+                    let accessibility = self.cdp.get_accessibility_tree().await?;
+                    let end = self.compact_page_state(context_id).await?;
+                    BrowserResult::Ok((start, accessibility, end))
+                })
+                .await
+                {
+                    Err(_) => {
+                        return Err(
+                            "compact observation attempt exceeded its one-second deadline".into(),
+                        );
+                    }
+                    Ok(Ok(result)) => result,
+                    Ok(Err(error))
+                        if is_stale_observation_context(error.as_ref()) && !recovered_context =>
+                    {
+                        self.discard_observation_context(&target_id, &frame_id, context_id)
+                            .await;
+                        context_id = self.observation_context_id(&target_id, &frame_id).await?;
+                        recovered_context = true;
+                        continue;
+                    }
+                    Ok(Err(error)) => return Err(error),
+                };
             let end_revision = self.page_revision.load(Ordering::Relaxed);
             let consistent = start_revision == end_revision
                 && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision;
@@ -184,6 +204,7 @@ impl BrowserSession {
             if consistent {
                 break;
             }
+            attempt += 1;
         }
         let (
             attempts,
@@ -519,4 +540,24 @@ impl BrowserSession {
         });
         Ok(context_id)
     }
+
+    async fn discard_observation_context(&self, target_id: &str, frame_id: &str, context_id: i64) {
+        let mut context = self.observation_context.lock().await;
+        if context.as_ref().is_some_and(|cached| {
+            cached.target_id == target_id
+                && cached.frame_id == frame_id
+                && cached.context_id == context_id
+        }) {
+            context.take();
+        }
+    }
+}
+
+fn is_stale_observation_context(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<crate::browser::cdp::CdpError>()
+        .is_some_and(|error| {
+            error.message.contains("Cannot find context")
+                || error.message.contains("Execution context was destroyed")
+        })
 }

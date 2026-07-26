@@ -38,6 +38,7 @@ mod download;
 mod emulation;
 mod fill;
 mod frame;
+mod har;
 mod intercept;
 mod locator;
 mod navigate;

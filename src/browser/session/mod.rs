@@ -44,6 +44,7 @@ mod popup;
 mod retry;
 pub mod storage;
 mod target;
+mod targets;
 mod visual;
 mod wait;
 

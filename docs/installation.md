@@ -16,22 +16,19 @@ install from a checkout:
 cargo install --path . --locked
 ```
 
-After publication, install the released binary from crates.io:
+Install the published crate and build the `glass` binary locally:
 
 ```console
 cargo install glass-browser --locked
 ```
 
-Published native releases are also available through the zero-dependency npm
-launcher (Node.js 18+; it downloads and verifies the platform binary):
+Prebuilt native release artifacts are not available yet because the GitHub
+Actions release run is blocked by an account billing limit. The zero-dependency
+npm launcher is staged for when those artifacts are published; until then, use
+Cargo above.
 
-```console
-npm install -g @glass-browser/cli
-glass --version
-```
-
-Release binaries and SHA-256 checksum files are published for Linux x86-64 and
-macOS x86-64/arm64. The npm launcher is optional; it does not install
+When available, the native release binaries and SHA-256 checksum files will
+target Linux x86-64 and macOS x86-64/arm64. The npm launcher does not install
 Playwright or a browser runtime.
 
 ## Browser selection

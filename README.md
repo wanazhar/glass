@@ -46,7 +46,8 @@ cargo install --path . --locked
 glass --help
 ```
 
-After the first release, install the published binary with:
+The published `glass-browser` crate builds the `glass` binary locally on your
+platform:
 
 ```console
 cargo install glass-browser --locked

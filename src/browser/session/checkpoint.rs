@@ -50,8 +50,10 @@ impl BrowserSession {
             current_controls.push((&c.role, &c.name, c.backend_dom_node_id));
         }
 
-        // If route changed, all lost
-        let route_changed = false; // TODO: check topology
+        // Check if the route (target/frame) is still valid.
+        // If the active target was closed or the frame is gone,
+        // all references from the prior observation are stale.
+        let route_changed = self.route_identity().await.is_err();
 
         let mut mappings = Vec::with_capacity(refs.len());
         let mut preserved = 0usize;

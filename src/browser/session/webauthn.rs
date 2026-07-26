@@ -193,4 +193,46 @@ mod tests {
         assert!(!json["has_resident_key"].as_bool().unwrap());
         assert!(!json["has_user_verification"].as_bool().unwrap());
     }
+
+    #[test]
+    fn webauthn_options_custom_serializes_all_fields() {
+        let opts = WebAuthnOptions {
+            protocol: "u2f".to_string(),
+            transport: "usb".to_string(),
+            has_resident_key: true,
+            has_user_verification: true,
+            is_user_verifying_platform_authenticator: true,
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["protocol"], "u2f");
+        assert_eq!(json["transport"], "usb");
+        assert!(json["has_resident_key"].as_bool().unwrap());
+        assert!(json["has_user_verification"].as_bool().unwrap());
+        assert!(
+            json["is_user_verifying_platform_authenticator"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn webauthn_options_with_false_booleans_still_serializes_them() {
+        let opts = WebAuthnOptions {
+            protocol: "ctap2".to_string(),
+            transport: "nfc".to_string(),
+            has_resident_key: false,
+            has_user_verification: false,
+            is_user_verifying_platform_authenticator: false,
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        // All booleans should appear in JSON because #[serde(default)] does not
+        // skip them — it only provides default when deserializing.
+        assert!(!json["has_resident_key"].as_bool().unwrap());
+        assert!(!json["has_user_verification"].as_bool().unwrap());
+        assert!(
+            !json["is_user_verifying_platform_authenticator"]
+                .as_bool()
+                .unwrap()
+        );
+    }
 }

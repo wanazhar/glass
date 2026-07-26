@@ -10,12 +10,19 @@ impl BrowserSession {
         self.topology.lock().await.pending_dialog.clone()
     }
 
+    /// Accept (confirm) the currently pending JavaScript dialog.
+    ///
+    /// For `prompt` dialogs, the default prompt value is submitted.
+    /// Invalidates the observation cache after handling.
     pub async fn accept_dialog(&self) -> BrowserResult<()> {
         self.cdp.handle_javascript_dialog(true).await?;
         self.invalidate_observation();
         Ok(())
     }
 
+    /// Dismiss (cancel) the currently pending JavaScript dialog.
+    ///
+    /// Invalidates the observation cache after handling.
     pub async fn dismiss_dialog(&self) -> BrowserResult<()> {
         self.cdp.handle_javascript_dialog(false).await?;
         self.invalidate_observation();

@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserSession {
+    /// List all frames in the active target's frame tree.
+    ///
+    /// Discovers iframe/out-of-process frames and marks the currently active
+    /// frame. Call this before `select_frame` to discover available frame IDs.
     pub async fn list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
         let (target_id, target_session, active) = {
             let topology = self.topology.lock().await;
@@ -80,6 +84,11 @@ impl BrowserSession {
         Ok(frames)
     }
 
+    /// Select a frame as the active context for subsequent operations.
+    ///
+    /// The frame must exist in the current target's frame tree. Selecting an
+    /// iframe creates an isolated execution context for JavaScript evaluation.
+    /// Invalidates the observation cache.
     pub async fn select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
         validate_topology_id(frame_id)?;
         let frame = self

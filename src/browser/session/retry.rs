@@ -200,4 +200,38 @@ mod tests {
         assert_eq!(cloned.max_attempts, 4);
         assert_eq!(cloned.backoff, Duration::from_secs(1));
     }
+
+    #[test]
+    fn custom_predicate_can_be_called() {
+        let predicate: RetryPredicate = Arc::new(|_err: &(dyn std::error::Error + 'static)| true);
+        let test_error: Box<dyn std::error::Error + 'static> =
+            Box::new(std::io::Error::other("test"));
+        assert!(predicate(test_error.as_ref()));
+
+        let negative: RetryPredicate = Arc::new(|_err: &(dyn std::error::Error + 'static)| false);
+        let test_error2: Box<dyn std::error::Error + 'static> =
+            Box::new(std::io::Error::other("test2"));
+        assert!(!negative(test_error2.as_ref()));
+    }
+
+    #[test]
+    fn retry_policy_debug_output_hides_predicate_closure() {
+        let policy = RetryPolicy::new(5, Duration::from_millis(10));
+        let debug = format!("{:?}", policy);
+        assert!(debug.contains("max_attempts: 5"));
+        assert!(debug.contains("backoff: 10ms"));
+        // Predicate is None, so it should not show ".."
+        assert!(debug.contains("predicate: None"));
+    }
+
+    #[test]
+    fn retry_policy_debug_output_indicates_custom_predicate() {
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            backoff: Duration::from_millis(100),
+            predicate: Some(Arc::new(|_| true)),
+        };
+        let debug = format!("{:?}", policy);
+        assert!(debug.contains("predicate: Some(\"..\")"));
+    }
 }

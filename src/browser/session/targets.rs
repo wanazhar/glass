@@ -86,3 +86,27 @@ async fn cleanup_targets(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_concurrent_targets_is_4() {
+        assert_eq!(MAX_CONCURRENT_TARGETS, 4);
+    }
+
+    #[test]
+    fn max_concurrent_targets_is_reasonable() {
+        // Must be at least 1 to allow single-target parallelism
+        const { assert!(MAX_CONCURRENT_TARGETS >= 1) };
+        // Must be at most 16 to avoid resource exhaustion
+        const { assert!(MAX_CONCURRENT_TARGETS <= 16) };
+    }
+
+    #[test]
+    fn max_concurrent_targets_is_power_of_two() {
+        // Power-of-two bounds align with typical pool sizing
+        assert_eq!(MAX_CONCURRENT_TARGETS.count_ones(), 1);
+    }
+}

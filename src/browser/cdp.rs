@@ -483,7 +483,10 @@ impl CdpClient {
     }
 
     pub fn set_active_session(&self, session_id: Option<String>) {
-        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        let mut route = self
+            .active_route
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         route.session_id = session_id;
         route.context_id = None;
         route.frame_id = None;
@@ -492,12 +495,15 @@ impl CdpClient {
     pub fn set_active_context(&self, context_id: Option<i64>) {
         self.active_route
             .lock()
-            .expect("active CDP route poisoned")
+            .unwrap_or_else(|poison| poison.into_inner())
             .context_id = context_id;
     }
 
     pub fn set_active_frame_context(&self, frame_id: Option<String>, context_id: Option<i64>) {
-        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        let mut route = self
+            .active_route
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         route.frame_id = frame_id;
         route.context_id = context_id;
     }
@@ -508,7 +514,10 @@ impl CdpClient {
         frame_id: Option<String>,
         context_id: Option<i64>,
     ) {
-        let mut route = self.active_route.lock().expect("active CDP route poisoned");
+        let mut route = self
+            .active_route
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         route.session_id = session_id;
         route.frame_id = frame_id;
         route.context_id = context_id;
@@ -521,7 +530,10 @@ impl CdpClient {
         frame_id: Option<String>,
         context_id: Option<i64>,
     ) {
-        *self.active_route.lock().expect("active CDP route poisoned") = CdpRoute {
+        *self
+            .active_route
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = CdpRoute {
             target_id,
             session_id,
             frame_id,
@@ -537,7 +549,7 @@ impl CdpClient {
     pub fn set_active_frame(&self, frame_id: Option<String>) {
         self.active_route
             .lock()
-            .expect("active CDP route poisoned")
+            .unwrap_or_else(|poison| poison.into_inner())
             .frame_id = frame_id;
     }
 
@@ -549,7 +561,7 @@ impl CdpClient {
         OPERATION_ROUTE.try_with(Clone::clone).unwrap_or_else(|_| {
             self.active_route
                 .lock()
-                .expect("active CDP route poisoned")
+                .unwrap_or_else(|poison| poison.into_inner())
                 .clone()
         })
     }

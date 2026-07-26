@@ -213,4 +213,52 @@ mod tests {
         let json = serde_json::to_value(&loc).unwrap();
         assert_eq!(json["accuracy"], 42.0);
     }
+
+    #[test]
+    fn geo_location_roundtrip_through_json() {
+        let original = GeoLocation {
+            latitude: -33.8688,
+            longitude: 151.2093,
+            accuracy: Some(5.0),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: GeoLocation = serde_json::from_str(&json).unwrap();
+        assert!((parsed.latitude - original.latitude).abs() < 1e-10);
+        assert!((parsed.longitude - original.longitude).abs() < 1e-10);
+        assert!((parsed.accuracy.unwrap() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn geo_location_roundtrip_without_accuracy() {
+        let original = GeoLocation {
+            latitude: 35.6762,
+            longitude: 139.6503,
+            accuracy: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: GeoLocation = serde_json::from_str(&json).unwrap();
+        assert!((parsed.latitude - 35.6762).abs() < 1e-10);
+        assert!((parsed.longitude - 139.6503).abs() < 1e-10);
+        assert!(parsed.accuracy.is_none());
+    }
+
+    #[test]
+    fn pdf_options_letter_serializes_correctly() {
+        let opts = PdfOptions::letter();
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["paper_width"], 8.5);
+        assert_eq!(json["paper_height"], 11.0);
+        assert_eq!(json["print_background"], true);
+        // Omitted fields should be absent, not null
+        assert!(json.get("scale").is_none());
+        assert!(json.get("margin_top").is_none());
+    }
+
+    #[test]
+    fn pdf_options_default_serializes_empty_object() {
+        let opts = PdfOptions::default();
+        let json = serde_json::to_value(&opts).unwrap();
+        // All fields are None, so serialization should skip them all
+        assert!(json.as_object().unwrap().is_empty());
+    }
 }

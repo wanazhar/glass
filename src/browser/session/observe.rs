@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserSession {
+    /// Return the visible text content of the current page.
+    ///
+    /// Evaluates `document.body.innerText` and truncates the result to
+    /// [`COMPACT_TEXT_MAX_BYTES`] (16 KiB).
     pub async fn text(&self) -> BrowserResult<String> {
         self.cdp
             .with_current_route(async {

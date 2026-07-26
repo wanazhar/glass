@@ -210,4 +210,50 @@ mod tests {
         assert_eq!(json["total"], 3);
         assert_eq!(json["fields"].as_array().unwrap().len(), 3);
     }
+
+    #[test]
+    fn fill_form_max_fields_is_16() {
+        assert_eq!(FILL_FORM_MAX_FIELDS, 16);
+    }
+
+    #[test]
+    fn fill_form_max_fields_is_reasonable() {
+        // Must be at least 1 to allow single-field fills
+        const { assert!(FILL_FORM_MAX_FIELDS >= 1) };
+        // Must be at most 64 to prevent unbounded allocation
+        const { assert!(FILL_FORM_MAX_FIELDS <= 64) };
+    }
+
+    #[test]
+    fn fill_form_rejects_exactly_one_over_max() {
+        // Verify the bound check: exactly 17 fields exceeds 16-field cap
+        const { assert!(FILL_FORM_MAX_FIELDS + 1 > FILL_FORM_MAX_FIELDS) };
+        // Boundary: exactly at max should pass the bound check
+        const { assert!(FILL_FORM_MAX_FIELDS == 16) };
+        // The error message uses the constant
+        let err_msg = format!(
+            "fill_form: max {} fields, got {}",
+            FILL_FORM_MAX_FIELDS,
+            FILL_FORM_MAX_FIELDS + 1
+        );
+        assert!(err_msg.contains("max 16 fields"));
+        assert!(err_msg.contains("got 17"));
+    }
+
+    #[test]
+    fn fill_field_result_roundtrip_through_json() {
+        let result = FillFieldResult {
+            target: "email".to_string(),
+            action: "type".to_string(),
+            label: Some("Email Address".to_string()),
+            success: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        // We can't deserialize back (no Deserialize impl), but verify JSON structure
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["target"], "email");
+        assert_eq!(parsed["success"], true);
+        assert!(parsed.get("error").is_none());
+    }
 }

@@ -105,3 +105,51 @@ impl BrowserSession {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_pattern_default_matches_all_urls() {
+        let pattern = RequestPattern::default();
+        assert_eq!(pattern.url_pattern, "*");
+        assert_eq!(pattern.request_stage, "Request");
+        assert!(pattern.resource_type.is_none());
+    }
+
+    #[test]
+    fn request_pattern_custom_resource_type() {
+        let pattern = RequestPattern {
+            url_pattern: "https://example.com/*".to_string(),
+            resource_type: Some("XHR".to_string()),
+            request_stage: "Response".to_string(),
+        };
+        assert_eq!(pattern.url_pattern, "https://example.com/*");
+        assert_eq!(pattern.resource_type.as_deref(), Some("XHR"));
+        assert_eq!(pattern.request_stage, "Response");
+    }
+
+    #[test]
+    fn request_pattern_is_cloneable() {
+        let pattern = RequestPattern {
+            url_pattern: "/api/*".to_string(),
+            resource_type: Some("Fetch".to_string()),
+            request_stage: "Request".to_string(),
+        };
+        let cloned = pattern.clone();
+        assert_eq!(cloned.url_pattern, "/api/*");
+        assert_eq!(cloned.resource_type.as_deref(), Some("Fetch"));
+        assert_eq!(cloned.request_stage, "Request");
+        // Verify original is unmodified
+        assert_eq!(pattern.url_pattern, "/api/*");
+    }
+
+    #[test]
+    fn request_pattern_debug_output_includes_fields() {
+        let pattern = RequestPattern::default();
+        let debug = format!("{:?}", pattern);
+        assert!(debug.contains("*"));
+        assert!(debug.contains("Request"));
+    }
+}

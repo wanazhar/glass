@@ -1,6 +1,12 @@
 use super::*;
 
 impl BrowserSession {
+    /// Click a target that is expected to open a popup window.
+    ///
+    /// Monitors target creation events during the click, identifies the new
+    /// popup target, and returns both the click outcome and the popup's
+    /// [`PageTargetInfo`]. If no popup appears within the witness window,
+    /// returns a [`PopupClickError`].
     pub async fn click_expect_popup(&self, target: &str) -> BrowserResult<PopupClickOutcome> {
         let _scope = self.popup_click_scope.lock().await;
         self.cdp

@@ -1,3 +1,13 @@
+//! Shared types for browser session operations.
+//!
+//! This module defines the core data types used throughout the session
+//! layer: [`BrowserResult`], configuration types like [`SessionOptions`],
+//! page/frame topology, targeting primitives, observation snapshots,
+//! wait conditions, visual capture types, and checkpoint structures.
+//!
+//! Many types are re-exported through [`super`] at the session level
+//! and through [`crate::browser`] for library consumers.
+
 #![allow(dead_code)]
 #![allow(unused_imports)]
 use base64::Engine;
@@ -205,6 +215,7 @@ pub struct CheckpointV1 {
     pub policy: String,
 }
 
+/// Target/frame identity within a checkpoint's topology snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointTopology {
     #[serde(rename = "targetId", skip_serializing_if = "Option::is_none")]
@@ -215,6 +226,9 @@ pub struct CheckpointTopology {
     pub title: String,
 }
 
+/// Observation summary stored in a checkpoint.
+///
+/// Captures the page revision and up to 8 interactive element references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointObservation {
     pub revision: u64,
@@ -336,6 +350,11 @@ pub(crate) fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Configuration for creating a new browser session.
+///
+/// Controls whether Glass launches its own Chrome or attaches to an
+/// existing CDP endpoint, session identity (profile, incognito), and
+/// browser UI / interaction behaviour.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
     pub port: u16,
@@ -354,6 +373,10 @@ pub struct SessionOptions {
     pub audit: bool,
 }
 
+/// Pointer movement strategy for mouse interactions.
+///
+/// - `Human`: bounded, smooth pointer paths with realistic delays.
+/// - `Fast`: direct pointer teleportation — no intermediate moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum InteractionMode {
     Human,
@@ -418,6 +441,7 @@ impl SessionOptions {
     }
 }
 
+/// Page metadata returned by `page_info` and navigation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageInfo {
     pub url: String,
@@ -430,6 +454,7 @@ pub struct PageInfo {
     pub frame_id: String,
 }
 
+/// A browser page target discovered via `Target.getTargets`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PageTargetInfo {
     pub id: String,
@@ -440,6 +465,7 @@ pub struct PageTargetInfo {
     pub active: bool,
 }
 
+/// A frame within a page target's frame tree.
 #[derive(Debug, Clone, Serialize)]
 pub struct FrameInfo {
     pub id: String,
@@ -450,6 +476,7 @@ pub struct FrameInfo {
     pub out_of_process: bool,
 }
 
+/// A summary of a topology change event (target/frame creation or destruction).
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyEventSummary {
     pub sequence: u64,
@@ -497,6 +524,10 @@ pub struct PendingDialog {
     pub url: String,
 }
 
+/// An interactive element discovered in the accessibility tree.
+///
+/// Each element has a revisioned reference string (`r<rev>:b<backend_id>`)
+/// used by targeting operations.
 #[derive(Debug, Clone, Serialize)]
 pub struct InteractiveElement {
     pub reference: String,
@@ -560,6 +591,7 @@ pub struct PreflightOutcome {
     pub revision: u64,
 }
 
+/// Reason why an element failed the actionability verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetActionabilityReason {
@@ -574,6 +606,7 @@ pub enum TargetActionabilityReason {
     VerificationFailed,
 }
 
+/// Category of targeting failure returned in [`TargetError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetErrorKind {
@@ -683,6 +716,10 @@ pub(crate) enum TargetResolution {
     NotFound,
 }
 
+/// Full accessibility tree snapshot for the current page.
+///
+/// Returned by `snapshot`. Prefer
+/// [`CompactAccessibilitySnapshot`] for agent workflows.
 #[derive(Debug, Clone, Serialize)]
 pub struct AccessibilitySnapshot {
     pub page: PageInfo,
@@ -690,6 +727,11 @@ pub struct AccessibilitySnapshot {
     pub interactive: Vec<InteractiveElement>,
 }
 
+/// A wait condition for `BrowserSession::wait`.
+///
+/// Variants mirror common browser automation patterns: lifecycle events,
+/// URL matching, element state (visibility, enabled, stable), text presence,
+/// arbitrary JavaScript, and network idle detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaitCondition {
     Lifecycle(String),
@@ -705,6 +747,7 @@ pub enum WaitCondition {
     NetworkQuiet(Duration),
 }
 
+/// Result of a successful `BrowserSession::wait` call.
 #[derive(Debug, Clone, Serialize)]
 pub struct WaitOutcome {
     pub condition: String,
@@ -714,6 +757,7 @@ pub struct WaitOutcome {
     pub frame_id: String,
 }
 
+/// Error returned when a `BrowserSession::wait` call exceeds its deadline.
 #[derive(Debug, Clone, Serialize)]
 pub struct WaitTimeout {
     pub condition: String,
@@ -766,6 +810,7 @@ pub struct ObservationCompleteness {
     pub signals: CompletenessSignals,
 }
 
+/// Input signals contributing to the completeness assessment.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompletenessSignals {
     pub interactive_discovered: usize,
@@ -777,6 +822,7 @@ pub struct CompletenessSignals {
     pub mutation_race: bool,
 }
 
+/// Advisory escalation suggestion for agents when observation completeness is low.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EscalationSuggestion {
@@ -874,6 +920,7 @@ pub struct PageContext {
     pub screenshot: Option<String>,
 }
 
+/// Multi-shot consistency check result for observations.
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservationConsistency {
     pub consistent: bool,
@@ -884,6 +931,7 @@ pub struct ObservationConsistency {
     pub end_mutation_revision: u64,
 }
 
+/// Explicitly scoped, bounded, secret-redacted browser evidence report.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticReport {
     pub target_id: String,
@@ -894,12 +942,14 @@ pub struct DiagnosticReport {
     pub dropped_events: u64,
 }
 
+/// A console message captured during diagnostic collection.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConsoleEvidence {
     pub level: String,
     pub text: String,
 }
 
+/// A network request/response captured during diagnostic collection.
 #[derive(Debug, Clone, Serialize)]
 pub struct NetworkEvidence {
     pub request_id: String,
@@ -914,6 +964,7 @@ pub struct NetworkEvidence {
     pub redirect_count: u16,
 }
 
+/// Outcome of a completed download lifecycle.
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadOutcome {
     pub guid: String,
@@ -928,6 +979,7 @@ pub struct DownloadOutcome {
     pub sha256: Option<String>,
 }
 
+/// Stable machine-readable category for [`DownloadError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadErrorKind {
@@ -935,6 +987,7 @@ pub enum DownloadErrorKind {
     RestorationFailed,
 }
 
+/// A fail-closed download failure with a stable machine-readable kind.
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadError {
     pub kind: DownloadErrorKind,
@@ -949,6 +1002,7 @@ impl std::fmt::Display for DownloadError {
 
 impl Error for DownloadError {}
 
+/// Image format for screenshots and visual captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum VisualFormat {
@@ -991,6 +1045,7 @@ impl std::str::FromStr for VisualClip {
     }
 }
 
+/// A clipping rectangle (x, y, width, height) for visual captures.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct VisualClip {
     pub x: f64,
@@ -999,6 +1054,7 @@ pub struct VisualClip {
     pub height: f64,
 }
 
+/// Options for `BrowserSession::capture_visual`.
 #[derive(Debug, Clone)]
 pub struct VisualCaptureOptions {
     pub format: VisualFormat,
@@ -1022,6 +1078,7 @@ impl Default for VisualCaptureOptions {
     }
 }
 
+/// Metadata describing a completed visual capture.
 #[derive(Debug, Clone, Serialize)]
 pub struct VisualCaptureMetadata {
     pub format: VisualFormat,
@@ -1037,12 +1094,16 @@ pub struct VisualCaptureMetadata {
     pub frame_id: String,
 }
 
+/// A completed visual capture (screenshot) with metadata and base64 data.
 #[derive(Debug)]
 pub struct VisualCapture {
     pub data: String,
     pub metadata: VisualCaptureMetadata,
 }
 
+/// Pixel-level comparison of two PNG images.
+///
+/// Only available with the `visual-compare` feature.
 #[cfg(feature = "visual-compare")]
 #[derive(Debug, Serialize)]
 pub struct VisualComparison {
@@ -1054,6 +1115,11 @@ pub struct VisualComparison {
     pub difference_box: Option<VisualClip>,
 }
 
+/// Compare two base64-encoded PNG images pixel by pixel.
+///
+/// Returns a [`VisualComparison`] with changed pixel count, ratio, and
+/// bounding box of differences. Both images must have identical dimensions
+/// and color layout. Only available with the `visual-compare` feature.
 #[cfg(feature = "visual-compare")]
 pub fn compare_png_visuals(first: &str, second: &str) -> BrowserResult<VisualComparison> {
     let first = decode_png_for_comparison(first)?;
@@ -1117,18 +1183,25 @@ pub(crate) fn decode_png_for_comparison(value: &str) -> BrowserResult<(u32, u32,
     Ok((info.width, info.height, samples, pixels))
 }
 
+/// A single frame received from an active screencast.
 #[derive(Debug, Serialize)]
 pub struct ScreencastFrame {
     pub data: String,
     pub metadata: Value,
 }
 
+/// Screencast delivery statistics (frames received vs dropped).
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ScreencastStats {
     pub received: u64,
     pub dropped: u64,
 }
 
+/// Scoped guard managing an active screencast session.
+///
+/// Created by `BrowserSession::start_screencast`. Frames are received
+/// via [`next_frame`](Self::next_frame). On drop or explicit
+/// [`stop`](Self::stop), screencast is disabled for the session.
 pub struct ScreencastScope {
     pub(crate) cdp: CdpClient,
     pub(crate) session_id: Option<String>,
@@ -1163,6 +1236,9 @@ impl Drop for ScreencastStartupGuard {
 }
 
 impl ScreencastScope {
+    /// Wait for the next screencast frame matching this session.
+    ///
+    /// Returns `None` if the screencast channel is closed or exhausted.
     pub async fn next_frame(&mut self) -> Option<ScreencastFrame> {
         while let Some(frame) = self.receiver.recv().await {
             if frame.session_id == self.session_id {
@@ -1175,11 +1251,13 @@ impl ScreencastScope {
         None
     }
 
+    /// Return current frame delivery statistics.
     pub fn stats(&self) -> ScreencastStats {
         let (received, dropped) = self.cdp.screencast_stats();
         ScreencastStats { received, dropped }
     }
 
+    /// Stop the screencast and return final delivery statistics.
     pub async fn stop(mut self) -> BrowserResult<ScreencastStats> {
         stop_screencast_for(&self.cdp, self.session_id.as_deref()).await?;
         let (received, dropped) = self.cdp.close_screencast_channel();
@@ -1288,6 +1366,7 @@ pub struct PopupClickOutcome {
     pub evidence: PopupVerificationEvidence,
 }
 
+/// Structured verification evidence for a popup click outcome.
 #[derive(Debug, Clone, Serialize)]
 pub struct PopupVerificationEvidence {
     pub trusted_click_witness: bool,
@@ -1299,6 +1378,7 @@ pub struct PopupVerificationEvidence {
     pub ready_state: String,
 }
 
+/// Stable machine-readable kind for [`PopupClickError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PopupClickErrorKind {

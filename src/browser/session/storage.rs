@@ -249,4 +249,85 @@ mod tests {
         assert_eq!(items.count, 0);
         assert!(items.items.is_empty());
     }
+
+    #[test]
+    fn storage_entry_serializes_to_json() {
+        let entry = StorageEntry {
+            key: "session_token".to_string(),
+            value: "abc.def.ghi".to_string(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["key"], "session_token");
+        assert_eq!(json["value"], "abc.def.ghi");
+    }
+
+    #[test]
+    fn storage_entry_roundtrip_through_json() {
+        let original = StorageEntry {
+            key: "theme".to_string(),
+            value: "dark".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: StorageEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.key, "theme");
+        assert_eq!(parsed.value, "dark");
+    }
+
+    #[test]
+    fn storage_max_entries_is_64() {
+        assert_eq!(STORAGE_MAX_ENTRIES, 64);
+    }
+
+    #[test]
+    fn storage_max_entries_is_reasonable() {
+        // Must be at least 1
+        const { assert!(STORAGE_MAX_ENTRIES >= 1) };
+        // Must be at most 256
+        const { assert!(STORAGE_MAX_ENTRIES <= 256) };
+    }
+
+    #[test]
+    fn storage_max_entries_is_power_of_two() {
+        assert_eq!(STORAGE_MAX_ENTRIES.count_ones(), 1);
+    }
+
+    #[test]
+    fn storage_items_serializes_with_truncated_flag() {
+        let items = StorageItems {
+            items: vec![StorageEntry {
+                key: "k1".to_string(),
+                value: "v1".to_string(),
+            }],
+            truncated: true,
+            count: 100,
+        };
+        let json = serde_json::to_value(&items).unwrap();
+        assert_eq!(json["truncated"], true);
+        assert_eq!(json["count"], 100);
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cookie_roundtrip_through_json() {
+        let original = Cookie {
+            name: "sid".to_string(),
+            value: "secret".to_string(),
+            domain: "example.com".to_string(),
+            path: "/app".to_string(),
+            expires: 2000000000.0,
+            http_only: true,
+            secure: true,
+            same_site: Some("Strict".to_string()),
+            is_session: false,
+            size: Some(32),
+            priority: Some("High".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: Cookie = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "sid");
+        assert_eq!(parsed.value, "secret");
+        assert_eq!(parsed.same_site, Some("Strict".to_string()));
+        assert!(parsed.http_only);
+        assert_eq!(parsed.priority, Some("High".to_string()));
+    }
 }

@@ -71,6 +71,7 @@ also supported:
 
 ```console
 glass "navigate to https://example.com"
+glass "fill name=John email=john@example.com and click Submit"
 ```
 
 Glass launches headless Chrome by default. Use `--headed` to show the browser,
@@ -81,6 +82,27 @@ cookies and storage.
 glass --headed --profile demo navigate https://example.com
 glass --incognito observe
 ```
+
+### Key features
+
+- **Fill forms**: `glass "fill username=admin password=secret"` — resolves
+  fields by accessible name and applies the appropriate action (type, check,
+  select, click).
+- **Cookies & storage**: `glass cookies` reads browser cookies;
+  `glass set-cookie name=value domain=example.com` sets them.
+  `glass localStorage` and `glass sessionStorage` inspect DOM storage.
+- **PDF generation**: `glass pdf --output page.pdf` renders the current page
+  via CDP `Page.printToPDF` with configurable page size and margins.
+- **Clipboard access**: `glass clipboard read` and `glass clipboard write "text"`
+  interact with the system clipboard through the browser.
+- **WebAuthn**: `glass webauthn --protocol ctap2` enables a virtual authenticator
+  for testing passkey and WebAuthn flows.
+- **Retry**: `glass click --retry 3 "button"` retries on transport/CDP errors
+  while failing immediately on ambiguous targets.
+- **Network recording**: `glass network start` / `glass network stop` capture
+  HAR-like request/response entries.
+- **Request interception**: `glass intercept "*.google-analytics.com/*"` enables
+  CDP Fetch domain interception with scoped guards.
 
 See the [CLI reference](docs/cli.md) for all commands and session options.
 

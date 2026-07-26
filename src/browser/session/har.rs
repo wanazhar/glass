@@ -228,4 +228,62 @@ mod tests {
         assert_eq!(json["dropped_events"], 3);
         assert!(json["entries"].as_array().unwrap().is_empty());
     }
+
+    #[test]
+    fn network_recording_defaults_start_at_zero() {
+        // Verify the zero-state that users see for empty recordings
+        let recording = NetworkRecording {
+            entries: vec![],
+            duration_ms: 0,
+            dropped_events: 0,
+        };
+        assert_eq!(recording.duration_ms, 0);
+        assert_eq!(recording.dropped_events, 0);
+        assert!(recording.entries.is_empty());
+    }
+
+    #[test]
+    fn network_entry_with_redirects_serializes_count() {
+        let entry = NetworkEntry {
+            request_id: "req-redirect".to_string(),
+            method: "GET".to_string(),
+            url: "https://example.com/redirected".to_string(),
+            status: Some(301),
+            failure: None,
+            redirect_count: 2,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["redirect_count"], 2);
+        assert_eq!(json["status"], 301);
+    }
+
+    #[test]
+    fn network_recording_with_entries_serializes_all() {
+        let recording = NetworkRecording {
+            entries: vec![
+                NetworkEntry {
+                    request_id: "r1".to_string(),
+                    method: "GET".to_string(),
+                    url: "/a".to_string(),
+                    status: Some(200),
+                    failure: None,
+                    redirect_count: 0,
+                },
+                NetworkEntry {
+                    request_id: "r2".to_string(),
+                    method: "POST".to_string(),
+                    url: "/b".to_string(),
+                    status: None,
+                    failure: Some("net::ERR_FAILED".to_string()),
+                    redirect_count: 0,
+                },
+            ],
+            duration_ms: 500,
+            dropped_events: 0,
+        };
+        let json = serde_json::to_value(&recording).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(json["entries"][0]["method"], "GET");
+        assert_eq!(json["entries"][1]["failure"], "net::ERR_FAILED");
+    }
 }

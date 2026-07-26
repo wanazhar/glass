@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserSession {
+    /// Capture a PNG screenshot and return the raw PNG bytes.
+    ///
+    /// Policy-gated: requires the `Screenshot` capability. Base64-decodes
+    /// the CDP payload for direct file writing or image processing.
     pub async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
         let data = self.screenshot_base64().await?;
         Ok(STANDARD.decode(data.as_bytes())?)

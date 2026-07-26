@@ -1,6 +1,12 @@
 use super::*;
 
 impl BrowserSession {
+    /// Wait for a condition to be satisfied on the page.
+    ///
+    /// Supported conditions include lifecycle events (`"complete"`, `"interactive"`),
+    /// URL matching, target visibility/enabled/stability, text presence,
+    /// JavaScript expressions, and network quiet. Returns a [`WaitOutcome`]
+    /// on success or a [`WaitTimeout`] error if the deadline expires.
     pub async fn wait(
         &self,
         condition: WaitCondition,

@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserSession {
+    /// Return the current page's URL, title, and ready state.
+    ///
+    /// Evaluates `location.href`, `document.title`, and `document.readyState`
+    /// in the active page context. Includes the current target and frame IDs.
     pub async fn page_info(&self) -> BrowserResult<PageInfo> {
         self.cdp.with_current_route(async {
         let raw = self
@@ -19,11 +23,19 @@ impl BrowserSession {
         }).await
     }
 
+    /// Navigate the active target to a URL with a 20-second deadline.
+    ///
+    /// Waits for the `Page.loadEventFired` lifecycle event before returning.
+    /// The URL is normalized and validated against the active policy.
     pub async fn navigate(&self, url: &str) -> BrowserResult<PageInfo> {
         self.navigate_with_deadline(url, Duration::from_secs(20))
             .await
     }
 
+    /// Navigate to a URL with an explicit deadline.
+    ///
+    /// Like [`navigate`](Self::navigate), but with a caller-specified timeout.
+    /// `deadline` must be between 1 ms and 30 seconds.
     pub async fn navigate_with_deadline(
         &self,
         url: &str,
@@ -89,6 +101,10 @@ impl BrowserSession {
             .await
     }
 
+    /// Evaluate arbitrary JavaScript in the active page context.
+    ///
+    /// Policy-gated: requires the `Evaluate` capability. Invalidates the
+    /// observation cache after execution since arbitrary JS may mutate DOM.
     pub async fn evaluate(&self, expression: &str) -> BrowserResult<Value> {
         self.policy.require(PolicyCapability::Evaluate)?;
         self.cdp

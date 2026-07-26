@@ -295,4 +295,113 @@ mod tests {
                 .contains(&"checked".to_string())
         );
     }
+
+    #[test]
+    fn diff_with_both_empty_snapshots_is_clean() {
+        let before = make_snapshot(1, vec![]);
+        let after = make_snapshot(2, vec![]);
+        let diff = diff_accessibility(&before, &after);
+        assert_eq!(diff.from_revision, 1);
+        assert_eq!(diff.to_revision, 2);
+        assert_eq!(diff.total_after, 0);
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn diff_with_empty_before_marks_all_as_added() {
+        let before = make_snapshot(1, vec![]);
+        let after = make_snapshot(
+            2,
+            vec![
+                make_element("r2:b1", "button", "Click"),
+                make_element("r2:b2", "textbox", "Name"),
+            ],
+        );
+        let diff = diff_accessibility(&before, &after);
+        assert_eq!(diff.added.len(), 2);
+        assert!(diff.removed.is_empty());
+        assert!(diff.changed.is_empty());
+        assert_eq!(diff.total_after, 2);
+    }
+
+    #[test]
+    fn diff_with_empty_after_marks_all_as_removed() {
+        let before = make_snapshot(
+            1,
+            vec![
+                make_element("r1:b1", "button", "Old"),
+                make_element("r1:b2", "link", "Gone"),
+            ],
+        );
+        let after = make_snapshot(2, vec![]);
+        let diff = diff_accessibility(&before, &after);
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed.len(), 2);
+        assert!(diff.changed.is_empty());
+        assert_eq!(diff.total_after, 0);
+    }
+
+    #[test]
+    fn diff_element_serializes_to_json() {
+        let elem = DiffElement {
+            reference: "r7:b42".to_string(),
+            role: "button".to_string(),
+            name: "Submit".to_string(),
+        };
+        let json = serde_json::to_value(&elem).unwrap();
+        assert_eq!(json["reference"], "r7:b42");
+        assert_eq!(json["role"], "button");
+        assert_eq!(json["name"], "Submit");
+    }
+
+    #[test]
+    fn diff_change_serializes_to_json() {
+        let change = DiffChange {
+            reference: "r3:b99".to_string(),
+            role: "textbox".to_string(),
+            name: "Search".to_string(),
+            changed_properties: vec!["value".to_string(), "name".to_string()],
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(json["reference"], "r3:b99");
+        assert_eq!(json["role"], "textbox");
+        let props: Vec<&str> = json["changed_properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(props.contains(&"value"));
+        assert!(props.contains(&"name"));
+    }
+
+    #[test]
+    fn accessibility_diff_serializes_full_structure() {
+        let diff = AccessibilityDiff {
+            from_revision: 5,
+            to_revision: 6,
+            added: vec![DiffElement {
+                reference: "r6:b1".to_string(),
+                role: "button".to_string(),
+                name: "New".to_string(),
+            }],
+            removed: vec![],
+            changed: vec![DiffChange {
+                reference: "r5:b2".to_string(),
+                role: "textbox".to_string(),
+                name: "Email".to_string(),
+                changed_properties: vec!["value".to_string()],
+            }],
+            total_after: 2,
+        };
+        let json = serde_json::to_value(&diff).unwrap();
+        assert_eq!(json["from_revision"], 5);
+        assert_eq!(json["to_revision"], 6);
+        assert_eq!(json["total_after"], 2);
+        assert_eq!(json["added"].as_array().unwrap().len(), 1);
+        assert_eq!(json["changed"].as_array().unwrap().len(), 1);
+        assert!(json["removed"].as_array().unwrap().is_empty());
+    }
 }

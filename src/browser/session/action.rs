@@ -1,6 +1,9 @@
 use super::*;
 
 impl BrowserSession {
+    /// Scroll the viewport by the given pixel offsets.
+    ///
+    /// Positive `dy` scrolls down; positive `dx` scrolls right.
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
@@ -18,6 +21,11 @@ impl BrowserSession {
             .await
     }
 
+    /// Capture the full accessibility tree snapshot for the current page.
+    ///
+    /// Returns the page info, accessibility roots, and all interactive elements.
+    /// Prefer [`observe`](BrowserSession::observe) for compact observations in
+    /// agent workflows.
     pub async fn snapshot(&self) -> BrowserResult<AccessibilitySnapshot> {
         self.cdp
             .with_current_route(async {
@@ -45,6 +53,10 @@ impl BrowserSession {
         self.pointer_click(target, true).await
     }
 
+    /// Hover the pointer over an element without clicking.
+    ///
+    /// Resolves the target, moves the pointer to the element's center using the
+    /// configured interaction mode, then returns an [`ActionOutcome`].
     pub async fn hover(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
@@ -66,6 +78,10 @@ impl BrowserSession {
             .await
     }
 
+    /// Drag an element from `source` to `destination`.
+    ///
+    /// Performs a mouse-press on the source element, moves the pointer to the
+    /// destination element, then releases.
     pub async fn drag(&self, source: &str, destination: &str) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
@@ -165,16 +181,26 @@ impl BrowserSession {
             .await
     }
 
+    /// Press and hold a keyboard key.
+    ///
+    /// Dispatches a `rawKeyDown` CDP event for the given key.
     pub async fn key_down(&self, key: &str) -> BrowserResult<ActionOutcome> {
         self.keyboard_action(ActionKind::KeyDown, key, "rawKeyDown", 0)
             .await
     }
 
+    /// Release a keyboard key.
+    ///
+    /// Dispatches a `keyUp` CDP event for the given key.
     pub async fn key_up(&self, key: &str) -> BrowserResult<ActionOutcome> {
         self.keyboard_action(ActionKind::KeyUp, key, "keyUp", 0)
             .await
     }
 
+    /// Press and release a keyboard key.
+    ///
+    /// Dispatches `rawKeyDown`, `char` (for single-character keys), and `keyUp`
+    /// CDP events.
     pub async fn key_press(&self, key: &str) -> BrowserResult<ActionOutcome> {
         validate_key(key)?;
         self.cdp
@@ -196,6 +222,10 @@ impl BrowserSession {
             .await
     }
 
+    /// Execute a keyboard shortcut with modifier keys.
+    ///
+    /// Parses shortcuts like `"Ctrl+C"` or `"Meta+V"` and dispatches
+    /// the corresponding key events with the specified modifiers.
     pub async fn shortcut(&self, shortcut: &str) -> BrowserResult<ActionOutcome> {
         let (modifiers, key) = parse_shortcut(shortcut)?;
         self.cdp
@@ -212,6 +242,10 @@ impl BrowserSession {
             .await
     }
 
+    /// Clear the contents of an editable element.
+    ///
+    /// Clicks the target, selects all content, then presses Backspace.
+    /// Verifies the element is empty afterward.
     pub async fn clear(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
@@ -231,14 +265,23 @@ impl BrowserSession {
             .await
     }
 
+    /// Check a checkbox or radio button.
+    ///
+    /// Ensures the target element's `checked` property is set to `true`.
     pub async fn check(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.set_checked(target, true).await
     }
 
+    /// Uncheck a checkbox.
+    ///
+    /// Ensures the target element's `checked` property is set to `false`.
     pub async fn uncheck(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.set_checked(target, false).await
     }
 
+    /// Select an option from a `<select>` element by value.
+    ///
+    /// `value` must be 1–4096 bytes. Fires `input` and `change` events.
     pub async fn select_option(&self, target: &str, value: &str) -> BrowserResult<ActionOutcome> {
         if value.is_empty() || value.len() > 4096 {
             return Err("select value must be 1..=4096 bytes".into());
@@ -406,6 +449,11 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Type text into the page.
+    ///
+    /// If `target` is provided, clicks the target element first to focus it,
+    /// then inserts the text via CDP `Input.insertText`. Otherwise types at
+    /// the current focus.
     pub async fn type_text(
         &self,
         text: &str,

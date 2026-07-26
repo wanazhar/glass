@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserSession {
+    /// List all open page targets in the browser.
+    ///
+    /// Returns the target ID, URL, title, opener relationship, and whether
+    /// each target is currently active. Capped at 32 targets.
     pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
         let raw = self.cdp.send_browser("Target.getTargets", None).await?;
         let active = self.topology.lock().await.active_target_id.clone();
@@ -28,6 +32,10 @@ impl BrowserSession {
         Ok(targets)
     }
 
+    /// Return recent topology change events for diagnostic purposes.
+    ///
+    /// Each event includes a sequence number, kind (e.g. `targetCreated`),
+    /// and the affected target/frame ID. Bounded to 64 recent events.
     pub async fn topology_events(&self) -> Vec<TopologyEventSummary> {
         self.topology.lock().await.events.iter().cloned().collect()
     }
@@ -52,6 +60,11 @@ impl BrowserSession {
         self.route_identity().await
     }
 
+    /// Open a new page target navigating to the given URL.
+    ///
+    /// The URL is normalized and validated against the active policy.
+    /// The new target is discoverable via [`list_targets`](Self::list_targets)
+    /// but does not become the active target automatically.
     pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
         let url = normalize_url(url);
         self.policy.require_url(&url).await?;
@@ -72,6 +85,10 @@ impl BrowserSession {
         Ok(target)
     }
 
+    /// Select a page target as the active context.
+    ///
+    /// Attaches to the target via CDP, selects its main frame, and detaches
+    /// from the previously active target. Invalidates the observation cache.
     pub async fn select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
         validate_topology_id(target_id)?;
         let target = self
@@ -206,6 +223,10 @@ impl BrowserSession {
         })
     }
 
+    /// Close a page target by ID.
+    ///
+    /// If the closed target was the active target, the session's active
+    /// target, session, and frame state are cleared.
     pub async fn close_target(&self, target_id: &str) -> BrowserResult<()> {
         validate_topology_id(target_id)?;
         let result = self

@@ -1,3 +1,36 @@
+//! Browser session management.
+//!
+//! The [`BrowserSession`] struct orchestrates a single browser session:
+//! launching or attaching to Chrome, managing CDP connections, routing
+//! operations to the active page target and frame, and providing the
+//! high-level API for navigation, interaction, observation, and more.
+//!
+//! Submodules implement specific capabilities:
+//! - **action**: clicks, typing, keyboard, scroll, drag
+//! - **batch**: ordered batch operations with policy pre-flight
+//! - **checkpoint**: cross-process session checkpoint export/import
+//! - **clipboard**: system clipboard read/write
+//! - **diagnostic**: scoped diagnostic evidence collection
+//! - **dialog**: JavaScript dialog handling
+//! - **diff**: accessibility tree diffing
+//! - **download**: scoped download lifecycle management
+//! - **emulation**: PDF generation, geolocation, timezone override
+//! - **fill**: high-level multi-field form filling
+//! - **frame**: frame tree discovery and selection
+//! - **har**: network recording (HAR-like capture)
+//! - **intercept**: CDP Fetch domain request interception
+//! - **locator**: element resolution with fallback chains
+//! - **navigate**: page navigation and JavaScript evaluation
+//! - **observe**: compact page observation
+//! - **popup**: popup window click and witness tracking
+//! - **retry**: retry policies for transport/CDP errors
+//! - **storage**: cookies, localStorage, sessionStorage
+//! - **target**: page target discovery, selection, creation
+//! - **targets**: parallel multi-target operations
+//! - **visual**: screenshots, visual capture, screencast
+//! - **wait**: page wait conditions and lifecycle detection
+//! - **webauthn**: virtual WebAuthn authenticator
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
@@ -702,7 +735,11 @@ impl BrowserSession {
 
         let mut error_text = error.into();
         if error_text.len() > MAX_ERROR_BYTES {
-            error_text.truncate(MAX_ERROR_BYTES);
+            let mut end = MAX_ERROR_BYTES;
+            while end > 0 && !error_text.is_char_boundary(end) {
+                end -= 1;
+            }
+            error_text.truncate(end);
         }
 
         let last_observation =

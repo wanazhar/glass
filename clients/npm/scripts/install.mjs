@@ -13,8 +13,6 @@ const names = {
   "linux-x64": "glass-linux-x86_64",
   "darwin-x64": "glass-macos-x86_64",
   "darwin-arm64": "glass-macos-aarch64",
-  "win32-x64": "glass-windows-x86_64.exe",
-  "win32-ia32": "glass-windows-i686.exe",
 };
 const artifact = names[platform];
 if (!artifact) throw new Error(`Glass has no release artifact for ${platform}`);

@@ -16,18 +16,12 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: glass-linux-x86_64
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             artifact: glass-macos-x86_64
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             artifact: glass-macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: glass-windows-x86_64
-          - os: windows-latest
-            target: i686-pc-windows-msvc
-            artifact: glass-windows-i686
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -43,27 +37,28 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets --locked --target ${{ matrix.target }}
 
-      - name: Run Linux browser smoke
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Install managed Chrome for browser smoke
+        run: cargo run --release --locked -- install-chromium
+
+      - name: Run browser smoke
         run: GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
 
       - name: Package artifact
         shell: bash
         run: |
           mkdir -p dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/glass.exe dist/${{ matrix.artifact }}.exe
-            sha256sum dist/${{ matrix.artifact }}.exe > dist/${{ matrix.artifact }}.sha256
-          else
-            cp target/${{ matrix.target }}/release/glass dist/${{ matrix.artifact }}
-            strip dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/glass dist/${{ matrix.artifact }}
+          strip dist/${{ matrix.artifact }}
+          if command -v sha256sum >/dev/null 2>&1; then
             sha256sum dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
+          else
+            shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          path: dist/${{ matrix.artifact }}
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4

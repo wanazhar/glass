@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 
 export interface JsonRpcResult<T> { result: T; }
 export interface McpErrorShape { code: number; message: string; data?: unknown; }
@@ -18,7 +19,7 @@ export interface GlassClientOptions {
 
 /** Small MCP client with typed helpers for the stable Glass agent surface. */
 export class GlassClient {
-  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly child: ChildProcessByStdio<Writable, Readable, null>;
   private readonly maxFrameBytes: number;
   private readonly pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private buffer = Buffer.alloc(0);

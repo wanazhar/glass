@@ -23,7 +23,7 @@ failed hard gate blocks that language. See the
 
 ## Requirements
 
-- Linux, macOS, or Windows on a supported Rust target;
+- Linux x86-64 or macOS x86-64/arm64 for the published release artifacts;
 - Chrome, Chromium, or Chrome for Testing; and
 - Rust stable when building from source.
 
@@ -46,8 +46,7 @@ cargo install --path . --locked
 glass --help
 ```
 
-If Chrome is not already installed, Glass can download Chrome for Testing
-(`unzip` must be available):
+If Chrome is not already installed, Glass can download Chrome for Testing:
 
 ```console
 glass install-chromium

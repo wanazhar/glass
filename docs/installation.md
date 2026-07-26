@@ -9,8 +9,8 @@ and the checked-in dependency lockfile:
 cargo build --release --locked
 ```
 
-The optimized executable is `target/release/glass` on Unix-like systems and
-`target/release/glass.exe` on Windows. To install from a checkout:
+The optimized executable is `target/release/glass` on Linux and macOS. To
+install from a checkout:
 
 ```console
 cargo install --path . --locked
@@ -24,9 +24,9 @@ npm install -g @glass-browser/cli
 glass --version
 ```
 
-Release binaries and SHA-256 checksum files are published for Linux x86-64,
-macOS x86-64/arm64, and Windows x86/x86-64. The npm launcher is optional; it
-does not install Playwright or a browser runtime.
+Release binaries and SHA-256 checksum files are published for Linux x86-64 and
+macOS x86-64/arm64. The npm launcher is optional; it does not install
+Playwright or a browser runtime.
 
 ## Browser selection
 
@@ -43,7 +43,7 @@ glass --chrome-path /opt/chrome/chrome navigate https://example.com
 ```
 
 `glass install-chromium` installs the Chrome for Testing version pinned by this
-Glass release for Linux x86-64, macOS x86-64/arm64, or Windows x86/x86-64.
+Glass release for Linux x86-64 or macOS x86-64/arm64.
 Glass streams the bounded archive, checks its pinned size and digest, extracts
 it with an in-process ZIP reader, and atomically publishes only a validated
 executable. It does not require an external `unzip` program. Reinstall the

@@ -40,3 +40,32 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+  clients:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build and typecheck TypeScript client
+        working-directory: clients/typescript
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm run typecheck
+          npm pack --dry-run
+
+      - name: Validate npm launcher package
+        working-directory: clients/npm
+        run: npm pack --dry-run
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build Python client wheel
+        working-directory: clients/python
+        run: python -m pip wheel --no-deps . -w /tmp/glass-python-wheel

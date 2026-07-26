@@ -5,5 +5,7 @@
   "bin": { "glass": "bin/glass.js" },
   "scripts": { "postinstall": "node scripts/install.mjs" },
   "engines": { "node": ">=18" },
+  "os": ["linux", "darwin"],
+  "cpu": ["x64", "arm64"],
   "files": ["bin", "scripts", "README.md"]
 }

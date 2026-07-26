@@ -46,16 +46,7 @@ required = [
     "x86_64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "i686-pc-windows-msvc",
 ]
-platform_rows = {
-    target: {
-        "target": target,
-        "status": "observed" if target in target_list and target == host else "not_observed",
-    }
-    for target in required
-}
 release_statuses = {
     "fmt": fmt,
     "test": tests,
@@ -100,7 +91,7 @@ metrics = json.loads(os.environ.get("GLASS_RATIFIED_METRICS", "{}"))
 observed_platforms = [
     {
         "target": target,
-        "os": "linux" if "linux" in target else "macos" if "apple" in target else "windows",
+        "os": "linux" if "linux" in target else "macos",
         "architecture": target.split("-")[0],
         "chrome": "not-recorded",
         "status": "passed",

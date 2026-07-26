@@ -28,7 +28,7 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
 - [ ] Confirm the tagged release matrix ran the real-browser smoke on Linux
-      x86-64, macOS x86-64/arm64, and Windows x86/x86-64.
+      x86-64 and macOS x86-64/arm64.
 - [ ] Smoke-test `--help`, `navigate`, `observe`, `screenshot`, TUI startup,
       and MCP initialization using the release binary.
 - [ ] Inspect `cargo package --list` and unpacked package contents.

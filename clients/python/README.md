@@ -15,5 +15,7 @@ finally:
     glass.close()
 ```
 
+Install the thin client from this directory with `python -m pip install .`.
+
 The client accepts newline-delimited and `Content-Length` MCP frames and caps
 individual frames at 4 MiB.

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glass-browser-client"
+version = "0.1.0"
+description = "Dependency-free Python thin client for the Glass MCP browser control plane"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.setuptools]
+py-modules = ["glass_client"]

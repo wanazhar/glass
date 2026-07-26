@@ -1,3 +1,8 @@
+//! Page wait conditions and lifecycle detection.
+//!
+//! Waits for conditions such as URL changes, element visibility, text
+//! appearance, navigation completion, or configurable timeouts.
+
 use super::*;
 
 impl BrowserSession {

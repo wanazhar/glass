@@ -1,3 +1,9 @@
+//! Low-level Chrome DevTools Protocol (CDP) client.
+//!
+//! Provides a multiplexed WebSocket connection to a Chrome debugging
+//! endpoint, including command dispatch, event subscription, and
+//! session-scoped target management.
+
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

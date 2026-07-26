@@ -1,3 +1,8 @@
+//! MCP prompt definitions.
+//!
+//! Static agent-facing prompt templates exposed through the MCP
+//! `prompts/list` and `prompts/get` methods.
+
 use serde_json::Value;
 
 use crate::browser::session::BrowserResult;
@@ -8,6 +13,8 @@ struct PromptDef {
     content: &'static str,
 }
 
+/// Return all MCP prompts (agent-facing templates) as a JSON value for the
+/// `prompts/list` response.
 pub fn list_prompts() -> BrowserResult<Value> {
     let prompts: Vec<Value> = PROMPTS
         .iter()
@@ -21,6 +28,8 @@ pub fn list_prompts() -> BrowserResult<Value> {
     Ok(serde_json::json!({ "prompts": prompts }))
 }
 
+/// Return a specific MCP prompt by name, including its content, for the
+/// `prompts/get` response.
 pub fn get_prompt(name: &str) -> BrowserResult<Value> {
     let prompt =
         PROMPTS

@@ -1,3 +1,9 @@
+//! Ordered batch execution with policy pre-flight.
+//!
+//! Runs up to [`MAX_BATCH_STEPS`] typed operations as a single atomic unit.
+//! Every step is validated against the active [`BrowserPolicy`] before any
+//! side effects are applied.
+
 use super::*;
 use crate::browser::policy::PolicyCapability;
 use std::time::Duration;

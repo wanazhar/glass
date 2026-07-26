@@ -1,3 +1,9 @@
+//! MCP JSON-RPC 2.0 stdio server.
+//!
+//! Implements the Model Context Protocol (2024-11-05) over stdin/stdout,
+//! providing browser automation tools with policy-gated execution, bounded
+//! response sizes, and concurrent request handling.
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{

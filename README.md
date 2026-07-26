@@ -121,6 +121,11 @@ glass --incognito observe
   switches context. `glass targets` lists page targets with explicit select/close.
 - **Popup witness**: `glass click-expect-popup target` verifies causal popup
   opening from a click.
+- **Parallel targets**: `BrowserSession::with_targets` opens multiple page
+  targets for concurrent operations, with automatic cleanup and context
+  restoration.
+- **Accessibility diff**: `diff_accessibility` computes structured diffs
+  between two accessibility snapshots for UI transition verification.
 
 See the [CLI reference](docs/cli.md) for all commands and session options.
 

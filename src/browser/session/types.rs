@@ -34,6 +34,9 @@ use crate::browser::mouse::{MouseEngine, Point};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::profile::ProfileManager;
 
+/// Convenience alias for fallible browser operations. All session methods
+/// return this type so callers can propagate errors with `?` without boxing
+/// at every call site.
 pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
 
 /// Maximum number of steps in a single batch operation.
@@ -3898,6 +3901,8 @@ pub(crate) async fn wait_for_ws_url(port: u16, target_id: Option<&str>) -> Brows
     }
 }
 
+/// Append `https://` if an input string lacks a scheme. About pages and
+/// data URIs are left unchanged. Whitespace is trimmed.
 pub fn normalize_url(url: &str) -> String {
     let url = url.trim();
     if url.starts_with("http://")
@@ -3910,4 +3915,18 @@ pub fn normalize_url(url: &str) -> String {
     } else {
         format!("https://{url}")
     }
+}
+
+pub(crate) async fn disable_network_for(
+    cdp: &CdpClient,
+    session_id: Option<&str>,
+) -> BrowserResult<()> {
+    match session_id {
+        Some(session_id) => {
+            cdp.send_to_session(session_id, "Network.disable", None)
+                .await?
+        }
+        None => cdp.send("Network.disable", None).await?,
+    };
+    Ok(())
 }

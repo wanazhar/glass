@@ -1,9 +1,18 @@
+//! CLI argument definitions (clap).
+//!
+//! Defines the top-level `Cli` struct and all subcommands for one-shot
+//! browser operations, profile management, and server modes.
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::browser::policy::{PolicyCapability, PolicyPreset};
 use crate::browser::session::{InteractionMode, VisualClip, VisualFormat};
 
+/// Top-level CLI configuration parsed from command-line arguments.
+///
+/// Wraps clap-derived flags for policy, browser selection, session options,
+/// and the subcommand to execute.
 #[derive(Debug, Parser)]
 #[command(
     name = "glass",

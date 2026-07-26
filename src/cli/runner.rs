@@ -1,3 +1,8 @@
+//! CLI command dispatch and session orchestration.
+//!
+//! Routes parsed CLI arguments to the appropriate runner: one-shot browser
+//! commands, interactive TUI, or the MCP stdio server.
+
 use super::args::{Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -8,6 +13,8 @@ use base64::Engine;
 use serde::Serialize;
 use std::time::Duration;
 
+/// Top-level command-line entry point: parses CLI arguments and dispatches
+/// to the appropriate runner (one-shot, TUI, or MCP server).
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     let policy = policy_from_cli(&cli)?;
     if cli.mcp {

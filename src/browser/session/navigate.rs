@@ -1,3 +1,8 @@
+//! Page navigation and JavaScript evaluation.
+//!
+//! Navigates the active page target to a URL with configurable timeouts,
+//! and evaluates JavaScript expressions in the page context.
+
 use super::*;
 
 impl BrowserSession {
@@ -114,7 +119,7 @@ impl BrowserSession {
                 // Invalidate synchronously so the next cached observation cannot race
                 // the asynchronous CDP mutation event stream.
                 self.invalidate_observation();
-                self.record_audit("evaluate", expression);
+                self.record_audit("evaluate", redact_diagnostic_text(expression));
                 result
             })
             .await

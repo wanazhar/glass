@@ -85,7 +85,7 @@ impl NetworkRecorder {
     /// Stop recording, disable the Network domain, and return captured entries.
     pub async fn stop(mut self) -> BrowserResult<NetworkRecording> {
         self.armed = false;
-        disable_fetch_for(&self.cdp, Some(&self.session_id)).await?;
+        disable_network_for(&self.cdp, Some(&self.session_id)).await?;
         let entries = std::mem::take(&mut *self.entries.lock().await);
         Ok(NetworkRecording {
             entries,
@@ -160,7 +160,7 @@ impl Drop for NetworkRecorder {
             let cdp = self.cdp.clone();
             let sid = self.session_id.clone();
             tokio::spawn(async move {
-                let _ = disable_fetch_for(&cdp, Some(&sid)).await;
+                let _ = disable_network_for(&cdp, Some(&sid)).await;
             });
         }
     }

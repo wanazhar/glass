@@ -1,3 +1,8 @@
+//! Chrome user-data directory profile management.
+//!
+//! Manages named profiles backed by Chrome user-data directories. Profiles
+//! persist cookies, localStorage, and all browser state across sessions.
+
 use std::path::{Path, PathBuf};
 use tracing::info;
 

@@ -1,3 +1,9 @@
+//! Chrome process lifecycle management.
+//!
+//! Handles Chrome/Chromium binary resolution, process launch with
+//! configurable flags, managed Chrome for Testing installation,
+//! port locking, and health checks.
+
 use fs2::FileExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -896,6 +902,8 @@ struct BrowserVersionEndpoint {
     websocket_debugger_url: String,
 }
 
+/// Fetch the browser-level WebSocket debugger URL from Chrome's `/json/version`
+/// endpoint on the given port. Returns the `webSocketDebuggerUrl` field.
 pub async fn get_browser_ws_url(port: u16) -> Result<String, Box<dyn std::error::Error>> {
     let response = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/json/version"))

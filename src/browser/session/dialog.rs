@@ -1,3 +1,8 @@
+//! JavaScript dialog (alert, confirm, prompt) handling.
+//!
+//! Inspects and dismisses JavaScript dialogs via CDP `Page.javascriptDialogOpening`
+//! events. Supports accept and dismiss with optional prompt text.
+
 use super::*;
 
 impl BrowserSession {

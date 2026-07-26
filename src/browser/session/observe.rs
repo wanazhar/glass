@@ -1,3 +1,9 @@
+//! Compact page observation.
+//!
+//! Produces a bounded [`CompactAccessibilitySnapshot`] with visible text,
+//! interactive element summaries, and optional full DOM / screenshot /
+//! form-value overlays.
+
 use super::*;
 
 impl BrowserSession {

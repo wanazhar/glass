@@ -1,3 +1,8 @@
+//! Interactive TUI application state and rendering.
+//!
+//! Implements the Ratatui-based terminal interface with split-pane layout,
+//! command input, observation display, and keyboard-driven interaction.
+
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},

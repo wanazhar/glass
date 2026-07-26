@@ -1,3 +1,9 @@
+//! Cross-process session checkpoint export/import.
+//!
+//! Serializes a compact [`CheckpointV1`] containing the current URL, title,
+//! frame tree topology, and revision-tagged element references. Checkpoints
+//! are ≤ 4 KiB and designed for cross-process resume.
+
 use super::*;
 
 impl BrowserSession {

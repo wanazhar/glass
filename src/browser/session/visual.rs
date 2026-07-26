@@ -1,3 +1,9 @@
+//! Screenshots, visual capture, and screencast.
+//!
+//! Captures viewport, clip-region, element-scoped, and full-page visuals
+//! with configurable format, quality, and scale. Also supports continuous
+//! screencast frame delivery.
+
 use super::*;
 
 impl BrowserSession {

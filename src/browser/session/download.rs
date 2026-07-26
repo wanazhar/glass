@@ -1,3 +1,9 @@
+//! Scoped download lifecycle management.
+//!
+//! Waits for and captures a single file download initiated by the browser,
+//! returning the downloaded bytes. Only one download may be authorized at a
+//! time per session.
+
 use super::*;
 
 impl BrowserSession {

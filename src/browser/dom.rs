@@ -1,3 +1,9 @@
+//! DOM and accessibility tree parsing.
+//!
+//! Parses CDP `DOM.getDocument` and `Accessibility.getFullAXTree` responses
+//! into typed Rust structures. Provides compact accessibility projection
+//! with configurable node and text limits.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -263,6 +269,8 @@ fn is_interactive_role(role: &str) -> bool {
     )
 }
 
+/// Return accessibility nodes with the `interactive` flag set, in document
+/// order (depth-first).
 pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
     let mut result = Vec::new();
     for node in nodes {
@@ -444,6 +452,8 @@ pub(crate) fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
     (value, true)
 }
 
+/// Recursively collect visible name text from an accessibility subtree,
+/// joined with newlines.
 pub fn extract_text_content(nodes: &[AxNode]) -> String {
     let mut parts = Vec::new();
     extract_text_recursive(nodes, &mut parts);
@@ -459,6 +469,8 @@ fn extract_text_recursive(nodes: &[AxNode], parts: &mut Vec<String>) {
     }
 }
 
+/// Format an accessibility tree as a human-readable indented string for
+/// debugging and inspection.
 pub fn format_tree(nodes: &[AxNode], indent: usize) -> String {
     let mut output = String::new();
     for node in nodes {
@@ -641,6 +653,8 @@ pub struct DomNode {
     pub bounding_box: Option<[f64; 4]>,
 }
 
+/// Parse a CDP `DOM.getDocument` response into a [`DomNode`] tree. Returns
+/// `None` when the `root` field is absent or malformed.
 pub fn parse_dom_tree(raw: &Value) -> Option<DomNode> {
     raw.get("root").and_then(parse_dom_node)
 }

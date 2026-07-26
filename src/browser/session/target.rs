@@ -1,3 +1,8 @@
+//! Page target discovery, selection, and creation.
+//!
+//! Lists open page targets, creates new ones, and provides explicit
+//! target selection for subsequent operations.
+
 use super::*;
 
 impl BrowserSession {

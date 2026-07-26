@@ -1,3 +1,10 @@
+//! Security policy engine for browser operations.
+//!
+//! Defines a policy system with presets (development, hardened, custom)
+//! and capability-based gating. Every session operation is checked against
+//! the active policy before execution. Includes network filtering, file
+//! system sandboxing, and per-capability allow/deny controls.
+
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

@@ -1,3 +1,8 @@
+//! Frame tree discovery and selection.
+//!
+//! Lists all frames in the active page target's frame tree and provides
+//! explicit frame selection for subsequent operations.
+
 use super::*;
 
 impl BrowserSession {

@@ -1,15 +1,65 @@
+/// Low-level CDP WebSocket client for Chrome DevTools Protocol communication.
 pub mod cdp;
+/// Chrome/Chromium process lifecycle, binary resolution, and health checks.
 pub mod chrome;
+/// DOM and accessibility tree parsing with compact projection.
 pub mod dom;
+/// Mouse movement engine with bounded smooth pointer paths.
 pub mod mouse;
+/// Security policy engine with capability-based operation gating.
 pub mod policy;
+/// Chrome user-data directory profiles for persistent sessions.
 pub mod profile;
+/// Central browser session orchestrating all CDP operations.
 pub mod session;
 
 // Re-export key session types to the browser module level.
-pub use session::{
-    AccessibilityDiff, BrowserResult, BrowserSession, Cookie, DiffChange, DiffElement,
-    FillFieldResult, FillFormOutcome, GeoLocation, InteractionMode, InterceptGuard, NetworkEntry,
-    NetworkRecorder, NetworkRecording, PdfOptions, PopupClickOutcome, RequestPattern, RetryPolicy,
-    RetryPredicate, StorageEntry, StorageItems, WebAuthnGuard, WebAuthnOptions, diff_accessibility,
-};
+
+/// A structured diff between two accessibility snapshots.
+pub use session::AccessibilityDiff;
+/// Type alias for fallible browser operations.
+pub use session::BrowserResult;
+/// A headful or headless browser session that drives Chrome via CDP.
+pub use session::BrowserSession;
+/// An HTTP cookie with name, value, domain, path, and expiration.
+pub use session::Cookie;
+/// A single change (added, removed, or modified) in an accessibility diff.
+pub use session::DiffChange;
+/// An element within an accessibility diff change.
+pub use session::DiffElement;
+/// The result of filling a single form field.
+pub use session::FillFieldResult;
+/// The aggregate outcome of a multi-field form fill.
+pub use session::FillFormOutcome;
+/// Latitude/longitude geolocation override.
+pub use session::GeoLocation;
+/// Pointer movement mode: human (bounded smooth) or fast (direct).
+pub use session::InteractionMode;
+/// A guard that disables CDP Fetch domain interception on drop.
+pub use session::InterceptGuard;
+/// A single captured network request/response entry.
+pub use session::NetworkEntry;
+/// A bounded network event recorder producing [`NetworkRecording`].
+pub use session::NetworkRecorder;
+/// A collection of captured network entries from a recording session.
+pub use session::NetworkRecording;
+/// PDF generation options (page size, margins, background).
+pub use session::PdfOptions;
+/// The outcome of a popup-expecting click with causal verification.
+pub use session::PopupClickOutcome;
+/// A URL or pattern for CDP Fetch domain request interception.
+pub use session::RequestPattern;
+/// Retry configuration for transport/CDP protocol errors.
+pub use session::RetryPolicy;
+/// Predicate controlling which errors trigger a retry.
+pub use session::RetryPredicate;
+/// A single localStorage or sessionStorage key-value entry.
+pub use session::StorageEntry;
+/// Bounded collection of DOM storage items (≤ 64 entries).
+pub use session::StorageItems;
+/// A guard managing a virtual WebAuthn authenticator lifecycle.
+pub use session::WebAuthnGuard;
+/// Configuration for creating a virtual WebAuthn authenticator.
+pub use session::WebAuthnOptions;
+/// Computes a structured diff between two accessibility snapshots.
+pub use session::diff_accessibility;

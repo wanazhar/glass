@@ -1,3 +1,8 @@
+//! MCP resource definitions.
+//!
+//! Static reference documents (contracts, guides) exposed through the MCP
+//! `resources/list` and `resources/read` methods.
+
 use serde_json::Value;
 
 use crate::browser::session::BrowserResult;
@@ -10,6 +15,8 @@ struct ResourceDef {
     content: &'static str,
 }
 
+/// Return all MCP resources (static reference documents) as a JSON value
+/// for the `resources/list` response.
 pub fn list_resources() -> BrowserResult<Value> {
     let resources: Vec<Value> = RESOURCES
         .iter()
@@ -25,6 +32,8 @@ pub fn list_resources() -> BrowserResult<Value> {
     Ok(serde_json::json!({ "resources": resources }))
 }
 
+/// Return a specific MCP resource by URI with its markdown content, for
+/// the `resources/read` response.
 pub fn read_resource(uri: &str) -> BrowserResult<Value> {
     let resource =
         RESOURCES

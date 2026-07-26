@@ -1,3 +1,8 @@
+//! Scoped diagnostic evidence collection.
+//!
+//! Produces a bounded [`DiagnosticReport`] with console messages, network
+//! evidence, and page context. All secrets are redacted before output.
+
 use super::*;
 
 impl BrowserSession {

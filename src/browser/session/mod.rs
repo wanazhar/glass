@@ -809,11 +809,9 @@ impl BrowserSession {
             return;
         }
         let sequence = self.audit_sequence.fetch_add(1, Ordering::Relaxed);
-        let mut detail_text = detail.into();
+        let detail_text = detail.into();
         const MAX_AUDIT_DETAIL_BYTES: usize = 256;
-        if detail_text.len() > MAX_AUDIT_DETAIL_BYTES {
-            detail_text.truncate(MAX_AUDIT_DETAIL_BYTES);
-        }
+        let detail_text = truncate_utf8_bytes(&detail_text, MAX_AUDIT_DETAIL_BYTES);
         let preset = format!("{:?}", self.policy.preset());
         if let Ok(mut log) = self.audit_log.lock() {
             log.push_back(AuditEntry {

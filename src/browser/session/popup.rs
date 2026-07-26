@@ -1,3 +1,8 @@
+//! Popup window click and witness tracking.
+//!
+//! Clicks a target that is expected to open a popup window, then verifies
+//! the causal relationship by tracking CDP target creation events.
+
 use super::*;
 
 impl BrowserSession {

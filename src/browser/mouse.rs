@@ -1,3 +1,9 @@
+//! Mouse movement engine with bounded smooth pointer paths.
+//!
+//! Generates human-like mouse movement trajectories between points using
+//! configurable interaction modes ([`InteractionMode::Human`] for bounded
+//! smooth paths, [`InteractionMode::Fast`] for direct jumps).
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

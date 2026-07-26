@@ -1,3 +1,9 @@
+//! Element resolution with fallback chains.
+//!
+//! Resolves locator strings (ref, accessible name, role+name, text, CSS,
+//! ordinal) into specific DOM elements. Supports fallback chains of up to
+//! [`MAX_FALLBACK_SEGMENTS`] locator segments.
+
 use super::*;
 
 /// Maximum number of locator segments in a fallback chain.

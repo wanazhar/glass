@@ -1,3 +1,9 @@
+//! Action primitives: clicks, typing, keyboard, scroll, drag.
+//!
+//! Implementation of individual browser interaction actions on
+//! [`BrowserSession`]: click, double-click, hover, drag, key press,
+//! scroll, clear, check, uncheck, select, and file upload.
+
 use super::*;
 
 impl BrowserSession {

@@ -25,6 +25,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         pointer: Mutex::new(None),
         page_revision: Arc::new(AtomicU64::new(1)),
         observation_cache: Mutex::new(None),
+        observation_context: Arc::new(Mutex::new(None)),
         network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
         diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
         download_scope: Arc::new(Mutex::new(())),
@@ -275,8 +276,7 @@ async fn observation_server(include_dom: bool) -> (String, tokio::task::JoinHand
                             "canvases": 1,
                             "truncated": false
                         }
-                    })
-                    .to_string();
+                    });
                     serde_json::json!({
                         "result": {"value": page_state}
                     })
@@ -341,16 +341,16 @@ async fn mutation_race_server() -> (String, tokio::task::JoinHandle<()>) {
                 }
                 Some("Runtime.evaluate") => {
                     runtime_revision += 1;
-                    serde_json::json!({"result": {"value": serde_json::json!({
-                            "url": "https://race.test",
-                            "title": "Race",
-                            "ready_state": "complete",
-                            "text": "changing",
-                            "mutation_revision": runtime_revision,
-                            "boundaries": {"scanned_elements": 1, "scan_limit": 512,
-                                "shadow_roots": 0, "child_frames": 0, "canvases": 0,
-                                "truncated": false}
-                        }).to_string()}})
+                    serde_json::json!({"result": {"value": {
+                        "url": "https://race.test",
+                        "title": "Race",
+                        "ready_state": "complete",
+                        "text": "changing",
+                        "mutation_revision": runtime_revision,
+                        "boundaries": {"scanned_elements": 1, "scan_limit": 512,
+                            "shadow_roots": 0, "child_frames": 0, "canvases": 0,
+                            "truncated": false}
+                    }}})
                 }
                 Some("Accessibility.getFullAXTree") => serde_json::json!({"nodes": []}),
                 method => panic!("unexpected mutation-race command: {method:?}"),
@@ -582,12 +582,28 @@ async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, S
                     serde_json::json!({"executionContextId": 73})
                 }
                 Some("Runtime.evaluate") => serde_json::json!({
-                    "result": {"value": serde_json::json!({
-                        "url": "https://example.test",
-                        "title": "Example",
-                        "ready_state": "complete",
-                        "text": text_for_server.clone(),
-                    }).to_string()}
+                    "result": {"value": if request["params"]["expression"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("JSON.stringify")
+                    {
+                        serde_json::Value::String(
+                            serde_json::json!({
+                                "url": "https://example.test",
+                                "title": "Example",
+                                "ready_state": "complete",
+                                "text": text_for_server.clone(),
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        serde_json::json!({
+                            "url": "https://example.test",
+                            "title": "Example",
+                            "ready_state": "complete",
+                            "text": text_for_server.clone(),
+                        })
+                    }}
                 }),
                 Some("Accessibility.getFullAXTree") => tree.clone(),
                 method => panic!("unexpected compact-observation command: {method:?}"),
@@ -692,6 +708,11 @@ fn invalidates_context_only_for_page_or_dom_mutations() {
     assert!(!context_event_invalidates_observation(
         "Network.loadingFinished"
     ));
+    assert!(observation_context_invalidates("DOM.documentUpdated"));
+    assert!(observation_context_invalidates(
+        "Runtime.executionContextDestroyed"
+    ));
+    assert!(!observation_context_invalidates("DOM.childNodeInserted"));
 }
 
 #[test]

@@ -159,16 +159,7 @@ impl BrowserSession {
         }
 
         let (target_id, frame_id) = self.route_identity().await?;
-        let world = self
-            .cdp
-            .send(
-                "Page.createIsolatedWorld",
-                Some(serde_json::json!({"frameId": frame_id, "worldName": "glass-observation"})),
-            )
-            .await?;
-        let context_id = world["executionContextId"]
-            .as_i64()
-            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
+        let context_id = self.observation_context_id(&target_id, &frame_id).await?;
         let mut collected = None;
         for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
             let start_revision = self.page_revision.load(Ordering::Relaxed);
@@ -494,10 +485,38 @@ impl BrowserSession {
             .cdp
             .evaluate_in_context(COMPACT_PAGE_STATE_EXPRESSION, Some(context_id))
             .await?;
-        let value = runtime_value(&raw)?;
-        let json = value
-            .as_str()
-            .ok_or("compact page-state evaluation returned a non-string value")?;
-        Ok(serde_json::from_str(json)?)
+        Ok(serde_json::from_value(runtime_value(&raw)?)?)
+    }
+
+    async fn observation_context_id(&self, target_id: &str, frame_id: &str) -> BrowserResult<i64> {
+        let session_id = self.cdp.current_session_id();
+        {
+            let context = self.observation_context.lock().await;
+            if let Some(cached) = context.as_ref()
+                && cached.target_id == target_id
+                && cached.session_id == session_id
+                && cached.frame_id == frame_id
+            {
+                return Ok(cached.context_id);
+            }
+        }
+
+        let world = self
+            .cdp
+            .send(
+                "Page.createIsolatedWorld",
+                Some(serde_json::json!({"frameId": frame_id, "worldName": "glass-observation"})),
+            )
+            .await?;
+        let context_id = world["executionContextId"]
+            .as_i64()
+            .ok_or("Page.createIsolatedWorld returned no executionContextId")?;
+        *self.observation_context.lock().await = Some(CachedObservationContext {
+            target_id: target_id.to_string(),
+            session_id,
+            frame_id: frame_id.to_string(),
+            context_id,
+        });
+        Ok(context_id)
     }
 }

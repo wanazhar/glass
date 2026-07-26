@@ -111,6 +111,7 @@ pub struct BrowserSession {
     pub(crate) pointer: Mutex<Option<Point>>,
     pub(crate) page_revision: Arc<AtomicU64>,
     pub(crate) observation_cache: Mutex<Option<CachedObservation>>,
+    pub(crate) observation_context: Arc<Mutex<Option<CachedObservationContext>>>,
     pub(crate) network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     pub(crate) diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     pub(crate) download_scope: Arc<Mutex<()>>,
@@ -127,6 +128,13 @@ pub struct BrowserSession {
 struct CachedObservation {
     revision: u64,
     context: CompactPageContext,
+}
+
+struct CachedObservationContext {
+    target_id: String,
+    session_id: Option<String>,
+    frame_id: String,
+    context_id: i64,
 }
 
 type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
@@ -561,12 +569,17 @@ impl BrowserSession {
         };
 
         let page_revision = Arc::new(AtomicU64::new(1));
+        let observation_context = Arc::new(Mutex::new(None));
         let mut events = cdp.subscribe_events();
         let revision_for_events = Arc::clone(&page_revision);
+        let observation_context_for_events = Arc::clone(&observation_context);
         tokio::spawn(async move {
             while let Ok(event) = events.recv().await {
                 if context_event_invalidates_observation(&event.method) {
                     revision_for_events.fetch_add(1, Ordering::Relaxed);
+                }
+                if observation_context_invalidates(&event.method) {
+                    observation_context_for_events.lock().await.take();
                 }
             }
         });
@@ -641,6 +654,7 @@ impl BrowserSession {
             pointer: Mutex::new(None),
             page_revision,
             observation_cache: Mutex::new(None),
+            observation_context,
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
             download_scope: Arc::new(Mutex::new(())),

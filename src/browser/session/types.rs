@@ -367,11 +367,11 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
         if (element.localName === 'canvas') summary.canvases += 1;
     }
-    return JSON.stringify({url:location.href, title:document.title, ready_state:document.readyState,
+    return {url:location.href, title:document.title, ready_state:document.readyState,
         text:(() => { const source=document.body ? document.body.innerText : ''; const bytes=new Uint8Array(16384);
             const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
             return new TextDecoder().decode(bytes.subarray(0, encoded.written)); })(),
-        mutation_revision:state.revision, boundaries:summary});
+        mutation_revision:state.revision, boundaries:summary};
 })()"#;
 pub(crate) const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
@@ -2717,6 +2717,16 @@ pub(crate) fn context_event_invalidates_observation(method: &str) -> bool {
             | "DOM.attributeRemoved"
             | "DOM.characterDataModified"
             | "DOM.setChildNodes"
+    )
+}
+
+pub(crate) fn observation_context_invalidates(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.frameNavigated"
+            | "DOM.documentUpdated"
+            | "Runtime.executionContextDestroyed"
+            | "Runtime.executionContextsCleared"
     )
 }
 

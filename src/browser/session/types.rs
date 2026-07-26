@@ -504,6 +504,8 @@ pub struct InteractiveElement {
     pub name: String,
     pub description: String,
     pub backend_dom_node_id: i64,
+    /// HTML input type (e.g. \"text\", \"checkbox\") for form field discovery.
+    pub input_type: Option<String>,
 }
 
 /// An explicit, deterministic element lookup strategy.
@@ -1794,6 +1796,7 @@ pub(crate) fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<Inter
                 name: node.name.clone(),
                 description: node.description.clone(),
                 backend_dom_node_id,
+                input_type: None,
             })
         })
         .collect()
@@ -2256,6 +2259,10 @@ pub struct ResolvedElement {
     pub backend_dom_node_id: Option<i64>,
     pub label: String,
     pub reference: Option<String>,
+    /// Accessibility role of the element (e.g. \"textbox\", \"checkbox\").
+    pub role: Option<String>,
+    /// HTML input type for form fields (e.g. \"text\", \"checkbox\").
+    pub input_type: Option<String>,
 }
 
 pub(crate) struct PressedButtonGuard {
@@ -2910,6 +2917,8 @@ pub(crate) fn dom_nodes_resolution(
             backend_dom_node_id: None,
             label,
             reference: None,
+            role: None,
+            input_type: None,
         })),
         1 => Err("unique element query returned no DOM node".into()),
         _ => Ok(TargetResolution::Ambiguous(

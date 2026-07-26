@@ -184,6 +184,8 @@ impl BrowserSession {
                 backend_dom_node_id: Some(reference.backend_dom_node_id),
                 label: target.to_string(),
                 reference: Some(target.to_string()),
+                role: None,
+                input_type: None,
             }));
         }
 
@@ -214,6 +216,8 @@ impl BrowserSession {
                 backend_dom_node_id: Some(element.backend_dom_node_id),
                 label: format!("{} {}", element.role, element.name),
                 reference: Some(element.reference.clone()),
+                role: Some(element.role.clone()),
+                input_type: element.input_type.clone(),
             }));
         }
         if matches.len() > 1 {

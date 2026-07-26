@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;

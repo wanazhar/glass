@@ -13,13 +13,9 @@ Glass provides four interfaces over the same browser session:
 
 ## Status
 
-Glass is preparing its `0.1.0` release. Treat the CLI and Rust API as
-pre-stable: breaking changes may occur before `1.0.0`.
-
-Glass does not currently claim to be best in class. Its release gate publishes
-wrong-action, task-success, resource, and unsupported-adapter evidence; any
-failed hard gate blocks that language. See the
-[competitive acceptance guide](benchmarks/README.md#competitive-acceptance).
+Glass `0.1.0` is available on crates.io. The supported release targets are
+Linux x86-64 and macOS x86-64/arm64. The CLI, terminal UI, MCP server, and Rust
+library share the same browser session runtime.
 
 ## Requirements
 
@@ -232,8 +228,7 @@ available tools, and security considerations.
 Add Glass to your MCP client in one copy-paste step.
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`
-on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows, or
-`~/.config/Claude/claude_desktop_config.json` on Linux):
+on macOS or `~/.config/Claude/claude_desktop_config.json` on Linux):
 
 ```json
 {

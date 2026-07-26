@@ -1,9 +1,8 @@
 # Category Metric: Wrong-Action Scoreboard
 
-Glass publishes and maintains a public scoreboard of three category-defining
-metrics for agent browser automation. These are the numbers Glass uses to
-claim best-in-class — and the numbers any competitor can reproduce with the
-same fixtures and Chrome build.
+Glass publishes and maintains a public scoreboard of three useful metrics for
+agent browser automation. Any competitor can reproduce them with the same
+fixtures and Chrome build.
 
 ## The Three Metrics
 
@@ -86,8 +85,8 @@ and v1 corpus. Results are written to `benchmarks/results/compare-018/`.
 ## Release Policy
 
 - **Every release that claims progress** publishes an updated scoreboard.
-- **"Best in class" language** is blocked until all three metrics pass their
-gates with 0 wrong actions on the published corpus.
+- **Comparisons** use the same corpus, controls, and release evidence for every
+  implementation.
 - **A new corpus version** is introduced with a new schema version and at
 least one release cycle of documentation before it gates release language.
 

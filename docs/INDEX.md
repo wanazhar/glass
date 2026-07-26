@@ -42,8 +42,3 @@
   generation.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
   lifecycle.
-
-## Internal delivery history
-
-The files under [`plan/`](plan/README.md) record implementation work and are
-maintainer context, not public API commitments.

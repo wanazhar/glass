@@ -22,14 +22,9 @@ Install the published crate and build the `glass` binary locally:
 cargo install glass-browser --locked
 ```
 
-Prebuilt native release artifacts are not available yet because the GitHub
-Actions release run is blocked by an account billing limit. The zero-dependency
-npm launcher is staged for when those artifacts are published; until then, use
-Cargo above.
-
-When available, the native release binaries and SHA-256 checksum files will
-target Linux x86-64 and macOS x86-64/arm64. The npm launcher does not install
-Playwright or a browser runtime.
+Cargo is the supported installation path for the current release. It builds the
+native `glass` executable for Linux x86-64 and macOS x86-64/arm64 without
+installing Playwright or another browser runtime.
 
 ## Browser selection
 

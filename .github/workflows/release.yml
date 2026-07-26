@@ -74,7 +74,7 @@ jobs:
         run: |
           mkdir -p dist
           set -o pipefail
-          cargo test --test browser_smoke --locked -- --nocapture 2>&1 \
+          cargo test --test browser_smoke --locked -- --nocapture --test-threads=1 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
 
       - name: Write platform evidence

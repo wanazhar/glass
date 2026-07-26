@@ -46,9 +46,34 @@ impl BrowserSession {
     }
 
     pub(crate) async fn route_identity(&self) -> BrowserResult<(String, String)> {
-        self.cdp
-            .operation_identity()
-            .ok_or_else(|| "operation has no target/frame identity".into())
+        if let Some(identity) = self.cdp.operation_identity() {
+            return Ok(identity);
+        }
+
+        let topology = self.topology.lock().await;
+        let (kind, message) = match (
+            topology.active_target_id.as_ref(),
+            topology.active_session_id.as_ref(),
+            topology.active_frame_id.as_ref(),
+        ) {
+            (None, _, _) => (
+                TopologyErrorKind::NoTargetSelected,
+                "no active target is selected; call listTargets to discover available pages",
+            ),
+            (Some(_), None, _) => (
+                TopologyErrorKind::NoPageSession,
+                "active target has no CDP session; the session may need to be re-established",
+            ),
+            (Some(_), Some(_), None) => (
+                TopologyErrorKind::StaleFrame,
+                "active target has no selected frame; call listFrames and selectFrame",
+            ),
+            (Some(_), Some(_), Some(_)) => (
+                TopologyErrorKind::RoutingLost,
+                "active target/frame routing is unavailable; re-synchronize the session",
+            ),
+        };
+        Err(TopologyError::new(kind, message).into())
     }
 
     pub(crate) async fn ensured_route_identity(&self) -> BrowserResult<(String, String)> {

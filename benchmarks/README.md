@@ -82,10 +82,13 @@ so its RSS scope is explicitly incomparable and cannot create an efficiency
 win. Without at least one strict comparable-scope win, a Glass resource-budget
 failure, full release validation, or real-browser platform-matrix evidence,
 best-in-class language remains blocked.
-The latter evidence files use `{ "schema_version": 1, "git_revision": "...",
-"passed": true }` and are supplied through `GLASS_RELEASE_VALIDATION_REPORT`
-and `GLASS_PLATFORM_MATRIX_REPORT`; the runner copies them into `raw/` and
-rejects evidence for another revision. Even when every boolean gate passes,
+Release and platform evidence use the exact shapes in
+`prerequisite-evidence-schema.json` and are supplied through
+`GLASS_RELEASE_VALIDATION_REPORT` and `GLASS_PLATFORM_MATRIX_REPORT`; the
+runner copies them into `raw/` and rejects evidence for another revision.
+The repository's `scripts/compare-018.sh` generates local evidence when these
+variables are absent and then invokes the real runner; it never creates a
+passing stub. Even when every boolean gate passes,
 the retained comparison still needs interpretation before a leadership claim.
 The remaining ratified thresholds use the same envelope plus a `metrics`
 object and `GLASS_RATIFIED_GATES_REPORT`; absent or malformed metrics fail

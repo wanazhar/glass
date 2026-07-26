@@ -27,6 +27,7 @@ use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 mod types;
+pub use emulation::PdfOptions;
 pub use types::*;
 mod action;
 mod batch;

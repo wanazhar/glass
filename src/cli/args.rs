@@ -256,6 +256,30 @@ pub enum Commands {
     /// Evaluate JavaScript in the current page.
     Evaluate { expression: String },
 
+    /// List all browser cookies for the current page.
+    Cookies,
+
+    /// Save the current page as a PDF.
+    Pdf {
+        #[arg(short, long, default_value = "page.pdf")]
+        output: String,
+        #[arg(long)]
+        background: bool,
+    },
+
+    /// Fill multiple form fields from a JSON value.
+    FillForm {
+        /// JSON array of {target, value} objects.
+        #[arg(long)]
+        fields: String,
+    },
+
+    /// Read text from the system clipboard.
+    ClipboardRead,
+
+    /// Write text to the system clipboard.
+    ClipboardWrite { text: String },
+
     /// Launch the interactive TUI.
     Tui,
 }

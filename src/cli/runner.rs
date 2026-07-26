@@ -2,8 +2,9 @@ use super::args::{Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    BrowserResult, BrowserSession, SessionOptions, VisualCaptureOptions, WaitCondition,
+    BrowserResult, BrowserSession, PdfOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
 };
+use base64::Engine;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -220,6 +221,42 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Evaluate { expression } => {
             print_json(&session.evaluate(expression).await?)?;
         }
+        Commands::Cookies => print_json(&session.cookies().await?)?,
+        Commands::Pdf { output, background } => {
+            let mut opts = PdfOptions::letter();
+            if *background {
+                opts.print_background = Some(true);
+            }
+            let data = session.print_to_pdf(&opts).await?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(&data)?;
+            tokio::fs::write(&output, &bytes).await?;
+            println!("PDF saved to {output} ({} bytes)", bytes.len());
+        }
+        Commands::FillForm { fields } => {
+            let parsed: Vec<serde_json::Value> = serde_json::from_str(fields)?;
+            let field_refs: Vec<(String, String)> = parsed
+                .iter()
+                .map(|v| {
+                    (
+                        v["target"].as_str().unwrap_or("").to_string(),
+                        v["value"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect();
+            let field_slices: Vec<(&str, &str)> = field_refs
+                .iter()
+                .map(|(t, v)| (t.as_str(), v.as_str()))
+                .collect();
+            print_json(&session.fill_form(&field_slices).await?)?;
+        }
+        Commands::ClipboardRead => {
+            let text = session.clipboard_read().await?;
+            println!("{text}");
+        }
+        Commands::ClipboardWrite { text } => {
+            session.clipboard_write(text).await?;
+            println!("Text written to clipboard");
+        }
         Commands::Tui
         | Commands::InstallChromium { .. }
         | Commands::Profiles { .. }
@@ -325,7 +362,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(!output.contains('\n'));
+        assert!(!output.contains('n'));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&output).unwrap()["items"],
             json!([1, 2])

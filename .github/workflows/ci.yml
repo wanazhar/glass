@@ -27,3 +27,16 @@ jobs:
       - name: Build documentation
         run: cargo doc --no-deps
 
+      - name: Validate package and fuzz workspace
+        run: |
+          cargo package --locked --allow-dirty --no-verify
+          cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
+
+      - name: Install release audit tools
+        run: cargo install cargo-deny cargo-audit --locked
+
+      - name: Check dependency policy
+        run: cargo deny check
+
+      - name: Audit dependencies
+        run: cargo audit

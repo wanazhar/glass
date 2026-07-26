@@ -123,10 +123,7 @@ impl BrowserSession {
                     .cdp
                     .resolve_node_object(element.node_id, element.backend_dom_node_id)
                     .await?;
-                let remote = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id,
-                };
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let local = self.verified_action_point(&remote.object_id).await?;
                 let point = self.target_viewport_point(local).await?;
                 self.move_pointer(point).await?;
@@ -148,19 +145,14 @@ impl BrowserSession {
                     .cdp
                     .resolve_node_object(source.node_id, source.backend_dom_node_id)
                     .await?;
-                let source_guard = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id: source_object,
-                };
+                let source_guard = RemoteObjectGuard::new(self.cdp.clone(), source_object);
                 let destination = self.resolve_element(destination).await?;
                 let destination_object = self
                     .cdp
                     .resolve_node_object(destination.node_id, destination.backend_dom_node_id)
                     .await?;
-                let destination_guard = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id: destination_object,
-                };
+                let destination_guard =
+                    RemoteObjectGuard::new(self.cdp.clone(), destination_object);
                 let source_local = self.verified_action_point(&source_guard.object_id).await?;
                 let destination_local = self
                     .verified_action_point(&destination_guard.object_id)
@@ -311,7 +303,7 @@ impl BrowserSession {
             .with_current_route(async {
                 let element = self.resolve_element(target).await?;
                 let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
-                let remote = RemoteObjectGuard { cdp: self.cdp.clone(), object_id };
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let editable = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable}").await?)?;
                 if editable.as_bool() != Some(true) { return Err("clear target is not editable".into()); }
                 let clicked = self.click(target).await?;
@@ -367,7 +359,7 @@ impl BrowserSession {
             }
             let element = self.resolve_element(target).await?;
             let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
-            let remote = RemoteObjectGuard { cdp: self.cdp.clone(), object_id };
+            let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
             self.verified_action_point(&remote.object_id).await?;
             let input = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return {ok:this instanceof HTMLInputElement && this.type === 'file'}}").await?)?;
             if input["ok"].as_bool() != Some(true) { return Err("upload target is not a file input".into()); }
@@ -402,10 +394,7 @@ impl BrowserSession {
                             recovery: None,
                         }
                     })?;
-                let remote = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id,
-                };
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let local_point = self.verified_action_point(&remote.object_id).await?;
                 let point = self.target_viewport_point(local_point).await?;
                 let events = if double_click {
@@ -612,10 +601,7 @@ impl BrowserSession {
                     .cdp
                     .resolve_node_object(element.node_id, element.backend_dom_node_id)
                     .await?;
-                let remote = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id,
-                };
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 self.verified_action_point(&remote.object_id).await?;
                 let result = self.cdp.call_on_object(&remote.object_id, function).await?;
                 let value = runtime_value(&result)?;

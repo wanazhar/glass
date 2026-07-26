@@ -30,10 +30,7 @@ impl BrowserSession {
                             recovery: None,
                         }
                     })?;
-                let remote = RemoteObjectGuard {
-                    cdp: self.cdp.clone(),
-                    object_id,
-                };
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let original_session_id = self
                     .cdp
                     .current_session_id()

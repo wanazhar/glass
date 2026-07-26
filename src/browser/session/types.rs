@@ -2751,7 +2751,19 @@ pub(crate) struct PressedButtonGuard {
 
 pub(crate) struct RemoteObjectGuard {
     pub(crate) cdp: CdpClient,
+    pub(crate) session_id: Option<String>,
     pub(crate) object_id: String,
+}
+
+impl RemoteObjectGuard {
+    pub(crate) fn new(cdp: CdpClient, object_id: String) -> Self {
+        let session_id = cdp.current_session_id();
+        Self {
+            cdp,
+            session_id,
+            object_id,
+        }
+    }
 }
 
 pub(crate) struct PopupWitnessGuard {
@@ -3107,9 +3119,16 @@ pub(crate) async fn release_network_lease_locked(
 impl Drop for RemoteObjectGuard {
     fn drop(&mut self) {
         let cdp = self.cdp.clone();
+        let session_id = self.session_id.clone();
         let object_id = self.object_id.clone();
         tokio::spawn(async move {
-            let _ = cdp.release_object(&object_id).await;
+            if let Some(session_id) = session_id {
+                let _ = cdp
+                    .release_object_for_session(&session_id, &object_id)
+                    .await;
+            } else {
+                let _ = cdp.release_object(&object_id).await;
+            }
         });
     }
 }

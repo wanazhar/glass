@@ -199,10 +199,7 @@ impl BrowserSession {
                 geometry: None,
                 hints: PreflightHints::default(),
             })?;
-        let remote = RemoteObjectGuard {
-            cdp: self.cdp.clone(),
-            object_id,
-        };
+        let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
         let raw = self
             .cdp
             .call_on_object(&remote.object_id, PREFLIGHT_FUNCTION)

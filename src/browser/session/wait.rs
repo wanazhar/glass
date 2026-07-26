@@ -157,10 +157,7 @@ impl BrowserSession {
             .cdp
             .resolve_node_object(element.node_id, element.backend_dom_node_id)
             .await?;
-        let remote = RemoteObjectGuard {
-            cdp: self.cdp.clone(),
-            object_id,
-        };
+        let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
         let raw = self
             .cdp
             .call_on_object(&remote.object_id, WAIT_TARGET_STATE_FUNCTION)

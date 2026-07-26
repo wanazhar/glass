@@ -432,10 +432,7 @@ impl BrowserSession {
             let Some(object_id) = resolved["object"]["objectId"].as_str() else {
                 continue;
             };
-            let remote = RemoteObjectGuard {
-                cdp: self.cdp.clone(),
-                object_id: object_id.to_string(),
-            };
+            let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id.to_string());
 
             let raw_result = self
                 .cdp

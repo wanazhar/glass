@@ -117,6 +117,8 @@ glass --incognito observe
   input element.
 - **Dialogs**: `glass accept-dialog` and `glass dismiss-dialog` handle JavaScript
   alerts, confirms, and prompts.
+- **Consent walls**: `glass dismiss-consent` handles visible OneTrust/Cookiebot
+  controls with typed outcomes; it never clicks generic page text.
 - **Frame & target management**: `glass frames` lists frames; `glass select-frame`
   switches context. `glass targets` lists page targets with explicit select/close.
 - **Popup witness**: `glass click-expect-popup target` verifies causal popup
@@ -128,6 +130,10 @@ glass --incognito observe
   between two accessibility snapshots for UI transition verification.
 
 See the [CLI reference](docs/cli.md) for all commands and session options.
+
+Thin clients are available in [`clients/typescript`](clients/typescript) and
+[`clients/python`](clients/python). Both launch an absolute Glass binary over
+MCP without a Playwright dependency.
 
 ## Using an Existing Login
 
@@ -268,7 +274,7 @@ These numbers are reproducible with the same fixtures and Chrome build.
 |--------|--------------|------------|
 | Runner RSS (peak) | ~8.9 MB | Playwright MCP ~196 MB |
 | Tests passing | 226 | — |
-| MCP tools | 49 | Chrome DevTools MCP ~33 |
+| MCP tools | 59 | Chrome DevTools MCP ~33 |
 | Wrong actions | 0 (adversarial suite) | Playwright: 0 |
 | Session modules | 24 | — |
 
@@ -278,7 +284,7 @@ competitive acceptance results.
 
 ## MCP Schema Budget
 
-Glass maintains a bounded, audited MCP tool surface. With 49 tools using compact
+Glass maintains a bounded, audited MCP tool surface. With 59 tools using compact
 JSON Schema definitions, the full `tools/list` response fits within ~10 KiB —
 well under the Chrome DevTools MCP ~18k-token class.
 

@@ -52,6 +52,17 @@ policy checks.
 glass --policy ci
 ```
 
+### `polite`
+
+The opt-in public-site preset follows `robots.txt`, honors `Crawl-delay` with
+a bounded minimum delay, and identifies requests as `Glass/<version>`. A
+robots failure or disallowed path fails closed. It does not evade bot
+protection or rotate identities.
+
+```sh
+glass --policy polite navigate https://example.com/public-page
+```
+
 ### `hardened`
 
 The production preset for untrusted content. Every capability is denied by
@@ -95,6 +106,8 @@ explicitly confirmed per invocation. Host allowlisting is mandatory.
 | `raw_cdp` | Deny (always) |
 | `read_form_values` | RequireConfirmation |
 | `read_sensitive_form_values` | Deny (always) |
+| `consent_dismissal` | Allow only for recognized visible UX controls |
+| `declared_agent_identity` | Deny unless explicitly allowed |
 
 ```sh
 glass --mcp --policy untrusted-mcp --policy-allow-host example.com
@@ -130,6 +143,8 @@ glass --policy-confirm evaluate navigate https://example.com
 | `raw_cdp` | Direct CDP method dispatch (unbounded escape hatch) |
 | `read_form_values` | Reading non-password form field values |
 | `read_sensitive_form_values` | Reading password/credit-card field values |
+| `consent_dismissal` | Clicking documented OneTrust/Cookiebot consent controls |
+| `declared_agent_identity` | Signing an explicitly supplied request with an opt-in Ed25519 key |
 
 ## Host Allowlisting
 

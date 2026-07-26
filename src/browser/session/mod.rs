@@ -59,10 +59,12 @@ use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 mod types;
+pub use consent::ConsentDismissalOutcome;
 pub use diff::{AccessibilityDiff, DiffChange, DiffElement, diff_accessibility};
 pub use emulation::{GeoLocation, NetworkConditions, PdfOptions};
 pub use fill::{FillFieldResult, FillFormOutcome};
 pub use har::{NetworkEntry, NetworkRecorder, NetworkRecording};
+pub use identity::{AgentIdentity, SignedHttpRequest};
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use types::*;
@@ -71,6 +73,7 @@ mod action;
 mod batch;
 mod checkpoint;
 mod clipboard;
+mod consent;
 mod diagnostic;
 mod dialog;
 mod diff;
@@ -79,10 +82,12 @@ mod emulation;
 mod fill;
 mod frame;
 mod har;
+mod identity;
 mod intercept;
 mod locator;
 mod navigate;
 mod observe;
+mod polite;
 mod popup;
 mod retry;
 pub mod storage;
@@ -101,6 +106,7 @@ pub struct BrowserSession {
     pub(crate) profile: String,
     pub(crate) interaction_mode: InteractionMode,
     pub(crate) user_agent_original: Mutex<Option<String>>,
+    pub(crate) polite_last_request: Mutex<Option<tokio::time::Instant>>,
     pub(crate) mouse: MouseEngine,
     pub(crate) pointer: Mutex<Option<Point>>,
     pub(crate) page_revision: Arc<AtomicU64>,
@@ -630,6 +636,7 @@ impl BrowserSession {
             profile: options.profile.clone(),
             interaction_mode: options.interaction_mode,
             user_agent_original: Mutex::new(None),
+            polite_last_request: Mutex::new(None),
             mouse: MouseEngine::new(),
             pointer: Mutex::new(None),
             page_revision,

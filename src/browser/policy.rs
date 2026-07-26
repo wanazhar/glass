@@ -25,6 +25,8 @@ pub enum PolicyCapability {
     ReadFormValues,
     ReadSensitiveFormValues,
     CoordinateClick,
+    ConsentDismissal,
+    DeclaredAgentIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
@@ -33,6 +35,7 @@ pub enum PolicyPreset {
     Development,
     #[clap(name = "ci")]
     Ci,
+    Polite,
     Hardened,
     #[clap(name = "untrusted-mcp")]
     UntrustedMcp,
@@ -45,6 +48,7 @@ impl std::str::FromStr for PolicyPreset {
         match value {
             "development" | "dev" => Ok(Self::Development),
             "ci" => Ok(Self::Ci),
+            "polite" => Ok(Self::Polite),
             "hardened" => Ok(Self::Hardened),
             "untrusted-mcp" | "untrusted_mcp" => Ok(Self::UntrustedMcp),
             _ => Err(PolicyError::InvalidConfiguration {
@@ -114,6 +118,7 @@ impl BrowserPolicy {
         match preset {
             PolicyPreset::Development => Self::development(workspace_root),
             PolicyPreset::Ci => Self::ci(workspace_root),
+            PolicyPreset::Polite => Self::polite(workspace_root),
             PolicyPreset::Hardened => Self::hardened(workspace_root),
             PolicyPreset::UntrustedMcp => Self::untrusted_mcp(workspace_root),
         }
@@ -125,6 +130,10 @@ impl BrowserPolicy {
 
     pub fn ci(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
         Self::new(PolicyPreset::Ci, workspace_root, [], [])
+    }
+
+    pub fn polite(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
+        Self::new(PolicyPreset::Polite, workspace_root, [], [])
     }
 
     pub fn hardened(workspace_root: impl AsRef<Path>) -> Result<Self, PolicyError> {
@@ -235,7 +244,10 @@ impl BrowserPolicy {
         attached: bool,
     ) -> Result<Option<String>, PolicyError> {
         // Development and CI do not require host allowlisting
-        if matches!(self.preset, PolicyPreset::Development | PolicyPreset::Ci) {
+        if matches!(
+            self.preset,
+            PolicyPreset::Development | PolicyPreset::Ci | PolicyPreset::Polite
+        ) {
             return Ok(None);
         }
         if self.allowed_hosts.is_empty() {
@@ -334,8 +346,10 @@ impl BrowserPolicy {
         }
 
         // Development: allow everything
-        if self.preset == PolicyPreset::Development
-            || self.allowed_capabilities.contains(&capability)
+        if matches!(
+            self.preset,
+            PolicyPreset::Development | PolicyPreset::Polite
+        ) || self.allowed_capabilities.contains(&capability)
         {
             PolicyDecision::Allow
         } else if self.confirmed_capabilities.contains(&capability) {
@@ -417,7 +431,10 @@ impl BrowserPolicy {
         {
             return Err(url_denied("host is not in the explicit allow list"));
         }
-        if self.preset == PolicyPreset::Development {
+        if matches!(
+            self.preset,
+            PolicyPreset::Development | PolicyPreset::Polite
+        ) {
             return Ok(url);
         }
         if url.host_str().is_some_and(|host| host.ends_with('.')) {
@@ -486,7 +503,11 @@ impl BrowserPolicy {
         canonical: &Path,
         operation: &str,
     ) -> Result<(), PolicyError> {
-        if self.preset == PolicyPreset::Development || canonical.starts_with(&self.workspace_root) {
+        if matches!(
+            self.preset,
+            PolicyPreset::Development | PolicyPreset::Polite
+        ) || canonical.starts_with(&self.workspace_root)
+        {
             Ok(())
         } else {
             Err(PolicyError::Denied {
@@ -494,6 +515,10 @@ impl BrowserPolicy {
                 reason: "path escapes the configured workspace root".to_string(),
             })
         }
+    }
+
+    pub fn is_polite(&self) -> bool {
+        self.preset == PolicyPreset::Polite
     }
 }
 
@@ -509,6 +534,8 @@ fn capability_name(capability: PolicyCapability) -> &'static str {
         PolicyCapability::ReadFormValues => "read_form_values",
         PolicyCapability::ReadSensitiveFormValues => "read_sensitive_form_values",
         PolicyCapability::CoordinateClick => "coordinate_click",
+        PolicyCapability::ConsentDismissal => "consent_dismissal",
+        PolicyCapability::DeclaredAgentIdentity => "declared_agent_identity",
     }
 }
 

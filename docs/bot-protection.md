@@ -101,11 +101,9 @@ Glass provides bounded helpers for common consent frameworks:
 |-----------|-----------|--------|
 | OneTrust | CSS class `.onetrust-*` | Click "Accept All" or "Reject All" button |
 | Cookiebot | `#CybotCookiebotDialog` | Click configured consent button |
-| Generic GDPR banner | Text-content heuristics | Click "Accept" or "Necessary Only" |
 
 Outcomes are typed: `dismissed`, `no_consent_found`,
-`unrecognized_framework`. Unrecognized frameworks return a structured
-description so the agent can decide how to proceed.
+`unrecognized_framework`. Glass does not click generic text matches.
 
 **Important:** Consent helpers are UX assistance, not evasion. They interact
 with visible consent UI exactly as a user would. They are part of Glass's

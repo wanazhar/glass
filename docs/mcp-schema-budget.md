@@ -63,7 +63,7 @@ under 4k tokens for the full `tools/list` response.
 | `clearGeolocation` | (none) | — | Reset geolocation override |
 | `setTimezone` | `timezoneId` | `timezoneId` | IANA timezone ID |
 
-**Total: 49 tools.**
+**Total: 59 tools.**
 
 ## Schema Size Estimate
 

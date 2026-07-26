@@ -123,6 +123,7 @@ errors never cross the MCP error surface. Local tracing remains metadata-only.
 | `wait` | `condition`, optional `timeoutMs` | Wait for one typed condition. |
 | `diagnostics` | optional `durationMs` | Collect bounded redacted console/network evidence. |
 | `acceptDialog`, `dismissDialog` | none | Resolve the currently open JavaScript dialog. |
+| `dismissConsent` | none | Dismiss a recognized visible OneTrust/Cookiebot consent control. |
 | `download` | `destination`, optional `timeoutMs` | Wait for one scoped download lifecycle. |
 | `listTargets` | none | List bounded page targets without selecting one. |
 | `createTarget` | `url` | Create a page target without selecting it. |

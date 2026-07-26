@@ -220,6 +220,7 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             session.dismiss_dialog().await?;
             print_json(&serde_json::json!({"dialog": "dismissed"}))?;
         }
+        Commands::DismissConsent => print_json(&session.dismiss_consent().await?)?,
         Commands::Download {
             destination,
             timeout_ms,

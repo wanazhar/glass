@@ -257,6 +257,7 @@ enum ToolInvocation<'a> {
     },
     AcceptDialog,
     DismissDialog,
+    DismissConsent,
     Download {
         destination: std::path::PathBuf,
         timeout_ms: u64,
@@ -957,6 +958,7 @@ async fn call_tool(
             session.dismiss_dialog().await?;
             serialized_result(&json!({"dialog": "dismissed"}))
         }
+        ToolInvocation::DismissConsent => serialized_result(&session.dismiss_consent().await?),
         ToolInvocation::Download {
             destination,
             timeout_ms,
@@ -1181,6 +1183,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "acceptDialog" => Ok(ToolInvocation::AcceptDialog),
         "dismissDialog" => Ok(ToolInvocation::DismissDialog),
+        "dismissConsent" => Ok(ToolInvocation::DismissConsent),
         "download" => Ok(ToolInvocation::Download {
             destination: std::path::PathBuf::from(required_string(arguments, "destination")?),
             timeout_ms: optional_u64(arguments, "timeoutMs", 30_000)?,
@@ -1548,6 +1551,11 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "dismissDialog",
             description: "Dismiss the currently open JavaScript dialog.",
+            input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "dismissConsent",
+            description: "Dismiss a visible OneTrust or Cookiebot consent control; UX assistance only, never anti-bot bypass.",
             input_schema: json!({"type":"object","properties":{}}),
         },
         Tool {
@@ -2082,7 +2090,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 58);
+        assert_eq!(tools.len(), 59);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2121,7 +2129,13 @@ mod tests {
         ] {
             assert!(tools.iter().any(|tool| tool["name"] == name));
         }
-        for name in ["diagnostics", "acceptDialog", "dismissDialog", "download"] {
+        for name in [
+            "diagnostics",
+            "acceptDialog",
+            "dismissDialog",
+            "dismissConsent",
+            "download",
+        ] {
             assert!(tools.iter().any(|tool| tool["name"] == name));
         }
         assert!(tools.iter().any(|tool| {

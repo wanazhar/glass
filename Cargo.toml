@@ -33,6 +33,7 @@ dirs = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
+ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
 futures-util = "0.3"
 libc = "0.2"
 fs2 = "0.4"

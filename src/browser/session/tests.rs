@@ -20,6 +20,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         profile: "test".to_string(),
         interaction_mode: InteractionMode::Fast,
         user_agent_original: Mutex::new(None),
+        polite_last_request: Mutex::new(None),
         mouse: MouseEngine::new(),
         pointer: Mutex::new(None),
         page_revision: Arc::new(AtomicU64::new(1)),

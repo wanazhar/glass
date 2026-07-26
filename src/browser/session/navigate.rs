@@ -51,6 +51,7 @@ impl BrowserSession {
                 validate_wait_deadline(deadline)?;
                 let url = normalize_url(url);
                 self.policy.require_url(&url).await?;
+                self.enforce_polite_navigation(&url).await?;
                 if let Some(interception) = &self.policy_interception
                     && let Some(error) = interception.take_denial().await
                 {

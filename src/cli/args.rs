@@ -250,6 +250,9 @@ pub enum Commands {
     /// Dismiss the currently open JavaScript dialog.
     DismissDialog,
 
+    /// Dismiss a recognized OneTrust/Cookiebot consent wall.
+    DismissConsent,
+
     /// Wait for one download into an authorized existing directory.
     Download {
         destination: PathBuf,

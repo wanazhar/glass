@@ -205,6 +205,45 @@ pub struct CdpClient {
     active_route: Arc<std::sync::Mutex<CdpRoute>>,
 }
 
+struct RemoteObjectBatchGuard {
+    cdp: CdpClient,
+    object_ids: Vec<String>,
+}
+
+impl RemoteObjectBatchGuard {
+    fn new(cdp: CdpClient, array_id: String) -> Self {
+        Self {
+            cdp,
+            object_ids: vec![array_id],
+        }
+    }
+
+    async fn cleanup(&mut self) -> Result<(), CdpError> {
+        let object_ids = std::mem::take(&mut self.object_ids);
+        let mut first_error = None;
+        for object_id in object_ids {
+            if let Err(error) = self.cdp.release_object(&object_id).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for RemoteObjectBatchGuard {
+    fn drop(&mut self) {
+        let cdp = self.cdp.clone();
+        let object_ids = std::mem::take(&mut self.object_ids);
+        tokio::spawn(async move {
+            for object_id in object_ids {
+                let _ = cdp.release_object(&object_id).await;
+            }
+        });
+    }
+}
+
 impl CdpClient {
     /// Number of CDP requests allocated by this connection so far.
     ///
@@ -839,6 +878,7 @@ impl CdpClient {
         let array_id = evaluated["result"]["objectId"]
             .as_str()
             .ok_or_else(|| CdpError::transport("element query returned no remote array"))?;
+        let mut remote_objects = RemoteObjectBatchGuard::new(self.clone(), array_id.to_string());
         let properties = self
             .send(
                 "Runtime.getProperties",
@@ -861,6 +901,7 @@ impl CdpClient {
                 .is_some_and(|index| index < limit)
                 && let Some(object_id) = property["value"]["objectId"].as_str()
             {
+                remote_objects.object_ids.push(object_id.to_string());
                 objects.push(object_id.to_string());
             }
         }
@@ -872,23 +913,12 @@ impl CdpClient {
                     Some(serde_json::json!({ "objectId": object_id })),
                 )
                 .await;
-            let _ = self
-                .send(
-                    "Runtime.releaseObject",
-                    Some(serde_json::json!({ "objectId": object_id })),
-                )
-                .await;
             let requested = requested?;
             if let Some(node_id) = requested["nodeId"].as_i64().filter(|id| *id != 0) {
                 node_ids.push(node_id);
             }
         }
-        let _ = self
-            .send(
-                "Runtime.releaseObject",
-                Some(serde_json::json!({ "objectId": array_id })),
-            )
-            .await;
+        remote_objects.cleanup().await?;
         Ok((count, node_ids))
     }
 

@@ -19,7 +19,7 @@ if ! cargo fmt --all -- --check >/dev/null; then fmt_status=failed; fi
 clippy_status=passed
 if ! cargo clippy --all-targets --all-features --locked -- -D warnings >/dev/null; then clippy_status=failed; fi
 docs_status=passed
-if ! cargo doc --no-deps --locked >/dev/null; then docs_status=failed; fi
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked >/dev/null; then docs_status=failed; fi
 build_status=passed
 if ! cargo build --release --locked >/dev/null; then build_status=failed; fi
 package_status=passed
@@ -75,7 +75,7 @@ check_commands = {
     "fmt": "cargo fmt --all -- --check",
     "test": "cargo test --all-targets --locked",
     "clippy": "cargo clippy --all-targets --all-features --locked -- -D warnings",
-    "docs": "cargo doc --no-deps --locked",
+    "docs": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --locked",
     "build": "cargo build --release --locked",
     "package": "cargo package --locked --allow-dirty --no-verify",
     "deny": "cargo deny check",

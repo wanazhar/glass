@@ -673,7 +673,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "navigate", "arguments": {"url": url}}
+                "params": {"name": "navigate", "arguments": {"url": url, "includeTrace": true}}
             }),
             json!({
                 "jsonrpc": "2.0",
@@ -725,7 +725,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
                 "method": "tools/call",
                 "params": {
                     "name": "evaluate",
-                    "arguments": {"expression": "localStorage.getItem('glass-persistent')"}
+                    "arguments": {"expression": "localStorage.getItem('glass-persistent')", "includeTrace": true}
                 }
             }),
         ],
@@ -737,7 +737,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
             panic!("second-session evaluate response was not text: {second_responses:?}")
         });
     let persisted = serde_json::from_str::<Value>(persisted_text).unwrap_or_else(|error| {
-        panic!("second-session evaluate payload was invalid JSON ({error}): {persisted_text:?}")
+        panic!("second-session evaluate payload was invalid JSON ({error}): {second_responses:?}")
     });
     assert_eq!(
         persisted, "saved",

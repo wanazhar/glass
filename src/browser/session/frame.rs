@@ -52,10 +52,36 @@ impl BrowserSession {
                 "active target has no CDP session; the session may need to be re-established",
             )
         })?;
-        let raw = self
+        let raw = match self
             .cdp
             .send_to_session(&target_session, "Page.getFrameTree", None)
-            .await?;
+            .await
+        {
+            Ok(raw) => raw,
+            Err(error) => {
+                // A crashed page can leave Target.targetCrashed and the
+                // detached-session notification queued behind this request.
+                // The page route is unusable regardless of which notification
+                // arrives first, so make the recovery state deterministic.
+                let mut topology = self.topology.lock().await;
+                if topology.active_target_session_id.as_deref() == Some(target_session.as_str()) {
+                    topology.active_target_id = None;
+                    topology.active_session_id = None;
+                    topology.active_target_session_id = None;
+                    topology.active_frame_id = None;
+                    topology.frames.clear();
+                    topology.frame_sessions.clear();
+                    topology.frame_parents.clear();
+                    self.cdp.set_active_target_route(None, None, None, None);
+                    return Err(TopologyError::new(
+                        TopologyErrorKind::NoTargetSelected,
+                        "no active target is selected; call listTargets to discover available pages",
+                    )
+                    .into());
+                }
+                return Err(error.into());
+            }
+        };
         let mut frames = Vec::new();
         collect_frames(&raw["frameTree"], None, active.as_deref(), &mut frames)?;
         let (attached_sessions, frame_parents) = {

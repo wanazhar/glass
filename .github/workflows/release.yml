@@ -66,10 +66,15 @@ jobs:
 
       - name: Run browser smoke
         shell: bash
+        env:
+          GLASS_E2E: "1"
+          # GitHub's hosted Linux runner does not expose Chrome's sandbox.
+          # Keep the production default secure and scope this exception here.
+          GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
         run: |
           mkdir -p dist
           set -o pipefail
-          GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture 2>&1 \
+          cargo test --test browser_smoke --locked -- --nocapture 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
 
       - name: Write platform evidence

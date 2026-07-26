@@ -253,19 +253,19 @@ pub(crate) const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
 pub(crate) const COMPACT_OBSERVATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) const COMPACT_OBSERVATION_MAX_ATTEMPTS: u8 = 2;
 pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
-    pub(crate) const key = '__glassObservationRevision';
+    const key = '__glassObservationRevision';
     let state = globalThis[key];
     if (!state) {
         state = {revision: 0};
-        pub(crate) const observer = new MutationObserver(() => { state.revision += 1; });
+        const observer = new MutationObserver(() => { state.revision += 1; });
         observer.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
         globalThis[key] = state;
     }
-    pub(crate) const summary = {scanned_elements:0, scan_limit:512, shadow_roots:0, child_frames:0, canvases:0, truncated:false};
-    pub(crate) const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+    const summary = {scanned_elements:0, scan_limit:512, shadow_roots:0, child_frames:0, canvases:0, truncated:false};
+    const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
     while (walker.nextNode()) {
         if (summary.scanned_elements >= summary.scan_limit) { summary.truncated = true; break; }
-        pub(crate) const element = walker.currentNode;
+        const element = walker.currentNode;
         summary.scanned_elements += 1;
         if (element.shadowRoot) summary.shadow_roots += 1;
         if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
@@ -273,7 +273,7 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
     }
     return JSON.stringify({url:location.href, title:document.title, ready_state:document.readyState,
         text:(() => { const source=document.body ? document.body.innerText : ''; const bytes=new Uint8Array(16384);
-            pub(crate) const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
+            const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
             return new TextDecoder().decode(bytes.subarray(0, encoded.written)); })(),
         mutation_revision:state.revision, boundaries:summary});
 })()"#;
@@ -310,28 +310,28 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
     if (!element || !element.isConnected) return {ok:false, reason:'detached'};
-    pub(crate) const sample = () => {
-        pub(crate) const rect = element.getBoundingClientRect();
+    const sample = () => {
+        const rect = element.getBoundingClientRect();
         return {left:rect.left, top:rect.top, width:rect.width, height:rect.height};
     };
     element.scrollIntoView({block:'nearest', inline:'nearest'});
-    pub(crate) const first = sample();
+    const first = sample();
     if (!element.isConnected) return {ok:false, reason:'detached'};
     if (element.getAnimations({subtree:true}).some(animation => animation.playState === 'running'))
         return {ok:false, reason:'unstable_geometry'};
-    pub(crate) const second = sample();
-    pub(crate) const style = getComputedStyle(element);
+    const second = sample();
+    const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || second.width <= 0 || second.height <= 0)
         return {ok:false, reason:'not_visible'};
     if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
         return {ok:false, reason:'disabled'};
     if ([first.left, first.top, first.width, first.height].some((value, index) => Math.abs(value - [second.left, second.top, second.width, second.height][index]) > 1))
         return {ok:false, reason:'unstable_geometry'};
-    pub(crate) const x = second.left + second.width / 2;
-    pub(crate) const y = second.top + second.height / 2;
+    const x = second.left + second.width / 2;
+    const y = second.top + second.height / 2;
     if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)
         return {ok:false, reason:'outside_viewport'};
-    pub(crate) const hit = document.elementFromPoint(x, y);
+    const hit = document.elementFromPoint(x, y);
     if (!hit || (hit !== element && !element.contains(hit)))
         return {ok:false, reason:'hit_test_blocked'};
     return {ok:true, x, y};
@@ -339,10 +339,10 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
 pub(crate) const WAIT_TARGET_STATE_FUNCTION: &str = r#"function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
     if (!element || !element.isConnected) return {attached:false, visible:false, enabled:false};
-    pub(crate) const rect = element.getBoundingClientRect();
-    pub(crate) const style = getComputedStyle(element);
-    pub(crate) const visible = style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
-    pub(crate) const enabled = !element.matches(':disabled') && element.getAttribute('aria-disabled') !== 'true';
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const visible = style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
+    const enabled = !element.matches(':disabled') && element.getAttribute('aria-disabled') !== 'true';
     return {attached:true, visible, enabled, geometry:[rect.left, rect.top, rect.width, rect.height].map(value => Math.round(value * 10) / 10).join(',')};
 }"#;
 
@@ -3026,31 +3026,31 @@ pub(crate) fn text_query_expression(text: &str) -> BrowserResult<String> {
     let text = serde_json::to_string(text)?;
     Ok(format!(
         r#"(() => {{
-            pub(crate) const wanted = ({text}).replace(/\s+/g, ' ').trim();
-            pub(crate) const matches = [];
+            const wanted = ({text}).replace(/\s+/g, ' ').trim();
+            const matches = [];
             let count = 0;
-            pub(crate) const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
             for (let element = walker.currentNode; element; element = walker.nextNode()) {{
-                pub(crate) const style = getComputedStyle(element);
-                pub(crate) const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
                 if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) continue;
                 if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
                 let clipped = false;
                 let visibleLeft = rect.left, visibleTop = rect.top, visibleRight = rect.right, visibleBottom = rect.bottom;
                 for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {{
-                    pub(crate) const ancestorStyle = getComputedStyle(ancestor);
+                    const ancestorStyle = getComputedStyle(ancestor);
                     if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden' || Number(ancestorStyle.opacity) === 0) {{ clipped = true; break; }}
                     if (/(hidden|clip)/.test(ancestorStyle.overflow + ancestorStyle.overflowX + ancestorStyle.overflowY)) {{
-                        pub(crate) const bounds = ancestor.getBoundingClientRect();
+                        const bounds = ancestor.getBoundingClientRect();
                         visibleLeft = Math.max(visibleLeft, bounds.left); visibleTop = Math.max(visibleTop, bounds.top);
                         visibleRight = Math.min(visibleRight, bounds.right); visibleBottom = Math.min(visibleBottom, bounds.bottom);
                         if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) {{ clipped = true; break; }}
                     }}
                 }}
                 if (clipped) continue;
-                pub(crate) const actual = (element.innerText || '').replace(/\s+/g, ' ').trim();
+                const actual = (element.innerText || '').replace(/\s+/g, ' ').trim();
                 if (actual !== wanted) continue;
-                pub(crate) const candidate = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
+                const candidate = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
                 if (matches.includes(candidate)) continue;
                 for (let index = matches.length - 1; index >= 0; index--) {{
                     if (matches[index].contains(candidate)) {{ matches.splice(index, 1); count--; }}
@@ -3068,21 +3068,21 @@ pub(crate) fn visible_text_contains_expression(text: &str) -> BrowserResult<Stri
     let text = serde_json::to_string(text)?;
     Ok(format!(
         r#"(() => {{
-            pub(crate) const wanted = {text};
-            pub(crate) const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+            const wanted = {text};
+            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {{
                 if (!(node.nodeValue || '').includes(wanted)) continue;
-                pub(crate) const element = node.parentElement;
+                const element = node.parentElement;
                 if (!element) continue;
                 if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
-                pub(crate) const rect = element.getBoundingClientRect();
+                const rect = element.getBoundingClientRect();
                 if (rect.width <= 0 || rect.height <= 0) continue;
                 let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom, hidden = false;
                 for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {{
-                    pub(crate) const style = getComputedStyle(ancestor);
+                    const style = getComputedStyle(ancestor);
                     if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {{ hidden = true; break; }}
                     if (/(hidden|clip)/.test(style.overflow + style.overflowX + style.overflowY)) {{
-                        pub(crate) const bounds = ancestor.getBoundingClientRect();
+                        const bounds = ancestor.getBoundingClientRect();
                         left = Math.max(left, bounds.left); top = Math.max(top, bounds.top);
                         right = Math.min(right, bounds.right); bottom = Math.min(bottom, bounds.bottom);
                         if (right <= left || bottom <= top) {{ hidden = true; break; }}
@@ -3209,18 +3209,18 @@ pub(crate) fn popup_typed_error(
 pub(crate) fn popup_witness_install_function() -> String {
     format!(
         r#"function() {{
-            pub(crate) const element = this;
-            pub(crate) const nativeAdd = EventTarget.prototype.addEventListener;
-            pub(crate) const nativeRemove = EventTarget.prototype.removeEventListener;
-            pub(crate) const nativeApply = Reflect.apply;
-            pub(crate) const nativeSetTimeout = setTimeout;
-            pub(crate) const nativeClearTimeout = clearTimeout;
-            pub(crate) const state = {{fired:false, cleaned:false}};
-            pub(crate) const listener = function(event) {{
+            const element = this;
+            const nativeAdd = EventTarget.prototype.addEventListener;
+            const nativeRemove = EventTarget.prototype.removeEventListener;
+            const nativeApply = Reflect.apply;
+            const nativeSetTimeout = setTimeout;
+            const nativeClearTimeout = clearTimeout;
+            const state = {{fired:false, cleaned:false}};
+            const listener = function(event) {{
                 if (event.isTrusted === true && event.currentTarget === element) state.fired = true;
             }};
             let timer;
-            pub(crate) const cleanup = function() {{
+            const cleanup = function() {{
                 if (state.cleaned) return true;
                 state.cleaned = true;
                 nativeApply(nativeRemove, element, ['click', listener, true]);

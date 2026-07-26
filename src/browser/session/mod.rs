@@ -51,7 +51,7 @@ mod target;
 mod targets;
 mod visual;
 mod wait;
-
+mod webauthn;
 #[allow(private_interfaces)]
 pub struct BrowserSession {
     pub(crate) cdp: CdpClient,

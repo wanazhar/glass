@@ -33,6 +33,7 @@ mod batch;
 mod checkpoint;
 mod diagnostic;
 mod dialog;
+mod diff;
 mod download;
 mod emulation;
 mod fill;

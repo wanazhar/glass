@@ -157,11 +157,14 @@ impl BrowserSession {
             .cdp
             .resolve_node_object(element.node_id, element.backend_dom_node_id)
             .await?;
+        let remote = RemoteObjectGuard {
+            cdp: self.cdp.clone(),
+            object_id,
+        };
         let raw = self
             .cdp
-            .call_on_object(&object_id, WAIT_TARGET_STATE_FUNCTION)
+            .call_on_object(&remote.object_id, WAIT_TARGET_STATE_FUNCTION)
             .await;
-        let _ = self.cdp.release_object(&object_id).await;
         let value = runtime_value(&raw?)?;
         let visible = value["visible"].as_bool().unwrap_or(false);
         let enabled = value["enabled"].as_bool().unwrap_or(false);

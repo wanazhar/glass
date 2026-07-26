@@ -432,23 +432,23 @@ impl BrowserSession {
             let Some(object_id) = resolved["object"]["objectId"].as_str() else {
                 continue;
             };
+            let remote = RemoteObjectGuard {
+                cdp: self.cdp.clone(),
+                object_id: object_id.to_string(),
+            };
 
             let raw_result = self
                 .cdp
                 .send(
                     "Runtime.callFunctionOn",
                     Some(serde_json::json!({
-                        "objectId": object_id,
+                        "objectId": &remote.object_id,
                         "functionDeclaration": expression,
                         "returnByValue": true,
                         "awaitPromise": false,
                     })),
                 )
                 .await;
-            // DOM.resolveNode creates a remote object even when the following
-            // call fails. Release it on every path; form snapshots are bounded
-            // but must not turn each observe into a remote-handle leak.
-            let _ = self.cdp.release_object(object_id).await;
             let raw = match raw_result {
                 Ok(raw) => raw,
                 Err(_) => continue,

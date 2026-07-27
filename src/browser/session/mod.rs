@@ -146,11 +146,12 @@ pub use workflow::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,
     WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowDraft,
     WorkflowDraftStep, WorkflowInput, WorkflowIntentEvidence, WorkflowIntentStep, WorkflowOutput,
-    WorkflowOutputDeclaration, WorkflowOutputEvidence, WorkflowOutputSource,
-    WorkflowRecordedTarget, WorkflowRecorder, WorkflowRecordingConfidence, WorkflowResumeError,
-    WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,
-    WorkflowStepState, WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent,
-    WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    WorkflowOutputDeclaration, WorkflowOutputEvidence, WorkflowOutputSource, WorkflowRecordedRoute,
+    WorkflowRecordedSemantic, WorkflowRecordedTarget, WorkflowRecorder,
+    WorkflowRecordingConfidence, WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof,
+    WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError,
+    WorkflowValueType,
 };
 #[allow(private_interfaces)]
 pub struct BrowserSession {

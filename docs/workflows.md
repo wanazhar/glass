@@ -99,7 +99,9 @@ repeated automatically.
 
 Outputs use bounded sources such as `page_url`, `page_title`, or
 `visible_text`. Their declared type is checked before the value is returned;
-arbitrary JavaScript is not an output source.
+arbitrary JavaScript is not an output source. Marking an output `sensitive`
+still performs type validation and provenance recording, but returns `null`
+with `redacted: true` instead of the extracted value.
 
 String, URL, integer, number, and boolean outputs use strict conversions. A
 run-wide `maxExtractedBytes` budget is enforced before serialization. Each

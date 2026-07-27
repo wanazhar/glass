@@ -877,6 +877,7 @@ async fn browser_session_drives_a_local_fixture() {
                 value_type: glass::browser::session::WorkflowValueType::String,
                 source: WorkflowOutputSource::PageTitle,
                 required: true,
+                sensitive: false,
             },
         )]),
     };

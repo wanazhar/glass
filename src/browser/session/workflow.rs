@@ -2132,11 +2132,13 @@ async fn extract_workflow_outputs(
             .into());
         }
         let value = typed_output_value(name, declaration.value_type, text)?;
+        let redacted = declaration.sensitive;
         outputs.insert(
             name.clone(),
             WorkflowOutput {
                 value_type: declaration.value_type,
-                value,
+                value: if redacted { Value::Null } else { value },
+                redacted,
                 evidence: WorkflowOutputEvidence {
                     source: declaration.source,
                     revision,
@@ -2250,6 +2252,8 @@ pub struct WorkflowOutputDeclaration {
     pub source: WorkflowOutputSource,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 impl WorkflowOutputDeclaration {
@@ -2301,7 +2305,13 @@ impl fmt::Display for WorkflowOutputSource {
 pub struct WorkflowOutput {
     pub value_type: WorkflowValueType,
     pub value: Value,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub redacted: bool,
     pub evidence: WorkflowOutputEvidence,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Bounded provenance for a typed workflow output.
@@ -2722,6 +2732,22 @@ mod tests {
         );
         assert!(typed_output_value("count", WorkflowValueType::Integer, "4.2").is_err());
         assert!(typed_output_value("ready", WorkflowValueType::Boolean, "yes").is_err());
+    }
+
+    #[test]
+    fn sensitive_output_serialization_contains_no_literal_value() {
+        let output = WorkflowOutput {
+            value_type: WorkflowValueType::String,
+            value: Value::Null,
+            redacted: true,
+            evidence: WorkflowOutputEvidence {
+                source: WorkflowOutputSource::VisibleText,
+                revision: 4,
+            },
+        };
+        let serialized = serde_json::to_string(&output).unwrap();
+        assert!(serialized.contains("\"redacted\":true"));
+        assert!(!serialized.contains("secret"));
     }
 
     #[test]

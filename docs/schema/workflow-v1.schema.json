@@ -104,7 +104,8 @@
       "properties": {
         "valueType": {"enum": ["string", "integer", "number", "boolean", "url"]},
         "source": {"enum": ["page_url", "page_title", "visible_text"]},
-        "required": {"type": "boolean"}
+        "required": {"type": "boolean"},
+        "sensitive": {"type": "boolean", "default": false}
       }
     }
   }

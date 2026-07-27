@@ -15,6 +15,8 @@
   field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
+- [Semantic observations](semantic-observation.md) — bounded page and region
+  state, levels, expansion, revisions, diffs, and privacy boundaries.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
   and design principles for keeping the surface lean.
 - [Logged-in session ergonomics](profile-ergonomics.md) — using persistent

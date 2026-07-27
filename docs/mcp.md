@@ -134,7 +134,7 @@ reversible.
 | `fillForm` | `fields`, optional `expectedRevision` | Fill up to 16 fields and return per-field results. |
 | `upload` | `target`, `files`, optional `expectedRevision` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
-| `observe` | optional `includeDom`, `includeScreenshot` | Return structured page context. |
+| `observe` | optional `includeDom`, `includeScreenshot`, `includeFormValues`, `level`, `region` | Return compact page context or a bounded semantic observation. |
 | `getDOM` | none | Return the full DOM tree. |
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
@@ -159,6 +159,12 @@ All arguments are JSON. `scroll` defaults to `dx: 0` and `dy: 600`.
 accessible names remain compatible. The legacy `selector` argument is treated
 as CSS, but must still resolve uniquely.
 `includeDom` and `includeScreenshot` default to `false`.
+When `level` is omitted, `observe` retains its compact `PageContext` response.
+Set `level` to `summary`, `interactive`, `structured`, `detailed`, or `raw` for
+the versioned semantic contract. `region` requires an explicit level and
+returns one revision-checked region; semantic levels cannot be combined with
+DOM, screenshot, or form-value overlays. See
+[semantic observations](semantic-observation.md) for the payload rules.
 `wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
 active wait and scoped network subscriptions are disabled on drop.
 Diagnostic and download durations are limited to 30 seconds. Console argument

@@ -9,8 +9,7 @@ silently retarget an action.
 
 ## Status
 
-Glass `0.1.18` is prepared as the next `glass-browser` release. The release
-workflow builds Linux x86-64 and macOS x86-64/arm64 binaries. Windows is not a supported
+Glass supports Linux x86-64 and macOS x86-64/arm64. Windows is not a supported
 target.
 
 The command-line interface, terminal UI, MCP server, and Rust library share the
@@ -30,9 +29,7 @@ glass --help
 cargo install --path . --locked
 ```
 
-The prepared release will provide Linux and macOS binaries from the
-[0.1.18 GitHub release](https://github.com/wanazhar/glass/releases/tag/v0.1.18)
-with SHA-256 checksum files after publication. For example:
+Linux and macOS releases include SHA-256 checksum files. For example:
 
 ```console
 GLASS_VERSION=v0.1.18
@@ -117,6 +114,12 @@ The main browser operations are available from the CLI and MCP:
 - export/import cookies and bounded session checkpoints; and
 - run bounded typed batches and reconcile revisioned references.
 
+Semantic observations provide bounded page and region summaries, grouped
+interactive references, visible text, accessibility projections, and
+revision-aware diffs. Start with `glass observe --level summary`; use
+`--level interactive` when an action reference is needed. See the
+[semantic observation guide](docs/semantic-observation.md).
+
 Use `glass --help` for the complete CLI surface. Detailed command syntax is in
 the [CLI reference](docs/cli.md), and the corresponding MCP names and
 arguments are in the [MCP guide](docs/mcp.md).
@@ -157,7 +160,8 @@ glass = { package = "glass-browser", version = "0.1" }
 
 The library exposes `BrowserSession`, typed session options and policies,
 compact observations, revision-safe actions, target/frame management, storage,
-downloads, screenshots, PDFs, and the MCP server implementation.
+downloads, screenshots, PDFs, semantic observations, and the MCP server
+implementation.
 
 Small optional MCP clients are included for [TypeScript](https://github.com/wanazhar/glass/tree/main/clients/typescript)
 and [Python](https://github.com/wanazhar/glass/tree/main/clients/python). They launch a local Glass binary and do not

@@ -53,7 +53,8 @@ fill-form --fields JSON [--expected-revision REVISION]
 screenshot [-o|--output FILE]
 text
 dom
-observe [--deep-dom] [--screenshot]
+observe [--deep-dom] [--screenshot] [--form-values]
+observe --level summary|interactive|structured|detailed|raw [--region REGION_ID]
 scroll [--dx PIXELS] [--dy PIXELS] [--expected-revision REVISION]
 wait CONDITION [--timeout-ms MILLISECONDS]
 diagnostics [--duration-ms MILLISECONDS]
@@ -80,6 +81,12 @@ forms documented in the browser architecture (`lifecycle=`, `url=`,
 `url-prefix=`, target states, `text=`, `js=`, and `network-quiet=`);
 normal observations do not collect the full DOM. Likewise, screenshots are
 only captured by `screenshot` or `observe --screenshot`.
+
+`observe --level` returns the versioned semantic observation contract. Use
+`--region` for a revision-checked scoped expansion. Semantic options cannot be
+combined with deep DOM, screenshots, or form values; see
+[semantic observations](semantic-observation.md) for payload levels and
+revision behavior.
 
 `diagnostics` explicitly leases console and network domains for at most 30
 seconds and returns bounded, secret-redacted metadata. Dialog commands act only

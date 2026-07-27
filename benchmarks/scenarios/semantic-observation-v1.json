@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "generic-summary",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 7,
+        "level": "summary",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/"},
+        "page": {
+          "kind": "generic",
+          "title": "Example",
+          "url": "https://example.test/",
+          "targetId": "target-1",
+          "frameId": "frame-1",
+          "confidence": "unknown",
+          "evidence": ["no-high-confidence-page-signature"]
+        },
+        "regions": [{
+          "id": "region_main_1",
+          "kind": "main",
+          "label": "Main content",
+          "interactiveCount": 0,
+          "confidence": "exact",
+          "expansion": {
+            "regionId": "region_main_1",
+            "revision": 7,
+            "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/"}
+          }
+        }],
+        "limits": {"truncated": false, "omittedRegions": 0}
+      }
+    },
+    {
+      "name": "search-interactive",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 8,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/search"},
+        "page": {
+          "kind": "searchResults",
+          "title": "Search results",
+          "url": "https://example.test/search",
+          "targetId": "target-1",
+          "frameId": "frame-1",
+          "confidence": "high",
+          "evidence": ["aria-role=search"]
+        },
+        "regions": [{
+          "id": "region_search_1",
+          "kind": "search",
+          "label": "Site search",
+          "interactiveCount": 1,
+          "confidence": "exact",
+          "targets": [{"reference": "axr-8-9", "role": "textbox", "name": "Query", "inputType": "search"}],
+          "expansion": {
+            "regionId": "region_search_1",
+            "revision": 8,
+            "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/search"}
+          }
+        }],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      }
+    },
+    {
+      "name": "form-detailed",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 9,
+        "level": "detailed",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/contact"},
+        "page": {
+          "kind": "form",
+          "title": "Contact",
+          "url": "https://example.test/contact",
+          "targetId": "target-1",
+          "frameId": "frame-1",
+          "confidence": "high",
+          "evidence": ["aria-role=form"]
+        },
+        "regions": [{
+          "id": "region_form_1",
+          "kind": "form",
+          "label": "Contact form",
+          "interactiveCount": 1,
+          "confidence": "exact",
+          "targets": [{"reference": "axr-9-14", "role": "textbox", "name": "Message"}],
+          "expansion": {
+            "regionId": "region_form_1",
+            "revision": 9,
+            "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/contact"}
+          }
+        }],
+        "text": "Contact us",
+        "accessibility": [{"role": "form", "name": "Contact form", "children": [{"role": "textbox", "name": "Message", "interactive": true}]}],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      }
+    },
+    {
+      "name": "raw-accessibility-only",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 10,
+        "level": "raw",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/"},
+        "page": {
+          "kind": "generic",
+          "title": "Example",
+          "url": "https://example.test/",
+          "targetId": "target-1",
+          "frameId": "frame-1",
+          "confidence": "unknown"
+        },
+        "regions": [{
+          "id": "region_unknown",
+          "kind": "unknown",
+          "label": "Unclassified page content",
+          "interactiveCount": 0,
+          "confidence": "unknown",
+          "evidence": ["no recognized landmark role"]
+        }],
+        "text": "Example",
+        "accessibility": [{"role": "document", "name": "Example"}],
+        "rawAccessibility": [{"role": "document", "name": "Example"}],
+        "limits": {"truncated": false, "omittedRegions": 0}
+      }
+    }
+  ]
+}

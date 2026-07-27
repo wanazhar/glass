@@ -317,6 +317,18 @@ pub fn resolve_intent(
     request: &SemanticIntentRequest,
     observation: &super::SemanticObservation,
 ) -> SemanticIntentResult {
+    resolve_intent_with_historical_matches(request, observation, &BTreeSet::new())
+}
+
+/// Resolve an intent against fresh semantic evidence with optional eligible
+/// historical fingerprint digests. Historical evidence can explain a current
+/// candidate but never creates one and never upgrades its confidence by
+/// itself.
+pub fn resolve_intent_with_historical_matches(
+    request: &SemanticIntentRequest,
+    observation: &super::SemanticObservation,
+    historical_fingerprints: &BTreeSet<String>,
+) -> SemanticIntentResult {
     let normalized = match normalize_intent(request) {
         Ok(normalized) => normalized,
         Err(error) => {
@@ -373,8 +385,14 @@ pub fn resolve_intent(
         for target in &region.targets {
             let id = format!("candidate_{}", candidate_index + 1);
             candidate_index += 1;
-            let (include, evidence, excluded_reason) =
-                score_candidate(request, &normalized, observation, region, target);
+            let (include, evidence, excluded_reason) = score_candidate(
+                request,
+                &normalized,
+                observation,
+                region,
+                target,
+                historical_fingerprints,
+            );
             if !include {
                 if excluded.len() < request.constraints.max_candidates {
                     excluded.push(ExcludedIntentCandidate {
@@ -448,6 +466,7 @@ fn score_candidate(
     observation: &super::SemanticObservation,
     region: &super::SemanticRegion,
     target: &super::SemanticTarget,
+    historical_fingerprints: &BTreeSet<String>,
 ) -> (bool, Vec<IntentEvidence>, Option<IntentEvidence>) {
     if request.constraints.must_be_visible || request.constraints.must_be_enabled {
         return (
@@ -590,6 +609,18 @@ fn score_candidate(
         evidence.push(IntentEvidence {
             category: IntentEvidenceCategory::RegionMatch,
             detail: "candidate belongs to the requested semantic region".into(),
+        });
+    }
+    if historical_fingerprints.contains(&target_fingerprint_digest(
+        &target.role,
+        &target.name,
+        target.input_type.as_deref(),
+        Some(region.kind),
+        normalized.purpose,
+    )) {
+        evidence.push(IntentEvidence {
+            category: IntentEvidenceCategory::HistoricalMatch,
+            detail: "eligible scoped knowledge matches this current candidate fingerprint".into(),
         });
     }
     (true, evidence, None)
@@ -1089,6 +1120,28 @@ pub struct SemanticTargetFingerprint {
     pub invalidated_by: Vec<FingerprintInvalidation>,
 }
 
+/// Derive the stable, non-authorizing digest used by persistent target
+/// knowledge. The current target reference, route handles, and accessible
+/// name are intentionally not part of the stored value.
+pub fn target_fingerprint_digest(
+    role: &str,
+    name: &str,
+    input_type: Option<&str>,
+    region_kind: Option<SemanticRegionKind>,
+    purpose: SemanticIntentPurpose,
+) -> String {
+    let canonical = serde_json::json!({
+        "role": role,
+        "name": name,
+        "inputType": input_type,
+        "regionKind": region_kind,
+        "purpose": purpose,
+    });
+    let digest =
+        Sha256::digest(serde_json::to_vec(&canonical).expect("JSON value is serializable"));
+    format!("sha256:{digest:x}")
+}
+
 /// Candidate excluded from consideration for an inspectable reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1475,6 +1528,45 @@ impl super::BrowserSession {
         Ok(resolve_intent(request, &observation))
     }
 
+    /// Resolve against fresh semantic evidence while using only eligible
+    /// stored target fingerprints as secondary explanation evidence.
+    /// Historical records never create candidates, supply current references,
+    /// or authorize an action.
+    pub async fn resolve_intent_with_knowledge(
+        &self,
+        request: &SemanticIntentRequest,
+        store: &super::KnowledgeStore,
+        lookup_options: super::KnowledgeLookupOptions,
+    ) -> super::types::BrowserResult<SemanticIntentResult> {
+        let observation = self
+            .semantic_observe(super::SemanticObservationLevel::Interactive)
+            .await?;
+        let context =
+            super::KnowledgeLookupContext::from_observation(&observation, lookup_options)?;
+        let assessments = store.assess(&context);
+        let historical_fingerprints = store
+            .records()
+            .iter()
+            .zip(assessments)
+            .filter(|(record, assessment)| {
+                record.kind == super::KnowledgeRecordKind::TargetFingerprint
+                    && assessment.status == super::KnowledgeAssessmentStatus::Eligible
+            })
+            .filter_map(|(record, _)| {
+                record
+                    .data
+                    .get("fingerprint")
+                    .and_then(|value| value.as_str())
+            })
+            .map(str::to_string)
+            .collect();
+        Ok(resolve_intent_with_historical_matches(
+            request,
+            &observation,
+            &historical_fingerprints,
+        ))
+    }
+
     /// Resolve and, when the caller-selected candidate remains policy-eligible,
     /// execute one supported action through the existing guarded primitives.
     ///
@@ -1831,6 +1923,43 @@ mod tests {
         assert_eq!(result.policy_decision, IntentPolicyDecision::Rejected);
         assert!(result.selected_candidate.is_none());
         assert_eq!(result.candidates.len(), 2);
+    }
+
+    #[test]
+    fn historical_fingerprint_explains_only_a_current_candidate() {
+        let observation = semantic_observation();
+        let mut request = make_request();
+        request.constraints.must_be_visible = false;
+        request.constraints.name = Some("Settings".into());
+        let fingerprint = target_fingerprint_digest(
+            "button",
+            "Settings",
+            None,
+            Some(SemanticRegionKind::Navigation),
+            SemanticIntentPurpose::Open,
+        );
+        let mut historical = BTreeSet::new();
+        historical.insert(fingerprint);
+        let result = resolve_intent_with_historical_matches(&request, &observation, &historical);
+        assert_eq!(result.resolution, SemanticResolution::Exact);
+        assert!(
+            result.candidates[0]
+                .evidence
+                .iter()
+                .any(|evidence| { evidence.category == IntentEvidenceCategory::HistoricalMatch })
+        );
+
+        let mut unknown = BTreeSet::new();
+        unknown.insert("sha256:not-current".into());
+        let without_match =
+            resolve_intent_with_historical_matches(&request, &observation, &unknown);
+        assert_eq!(without_match.candidates.len(), result.candidates.len());
+        assert!(
+            !without_match.candidates[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.category == IntentEvidenceCategory::HistoricalMatch)
+        );
     }
 
     #[test]

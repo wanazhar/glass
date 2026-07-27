@@ -75,6 +75,7 @@ pub use intent::{
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
     SemanticIntentPurpose, SemanticIntentRequest, SemanticIntentResult, SemanticResolution,
     SemanticResolutionPolicy, SemanticTargetFingerprint, normalize_intent, resolve_intent,
+    resolve_intent_with_historical_matches, target_fingerprint_digest,
 };
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use knowledge::{

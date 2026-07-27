@@ -4,7 +4,7 @@
 //! recognize a recurring page or reduce inspection work, but it never contains
 //! an executable target reference and never authorizes a browser mutation.
 
-use super::SemanticObservation;
+use super::{SemanticIntentCandidate, SemanticObservation, target_fingerprint_digest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,7 @@ pub const KNOWLEDGE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_KNOWLEDGE_RECORDS: usize = 256;
 const MAX_RECORD_ID_BYTES: usize = 128;
 const MAX_SCOPE_VALUE_BYTES: usize = 256;
+const MAX_ROLE_BYTES: usize = 64;
 const MAX_TIMESTAMP_BYTES: usize = 64;
 const MAX_LANDMARKS: usize = 32;
 const MAX_HISTORY: usize = 32;
@@ -352,6 +353,71 @@ impl KnowledgeRecord {
             data: json!({
                 "pageKind": page_kind,
                 "regionKinds": region_kinds,
+            }),
+            history: Vec::new(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Build an observed target-fingerprint record from one fresh intent
+    /// candidate. Only a digest and non-sensitive semantic dimensions are
+    /// retained; the candidate's current reference and accessible name are
+    /// never persisted.
+    pub fn from_intent_candidate(
+        candidate: &SemanticIntentCandidate,
+        options: KnowledgeRecordBuildOptions,
+    ) -> Result<Self, KnowledgeValidationError> {
+        let fingerprint = candidate.fingerprint.as_ref().ok_or_else(|| {
+            KnowledgeValidationError::new(
+                "candidate.fingerprint",
+                "fresh intent candidates require a target fingerprint",
+            )
+        })?;
+        validate_text("recordId", &options.record_id, MAX_RECORD_ID_BYTES, false)?;
+        validate_text(
+            "source.glassVersion",
+            &options.glass_version,
+            MAX_SCOPE_VALUE_BYTES,
+            false,
+        )?;
+        validate_timestamp("source.observedAt", &options.observed_at)?;
+        validate_scope(&options.scope)?;
+        validate_text("candidate.role", &candidate.role, MAX_ROLE_BYTES, false)?;
+        let digest = target_fingerprint_digest(
+            &candidate.role,
+            &candidate.name,
+            candidate.input_type.as_deref(),
+            candidate.region_kind,
+            fingerprint.purpose,
+        );
+        let required_landmarks = candidate
+            .region_kind
+            .map(|kind| serde_json::to_string(&kind).unwrap_or_default())
+            .into_iter()
+            .map(|landmark| landmark.trim_matches('"').to_string())
+            .collect();
+        let record = Self {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            record_id: options.record_id,
+            kind: KnowledgeRecordKind::TargetFingerprint,
+            scope: options.scope,
+            source: KnowledgeSource {
+                first_seen_at: options.observed_at.clone(),
+                last_verified_at: options.observed_at,
+                glass_version: options.glass_version,
+                verification_count: 0,
+            },
+            confidence: KnowledgeConfidence::Observed,
+            invalidation: KnowledgeInvalidation {
+                max_age_seconds: Some(604_800),
+                required_landmarks,
+            },
+            data: json!({
+                "fingerprint": digest,
+                "role": candidate.role,
+                "regionKind": candidate.region_kind,
+                "purpose": fingerprint.purpose,
             }),
             history: Vec::new(),
         };
@@ -976,6 +1042,10 @@ impl std::error::Error for KnowledgeValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::session::{
+        FingerprintInvalidation, IntentConfidence, SemanticIntentPurpose, SemanticRegionKind,
+        SemanticRouteIdentity, SemanticTargetFingerprint,
+    };
     use serde_json::json;
 
     fn record() -> KnowledgeRecord {
@@ -1172,5 +1242,51 @@ mod tests {
         assert!(data.contains("searchResults"));
         assert!(!data.contains("axr-8-9"));
         assert_eq!(record.confidence, KnowledgeConfidence::Observed);
+    }
+
+    #[test]
+    fn target_record_keeps_digest_but_not_current_handles_or_names() {
+        let candidate = SemanticIntentCandidate {
+            id: "candidate_1".into(),
+            reference: "axr-42-1".into(),
+            role: "button".into(),
+            name: "Private Settings Label".into(),
+            input_type: None,
+            region_id: Some("region_navigation".into()),
+            region_kind: Some(SemanticRegionKind::Navigation),
+            confidence: IntentConfidence::Exact,
+            evidence: Vec::new(),
+            fingerprint: Some(SemanticTargetFingerprint {
+                revision: 42,
+                route: SemanticRouteIdentity {
+                    target_id: "target-1".into(),
+                    frame_id: "frame-1".into(),
+                    url: "https://example.test/settings".into(),
+                },
+                role: "button".into(),
+                name: "Private Settings Label".into(),
+                input_type: None,
+                region_id: Some("region_navigation".into()),
+                region_kind: Some(SemanticRegionKind::Navigation),
+                purpose: SemanticIntentPurpose::Open,
+                invalidated_by: vec![FingerprintInvalidation::Revision],
+            }),
+        };
+        let record = KnowledgeRecord::from_intent_candidate(
+            &candidate,
+            KnowledgeRecordBuildOptions {
+                record_id: "knowledge-settings-target".into(),
+                scope: record().scope,
+                glass_version: "0.2.0".into(),
+                observed_at: "2026-07-27T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        let data = serde_json::to_string(&record.data).unwrap();
+        assert!(data.contains("sha256:"));
+        assert!(!data.contains("axr-42-1"));
+        assert!(!data.contains("Private Settings Label"));
+        assert!(!data.contains("target-1"));
+        assert!(!data.contains("frame-1"));
     }
 }

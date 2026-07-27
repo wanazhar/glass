@@ -367,6 +367,9 @@ pub enum Commands {
         /// JSON array of {target, value} objects.
         #[arg(long)]
         fields: String,
+        /// Initial observation revision required before filling.
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Execute a bounded typed batch from a JSON array or stdin.
@@ -564,6 +567,22 @@ mod tests {
                 .unwrap()
                 .command,
             Some(Commands::Shortcut { shortcut, .. }) if shortcut == "Control+A"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "glass",
+                "fill-form",
+                "--fields",
+                "[]",
+                "--expected-revision",
+                "7"
+            ])
+            .unwrap()
+            .command,
+            Some(Commands::FillForm {
+                fields,
+                expected_revision: Some(7)
+            }) if fields == "[]"
         ));
     }
 

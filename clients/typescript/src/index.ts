@@ -24,6 +24,11 @@ export type VerificationPredicate =
 
 export type BatchMode = "fixed" | "chain" | "unguarded";
 
+export interface FormField {
+  target: string;
+  value?: string;
+}
+
 export interface GlassClientOptions {
   command?: string;
   args?: string[];
@@ -108,6 +113,9 @@ export class GlassClient {
   }
   key<T = Record<string, unknown>>(key: string, expectedRevision?: number): Promise<T> {
     return this.call<T>("key", { key, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  fillForm<T = Record<string, unknown>>(fields: FormField[], expectedRevision?: number): Promise<T> {
+    return this.call<T>("fillForm", { fields, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
   verify<T = Record<string, unknown>>(predicate: VerificationPredicate, timeoutMs?: number): Promise<T> {
     return this.call<T>("verify", { predicate, ...(timeoutMs === undefined ? {} : { timeoutMs }) });

@@ -128,6 +128,13 @@ class GlassClient:
     def key(self, key: str, expected_revision: Optional[int] = None) -> Any:
         return self._guarded("key", {"key": key}, expected_revision)
 
+    def fill_form(
+        self,
+        fields: list[dict[str, str]],
+        expected_revision: Optional[int] = None,
+    ) -> Any:
+        return self._guarded("fillForm", {"fields": fields}, expected_revision)
+
     def verify(
         self,
         predicate: VerificationPredicate,

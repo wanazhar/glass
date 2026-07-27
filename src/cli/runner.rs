@@ -448,7 +448,10 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             tokio::fs::write(&output, &bytes).await?;
             println!("PDF saved to {output} ({} bytes)", bytes.len());
         }
-        Commands::FillForm { fields } => {
+        Commands::FillForm {
+            fields,
+            expected_revision,
+        } => {
             let parsed: Vec<serde_json::Value> = serde_json::from_str(fields)?;
             let field_refs: Vec<(String, String)> = parsed
                 .iter()
@@ -463,7 +466,11 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 .iter()
                 .map(|(t, v)| (t.as_str(), v.as_str()))
                 .collect();
-            print_json(&session.fill_form(&field_slices).await?)?;
+            print_json(
+                &session
+                    .fill_form_with_expected_revision(&field_slices, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Batch {
             input,

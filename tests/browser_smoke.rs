@@ -846,7 +846,7 @@ async fn browser_session_drives_a_local_fixture() {
         description: None,
         inputs: BTreeMap::new(),
         budgets: WorkflowBudgets {
-            max_steps: 1,
+            max_steps: 2,
             max_duration_ms: 10_000,
             max_retries: 0,
             max_extracted_bytes: 4_096,
@@ -854,15 +854,18 @@ async fn browser_session_drives_a_local_fixture() {
         preconditions: vec![],
         steps: vec![WorkflowStep {
             id: "save".into(),
-            action: BatchStep::Click {
-                target: "name=Save".into(),
+            action: BatchStep::Observe {
+                include_dom: false,
+                include_screenshot: false,
+                include_form_values: false,
             },
-            expect: Some(VerificationPredicate::TextContains {
-                value: "Saved".into(),
+            expect: Some(VerificationPredicate::TitleContains {
+                value: "Glass Fixture".into(),
             }),
-            transaction: WorkflowTransactionClass::NonIdempotent,
+            transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
             max_retries: 0,
+            repeat: 2,
         }],
         terminal_condition: VerificationPredicate::TitleContains {
             value: "Glass Fixture".into(),
@@ -882,7 +885,7 @@ async fn browser_session_drives_a_local_fixture() {
         .unwrap();
     assert_eq!(workflow_result.status, WorkflowRunStatus::Completed);
     assert_eq!(workflow_result.steps[0].state, WorkflowStepState::Committed);
-    assert_eq!(workflow_result.steps[0].attempts, 1);
+    assert_eq!(workflow_result.steps[0].attempts, 2);
     assert_eq!(
         workflow_result.outputs["title"].value,
         json!("Glass Fixture")

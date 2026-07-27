@@ -26,6 +26,7 @@ const MAX_EXTRACTED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_TARGET_BYTES: usize = 1_024;
 const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
+const MAX_STEP_REPETITIONS: u32 = 8;
 const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
 const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
 
@@ -117,6 +118,13 @@ impl WorkflowDefinition {
             return Err(WorkflowValidationError::new(
                 "steps",
                 "step count exceeds budgets.maxSteps",
+            ));
+        }
+        let expanded_steps: usize = self.steps.iter().map(|step| step.repeat as usize).sum();
+        if expanded_steps > self.budgets.max_steps as usize {
+            return Err(WorkflowValidationError::new(
+                "steps",
+                "expanded repetition count exceeds budgets.maxSteps",
             ));
         }
 
@@ -312,6 +320,7 @@ pub struct WorkflowStep {
     pub transaction: WorkflowTransactionClass,
     pub idempotency_key: Option<String>,
     pub max_retries: u32,
+    pub repeat: u32,
 }
 
 /// Effect classification used to decide whether a failed attempt may be
@@ -379,6 +388,9 @@ impl Serialize for WorkflowStep {
         if self.max_retries > 0 {
             workflow.insert("maxRetries".into(), Value::from(self.max_retries));
         }
+        if self.repeat > 1 {
+            workflow.insert("repeat".into(), Value::from(self.repeat));
+        }
         Value::Object(workflow).serialize(serializer)
     }
 }
@@ -415,6 +427,12 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             .transpose()
             .map_err(D::Error::custom)?
             .unwrap_or(0);
+        let repeat = workflow
+            .remove("repeat")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?
+            .unwrap_or(1);
         for (public, internal) in [
             ("timeoutMs", "timeout_ms"),
             ("includeDom", "include_dom"),
@@ -433,6 +451,7 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             transaction,
             idempotency_key,
             max_retries,
+            repeat,
         })
     }
 }
@@ -450,6 +469,18 @@ impl WorkflowStep {
         }
         if let Some(key) = &self.idempotency_key {
             validate_bytes(&format!("{path}.idempotencyKey"), key, 1, 256)?;
+        }
+        if self.repeat == 0 || self.repeat > MAX_STEP_REPETITIONS {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.repeat"),
+                format!("must be 1..={MAX_STEP_REPETITIONS}"),
+            ));
+        }
+        if self.repeat > 1 && !self.transaction.permits_pre_dispatch_retry() {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.repeat"),
+                "unknown or non-idempotent steps cannot repeat automatically",
+            ));
         }
         if self.max_retries > workflow_max_retries {
             return Err(WorkflowValidationError::new(
@@ -522,6 +553,7 @@ impl WorkflowStepState {
                 | (Self::Verified, Self::OutputsExtracted)
                 | (Self::OutputsExtracted, Self::Committed)
                 | (Self::FailedBeforeDispatch, Self::Ready)
+                | (Self::Committed, Self::Ready)
         )
     }
 }
@@ -766,131 +798,137 @@ impl super::BrowserSession {
         }
 
         for (index, step) in workflow.steps.iter().enumerate() {
-            let mut attempt_number = 0;
-            let outcome = loop {
-                {
+            for repetition in 0..step.repeat {
+                if repetition > 0 {
                     let record = &mut records[index];
-                    if record.state == WorkflowStepState::Pending {
-                        let _ = record.transition(WorkflowStepState::Ready);
-                    }
-                    let _ = record.transition(WorkflowStepState::Preflight);
-                    let _ = record.transition(WorkflowStepState::Resolving);
-                    attempt_number += 1;
-                    record.attempts = attempt_number;
+                    let _ = record.transition(WorkflowStepState::Ready);
                 }
+                let mut attempt_number = 0;
+                let outcome = loop {
+                    {
+                        let record = &mut records[index];
+                        if record.state == WorkflowStepState::Pending {
+                            let _ = record.transition(WorkflowStepState::Ready);
+                        }
+                        let _ = record.transition(WorkflowStepState::Preflight);
+                        let _ = record.transition(WorkflowStepState::Resolving);
+                        attempt_number += 1;
+                        record.attempts = record.attempts.saturating_add(1);
+                    }
 
-                let outcome = self
-                    .run_batch_with_mode(
-                        std::slice::from_ref(&step.action),
-                        false,
-                        BatchMode::Unguarded,
-                        None,
-                    )
-                    .await;
-                match outcome {
-                    Ok(outcome) => break outcome,
-                    Err(error) => {
-                        let message = bound_workflow_text(&error.to_string(), 512);
-                        let retry = can_retry_before_dispatch(
-                            step.transaction,
+                    let outcome = self
+                        .run_batch_with_mode(
+                            std::slice::from_ref(&step.action),
                             false,
-                            attempt_number,
-                            step.max_retries,
-                        );
-                        {
-                            let record = &mut records[index];
-                            let _ = record.transition(WorkflowStepState::NotDispatched);
-                            record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
-                            if retry {
-                                let _ = record.transition(WorkflowStepState::Ready);
+                            BatchMode::Unguarded,
+                            None,
+                        )
+                        .await;
+                    match outcome {
+                        Ok(outcome) => break outcome,
+                        Err(error) => {
+                            let message = bound_workflow_text(&error.to_string(), 512);
+                            let retry = can_retry_before_dispatch(
+                                step.transaction,
+                                false,
+                                attempt_number,
+                                step.max_retries,
+                            );
+                            {
+                                let record = &mut records[index];
+                                let _ = record.transition(WorkflowStepState::NotDispatched);
+                                record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
+                                if retry {
+                                    let _ = record.transition(WorkflowStepState::Ready);
+                                }
                             }
+                            if retry {
+                                continue;
+                            }
+                            let message = records[index]
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "workflow step failed".into());
+                            skip_remaining(&mut records, index + 1);
+                            return Ok(WorkflowRunResult::failed(
+                                workflow,
+                                records,
+                                Some(step.id.clone()),
+                                message,
+                                initial_revision,
+                                current_revision(self),
+                            ));
                         }
-                        if retry {
-                            continue;
-                        }
-                        let message = records[index]
+                    }
+                };
+
+                if !outcome.success {
+                    let message = outcome
+                        .steps
+                        .last()
+                        .and_then(|step| match step {
+                            super::types::BatchStepOutcome::Error { message, .. } => {
+                                Some(message.as_str())
+                            }
+                            super::types::BatchStepOutcome::Success { .. } => None,
+                        })
+                        .unwrap_or("workflow action failed after dispatch");
+                    let message = {
+                        let record = &mut records[index];
+                        let _ = record.transition(WorkflowStepState::Dispatched);
+                        record.fail(WorkflowStepState::FailedAfterDispatch, message);
+                        record
                             .error
                             .clone()
-                            .unwrap_or_else(|| "workflow step failed".into());
-                        skip_remaining(&mut records, index + 1);
-                        return Ok(WorkflowRunResult::failed(
-                            workflow,
-                            records,
-                            Some(step.id.clone()),
-                            message,
-                            initial_revision,
-                            current_revision(self),
-                        ));
-                    }
+                            .unwrap_or_else(|| "workflow step failed".into())
+                    };
+                    skip_remaining(&mut records, index + 1);
+                    return Ok(WorkflowRunResult::failed(
+                        workflow,
+                        records,
+                        Some(step.id.clone()),
+                        message,
+                        initial_revision,
+                        current_revision(self),
+                    ));
                 }
-            };
 
-            if !outcome.success {
-                let message = outcome
-                    .steps
-                    .last()
-                    .and_then(|step| match step {
-                        super::types::BatchStepOutcome::Error { message, .. } => {
-                            Some(message.as_str())
-                        }
-                        super::types::BatchStepOutcome::Success { .. } => None,
-                    })
-                    .unwrap_or("workflow action failed after dispatch");
-                let message = {
+                {
                     let record = &mut records[index];
                     let _ = record.transition(WorkflowStepState::Dispatched);
-                    record.fail(WorkflowStepState::FailedAfterDispatch, message);
-                    record
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "workflow step failed".into())
-                };
-                skip_remaining(&mut records, index + 1);
-                return Ok(WorkflowRunResult::failed(
-                    workflow,
-                    records,
-                    Some(step.id.clone()),
-                    message,
-                    initial_revision,
-                    current_revision(self),
-                ));
-            }
-
-            {
+                    let _ = record.transition(WorkflowStepState::EffectObserved);
+                }
+                if let Some(predicate) = &step.expect
+                    && let Err(error) = self
+                        .verify(
+                            predicate.clone(),
+                            Duration::from_millis(workflow.budgets.max_duration_ms),
+                        )
+                        .await
+                {
+                    let message = {
+                        let record = &mut records[index];
+                        record.fail(WorkflowStepState::FailedAfterDispatch, &error.to_string());
+                        record
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "workflow verification failed".into())
+                    };
+                    skip_remaining(&mut records, index + 1);
+                    return Ok(WorkflowRunResult::failed(
+                        workflow,
+                        records,
+                        Some(step.id.clone()),
+                        message,
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
                 let record = &mut records[index];
-                let _ = record.transition(WorkflowStepState::Dispatched);
-                let _ = record.transition(WorkflowStepState::EffectObserved);
+                let _ = record.transition(WorkflowStepState::Verified);
+                let _ = record.transition(WorkflowStepState::OutputsExtracted);
+                let _ = record.transition(WorkflowStepState::Committed);
             }
-            if let Some(predicate) = &step.expect
-                && let Err(error) = self
-                    .verify(
-                        predicate.clone(),
-                        Duration::from_millis(workflow.budgets.max_duration_ms),
-                    )
-                    .await
-            {
-                let message = {
-                    let record = &mut records[index];
-                    record.fail(WorkflowStepState::FailedAfterDispatch, &error.to_string());
-                    record
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "workflow verification failed".into())
-                };
-                skip_remaining(&mut records, index + 1);
-                return Ok(WorkflowRunResult::failed(
-                    workflow,
-                    records,
-                    Some(step.id.clone()),
-                    message,
-                    initial_revision,
-                    current_revision(self),
-                ));
-            }
-            let record = &mut records[index];
-            let _ = record.transition(WorkflowStepState::Verified);
-            let _ = record.transition(WorkflowStepState::OutputsExtracted);
-            let _ = record.transition(WorkflowStepState::Committed);
         }
 
         let terminal_proof = match self
@@ -1527,6 +1565,7 @@ mod tests {
                 transaction: WorkflowTransactionClass::ReadOnly,
                 idempotency_key: None,
                 max_retries: 0,
+                repeat: 1,
             }],
             terminal_condition: VerificationPredicate::UrlEquals {
                 value: "https://example.com/".into(),
@@ -1564,6 +1603,7 @@ mod tests {
             transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
             max_retries: 0,
+            repeat: 1,
         });
         let error = workflow.validate().unwrap_err();
         assert_eq!(error.path, "steps[1].id");
@@ -1593,6 +1633,16 @@ mod tests {
         workflow.steps[0].max_retries = 1;
         let error = workflow.validate().unwrap_err();
         assert_eq!(error.path, "steps[0].maxRetries");
+    }
+
+    #[test]
+    fn bounded_repetition_requires_retry_safe_class() {
+        let mut workflow = definition();
+        workflow.budgets.max_steps = 2;
+        workflow.steps[0].repeat = 2;
+        workflow.steps[0].transaction = WorkflowTransactionClass::Unknown;
+        let error = workflow.validate().unwrap_err();
+        assert_eq!(error.path, "steps[0].repeat");
     }
 
     #[test]
@@ -1719,6 +1769,6 @@ mod tests {
         }
         assert_eq!(record.state, WorkflowStepState::Committed);
         assert_eq!(record.history.len(), 9);
-        assert!(record.transition(WorkflowStepState::Ready).is_err());
+        assert!(record.transition(WorkflowStepState::Preflight).is_err());
     }
 }

@@ -1632,6 +1632,48 @@ impl WorkflowRunResult {
 }
 
 impl super::BrowserSession {
+    async fn execute_workflow_intent_step(
+        &self,
+        intent: &WorkflowIntentStep,
+        expected_revision: u64,
+    ) -> BrowserResult<super::types::BatchOutcome> {
+        let mut execution = intent.execution_request("workflow.intent")?;
+        execution.request.expected_revision = Some(expected_revision);
+        let resolution = self.resolve_intent(&execution.request).await?;
+        let candidate_id = resolution.selected_candidate.clone().ok_or_else(|| {
+            format!(
+                "semantic workflow intent was not uniquely authorized: resolution={}, policy={}",
+                serde_json::to_string(&resolution.resolution).unwrap_or_else(|_| "unknown".into()),
+                serde_json::to_string(&resolution.policy_decision)
+                    .unwrap_or_else(|_| "unknown".into())
+            )
+        })?;
+        execution.candidate_id = candidate_id;
+        let result = self.execute_intent(&execution).await?;
+        let Some(action) = result.action else {
+            return Err(result
+                .reason
+                .unwrap_or_else(|| "semantic workflow intent was not executed".into())
+                .into());
+        };
+        let execution_id = action.execution_id.clone();
+        Ok(super::types::BatchOutcome {
+            mode: BatchMode::Fixed,
+            initial_revision: expected_revision,
+            final_revision: current_revision(self),
+            steps: vec![super::types::BatchStepOutcome::Success {
+                index: 0,
+                action: "intent".into(),
+                response_bytes: serde_json::to_string(&action).ok().map(|value| value.len()),
+                execution_id: Some(execution_id),
+            }],
+            completed: 1,
+            failed: 0,
+            total: 1,
+            success: true,
+        })
+    }
+
     /// Execute a validated workflow linearly through the existing batch
     /// policy and action runtime, retaining bounded per-step evidence.
     pub async fn run_workflow(
@@ -1791,9 +1833,24 @@ impl super::BrowserSession {
                         record.attempts = record.attempts.saturating_add(1);
                     }
 
-                    let outcome = match workflow_target(&step.action) {
-                        Some(target) => match self.resolve_element(target).await {
-                            Ok(_) => {
+                    let outcome = if let Some(intent) = &step.intent {
+                        self.execute_workflow_intent_step(intent, attempt_revision)
+                            .await
+                    } else {
+                        match workflow_target(&step.action) {
+                            Some(target) => match self.resolve_element(target).await {
+                                Ok(_) => {
+                                    self.run_batch_with_mode(
+                                        std::slice::from_ref(&step.action),
+                                        false,
+                                        BatchMode::Unguarded,
+                                        None,
+                                    )
+                                    .await
+                                }
+                                Err(error) => Err(error),
+                            },
+                            None => {
                                 self.run_batch_with_mode(
                                     std::slice::from_ref(&step.action),
                                     false,
@@ -1802,16 +1859,6 @@ impl super::BrowserSession {
                                 )
                                 .await
                             }
-                            Err(error) => Err(error),
-                        },
-                        None => {
-                            self.run_batch_with_mode(
-                                std::slice::from_ref(&step.action),
-                                false,
-                                BatchMode::Unguarded,
-                                None,
-                            )
-                            .await
                         }
                     };
                     match outcome {

@@ -87,7 +87,7 @@ pub use knowledge::{
 };
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgePurgeResult, KnowledgeStore, KnowledgeStoreChange,
-    KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreStats,
+    KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreStats, default_knowledge_store_path,
 };
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use semantic::{

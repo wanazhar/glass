@@ -3,14 +3,17 @@
 //! Routes parsed CLI arguments to the appropriate runner: one-shot browser
 //! commands, interactive TUI, or the MCP stdio server.
 
-use super::args::{CheckpointCommand, Cli, Commands, ProfileCommand};
+use super::args::{
+    CheckpointCommand, Cli, Commands, KnowledgeCommand, KnowledgeInvalidationState, ProfileCommand,
+};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
-    PdfOptions, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
-    SemanticObservationLevel, SessionOptions, VerificationPredicate, VisualCaptureOptions,
-    WaitCondition, WorkflowCheckpoint, WorkflowDefinition,
+    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie,
+    KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
+    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
+    SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowCheckpoint,
+    WorkflowDefinition, default_knowledge_store_path,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -42,6 +45,11 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             policy.require(PolicyCapability::PersistentProfile)?;
             ProfileManager::new().delete_profile(name)?;
             println!("deleted profile {name}");
+            return Ok(());
+        }
+        Some(Commands::Knowledge { action }) => {
+            policy.require(PolicyCapability::PersistentProfile)?;
+            dispatch_knowledge(action, cli.knowledge_store.as_deref(), &cli.profile)?;
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
@@ -148,8 +156,74 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
     Ok(())
 }
 
+fn dispatch_knowledge(
+    action: &KnowledgeCommand,
+    explicit_path: Option<&std::path::Path>,
+    profile: &str,
+) -> BrowserResult<()> {
+    ProfileManager::validate_name(profile)?;
+    let path = explicit_path
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| default_knowledge_store_path(profile));
+    let mut store = KnowledgeStore::open(path)?;
+    match action {
+        KnowledgeCommand::List => print_json(store.snapshot())?,
+        KnowledgeCommand::Show { record_id } => {
+            let record = store
+                .get(record_id)
+                .ok_or_else(|| format!("knowledge record not found: {record_id}"))?;
+            print_json(record)?;
+        }
+        KnowledgeCommand::Stats => print_json(&store.stats()?)?,
+        KnowledgeCommand::Export { output } => {
+            let canonical = store.snapshot().to_canonical_json()?;
+            if let Some(output) = output {
+                std::fs::write(output, canonical)?;
+                println!("exported knowledge to {}", output.display());
+            } else {
+                println!("{canonical}");
+            }
+        }
+        KnowledgeCommand::Import { input } => {
+            let snapshot = serde_json::from_value(read_json_input(Some(input))?)
+                .map_err(|error| format!("invalid knowledge snapshot: {error}"))?;
+            store.replace_snapshot(snapshot)?;
+            print_json(&store.stats()?)?;
+        }
+        KnowledgeCommand::Invalidate {
+            record_id,
+            state,
+            reason,
+            observed_at,
+        } => {
+            let next = match state {
+                KnowledgeInvalidationState::Stale => KnowledgeConfidence::Stale,
+                KnowledgeInvalidationState::Contradicted => KnowledgeConfidence::Contradicted,
+                KnowledgeInvalidationState::Quarantined => KnowledgeConfidence::Quarantined,
+            };
+            let change = store.transition(
+                record_id,
+                next,
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "caller invalidated record".into()),
+                observed_at
+                    .clone()
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                false,
+            )?;
+            print_json(&change)?;
+        }
+        KnowledgeCommand::Purge { origin } => print_json(&store.purge_origin(origin)?)?,
+    }
+    Ok(())
+}
+
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
+        Commands::Knowledge { .. } => {
+            unreachable!("knowledge commands are handled before browser startup")
+        }
         Commands::Navigate {
             url,
             timeout_ms,

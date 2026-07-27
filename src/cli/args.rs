@@ -3,7 +3,7 @@
 //! Defines the top-level `Cli` struct and all subcommands for one-shot
 //! browser operations, profile management, and server modes.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use crate::browser::policy::{PolicyCapability, PolicyPreset};
@@ -96,6 +96,10 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
+    /// Override the per-profile persistent knowledge snapshot path.
+    #[arg(long, global = true)]
+    pub knowledge_store: Option<PathBuf>,
+
     /// One-shot prompt, for example: `navigate to https://example.com`.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
@@ -117,6 +121,12 @@ pub enum Commands {
     Profiles {
         #[command(subcommand)]
         action: Option<ProfileCommand>,
+    },
+
+    /// Inspect and manage the bounded local knowledge store.
+    Knowledge {
+        #[command(subcommand)]
+        action: KnowledgeCommand,
     },
 
     /// Delete a saved profile.
@@ -477,6 +487,39 @@ pub enum ProfileCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum KnowledgeCommand {
+    /// List all validated records.
+    List,
+    /// Show one record by ID.
+    Show { record_id: String },
+    /// Print lifecycle and serialized-size statistics.
+    Stats,
+    /// Export the validated snapshot to stdout or a file.
+    Export { output: Option<PathBuf> },
+    /// Import and replace the complete validated snapshot.
+    Import { input: PathBuf },
+    /// Move one record to a non-eligible state.
+    Invalidate {
+        record_id: String,
+        #[arg(value_enum)]
+        state: KnowledgeInvalidationState,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        observed_at: Option<String>,
+    },
+    /// Remove every record for one exact origin.
+    Purge { origin: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum KnowledgeInvalidationState {
+    Stale,
+    Contradicted,
+    Quarantined,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum CheckpointCommand {
     Export,
     Import { input: Option<PathBuf> },
@@ -733,5 +776,32 @@ mod tests {
                 if path.as_os_str() == "intent.json"
         ));
         assert!(Cli::try_parse_from(["glass", "execute-intent"]).is_ok());
+    }
+
+    #[test]
+    fn knowledge_management_commands_parse_without_browser_startup() {
+        let cli = Cli::try_parse_from(["glass", "knowledge", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Knowledge {
+                action: KnowledgeCommand::List
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--knowledge-store",
+            "knowledge.json",
+            "knowledge",
+            "invalidate",
+            "record-1",
+            "stale",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Knowledge {
+                action: KnowledgeCommand::Invalidate { .. }
+            })
+        ));
     }
 }

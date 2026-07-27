@@ -20,6 +20,17 @@ pub const DEFAULT_KNOWLEDGE_STORE_BYTES: usize = 4 * 1024 * 1024;
 const STORE_LOCK_SUFFIX: &str = ".lock";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Default per-profile knowledge file used by local management surfaces.
+pub fn default_knowledge_store_path(profile: &str) -> PathBuf {
+    std::env::var_os("GLASS_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("glass")
+        .join("knowledge")
+        .join(format!("{profile}.json"))
+}
+
 /// Resource bounds for one local knowledge store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeStoreLimits {

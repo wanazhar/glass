@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "fresh-matching-page-family",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-docs",
+        "kind": "pageFamily",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "locale": "en-US",
+          "browserFamily": "chromium",
+          "browserVersionRange": ">=120",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 2
+        },
+        "confidence": "observed",
+        "invalidation": {
+          "maxAgeSeconds": 604800,
+          "requiredLandmarks": ["documentation", "main", "search"]
+        },
+        "data": {
+          "pageKind": "documentation",
+          "regionKinds": ["main", "search"]
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/getting-started",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "locale": "en-US",
+        "landmarks": ["documentation", "main", "search"],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "eligible"
+    },
+    {
+      "name": "missing-required-landmark-is-stale",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-search",
+        "kind": "regionModel",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "browserFamily": "chromium",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 1
+        },
+        "confidence": "verified",
+        "invalidation": {
+          "maxAgeSeconds": 604800,
+          "requiredLandmarks": ["documentation", "search"]
+        },
+        "data": {
+          "regionKind": "search"
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/reference",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "landmarks": ["documentation", "main"],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "stale"
+    },
+    {
+      "name": "expired-record-is-stale",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-dashboard",
+        "kind": "routeTransition",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/dashboard",
+          "profileScope": "authenticated",
+          "browserFamily": "chromium",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-26T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 4
+        },
+        "confidence": "observed",
+        "invalidation": {
+          "maxAgeSeconds": 3600,
+          "requiredLandmarks": ["dashboard"]
+        },
+        "data": {
+          "fromPageKind": "login",
+          "toPageKind": "dashboard"
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/dashboard",
+        "profileScope": "authenticated",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "landmarks": ["dashboard"],
+        "now": "2026-07-27T02:00:01Z"
+      },
+      "expectedStatus": "stale"
+    },
+    {
+      "name": "cross-origin-record-is-out-of-scope",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-other-origin",
+        "kind": "targetFingerprint",
+        "scope": {
+          "origin": "https://other.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "browserFamily": "chromium",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 1
+        },
+        "confidence": "verified",
+        "invalidation": {},
+        "data": {
+          "role": "button",
+          "nameHash": "sha256:example"
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/getting-started",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "landmarks": [],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "outOfScope"
+    },
+    {
+      "name": "contradicted-record-never-becomes-eligible",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-contradicted",
+        "kind": "verifiedPostcondition",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "browserFamily": "chromium",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 2
+        },
+        "confidence": "contradicted",
+        "invalidation": {},
+        "data": {
+          "postconditionKind": "documentation-visible"
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/reference",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "landmarks": [],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "contradicted"
+    },
+    {
+      "name": "quarantined-record-remains-quarantined",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-quarantined",
+        "kind": "invalidationRule",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "browserFamily": "chromium",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 1
+        },
+        "confidence": "quarantined",
+        "invalidation": {},
+        "data": {
+          "reasonCode": "unexpected-change"
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/reference",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "landmarks": [],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "quarantined"
+    }
+  ]
+}

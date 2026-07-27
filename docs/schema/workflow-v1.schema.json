@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/workflow-v1.schema.json",
+  "title": "Glass workflow definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "workflowVersion", "inputs", "budgets", "steps", "terminalCondition", "outputs"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "workflowVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "inputs": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {"$ref": "#/$defs/input"}
+    },
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "preconditions": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/predicate"}},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/step"}
+    },
+    "terminalCondition": {"$ref": "#/$defs/predicate"},
+    "outputs": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {"$ref": "#/$defs/output"}
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valueType"],
+      "properties": {
+        "valueType": {"enum": ["string", "integer", "number", "boolean", "url"]},
+        "required": {"type": "boolean", "default": true},
+        "maxLength": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "sensitive": {"type": "boolean"}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxSteps", "maxDurationMs", "maxRetries", "maxExtractedBytes"],
+      "properties": {
+        "maxSteps": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maxDurationMs": {"type": "integer", "minimum": 1, "maximum": 900000},
+        "maxRetries": {"type": "integer", "minimum": 0, "maximum": 8},
+        "maxExtractedBytes": {"type": "integer", "minimum": 1, "maximum": 4194304}
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "transaction"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "when": {"$ref": "#/$defs/predicate"},
+        "expect": {"$ref": "#/$defs/predicate"},
+        "transaction": {"enum": ["read_only", "idempotent", "conditionally_idempotent", "non_idempotent", "unknown"]},
+        "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
+        "maxRetries": {"type": "integer", "minimum": 0, "maximum": 8},
+        "repeat": {"type": "integer", "minimum": 1, "maximum": 8},
+        "action": {"enum": ["navigate", "click", "type", "check", "uncheck", "select", "clear", "scroll", "wait", "observe", "screenshot", "acceptDialog", "dismissDialog"]},
+        "url": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 900000},
+        "target": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "text": {"type": "string", "maxLength": 65536},
+        "value": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "condition": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "dx": {"type": "number"},
+        "dy": {"type": "number"},
+        "includeDom": {"type": "boolean"},
+        "includeScreenshot": {"type": "boolean"},
+        "includeFormValues": {"type": "boolean"}
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "oneOf": [
+        {"required": ["urlEquals"], "properties": {"urlEquals": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        {"required": ["titleContains"], "properties": {"titleContains": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        {"required": ["visible"], "properties": {"visible": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        {"required": ["textContains"], "properties": {"textContains": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        {"required": ["popupOpened"], "properties": {"popupOpened": {"type": "boolean"}}},
+        {"required": ["dialogOpen"], "properties": {"dialogOpen": {"type": "boolean"}}},
+        {"required": ["downloadStarted"], "properties": {"downloadStarted": {"type": "boolean"}}},
+        {"required": ["revisionEquals"], "properties": {"revisionEquals": {"type": "integer", "minimum": 0}}},
+        {"required": ["all"], "properties": {"all": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/predicate"}}}},
+        {"required": ["any"], "properties": {"any": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/predicate"}}}},
+        {"required": ["not"], "properties": {"not": {"$ref": "#/$defs/predicate"}}}
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valueType", "source"],
+      "properties": {
+        "valueType": {"enum": ["string", "integer", "number", "boolean", "url"]},
+        "source": {"enum": ["page_url", "page_title", "visible_text"]},
+        "required": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -52,6 +52,11 @@ invalid URLs, unbounded budgets, invalid input values, and unsafe arbitrary
 JavaScript steps. `to_canonical_json` returns deterministic JSON with ordered
 map keys for hashing or audit records.
 
+The pinned external contract is [workflow-v1.schema.json](schema/workflow-v1.schema.json).
+It describes the supported JSON shape; runtime validation additionally checks
+cross-field rules such as unique step IDs, expanded repetition budgets, and
+transaction retry safety.
+
 Action strings may reference declared values with the bounded
 `${inputs.name}` form. Glass resolves these placeholders after input type
 validation and before browser dispatch; unknown, missing, non-scalar, or

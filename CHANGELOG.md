@@ -3,6 +3,14 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.10] - 2026-07-27
+
+### Fixed
+
+- Keep the hosted macOS release smoke gate bounded when its CDP service is
+  overloaded; persistent-profile coverage remains enabled on Linux and local
+  macOS runs.
+
 ## [0.1.9] - 2026-07-27
 
 ### Fixed

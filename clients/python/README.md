@@ -2,7 +2,7 @@
 
 `glass_client.py` uses only the Python standard library. It starts an absolute
 Glass binary, negotiates MCP, and provides `navigate`, `observe`, `click`,
-`verify`, `batch`, and `wait` helpers for Python automation programs, including
+`verify`, `batch`, `workflow`, and `wait` helpers for Python automation programs, including
 guarded form filling. All targeted mutation helpers accept optional revision
 guards.
 
@@ -13,6 +13,15 @@ glass = GlassClient(command="/absolute/path/to/glass")
 try:
     glass.navigate("https://example.com")
     print(glass.observe())
+    print(glass.workflow({
+        "schemaVersion": 1,
+        "name": "read-title",
+        "workflowVersion": "1.0.0",
+        "budgets": {"maxSteps": 1, "maxDurationMs": 10000, "maxRetries": 0, "maxExtractedBytes": 8192},
+        "steps": [{"id": "observe", "action": {"type": "observe"}, "transaction": "readOnly"}],
+        "terminalCondition": {"titleContains": "Example"},
+        "outputs": {},
+    }))
 finally:
     glass.close()
 ```

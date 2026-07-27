@@ -157,6 +157,13 @@ class GlassClient:
             args["expectedRevision"] = expected_revision
         return self.call("batch", args)
 
+    def workflow(
+        self,
+        definition: dict[str, Any],
+        inputs: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        return self.call("workflow", {"workflow": definition, "inputs": inputs or {}})
+
     def wait(self, condition: str, timeout_ms: Optional[int] = None) -> Any:
         args: dict[str, Any] = {"condition": condition}
         if timeout_ms is not None:

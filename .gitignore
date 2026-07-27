@@ -16,6 +16,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 clients/typescript/dist/
+clients/typescript/node_modules/
 clients/python/build/
 clients/python/*.egg-info/
 *.tgz

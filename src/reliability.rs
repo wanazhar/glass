@@ -227,8 +227,19 @@ impl ReliabilityReplayBundle {
         input: &str,
         scenario: &ReliabilityScenario,
     ) -> Result<Self, ReliabilityScenarioError> {
-        let bundle: Self = serde_json::from_str(input).map_err(|error| {
+        let value = serde_json::from_str(input).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid replay JSON: {error}"))
+        })?;
+        Self::from_value(value, scenario)
+    }
+
+    /// Parse and validate one replay JSON value against its scenario.
+    pub fn from_value(
+        value: Value,
+        scenario: &ReliabilityScenario,
+    ) -> Result<Self, ReliabilityScenarioError> {
+        let bundle: Self = serde_json::from_value(value).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("invalid replay shape: {error}"))
         })?;
         bundle.validate(scenario)?;
         Ok(bundle)
@@ -308,6 +319,16 @@ impl ReliabilityReplayBundle {
         serde_json::to_string(self).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("cannot serialize replay: {error}"))
         })
+    }
+
+    /// Return a stable hash for this validated replay bundle.
+    pub fn content_hash(
+        &self,
+        scenario: &ReliabilityScenario,
+    ) -> Result<String, ReliabilityScenarioError> {
+        let canonical = self.to_canonical_json(scenario)?;
+        let digest = Sha256::digest(canonical.as_bytes());
+        Ok(format!("sha256:{digest:x}"))
     }
 }
 

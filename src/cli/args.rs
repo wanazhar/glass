@@ -579,6 +579,15 @@ pub enum CertifyCommand {
         #[arg(long)]
         observations: PathBuf,
     },
+    /// Validate one redacted replay bundle against its versioned scenario.
+    Replay {
+        /// JSON scenario used to validate the replay binding.
+        #[arg(long)]
+        scenario: PathBuf,
+        /// JSON replay bundle to validate.
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -852,6 +861,26 @@ mod tests {
             }) if version == "0.2.0"
                 && scenarios.as_os_str() == "scenarios.json"
                 && observations.as_os_str() == "observations.json"
+        ));
+    }
+
+    #[test]
+    fn certify_replay_command_accepts_scenario_and_bundle_paths() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "certify",
+            "replay",
+            "--scenario",
+            "scenario.json",
+            "--input",
+            "replay.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Certify {
+                action: CertifyCommand::Replay { scenario, input },
+            }) if scenario.as_os_str() == "scenario.json" && input.as_os_str() == "replay.json"
         ));
     }
 

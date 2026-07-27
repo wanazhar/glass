@@ -19,7 +19,8 @@ use crate::browser::session::{
     format_workflow_yaml, preview_workflow, record_semantic_events,
 };
 use crate::reliability::{
-    ReliabilityScenario, ReliabilityScenarioObservation, evaluate_reliability_gate,
+    ReliabilityReplayBundle, ReliabilityScenario, ReliabilityScenarioObservation,
+    evaluate_reliability_gate,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -199,6 +200,16 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             if !certified {
                 return Err("reliability certification blocked".into());
             }
+        }
+        CertifyCommand::Replay { scenario, input } => {
+            let scenario = ReliabilityScenario::from_value(read_json_input(Some(scenario))?)?;
+            let bundle =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(input))?, &scenario)?;
+            print_json(&serde_json::json!({
+                "status": "valid",
+                "scenarioId": &bundle.scenario_id,
+                "replayHash": bundle.content_hash(&scenario)?,
+            }))?;
         }
     }
     Ok(())

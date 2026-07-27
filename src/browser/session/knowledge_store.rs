@@ -5,8 +5,8 @@
 //! each later knowledge-assisted operation.
 
 use super::{
-    KNOWLEDGE_SCHEMA_VERSION, KnowledgeConfidence, KnowledgeRecord, KnowledgeStoreSnapshot,
-    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeLookupContext,
+    KnowledgeRecord, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 use fs2::FileExt;
 use std::cmp::Ordering;
@@ -122,6 +122,16 @@ impl KnowledgeStore {
             .records
             .iter()
             .find(|record| record.record_id == record_id)
+    }
+
+    /// Assess all records against fresh session dimensions without changing
+    /// the store or returning any executable browser reference.
+    pub fn assess(&self, context: &KnowledgeLookupContext) -> Vec<KnowledgeAssessment> {
+        self.snapshot
+            .records
+            .iter()
+            .map(|record| record.assess(context))
+            .collect()
     }
 
     /// Insert or replace a record, then prune the least useful records first.
@@ -407,8 +417,8 @@ impl From<KnowledgeValidationError> for KnowledgeStoreError {
 mod tests {
     use super::*;
     use crate::browser::session::{
-        KnowledgeInvalidation, KnowledgeProfileScope, KnowledgeRecordKind, KnowledgeScope,
-        KnowledgeSource,
+        KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
+        KnowledgeScope, KnowledgeSource,
     };
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -441,8 +451,8 @@ mod tests {
                 policy_preset: "balanced".into(),
             },
             source: KnowledgeSource {
-                first_seen_at: verified_at.into(),
-                last_verified_at: verified_at.into(),
+                first_seen_at: format!("2026-07-27T00:00:{verified_at:0>2}Z"),
+                last_verified_at: format!("2026-07-27T00:00:{verified_at:0>2}Z"),
                 glass_version: "0.2.0".into(),
                 verification_count: 1,
             },
@@ -498,5 +508,36 @@ mod tests {
         let error = KnowledgeStore::open(&path).unwrap_err();
         assert!(matches!(error, KnowledgeStoreError::Corrupt(_)));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn assessment_is_read_only_and_returns_current_evidence() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("knowledge_1", KnowledgeConfidence::Verified, "01"))
+            .unwrap();
+        let context = KnowledgeLookupContext {
+            origin: "https://example.test".into(),
+            path: "/docs/start".into(),
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: None,
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: None,
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            landmarks: vec!["documentation".into()],
+            now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:02Z")
+                .unwrap()
+                .timestamp(),
+        };
+        let assessments = store.assess(&context);
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].record_id, "knowledge_1");
+        assert_eq!(store.snapshot().records.len(), 1);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
     }
 }

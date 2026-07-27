@@ -63,8 +63,9 @@ use super::profile::ProfileManager;
 mod types;
 pub use authoring::{
     WORKFLOW_AUTHORING_SCHEMA_VERSION, WorkflowAuthoringDocument, WorkflowAuthoringFormat,
-    WorkflowCompileError, WorkflowDiagnostic, WorkflowDiagnosticSeverity, analyze_workflow,
-    compile_workflow, compile_workflow_json, compile_workflow_yaml, format_workflow_yaml,
+    WorkflowCompileError, WorkflowDiagnostic, WorkflowDiagnosticSeverity, WorkflowPreview,
+    WorkflowPreviewStep, analyze_workflow, compile_workflow, compile_workflow_json,
+    compile_workflow_yaml, format_workflow_yaml, preview_workflow,
 };
 pub use consent::ConsentDismissalOutcome;
 pub use diff::{AccessibilityDiff, DiffChange, DiffElement, diff_accessibility};

@@ -69,6 +69,33 @@ pub struct WorkflowCompileError {
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
+/// Redacted, browser-free execution preview for review and CI output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowPreview {
+    pub schema_version: u32,
+    pub name: String,
+    pub workflow_version: String,
+    pub input_names: Vec<String>,
+    pub steps: Vec<WorkflowPreviewStep>,
+    pub has_terminal_condition: bool,
+}
+
+/// One redacted preview entry. Values, selectors, URLs, and expressions are
+/// intentionally omitted; the preview describes execution shape only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowPreviewStep {
+    pub id: String,
+    pub action: String,
+    pub intent: bool,
+    pub transaction: WorkflowTransactionClass,
+    pub has_postcondition: bool,
+    pub max_retries: u32,
+    pub repeat: u32,
+    pub input_names: Vec<String>,
+}
+
 impl fmt::Display for WorkflowCompileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(diagnostic) = self.diagnostics.first() {
@@ -352,6 +379,71 @@ pub fn analyze_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowDiagnost
     diagnostics
 }
 
+/// Build a deterministic preview without resolving inputs or starting a
+/// browser. The output is safe to print in CI logs because action values are
+/// omitted and only input names are retained.
+pub fn preview_workflow(
+    definition: &WorkflowDefinition,
+) -> Result<WorkflowPreview, WorkflowCompileError> {
+    definition.validate().map_err(|error| {
+        compile_error(
+            WorkflowAuthoringFormat::Json,
+            diagnostic(
+                "workflow.validation",
+                WorkflowDiagnosticSeverity::Error,
+                error.reason,
+                error.path,
+                None,
+                None,
+                "Correct the workflow before previewing it.",
+            ),
+        )
+    })?;
+    let input_names = definition.inputs.keys().cloned().collect::<Vec<_>>();
+    let steps = definition
+        .steps
+        .iter()
+        .map(|step| {
+            let serialized = serde_json::to_value(step).unwrap_or(Value::Null);
+            let input_names = input_names_in_value(&serialized);
+            let action = step
+                .intent
+                .as_ref()
+                .map(|intent| {
+                    serde_json::to_value(intent.action)
+                        .ok()
+                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                        .unwrap_or_else(|| "intent".into())
+                })
+                .or_else(|| {
+                    serialized
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| "unknown".into());
+            WorkflowPreviewStep {
+                id: step.id.clone(),
+                action,
+                intent: step.intent.is_some(),
+                transaction: step.transaction,
+                has_postcondition: step.expect.is_some(),
+                max_retries: step.max_retries,
+                repeat: step.repeat,
+                input_names,
+            }
+        })
+        .collect();
+    Ok(WorkflowPreview {
+        schema_version: definition.schema_version,
+        name: definition.name.clone(),
+        workflow_version: definition.workflow_version.clone(),
+        input_names,
+        steps,
+        has_terminal_condition: true,
+    })
+}
+
 fn infer_sensitive_inputs(definition: &mut WorkflowDefinition) -> Vec<WorkflowDiagnostic> {
     let mut diagnostics = Vec::new();
     for (name, input) in &mut definition.inputs {
@@ -397,6 +489,43 @@ fn looks_sensitive_input_name(name: &str) -> bool {
 
 fn contains_input_placeholder(value: &str) -> bool {
     value.contains("${inputs.")
+}
+
+fn input_names_in_value(value: &Value) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    collect_input_names(value, &mut names);
+    names.into_iter().collect()
+}
+
+fn collect_input_names(value: &Value, names: &mut BTreeSet<String>) {
+    match value {
+        Value::String(text) => {
+            let marker = "${inputs.";
+            let mut remainder = text.as_str();
+            while let Some(start) = remainder.find(marker) {
+                let placeholder = &remainder[start..];
+                let Some(end) = placeholder.find('}') else {
+                    break;
+                };
+                let name = &placeholder[marker.len()..end];
+                if !name.is_empty() && !name.contains(['{', '}', '$']) {
+                    names.insert(name.to_string());
+                }
+                remainder = &placeholder[end + 1..];
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_input_names(item, names);
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values() {
+                collect_input_names(item, names);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn collect_input_references(
@@ -666,5 +795,18 @@ outputs: {}
         document.definition.steps.clear();
         let error = format_workflow_yaml(&document.definition).unwrap_err();
         assert_eq!(error.diagnostics[0].code, "workflow.validation");
+    }
+
+    #[test]
+    fn preview_omits_values_and_lists_input_shape() {
+        let source = YAML.replace("inputs: {}", "inputs:\n  query:\n    type: string");
+        let document = compile_workflow_yaml(&source).unwrap();
+        let preview = preview_workflow(&document.definition).unwrap();
+        assert_eq!(preview.input_names, vec!["query"]);
+        assert_eq!(preview.steps[0].action, "navigate");
+        assert!(preview.steps[0].has_postcondition);
+        let serialized = serde_json::to_string(&preview).unwrap();
+        assert!(!serialized.contains("example.test/docs"));
+        assert!(!serialized.contains("${inputs.query}"));
     }
 }

@@ -538,6 +538,8 @@ pub enum WorkflowAuthoringCommand {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Show a redacted browser-free execution preview.
+    Preview { input: PathBuf },
     /// Validate authoring source against the canonical workflow contract.
     Validate { input: PathBuf },
     /// Run static workflow diagnostics without starting a browser.
@@ -768,6 +770,14 @@ mod tests {
             cli.command,
             Some(Commands::Workflow {
                 action: Some(WorkflowAuthoringCommand::Validate { input }),
+                input: None,
+            }) if input.as_os_str() == "workflow.yaml"
+        ));
+        let cli = Cli::try_parse_from(["glass", "workflow", "preview", "workflow.yaml"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Workflow {
+                action: Some(WorkflowAuthoringCommand::Preview { input }),
                 input: None,
             }) if input.as_os_str() == "workflow.yaml"
         ));

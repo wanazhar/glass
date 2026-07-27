@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/semantic-observation-v1.schema.json",
+  "title": "Glass semantic observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "revision", "level", "route", "page", "regions", "limits"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "level": {"enum": ["summary", "interactive", "structured", "detailed", "raw"]},
+    "route": {"$ref": "#/$defs/route"},
+    "page": {"$ref": "#/$defs/page"},
+    "regions": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/region"}},
+    "changes": {},
+    "limits": {"$ref": "#/$defs/limits"}
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetId", "frameId", "url"],
+      "properties": {
+        "targetId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "frameId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048}
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "title", "url", "targetId", "frameId", "confidence"],
+      "properties": {
+        "kind": {"type": "string"},
+        "title": {"type": "string", "maxLength": 1024},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "targetId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "frameId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "confidence": {"enum": ["exact", "high", "medium", "low", "unknown"]},
+        "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 128}}
+      }
+    },
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "interactiveCount", "confidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"type": "string"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 256},
+        "interactiveCount": {"type": "integer", "minimum": 0},
+        "itemCount": {"type": "integer", "minimum": 0},
+        "confidence": {"enum": ["exact", "high", "medium", "low", "unknown"]},
+        "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 128}},
+        "expansion": {"$ref": "#/$defs/expansion"}
+      }
+    },
+    "expansion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regionId", "revision", "route"],
+      "properties": {
+        "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "revision": {"type": "integer", "minimum": 0},
+        "route": {"$ref": "#/$defs/route"}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["truncated", "omittedRegions"],
+      "properties": {
+        "truncated": {"type": "boolean"},
+        "omittedRegions": {"type": "integer", "minimum": 0},
+        "omittedTargets": {"type": "integer", "minimum": 0},
+        "omittedBytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

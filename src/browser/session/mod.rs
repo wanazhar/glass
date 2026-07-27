@@ -69,6 +69,12 @@ pub use har::{NetworkEntry, NetworkRecorder, NetworkRecording};
 pub use identity::{AgentIdentity, SignedHttpRequest};
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};
+pub use semantic::{
+    SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticConfidence, SemanticExpansionHandle,
+    SemanticObservation, SemanticObservationError, SemanticObservationLevel,
+    SemanticObservationLimits, SemanticPage, SemanticPageKind, SemanticRegion, SemanticRegionKind,
+    SemanticRouteIdentity,
+};
 pub use types::*;
 pub use webauthn::{WebAuthnGuard, WebAuthnOptions};
 mod action;
@@ -93,6 +99,7 @@ mod observe;
 mod polite;
 mod popup;
 mod retry;
+mod semantic;
 pub mod storage;
 pub use storage::{Cookie, StorageEntry, StorageItems};
 mod target;

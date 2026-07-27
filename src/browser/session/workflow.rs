@@ -338,6 +338,7 @@ impl fmt::Display for WorkflowValueType {
 pub struct WorkflowStep {
     pub id: String,
     pub action: BatchStep,
+    pub when: Option<VerificationPredicate>,
     pub expect: Option<VerificationPredicate>,
     pub transaction: WorkflowTransactionClass,
     pub idempotency_key: Option<String>,
@@ -394,6 +395,12 @@ impl Serialize for WorkflowStep {
         if let Value::Object(action) = action {
             workflow.extend(action);
         }
+        if let Some(when) = &self.when {
+            workflow.insert(
+                "when".into(),
+                serde_json::to_value(when).map_err(serde::ser::Error::custom)?,
+            );
+        }
         if let Some(expect) = &self.expect {
             workflow.insert(
                 "expect".into(),
@@ -427,6 +434,11 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             .remove("id")
             .ok_or_else(|| D::Error::custom("workflow step is missing id"))?;
         let id = serde_json::from_value(id).map_err(D::Error::custom)?;
+        let when = workflow
+            .remove("when")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?;
         let expect = workflow
             .remove("expect")
             .map(serde_json::from_value)
@@ -469,6 +481,7 @@ impl<'de> Deserialize<'de> for WorkflowStep {
         Ok(Self {
             id,
             action,
+            when,
             expect,
             transaction,
             idempotency_key,
@@ -486,6 +499,9 @@ impl WorkflowStep {
     ) -> Result<(), WorkflowValidationError> {
         validate_name(&format!("{path}.id"), &self.id)?;
         validate_batch_step(&self.action, &format!("{path}.action"))?;
+        if let Some(predicate) = &self.when {
+            validate_predicate(predicate, &format!("{path}.when"))?;
+        }
         if let Some(predicate) = &self.expect {
             validate_predicate(predicate, &format!("{path}.expect"))?;
         }
@@ -496,6 +512,12 @@ impl WorkflowStep {
             return Err(WorkflowValidationError::new(
                 format!("{path}.repeat"),
                 format!("must be 1..={MAX_STEP_REPETITIONS}"),
+            ));
+        }
+        if self.repeat > 1 && self.when.is_some() {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.repeat"),
+                "conditional steps cannot repeat automatically",
             ));
         }
         if self.repeat > 1 && !self.transaction.permits_pre_dispatch_retry() {
@@ -589,6 +611,8 @@ pub struct WorkflowStepRecord {
     pub history: Vec<WorkflowStepState>,
     pub attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_decision: Option<WorkflowBranchDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -599,6 +623,7 @@ impl WorkflowStepRecord {
             state: WorkflowStepState::Pending,
             history: vec![WorkflowStepState::Pending],
             attempts: 0,
+            branch_decision: None,
             error: None,
         }
     }
@@ -659,11 +684,22 @@ pub struct WorkflowRunResult {
     pub final_revision: u64,
 }
 
+/// Evidence for a declarative step condition evaluated before dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowBranchDecision {
+    pub step_id: String,
+    pub predicate: VerificationPredicate,
+    pub matched: bool,
+}
+
 /// Deterministic state-transition trace for replay and debugging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTrace {
     pub events: Vec<WorkflowTraceEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_decisions: Vec<WorkflowBranchDecision>,
 }
 
 /// One ordered state transition in a workflow trace.
@@ -697,7 +733,14 @@ impl WorkflowTrace {
                 });
             }
         }
-        Self { events }
+        let branch_decisions = steps
+            .iter()
+            .filter_map(|step| step.branch_decision.clone())
+            .collect();
+        Self {
+            events,
+            branch_decisions,
+        }
     }
 
     /// Validate sequence ordering and the trace event budget.
@@ -715,6 +758,18 @@ impl WorkflowTrace {
                     "sequence must be contiguous from zero",
                 ));
             }
+        }
+        for (index, decision) in self.branch_decisions.iter().enumerate() {
+            if decision.step_id.is_empty() {
+                return Err(WorkflowValidationError::new(
+                    format!("trace.branchDecisions[{index}].stepId"),
+                    "step ID must not be empty",
+                ));
+            }
+            validate_predicate(
+                &decision.predicate,
+                &format!("trace.branchDecisions[{index}].predicate"),
+            )?;
         }
         Ok(())
     }
@@ -792,6 +847,25 @@ impl WorkflowTrace {
             record.transition(event.state).map_err(|reason| {
                 WorkflowValidationError::new(format!("trace.events[{event_index}].state"), reason)
             })?;
+        }
+        for decision in &self.branch_decisions {
+            let index = workflow
+                .steps
+                .iter()
+                .position(|step| step.id == decision.step_id)
+                .ok_or_else(|| {
+                    WorkflowValidationError::new(
+                        "trace.branchDecisions",
+                        "branch decision references an undeclared step",
+                    )
+                })?;
+            if workflow.steps[index].when.as_ref() != Some(&decision.predicate) {
+                return Err(WorkflowValidationError::new(
+                    "trace.branchDecisions",
+                    "branch decision predicate does not match the workflow",
+                ));
+            }
+            records[index].branch_decision = Some(decision.clone());
         }
         Ok(records)
     }
@@ -965,6 +1039,43 @@ impl super::BrowserSession {
                 if repetition > 0 {
                     let record = &mut records[index];
                     let _ = record.transition(WorkflowStepState::Ready);
+                }
+                if let Some(predicate) = &step.when {
+                    {
+                        let record = &mut records[index];
+                        if record.state == WorkflowStepState::Pending {
+                            let _ = record.transition(WorkflowStepState::Ready);
+                        }
+                    }
+                    match self.evaluate_predicate_once(predicate).await {
+                        Ok((matched, _state)) => {
+                            let record = &mut records[index];
+                            record.branch_decision = Some(WorkflowBranchDecision {
+                                step_id: step.id.clone(),
+                                predicate: predicate.clone(),
+                                matched,
+                            });
+                            if !matched {
+                                let _ = record.transition(WorkflowStepState::Skipped);
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let message = bound_workflow_text(&error.to_string(), 512);
+                            let record = &mut records[index];
+                            let _ = record.transition(WorkflowStepState::Preflight);
+                            record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
+                            skip_remaining(&mut records, index + 1);
+                            return Ok(WorkflowRunResult::failed(
+                                workflow,
+                                records,
+                                Some(step.id.clone()),
+                                message,
+                                initial_revision,
+                                current_revision(self),
+                            ));
+                        }
+                    }
                 }
                 let mut attempt_number = 0;
                 let outcome = loop {
@@ -1830,6 +1941,7 @@ mod tests {
                     url: "https://example.com".into(),
                     timeout_ms: 20_000,
                 },
+                when: None,
                 expect: Some(VerificationPredicate::TitleContains {
                     value: "Example".into(),
                 }),
@@ -1870,6 +1982,7 @@ mod tests {
         workflow.steps.push(WorkflowStep {
             id: "open".into(),
             action: BatchStep::Screenshot,
+            when: None,
             expect: None,
             transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
@@ -2106,5 +2219,27 @@ mod tests {
         assert_eq!(trace.events[7].attempt, 2);
         assert_eq!(replayed[0].state, WorkflowStepState::Committed);
         assert_eq!(replayed[0].attempts, 2);
+    }
+
+    #[test]
+    fn conditional_steps_record_and_replay_branch_decisions() {
+        let mut workflow = definition();
+        let predicate = VerificationPredicate::TitleContains {
+            value: "Example".into(),
+        };
+        workflow.steps[0].when = Some(predicate.clone());
+        let mut record = WorkflowStepRecord::new("open");
+        record.transition(WorkflowStepState::Ready).unwrap();
+        record.branch_decision = Some(WorkflowBranchDecision {
+            step_id: "open".into(),
+            predicate: predicate.clone(),
+            matched: false,
+        });
+        record.transition(WorkflowStepState::Skipped).unwrap();
+        let trace = WorkflowTrace::from_steps(&[record]);
+        assert!(!trace.branch_decisions[0].matched);
+        let replayed = trace.replay(&workflow).unwrap();
+        assert_eq!(replayed[0].state, WorkflowStepState::Skipped);
+        assert_eq!(replayed[0].branch_decision.as_ref().unwrap().predicate, predicate);
     }
 }

@@ -103,12 +103,12 @@ mod wait;
 mod webauthn;
 mod workflow;
 pub use workflow::{
-    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
-    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutput,
-    WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError, WorkflowResumePlan,
-    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
-    WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
-    WorkflowValidationError, WorkflowValueType,
+    WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,
+    WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput,
+    WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError,
+    WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,
+    WorkflowStepState, WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent,
+    WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };
 #[allow(private_interfaces)]
 pub struct BrowserSession {

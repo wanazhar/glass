@@ -81,6 +81,12 @@ For bounded control flow, a step may set `repeat` from 1 through 8. Repeated
 steps count toward `maxSteps` and require a retry-safe transaction class, so
 `repeat` cannot be used to replay an unknown or non-idempotent effect.
 
+A step may also declare a `when` predicate. Glass evaluates it once before
+dispatch: a matched condition runs the action, while an unmet condition records
+the step as `skipped`. Predicate errors fail before dispatch. The decision and
+predicate are retained in the bounded trace; conditional steps cannot be
+repeated automatically.
+
 Outputs use bounded sources such as `page_url`, `page_title`, or
 `visible_text`. Their declared type is checked before the value is returned;
 arbitrary JavaScript is not an output source.

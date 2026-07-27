@@ -859,6 +859,7 @@ async fn browser_session_drives_a_local_fixture() {
                 include_screenshot: false,
                 include_form_values: false,
             },
+            when: None,
             expect: Some(VerificationPredicate::TitleContains {
                 value: "Glass Fixture".into(),
             }),

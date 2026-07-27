@@ -11,6 +11,14 @@ type VerificationCheckFuture<'a> =
     Pin<Box<dyn Future<Output = BrowserResult<(bool, String)>> + 'a>>;
 
 impl BrowserSession {
+    pub(crate) async fn evaluate_predicate_once(
+        &self,
+        predicate: &VerificationPredicate,
+    ) -> BrowserResult<(bool, String)> {
+        predicate.validate(0)?;
+        self.check_verification_predicate(predicate).await
+    }
+
     /// Evaluate a bounded, composable postcondition until it becomes true.
     pub async fn verify(
         &self,

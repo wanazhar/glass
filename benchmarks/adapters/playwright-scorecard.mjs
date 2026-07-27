@@ -3,6 +3,7 @@ import os from "node:os";
 import process from "node:process";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
+import { summarizeByteSamples } from "../metric-utils.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -124,6 +125,7 @@ const report = {
     task_success_rate: successes / outcomes.length,
     hard_gate_passed: successes === outcomes.length,
   },
+  metrics: { compact_observe_bytes: summarizeByteSamples([]) },
   scenarios: outcomes,
 };
 

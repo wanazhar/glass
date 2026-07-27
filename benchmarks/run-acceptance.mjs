@@ -90,10 +90,10 @@ const prerequisites = {
   release_validation: retainEvidence("release_validation", "GLASS_RELEASE_VALIDATION_REPORT"),
   real_browser_platform_matrix: retainEvidence("real_browser_platform_matrix", "GLASS_PLATFORM_MATRIX_REPORT"),
 };
-const controls = controlGates([...reports.values()].map(({ report }) => report));
+const requiredAdapterIds = contract.adapters.filter(({ required }) => required).map(({ id }) => id);
+const controls = controlGates([...reports.values()].map(({ report }) => report), requiredAdapterIds);
 const glass = reports.get("glass");
 const external = prerequisiteGates(prerequisites);
-const requiredAdapterIds = contract.adapters.filter(({ required }) => required).map(({ id }) => id);
 const comparative = comparativeGates({ reports,
   adapterStatuses: new Map(adapters.map(({ id, status }) => [id, status])), requiredAdapterIds });
 const gates = {
@@ -117,6 +117,11 @@ writeJson(path.join(outputDir, "environment.json"), environment);
 const acceptance = {
   schema_version: 1, contract: "benchmarks/acceptance-v1.json", environment: "environment.json",
   adapters, prerequisites, controls: controls.details, comparison: comparative.comparison, gates, best_in_class_eligible: bestInClassEligible,
+  token_scoreboard: {
+    metric: "compact_observe_bytes",
+    serialization: "UTF-8 JSON bytes emitted by the adapter's compact observation/snapshot surface; JSON-RPC framing excluded",
+    adapters: Object.fromEntries([...reports].map(([id, { report }]) => [id, report.metrics.compact_observe_bytes])),
+  },
   claim: bestInClassEligible
     ? "All declared hard gates passed; comparative leadership still requires interpreting the published efficiency evidence."
     : "Glass is not eligible for a best-in-class claim because one or more hard gates failed or lacks revision-bound evidence.",
@@ -205,7 +210,7 @@ function terminate(child) {
 }
 
 function validateReport(report, id) {
-  exactKeys(report, ["schema_version", "tool", "run", "environment", "resources", "summary", "scenarios"], `${id} report`);
+  exactKeys(report, ["schema_version", "tool", "run", "environment", "resources", "summary", "metrics", "scenarios"], `${id} report`);
   if (report.schema_version !== 1 || !Array.isArray(report.scenarios)) throw new Error(`${id} report has an invalid schema`);
   exactKeys(report.tool, ["name", "version"], `${id} tool`);
   exactKeys(report.run, ["corpus", "corpus_fixture", "iterations", "temperature", "profile", "viewport"], `${id} run`);
@@ -214,6 +219,12 @@ function validateReport(report, id) {
   exactKeys(report.resources.runner, ["pid", "rss_start_bytes", "rss_end_bytes", "peak_rss_bytes"], `${id} runner resources`);
   exactKeys(report.resources.chrome, ["root_pid", "rss_end_bytes", "peak_process_tree_rss_bytes"], `${id} Chrome resources`);
   exactKeys(report.summary, ["successes", "failures", "wrong_actions", "unsupported", "task_success_rate", "hard_gate_passed"], `${id} summary`);
+  exactKeys(report.metrics, ["compact_observe_bytes"], `${id} metrics`);
+  exactKeys(report.metrics.compact_observe_bytes, ["median_bytes", "p95_bytes", "samples"], `${id} compact observe metrics`);
+  if (!Number.isInteger(report.metrics.compact_observe_bytes.samples) || report.metrics.compact_observe_bytes.samples < 0 ||
+      ![report.metrics.compact_observe_bytes.median_bytes, report.metrics.compact_observe_bytes.p95_bytes].every((value) => value === null || Number.isInteger(value) && value >= 0)) {
+    throw new Error(`${id} contains invalid compact observe metrics`);
+  }
   const expectedTool = expectedTools()[id];
   if (report.tool?.name !== id || report.tool?.version !== expectedTool) throw new Error(`${id} reported an unexpected tool identity/version`);
   if (!nonEmpty(report.resources.scope) || !positiveIntegerValue(report.resources.runner.pid) ||
@@ -261,12 +272,11 @@ function checkpointExpectation(id, extraEnv, invocation) {
       profile: contract.profile_semantics, viewport: contract.viewport }, scenarios: corpus.scenarios };
 }
 
-function controlGates(rows) {
+function controlGates(rows, requiredAdapterIds) {
   const details = rows.map((report) => ({ tool: report.tool.name, corpus: report.run.corpus, iterations: report.run.iterations,
     temperature: report.run.temperature, profile: report.run.profile, viewport: report.run.viewport, chrome: report.environment.chrome }));
   const chrome = details[0]?.chrome;
-  const requiredComparisonCount = contract.adapters.filter(({ required }) => required).length;
-  const ok = details.length === requiredComparisonCount && typeof chrome === "string" && details.every((row) => row.corpus === contract.corpus && row.iterations === iterations &&
+  const ok = details.length === requiredAdapterIds.length && typeof chrome === "string" && details.every((row) => row.corpus === contract.corpus && row.iterations === iterations &&
     row.temperature === contract.temperature && row.profile === contract.profile_semantics && sameViewport(row.viewport, contract.viewport) && row.chrome === chrome);
   return { ok, details };
 }

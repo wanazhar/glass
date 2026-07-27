@@ -5,6 +5,7 @@ import process from "node:process";
 import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { atomicWriteJson } from "../checkpoint.mjs";
+import { summarizeByteSamples } from "../metric-utils.mjs";
 
 class TransportError extends Error {}
 class UnsupportedScenario extends Error {}
@@ -28,6 +29,7 @@ const client = createMcpClient(command, [
 ]);
 
 let outcomes = [];
+let compactByteSamples = [];
 let startupMs = 0;
 try {
   const initialized = await client.initialize();
@@ -37,6 +39,7 @@ try {
   for (const required of ["browser_navigate", "browser_click", "browser_evaluate", "browser_fill_form", "browser_handle_dialog"]) {
     if (!availableTools.has(required)) throw new Error(`released MCP surface is missing ${required}`);
   }
+  const hasSnapshot = availableTools.has("browser_snapshot");
   await client.tool("browser_resize", { width: 1280, height: 720 });
   await client.tool("browser_navigate", { url: fixtureServer.url });
   startupMs = performance.now() - startupStarted;
@@ -44,6 +47,12 @@ try {
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     for (const scenario of corpus.scenarios) {
       await client.tool("browser_evaluate", { function: "() => { window.resetFixture(); document.querySelector('#name').value = ''; return true; }" });
+      if (hasSnapshot) {
+        try {
+          const snapshot = await client.tool("browser_snapshot", {});
+          compactByteSamples.push(Buffer.byteLength(JSON.stringify(snapshot.content ?? snapshot), "utf8"));
+        } catch {}
+      }
       const started = performance.now();
       let actual = null;
       let error = null;
@@ -89,6 +98,7 @@ const report = {
   summary: { successes, failures, wrong_actions: wrongActions, unsupported,
     task_success_rate: outcomes.length ? successes / outcomes.length : 0,
     hard_gate_passed: successes === outcomes.length },
+  metrics: { compact_observe_bytes: summarizeByteSamples(compactByteSamples) },
   scenarios: outcomes,
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

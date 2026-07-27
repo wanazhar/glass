@@ -5,6 +5,7 @@ import process from "node:process";
 import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { atomicWriteJson } from "../checkpoint.mjs";
+import { summarizeByteSamples } from "../metric-utils.mjs";
 
 class TransportError extends Error {}
 class UnsupportedScenario extends Error {}
@@ -31,6 +32,7 @@ const client = createMcpClient(command, ["mcp", "--tools", "all"], {
 });
 
 let outcomes = [];
+let compactByteSamples = [];
 let startupMs = 0;
 try {
   const initialized = await client.initialize();
@@ -57,6 +59,12 @@ try {
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     for (const scenario of corpus.scenarios) {
       await client.tool("agent_browser_eval", { script: "(() => { window.resetFixture(); document.querySelector('#name').value = ''; return true; })()" }).catch(() => {});
+      if (caps.hasSnapshot) {
+        try {
+          const snapshot = await client.tool("agent_browser_snapshot", {});
+          compactByteSamples.push(Buffer.byteLength(JSON.stringify(snapshot.content ?? snapshot), "utf8"));
+        } catch {}
+      }
       const started = performance.now();
       let actual = null;
       let error = null;
@@ -88,6 +96,7 @@ const report = {
   environment: { os: process.platform, architecture: process.arch, rust: null, chrome: commandVersion(chromePath), machine: `${os.hostname()} ${os.release()}` },
   resources: { scope: "Runner RSS is the agent-browser MCP server process only; client and Chrome process-tree metrics are unavailable", runner: { pid: client.pid, rss_start_bytes: null, rss_end_bytes: null, peak_rss_bytes: client.peakRss }, chrome: { root_pid: null, rss_end_bytes: null, peak_process_tree_rss_bytes: null }, binary_size_bytes: fs.statSync(process.execPath).size, compact_context_bytes: null, cdp_requests: null, startup_ms: startupMs },
   summary: { successes, failures, wrong_actions: wrongActions, unsupported, task_success_rate: outcomes.length ? successes / outcomes.length : 0, hard_gate_passed: successes === outcomes.length },
+  metrics: { compact_observe_bytes: summarizeByteSamples(compactByteSamples) },
   scenarios: outcomes,
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

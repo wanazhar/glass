@@ -126,6 +126,10 @@ async fn main() -> BrowserResult<()> {
 
     let compact = session.observe_fresh().await?;
     let context_bytes = serde_json::to_vec(&compact)?.len();
+    let mut compact_byte_samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        compact_byte_samples.push(serde_json::to_vec(&session.observe().await?)?.len());
+    }
     let cdp_requests = session.cdp_request_count();
     let memory = sampler.stop().await;
     let glass_rss_end = process_rss_bytes(std::process::id());
@@ -172,10 +176,27 @@ async fn main() -> BrowserResult<()> {
             "task_success_rate": successes as f64 / outcomes.len() as f64,
             "hard_gate_passed": hard_gate_passed,
         },
+        "metrics": {
+            "compact_observe_bytes": summarize_byte_samples(&compact_byte_samples),
+        },
         "scenarios": outcomes,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn summarize_byte_samples(samples: &[usize]) -> Value {
+    if samples.is_empty() {
+        return json!({"median_bytes": null, "p95_bytes": null, "samples": 0});
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let percentile = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
+    json!({
+        "median_bytes": percentile(0.50),
+        "p95_bytes": percentile(0.95),
+        "samples": sorted.len(),
+    })
 }
 
 fn classify_run(

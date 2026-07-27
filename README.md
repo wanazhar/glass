@@ -304,6 +304,7 @@ These numbers are reproducible with the same fixtures and Chrome build.
 | Tests passing | 227 | — |
 | MCP tools | 59 | Chrome DevTools MCP ~33 |
 | Wrong actions | 0 (adversarial suite) | Playwright: 0 |
+| Compact observe bytes | Published as median/p95 in each release acceptance artifact | Playwright MCP and agent-browser when measurable |
 | Session modules | 24 | — |
 
 See the [category metric guide](docs/category-metric.md) for methodology and

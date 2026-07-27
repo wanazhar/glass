@@ -45,7 +45,10 @@ Median and p95 byte size of a single compact `observe` response. This is the
 token-cost proxy: every byte Glass emits becomes context tokens the agent pays
 for.
 
-**Current:** Tracked per release; target: below 2 KiB median on warm fixtures.
+**Current:** The release acceptance artifact publishes median and p95 values for
+Glass, Playwright MCP, and agent-browser when their observation surfaces are
+measurable. Values are serialized UTF-8 bytes with JSON-RPC framing excluded;
+the fixture, viewport, Chrome build, and warm lifecycle are shared.
 
 Glass achieves this through:
 - Accessibility-only compact projection (no DOM by default)
@@ -79,7 +82,9 @@ CHROME_PATH=/path/to/chromium \
 ```
 
 This runs all four required adapters (Glass, Playwright, Playwright MCP, and
-agent-browser) against the same Chromium binary
+agent-browser) against the same Chromium binary. The resulting
+`acceptance.json` includes `token_scoreboard.adapters`, so the byte comparison
+is published with the same revision-bound evidence as the correctness gates.
 and v1 corpus. Results are written to `benchmarks/results/compare-018/`.
 
 ## Release Policy

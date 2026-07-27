@@ -3,7 +3,7 @@ use glass::browser::session::{
     ActionKind, BatchStep, BrowserSession, InteractionMode, SessionOptions, TargetError,
     TargetErrorKind, VerificationPredicate, WaitCondition, WaitTimeout, WorkflowBudgets,
     WorkflowDefinition, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowRunStatus,
-    WorkflowStep, WorkflowStepState, WorkflowTransactionClass,
+    WorkflowStep, WorkflowStepState, WorkflowTrace, WorkflowTransactionClass,
 };
 use serde_json::{Value, json};
 use std::{
@@ -901,6 +901,7 @@ async fn browser_session_drives_a_local_fixture() {
     };
     marker_workflow.steps[0].expect = None;
     marker_workflow.steps[0].max_retries = 1;
+    marker_workflow.steps[0].repeat = 1;
     marker_workflow.steps[0].before_retry = Some(VerificationPredicate::TitleContains {
         value: "Glass Fixture".into(),
     });
@@ -926,6 +927,57 @@ async fn browser_session_drives_a_local_fixture() {
         .unwrap();
     assert_eq!(resume_plan.next_step_index, 1);
     assert!(resume_plan.reconciled);
+
+    let mut resumable_workflow = workflow.clone();
+    resumable_workflow.budgets.max_steps = 2;
+    resumable_workflow.steps[0].repeat = 1;
+    resumable_workflow.steps.push(WorkflowStep {
+        id: "recover-duplicate".into(),
+        action: BatchStep::Click {
+            target: "name=Duplicate".into(),
+        },
+        when: None,
+        expect: None,
+        before_retry: None,
+        transaction: WorkflowTransactionClass::Idempotent,
+        idempotency_key: None,
+        max_retries: 0,
+        repeat: 1,
+    });
+    let failed_resume = session
+        .run_workflow(&resumable_workflow, &BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(failed_resume.status, WorkflowRunStatus::Failed);
+    assert_eq!(failed_resume.steps.len(), 2);
+    let failed_checkpoint = session
+        .export_workflow_checkpoint(&resumable_workflow, &failed_resume)
+        .await
+        .unwrap();
+    assert_eq!(failed_checkpoint.next_step_index, 1);
+    session
+        .evaluate("document.querySelectorAll('.duplicate')[1]?.remove()")
+        .await
+        .unwrap();
+    let resumed = session
+        .resume_workflow(&resumable_workflow, &BTreeMap::new(), &failed_checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(resumed.status, WorkflowRunStatus::Completed);
+    assert_ne!(resumed.run_id, failed_resume.run_id);
+    assert_eq!(resumed.steps.len(), resumable_workflow.steps.len());
+    assert_eq!(resumed.steps[0].state, WorkflowStepState::Committed);
+    assert_eq!(resumed.steps[1].state, WorkflowStepState::Committed);
+    assert!(WorkflowTrace::replay(&resumed.trace, &resumable_workflow).is_ok());
+    let resumed_checkpoint = session
+        .export_workflow_checkpoint(&resumable_workflow, &resumed)
+        .await
+        .unwrap();
+    assert_eq!(resumed_checkpoint.next_step_index, 2);
+    session
+        .evaluate("document.body.insertAdjacentHTML('beforeend', '<button class=\\\"duplicate\\\">Duplicate</button>')")
+        .await
+        .unwrap();
     for condition in [
         WaitCondition::Lifecycle("complete".to_string()),
         WaitCondition::UrlExact(redirected.url.clone()),

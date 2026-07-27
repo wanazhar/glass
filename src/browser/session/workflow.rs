@@ -30,6 +30,8 @@ const MAX_WORKFLOW_TRACE_EVENTS: usize = 2_048;
 const WORKFLOW_TRACE_SCHEMA_VERSION: u8 = 1;
 const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
 const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
+const MAX_CHECKPOINT_HISTORY_STATES: usize = 64;
+const MAX_CHECKPOINT_EXECUTION_IDS: usize = 8;
 
 /// A complete declarative workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1282,6 +1284,24 @@ pub struct WorkflowCheckpointStep {
     pub id: String,
     pub state: WorkflowStepState,
     pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<WorkflowStepState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_ids: Vec<String>,
+    #[serde(default)]
+    pub dispatch_acknowledged: bool,
+    #[serde(default)]
+    pub effect_observed: bool,
+    #[serde(default)]
+    pub postcondition_verified: bool,
+    #[serde(default)]
+    pub retry_safe: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_decision: Option<WorkflowBranchDecision>,
 }
 
 /// Bounded page identity used to reject unsafe resume attempts.
@@ -1600,14 +1620,29 @@ impl super::BrowserSession {
                         record.attempts = record.attempts.saturating_add(1);
                     }
 
-                    let outcome = self
-                        .run_batch_with_mode(
-                            std::slice::from_ref(&step.action),
-                            false,
-                            BatchMode::Unguarded,
-                            None,
-                        )
-                        .await;
+                    let outcome = match workflow_target(&step.action) {
+                        Some(target) => match self.resolve_element(target).await {
+                            Ok(_) => {
+                                self.run_batch_with_mode(
+                                    std::slice::from_ref(&step.action),
+                                    false,
+                                    BatchMode::Unguarded,
+                                    None,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error),
+                        },
+                        None => {
+                            self.run_batch_with_mode(
+                                std::slice::from_ref(&step.action),
+                                false,
+                                BatchMode::Unguarded,
+                                None,
+                            )
+                            .await
+                        }
+                    };
                     match outcome {
                         Ok(outcome) => break outcome,
                         Err(error) => {
@@ -1948,6 +1983,15 @@ impl super::BrowserSession {
                     id: step.id.clone(),
                     state: step.state,
                     attempts: step.attempts,
+                    history: step.history.clone(),
+                    execution_ids: step.execution_ids.clone(),
+                    dispatch_acknowledged: step.dispatch_acknowledged,
+                    effect_observed: step.effect_observed,
+                    postcondition_verified: step.postcondition_verified,
+                    retry_safe: step.retry_safe,
+                    previous_revision: step.previous_revision,
+                    current_revision: step.current_revision,
+                    branch_decision: step.branch_decision.clone(),
                 })
                 .collect(),
             page: WorkflowCheckpointPage {
@@ -2098,7 +2142,49 @@ impl super::BrowserSession {
         }
         let mut suffix = workflow.clone();
         suffix.steps = workflow.steps[plan.next_step_index..].to_vec();
-        self.run_workflow(&suffix, inputs).await
+        let mut result = self.run_workflow(&suffix, inputs).await?;
+        let mut prefix = checkpoint.steps[..plan.next_step_index]
+            .iter()
+            .map(checkpoint_step_to_record)
+            .collect::<Vec<_>>();
+        prefix.append(&mut result.steps);
+        result.steps = prefix;
+        result.trace = WorkflowTrace::from_steps(&result.steps);
+        result.trace.run_id = Some(result.run_id.clone());
+        Ok(result)
+    }
+}
+
+fn checkpoint_step_to_record(step: &WorkflowCheckpointStep) -> WorkflowStepRecord {
+    let history = if step.history.is_empty() {
+        vec![
+            WorkflowStepState::Pending,
+            WorkflowStepState::Ready,
+            WorkflowStepState::Preflight,
+            WorkflowStepState::Resolving,
+            WorkflowStepState::Dispatched,
+            WorkflowStepState::EffectObserved,
+            WorkflowStepState::Verified,
+            WorkflowStepState::OutputsExtracted,
+            WorkflowStepState::Committed,
+        ]
+    } else {
+        step.history.clone()
+    };
+    WorkflowStepRecord {
+        id: step.id.clone(),
+        state: step.state,
+        history,
+        attempts: step.attempts,
+        execution_ids: step.execution_ids.clone(),
+        dispatch_acknowledged: step.dispatch_acknowledged,
+        effect_observed: step.effect_observed,
+        postcondition_verified: step.postcondition_verified,
+        retry_safe: step.retry_safe,
+        previous_revision: step.previous_revision,
+        current_revision: step.current_revision,
+        branch_decision: step.branch_decision.clone(),
+        error: None,
     }
 }
 
@@ -2127,6 +2213,25 @@ impl WorkflowCheckpoint {
                 "checkpoint runId is too long".into(),
             ));
         }
+        for (index, step) in self.steps.iter().enumerate() {
+            if step.history.len() > MAX_CHECKPOINT_HISTORY_STATES {
+                return Err(WorkflowResumeError::CheckpointShape(format!(
+                    "checkpoint step {index} contains too much state history"
+                )));
+            }
+            if !step.history.is_empty() && step.history.last() != Some(&step.state) {
+                return Err(WorkflowResumeError::CheckpointShape(format!(
+                    "checkpoint step {index} history does not end at its state"
+                )));
+            }
+            if step.execution_ids.len() > MAX_CHECKPOINT_EXECUTION_IDS
+                || step.execution_ids.iter().any(|id| id.len() > 128)
+            {
+                return Err(WorkflowResumeError::CheckpointShape(format!(
+                    "checkpoint step {index} contains too many execution IDs"
+                )));
+            }
+        }
         let bytes = serde_json::to_vec(self)
             .map_err(|error| WorkflowResumeError::CheckpointShape(error.to_string()))?;
         if bytes.len() > MAX_WORKFLOW_CHECKPOINT_BYTES {
@@ -2142,6 +2247,18 @@ fn workflow_definition_hash(
     let canonical = workflow.to_canonical_json()?;
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn workflow_target(action: &BatchStep) -> Option<&str> {
+    match action {
+        BatchStep::Click { target }
+        | BatchStep::Check { target }
+        | BatchStep::Uncheck { target }
+        | BatchStep::Select { target, .. }
+        | BatchStep::Clear { target } => Some(target),
+        BatchStep::Type { target, .. } => target.as_deref(),
+        _ => None,
+    }
 }
 
 fn resolve_batch_step(
@@ -2938,11 +3055,29 @@ mod tests {
                     id: "open".into(),
                     state: WorkflowStepState::Committed,
                     attempts: 1,
+                    history: Vec::new(),
+                    execution_ids: Vec::new(),
+                    dispatch_acknowledged: false,
+                    effect_observed: false,
+                    postcondition_verified: false,
+                    retry_safe: false,
+                    previous_revision: None,
+                    current_revision: None,
+                    branch_decision: None,
                 },
                 WorkflowCheckpointStep {
                     id: "save".into(),
                     state: WorkflowStepState::FailedBeforeDispatch,
                     attempts: 1,
+                    history: Vec::new(),
+                    execution_ids: Vec::new(),
+                    dispatch_acknowledged: false,
+                    effect_observed: false,
+                    postcondition_verified: false,
+                    retry_safe: false,
+                    previous_revision: None,
+                    current_revision: None,
+                    branch_decision: None,
                 },
             ],
             page: WorkflowCheckpointPage {

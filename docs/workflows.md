@@ -136,9 +136,9 @@ auditable.
 ## Checkpoints and resume
 
 `export_workflow_checkpoint` produces deterministic JSON capped at 8 KiB. It
-stores workflow identity, a definition hash, redacted step states, and bounded
-target/frame/URL/title/revision metadata. It does not store input values,
-cookies, passwords, or page content.
+stores workflow identity, a definition hash, redacted step states and bounded
+execution evidence, plus target/frame/URL/title/revision metadata. It does not
+store input values, cookies, passwords, page content, or step error strings.
 
 `reconcile_workflow_checkpoint` checks that the definition and route still
 match and returns the next safe step without dispatching an action. It rejects
@@ -147,7 +147,9 @@ dispatched effect. Callers remain responsible for executing the returned plan.
 
 `BrowserSession::resume_workflow` performs that reconciliation and then runs
 only the safe pending suffix. It refuses an already-complete checkpoint and
-never re-dispatches the committed prefix.
+never re-dispatches the committed prefix. The returned result restores the
+committed prefix as bounded checkpoint evidence, so it remains exportable and
+replayable against the original workflow definition.
 
 `WorkflowTrace::replay` checks that a trace belongs to the declared workflow,
 follows legal state transitions, and preserves attempt boundaries without

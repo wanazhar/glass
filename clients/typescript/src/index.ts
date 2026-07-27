@@ -26,6 +26,11 @@ export type BatchMode = "fixed" | "chain" | "unguarded";
 export type WorkflowValueType = "string" | "integer" | "number" | "boolean" | "url";
 export type WorkflowTransaction = "read_only" | "idempotent" | "conditionally_idempotent" | "non_idempotent" | "unknown";
 export type WorkflowOutputSource = "page_url" | "page_title" | "visible_text";
+export type WorkflowStepState =
+  | "pending" | "ready" | "preflight" | "resolving" | "not_dispatched"
+  | "dispatched" | "effect_observed" | "verified" | "outputs_extracted"
+  | "committed" | "failed_before_dispatch" | "failed_after_dispatch"
+  | "indeterminate" | "skipped";
 
 export interface WorkflowInput {
   valueType: WorkflowValueType;
@@ -82,7 +87,23 @@ export interface WorkflowCheckpoint {
   definitionHash: string;
   status: string;
   nextStepIndex: number;
+  steps: WorkflowCheckpointStep[];
   [field: string]: unknown;
+}
+
+export interface WorkflowCheckpointStep {
+  id: string;
+  state: WorkflowStepState;
+  attempts: number;
+  history?: WorkflowStepState[];
+  executionIds?: string[];
+  dispatchAcknowledged?: boolean;
+  effectObserved?: boolean;
+  postconditionVerified?: boolean;
+  retrySafe?: boolean;
+  previousRevision?: number;
+  currentRevision?: number;
+  branchDecision?: Record<string, unknown>;
 }
 
 export interface WorkflowRunResult {

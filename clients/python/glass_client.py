@@ -67,7 +67,32 @@ class WorkflowDefinition(TypedDict, total=False):
 
 
 WorkflowInputs = dict[str, Any]
-WorkflowCheckpoint = dict[str, Any]
+
+
+class WorkflowCheckpointStep(TypedDict, total=False):
+    id: str
+    state: str
+    attempts: int
+    history: list[str]
+    executionIds: list[str]
+    dispatchAcknowledged: bool
+    effectObserved: bool
+    postconditionVerified: bool
+    retrySafe: bool
+    previousRevision: int
+    currentRevision: int
+    branchDecision: VerificationPredicate
+
+
+class WorkflowCheckpoint(TypedDict, total=False):
+    schemaVersion: int
+    runId: str
+    workflowName: str
+    workflowVersion: str
+    definitionHash: str
+    status: str
+    nextStepIndex: int
+    steps: list[WorkflowCheckpointStep]
 
 
 class GlassClient:

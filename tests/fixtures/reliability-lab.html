@@ -26,12 +26,18 @@
     <script>
       const state = document.querySelector("#state");
       const submitCount = document.querySelector("#submit-count");
-      const original = document.querySelector("#target");
       const lab = {
         reset() {
           document.querySelector("#overlay").style.display = "none";
           document.querySelector("#moving").style.left = "0";
-          document.querySelector("#region-a").append(document.querySelector("#target"));
+          document.querySelector("#target, #replacement")?.remove();
+          const target = document.createElement("button");
+          target.id = "target";
+          target.textContent = "Submit request";
+          target.onclick = lab.commitSubmit;
+          document.querySelector("#region-a").prepend(target);
+          document.querySelector("#region-a").append(document.querySelector("#duplicate"));
+          document.querySelector("#region-a").append(document.querySelector("#moving"));
           state.value = "idle";
           submitCount.value = "0";
         },
@@ -85,7 +91,7 @@
           };
         }
       };
-      original.onclick = lab.commitSubmit;
+      document.querySelector("#target").onclick = lab.commitSubmit;
       window.reliabilityLab = lab;
     </script>
   </body>

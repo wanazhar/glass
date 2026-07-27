@@ -13,6 +13,7 @@ fn reliability_fixture_exposes_independent_fault_controls_and_oracles() {
         "scheduleEffectMarker",
         "data-side-effect-count",
         "snapshot",
+        "target, #replacement",
     ] {
         assert!(fixture.contains(marker), "missing fixture marker: {marker}");
     }

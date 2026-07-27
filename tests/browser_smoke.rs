@@ -73,6 +73,13 @@ async fn serve_fixture(mut stream: TcpStream, html: &'static str) {
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
+async fn reliability_snapshot(session: &BrowserSession) -> Value {
+    session
+        .evaluate("window.reliabilityLab.snapshot()")
+        .await
+        .unwrap()
+}
+
 async fn page_target_id(port: u16) -> String {
     let targets: Vec<Value> = reqwest::get(format!("http://127.0.0.1:{port}/json"))
         .await
@@ -1878,6 +1885,114 @@ async fn browser_session_drives_a_local_fixture() {
     assert_eq!(pointer_events[pointer_events.len() - 1]["type"], "mouseup");
     fast_session.close().await.unwrap();
 
+    fixture_server.close().await;
+}
+
+#[tokio::test]
+async fn reliability_lab_controls_produce_independent_oracle_state() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping reliability fixture smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    if cfg!(target_os = "macos")
+        && cfg!(target_arch = "x86_64")
+        && std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+    {
+        eprintln!(
+            "skipping reliability fixture smoke test on GitHub-hosted Intel macOS; the runner's CDP is too slow for this bounded scenario"
+        );
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "reliability-lab-e2e".to_string(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+
+    session
+        .evaluate("window.reliabilityLab.reset(); true")
+        .await
+        .unwrap();
+    let initial = reliability_snapshot(&session).await;
+    assert_eq!(initial["state"], "idle");
+    assert_eq!(initial["submitCount"], 0);
+    assert_eq!(initial["targetPresent"], true);
+    assert_eq!(initial["framePresent"], true);
+
+    session
+        .evaluate("window.reliabilityLab.replaceTarget(); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        reliability_snapshot(&session).await["state"],
+        "target-replaced"
+    );
+    session
+        .evaluate("window.reliabilityLab.reset(); true")
+        .await
+        .unwrap();
+    session
+        .evaluate("window.reliabilityLab.moveTargetToOtherRegion(); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        reliability_snapshot(&session).await["state"],
+        "region-moved"
+    );
+    session
+        .evaluate("window.reliabilityLab.reset(); true")
+        .await
+        .unwrap();
+
+    session.click("css=#target").await.unwrap();
+    let submitted = reliability_snapshot(&session).await;
+    assert_eq!(submitted["state"], "submitted");
+    assert_eq!(submitted["submitCount"], 1);
+
+    for operation in [
+        "duplicateTarget",
+        "renameTarget",
+        "showOverlay",
+        "moveTarget",
+        "detachFrame",
+    ] {
+        session
+            .evaluate(&format!("window.reliabilityLab.{operation}(); true"))
+            .await
+            .unwrap();
+    }
+    let changed = reliability_snapshot(&session).await;
+    assert_eq!(changed["state"], "frame-detached");
+    assert_eq!(changed["overlayVisible"], true);
+    assert_eq!(changed["framePresent"], false);
+
+    session
+        .evaluate("window.reliabilityLab.scheduleEffectMarker(0); true")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert_eq!(
+        reliability_snapshot(&session).await["state"],
+        "effect-visible"
+    );
+
+    session.close().await.unwrap();
     fixture_server.close().await;
 }
 

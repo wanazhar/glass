@@ -466,6 +466,26 @@ pub struct ReliabilityGateReport {
     pub failures: Vec<ReliabilityGateFailure>,
 }
 
+/// Category-level release summary derived from the exact gate report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScorecardCategory {
+    pub category: String,
+    pub scenario_count: usize,
+    pub certified_count: usize,
+    pub blocked_count: usize,
+}
+
+/// Inspectable release scorecard. It never replaces the detailed gate report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScorecard {
+    pub schema_version: u32,
+    pub certified: bool,
+    pub categories: Vec<ReliabilityScorecardCategory>,
+    pub gate: ReliabilityGateReport,
+}
+
 /// Versioned, browser-free reliability scenario.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -804,6 +824,41 @@ pub fn evaluate_reliability_gate(
     Ok(report)
 }
 
+/// Build a category summary from the same evidence used by certification.
+pub fn build_reliability_scorecard(
+    scenarios: &[ReliabilityScenario],
+    observations: &[ReliabilityScenarioObservation],
+) -> Result<ReliabilityScorecard, ReliabilityScenarioError> {
+    let gate = evaluate_reliability_gate(scenarios, observations)?;
+    let mut categories: BTreeMap<&str, ReliabilityScorecardCategory> = BTreeMap::new();
+    for scenario in scenarios {
+        let category = categories
+            .entry(scenario.category.as_str())
+            .or_insert_with(|| ReliabilityScorecardCategory {
+                category: scenario.category.clone(),
+                scenario_count: 0,
+                certified_count: 0,
+                blocked_count: 0,
+            });
+        category.scenario_count += 1;
+        let blocked = gate
+            .failures
+            .iter()
+            .any(|failure| failure.scenario_id == scenario.id || failure.scenario_id == "*");
+        if blocked {
+            category.blocked_count += 1;
+        } else {
+            category.certified_count += 1;
+        }
+    }
+    Ok(ReliabilityScorecard {
+        schema_version: RELIABILITY_SCENARIO_SCHEMA_VERSION,
+        certified: gate.certified,
+        categories: categories.into_values().collect(),
+        gate,
+    })
+}
+
 fn gate_failure(scenario_id: &str, code: &str, detail: &str) -> ReliabilityGateFailure {
     ReliabilityGateFailure {
         scenario_id: scenario_id.into(),
@@ -1058,6 +1113,25 @@ mod tests {
         assert!(report.certified);
         assert_eq!(report.passed, 1);
         assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn reliability_scorecard_preserves_gate_and_groups_categories() {
+        let scenario = scenario();
+        let scorecard = build_reliability_scorecard(
+            std::slice::from_ref(&scenario),
+            &[observation(
+                &scenario,
+                ReliabilityRunClassification::Passed,
+                Vec::new(),
+            )],
+        )
+        .unwrap();
+        assert!(scorecard.certified);
+        assert_eq!(scorecard.gate.passed, 1);
+        assert_eq!(scorecard.categories[0].category, "transactional-workflow");
+        assert_eq!(scorecard.categories[0].certified_count, 1);
+        assert_eq!(scorecard.categories[0].blocked_count, 0);
     }
 
     #[test]

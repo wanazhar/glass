@@ -20,7 +20,7 @@ use crate::browser::session::{
 };
 use crate::reliability::{
     ReliabilityReplayBundle, ReliabilityScenario, ReliabilityScenarioObservation,
-    evaluate_reliability_gate,
+    build_reliability_scorecard,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -189,13 +189,14 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             };
             let observations: Vec<ReliabilityScenarioObservation> =
                 serde_json::from_value(read_json_input(Some(observations))?)?;
-            let gate = evaluate_reliability_gate(&scenarios, &observations)?;
-            let certified = gate.certified;
+            let scorecard = build_reliability_scorecard(&scenarios, &observations)?;
+            let certified = scorecard.certified;
             print_json(&serde_json::json!({
                 "status": if certified { "certified" } else { "blocked" },
                 "version": version,
                 "tool": {"name": "glass", "version": env!("CARGO_PKG_VERSION")},
-                "gate": gate,
+                "gate": &scorecard.gate,
+                "scorecard": &scorecard,
             }))?;
             if !certified {
                 return Err("reliability certification blocked".into());

@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.5] - 2026-07-26
+
+### Fixed
+
+- Prevent persistent Chrome profiles from restoring stale tabs into a new
+  Glass-owned session.
+
 ## [0.1.4] - 2026-07-26
 
 ### Fixed

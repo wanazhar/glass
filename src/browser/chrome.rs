@@ -796,6 +796,7 @@ fn chrome_arguments(
         "--disable-extensions".to_string(),
         "--disable-default-apps".to_string(),
         "--disable-session-crashed-bubble".to_string(),
+        "--disable-restore-session-state".to_string(),
         "--disable-features=Translate,BackForwardCache".to_string(),
         "--window-size=1280,720".to_string(),
     ];
@@ -1142,6 +1143,7 @@ mod tests {
 
         assert!(args.contains(&"--incognito".to_string()));
         assert!(args.contains(&"--user-data-dir=/tmp/glass-incognito".to_string()));
+        assert!(args.contains(&"--disable-restore-session-state".to_string()));
     }
 
     #[test]

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/intent-resolution-v1.schema.json",
+  "title": "Glass intent resolution v1",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "intent", "action", "resolutionPolicy"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "intent": {"type": "string", "minLength": 1, "maxLength": 512},
+        "action": {"$ref": "#/$defs/action"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "constraints": {"$ref": "#/$defs/constraints"},
+        "resolutionPolicy": {"enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
+        "expectedRevision": {"type": "integer", "minimum": 0}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "intent", "action", "normalizedIntent", "resolution", "policyDecision", "excludedCount"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "intent": {"type": "string", "minLength": 1, "maxLength": 512},
+        "action": {"$ref": "#/$defs/action"},
+        "normalizedIntent": {"type": "string", "minLength": 1, "maxLength": 512},
+        "resolution": {"enum": ["exact", "uniqueHighConfidence", "uniqueLowConfidence", "ambiguous", "notFound", "staleRevision", "policyRejected", "unsupportedIntent"]},
+        "policyDecision": {"enum": ["allowed", "reportOnly", "confirmationRequired", "rejected"]},
+        "route": {"$ref": "#/$defs/route"},
+        "revision": {"type": "integer", "minimum": 0},
+        "candidates": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/candidate"}},
+        "excludedCandidates": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/excludedCandidate"}},
+        "excludedCount": {"type": "integer", "minimum": 0},
+        "selectedCandidate": {"type": "string", "minLength": 1, "maxLength": 128},
+        "suggestedConstraints": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/suggestion"}},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "action": {"enum": ["click", "type", "clear", "check", "uncheck", "select", "submit", "open", "close", "search", "filter", "sort", "paginate", "toggle", "expand", "collapse", "download", "upload", "inspect", "extract"]},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pageKind": {"type": "string"},
+        "regionKind": {"type": "string"},
+        "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "formLabel": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "nameContains": {"type": "string", "minLength": 1, "maxLength": 256},
+        "mustBeVisible": {"type": "boolean"},
+        "mustBeEnabled": {"type": "boolean"},
+        "excludeText": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+        "maxCandidates": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetId", "frameId", "url"],
+      "properties": {
+        "targetId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "frameId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reference", "role", "name", "confidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reference": {"type": "string", "minLength": 1, "maxLength": 128},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "regionKind": {"type": "string"},
+        "confidence": {"enum": ["exact", "high", "medium", "low", "insufficient"]},
+        "evidence": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/evidence"}}
+      }
+    },
+    "excludedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reason"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "detail"],
+      "properties": {
+        "category": {"enum": ["exactRole", "exactName", "semanticName", "regionMatch", "formRelationship", "headingContext", "stateMatch", "routeMatch", "workflowContext", "historicalMatch", "negativeConflict", "policyExclusion"]},
+        "detail": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "regionKind": {"type": "string"},
+        "nameContains": {"type": "string", "minLength": 1, "maxLength": 256},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  }
+}

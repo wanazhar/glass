@@ -67,6 +67,13 @@ pub use emulation::{GeoLocation, NetworkConditions, PdfOptions};
 pub use fill::{FillFieldResult, FillFormOutcome};
 pub use har::{NetworkEntry, NetworkRecorder, NetworkRecording};
 pub use identity::{AgentIdentity, SignedHttpRequest};
+pub use intent::{
+    ExcludedIntentCandidate, INTENT_RESOLUTION_SCHEMA_VERSION, IntentConfidence,
+    IntentConstraintSuggestion, IntentConstraints, IntentEvidence, IntentEvidenceCategory,
+    IntentPolicyDecision, IntentResolutionError, IntentScope, SemanticIntentAction,
+    SemanticIntentCandidate, SemanticIntentRequest, SemanticIntentResult, SemanticResolution,
+    SemanticResolutionPolicy,
+};
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use semantic::{
@@ -94,6 +101,7 @@ mod fill;
 mod frame;
 mod har;
 mod identity;
+mod intent;
 mod intercept;
 mod locator;
 mod navigate;

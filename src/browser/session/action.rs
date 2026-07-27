@@ -373,6 +373,61 @@ impl BrowserSession {
         }).await
     }
 
+    async fn resolve_click_target(
+        &self,
+        target: &str,
+    ) -> BrowserResult<(ResolvedElement, String, Point)> {
+        const MAX_NODE_RESOLUTION_ATTEMPTS: usize = 3;
+        let mut last_error: Option<Box<dyn Error>> = None;
+
+        for attempt in 0..MAX_NODE_RESOLUTION_ATTEMPTS {
+            let element = self.resolve_element(target).await?;
+            let object_id = match self
+                .cdp
+                .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                .await
+            {
+                Ok(object_id) => object_id,
+                Err(error) => {
+                    tracing::debug!(%error, attempt, "target node could not be resolved");
+                    last_error = Some(Box::new(TargetError {
+                        kind: TargetErrorKind::NotActionable,
+                        reason: Some(TargetActionabilityReason::NodeUnavailable),
+                        candidates: Vec::new(),
+                        recovery: None,
+                    }));
+                    if attempt + 1 < MAX_NODE_RESOLUTION_ATTEMPTS {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+
+            let local_point = match self.verified_action_point(&object_id).await {
+                Ok(point) => point,
+                Err(error)
+                    if error
+                        .downcast_ref::<TargetError>()
+                        .and_then(|target_error| target_error.reason)
+                        == Some(TargetActionabilityReason::NodeUnavailable) =>
+                {
+                    last_error = Some(error);
+                    if attempt + 1 < MAX_NODE_RESOLUTION_ATTEMPTS {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+
+            return Ok((element, object_id, local_point));
+        }
+
+        Err(last_error.expect("node resolution retry loop must retain its last error"))
+    }
+
     async fn pointer_click(
         &self,
         target: &str,
@@ -380,22 +435,8 @@ impl BrowserSession {
     ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
-                let element = self.resolve_element(target).await?;
-                let object_id = self
-                    .cdp
-                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
-                    .await
-                    .map_err(|error| {
-                        tracing::debug!(%error, "target node could not be resolved");
-                        TargetError {
-                            kind: TargetErrorKind::NotActionable,
-                            reason: Some(TargetActionabilityReason::NodeUnavailable),
-                            candidates: Vec::new(),
-                            recovery: None,
-                        }
-                    })?;
+                let (element, object_id, local_point) = self.resolve_click_target(target).await?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
-                let local_point = self.verified_action_point(&remote.object_id).await?;
                 let point = self.target_viewport_point(local_point).await?;
                 let events = if double_click {
                     self.mouse.generate_double_click_events(point)

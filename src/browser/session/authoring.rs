@@ -4,7 +4,10 @@
 //! [`super::WorkflowDefinition`] contract after this module parses, validates,
 //! and analyzes the source.
 
-use super::{BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowTransactionClass};
+use super::{
+    BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowDraft, WorkflowTransactionClass,
+    WorkflowValidationError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -135,6 +138,30 @@ pub struct WorkflowDiff {
     pub after_hash: String,
     pub breaking: bool,
     pub changes: Vec<WorkflowDiffChange>,
+}
+
+/// Explicit semantic evidence accepted by the offline recorder importer.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowRecordingEvent {
+    pub id: String,
+    pub request: super::SemanticIntentRequest,
+    pub result: super::SemanticIntentResult,
+    #[serde(default)]
+    pub input_name: Option<String>,
+    pub transaction: WorkflowTransactionClass,
+    #[serde(default)]
+    pub expect: Option<super::VerificationPredicate>,
+}
+
+/// Versioned envelope for offline semantic recording input.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowRecordingSession {
+    pub schema_version: u32,
+    pub name: String,
+    pub workflow_version: String,
+    pub events: Vec<WorkflowRecordingEvent>,
 }
 
 impl fmt::Display for WorkflowCompileError {
@@ -659,6 +686,33 @@ pub fn diff_workflows(
     })
 }
 
+/// Turn explicit semantic resolution evidence into a reviewable draft.
+pub fn record_semantic_events(
+    session: WorkflowRecordingSession,
+) -> Result<WorkflowDraft, WorkflowValidationError> {
+    if session.schema_version != WORKFLOW_AUTHORING_SCHEMA_VERSION {
+        return Err(WorkflowValidationError::new(
+            "schemaVersion",
+            format!(
+                "unsupported recording schema version {}; expected {}",
+                session.schema_version, WORKFLOW_AUTHORING_SCHEMA_VERSION
+            ),
+        ));
+    }
+    let mut recorder = super::WorkflowRecorder::new(session.name, session.workflow_version);
+    for event in session.events {
+        recorder.record_semantic_intent(
+            event.id,
+            &event.request,
+            &event.result,
+            event.input_name,
+            event.transaction,
+            event.expect,
+        )?;
+    }
+    Ok(recorder.draft().clone())
+}
+
 fn diff_change(
     kind: WorkflowDiffChangeKind,
     path: String,
@@ -1112,5 +1166,26 @@ outputs: {}
         let serialized = serde_json::to_string(&diff).unwrap();
         assert!(!serialized.contains("example.test/docs"));
         assert_ne!(diff.before_hash, diff.after_hash);
+    }
+
+    #[test]
+    fn recording_session_is_versioned_and_stays_a_draft() {
+        let draft = record_semantic_events(WorkflowRecordingSession {
+            schema_version: WORKFLOW_AUTHORING_SCHEMA_VERSION,
+            name: "empty-recording".into(),
+            workflow_version: "1.0.0".into(),
+            events: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(draft.name, "empty-recording");
+        assert!(draft.steps.is_empty());
+        let error = record_semantic_events(WorkflowRecordingSession {
+            schema_version: 99,
+            name: "bad".into(),
+            workflow_version: "1.0.0".into(),
+            events: Vec::new(),
+        })
+        .unwrap_err();
+        assert_eq!(error.path, "schemaVersion");
     }
 }

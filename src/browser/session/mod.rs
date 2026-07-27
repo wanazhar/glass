@@ -65,8 +65,9 @@ pub use authoring::{
     WORKFLOW_AUTHORING_SCHEMA_VERSION, WorkflowAuthoringDocument, WorkflowAuthoringFormat,
     WorkflowCompileError, WorkflowDiagnostic, WorkflowDiagnosticSeverity, WorkflowDiff,
     WorkflowDiffChange, WorkflowDiffChangeKind, WorkflowDiffRisk, WorkflowPreview,
-    WorkflowPreviewStep, analyze_workflow, compile_workflow, compile_workflow_json,
-    compile_workflow_yaml, diff_workflows, format_workflow_yaml, preview_workflow,
+    WorkflowPreviewStep, WorkflowRecordingEvent, WorkflowRecordingSession, analyze_workflow,
+    compile_workflow, compile_workflow_json, compile_workflow_yaml, diff_workflows,
+    format_workflow_yaml, preview_workflow, record_semantic_events,
 };
 pub use consent::ConsentDismissalOutcome;
 pub use diff::{AccessibilityDiff, DiffChange, DiffElement, diff_accessibility};

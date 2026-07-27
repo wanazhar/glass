@@ -3191,7 +3191,7 @@ pub struct WorkflowValidationError {
 }
 
 impl WorkflowValidationError {
-    fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             reason: reason.into(),

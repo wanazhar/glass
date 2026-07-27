@@ -15,8 +15,8 @@ use crate::browser::session::{
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
     SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition,
     WorkflowAuthoringFormat, WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity,
-    compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
-    preview_workflow,
+    WorkflowRecordingSession, compile_workflow, default_knowledge_store_path, diff_workflows,
+    format_workflow_yaml, preview_workflow, record_semantic_events,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -295,6 +295,18 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
                 "beforeDiagnostics": before_document.diagnostics,
                 "afterDiagnostics": after_document.diagnostics,
             }))?;
+        }
+        WorkflowAuthoringCommand::Record { input, output } => {
+            let value = read_json_input(input.as_ref())?;
+            let session: WorkflowRecordingSession = serde_json::from_value(value)?;
+            let draft = record_semantic_events(session)?;
+            let serialized = serde_json::to_string_pretty(&draft)?;
+            if let Some(output) = output {
+                std::fs::write(output, serialized)?;
+                println!("recorded workflow draft to {}", output.display());
+            } else {
+                println!("{serialized}");
+            }
         }
         WorkflowAuthoringCommand::Validate { input } => {
             let source = std::fs::read_to_string(input)?;

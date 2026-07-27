@@ -542,6 +542,14 @@ pub enum WorkflowAuthoringCommand {
     Preview { input: PathBuf },
     /// Compare two workflow sources and print migration guidance.
     Diff { before: PathBuf, after: PathBuf },
+    /// Import explicit semantic evidence into a reviewable draft.
+    Record {
+        /// JSON event envelope; omit to read stdin.
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Validate authoring source against the canonical workflow contract.
     Validate { input: PathBuf },
     /// Run static workflow diagnostics without starting a browser.
@@ -782,6 +790,23 @@ mod tests {
                 action: Some(WorkflowAuthoringCommand::Preview { input }),
                 input: None,
             }) if input.as_os_str() == "workflow.yaml"
+        ));
+        let cli = Cli::try_parse_from([
+            "glass",
+            "workflow",
+            "record",
+            "--input",
+            "events.json",
+            "--output",
+            "draft.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Workflow {
+                action: Some(WorkflowAuthoringCommand::Record { input: Some(input), output: Some(output) }),
+                input: None,
+            }) if input.as_os_str() == "events.json" && output.as_os_str() == "draft.json"
         ));
     }
 

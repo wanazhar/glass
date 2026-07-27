@@ -150,7 +150,11 @@ pub enum Commands {
     ClickExpectPopup { target: String },
 
     /// Double-click an element by an explicit ref/name/role/text/CSS/ordinal locator.
-    DoubleClick { target: String },
+    DoubleClick {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Move the pointer over an element without clicking.
     Hover { target: String },
@@ -180,16 +184,33 @@ pub enum Commands {
     Shortcut { shortcut: String },
 
     /// Clear an editable element.
-    Clear { target: String },
+    Clear {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Ensure a checkbox or radio is checked.
-    Check { target: String },
+    Check {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Ensure a checkbox is unchecked.
-    Uncheck { target: String },
+    Uncheck {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Select one exact option value.
-    Select { target: String, value: String },
+    Select {
+        target: String,
+        value: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Set a bounded list of regular files on one file input.
     Upload {
@@ -241,6 +262,8 @@ pub enum Commands {
         dx: f64,
         #[arg(long, default_value_t = 600.0)]
         dy: f64,
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Wait for one explicit browser condition until a bounded deadline.
@@ -437,7 +460,7 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            Some(Commands::DoubleClick { target }) if target == "r7:b42"
+            Some(Commands::DoubleClick { target, .. }) if target == "r7:b42"
         ));
     }
 

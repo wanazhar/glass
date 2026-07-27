@@ -64,8 +64,19 @@ impl BrowserSession {
     ///
     /// Positive `dy` scrolls down; positive `dx` scrolls right.
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
+        self.scroll_with_revision(dx, dy, None).await
+    }
+
+    /// Scroll while enforcing an optional observation revision.
+    pub async fn scroll_with_revision(
+        &self,
+        dx: f64,
+        dy: f64,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 self.cdp.scroll_by(dx, dy).await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
@@ -136,6 +147,20 @@ impl BrowserSession {
     pub async fn double_click(&self, target: &str) -> BrowserResult<ActionOutcome> {
         self.pointer_click(ActionRequest::new(ActionKind::DoubleClick, target, None))
             .await
+    }
+
+    /// Double-click while enforcing an optional observation revision.
+    pub async fn double_click_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        self.pointer_click(ActionRequest::new(
+            ActionKind::DoubleClick,
+            target,
+            expected_revision,
+        ))
+        .await
     }
 
     /// Hover the pointer over an element without clicking.
@@ -326,14 +351,30 @@ impl BrowserSession {
     /// Clicks the target, selects all content, then presses Backspace.
     /// Verifies the element is empty afterward.
     pub async fn clear(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.clear_with_revision(target, None).await
+    }
+
+    /// Clear an editable element while enforcing an optional revision.
+    pub async fn clear_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let element = self.resolve_element(target).await?;
                 let object_id = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let editable = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable}").await?)?;
                 if editable.as_bool() != Some(true) { return Err("clear target is not editable".into()); }
-                let clicked = self.click(target).await?;
+                let clicked = self
+                    .pointer_click(ActionRequest::new(
+                        ActionKind::Click,
+                        target,
+                        expected_revision,
+                    ))
+                    .await?;
                 self.cdp.dispatch_select_all().await?;
                 self.key_press("Backspace").await?;
                 let empty = runtime_value(&self.cdp.call_on_object(&remote.object_id, "function(){return this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement ? this.value === '' : this.textContent === ''}").await?)?;
@@ -351,6 +392,16 @@ impl BrowserSession {
         self.set_checked(target, true).await
     }
 
+    /// Check a control while enforcing an optional observation revision.
+    pub async fn check_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        self.set_checked_with_revision(target, true, expected_revision)
+            .await
+    }
+
     /// Uncheck a checkbox.
     ///
     /// Ensures the target element's `checked` property is set to `false`.
@@ -358,15 +409,41 @@ impl BrowserSession {
         self.set_checked(target, false).await
     }
 
+    /// Uncheck a control while enforcing an optional observation revision.
+    pub async fn uncheck_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        self.set_checked_with_revision(target, false, expected_revision)
+            .await
+    }
+
     /// Select an option from a `<select>` element by value.
     ///
     /// `value` must be 1–4096 bytes. Fires `input` and `change` events.
     pub async fn select_option(&self, target: &str, value: &str) -> BrowserResult<ActionOutcome> {
+        self.select_option_with_revision(target, value, None).await
+    }
+
+    /// Select an option while enforcing an optional observation revision.
+    pub async fn select_option_with_revision(
+        &self,
+        target: &str,
+        value: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         if value.is_empty() || value.len() > 4096 {
             return Err("select value must be 1..=4096 bytes".into());
         }
         let value_json = serde_json::to_string(value)?;
-        self.form_object_action(target, ActionKind::Select, &format!(r#"function() {{ if (!(this instanceof HTMLSelectElement)) return {{ok:false,reason:'not_select'}}; const option = Array.from(this.options).find(option => option.value === {value_json}); if (!option) return {{ok:false,reason:'option_not_found'}}; this.value = option.value; this.dispatchEvent(new Event('input',{{bubbles:true}})); this.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:this.value === option.value}}; }}"#)).await
+        self.form_object_action(
+            target,
+            ActionKind::Select,
+            &format!(r#"function() {{ if (!(this instanceof HTMLSelectElement)) return {{ok:false,reason:'not_select'}}; const option = Array.from(this.options).find(option => option.value === {value_json}); if (!option) return {{ok:false,reason:'option_not_found'}}; this.value = option.value; this.dispatchEvent(new Event('input',{{bubbles:true}})); this.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:this.value === option.value}}; }}"#),
+            expected_revision,
+        )
+        .await
     }
 
     pub async fn upload_files(
@@ -697,6 +774,15 @@ impl BrowserSession {
     }
 
     async fn set_checked(&self, target: &str, checked: bool) -> BrowserResult<ActionOutcome> {
+        self.set_checked_with_revision(target, checked, None).await
+    }
+
+    async fn set_checked_with_revision(
+        &self,
+        target: &str,
+        checked: bool,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         let action = if checked {
             ActionKind::Check
         } else {
@@ -705,7 +791,8 @@ impl BrowserSession {
         let script = format!(
             r#"function() {{ if (!(this instanceof HTMLInputElement) || !['checkbox','radio'].includes(this.type)) return {{ok:false,reason:'not_checkable'}}; if (this.checked !== {checked}) this.click(); return {{ok:this.checked === {checked}}}; }}"#
         );
-        self.form_object_action(target, action, &script).await
+        self.form_object_action(target, action, &script, expected_revision)
+            .await
     }
 
     async fn form_object_action(
@@ -713,9 +800,11 @@ impl BrowserSession {
         target: &str,
         action: ActionKind,
         function: &str,
+        expected_revision: Option<u64>,
     ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let element = self.resolve_element(target).await?;
                 let object_id = self
                     .cdp

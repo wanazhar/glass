@@ -13,9 +13,19 @@ impl BrowserSession {
     /// [`PageTargetInfo`]. If no popup appears within the witness window,
     /// returns a [`PopupClickError`].
     pub async fn click_expect_popup(&self, target: &str) -> BrowserResult<PopupClickOutcome> {
+        self.click_expect_popup_with_revision(target, None).await
+    }
+
+    /// Click a target expected to open a popup, optionally enforcing an observation revision.
+    pub async fn click_expect_popup_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<PopupClickOutcome> {
         let _scope = self.popup_click_scope.lock().await;
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let element = self.resolve_element(target).await?;
                 let object_id = self
                     .cdp

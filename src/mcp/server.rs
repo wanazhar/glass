@@ -153,9 +153,11 @@ enum ToolInvocation<'a> {
     },
     ClickExpectPopup {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     DoubleClick {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Hover {
         target: Cow<'a, str>,
@@ -183,16 +185,20 @@ enum ToolInvocation<'a> {
     },
     Clear {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Check {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Uncheck {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Select {
         target: Cow<'a, str>,
         value: &'a str,
+        expected_revision: Option<u64>,
     },
     Upload {
         target: Cow<'a, str>,
@@ -252,6 +258,7 @@ enum ToolInvocation<'a> {
     Scroll {
         dx: f64,
         dy: f64,
+        expected_revision: Option<u64>,
     },
     Wait {
         condition: &'a str,
@@ -863,12 +870,22 @@ async fn call_tool(
             serialized_result(&session.preflight_with_action(target.as_ref(), action).await)
         }
         ToolInvocation::ClickAt { x, y } => serialized_result(&session.click_at(x, y).await?),
-        ToolInvocation::ClickExpectPopup { target } => {
-            serialized_result(&session.click_expect_popup(target.as_ref()).await?)
-        }
-        ToolInvocation::DoubleClick { target } => {
-            action_result(session.double_click(target.as_ref()).await?)
-        }
+        ToolInvocation::ClickExpectPopup {
+            target,
+            expected_revision,
+        } => serialized_result(
+            &session
+                .click_expect_popup_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
+        ToolInvocation::DoubleClick {
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .double_click_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
         ToolInvocation::Hover { target } => action_result(session.hover(target.as_ref()).await?),
         ToolInvocation::Drag {
             source,
@@ -887,14 +904,39 @@ async fn call_tool(
         ToolInvocation::KeyDown { key } => action_result(session.key_down(key).await?),
         ToolInvocation::KeyUp { key } => action_result(session.key_up(key).await?),
         ToolInvocation::Shortcut { shortcut } => action_result(session.shortcut(shortcut).await?),
-        ToolInvocation::Clear { target } => action_result(session.clear(target.as_ref()).await?),
-        ToolInvocation::Check { target } => action_result(session.check(target.as_ref()).await?),
-        ToolInvocation::Uncheck { target } => {
-            action_result(session.uncheck(target.as_ref()).await?)
-        }
-        ToolInvocation::Select { target, value } => {
-            action_result(session.select_option(target.as_ref(), value).await?)
-        }
+        ToolInvocation::Clear {
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .clear_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
+        ToolInvocation::Check {
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .check_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
+        ToolInvocation::Uncheck {
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .uncheck_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
+        ToolInvocation::Select {
+            target,
+            value,
+            expected_revision,
+        } => action_result(
+            session
+                .select_option_with_revision(target.as_ref(), value, expected_revision)
+                .await?,
+        ),
         ToolInvocation::Upload { target, files } => {
             action_result(session.upload_files(target.as_ref(), &files).await?)
         }
@@ -1048,7 +1090,15 @@ async fn call_tool(
             session.import_checkpoint(&ckpt).await?;
             serialized_result(&json!({"status": "checkpoint_imported"}))
         }
-        ToolInvocation::Scroll { dx, dy } => action_result(session.scroll(dx, dy).await?),
+        ToolInvocation::Scroll {
+            dx,
+            dy,
+            expected_revision,
+        } => action_result(
+            session
+                .scroll_with_revision(dx, dy, expected_revision)
+                .await?,
+        ),
         ToolInvocation::Wait {
             condition,
             timeout_ms,
@@ -1191,9 +1241,11 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "clickExpectPopup" => Ok(ToolInvocation::ClickExpectPopup {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "doubleClick" => Ok(ToolInvocation::DoubleClick {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "hover" => Ok(ToolInvocation::Hover {
             target: required_target(arguments)?,
@@ -1221,16 +1273,20 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "clear" => Ok(ToolInvocation::Clear {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "check" => Ok(ToolInvocation::Check {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "uncheck" => Ok(ToolInvocation::Uncheck {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "select" => Ok(ToolInvocation::Select {
             target: required_target(arguments)?,
             value: required_string(arguments, "value")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "upload" => Ok(ToolInvocation::Upload {
             target: required_target(arguments)?,
@@ -1298,6 +1354,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "scroll" => Ok(ToolInvocation::Scroll {
             dx: optional_number(arguments, "dx", 0.0)?,
             dy: optional_number(arguments, "dy", 600.0)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "wait" => Ok(ToolInvocation::Wait {
             condition: required_string(arguments, "condition")?,
@@ -1409,7 +1466,7 @@ fn tools() -> Vec<Tool> {
             description: "Click one target and return exactly one causally verified popup without selecting it.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1418,7 +1475,7 @@ fn tools() -> Vec<Tool> {
             description: "Double-click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1455,22 +1512,22 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "clear",
             description: "Clear one actionable editable target.",
-            input_schema: target_schema(),
+            input_schema: guarded_target_schema(),
         },
         Tool {
             name: "check",
             description: "Ensure one checkbox or radio is checked.",
-            input_schema: target_schema(),
+            input_schema: guarded_target_schema(),
         },
         Tool {
             name: "uncheck",
             description: "Ensure one checkbox is unchecked.",
-            input_schema: target_schema(),
+            input_schema: guarded_target_schema(),
         },
         Tool {
             name: "select",
             description: "Select one exact option value.",
-            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["target","value"]}),
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":["target","value"]}),
         },
         Tool {
             name: "upload",
@@ -1650,7 +1707,8 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "dx": {"type": "number", "default": 0},
-                    "dy": {"type": "number", "default": 600}
+                    "dy": {"type": "number", "default": 600},
+                    "expectedRevision": {"type": "integer", "minimum": 0}
                 }
             }),
         },
@@ -1787,6 +1845,10 @@ fn tools() -> Vec<Tool> {
 
 fn target_schema() -> Value {
     json!({"type":"object","properties":{"target":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["target"]})
+}
+
+fn guarded_target_schema() -> Value {
+    json!({"type":"object","properties":{"target":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":["target"]})
 }
 
 fn string_schema(name: &str) -> Value {
@@ -2246,7 +2308,7 @@ mod tests {
             popup_click["inputSchema"],
             json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default": false}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default": false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             })
         );
@@ -2356,7 +2418,10 @@ mod tests {
             let params = json!({"name": "clickExpectPopup", "arguments": arguments});
             assert!(matches!(
                 parse_tool_invocation(&params).unwrap(),
-                ToolInvocation::ClickExpectPopup { target } if target == expected
+                ToolInvocation::ClickExpectPopup {
+                    target,
+                    expected_revision: None,
+                } if target == expected
             ));
         }
     }
@@ -2388,6 +2453,49 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_revision_guards_for_extended_mutations() {
+        let cases = [
+            ("clickExpectPopup", json!({"target": "r7:b42"})),
+            ("doubleClick", json!({"target": "r7:b42"})),
+            ("clear", json!({"target": "r7:b42"})),
+            ("check", json!({"target": "r7:b42"})),
+            ("uncheck", json!({"target": "r7:b42"})),
+            ("select", json!({"target": "r7:b42", "value": "on"})),
+            ("scroll", json!({"dy": 20})),
+        ];
+        for (name, mut arguments) in cases {
+            arguments["expectedRevision"] = json!(7);
+            let params = json!({"name": name, "arguments": arguments});
+            let invocation = parse_tool_invocation(&params).unwrap();
+            let revision = match invocation {
+                ToolInvocation::ClickExpectPopup {
+                    expected_revision, ..
+                }
+                | ToolInvocation::DoubleClick {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Clear {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Check {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Uncheck {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Select {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Scroll {
+                    expected_revision, ..
+                } => expected_revision,
+                _ => None,
+            };
+            assert_eq!(revision, Some(7), "tool {name} lost expectedRevision");
+        }
     }
 
     #[test]

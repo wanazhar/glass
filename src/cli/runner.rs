@@ -191,8 +191,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::ClickExpectPopup { target } => {
             print_json(&session.click_expect_popup(target).await?)?;
         }
-        Commands::DoubleClick { target } => {
-            print_json(&session.double_click(target).await?)?;
+        Commands::DoubleClick {
+            target,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .double_click_with_revision(target, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Hover { target } => print_json(&session.hover(target).await?)?,
         Commands::Drag {
@@ -216,11 +223,40 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::KeyDown { key } => print_json(&session.key_down(key).await?)?,
         Commands::KeyUp { key } => print_json(&session.key_up(key).await?)?,
         Commands::Shortcut { shortcut } => print_json(&session.shortcut(shortcut).await?)?,
-        Commands::Clear { target } => print_json(&session.clear(target).await?)?,
-        Commands::Check { target } => print_json(&session.check(target).await?)?,
-        Commands::Uncheck { target } => print_json(&session.uncheck(target).await?)?,
-        Commands::Select { target, value } => {
-            print_json(&session.select_option(target, value).await?)?;
+        Commands::Clear {
+            target,
+            expected_revision,
+        } => print_json(
+            &session
+                .clear_with_revision(target, *expected_revision)
+                .await?,
+        )?,
+        Commands::Check {
+            target,
+            expected_revision,
+        } => print_json(
+            &session
+                .check_with_revision(target, *expected_revision)
+                .await?,
+        )?,
+        Commands::Uncheck {
+            target,
+            expected_revision,
+        } => print_json(
+            &session
+                .uncheck_with_revision(target, *expected_revision)
+                .await?,
+        )?,
+        Commands::Select {
+            target,
+            value,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .select_option_with_revision(target, value, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Upload { target, files } => {
             print_json(&session.upload_files(target, files).await?)?;
@@ -273,8 +309,16 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             };
             print_json(&context)?;
         }
-        Commands::Scroll { dx, dy } => {
-            print_json(&session.scroll(*dx, *dy).await?)?;
+        Commands::Scroll {
+            dx,
+            dy,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .scroll_with_revision(*dx, *dy, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Wait {
             condition,

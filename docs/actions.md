@@ -20,10 +20,13 @@ observe
 click r7:b42 --expected-revision 7
 ```
 
-The same guard is available on the MCP `navigate`, `click`, `type`, and
-`fillForm` tools. The Rust library exposes `click_with_revision`,
-`type_text_with_expected_revision`, `fill_form_with_expected_revision`, and
-`navigate_with_revision`.
+The same guard is available on the MCP `navigate`, `click`, `clickExpectPopup`,
+`doubleClick`, `type`, `clear`, `check`, `uncheck`, `select`, `scroll`, and
+`fillForm` tools. The Rust library exposes matching guarded methods alongside
+the compatibility methods, including `click_expect_popup_with_revision`,
+`double_click_with_revision`, `clear_with_revision`,
+`check_with_revision`, `uncheck_with_revision`,
+`select_option_with_revision`, and `scroll_with_revision`.
 
 ## Successful action result
 

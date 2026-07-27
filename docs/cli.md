@@ -35,7 +35,7 @@ browsing.
 ```text
 navigate URL [--timeout-ms MILLISECONDS] [--expected-revision REVISION]
 click TARGET [--expected-revision REVISION]
-double-click TARGET
+double-click TARGET [--expected-revision REVISION]
 hover TARGET
 drag SOURCE DESTINATION
 type TEXT [--target TARGET] [--expected-revision REVISION]
@@ -43,16 +43,16 @@ key KEY
 key-down KEY
 key-up KEY
 shortcut SHORTCUT
-clear TARGET
-check TARGET
-uncheck TARGET
-select TARGET VALUE
+clear TARGET [--expected-revision REVISION]
+check TARGET [--expected-revision REVISION]
+uncheck TARGET [--expected-revision REVISION]
+select TARGET VALUE [--expected-revision REVISION]
 upload TARGET FILE...
 screenshot [-o|--output FILE]
 text
 dom
 observe [--deep-dom] [--screenshot]
-scroll [--dx PIXELS] [--dy PIXELS]
+scroll [--dx PIXELS] [--dy PIXELS] [--expected-revision REVISION]
 wait CONDITION [--timeout-ms MILLISECONDS]
 diagnostics [--duration-ms MILLISECONDS]
 accept-dialog
@@ -114,8 +114,10 @@ Prefer revisioned references for automation workflows. They let Glass reject a
 reference after page state changes instead of acting on a stale element.
 For an explicit action contract, pass the revision from `observe` with
 `--expected-revision`; stale state is rejected before the action runs and the
-result includes typed status plus bounded verification metadata. Existing
-commands without the flag remain compatible.
+result includes typed status plus bounded verification metadata. The flag is
+available on navigation, click, double-click, type, clear, check, uncheck,
+select, scroll, and form-fill commands. Existing commands without the flag
+remain compatible.
 Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
 with bounded candidates instead of choosing the first match.
 

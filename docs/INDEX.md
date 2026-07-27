@@ -7,6 +7,8 @@
 - [CLI reference](cli.md) — global options, commands, targets, and output.
 - [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
   bounded verification evidence.
+- [Workflow definitions](workflows.md) — versioned declarative workflows,
+  typed inputs, budgets, and pre-execution validation.
 - [Action contract](action-contract.md) — the canonical `0.1.18` execution
   envelope, failure phases, and explicit recovery policies.
 - [Schema compatibility](schema-compatibility.md) — additive cross-interface

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "name": "open-example",
+  "workflowVersion": "1.0.0",
+  "inputs": {},
+  "budgets": {
+    "maxSteps": 1,
+    "maxDurationMs": 30000,
+    "maxRetries": 0,
+    "maxExtractedBytes": 4096
+  },
+  "steps": [
+    {
+      "id": "open",
+      "action": "navigate",
+      "url": "https://example.com",
+      "timeoutMs": 20000,
+      "expect": {
+        "titleContains": "Example"
+      }
+    }
+  ],
+  "terminalCondition": {
+    "urlEquals": "https://example.com/"
+  },
+  "outputs": {}
+}

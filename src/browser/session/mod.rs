@@ -101,6 +101,11 @@ mod topology;
 mod visual;
 mod wait;
 mod webauthn;
+mod workflow;
+pub use workflow::{
+    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
+    WorkflowOutputDeclaration, WorkflowStep, WorkflowValidationError, WorkflowValueType,
+};
 #[allow(private_interfaces)]
 pub struct BrowserSession {
     pub(crate) cdp: CdpClient,

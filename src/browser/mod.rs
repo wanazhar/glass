@@ -85,3 +85,8 @@ pub use session::WebAuthnGuard;
 pub use session::WebAuthnOptions;
 /// Computes a structured diff between two accessibility snapshots.
 pub use session::diff_accessibility;
+/// Versioned declarative workflow definition and validation types.
+pub use session::{
+    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
+    WorkflowOutputDeclaration, WorkflowStep, WorkflowValidationError, WorkflowValueType,
+};

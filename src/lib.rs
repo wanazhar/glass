@@ -55,5 +55,7 @@ pub mod tui;
 pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
     ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, NavigationOutcome,
-    PageInfo, SessionOptions, SessionOptionsBuilder,
+    PageInfo, SessionOptions, SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets,
+    WorkflowDefinition, WorkflowInput, WorkflowOutputDeclaration, WorkflowStep,
+    WorkflowValidationError, WorkflowValueType,
 };

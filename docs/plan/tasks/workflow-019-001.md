@@ -1,7 +1,7 @@
 ---
 id: workflow-019-001
 scope: transactional workflow definition foundation
-status: in-progress
+status: completed
 depends-on: []
 ---
 

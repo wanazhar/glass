@@ -1,8 +1,7 @@
 //! Versioned, declarative workflow definitions.
 //!
-//! This module contains the data contract only. Execution, persistence, and
-//! resume reconciliation build on these validated definitions in later
-//! workflow phases.
+//! This module contains the validated workflow contract, execution evidence,
+//! bounded checkpointing, and resume reconciliation.
 
 use super::types::{BatchMode, BatchStep, BrowserResult, VerificationPredicate};
 use serde::de::Error as DeError;
@@ -827,6 +826,18 @@ pub struct WorkflowStepRecord {
     pub state: WorkflowStepState,
     pub history: Vec<WorkflowStepState>,
     pub attempts: u32,
+    #[serde(default)]
+    pub dispatch_acknowledged: bool,
+    #[serde(default)]
+    pub effect_observed: bool,
+    #[serde(default)]
+    pub postcondition_verified: bool,
+    #[serde(default)]
+    pub retry_safe: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_decision: Option<WorkflowBranchDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -840,6 +851,12 @@ impl WorkflowStepRecord {
             state: WorkflowStepState::Pending,
             history: vec![WorkflowStepState::Pending],
             attempts: 0,
+            dispatch_acknowledged: false,
+            effect_observed: false,
+            postcondition_verified: false,
+            retry_safe: false,
+            previous_revision: None,
+            current_revision: None,
             branch_decision: None,
             error: None,
         }
@@ -1232,8 +1249,7 @@ impl WorkflowRunResult {
 
 impl super::BrowserSession {
     /// Execute a validated workflow linearly through the existing batch
-    /// policy and action runtime. This phase records state in memory; durable
-    /// checkpoints and resume reconciliation are added separately.
+    /// policy and action runtime, retaining bounded per-step evidence.
     pub async fn run_workflow(
         &self,
         workflow: &WorkflowDefinition,
@@ -1318,8 +1334,13 @@ impl super::BrowserSession {
                 }
                 let mut attempt_number = 0;
                 let outcome = loop {
+                    let attempt_revision = current_revision(self);
                     {
                         let record = &mut records[index];
+                        if record.previous_revision.is_none() {
+                            record.previous_revision = Some(attempt_revision);
+                        }
+                        record.retry_safe = step.transaction.permits_pre_dispatch_retry();
                         if record.state == WorkflowStepState::Pending {
                             let _ = record.transition(WorkflowStepState::Ready);
                         }
@@ -1349,6 +1370,7 @@ impl super::BrowserSession {
                             );
                             {
                                 let record = &mut records[index];
+                                record.current_revision = Some(current_revision(self));
                                 let _ = record.transition(WorkflowStepState::NotDispatched);
                                 record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
                                 if retry {
@@ -1389,6 +1411,8 @@ impl super::BrowserSession {
                         .unwrap_or("workflow action failed after dispatch");
                     let message = {
                         let record = &mut records[index];
+                        record.dispatch_acknowledged = true;
+                        record.current_revision = Some(current_revision(self));
                         let _ = record.transition(WorkflowStepState::Dispatched);
                         record.fail(WorkflowStepState::FailedAfterDispatch, message);
                         record
@@ -1410,6 +1434,9 @@ impl super::BrowserSession {
 
                 {
                     let record = &mut records[index];
+                    record.dispatch_acknowledged = true;
+                    record.effect_observed = true;
+                    record.current_revision = Some(current_revision(self));
                     let _ = record.transition(WorkflowStepState::Dispatched);
                     let _ = record.transition(WorkflowStepState::EffectObserved);
                 }
@@ -1423,6 +1450,7 @@ impl super::BrowserSession {
                 {
                     let message = {
                         let record = &mut records[index];
+                        record.current_revision = Some(current_revision(self));
                         record.fail(WorkflowStepState::FailedAfterDispatch, &error.to_string());
                         record
                             .error
@@ -1441,6 +1469,7 @@ impl super::BrowserSession {
                     ));
                 }
                 let record = &mut records[index];
+                record.postcondition_verified = true;
                 let _ = record.transition(WorkflowStepState::Verified);
                 let _ = record.transition(WorkflowStepState::OutputsExtracted);
                 let _ = record.transition(WorkflowStepState::Committed);
@@ -2527,6 +2556,25 @@ mod tests {
             trace.events.last().unwrap().state,
             WorkflowStepState::Committed
         );
+    }
+
+    #[test]
+    fn step_record_serializes_bounded_execution_evidence() {
+        let mut record = WorkflowStepRecord::new("open");
+        record.dispatch_acknowledged = true;
+        record.effect_observed = true;
+        record.postcondition_verified = true;
+        record.retry_safe = false;
+        record.previous_revision = Some(7);
+        record.current_revision = Some(8);
+
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["dispatchAcknowledged"], true);
+        assert_eq!(value["effectObserved"], true);
+        assert_eq!(value["postconditionVerified"], true);
+        assert_eq!(value["retrySafe"], false);
+        assert_eq!(value["previousRevision"], 7);
+        assert_eq!(value["currentRevision"], 8);
     }
 
     #[test]

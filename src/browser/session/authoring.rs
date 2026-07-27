@@ -390,6 +390,19 @@ pub fn analyze_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowDiagnost
             }
             _ => {}
         }
+        if let Some(target) = workflow_target(&step.action)
+            && let Some(reason) = fragile_target_reason(target)
+        {
+            diagnostics.push(diagnostic(
+                "workflow.fragile_selector",
+                WorkflowDiagnosticSeverity::Warning,
+                format!("workflow target uses a {reason} locator"),
+                format!("{path}.target"),
+                None,
+                None,
+                "Prefer a semantic role/name target or a reviewed semantic intent.",
+            ));
+        }
         if let Some(intent) = &step.intent
             && matches!(
                 intent.action,
@@ -857,6 +870,33 @@ fn intent_action_is_mutating(action: SemanticIntentAction) -> bool {
     )
 }
 
+fn workflow_target(action: &BatchStep) -> Option<&str> {
+    match action {
+        BatchStep::Click { target }
+        | BatchStep::Check { target }
+        | BatchStep::Uncheck { target }
+        | BatchStep::Select { target, .. }
+        | BatchStep::Clear { target } => Some(target),
+        BatchStep::Type { target, .. } => target.as_deref(),
+        _ => None,
+    }
+}
+
+fn fragile_target_reason(target: &str) -> Option<&'static str> {
+    let target = target.trim();
+    if target.starts_with("css=") {
+        Some("CSS selector")
+    } else if target.starts_with("ordinal=") {
+        Some("ordinal")
+    } else if target.starts_with("ref=") || target.contains(" | ref=") {
+        Some("revision-scoped reference")
+    } else if target.starts_with("x=") || target.starts_with("y=") {
+        Some("coordinate")
+    } else {
+        None
+    }
+}
+
 fn source_hash(source: &str) -> String {
     let digest = Sha256::digest(source.as_bytes());
     format!("sha256:{digest:x}")
@@ -1018,6 +1058,21 @@ outputs: {}
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "workflow.literal_input_value")
+        );
+    }
+
+    #[test]
+    fn analyzer_flags_fragile_locator_targets() {
+        let source = YAML.replace(
+            "    action: navigate\n    url: https://example.test/docs\n    transaction: read_only",
+            "    action: click\n    target: css=.submit\n    transaction: idempotent",
+        );
+        let document = compile_workflow_yaml(&source).unwrap();
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "workflow.fragile_selector")
         );
     }
 

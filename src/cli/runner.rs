@@ -300,11 +300,15 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
 }
 
 fn authoring_format(path: &std::path::Path) -> WorkflowAuthoringFormat {
-    path.extension()
+    if path
+        .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-        .then_some(WorkflowAuthoringFormat::Json)
-        .unwrap_or(WorkflowAuthoringFormat::Yaml)
+    {
+        WorkflowAuthoringFormat::Json
+    } else {
+        WorkflowAuthoringFormat::Yaml
+    }
 }
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {

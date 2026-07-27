@@ -1,0 +1,395 @@
+//! Browser-free reliability scenario contracts.
+//!
+//! A scenario is an input to the reliability laboratory, not a browser
+//! command. Validation is deliberately independent from fixture execution so
+//! malformed expectations fail before any browser is started.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+pub const RELIABILITY_SCENARIO_SCHEMA_VERSION: u32 = 1;
+const MAX_SCENARIO_ID_BYTES: usize = 128;
+const MAX_CATEGORY_BYTES: usize = 128;
+const MAX_FIXTURE_BYTES: usize = 256;
+const MAX_CAPABILITIES: usize = 32;
+const MAX_STEPS: usize = 64;
+const MAX_FORBIDDEN_OUTCOMES: usize = 32;
+const MAX_SIDE_EFFECT_COUNTERS: usize = 32;
+const MAX_DURATION_MS: u64 = 15 * 60 * 1_000;
+const MAX_BROWSER_ACTIONS: u32 = 1_024;
+
+/// Supported platform labels for deterministic reliability evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReliabilityPlatform {
+    LinuxX86_64,
+    MacosX86_64,
+    MacosArm64,
+}
+
+/// Release-blocking outcomes recognized by the reliability laboratory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReliabilityForbiddenOutcome {
+    WrongTargetExecuted,
+    StaleRevisionExecuted,
+    AmbiguousTargetSilentlyExecuted,
+    NonIdempotentMutationDuplicated,
+    FalseWorkflowCompletion,
+    UnsafeResumeReplay,
+    SecretLeaked,
+    CrossProfileKnowledgeLeak,
+    UnboundedLoopEscapedBudget,
+    PolicyBypassed,
+    CheckpointAcceptedAfterIncompatibleDefinitionChange,
+    SemanticCacheHidCriticalUnexpectedState,
+}
+
+/// Browser and policy setup for a scenario.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenarioSetup {
+    pub browser: String,
+    pub policy: String,
+}
+
+/// A controlled fault injected during a scenario step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityFaultInjection {
+    pub after_dispatch: String,
+    pub fault: String,
+}
+
+/// One declarative scenario operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenarioStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_workflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject: Option<ReliabilityFaultInjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from_checkpoint: Option<String>,
+}
+
+/// Expected typed outcome and independent side-effect oracle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenarioExpectation {
+    pub terminal_state: String,
+    #[serde(default)]
+    pub side_effect_count: BTreeMap<String, u64>,
+}
+
+/// Resource limits for one scenario execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenarioBudgets {
+    pub max_duration_ms: u64,
+    pub max_browser_actions: u32,
+}
+
+/// Versioned, browser-free reliability scenario.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenario {
+    pub schema_version: u32,
+    pub id: String,
+    pub category: String,
+    pub fixture: String,
+    #[serde(default = "default_platforms")]
+    pub platforms: Vec<ReliabilityPlatform>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub setup: ReliabilityScenarioSetup,
+    pub steps: Vec<ReliabilityScenarioStep>,
+    pub expect: ReliabilityScenarioExpectation,
+    #[serde(default)]
+    pub forbid: Vec<ReliabilityForbiddenOutcome>,
+    pub budgets: ReliabilityScenarioBudgets,
+}
+
+impl ReliabilityScenario {
+    /// Parse and validate one JSON scenario.
+    pub fn from_json(input: &str) -> Result<Self, ReliabilityScenarioError> {
+        let scenario: Self = serde_json::from_str(input).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("invalid scenario JSON: {error}"))
+        })?;
+        scenario.validate()?;
+        Ok(scenario)
+    }
+
+    /// Parse and validate one JSON value.
+    pub fn from_value(value: Value) -> Result<Self, ReliabilityScenarioError> {
+        let scenario: Self = serde_json::from_value(value).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("invalid scenario shape: {error}"))
+        })?;
+        scenario.validate()?;
+        Ok(scenario)
+    }
+
+    /// Validate bounds, supported platforms, operations, and outcome oracles.
+    pub fn validate(&self) -> Result<(), ReliabilityScenarioError> {
+        if self.schema_version != RELIABILITY_SCENARIO_SCHEMA_VERSION {
+            return Err(ReliabilityScenarioError::new(
+                "schemaVersion",
+                format!(
+                    "unsupported scenario schema {}; expected {}",
+                    self.schema_version, RELIABILITY_SCENARIO_SCHEMA_VERSION
+                ),
+            ));
+        }
+        validate_text("id", &self.id, MAX_SCENARIO_ID_BYTES)?;
+        validate_text("category", &self.category, MAX_CATEGORY_BYTES)?;
+        validate_text("fixture", &self.fixture, MAX_FIXTURE_BYTES)?;
+        if self.platforms.is_empty() {
+            return Err(ReliabilityScenarioError::new(
+                "platforms",
+                "must list at least one supported platform",
+            ));
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES {
+            return Err(ReliabilityScenarioError::new(
+                "capabilities",
+                format!("must contain at most {MAX_CAPABILITIES} entries"),
+            ));
+        }
+        for (index, capability) in self.capabilities.iter().enumerate() {
+            validate_text(
+                &format!("capabilities[{index}]"),
+                capability,
+                MAX_CATEGORY_BYTES,
+            )?;
+        }
+        validate_text("setup.browser", &self.setup.browser, MAX_CATEGORY_BYTES)?;
+        validate_text("setup.policy", &self.setup.policy, MAX_CATEGORY_BYTES)?;
+        if self.steps.is_empty() || self.steps.len() > MAX_STEPS {
+            return Err(ReliabilityScenarioError::new(
+                "steps",
+                format!("must contain 1..={MAX_STEPS} entries"),
+            ));
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            let path = format!("steps[{index}]");
+            let operations = step.run_workflow.is_some() as u8
+                + step.inject.is_some() as u8
+                + step.resume_from_checkpoint.is_some() as u8;
+            if operations != 1 {
+                return Err(ReliabilityScenarioError::new(
+                    path,
+                    "provide exactly one of runWorkflow, inject, or resumeFromCheckpoint",
+                ));
+            }
+            if let Some(workflow) = &step.run_workflow {
+                validate_text(&format!("{path}.runWorkflow"), workflow, MAX_FIXTURE_BYTES)?;
+            }
+            if let Some(checkpoint) = &step.resume_from_checkpoint {
+                validate_text(
+                    &format!("{path}.resumeFromCheckpoint"),
+                    checkpoint,
+                    MAX_FIXTURE_BYTES,
+                )?;
+            }
+            if let Some(injection) = &step.inject {
+                validate_text(
+                    &format!("{path}.inject.afterDispatch"),
+                    &injection.after_dispatch,
+                    MAX_SCENARIO_ID_BYTES,
+                )?;
+                validate_text(
+                    &format!("{path}.inject.fault"),
+                    &injection.fault,
+                    MAX_CATEGORY_BYTES,
+                )?;
+            }
+        }
+        validate_text(
+            "expect.terminalState",
+            &self.expect.terminal_state,
+            MAX_CATEGORY_BYTES,
+        )?;
+        if self.expect.side_effect_count.len() > MAX_SIDE_EFFECT_COUNTERS {
+            return Err(ReliabilityScenarioError::new(
+                "expect.sideEffectCount",
+                format!("must contain at most {MAX_SIDE_EFFECT_COUNTERS} counters"),
+            ));
+        }
+        for (name, count) in &self.expect.side_effect_count {
+            validate_text("expect.sideEffectCount", name, MAX_SCENARIO_ID_BYTES)?;
+            if *count > MAX_BROWSER_ACTIONS as u64 {
+                return Err(ReliabilityScenarioError::new(
+                    "expect.sideEffectCount",
+                    format!("counter {name:?} exceeds the action bound"),
+                ));
+            }
+        }
+        if self.forbid.len() > MAX_FORBIDDEN_OUTCOMES {
+            return Err(ReliabilityScenarioError::new(
+                "forbid",
+                format!("must contain at most {MAX_FORBIDDEN_OUTCOMES} entries"),
+            ));
+        }
+        let mut forbidden = BTreeSet::new();
+        for outcome in &self.forbid {
+            if !forbidden.insert(*outcome) {
+                return Err(ReliabilityScenarioError::new(
+                    "forbid",
+                    "duplicate forbidden outcome",
+                ));
+            }
+        }
+        if self.budgets.max_duration_ms == 0 || self.budgets.max_duration_ms > MAX_DURATION_MS {
+            return Err(ReliabilityScenarioError::new(
+                "budgets.maxDurationMs",
+                format!("must be 1..={MAX_DURATION_MS}"),
+            ));
+        }
+        if self.budgets.max_browser_actions == 0
+            || self.budgets.max_browser_actions > MAX_BROWSER_ACTIONS
+        {
+            return Err(ReliabilityScenarioError::new(
+                "budgets.maxBrowserActions",
+                format!("must be 1..={MAX_BROWSER_ACTIONS}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return stable JSON suitable for fixture hashes and report metadata.
+    pub fn to_canonical_json(&self) -> Result<String, ReliabilityScenarioError> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("cannot serialize scenario: {error}"))
+        })
+    }
+}
+
+fn default_platforms() -> Vec<ReliabilityPlatform> {
+    vec![
+        ReliabilityPlatform::LinuxX86_64,
+        ReliabilityPlatform::MacosX86_64,
+        ReliabilityPlatform::MacosArm64,
+    ]
+}
+
+fn validate_text(path: &str, value: &str, maximum: usize) -> Result<(), ReliabilityScenarioError> {
+    if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
+        return Err(ReliabilityScenarioError::new(
+            path,
+            format!("must contain 1..={maximum} non-control bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// A path-aware scenario contract failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReliabilityScenarioError {
+    pub path: String,
+    pub reason: String,
+}
+
+impl ReliabilityScenarioError {
+    fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for ReliabilityScenarioError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.path, self.reason)
+    }
+}
+
+impl std::error::Error for ReliabilityScenarioError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scenario() -> ReliabilityScenario {
+        ReliabilityScenario {
+            schema_version: RELIABILITY_SCENARIO_SCHEMA_VERSION,
+            id: "duplicate-submit".into(),
+            category: "transactional-workflow".into(),
+            fixture: "checkout-submit".into(),
+            platforms: vec![ReliabilityPlatform::LinuxX86_64],
+            capabilities: vec!["workflow".into(), "idempotency".into()],
+            setup: ReliabilityScenarioSetup {
+                browser: "chromium".into(),
+                policy: "hardened".into(),
+            },
+            steps: vec![
+                ReliabilityScenarioStep {
+                    run_workflow: Some("submit-request.json".into()),
+                    inject: None,
+                    resume_from_checkpoint: None,
+                },
+                ReliabilityScenarioStep {
+                    run_workflow: None,
+                    inject: Some(ReliabilityFaultInjection {
+                        after_dispatch: "submit".into(),
+                        fault: "loseResponse".into(),
+                    }),
+                    resume_from_checkpoint: None,
+                },
+                ReliabilityScenarioStep {
+                    run_workflow: None,
+                    inject: None,
+                    resume_from_checkpoint: Some("latest".into()),
+                },
+            ],
+            expect: ReliabilityScenarioExpectation {
+                terminal_state: "completed".into(),
+                side_effect_count: BTreeMap::from([(String::from("submit"), 1)]),
+            },
+            forbid: vec![
+                ReliabilityForbiddenOutcome::NonIdempotentMutationDuplicated,
+                ReliabilityForbiddenOutcome::FalseWorkflowCompletion,
+            ],
+            budgets: ReliabilityScenarioBudgets {
+                max_duration_ms: 30_000,
+                max_browser_actions: 20,
+            },
+        }
+    }
+
+    #[test]
+    fn scenario_round_trip_is_canonical_and_bounded() {
+        let scenario = scenario();
+        let canonical = scenario.to_canonical_json().unwrap();
+        let parsed = ReliabilityScenario::from_json(&canonical).unwrap();
+        assert_eq!(parsed.id, "duplicate-submit");
+        assert!(canonical.contains("nonIdempotentMutationDuplicated"));
+    }
+
+    #[test]
+    fn scenario_rejects_multiple_operations_in_one_step() {
+        let mut value = serde_json::to_value(scenario()).unwrap();
+        value["steps"][0]["inject"] = json!({
+            "afterDispatch": "submit",
+            "fault": "loseResponse"
+        });
+        let error = ReliabilityScenario::from_value(value).unwrap_err();
+        assert_eq!(error.path, "steps[0]");
+    }
+
+    #[test]
+    fn scenario_rejects_windows_and_duplicate_forbidden_outcomes() {
+        let mut value = serde_json::to_value(scenario()).unwrap();
+        value["platforms"] = json!(["windows-x86-64"]);
+        assert!(ReliabilityScenario::from_value(value).is_err());
+
+        let mut value = serde_json::to_value(scenario()).unwrap();
+        value["forbid"] = json!(["secretLeaked", "secretLeaked"]);
+        let error = ReliabilityScenario::from_value(value).unwrap_err();
+        assert_eq!(error.path, "forbid");
+    }
+}

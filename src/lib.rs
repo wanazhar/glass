@@ -47,6 +47,8 @@ pub mod browser;
 pub mod cli;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
+/// Versioned browser-free reliability scenario contracts.
+pub mod reliability;
 /// Ratatui terminal interface.
 pub mod tui;
 

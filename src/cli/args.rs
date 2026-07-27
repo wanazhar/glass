@@ -404,6 +404,9 @@ pub enum Commands {
 
     /// Execute a validated workflow document from JSON or stdin.
     Workflow {
+        /// Offline authoring operation. Omit to execute the workflow.
+        #[command(subcommand)]
+        action: Option<WorkflowAuthoringCommand>,
         /// JSON file containing `{ "workflow": ..., "inputs": ... }`.
         input: Option<PathBuf>,
     },
@@ -519,6 +522,30 @@ pub enum KnowledgeInvalidationState {
     Stale,
     Contradicted,
     Quarantined,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkflowAuthoringCommand {
+    /// Compile YAML or JSON source into canonical workflow JSON.
+    Compile {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Format a YAML or JSON workflow as deterministic YAML.
+    Format {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Validate authoring source against the canonical workflow contract.
+    Validate { input: PathBuf },
+    /// Run static workflow diagnostics without starting a browser.
+    Lint {
+        input: PathBuf,
+        #[arg(long)]
+        warnings_as_errors: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -730,8 +757,19 @@ mod tests {
         let cli = Cli::try_parse_from(["glass", "workflow", "workflow.json"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Workflow { input: Some(path) })
+            Some(Commands::Workflow {
+                action: None,
+                input: Some(path)
+            })
                 if path.as_os_str() == "workflow.json"
+        ));
+        let cli = Cli::try_parse_from(["glass", "workflow", "validate", "workflow.yaml"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Workflow {
+                action: Some(WorkflowAuthoringCommand::Validate { input }),
+                input: None,
+            }) if input.as_os_str() == "workflow.yaml"
         ));
     }
 

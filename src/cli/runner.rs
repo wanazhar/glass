@@ -5,6 +5,7 @@
 
 use super::args::{
     CheckpointCommand, Cli, Commands, KnowledgeCommand, KnowledgeInvalidationState, ProfileCommand,
+    WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -12,8 +13,9 @@ use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie,
     KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
-    SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowCheckpoint,
-    WorkflowDefinition, default_knowledge_store_path,
+    SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition,
+    WorkflowAuthoringFormat, WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity,
+    compile_workflow, default_knowledge_store_path, format_workflow_yaml,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -50,6 +52,13 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::Knowledge { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_knowledge(action, cli.knowledge_store.as_deref(), &cli.profile)?;
+            return Ok(());
+        }
+        Some(Commands::Workflow {
+            action: Some(action),
+            input: None,
+        }) => {
+            dispatch_workflow_authoring(action)?;
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
@@ -233,6 +242,69 @@ fn dispatch_knowledge(
         KnowledgeCommand::Purge { origin } => print_json(&store.purge_origin(origin)?)?,
     }
     Ok(())
+}
+
+fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResult<()> {
+    match action {
+        WorkflowAuthoringCommand::Compile { input, output } => {
+            let source = std::fs::read_to_string(input)?;
+            let document = compile_workflow(&source, authoring_format(input))?;
+            if let Some(output) = output {
+                std::fs::write(output, &document.canonical_json)?;
+                println!("compiled workflow to {}", output.display());
+            } else {
+                println!("{}", document.canonical_json);
+            }
+            if document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == WorkflowDiagnosticSeverity::Error)
+            {
+                return Err("workflow compilation produced error diagnostics".into());
+            }
+        }
+        WorkflowAuthoringCommand::Format { input, output } => {
+            let source = std::fs::read_to_string(input)?;
+            let document = compile_workflow(&source, authoring_format(input))?;
+            let formatted = format_workflow_yaml(&document.definition)?;
+            if let Some(output) = output {
+                std::fs::write(output, formatted)?;
+                println!("formatted workflow to {}", output.display());
+            } else {
+                print!("{formatted}");
+            }
+        }
+        WorkflowAuthoringCommand::Validate { input } => {
+            let source = std::fs::read_to_string(input)?;
+            let document = compile_workflow(&source, authoring_format(input))?;
+            print_json(&document)?;
+        }
+        WorkflowAuthoringCommand::Lint {
+            input,
+            warnings_as_errors,
+        } => {
+            let source = std::fs::read_to_string(input)?;
+            let document = compile_workflow(&source, authoring_format(input))?;
+            let failed = document.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == WorkflowDiagnosticSeverity::Error
+                    || (*warnings_as_errors
+                        && diagnostic.severity == WorkflowDiagnosticSeverity::Warning)
+            });
+            print_json(&document.diagnostics)?;
+            if failed {
+                return Err("workflow lint failed".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn authoring_format(path: &std::path::Path) -> WorkflowAuthoringFormat {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        .then_some(WorkflowAuthoringFormat::Json)
+        .unwrap_or(WorkflowAuthoringFormat::Yaml)
 }
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
@@ -603,7 +675,10 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .await?,
             )?;
         }
-        Commands::Workflow { input } => {
+        Commands::Workflow {
+            action: None,
+            input,
+        } => {
             let payload = read_json_input(input.as_ref())?;
             let workflow_value = payload
                 .get("workflow")
@@ -619,6 +694,9 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 .map_err(|error| format!("invalid workflow inputs: {error}"))?;
             print_json(&session.run_workflow(&workflow, &inputs).await?)?;
         }
+        Commands::Workflow {
+            action: Some(_), ..
+        } => unreachable!("offline workflow authoring commands are handled before browser startup"),
         Commands::WorkflowResume {
             workflow,
             checkpoint,

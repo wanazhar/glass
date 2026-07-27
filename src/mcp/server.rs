@@ -10,6 +10,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     io,
+    path::Path,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -23,10 +24,11 @@ use crate::browser::cdp::CdpError;
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
-    BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
-    SemanticObservationLevel, SessionOptions, TargetError, VerificationPredicate,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    BrowserResult, BrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
+    KnowledgeStore, Locator, PopupClickError, PreflightAction, ReconciliationOptions,
+    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
+    SessionOptions, TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip,
+    VisualFormat, WaitCondition, WaitTimeout, default_knowledge_store_path,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -231,6 +233,20 @@ enum ToolInvocation<'a> {
     },
     ExecuteIntent {
         request: SemanticIntentExecutionRequest,
+    },
+    KnowledgeList,
+    KnowledgeShow {
+        record_id: &'a str,
+    },
+    KnowledgeStats,
+    KnowledgeInvalidate {
+        record_id: &'a str,
+        state: &'a str,
+        reason: Option<&'a str>,
+        observed_at: Option<&'a str>,
+    },
+    KnowledgePurge {
+        origin: &'a str,
     },
     GetDom,
     GetText,
@@ -532,6 +548,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
         let task_policy = policy.clone();
+        let task_knowledge_store = cli.knowledge_store.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
@@ -541,7 +558,14 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
             let id = request.id.response_value();
             let operation = async {
                 let mut session = task_session.lock().await;
-                handle_request(&request, &mut session, &task_options, &task_policy).await
+                handle_request(
+                    &request,
+                    &mut session,
+                    &task_options,
+                    &task_policy,
+                    task_knowledge_store.as_deref(),
+                )
+                .await
             };
             let mut response = tokio::select! {
                 response = operation => response,
@@ -658,6 +682,7 @@ async fn handle_request(
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
+    knowledge_store_path: Option<&Path>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -720,7 +745,9 @@ async fn handle_request(
                 "resources/read requires a string `uri` parameter",
             ),
         },
-        "tools/call" => match call_tool(request, session, options, policy).await {
+        "tools/call" => match call_tool(request, session, options, policy, knowledge_store_path)
+            .await
+        {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
                 let text = typed_browser_error(error.as_ref())
@@ -851,8 +878,20 @@ async fn call_tool(
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
+    knowledge_store_path: Option<&Path>,
 ) -> BrowserResult<Value> {
     let invocation = parse_tool_invocation(&request.params)?;
+    if matches!(
+        &invocation,
+        ToolInvocation::KnowledgeList
+            | ToolInvocation::KnowledgeShow { .. }
+            | ToolInvocation::KnowledgeStats
+            | ToolInvocation::KnowledgeInvalidate { .. }
+            | ToolInvocation::KnowledgePurge { .. }
+    ) {
+        policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
+        return call_knowledge_tool(invocation, options, knowledge_store_path);
+    }
     let session = ensure_session(session, options, policy).await?;
 
     match invocation {
@@ -1090,6 +1129,13 @@ async fn call_tool(
         }
         ToolInvocation::ExecuteIntent { request } => {
             serialized_result(&session.execute_intent(&request).await?)
+        }
+        ToolInvocation::KnowledgeList
+        | ToolInvocation::KnowledgeShow { .. }
+        | ToolInvocation::KnowledgeStats
+        | ToolInvocation::KnowledgeInvalidate { .. }
+        | ToolInvocation::KnowledgePurge { .. } => {
+            unreachable!("knowledge tools are dispatched before browser startup")
         }
         ToolInvocation::GetDom => serialized_result(&session.deep_dom().await?),
         ToolInvocation::GetText => Ok(text_result(session.text().await?)),
@@ -1338,6 +1384,54 @@ async fn call_tool(
     }
 }
 
+fn call_knowledge_tool(
+    invocation: ToolInvocation<'_>,
+    options: &SessionOptions,
+    explicit_path: Option<&Path>,
+) -> BrowserResult<Value> {
+    let path = explicit_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_knowledge_store_path(&options.profile));
+    let mut store = KnowledgeStore::open(path)?;
+    match invocation {
+        ToolInvocation::KnowledgeList => serialized_result(store.snapshot()),
+        ToolInvocation::KnowledgeShow { record_id } => {
+            let record = store
+                .get(record_id)
+                .ok_or_else(|| format!("knowledge record not found: {record_id}"))?;
+            serialized_result(record)
+        }
+        ToolInvocation::KnowledgeStats => serialized_result(&store.stats()?),
+        ToolInvocation::KnowledgeInvalidate {
+            record_id,
+            state,
+            reason,
+            observed_at,
+        } => {
+            let next = match state {
+                "stale" => KnowledgeConfidence::Stale,
+                "contradicted" => KnowledgeConfidence::Contradicted,
+                "quarantined" => KnowledgeConfidence::Quarantined,
+                _ => return Err("state must be stale, contradicted, or quarantined".into()),
+            };
+            let change = store.transition(
+                record_id,
+                next,
+                reason.unwrap_or("caller invalidated record").to_string(),
+                observed_at
+                    .map(str::to_string)
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                false,
+            )?;
+            serialized_result(&change)
+        }
+        ToolInvocation::KnowledgePurge { origin } => {
+            serialized_result(&store.purge_origin(origin)?)
+        }
+        _ => unreachable!("non-knowledge tool passed to knowledge dispatcher"),
+    }
+}
+
 fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     let tool_name = required_string(params, "name")?;
     let arguments = &params["arguments"];
@@ -1467,6 +1561,20 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             request.validate()?;
             Ok(ToolInvocation::ExecuteIntent { request })
         }
+        "knowledgeList" => Ok(ToolInvocation::KnowledgeList),
+        "knowledgeShow" => Ok(ToolInvocation::KnowledgeShow {
+            record_id: required_string(arguments, "recordId")?,
+        }),
+        "knowledgeStats" => Ok(ToolInvocation::KnowledgeStats),
+        "knowledgeInvalidate" => Ok(ToolInvocation::KnowledgeInvalidate {
+            record_id: required_string(arguments, "recordId")?,
+            state: required_string(arguments, "state")?,
+            reason: optional_string(arguments, "reason")?,
+            observed_at: optional_string(arguments, "observedAt")?,
+        }),
+        "knowledgePurge" => Ok(ToolInvocation::KnowledgePurge {
+            origin: required_string(arguments, "origin")?,
+        }),
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
         "evaluate" => Ok(ToolInvocation::Evaluate {
@@ -1785,6 +1893,63 @@ fn tools() -> Vec<Tool> {
                     "expectedRevision": {"type": "integer", "minimum": 0},
                     "candidateId": {"type": "string", "minLength": 1, "maxLength": 128},
                     "value": {"type": "string", "maxLength": 4096}
+                }
+            }),
+        },
+        Tool {
+            name: "knowledgeList",
+            description: "List persistent, profile-scoped knowledge records without starting or inspecting a browser.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "knowledgeShow",
+            description: "Show one persistent knowledge record and its bounded provenance; records never authorize browser mutations.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["recordId"],
+                "properties": {
+                    "recordId": {"type": "string", "minLength": 1, "maxLength": 128}
+                }
+            }),
+        },
+        Tool {
+            name: "knowledgeStats",
+            description: "Report persistent knowledge-store counts and serialized size without starting a browser.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "knowledgeInvalidate",
+            description: "Move one persistent knowledge record to stale, contradicted, or quarantined state.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["recordId", "state"],
+                "properties": {
+                    "recordId": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "state": {"type": "string", "enum": ["stale", "contradicted", "quarantined"]},
+                    "reason": {"type": "string", "maxLength": 256},
+                    "observedAt": {"type": "string", "maxLength": 64}
+                }
+            }),
+        },
+        Tool {
+            name: "knowledgePurge",
+            description: "Purge persistent knowledge records for one exact origin after policy checks.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["origin"],
+                "properties": {
+                    "origin": {"type": "string", "minLength": 1, "maxLength": 2048}
                 }
             }),
         },
@@ -2532,6 +2697,7 @@ mod tests {
             &mut session,
             &SessionOptions::default(),
             &policy,
+            None,
         )
         .await
         .unwrap();
@@ -2546,12 +2712,18 @@ mod tests {
         assert_eq!(caps["resources"]["listChanged"], false);
         assert!(session.is_none());
 
-        let result = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let result = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 63);
+        assert_eq!(tools.len(), 68);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2575,6 +2747,15 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "resolveIntent"));
         assert!(tools.iter().any(|tool| tool["name"] == "executeIntent"));
+        for tool_name in [
+            "knowledgeList",
+            "knowledgeShow",
+            "knowledgeStats",
+            "knowledgeInvalidate",
+            "knowledgePurge",
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == tool_name));
+        }
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
         for tool_name in [
             "clickExpectPopup",
@@ -3035,15 +3216,51 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = response.result.unwrap();
 
         assert_eq!(result["isError"], true);
         assert_eq!(result["content"][0]["text"], "browser tool failed");
         assert!(!result.to_string().contains("yes"));
         assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn knowledge_stats_does_not_start_chrome() {
+        let path =
+            std::env::temp_dir().join(format!("glass-mcp-knowledge-{}.json", std::process::id()));
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "knowledgeStats", "arguments": {}}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            Some(&path),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.error.is_none());
+        assert!(response.result.as_ref().unwrap()["content"].is_array());
+        assert!(session.is_none());
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -3165,9 +3382,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = response.result.unwrap();
         let prompts = result["prompts"].as_array().unwrap();
         assert_eq!(prompts.len(), 4);
@@ -3193,9 +3416,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = response.result.unwrap();
         let messages = result["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
@@ -3216,9 +3445,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32602);
     }
@@ -3234,9 +3469,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = response.result.unwrap();
         let resources = result["resources"].as_array().unwrap();
         assert_eq!(resources.len(), 5);
@@ -3263,9 +3504,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         let result = response.result.unwrap();
         let contents = result["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 1);
@@ -3286,9 +3533,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32602);
     }
@@ -3305,9 +3558,15 @@ mod tests {
         let mut session = None;
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
-        let response = handle_request(&request, &mut session, &SessionOptions::default(), &policy)
-            .await
-            .unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32602);
     }

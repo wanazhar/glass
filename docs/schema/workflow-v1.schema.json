@@ -34,9 +34,10 @@
     "input": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["valueType"],
+      "oneOf": [{"required": ["valueType"]}, {"required": ["type"]}],
       "properties": {
         "valueType": {"enum": ["string", "integer", "number", "boolean", "url"]},
+        "type": {"enum": ["string", "integer", "number", "boolean", "url"]},
         "required": {"type": "boolean", "default": true},
         "maxLength": {"type": "integer", "minimum": 1, "maximum": 65536},
         "sensitive": {"type": "boolean"}
@@ -101,9 +102,11 @@
     "output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["valueType", "source"],
+      "required": ["source"],
+      "oneOf": [{"required": ["valueType"]}, {"required": ["type"]}],
       "properties": {
         "valueType": {"enum": ["string", "integer", "number", "boolean", "url"]},
+        "type": {"enum": ["string", "integer", "number", "boolean", "url"]},
         "source": {"enum": ["page_url", "page_title", "visible_text"]},
         "required": {"type": "boolean"},
         "sensitive": {"type": "boolean", "default": false}

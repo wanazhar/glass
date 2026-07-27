@@ -213,6 +213,7 @@ impl WorkflowDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowInput {
+    #[serde(alias = "type")]
     pub value_type: WorkflowValueType,
     #[serde(default = "default_true")]
     pub required: bool,
@@ -2332,6 +2333,7 @@ fn bound_workflow_text(value: &str, max_bytes: usize) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowOutputDeclaration {
+    #[serde(alias = "type")]
     pub value_type: WorkflowValueType,
     pub source: WorkflowOutputSource,
     #[serde(default)]
@@ -2632,6 +2634,19 @@ mod tests {
         assert!(json.contains("\"beforeRetry\":{"));
         let parsed = WorkflowDefinition::from_json(&json).unwrap();
         assert!(parsed.steps[0].before_retry.is_some());
+    }
+
+    #[test]
+    fn type_alias_is_accepted_but_canonical_json_uses_value_type() {
+        let mut value = serde_json::to_value(definition()).unwrap();
+        let input = value["inputs"]["url"].as_object_mut().unwrap();
+        let value_type = input.remove("valueType").unwrap();
+        input.insert("type".into(), value_type);
+
+        let parsed = WorkflowDefinition::from_value(value).unwrap();
+        let canonical = parsed.to_canonical_json().unwrap();
+        assert!(canonical.contains("\"valueType\":\"url\""));
+        assert!(!canonical.contains("\"type\":\"url\""));
     }
 
     #[test]

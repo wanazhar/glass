@@ -58,6 +58,10 @@ It describes the supported JSON shape; runtime validation additionally checks
 cross-field rules such as unique step IDs, expanded repetition budgets, and
 transaction retry safety.
 
+`valueType` is the canonical serialized field for inputs and outputs. The
+validator also accepts the issue-era `type` spelling as an additive input alias;
+canonical serialization always writes `valueType`.
+
 Action strings may reference declared values with the bounded
 `${inputs.name}` form. Glass resolves these placeholders after input type
 validation and before browser dispatch; unknown, missing, non-scalar, or

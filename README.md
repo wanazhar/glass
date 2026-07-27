@@ -42,6 +42,21 @@ cargo install --path . --locked
 glass --help
 ```
 
+For a machine without a Rust toolchain, download a stripped release binary and
+verify the published checksum. Set `GLASS_VERSION` to the release tag you want:
+
+```console
+GLASS_VERSION=v0.1.14
+curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64" -o glass
+curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64.sha256" -o glass.sha256
+sha256sum -c glass.sha256
+chmod +x glass
+./glass --help
+```
+
+On macOS, use `glass-macos-x86_64` for Intel or `glass-macos-aarch64` for
+Apple Silicon. The same release assets and checksum convention apply.
+
 The published `glass-browser` crate builds the `glass` binary locally on your
 platform:
 
@@ -268,6 +283,10 @@ on macOS or `~/.config/Claude/claude_desktop_config.json` on Linux):
 }
 ```
 
+If the client does not inherit your `PATH`, replace `"glass"` with the absolute
+path to the downloaded or installed binary. The process must be launched
+directly; stdout is reserved for MCP frames.
+
 > **Important:** Glass writes to stderr only; stdout is reserved for MCP
 > messages. Do not add shell wrappers that print to stdout. Use absolute
 > paths if `glass` is not on the client's `PATH`. The `--policy hardened`
@@ -290,6 +309,10 @@ These numbers are reproducible with the same fixtures and Chrome build.
 See the [category metric guide](docs/category-metric.md) for methodology and
 reproduction steps. See the [benchmarks README](benchmarks/README.md) for
 competitive acceptance results.
+
+The reproducible [MCP registry metadata](docs/mcp-registry.json) is available
+for directory submissions, and the [30-second demo recipe](docs/demo.md)
+shows the navigate → compact observe → revisioned click flow.
 
 ## MCP Schema Budget
 

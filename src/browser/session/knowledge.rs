@@ -653,9 +653,44 @@ fn compare_optional_scope(
 fn browser_version_matches(expected_range: Option<&str>, actual: Option<&str>) -> bool {
     match (expected_range, actual) {
         (None, _) => true,
-        (Some(expected), Some(actual)) => expected == actual || expected == ">=current",
+        (Some(expected), Some(actual)) => {
+            if expected == actual || expected == ">=current" {
+                return true;
+            }
+            let (operator, expected_version) = [">=", "<=", ">", "<", "="]
+                .iter()
+                .find_map(|operator| {
+                    expected
+                        .strip_prefix(operator)
+                        .map(|version| (*operator, version))
+                })
+                .unwrap_or(("=", expected));
+            let Some(expected_major) = version_major(expected_version) else {
+                return false;
+            };
+            let Some(actual_major) = version_major(actual) else {
+                return false;
+            };
+            match operator {
+                ">=" => actual_major >= expected_major,
+                "<=" => actual_major <= expected_major,
+                ">" => actual_major > expected_major,
+                "<" => actual_major < expected_major,
+                "=" => actual_major == expected_major,
+                _ => false,
+            }
+        }
         (Some(_), None) => false,
     }
+}
+
+fn version_major(value: &str) -> Option<u64> {
+    value
+        .trim()
+        .split_once('.')
+        .map_or(value.trim(), |(major, _)| major)
+        .parse()
+        .ok()
 }
 
 fn parse_age_seconds(last_verified_at: &str, now_epoch_seconds: i64) -> Option<i64> {
@@ -1082,6 +1117,14 @@ mod tests {
         assert_eq!(assessment.status, KnowledgeAssessmentStatus::Eligible);
         assert_eq!(assessment.missing_landmarks, Vec::<String>::new());
         assert!(assessment.conflicts.is_empty());
+    }
+
+    #[test]
+    fn assessment_matches_browser_version_ranges() {
+        assert!(browser_version_matches(Some(">=120"), Some("120.0")));
+        assert!(browser_version_matches(Some("<121"), Some("120.0.1")));
+        assert!(!browser_version_matches(Some(">=121"), Some("120.0")));
+        assert!(!browser_version_matches(Some("120"), None));
     }
 
     #[test]

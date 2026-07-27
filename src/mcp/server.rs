@@ -22,6 +22,7 @@ use tracing::{debug, info};
 
 use crate::browser::cdp::CdpError;
 use crate::browser::policy::{BrowserPolicy, PolicyError};
+use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
@@ -390,6 +391,7 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
 
 async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
     info!("MCP server starting on stdio");
+    ProfileManager::validate_name(&cli.profile)?;
     let options = SessionOptions {
         port: cli.port,
         chrome_path: cli.chrome_path.clone(),

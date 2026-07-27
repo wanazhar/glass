@@ -121,6 +121,10 @@ export interface SemanticIntentRequest {
   resolutionPolicy: SemanticResolutionPolicy;
   expectedRevision?: number;
 }
+export interface SemanticIntentExecutionRequest extends SemanticIntentRequest {
+  candidateId: string;
+  value?: string;
+}
 export interface SemanticIntentResult {
   schemaVersion: 1;
   intent: string;
@@ -149,6 +153,15 @@ export interface SemanticIntentCandidate {
   confidence: "exact" | "high" | "medium" | "low" | "insufficient";
   evidence?: SemanticEvidence[];
   fingerprint?: Record<string, unknown>;
+}
+export interface SemanticIntentExecutionResult {
+  resolutionId: string;
+  candidateId: string;
+  status: "executed" | "not_executed";
+  resolution: SemanticIntentResult;
+  action?: Record<string, unknown>;
+  executionId?: string;
+  reason?: string;
 }
 
 export interface WorkflowInput {
@@ -300,6 +313,9 @@ export class GlassClient {
   }
   resolveIntent<T = SemanticIntentResult>(request: SemanticIntentRequest): Promise<T> {
     return this.call<T>("resolveIntent", request as unknown as Record<string, unknown>);
+  }
+  executeIntent<T = SemanticIntentExecutionResult>(request: SemanticIntentExecutionRequest): Promise<T> {
+    return this.call<T>("executeIntent", request as unknown as Record<string, unknown>);
   }
   navigate<T = Record<string, unknown>>(url: string, timeoutMs?: number, expectedRevision?: number): Promise<T> {
     return this.call<T>("navigate", { url, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(expectedRevision === undefined ? {} : { expectedRevision }) });

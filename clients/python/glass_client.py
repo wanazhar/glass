@@ -126,6 +126,11 @@ class SemanticIntentRequest(TypedDict, total=False):
     expectedRevision: int
 
 
+class SemanticIntentExecutionRequest(SemanticIntentRequest, total=False):
+    candidateId: str
+    value: str
+
+
 class SemanticIntentResult(TypedDict, total=False):
     schemaVersion: Literal[1]
     intent: str
@@ -141,6 +146,16 @@ class SemanticIntentResult(TypedDict, total=False):
     suggestedConstraints: list[dict[str, Any]]
     reason: str
     route: dict[str, str]
+
+
+class SemanticIntentExecutionResult(TypedDict, total=False):
+    resolutionId: str
+    candidateId: str
+    status: Literal["executed", "not_executed"]
+    resolution: SemanticIntentResult
+    action: dict[str, Any]
+    executionId: str
+    reason: str
 
 
 class WorkflowCheckpointStep(TypedDict, total=False):
@@ -240,6 +255,11 @@ class GlassClient:
 
     def resolve_intent(self, request: SemanticIntentRequest) -> SemanticIntentResult:
         return self.call("resolveIntent", dict(request))
+
+    def execute_intent(
+        self, request: SemanticIntentExecutionRequest
+    ) -> SemanticIntentExecutionResult:
+        return self.call("executeIntent", dict(request))
 
     def navigate(
         self,

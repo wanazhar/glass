@@ -1100,7 +1100,7 @@ terminalCondition:
   textContains: done
 outputs: {}
 "#;
-        let document = compile_workflow_yaml(&source).unwrap();
+        let document = compile_workflow_yaml(source).unwrap();
         assert!(
             document
                 .diagnostics

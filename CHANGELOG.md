@@ -18,6 +18,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Bounded semantic intent resolution with candidate evidence, confidence
   policies, stale-revision handling, guarded execution, and semantic workflow
   steps across the library, CLI, MCP, TUI, TypeScript client, and Python client.
+- Bounded profile-scoped persistent knowledge records with atomic local storage,
+  lifecycle states, pruning, corruption handling, privacy checks, CLI/MCP
+  management, a TUI inspector, and deterministic offline fixtures.
+- Fresh-only and assessed semantic knowledge observations, plus explicit
+  knowledge-backed intent resolution using historical fingerprints only as
+  secondary evidence.
 
 ### Changed
 

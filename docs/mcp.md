@@ -135,8 +135,15 @@ reversible.
 | `upload` | `target`, `files`, optional `expectedRevision` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
 | `observe` | optional `includeDom`, `includeScreenshot`, `includeFormValues`, `level`, `region` | Return compact page context or a bounded semantic observation. |
+| `observeKnowledge` | optional `level`, `freshOnly`, and scope dimensions | Collect fresh semantic evidence and optionally assess local knowledge. |
 | `resolveIntent` | `schemaVersion`, `intent`, `action`, optional scope and constraints, `resolutionPolicy` | Resolve one bounded intent and return candidates and evidence without dispatch. |
+| `resolveIntentWithKnowledge` | resolve request plus profile/browser scope dimensions | Add eligible historical fingerprint evidence to a fresh intent resolution. |
 | `executeIntent` | the resolve request plus `candidateId`, optional `value` | Repeat resolution and dispatch one supported guarded action when policy permits. |
+| `knowledgeList` | none | List persistent profile-scoped knowledge without starting Chrome. |
+| `knowledgeShow` | `recordId` | Show one validated persistent knowledge record. |
+| `knowledgeStats` | none | Report bounded store counts and size. |
+| `knowledgeInvalidate` | `recordId`, `state` (`stale`, `contradicted`, or `quarantined`) | Apply an explicit non-eligible lifecycle state. |
+| `knowledgePurge` | `origin` | Remove records for one exact origin. |
 | `getDOM` | none | Return the full DOM tree. |
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
@@ -171,6 +178,12 @@ DOM, screenshot, or form-value overlays. See
 [intent resolution](intent-resolution.md). Execution is revision-checked and
 returns separate resolution and action evidence; unsupported intent actions
 are rejected before dispatch.
+`observeKnowledge` and `resolveIntentWithKnowledge` are explicit opt-ins. Both
+collect fresh current-page evidence first. The knowledge variants require the
+persistent-profile policy capability; historical fingerprints can only add
+`historicalMatch` evidence to a current candidate and cannot authorize an
+action. The ordinary `observe` and `resolveIntent` tools do not consult the
+store implicitly. See [persistent knowledge](knowledge.md).
 `wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
 active wait and scoped network subscriptions are disabled on drop.
 Diagnostic and download durations are limited to 30 seconds. Console argument

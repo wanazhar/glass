@@ -17,6 +17,7 @@ for the installed version.
 | `--interaction human|fast` | `human` | Smooth or direct pointer events. |
 | `--trace-on-error` | off | Emit one bounded JSON failure trace on stderr when an operation fails. |
 | `--chrome-path PATH` | discovered | Explicit Chrome/Chromium executable. |
+| `--knowledge-store PATH` | profile-scoped | Select the persistent knowledge snapshot. |
 | `--mcp` | off | Run the MCP stdio server. |
 
 Global options can be written before or after a subcommand.
@@ -74,6 +75,7 @@ workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 resolve-intent [JSON_FILE]
 execute-intent [JSON_FILE]
+knowledge list|show|explain|stats|export|import|invalidate|purge
 ```
 
 `screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and
@@ -96,6 +98,12 @@ evidence, confidence, and the policy decision without dispatching an action.
 resolution against a fresh observation, and dispatches only when the selected
 policy permits it. See [intent resolution](intent-resolution.md) for the JSON
 shapes and supported action classes.
+
+Knowledge commands inspect or manage the bounded profile-scoped store without
+starting Chrome. `list`, `show`, `explain`, and `stats` are read-only;
+`export`, `import`, `invalidate`, and `purge` are explicit lifecycle operations.
+See [persistent knowledge](knowledge.md) for scope, privacy, and freshness
+rules.
 
 `diagnostics` explicitly leases console and network domains for at most 30
 seconds and returns bounded, secret-redacted metadata. Dialog commands act only

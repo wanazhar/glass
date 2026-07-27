@@ -10,39 +10,29 @@ silently retarget an action.
 ## Status
 
 Glass supports Linux x86-64 and macOS x86-64/arm64. Windows is not a supported
-target.
+target. The current checkout contains the 0.2.0 development version.
 
 The command-line interface, terminal UI, MCP server, and Rust library share the
 same session runtime.
 
 ## Install
 
-After the `0.1.18` release is published, install the command with Cargo. Until
-then, install directly from this checkout:
-
-```console
-cargo install glass-browser --locked
-glass --help
-```
+To install the current checkout:
 
 ```console
 cargo install --path . --locked
+glass --help
 ```
 
-Linux and macOS releases include SHA-256 checksum files. For example:
+The latest published package can be installed with:
 
 ```console
-GLASS_VERSION=v0.1.18
-curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64" -o glass
-curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64.sha256" -o glass.sha256
-sha256sum -c glass.sha256
-chmod +x glass
+cargo install glass-browser --locked
 ```
 
-Use `glass-macos-x86_64` on Intel Macs or `glass-macos-aarch64` on Apple
-Silicon. The binary must be able to find Chrome, Chromium, or Chrome for
-Testing. Use `glass install-chromium` to install the release-pinned Chrome for
-Testing build when a system browser is not available.
+The current 0.2.0 development version is not published yet. The binary must be
+able to find Chrome, Chromium, or Chrome for Testing. Use
+`glass install-chromium` when a system browser is not available.
 
 See [installation and operations](docs/installation.md) for browser discovery,
 profiles, attach mode, logging, policy presets, and deployment guidance.
@@ -125,6 +115,13 @@ Intent resolution can compare semantic candidates before acting. Use
 explicit candidate with `glass execute-intent execution.json`. See the
 [intent resolution guide](docs/intent-resolution.md).
 
+Optional persistent knowledge records capture bounded page shapes and hashed
+target fingerprints. They are scoped by origin, path, profile, browser, locale,
+tenant, schema, and policy. Fresh observations remain authoritative. Inspect
+the store with `glass knowledge list`, `glass knowledge show ID`, or
+`glass knowledge explain ID`; MCP callers can opt into `observeKnowledge` and
+`resolveIntentWithKnowledge`.
+
 Use `glass --help` for the complete CLI surface. Detailed command syntax is in
 the [CLI reference](docs/cli.md), and the corresponding MCP names and
 arguments are in the [MCP guide](docs/mcp.md).
@@ -191,6 +188,7 @@ profiles, screenshots, DOM output, cookies, and logs as sensitive. Review
 - [Action contract](docs/actions.md)
 - [MCP integration](docs/mcp.md)
 - [Intent resolution](docs/intent-resolution.md)
+- [Persistent knowledge](docs/knowledge.md)
 - [Profiles and authenticated sessions](docs/profile-ergonomics.md)
 - [Policy reference](docs/policy.md)
 - [Security policy](SECURITY.md)

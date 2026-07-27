@@ -25,7 +25,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
 use crate::browser::cdp::{CdpClient, CdpEventWithParams};
-use crate::browser::chrome::{ChromeProcess, get_ws_url};
+use crate::browser::chrome::ChromeProcess;
 use crate::browser::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
     find_interactive_elements, format_tree,
@@ -4300,7 +4300,7 @@ pub(crate) fn runtime_value(raw: &Value) -> BrowserResult<Value> {
 pub(crate) async fn wait_for_ws_url(port: u16, target_id: Option<&str>) -> BrowserResult<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match get_ws_url(port, target_id).await {
+        match crate::browser::chrome::get_owned_ws_url(port, target_id).await {
             Ok(url) => return Ok(url),
             Err(error)
                 if error.to_string().starts_with("No page target")

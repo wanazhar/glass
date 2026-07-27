@@ -895,6 +895,8 @@ struct PageTarget {
     target_type: String,
     #[serde(rename = "webSocketDebuggerUrl")]
     websocket_debugger_url: Option<String>,
+    #[serde(default)]
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -928,6 +930,58 @@ pub async fn get_ws_url(
     port: u16,
     target_id: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let targets = page_targets_at(port).await?;
+    select_page_target(&targets, target_id)
+        .map(|target| {
+            target
+                .websocket_debugger_url
+                .clone()
+                .expect("filtered above")
+        })
+        .map_err(Into::into)
+}
+
+/// Get a page target for a browser owned by Glass. A persistent profile can
+/// restore its last page while Chrome also opens Glass's startup page. When
+/// exactly one restored non-blank page exists, it is the intended profile
+/// context and is safe to adopt; attached sessions retain strict selection.
+pub async fn get_owned_ws_url(
+    port: u16,
+    target_id: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let targets = page_targets_at(port).await?;
+    let target = select_owned_page_target(&targets, target_id)?;
+    Ok(target
+        .websocket_debugger_url
+        .clone()
+        .expect("filtered above"))
+}
+
+fn select_owned_page_target<'a>(
+    targets: &'a [PageTarget],
+    target_id: Option<&str>,
+) -> Result<&'a PageTarget, String> {
+    match select_page_target(targets, target_id) {
+        Ok(target) => Ok(target),
+        Err(error) if target_id.is_none() && error.starts_with("multiple page targets") => {
+            let candidates = targets
+                .iter()
+                .filter(|target| {
+                    target.target_type == "page"
+                        && target.websocket_debugger_url.is_some()
+                        && target.url != "about:blank"
+                })
+                .collect::<Vec<_>>();
+            match candidates.as_slice() {
+                [target] => Ok(target),
+                _ => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn page_targets_at(port: u16) -> Result<Vec<PageTarget>, Box<dyn std::error::Error>> {
     let url = format!("http://127.0.0.1:{port}/json");
     let response = reqwest::Client::new()
         .get(url)
@@ -937,15 +991,7 @@ pub async fn get_ws_url(
     if !response.status().is_success() {
         return Err(format!("Chrome target listing failed with {}", response.status()).into());
     }
-    let targets: Vec<PageTarget> = response.json().await?;
-    select_page_target(&targets, target_id)
-        .map(|target| {
-            target
-                .websocket_debugger_url
-                .clone()
-                .expect("filtered above")
-        })
-        .map_err(Into::into)
+    Ok(response.json().await?)
 }
 
 fn select_page_target<'a>(
@@ -1005,7 +1051,20 @@ mod tests {
             id: id.to_string(),
             target_type: "page".to_string(),
             websocket_debugger_url: Some(format!("ws://example.test/{id}")),
+            url: "about:blank".to_string(),
         }
+    }
+
+    #[test]
+    fn owned_target_selection_adopts_one_restored_nonblank_page() {
+        let mut restored = page_target("restored");
+        restored.url = "http://127.0.0.1:1234/".to_string();
+        let targets = vec![page_target("startup"), restored];
+
+        assert_eq!(
+            select_owned_page_target(&targets, None).unwrap().id,
+            "restored"
+        );
     }
 
     #[test]

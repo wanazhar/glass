@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.7] - 2026-07-27
+
+### Fixed
+
+- Reuse one restored non-blank page when a persistent profile also opens a
+  fresh startup page.
+
 ## [0.1.6] - 2026-07-27
 
 ### Fixed

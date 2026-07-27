@@ -4,8 +4,8 @@
 //! commands, interactive TUI, or the MCP stdio server.
 
 use super::args::{
-    CheckpointCommand, Cli, Commands, KnowledgeCommand, KnowledgeInvalidationState, ProfileCommand,
-    WorkflowAuthoringCommand,
+    CertifyCommand, CheckpointCommand, Cli, Commands, KnowledgeCommand, KnowledgeInvalidationState,
+    ProfileCommand, WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -17,6 +17,9 @@ use crate::browser::session::{
     WorkflowAuthoringFormat, WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity,
     WorkflowRecordingSession, compile_workflow, default_knowledge_store_path, diff_workflows,
     format_workflow_yaml, preview_workflow, record_semantic_events,
+};
+use crate::reliability::{
+    ReliabilityScenario, ReliabilityScenarioObservation, evaluate_reliability_gate,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -37,6 +40,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::InstallChromium { update }) => {
             let path = crate::browser::chrome::download_chromium(*update).await?;
             println!("Chrome for Testing installed at {}", path.display());
+            return Ok(());
+        }
+        Some(Commands::Certify { action }) => {
+            dispatch_certify(action)?;
             return Ok(());
         }
         Some(Commands::Profiles { action }) => {
@@ -161,6 +168,33 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
         Some(ProfileCommand::Delete { name }) => {
             manager.delete_profile(name)?;
             println!("deleted profile {name}");
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
+    match action {
+        CertifyCommand::Release {
+            version,
+            scenarios,
+            observations,
+        } => {
+            let scenarios: Vec<ReliabilityScenario> =
+                serde_json::from_value(read_json_input(Some(scenarios))?)?;
+            let observations: Vec<ReliabilityScenarioObservation> =
+                serde_json::from_value(read_json_input(Some(observations))?)?;
+            let gate = evaluate_reliability_gate(&scenarios, &observations)?;
+            let certified = gate.certified;
+            print_json(&serde_json::json!({
+                "status": if certified { "certified" } else { "blocked" },
+                "version": version,
+                "tool": {"name": "glass", "version": env!("CARGO_PKG_VERSION")},
+                "gate": gate,
+            }))?;
+            if !certified {
+                return Err("reliability certification blocked".into());
+            }
         }
     }
     Ok(())
@@ -347,7 +381,7 @@ fn authoring_format(path: &std::path::Path) -> WorkflowAuthoringFormat {
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
-        Commands::Knowledge { .. } => {
+        Commands::Certify { .. } | Commands::Knowledge { .. } => {
             unreachable!("knowledge commands are handled before browser startup")
         }
         Commands::Navigate {

@@ -117,6 +117,12 @@ pub enum Commands {
         update: bool,
     },
 
+    /// Evaluate reliability evidence without starting a browser.
+    Certify {
+        #[command(subcommand)]
+        action: CertifyCommand,
+    },
+
     /// List or manage saved profiles.
     Profiles {
         #[command(subcommand)]
@@ -561,6 +567,21 @@ pub enum WorkflowAuthoringCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum CertifyCommand {
+    /// Evaluate a release-blocking reliability gate.
+    Release {
+        #[arg(long)]
+        version: String,
+        /// JSON array of validated reliability scenarios.
+        #[arg(long)]
+        scenarios: PathBuf,
+        /// JSON array of scenario observations and oracle evidence.
+        #[arg(long)]
+        observations: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum CheckpointCommand {
     Export,
     Import { input: Option<PathBuf> },
@@ -807,6 +828,30 @@ mod tests {
                 action: Some(WorkflowAuthoringCommand::Record { input: Some(input), output: Some(output) }),
                 input: None,
             }) if input.as_os_str() == "events.json" && output.as_os_str() == "draft.json"
+        ));
+    }
+
+    #[test]
+    fn certify_release_command_accepts_versioned_evidence_paths() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "certify",
+            "release",
+            "--version",
+            "0.2.0",
+            "--scenarios",
+            "scenarios.json",
+            "--observations",
+            "observations.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Certify {
+                action: CertifyCommand::Release { version, scenarios, observations },
+            }) if version == "0.2.0"
+                && scenarios.as_os_str() == "scenarios.json"
+                && observations.as_os_str() == "observations.json"
         ));
     }
 

@@ -409,6 +409,12 @@ pub enum Commands {
         inputs: Option<PathBuf>,
     },
 
+    /// Resolve a declared intent from JSON or stdin without dispatching it.
+    ResolveIntent {
+        /// JSON file containing the versioned intent request; omit to read stdin.
+        input: Option<PathBuf>,
+    },
+
     /// Evaluate a bounded JSON verification predicate.
     Verify {
         /// JSON object such as `{"urlEquals":"https://example.com"}`.
@@ -699,5 +705,16 @@ mod tests {
                 && checkpoint.as_os_str() == "checkpoint.json"
                 && inputs.as_os_str() == "inputs.json"
         ));
+    }
+
+    #[test]
+    fn resolve_intent_command_accepts_optional_json_input() {
+        let cli = Cli::try_parse_from(["glass", "resolve-intent", "intent.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ResolveIntent { input: Some(path) })
+                if path.as_os_str() == "intent.json"
+        ));
+        assert!(Cli::try_parse_from(["glass", "resolve-intent"]).is_ok());
     }
 }

@@ -1333,6 +1333,20 @@ impl std::fmt::Display for IntentResolutionError {
 
 impl std::error::Error for IntentResolutionError {}
 
+impl super::BrowserSession {
+    /// Resolve one declared intent against a fresh interactive observation.
+    /// This method returns candidates only; it never dispatches an action.
+    pub async fn resolve_intent(
+        &self,
+        request: &SemanticIntentRequest,
+    ) -> super::types::BrowserResult<SemanticIntentResult> {
+        let observation = self
+            .semantic_observe(super::SemanticObservationLevel::Interactive)
+            .await?;
+        Ok(resolve_intent(request, &observation))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,8 +8,8 @@ use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
-    PdfOptions, ReconciliationOptions, SemanticObservationLevel, SessionOptions,
-    VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowCheckpoint,
+    PdfOptions, ReconciliationOptions, SemanticIntentRequest, SemanticObservationLevel,
+    SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowCheckpoint,
     WorkflowDefinition,
 };
 use base64::Engine;
@@ -549,6 +549,12 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .resume_workflow(&workflow, &inputs, &checkpoint)
                     .await?,
             )?;
+        }
+        Commands::ResolveIntent { input } => {
+            let request = SemanticIntentRequest::from_json(&serde_json::to_string(
+                &read_json_input(input.as_ref())?,
+            )?)?;
+            print_json(&session.resolve_intent(&request).await?)?;
         }
         Commands::Verify {
             predicate,

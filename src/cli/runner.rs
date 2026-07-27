@@ -9,7 +9,7 @@ use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
     PdfOptions, ReconciliationOptions, SessionOptions, VerificationPredicate, VisualCaptureOptions,
-    WaitCondition, WorkflowDefinition,
+    WaitCondition, WorkflowCheckpoint, WorkflowDefinition,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -505,6 +505,27 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs_value)
                 .map_err(|error| format!("invalid workflow inputs: {error}"))?;
             print_json(&session.run_workflow(&workflow, &inputs).await?)?;
+        }
+        Commands::WorkflowResume {
+            workflow,
+            checkpoint,
+            inputs,
+        } => {
+            let workflow = WorkflowDefinition::from_value(read_json_input(Some(workflow))?)
+                .map_err(|error| format!("invalid workflow: {error}"))?;
+            let checkpoint: WorkflowCheckpoint =
+                serde_json::from_value(read_json_input(Some(checkpoint))?)
+                    .map_err(|error| format!("invalid workflow checkpoint: {error}"))?;
+            let inputs: BTreeMap<String, Value> = match inputs {
+                Some(path) => serde_json::from_value(read_json_input(Some(path))?)
+                    .map_err(|error| format!("invalid workflow inputs: {error}"))?,
+                None => BTreeMap::new(),
+            };
+            print_json(
+                &session
+                    .resume_workflow(&workflow, &inputs, &checkpoint)
+                    .await?,
+            )?;
         }
         Commands::Verify {
             predicate,

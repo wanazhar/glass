@@ -69,6 +69,7 @@ select-frame ID
 evaluate EXPRESSION
 batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
 workflow [JSON_FILE]
+workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 ```
 
@@ -95,6 +96,11 @@ working root, and restores download denial on success, error, or cancellation.
 (or a workflow definition by itself), validates it before dispatch, and emits
 the workflow result with step states, terminal proof, typed outputs, and a
 deterministic trace.
+
+`workflow-resume` reconciles the definition and checkpoint against the current
+browser state, then executes only the safe pending suffix. It refuses
+post-dispatch ambiguity, route changes, definition mismatches, and completed
+checkpoints.
 
 `targets` and `frames` are bounded topology queries. Creating a target or
 discovering a popup never selects it. In a one-shot CLI workflow, discover IDs

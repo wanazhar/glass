@@ -392,6 +392,17 @@ pub enum Commands {
         input: Option<PathBuf>,
     },
 
+    /// Reconcile a workflow checkpoint and execute only its safe pending suffix.
+    WorkflowResume {
+        /// JSON file containing the workflow definition.
+        workflow: PathBuf,
+        /// JSON file containing a workflow checkpoint.
+        checkpoint: PathBuf,
+        /// Optional JSON file containing the workflow input map.
+        #[arg(long)]
+        inputs: Option<PathBuf>,
+    },
+
     /// Evaluate a bounded JSON verification predicate.
     Verify {
         /// JSON object such as `{"urlEquals":"https://example.com"}`.
@@ -622,6 +633,29 @@ mod tests {
             cli.command,
             Some(Commands::Workflow { input: Some(path) })
                 if path.as_os_str() == "workflow.json"
+        ));
+    }
+
+    #[test]
+    fn workflow_resume_command_accepts_checkpoint_and_inputs() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "workflow-resume",
+            "workflow.json",
+            "checkpoint.json",
+            "--inputs",
+            "inputs.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::WorkflowResume {
+                workflow,
+                checkpoint,
+                inputs: Some(inputs)
+            }) if workflow.as_os_str() == "workflow.json"
+                && checkpoint.as_os_str() == "checkpoint.json"
+                && inputs.as_os_str() == "inputs.json"
         ));
     }
 }

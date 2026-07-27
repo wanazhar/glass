@@ -3,6 +3,28 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - Unreleased (local only)
+
+### Added
+
+- A versioned semantic observation contract with bounded page classification,
+  landmark regions, interactive target grouping, structured levels, scoped
+  region expansion, and compact accessibility projections.
+- Revision-aware semantic diffs with conservative continuity hints that never
+  replace guarded action references.
+- Semantic observation surfaces for the Rust library, CLI, MCP, TUI,
+  TypeScript client, and Python client, plus deterministic fixture canaries and
+  an offline scorecard.
+
+### Changed
+
+- Documentation now separates the semantic observation guide from the compact
+  legacy observation and keeps deep DOM, screenshots, and form values explicit.
+
+This milestone is prepared locally only. It has not been pushed or published to
+GitHub, crates.io, npm, or PyPI. Public release remains gated on the 0.2.0
+release process.
+
 ## [0.1.19] - Unreleased (local only)
 
 ### Added

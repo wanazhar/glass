@@ -42,6 +42,14 @@ glass certify replay \
   --input replay.json
 ```
 
+Compare a baseline and candidate replay without exposing page values:
+
+```console
+glass certify replay-diff \
+  --scenario tests/fixtures/reliability-scenario-v1.json \
+  --before baseline.json --after candidate.json
+```
+
 Evaluate a complete release evidence set:
 
 ```console

@@ -588,6 +588,18 @@ pub enum CertifyCommand {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Compare two redacted replay bundles for one scenario.
+    ReplayDiff {
+        /// JSON scenario used to validate both replay bindings.
+        #[arg(long)]
+        scenario: PathBuf,
+        /// Baseline replay bundle.
+        #[arg(long)]
+        before: PathBuf,
+        /// Candidate replay bundle.
+        #[arg(long)]
+        after: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -881,6 +893,30 @@ mod tests {
             Some(Commands::Certify {
                 action: CertifyCommand::Replay { scenario, input },
             }) if scenario.as_os_str() == "scenario.json" && input.as_os_str() == "replay.json"
+        ));
+    }
+
+    #[test]
+    fn certify_replay_diff_command_accepts_two_bundle_paths() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "certify",
+            "replay-diff",
+            "--scenario",
+            "scenario.json",
+            "--before",
+            "before.json",
+            "--after",
+            "after.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Certify {
+                action: CertifyCommand::ReplayDiff { scenario, before, after },
+            }) if scenario.as_os_str() == "scenario.json"
+                && before.as_os_str() == "before.json"
+                && after.as_os_str() == "after.json"
         ));
     }
 

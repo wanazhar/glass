@@ -212,6 +212,22 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
                 "replayHash": bundle.content_hash(&scenario)?,
             }))?;
         }
+        CertifyCommand::ReplayDiff {
+            scenario,
+            before,
+            after,
+        } => {
+            let scenario = ReliabilityScenario::from_value(read_json_input(Some(scenario))?)?;
+            let before =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(before))?, &scenario)?;
+            let after =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(after))?, &scenario)?;
+            let comparison = before.compare(&after, &scenario)?;
+            print_json(&serde_json::json!({
+                "status": if comparison.equivalent { "equivalent" } else { "changed" },
+                "comparison": comparison,
+            }))?;
+        }
     }
     Ok(())
 }

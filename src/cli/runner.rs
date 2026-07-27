@@ -8,8 +8,9 @@ use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
-    PdfOptions, ReconciliationOptions, SessionOptions, VerificationPredicate, VisualCaptureOptions,
-    WaitCondition, WorkflowCheckpoint, WorkflowDefinition,
+    PdfOptions, ReconciliationOptions, SemanticObservationLevel, SessionOptions,
+    VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowCheckpoint,
+    WorkflowDefinition,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -349,7 +350,29 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             deep_dom,
             screenshot,
             form_values,
+            semantic_level,
+            region,
         } => {
+            if let Some(level_name) = semantic_level {
+                if *deep_dom || *screenshot || *form_values {
+                    return Err(
+                        "semantic observation cannot be combined with deep DOM, screenshot, or form values"
+                            .into(),
+                    );
+                }
+                let level = parse_semantic_level(level_name)?;
+                if let Some(region_id) = region {
+                    let page = session.semantic_observe(level).await?;
+                    print_json(
+                        &session
+                            .semantic_expand_region(region_id, page.revision, level)
+                            .await?,
+                    )?;
+                } else {
+                    print_json(&session.semantic_observe(level).await?)?;
+                }
+                return Ok(());
+            }
             let context = match (*deep_dom, *screenshot, *form_values) {
                 (false, false, false) => session.observe().await?,
                 (true, false, false) => session.observe_with_dom().await?,
@@ -587,6 +610,17 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
     }
     Ok(())
+}
+
+fn parse_semantic_level(value: &str) -> BrowserResult<SemanticObservationLevel> {
+    match value {
+        "summary" => Ok(SemanticObservationLevel::Summary),
+        "interactive" => Ok(SemanticObservationLevel::Interactive),
+        "structured" => Ok(SemanticObservationLevel::Structured),
+        "detailed" => Ok(SemanticObservationLevel::Detailed),
+        "raw" => Ok(SemanticObservationLevel::Raw),
+        _ => Err("expected summary, interactive, structured, detailed, or raw".into()),
+    }
 }
 
 fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_json::Value> {

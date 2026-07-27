@@ -283,6 +283,12 @@ pub enum Commands {
         /// Include bounded, policy-gated form field values.
         #[arg(long)]
         form_values: bool,
+        /// Return the versioned semantic observation at the requested level.
+        #[arg(long = "level", alias = "semantic-level", value_parser = parse_semantic_level)]
+        semantic_level: Option<String>,
+        /// Expand one semantic region from the current observation.
+        #[arg(long, requires = "semantic_level")]
+        region: Option<String>,
     },
 
     /// Scroll the page by CSS pixels.
@@ -444,6 +450,13 @@ pub enum Commands {
     Tui,
 }
 
+fn parse_semantic_level(value: &str) -> Result<String, String> {
+    match value {
+        "summary" | "interactive" | "structured" | "detailed" | "raw" => Ok(value.into()),
+        _ => Err("expected summary, interactive, structured, detailed, or raw".into()),
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommand {
     List,
@@ -471,7 +484,9 @@ mod tests {
             Some(Commands::Observe {
                 deep_dom: false,
                 screenshot: false,
-                form_values: false
+                form_values: false,
+                semantic_level: None,
+                region: None,
             })
         ));
     }
@@ -488,7 +503,9 @@ mod tests {
             Some(Commands::Observe {
                 deep_dom: false,
                 screenshot: true,
-                form_values: false
+                form_values: false,
+                semantic_level: None,
+                region: None,
             })
         ));
     }
@@ -502,9 +519,34 @@ mod tests {
             Some(Commands::Observe {
                 deep_dom: true,
                 screenshot: false,
-                form_values: false
+                form_values: false,
+                semantic_level: None,
+                region: None,
             })
         ));
+    }
+
+    #[test]
+    fn semantic_observation_level_and_region_are_explicit() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "observe",
+            "--level",
+            "interactive",
+            "--region",
+            "region_main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Observe {
+                semantic_level: Some(level),
+                region: Some(region),
+                ..
+            }) if level == "interactive" && region == "region_main"
+        ));
+
+        assert!(Cli::try_parse_from(["glass", "observe", "--level", "verbose"]).is_err());
     }
 
     #[test]

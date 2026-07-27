@@ -43,7 +43,7 @@ The compact cache owns one serialized-equivalent set of strings and bounded
 AX vectors for one route/revision. Callers receive clones; deep DOM, boundary
 descendants, screenshots, and source CDP payloads are not retained.
 
-## Agent frontend contract
+## Frontend contract
 
 CLI `observe` and MCP `observe` serialize `PageContext` as compact, single-line
 JSON. MCP uses `includeDom` and `includeScreenshot`; CLI uses `--deep-dom` and
@@ -53,7 +53,10 @@ is rejected rather than silently treated as `false`.
 `getDOM`/`dom` is an explicit deep-DOM operation and returns a serialized
 `DomNode`, not an unbounded accessibility snapshot. `getText`/`text` returns
 the same UTF-8-safe 16 KiB-bounded visible text used by compact observation.
-Input actions serialize `ActionOutcome`; navigation serializes `PageInfo`.
+Input actions serialize `ActionOutcome`; unguarded navigation serializes
+`PageInfo`, while revision-guarded navigation returns `NavigationOutcome`.
+Guarded actions include status, previous/current revisions, and bounded
+verification evidence.
 Screenshots remain a distinct image response in MCP and an explicit file or
 structured-context request in CLI.
 
@@ -67,7 +70,7 @@ newly numbered control.
 String targets use explicit locator forms: `ref=<reference>`, `name=<accessible
 name>`, `role=<role>;name=<accessible name>`, `text=<text>`, `css=<selector>`,
 and `ordinal=<one-based index>`. A bare revisioned reference remains accepted as
-the fast agent path, and a bare string remains an exact accessible-name lookup
+the fast path, and a bare string remains an exact accessible-name lookup
 for command-line compatibility. Role-only and substring-name lookup are not
 accepted. Every strategy resolves to exactly one element or returns a bounded
 ambiguous/not-found diagnostic; CSS and text lookup never select the first DOM
@@ -84,12 +87,14 @@ when the page contains more matches.
 Fast actions avoid implicit waits. A click resolves a target, asks Chrome to
 scroll it into view only when required, dispatches the configured pointer mode,
 invalidates the snapshot revision, and returns a serializable action outcome
-with action kind, target, and resulting revision. Navigation or state waiting
-is an explicit operation. Double-click uses the same contract. Hover moves
-without button events. Drag resolves and revalidates both endpoints, presses
-only after source validation, revalidates the destination before release, and
-uses the configured human or fast motion path. Cancellation after press keeps
-the existing best-effort release guard.
+with status, action kind, target, previous/current revisions, and bounded
+verification evidence. The optional expected revision is checked before the
+action and produces a typed stale-revision failure without browser mutation.
+Navigation or state waiting is an explicit operation. Double-click uses the
+same contract. Hover moves without button events. Drag resolves and
+revalidates both endpoints, presses only after source validation, revalidates
+the destination before release, and uses the configured human or fast motion
+path. Cancellation after press keeps the existing best-effort release guard.
 
 Keyboard primitives use `Input.dispatchKeyEvent`: key-down and key-up are
 independent operations, key press emits down/optional character/up ordering,

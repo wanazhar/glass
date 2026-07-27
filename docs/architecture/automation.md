@@ -1,13 +1,13 @@
-# Agent browser automation
+# Browser automation contracts
 
 Status: Draft
 
 ## Purpose
 
-Define the target contract for a browser control layer that is safe for agents,
-predictable for humans, and measurably smaller and faster than general-purpose
-automation stacks. This document extends the accepted browser data-plane
-contract; it does not replace its compact-observation or explicit-cost rules.
+Define the target contract for a browser control layer that is safe for callers,
+predictable for humans, and bounded in its resource use. This document extends
+the accepted browser data-plane contract; it does not replace its
+compact-observation or explicit-cost rules.
 
 ## Product boundary
 
@@ -15,7 +15,7 @@ Glass owns deterministic browser mechanics. It does not own planning or natural
 language reasoning.
 
 ```text
-human / agent
+human / calling program
       │ intent + explicit policy
       ▼
 CLI / MCP / TUI
@@ -36,7 +36,7 @@ higher one.
 1. **Correctness:** fail on ambiguity; never guess a destructive target.
 2. **Safety:** bound inputs and outputs; make powerful operations policy-aware.
 3. **Reliability:** expose explicit waits and state; avoid timing folklore.
-4. **Agent efficiency:** return stable references and compact structured
+4. **Caller efficiency:** return stable references and compact structured
    evidence by default.
 5. **Human control:** actions remain inspectable, cancellable where possible,
    and usable in headed sessions.
@@ -63,9 +63,8 @@ The MCP transport bounds newline/header input to 8 KiB, content-length input to
 responses to sixteen. Browser operations retain single-session ordering even
 though the transport accepts requests concurrently for cancellation.
 
-Initial release budgets are defined in
-[`best-in-class-browser.md`](../plan/analysis/best-in-class-browser.md) and may
-only change with recorded evidence.
+Release budgets are defined in the release checklist and benchmark
+methodology; changes require recorded evidence.
 
 ## Targeting contract
 
@@ -77,8 +76,7 @@ Target resolution returns exactly one of:
 
 Accessible names, roles, text, CSS, and ordinal positions are separate locator
 strategies. Substring or role-only matching never silently selects the first
-candidate. Revisioned backend-node references remain the fastest preferred
-agent path.
+candidate. Revisioned backend-node references remain the preferred fast path.
 
 Before pointer dispatch, Glass verifies that the target is attached, visible,
 enabled when relevant, inside the viewport, and is the hit-test result at the
@@ -151,14 +149,15 @@ boundaries in diagnostics.
 
 The complete intended primitive set is:
 
-- navigate, reload, back, and forward;
-- observe, screenshot, DOM, console, and scoped network evidence;
+- navigate, observe, screenshot, DOM, visible text, and scoped diagnostics;
 - click, click-and-expect-popup, double-click, hover, drag, wheel, key,
   shortcut, type, and clear;
 - check/uncheck, select, and file upload;
 - list/create/select/close target and select frame;
-- accept/dismiss dialog and monitor downloads; and
-- evaluate JavaScript when policy permits.
+- accept/dismiss dialog and monitor downloads;
+- evaluate JavaScript when policy permits; and
+- inspect storage, export/import checkpoints, emulate selected browser
+  conditions, and use the bounded clipboard and PDF surfaces.
 
 Each primitive returns a typed outcome containing target/frame identity,
 resulting revision, and only the evidence required to decide the next step.
@@ -186,7 +185,7 @@ Policy is evaluated before browser or filesystem side effects. It can restrict:
 - maximum protocol, DOM, image, and trace sizes.
 
 The default local policy remains useful for development but rejects unbounded
-inputs. A hardened preset is available for untrusted agent workloads. Policy
+inputs. A hardened preset is available for untrusted callers. Policy
 denials are typed and distinguishable from browser failures.
 
 ## Evidence and diagnostics

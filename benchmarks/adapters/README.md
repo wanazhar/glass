@@ -26,7 +26,11 @@ the server's published `browser_run_code_unsafe` MCP tool; this is recorded as
 a privileged released tool, not as a safety equivalence with Glass's default
 policy. The adapter validates its required tool surface before running. Its
 runner RSS covers the MCP server process only; unavailable client and Chrome
-process-tree metrics remain `null` with an explicit scope description.
+process-tree metrics remain `null` with an explicit scope description. The
+download scenario uses only the public click/snapshot tools. Playwright MCP
+reports that download as started, but version `0.0.78` does not expose a
+completed artifact to this isolated adapter; that row is therefore reported as
+`unsupported`, never as a successful integrity result.
 
 The acceptance runner gives this released MCP adapter a bounded process ceiling
 of two minutes plus 30 seconds per controlled iteration (52 minutes for the

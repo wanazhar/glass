@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import process from "node:process";
 import { spawn, execFileSync } from "node:child_process";
@@ -6,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { atomicWriteJson } from "../checkpoint.mjs";
 
 class TransportError extends Error {}
+class UnsupportedScenario extends Error {}
 
 const corpus = JSON.parse(fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"));
 const fixture = fs.readFileSync(new URL("../../tests/fixtures/scorecard.html", import.meta.url), "utf8");
@@ -18,6 +20,7 @@ const checkpointPath = requiredEnv("GLASS_SCORECARD_CHECKPOINT_PATH");
 const invocation = { run_id: requiredEnv("GLASS_SCORECARD_RUN_ID"), started_at: requiredEnv("GLASS_SCORECARD_STARTED_AT") };
 const requestTimeoutMs = positiveInteger("PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS", process.env.PLAYWRIGHT_MCP_REQUEST_TIMEOUT_MS ?? "30000");
 const outputDir = fs.mkdtempSync(`${os.tmpdir()}/glass-playwright-mcp-`);
+const fixtureServer = await startFixtureServer(fixture);
 const startupStarted = performance.now();
 const client = createMcpClient(command, [
   "--headless", "--isolated", "--executable-path", chromePath,
@@ -35,7 +38,7 @@ try {
     if (!availableTools.has(required)) throw new Error(`released MCP surface is missing ${required}`);
   }
   await client.tool("browser_resize", { width: 1280, height: 720 });
-  await client.tool("browser_navigate", { url: `data:text/html;base64,${Buffer.from(fixture).toString("base64")}` });
+  await client.tool("browser_navigate", { url: fixtureServer.url });
   startupMs = performance.now() - startupStarted;
 
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
@@ -44,14 +47,16 @@ try {
       const started = performance.now();
       let actual = null;
       let error = null;
+      let isUnsupported = false;
       try {
         actual = await runScenario(client, scenario.id);
       } catch (caught) {
         if (caught instanceof TransportError) throw caught;
+        if (caught instanceof UnsupportedScenario) isUnsupported = true;
         error = boundedText(caught?.message ?? caught);
       }
       if (typeof actual === "string") actual = boundedText(actual);
-      const status = actual === scenario.expected ? "success" : scenario.forbidden.includes(actual) ? "wrong_action" : "failure";
+      const status = actual === scenario.expected ? "success" : scenario.forbidden.includes(actual) ? "wrong_action" : isUnsupported ? "unsupported" : "failure";
       outcomes.push({ id: scenario.id, category: scenario.category, iteration, expected: scenario.expected,
         actual, status, error, latency_ms: performance.now() - started, cdp_requests: null });
     }
@@ -59,6 +64,7 @@ try {
   }
 } finally {
   await client.close();
+  await fixtureServer.close();
   fs.rmSync(outputDir, { recursive: true, force: true });
 }
 
@@ -144,14 +150,76 @@ async function waitForDialogCompletion(mcp) {
   throw new Error("dialog did not reach accepted state within 500 ms");
 }
 async function downloadWithPublicTools(mcp) {
-  const response = await mcp.tool("browser_click", { element: "Download", target: "#download" });
-  const text = response.content?.filter(({ type }) => type === "text").map(({ text }) => text).join("\n") ?? "";
-  if (!/^### Events\n[\s\S]*^- Downloaded file glass\.txt to /m.test(text))
-    throw new Error("Playwright MCP did not report a completed download artifact");
-  if (fs.readFileSync(`${outputDir}/glass.txt`, "utf8") !== "glass")
+  const response = await mcp.tool("browser_click", { element: "Download", target: "#download" }, { allowError: true });
+  const followUp = await mcp.tool("browser_snapshot", {});
+  const text = [response, followUp].flatMap(({ content }) => content ?? [])
+    .filter(({ type }) => type === "text").map(({ text }) => text).join("\n");
+  if (!/^### Events\n[\s\S]*^- Download(?:ing|ed) file glass\.txt(?: to )?/m.test(text))
+    throw new Error("Playwright MCP did not report the requested download artifact");
+  let artifact;
+  try {
+    artifact = await waitForDownload(`${outputDir}/glass.txt`);
+  } catch (error) {
+    throw new UnsupportedScenario(`Playwright MCP reported the download but did not expose a completed artifact: ${error.message}`);
+  }
+  if (artifact !== "glass")
     throw new Error("Playwright MCP download artifact content did not match the fixture");
   return "download-complete";
 }
+
+async function waitForDownload(file) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      return fs.readFileSync(file, "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error("completed download artifact was not materialized within 2 seconds");
+}
+
+function startFixtureServer(source) {
+  const html = source.replace(
+    'href="data:text/plain,glass"',
+    'href="/glass.txt"',
+  );
+  const server = http.createServer((request, response) => {
+    if (request.url === "/glass.txt") {
+      response.writeHead(200, {
+        "Content-Disposition": 'attachment; filename="glass.txt"',
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+      response.end("glass");
+      return;
+    }
+    if (request.url === "/fixture.html" || request.url === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(html);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("fixture server did not expose a TCP address"));
+        return;
+      }
+      resolve({
+        url: `http://127.0.0.1:${address.port}/fixture.html`,
+        close: () => new Promise((closeResolve, closeReject) => {
+          server.close((error) => error ? closeReject(error) : closeResolve());
+        }),
+      });
+    });
+  });
+}
+
 function parseResult(value) {
   const text = value.content?.find(({ type }) => type === "text")?.text;
   const match = text?.match(/^### Result\n([^\n]*)/m);
@@ -252,9 +320,9 @@ function createMcpClient(command, args) {
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
     return result;
   }
-  async tool(name, args) {
+  async tool(name, args, { allowError = false } = {}) {
     const result = await this.request("tools/call", { name, arguments: args });
-    if (result.isError) throw new Error(result.content?.map(({ text }) => text).filter(Boolean).join("\n") || `${name} failed`);
+    if (result.isError && !allowError) throw new Error(result.content?.map(({ text }) => text).filter(Boolean).join("\n") || `${name} failed`);
     return result;
   }
   async close() {

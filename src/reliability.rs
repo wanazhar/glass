@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -90,6 +91,58 @@ pub struct ReliabilityScenarioExpectation {
 pub struct ReliabilityScenarioBudgets {
     pub max_duration_ms: u64,
     pub max_browser_actions: u32,
+}
+
+/// Classification reported by one executed scenario.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReliabilityRunClassification {
+    Passed,
+    Failed,
+    SafeRefusal,
+    Indeterminate,
+    Unsupported,
+}
+
+/// Bounded evidence submitted to the forbidden-outcome evaluator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityScenarioObservation {
+    pub scenario_id: String,
+    pub scenario_hash: String,
+    pub classification: ReliabilityRunClassification,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_state: Option<String>,
+    #[serde(default)]
+    pub side_effect_count: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub forbidden_outcomes: Vec<ReliabilityForbiddenOutcome>,
+    pub oracle_evidence: bool,
+    pub artifacts_complete: bool,
+}
+
+/// One reason certification cannot be granted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityGateFailure {
+    pub scenario_id: String,
+    pub code: String,
+    pub detail: String,
+}
+
+/// Release-blocking result over a complete scenario set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityGateReport {
+    pub schema_version: u32,
+    pub certified: bool,
+    pub scenario_count: usize,
+    pub passed: usize,
+    pub safe_refusals: usize,
+    pub indeterminate: usize,
+    pub unsupported: usize,
+    pub forbidden_outcomes: BTreeMap<ReliabilityForbiddenOutcome, u64>,
+    pub failures: Vec<ReliabilityGateFailure>,
 }
 
 /// Versioned, browser-free reliability scenario.
@@ -265,6 +318,156 @@ impl ReliabilityScenario {
             ReliabilityScenarioError::new("$", format!("cannot serialize scenario: {error}"))
         })
     }
+
+    /// Return the content hash used to bind observations to this scenario.
+    pub fn content_hash(&self) -> Result<String, ReliabilityScenarioError> {
+        let canonical = self.to_canonical_json()?;
+        let digest = Sha256::digest(canonical.as_bytes());
+        Ok(format!("sha256:{digest:x}"))
+    }
+}
+
+/// Evaluate one complete scenario corpus using independent oracle evidence.
+pub fn evaluate_reliability_gate(
+    scenarios: &[ReliabilityScenario],
+    observations: &[ReliabilityScenarioObservation],
+) -> Result<ReliabilityGateReport, ReliabilityScenarioError> {
+    let mut scenario_map = BTreeMap::new();
+    for scenario in scenarios {
+        scenario.validate()?;
+        if scenario_map
+            .insert(scenario.id.as_str(), scenario)
+            .is_some()
+        {
+            return Err(ReliabilityScenarioError::new(
+                "scenarios",
+                format!("duplicate scenario ID {:?}", scenario.id),
+            ));
+        }
+    }
+    let mut observation_map = BTreeMap::new();
+    for observation in observations {
+        validate_text(
+            "observations.scenarioId",
+            &observation.scenario_id,
+            MAX_SCENARIO_ID_BYTES,
+        )?;
+        if observation_map
+            .insert(observation.scenario_id.as_str(), observation)
+            .is_some()
+        {
+            return Err(ReliabilityScenarioError::new(
+                "observations",
+                format!(
+                    "duplicate observation for scenario {:?}",
+                    observation.scenario_id
+                ),
+            ));
+        }
+    }
+    let mut forbidden_outcomes = BTreeMap::new();
+    let mut failures = Vec::new();
+    let mut passed = 0;
+    let mut safe_refusals = 0;
+    let mut indeterminate = 0;
+    let mut unsupported = 0;
+
+    for scenario in scenarios {
+        let Some(observation) = observation_map.get(scenario.id.as_str()) else {
+            failures.push(gate_failure(
+                &scenario.id,
+                "missing_evidence",
+                "no observation was provided for the required scenario",
+            ));
+            continue;
+        };
+        let expected_hash = scenario.content_hash()?;
+        if observation.scenario_hash != expected_hash {
+            failures.push(gate_failure(
+                &scenario.id,
+                "scenario_hash_mismatch",
+                "observation is not bound to the exact scenario content",
+            ));
+        }
+        if !observation.oracle_evidence {
+            failures.push(gate_failure(
+                &scenario.id,
+                "missing_oracle_evidence",
+                "required independent oracle evidence was not collected",
+            ));
+        }
+        if !observation.artifacts_complete {
+            failures.push(gate_failure(
+                &scenario.id,
+                "incomplete_artifacts",
+                "required release evidence artifacts are incomplete",
+            ));
+        }
+        match observation.classification {
+            ReliabilityRunClassification::Passed => passed += 1,
+            ReliabilityRunClassification::SafeRefusal => safe_refusals += 1,
+            ReliabilityRunClassification::Indeterminate => indeterminate += 1,
+            ReliabilityRunClassification::Unsupported => unsupported += 1,
+            ReliabilityRunClassification::Failed => failures.push(gate_failure(
+                &scenario.id,
+                "scenario_failed",
+                "scenario classification is failed",
+            )),
+        }
+        if observation.terminal_state.as_deref() != Some(scenario.expect.terminal_state.as_str()) {
+            failures.push(gate_failure(
+                &scenario.id,
+                "terminal_state_mismatch",
+                "observed terminal state does not match the declared expectation",
+            ));
+        }
+        if observation.side_effect_count != scenario.expect.side_effect_count {
+            failures.push(gate_failure(
+                &scenario.id,
+                "side_effect_oracle_mismatch",
+                "observed side-effect counters do not match the declared expectation",
+            ));
+        }
+        for outcome in &observation.forbidden_outcomes {
+            *forbidden_outcomes.entry(*outcome).or_default() += 1;
+        }
+    }
+    for observation in observations {
+        if !scenario_map.contains_key(observation.scenario_id.as_str()) {
+            failures.push(gate_failure(
+                &observation.scenario_id,
+                "unexpected_observation",
+                "observation does not identify a required scenario",
+            ));
+        }
+    }
+    if !forbidden_outcomes.is_empty() {
+        failures.push(gate_failure(
+            "*",
+            "forbidden_outcome",
+            "one or more release-blocking forbidden outcomes were observed",
+        ));
+    }
+    let report = ReliabilityGateReport {
+        schema_version: RELIABILITY_SCENARIO_SCHEMA_VERSION,
+        certified: failures.is_empty(),
+        scenario_count: scenarios.len(),
+        passed,
+        safe_refusals,
+        indeterminate,
+        unsupported,
+        forbidden_outcomes,
+        failures,
+    };
+    Ok(report)
+}
+
+fn gate_failure(scenario_id: &str, code: &str, detail: &str) -> ReliabilityGateFailure {
+    ReliabilityGateFailure {
+        scenario_id: scenario_id.into(),
+        code: code.into(),
+        detail: detail.into(),
+    }
 }
 
 fn default_platforms() -> Vec<ReliabilityPlatform> {
@@ -391,5 +594,62 @@ mod tests {
         value["forbid"] = json!(["secretLeaked", "secretLeaked"]);
         let error = ReliabilityScenario::from_value(value).unwrap_err();
         assert_eq!(error.path, "forbid");
+    }
+
+    fn observation(
+        scenario: &ReliabilityScenario,
+        classification: ReliabilityRunClassification,
+        forbidden_outcomes: Vec<ReliabilityForbiddenOutcome>,
+    ) -> ReliabilityScenarioObservation {
+        ReliabilityScenarioObservation {
+            scenario_id: scenario.id.clone(),
+            scenario_hash: scenario.content_hash().unwrap(),
+            classification,
+            terminal_state: Some(scenario.expect.terminal_state.clone()),
+            side_effect_count: scenario.expect.side_effect_count.clone(),
+            forbidden_outcomes,
+            oracle_evidence: true,
+            artifacts_complete: true,
+        }
+    }
+
+    #[test]
+    fn reliability_gate_certifies_complete_clean_evidence() {
+        let scenario = scenario();
+        let report = evaluate_reliability_gate(
+            std::slice::from_ref(&scenario),
+            &[observation(
+                &scenario,
+                ReliabilityRunClassification::Passed,
+                Vec::new(),
+            )],
+        )
+        .unwrap();
+        assert!(report.certified);
+        assert_eq!(report.passed, 1);
+        assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn reliability_gate_blocks_forbidden_outcomes_and_missing_evidence() {
+        let scenario = scenario();
+        let mut failed = observation(
+            &scenario,
+            ReliabilityRunClassification::SafeRefusal,
+            vec![ReliabilityForbiddenOutcome::SecretLeaked],
+        );
+        failed.artifacts_complete = false;
+        let report = evaluate_reliability_gate(std::slice::from_ref(&scenario), &[failed]).unwrap();
+        assert!(!report.certified);
+        assert_eq!(
+            report.forbidden_outcomes[&ReliabilityForbiddenOutcome::SecretLeaked],
+            1
+        );
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.code == "incomplete_artifacts")
+        );
     }
 }

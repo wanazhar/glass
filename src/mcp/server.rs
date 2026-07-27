@@ -24,9 +24,9 @@ use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SemanticIntentRequest, SemanticObservationLevel,
-    SessionOptions, TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip,
-    VisualFormat, WaitCondition, WaitTimeout,
+    PreflightAction, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    SemanticObservationLevel, SessionOptions, TargetError, VerificationPredicate,
+    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -228,6 +228,9 @@ enum ToolInvocation<'a> {
     },
     ResolveIntent {
         request: SemanticIntentRequest,
+    },
+    ExecuteIntent {
+        request: SemanticIntentExecutionRequest,
     },
     GetDom,
     GetText,
@@ -1085,6 +1088,9 @@ async fn call_tool(
         ToolInvocation::ResolveIntent { request } => {
             serialized_result(&session.resolve_intent(&request).await?)
         }
+        ToolInvocation::ExecuteIntent { request } => {
+            serialized_result(&session.execute_intent(&request).await?)
+        }
         ToolInvocation::GetDom => serialized_result(&session.deep_dom().await?),
         ToolInvocation::GetText => Ok(text_result(session.text().await?)),
         ToolInvocation::Evaluate { expression } => {
@@ -1443,6 +1449,24 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "resolveIntent" => Ok(ToolInvocation::ResolveIntent {
             request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
         }),
+        "executeIntent" => {
+            let candidate_id = required_string(arguments, "candidateId")?.to_string();
+            let value = optional_string(arguments, "value")?.map(str::to_string);
+            let mut request = arguments.clone();
+            let object = request
+                .as_object_mut()
+                .ok_or("executeIntent arguments must be an object")?;
+            object.remove("candidateId");
+            object.remove("value");
+            let request = SemanticIntentRequest::from_json(&serde_json::to_string(&request)?)?;
+            let request = SemanticIntentExecutionRequest {
+                request,
+                candidate_id,
+                value,
+            };
+            request.validate()?;
+            Ok(ToolInvocation::ExecuteIntent { request })
+        }
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
         "evaluate" => Ok(ToolInvocation::Evaluate {
@@ -1741,6 +1765,26 @@ fn tools() -> Vec<Tool> {
                     "constraints": {"type": "object"},
                     "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
                     "expectedRevision": {"type": "integer", "minimum": 0}
+                }
+            }),
+        },
+        Tool {
+            name: "executeIntent",
+            description: "Re-resolve one declared intent and execute only the explicitly selected candidate through revision-guarded actions.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["schemaVersion", "intent", "action", "resolutionPolicy", "candidateId"],
+                "properties": {
+                    "schemaVersion": {"const": 1},
+                    "intent": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "action": {"type": "string", "enum": ["click", "type", "clear", "check", "uncheck", "select", "submit", "open", "close", "search", "filter", "sort", "paginate", "expand", "collapse"]},
+                    "scope": {"type": "object"},
+                    "constraints": {"type": "object"},
+                    "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
+                    "expectedRevision": {"type": "integer", "minimum": 0},
+                    "candidateId": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "value": {"type": "string", "maxLength": 4096}
                 }
             }),
         },
@@ -2507,7 +2551,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 62);
+        assert_eq!(tools.len(), 63);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2530,6 +2574,7 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "resolveIntent"));
+        assert!(tools.iter().any(|tool| tool["name"] == "executeIntent"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
         for tool_name in [
             "clickExpectPopup",
@@ -2672,6 +2717,24 @@ mod tests {
                 ..
             }
         ));
+
+        let execute = json!({
+            "name": "executeIntent",
+            "arguments": {
+                "schemaVersion": 1,
+                "intent": "open settings",
+                "action": "click",
+                "resolutionPolicy": "interactiveConfirmation",
+                "candidateId": "candidate_1",
+                "expectedRevision": 42
+            }
+        });
+        let ToolInvocation::ExecuteIntent { request } = parse_tool_invocation(&execute).unwrap()
+        else {
+            panic!("expected execute intent invocation");
+        };
+        assert_eq!(request.candidate_id, "candidate_1");
+        assert_eq!(request.request.expected_revision, Some(42));
 
         let invalid_level = json!({
             "name": "observe",

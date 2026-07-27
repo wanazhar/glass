@@ -12,12 +12,20 @@ use super::*;
 /// Returned by [`BrowserSession::fill_form`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FillFormOutcome {
+    pub status: ActionStatus,
+    #[serde(rename = "failureKind", skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<ActionFailureKind>,
     /// Number of fields successfully filled.
     pub filled: usize,
     /// Total number of fields submitted.
     pub total: usize,
     /// Per-field result with action taken and status.
     pub fields: Vec<FillFieldResult>,
+    #[serde(rename = "previousRevision")]
+    pub previous_revision: u64,
+    #[serde(rename = "currentRevision")]
+    pub current_revision: u64,
+    pub verification: ActionVerificationEvidence,
 }
 
 /// Result for a single field within a form fill operation.
@@ -49,6 +57,20 @@ impl BrowserSession {
     ///
     /// Bounded to 16 fields per call.
     pub async fn fill_form(&self, fields: &[(&str, &str)]) -> BrowserResult<FillFormOutcome> {
+        self.fill_form_with_expected_revision(fields, None).await
+    }
+
+    /// Fill a form while optionally enforcing the caller's observation revision.
+    pub async fn fill_form_with_expected_revision(
+        &self,
+        fields: &[(&str, &str)],
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<FillFormOutcome> {
+        self.require_expected_revision(expected_revision)?;
+        let previous_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let before = self.page_info().await.ok();
         let total = fields.len();
         if total > FILL_FORM_MAX_FIELDS {
             return Err(format!(
@@ -61,10 +83,7 @@ impl BrowserSession {
         // Phase 1: resolve all locators atomically
         let mut resolved: Vec<(String, ResolvedElement)> = Vec::with_capacity(total);
         for (target, _value) in fields {
-            let element = self
-                .resolve_element(target)
-                .await
-                .map_err(|e| format!("fill_form: resolution failed for \"{target}\": {e}"))?;
+            let element = self.resolve_element(target).await?;
             resolved.push(((*target).to_string(), element));
         }
 
@@ -86,10 +105,34 @@ impl BrowserSession {
             });
         }
 
+        let current_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let after = self.page_info().await.ok();
         Ok(FillFormOutcome {
+            status: if filled == total {
+                ActionStatus::Succeeded
+            } else {
+                ActionStatus::CompletedWithVerificationFailure
+            },
+            failure_kind: (filled != total).then_some(ActionFailureKind::VerificationFailed),
             filled,
             total,
             fields: results,
+            previous_revision,
+            current_revision,
+            verification: ActionVerificationEvidence {
+                revision_delta: current_revision.saturating_sub(previous_revision),
+                url_changed: before
+                    .as_ref()
+                    .zip(after.as_ref())
+                    .is_some_and(|(before, after)| before.url != after.url),
+                title_changed: before
+                    .as_ref()
+                    .zip(after.as_ref())
+                    .is_some_and(|(before, after)| before.title != after.title),
+                ..ActionVerificationEvidence::default()
+            },
         })
     }
 
@@ -179,6 +222,8 @@ mod tests {
     #[test]
     fn fill_form_outcome_counts_filled_and_total() {
         let outcome = FillFormOutcome {
+            status: ActionStatus::CompletedWithVerificationFailure,
+            failure_kind: Some(ActionFailureKind::VerificationFailed),
             filled: 2,
             total: 3,
             fields: vec![
@@ -204,6 +249,12 @@ mod tests {
                     error: Some("not found".to_string()),
                 },
             ],
+            previous_revision: 1,
+            current_revision: 3,
+            verification: ActionVerificationEvidence {
+                revision_delta: 2,
+                ..ActionVerificationEvidence::default()
+            },
         };
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["filled"], 2);

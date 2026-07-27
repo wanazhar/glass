@@ -13,7 +13,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
@@ -872,15 +872,46 @@ pub struct CandidateSummary {
 }
 
 /// A bounded, structured targeting failure safe for agent-facing protocols.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TargetError {
     pub kind: TargetErrorKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<TargetActionabilityReason>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateSummary>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<StaleReferenceRecovery>,
+}
+
+impl Serialize for TargetError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("TargetError", 5)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("failureKind", &self.failure_kind())?;
+        if let Some(reason) = &self.reason {
+            state.serialize_field("reason", reason)?;
+        }
+        if !self.candidates.is_empty() {
+            state.serialize_field("candidates", &self.candidates)?;
+        }
+        if let Some(recovery) = &self.recovery {
+            state.serialize_field("recovery", recovery)?;
+        }
+        state.end()
+    }
+}
+
+impl TargetError {
+    /// Map the legacy targeting taxonomy into the revision-safe action
+    /// taxonomy while retaining the legacy `kind` field.
+    pub fn failure_kind(&self) -> ActionFailureKind {
+        match self.kind {
+            TargetErrorKind::Ambiguous => ActionFailureKind::AmbiguousTarget,
+            TargetErrorKind::NotFound => ActionFailureKind::TargetNotFound,
+            TargetErrorKind::StaleReference => ActionFailureKind::StaleRevision,
+            TargetErrorKind::NotActionable => ActionFailureKind::VerificationFailed,
+        }
+    }
 }
 /// Outcome of a side-effect-free preflight target resolution and actionability check.
 #[derive(Debug, Clone, Serialize)]
@@ -1679,6 +1710,7 @@ pub enum ObservationIncompleteReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
+    Navigate,
     Click,
     ClickExpectPopup,
     DoubleClick,
@@ -1697,6 +1729,106 @@ pub enum ActionKind {
     Scroll,
 }
 
+/// Status of a browser action envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionStatus {
+    Succeeded,
+    CompletedWithVerificationFailure,
+}
+
+/// Stable taxonomy for action failures exposed by revision-aware clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionFailureKind {
+    StaleRevision,
+    AmbiguousTarget,
+    TargetNotFound,
+    PolicyDenied,
+    ConfirmationRequired,
+    Transport,
+    VerificationFailed,
+}
+
+/// Typed failure raised before a revision-guarded action can run.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionContractError {
+    pub kind: ActionFailureKind,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: u64,
+    #[serde(rename = "currentRevision")]
+    pub current_revision: u64,
+    pub recovery: &'static str,
+}
+
+impl ActionContractError {
+    pub(crate) fn stale_revision(expected_revision: u64, current_revision: u64) -> Self {
+        Self {
+            kind: ActionFailureKind::StaleRevision,
+            expected_revision,
+            current_revision,
+            recovery: "observe",
+        }
+    }
+}
+
+impl std::fmt::Display for ActionContractError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "stale page revision: expected {}, current {}",
+            self.expected_revision, self.current_revision
+        )
+    }
+}
+
+impl Error for ActionContractError {}
+
+/// Typed error for an action that ran but failed its postcondition.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionVerificationError {
+    pub kind: ActionFailureKind,
+    pub action: ActionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ActionTarget>,
+    pub revision: u64,
+    pub reason: String,
+}
+
+impl std::fmt::Display for ActionVerificationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "action verification failed: {}", self.reason)
+    }
+}
+
+impl Error for ActionVerificationError {}
+
+/// Bounded post-action verification metadata.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ActionVerificationEvidence {
+    #[serde(rename = "revisionDelta")]
+    pub revision_delta: u64,
+    #[serde(rename = "urlChanged")]
+    pub url_changed: bool,
+    #[serde(rename = "titleChanged")]
+    pub title_changed: bool,
+    #[serde(rename = "targetChanged")]
+    pub target_changed: bool,
+    #[serde(rename = "frameChanged")]
+    pub frame_changed: bool,
+    /// Count-only accessibility evidence; individual page content is never
+    /// included in the action envelope.
+    #[serde(rename = "accessibilityDiff", skip_serializing_if = "Option::is_none")]
+    pub accessibility_diff: Option<AccessibilityDiffSummary>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct AccessibilityDiffSummary {
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+}
+
 /// A resolved browser target recorded in an action result.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionTarget {
@@ -1711,14 +1843,35 @@ pub struct ActionTarget {
 /// caller should observe again before reusing a previous element reference.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionOutcome {
+    pub status: ActionStatus,
     pub action: ActionKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionTarget>,
     pub revision: u64,
+    #[serde(rename = "previousRevision")]
+    pub previous_revision: u64,
+    #[serde(rename = "currentRevision")]
+    pub current_revision: u64,
     pub target_id: String,
     pub frame_id: String,
+    pub verification: ActionVerificationEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Value>,
+}
+
+/// Revision-aware navigation result. The legacy navigation API continues to
+/// return [`PageInfo`], while callers opting into the contract receive the
+/// same status/revision/evidence envelope as input actions.
+#[derive(Debug, Clone, Serialize)]
+pub struct NavigationOutcome {
+    pub status: ActionStatus,
+    pub action: ActionKind,
+    pub page: PageInfo,
+    #[serde(rename = "previousRevision")]
+    pub previous_revision: u64,
+    #[serde(rename = "currentRevision")]
+    pub current_revision: u64,
+    pub verification: ActionVerificationEvidence,
 }
 
 /// Result of a policy-gated coordinate click. The hit-test description is

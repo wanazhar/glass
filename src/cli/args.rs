@@ -125,10 +125,16 @@ pub enum Commands {
         url: String,
         #[arg(long, default_value_t = 20_000)]
         timeout_ms: u64,
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
-    Click { target: String },
+    Click {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Resolve a target and report clickability without performing an action.
     Preflight {
@@ -157,6 +163,8 @@ pub enum Commands {
         text: String,
         #[arg(long)]
         target: Option<String>,
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Dispatch one complete key press.

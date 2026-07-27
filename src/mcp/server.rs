@@ -19,12 +19,13 @@ use tokio::io::{
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
+use crate::browser::cdp::CdpError;
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionKind, ActionOutcome, BatchStep, BrowserResult, BrowserSession, CheckpointV1,
-    DownloadError, Locator, PopupClickError, PreflightAction, ReconciliationOptions,
-    SessionOptions, TargetError, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
-    WaitTimeout,
+    ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchStep,
+    BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
+    PreflightAction, ReconciliationOptions, SessionOptions, TargetError, VisualCaptureOptions,
+    VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -136,9 +137,11 @@ enum ToolInvocation<'a> {
     Navigate {
         url: &'a str,
         timeout_ms: u64,
+        expected_revision: Option<u64>,
     },
     Click {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Preflight {
         target: Cow<'a, str>,
@@ -164,6 +167,7 @@ enum ToolInvocation<'a> {
     Type {
         text: &'a str,
         target: Option<&'a str>,
+        expected_revision: Option<u64>,
     },
     Key {
         key: &'a str,
@@ -289,6 +293,7 @@ enum ToolInvocation<'a> {
     },
     FillForm {
         fields: Vec<(String, String)>,
+        expected_revision: Option<u64>,
     },
     ClipboardRead,
     ClipboardWrite {
@@ -772,6 +777,27 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         })
         .or_else(|| {
             error
+                .downcast_ref::<ActionContractError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<ActionVerificationError>()
+                .and_then(|error| serde_json::to_string(error).ok())
+        })
+        .or_else(|| {
+            error.downcast_ref::<CdpError>().and_then(|error| {
+                serde_json::to_string(&json!({
+                    "kind": "transport",
+                    "code": error.code,
+                    "message": error.message,
+                    "data": error.data,
+                }))
+                .ok()
+            })
+        })
+        .or_else(|| {
+            error
                 .downcast_ref::<PolicyError>()
                 .and_then(|error| serde_json::to_string(error).ok())
         })
@@ -797,13 +823,42 @@ async fn call_tool(
     let session = ensure_session(session, options, policy).await?;
 
     match invocation {
-        ToolInvocation::Navigate { url, timeout_ms } => {
-            let page = session
-                .navigate_with_deadline(url, Duration::from_millis(timeout_ms))
-                .await?;
-            serialized_result(&page)
+        ToolInvocation::Navigate {
+            url,
+            timeout_ms,
+            expected_revision,
+        } => {
+            if let Some(expected_revision) = expected_revision {
+                serialized_result(
+                    &session
+                        .navigate_with_revision(
+                            url,
+                            Duration::from_millis(timeout_ms),
+                            expected_revision,
+                        )
+                        .await?,
+                )
+            } else {
+                let page = session
+                    .navigate_with_deadline(url, Duration::from_millis(timeout_ms))
+                    .await?;
+                serialized_result(&page)
+            }
         }
-        ToolInvocation::Click { target } => action_result(session.click(target.as_ref()).await?),
+        ToolInvocation::Click {
+            target,
+            expected_revision,
+        } => {
+            if let Some(expected_revision) = expected_revision {
+                action_result(
+                    session
+                        .click_with_revision(target.as_ref(), expected_revision)
+                        .await?,
+                )
+            } else {
+                action_result(session.click(target.as_ref()).await?)
+            }
+        }
         ToolInvocation::Preflight { target, action } => {
             serialized_result(&session.preflight_with_action(target.as_ref(), action).await)
         }
@@ -819,9 +874,15 @@ async fn call_tool(
             source,
             destination,
         } => action_result(session.drag(source.as_ref(), destination.as_ref()).await?),
-        ToolInvocation::Type { text, target } => {
-            action_result(session.type_text(text, target).await?)
-        }
+        ToolInvocation::Type {
+            text,
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .type_text_with_expected_revision(text, target, expected_revision)
+                .await?,
+        ),
         ToolInvocation::Key { key } => action_result(session.key_press(key).await?),
         ToolInvocation::KeyDown { key } => action_result(session.key_down(key).await?),
         ToolInvocation::KeyUp { key } => action_result(session.key_up(key).await?),
@@ -1051,12 +1112,19 @@ async fn call_tool(
                 serde_json::from_value(options).unwrap_or_default();
             serialized_result(&session.print_to_pdf(&opts).await?)
         }
-        ToolInvocation::FillForm { fields } => {
+        ToolInvocation::FillForm {
+            fields,
+            expected_revision,
+        } => {
             let refs: Vec<(&str, &str)> = fields
                 .iter()
                 .map(|(t, v)| (t.as_str(), v.as_str()))
                 .collect();
-            serialized_result(&session.fill_form(&refs).await?)
+            serialized_result(
+                &session
+                    .fill_form_with_expected_revision(&refs, expected_revision)
+                    .await?,
+            )
         }
         ToolInvocation::ClipboardRead => {
             let text = session.clipboard_read().await?;
@@ -1100,9 +1168,11 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "navigate" => Ok(ToolInvocation::Navigate {
             url: required_string(arguments, "url")?,
             timeout_ms: optional_u64(arguments, "timeoutMs", 20_000)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "preflight" => Ok(ToolInvocation::Preflight {
             target: required_target(arguments)?,
@@ -1135,6 +1205,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "type" => Ok(ToolInvocation::Type {
             text: required_string(arguments, "text")?,
             target: optional_string(arguments, "target")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "key" => Ok(ToolInvocation::Key {
             key: required_string(arguments, "key")?,
@@ -1279,7 +1350,10 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 let value = entry["value"].as_str().unwrap_or("").to_string();
                 fields.push((target, value));
             }
-            Ok(ToolInvocation::FillForm { fields })
+            Ok(ToolInvocation::FillForm {
+                fields,
+                expected_revision: optional_u64_value(arguments, "expectedRevision")?,
+            })
         }
         "clipboardRead" => Ok(ToolInvocation::ClipboardRead),
         "clipboardWrite" => Ok(ToolInvocation::ClipboardWrite {
@@ -1317,7 +1391,7 @@ fn tools() -> Vec<Tool> {
             description: "Navigate the browser to a URL.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}, "includeTrace": {"type":"boolean", "default":false}},
+                "properties": {"url": {"type": "string"}, "timeoutMs": {"type":"integer", "minimum":1, "maximum":300000, "default":20000}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
                 "required": ["url"]
             }),
         },
@@ -1326,7 +1400,7 @@ fn tools() -> Vec<Tool> {
             description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "includeTrace": {"type":"boolean", "default":false}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -1408,7 +1482,7 @@ fn tools() -> Vec<Tool> {
             description: "Insert text into the focused element, optionally clicking a target.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"text": {"type": "string"}, "target": {"type": "string"}, "includeTrace": {"type":"boolean","default":false}},
+                "properties": {"text": {"type": "string"}, "target": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean","default":false}},
                 "required": ["text"]
             }),
         },
@@ -1681,7 +1755,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "fillForm",
             description: "Fill multiple form fields atomically (max 16). Resolves all locators first.",
-            input_schema: json!({"type":"object","properties":{"fields":{"type":"array","items":{"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"}},"required":["target"]}}},"required":["fields"]}),
+            input_schema: json!({"type":"object","properties":{"fields":{"type":"array","items":{"type":"object","properties":{"target":{"type":"string"},"value":{"type":"string"}},"required":["target"]}},"expectedRevision":{"type":"integer","minimum":0}},"required":["fields"]}),
         },
         Tool {
             name: "clipboardRead",
@@ -2070,7 +2144,7 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::session::ActionKind;
+    use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 
     #[derive(Deserialize)]
     struct FramingCorpusCase {
@@ -2151,6 +2225,13 @@ mod tests {
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
             false
         );
+        for tool_name in ["navigate", "click", "type", "fillForm"] {
+            let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
+            assert_eq!(
+                tool["inputSchema"]["properties"]["expectedRevision"]["type"],
+                "integer"
+            );
+        }
         assert_eq!(
             observe["inputSchema"]["properties"]["includeDom"]["default"],
             false
@@ -2281,6 +2362,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_revision_guard_without_changing_legacy_invocations() {
+        let guarded_params = json!({
+            "name": "click",
+            "arguments": {"target": "r7:b42", "expectedRevision": 7}
+        });
+        let guarded = parse_tool_invocation(&guarded_params).unwrap();
+        assert!(matches!(
+            guarded,
+            ToolInvocation::Click {
+                expected_revision: Some(7),
+                ..
+            }
+        ));
+
+        let legacy_params = json!({
+            "name": "click",
+            "arguments": {"target": "Save"}
+        });
+        let legacy = parse_tool_invocation(&legacy_params).unwrap();
+        assert!(matches!(
+            legacy,
+            ToolInvocation::Click {
+                expected_revision: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn serializes_popup_failures_as_typed_mcp_content() {
         let error = PopupClickError {
             kind: crate::browser::session::PopupClickErrorKind::PopupAmbiguous,
@@ -2326,11 +2436,18 @@ mod tests {
     #[test]
     fn action_results_are_compact_json_text() {
         let result = action_result(ActionOutcome {
+            status: ActionStatus::Succeeded,
             action: ActionKind::Scroll,
             target: None,
             revision: 9,
+            previous_revision: 8,
+            current_revision: 9,
             target_id: "target-1".to_string(),
             frame_id: "frame-1".to_string(),
+            verification: ActionVerificationEvidence {
+                revision_delta: 1,
+                ..ActionVerificationEvidence::default()
+            },
             evidence: None,
         })
         .unwrap();
@@ -2339,7 +2456,7 @@ mod tests {
         assert!(!text.contains('\n'));
         assert_eq!(
             serde_json::from_str::<Value>(text).unwrap(),
-            json!({"action": "scroll", "revision": 9, "target_id":"target-1", "frame_id":"frame-1"})
+            json!({"status":"succeeded", "action": "scroll", "revision": 9, "previousRevision":8, "currentRevision":9, "target_id":"target-1", "frame_id":"frame-1", "verification":{"revisionDelta":1,"urlChanged":false,"titleChanged":false,"targetChanged":false,"frameChanged":false}})
         );
     }
 

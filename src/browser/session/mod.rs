@@ -851,11 +851,15 @@ impl BrowserSession {
         };
         self.failure_trace(
             ActionOutcome {
+                status: ActionStatus::Succeeded,
                 action,
                 target: None,
                 revision: self.page_revision.load(Ordering::Relaxed),
+                previous_revision: self.page_revision.load(Ordering::Relaxed),
+                current_revision: self.page_revision.load(Ordering::Relaxed),
                 target_id,
                 frame_id,
+                verification: ActionVerificationEvidence::default(),
                 evidence: None,
             },
             error,

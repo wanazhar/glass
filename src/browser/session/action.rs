@@ -65,14 +65,23 @@ impl BrowserSession {
     pub async fn scroll(&self, dx: f64, dy: f64) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 self.cdp.scroll_by(dx, dy).await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
+                let current_revision = self.invalidate_observation();
                 Ok(ActionOutcome {
+                    status: ActionStatus::Succeeded,
                     action: ActionKind::Scroll,
                     target: None,
-                    revision: self.invalidate_observation(),
+                    revision: current_revision,
+                    previous_revision,
+                    current_revision,
                     target_id,
                     frame_id,
+                    verification: ActionVerificationEvidence {
+                        revision_delta: current_revision.saturating_sub(previous_revision),
+                        ..ActionVerificationEvidence::default()
+                    },
                     evidence: None,
                 })
             })
@@ -102,13 +111,23 @@ impl BrowserSession {
 
     /// Click an element and return its structured action outcome.
     pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
-        self.pointer_click(target, false).await
+        self.pointer_click(target, false, None).await
+    }
+
+    /// Click an element only when the caller's observation revision is current.
+    pub async fn click_with_revision(
+        &self,
+        target: &str,
+        expected_revision: u64,
+    ) -> BrowserResult<ActionOutcome> {
+        self.pointer_click(target, false, Some(expected_revision))
+            .await
     }
 
     /// Double-click an element with the same target, scroll, and pointer
     /// contract as a single click.
     pub async fn double_click(&self, target: &str) -> BrowserResult<ActionOutcome> {
-        self.pointer_click(target, true).await
+        self.pointer_click(target, true, None).await
     }
 
     /// Hover the pointer over an element without clicking.
@@ -432,9 +451,13 @@ impl BrowserSession {
         &self,
         target: &str,
         double_click: bool,
+        expected_revision: Option<u64>,
     ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
+                let previous_revision = self.page_revision.load(Ordering::Relaxed);
+                let before = self.page_info().await.ok();
                 let (element, object_id, local_point) = self.resolve_click_target(target).await?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let point = self.target_viewport_point(local_point).await?;
@@ -446,7 +469,10 @@ impl BrowserSession {
                 self.dispatch_pointer_events(&remote.object_id, local_point, point, events)
                     .await?;
                 let (target_id, frame_id) = self.route_identity().await?;
+                let current_revision = self.invalidate_observation();
+                let after = self.page_info().await.ok();
                 Ok(ActionOutcome {
+                    status: ActionStatus::Succeeded,
                     action: if double_click {
                         ActionKind::DoubleClick
                     } else {
@@ -456,9 +482,31 @@ impl BrowserSession {
                         label: element.label,
                         reference: element.reference,
                     }),
-                    revision: self.invalidate_observation(),
+                    revision: current_revision,
+                    previous_revision,
+                    current_revision,
                     target_id,
                     frame_id,
+                    verification: ActionVerificationEvidence {
+                        revision_delta: current_revision.saturating_sub(previous_revision),
+                        url_changed: before
+                            .as_ref()
+                            .zip(after.as_ref())
+                            .is_some_and(|(before, after)| before.url != after.url),
+                        title_changed: before
+                            .as_ref()
+                            .zip(after.as_ref())
+                            .is_some_and(|(before, after)| before.title != after.title),
+                        target_changed: before
+                            .as_ref()
+                            .zip(after.as_ref())
+                            .is_some_and(|(before, after)| before.target_id != after.target_id),
+                        frame_changed: before
+                            .as_ref()
+                            .zip(after.as_ref())
+                            .is_some_and(|(before, after)| before.frame_id != after.frame_id),
+                        ..ActionVerificationEvidence::default()
+                    },
                     evidence: None,
                 })
             })
@@ -551,20 +599,45 @@ impl BrowserSession {
         text: &str,
         target: Option<&str>,
     ) -> BrowserResult<ActionOutcome> {
+        self.type_text_with_expected_revision(text, target, None)
+            .await
+    }
+
+    /// Type text while enforcing an optional observation revision.
+    pub async fn type_text_with_expected_revision(
+        &self,
+        text: &str,
+        target: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
+                let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 let target = match target {
-                    Some(target) => self.click(target).await?.target,
+                    Some(target) => {
+                        self.pointer_click(target, false, expected_revision)
+                            .await?
+                            .target
+                    }
                     None => None,
                 };
                 self.cdp.insert_text(text).await?;
                 let (target_id, frame_id) = self.route_identity().await?;
+                let current_revision = self.invalidate_observation();
                 Ok(ActionOutcome {
+                    status: ActionStatus::Succeeded,
                     action: ActionKind::Type,
                     target,
-                    revision: self.invalidate_observation(),
+                    revision: current_revision,
+                    previous_revision,
+                    current_revision,
                     target_id,
                     frame_id,
+                    verification: ActionVerificationEvidence {
+                        revision_delta: current_revision.saturating_sub(previous_revision),
+                        ..ActionVerificationEvidence::default()
+                    },
                     evidence: None,
                 })
             })
@@ -647,10 +720,20 @@ impl BrowserSession {
                 let result = self.cdp.call_on_object(&remote.object_id, function).await?;
                 let value = runtime_value(&result)?;
                 if value["ok"].as_bool() != Some(true) {
-                    return Err(format!(
-                        "form action failed: {}",
-                        value["reason"].as_str().unwrap_or("verification_failed")
-                    )
+                    let current_revision = self.page_revision.load(Ordering::Relaxed);
+                    return Err(ActionVerificationError {
+                        kind: ActionFailureKind::VerificationFailed,
+                        action,
+                        target: Some(ActionTarget {
+                            label: element.label,
+                            reference: element.reference,
+                        }),
+                        revision: current_revision,
+                        reason: value["reason"]
+                            .as_str()
+                            .unwrap_or("verification_failed")
+                            .to_string(),
+                    }
                     .into());
                 }
                 self.action_outcome(action, Some(element), None).await
@@ -678,6 +761,7 @@ impl BrowserSession {
         action: ActionKind,
         target: Option<ActionTarget>,
     ) -> BrowserResult<ActionOutcome> {
+        let previous_revision = self.page_revision.load(Ordering::Relaxed);
         if let Some(interception) = &self.policy_interception {
             // A same-route command is an ordering barrier for synchronous
             // click/form navigation. The interception itself remains active
@@ -689,12 +773,20 @@ impl BrowserSession {
             }
         }
         let (target_id, frame_id) = self.route_identity().await?;
+        let current_revision = self.invalidate_observation();
         Ok(ActionOutcome {
+            status: ActionStatus::Succeeded,
             action,
             target,
-            revision: self.invalidate_observation(),
+            revision: current_revision,
+            previous_revision,
+            current_revision,
             target_id,
             frame_id,
+            verification: ActionVerificationEvidence {
+                revision_delta: current_revision.saturating_sub(previous_revision),
+                ..ActionVerificationEvidence::default()
+            },
             evidence: None,
         })
     }
@@ -754,6 +846,23 @@ impl BrowserSession {
 
     pub(crate) fn invalidate_observation(&self) -> u64 {
         self.page_revision.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn require_expected_revision(
+        &self,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<()> {
+        if let Some(expected_revision) = expected_revision {
+            let current_revision = self.page_revision.load(Ordering::Relaxed);
+            if expected_revision != current_revision {
+                return Err(ActionContractError::stale_revision(
+                    expected_revision,
+                    current_revision,
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn verified_action_point(&self, object_id: &str) -> BrowserResult<Point> {

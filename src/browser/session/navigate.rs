@@ -106,4 +106,41 @@ impl BrowserSession {
             })
             .await
     }
+
+    /// Navigate only when the supplied observation revision is still current.
+    /// This is the revision-safe counterpart to the compatibility-preserving
+    /// [`navigate_with_deadline`](Self::navigate_with_deadline) API.
+    pub async fn navigate_with_revision(
+        &self,
+        url: &str,
+        deadline: Duration,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationOutcome> {
+        self.require_expected_revision(Some(expected_revision))?;
+        let previous_revision = self.page_revision.load(Ordering::Relaxed);
+        let before = self.page_info().await.ok();
+        let page = self.navigate_with_deadline(url, deadline).await?;
+        let current_revision = self.page_revision.load(Ordering::Relaxed);
+        Ok(NavigationOutcome {
+            status: ActionStatus::Succeeded,
+            action: ActionKind::Navigate,
+            verification: ActionVerificationEvidence {
+                revision_delta: current_revision.saturating_sub(previous_revision),
+                url_changed: before.as_ref().is_some_and(|before| before.url != page.url),
+                title_changed: before
+                    .as_ref()
+                    .is_some_and(|before| before.title != page.title),
+                target_changed: before
+                    .as_ref()
+                    .is_some_and(|before| before.target_id != page.target_id),
+                frame_changed: before
+                    .as_ref()
+                    .is_some_and(|before| before.frame_id != page.frame_id),
+                ..ActionVerificationEvidence::default()
+            },
+            page,
+            previous_revision,
+            current_revision,
+        })
+    }
 }

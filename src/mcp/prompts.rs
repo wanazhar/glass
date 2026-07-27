@@ -192,6 +192,14 @@ next step.
 | `hit_test_blocked` | Overlay or other element on top | Dismiss overlay first, then retry |
 | `outside_viewport` | Element scrolled out of view | Scroll into view, then retry |
 
+## Revision-safe actions
+
+`navigate`, `click`, `type`, and `fillForm` accept `expectedRevision` from the
+latest `observe`. Successful guarded actions return `status`, the previous and
+current revision, and bounded verification evidence. A mismatched revision
+returns typed `stale_revision` before browser mutation; observe again before
+retrying.
+
 ## Policy errors
 
 - `kind: "denied"` — operation blocked by active policy preset.

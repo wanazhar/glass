@@ -4,6 +4,8 @@ Glass is a lightweight, local-first browser automation tool written in Rust. It
 drives Chrome or Chromium directly through the Chrome DevTools Protocol (CDP),
 without Playwright, WebDriver, or an embedded browser runtime.
 
+> A lightweight, verifiable browser execution runtime for AI agents.
+
 Glass provides four interfaces over the same browser session:
 
 - a command-line interface for scripts and one-shot actions;
@@ -13,7 +15,7 @@ Glass provides four interfaces over the same browser session:
 
 ## Status
 
-Glass `0.1.16` is available on crates.io. The supported release targets are
+Glass `0.1.17` is available on crates.io. The supported release targets are
 Linux x86-64 and macOS x86-64/arm64. The CLI, terminal UI, MCP server, and Rust
 library share the same browser session runtime.
 
@@ -46,7 +48,7 @@ For a machine without a Rust toolchain, download a stripped release binary and
 verify the published checksum. Set `GLASS_VERSION` to the release tag you want:
 
 ```console
-GLASS_VERSION=v0.1.16
+GLASS_VERSION=v0.1.17
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64" -o glass
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64.sha256" -o glass.sha256
 sha256sum -c glass.sha256
@@ -322,7 +324,23 @@ competitive acceptance results.
 
 The reproducible [MCP registry metadata](docs/mcp-registry.json) is available
 for directory submissions, and the [30-second demo recipe](docs/demo.md)
-shows the navigate → compact observe → revisioned click flow.
+shows the navigate → compact observe → revisioned click → typed outcome flow.
+
+## Revision-safe action contract
+
+Observe returns a page revision and revisioned element references. Pass that
+revision back as `expectedRevision` (MCP), `--expected-revision` (CLI), or to
+the matching Rust method. A stale action is rejected before it can mutate the
+browser:
+
+```json
+{"status":"succeeded","action":"click","previousRevision":7,"currentRevision":8,"revision":8,"target":{"reference":"r7:b42"},"verification":{"revisionDelta":1,"urlChanged":false,"titleChanged":false,"targetChanged":false,"frameChanged":false}}
+```
+
+The typed failure includes `kind: "stale_revision"`, the expected and current
+revisions, and `recovery: "observe"`. Target ambiguity, missing targets,
+policy denials, transport failures, and post-action verification failures are
+also returned as typed errors; clients do not need to parse human messages.
 
 ## MCP Schema Budget
 

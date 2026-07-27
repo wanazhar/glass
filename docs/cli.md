@@ -33,12 +33,12 @@ browsing.
 ## Browser commands
 
 ```text
-navigate URL [--timeout-ms MILLISECONDS]
-click TARGET
+navigate URL [--timeout-ms MILLISECONDS] [--expected-revision REVISION]
+click TARGET [--expected-revision REVISION]
 double-click TARGET
 hover TARGET
 drag SOURCE DESTINATION
-type TEXT [--target TARGET]
+type TEXT [--target TARGET] [--expected-revision REVISION]
 key KEY
 key-down KEY
 key-up KEY
@@ -112,6 +112,10 @@ it. Ordinary `click` retains strict CDP acknowledgement semantics.
 
 Prefer revisioned references for agent workflows. They let Glass reject a
 reference after page state changes instead of acting on a stale element.
+For an explicit action contract, pass the revision from `observe` with
+`--expected-revision`; stale state is rejected before the action runs and the
+result includes typed status plus bounded verification metadata. Existing
+commands without the flag remain compatible.
 Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
 with bounded candidates instead of choosing the first match.
 

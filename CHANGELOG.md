@@ -3,6 +3,16 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.17] - 2026-07-27
+
+### Added
+
+- Revision-safe click, type, fill, and navigation APIs with typed stale-state
+  rejection.
+- Shared action outcomes with status, revision transitions, and bounded URL,
+  title, target, frame, and verification evidence.
+- Public MCP and CLI examples for the observe → guarded action → recovery loop.
+
 ## [0.1.10] - 2026-07-27
 
 ### Fixed

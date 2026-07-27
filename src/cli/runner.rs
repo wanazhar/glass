@@ -146,14 +146,41 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
-        Commands::Navigate { url, timeout_ms } => {
-            let page = session
-                .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
-                .await?;
-            print_json(&page)?;
+        Commands::Navigate {
+            url,
+            timeout_ms,
+            expected_revision,
+        } => {
+            if let Some(expected_revision) = expected_revision {
+                print_json(
+                    &session
+                        .navigate_with_revision(
+                            url,
+                            Duration::from_millis(*timeout_ms),
+                            *expected_revision,
+                        )
+                        .await?,
+                )?;
+            } else {
+                let page = session
+                    .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
+                    .await?;
+                print_json(&page)?;
+            }
         }
-        Commands::Click { target } => {
-            print_json(&session.click(target).await?)?;
+        Commands::Click {
+            target,
+            expected_revision,
+        } => {
+            if let Some(expected_revision) = expected_revision {
+                print_json(
+                    &session
+                        .click_with_revision(target, *expected_revision)
+                        .await?,
+                )?;
+            } else {
+                print_json(&session.click(target).await?)?;
+            }
         }
         Commands::Preflight { target, action } => {
             print_json(&session.preflight_with_action(target, *action).await)?;
@@ -174,8 +201,16 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         } => {
             print_json(&session.drag(source, destination).await?)?;
         }
-        Commands::Type { text, target } => {
-            print_json(&session.type_text(text, target.as_deref()).await?)?;
+        Commands::Type {
+            text,
+            target,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .type_text_with_expected_revision(text, target.as_deref(), *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Key { key } => print_json(&session.key_press(key).await?)?,
         Commands::KeyDown { key } => print_json(&session.key_down(key).await?)?,

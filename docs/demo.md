@@ -18,12 +18,22 @@ claim.
    observe
    ```
 
-3. Copy one reference from that observation and click it explicitly. A stale
-   or ambiguous reference fails closed and asks for a fresh observation:
+3. Copy one reference and its observation revision, then click it explicitly
+   with the revision guard. The successful response includes a typed status,
+   the revision transition, and bounded verification evidence:
 
    ```console
-   click r1:b123
+   click r1:b123 --expected-revision 1
    ```
+
+   ```json
+   {"status":"succeeded","action":"click","previousRevision":1,"currentRevision":2,"revision":2,"target":{"reference":"r1:b123"},"verification":{"revisionDelta":1,"urlChanged":false,"titleChanged":false,"targetChanged":false,"frameChanged":false}}
+   ```
+
+   If another page mutation happened first, the same command returns a typed
+   `stale_revision` failure. Run `observe` again and retry with the new
+   revision; ambiguous targets and failed postconditions are likewise reported
+   as structured errors.
 
 The MCP server or either thin client from
 [`clients/typescript`](../clients/typescript) and

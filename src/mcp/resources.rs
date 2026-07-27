@@ -94,6 +94,14 @@ Rules:
 
 const RESOURCE_ERRORS: &str = r#"# Glass Typed Errors
 
+## Revision-safe action contract
+
+`navigate`, `click`, `type`, and `fillForm` accept an optional
+`expectedRevision`. Successful revision-aware actions return `status`,
+`previousRevision`, `currentRevision`, and bounded `verification` metadata.
+When the revision no longer matches, the action fails before mutation with
+`kind: "stale_revision"` and `recovery: "observe"`.
+
 ## Targeting errors (`TargetError`)
 
 | `kind` | `recoverable` | `suggested_tool` | Meaning |

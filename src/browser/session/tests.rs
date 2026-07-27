@@ -842,8 +842,15 @@ fn action_outcomes_are_compact_and_serializable() {
             reference: Some("r9:b42".to_string()),
         }),
         revision: 10,
+        previous_revision: 9,
+        current_revision: 10,
         target_id: "target-1".to_string(),
         frame_id: "frame-1".to_string(),
+        status: ActionStatus::Succeeded,
+        verification: ActionVerificationEvidence {
+            revision_delta: 1,
+            ..ActionVerificationEvidence::default()
+        },
         evidence: None,
     };
 
@@ -851,6 +858,42 @@ fn action_outcomes_are_compact_and_serializable() {
     assert_eq!(value["action"], "click");
     assert_eq!(value["target"]["reference"], "r9:b42");
     assert_eq!(value["revision"], 10);
+}
+
+#[test]
+fn revision_contract_errors_are_typed_and_recoverable() {
+    let error = ActionContractError::stale_revision(7, 9);
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["kind"], "stale_revision");
+    assert_eq!(value["expectedRevision"], 7);
+    assert_eq!(value["currentRevision"], 9);
+    assert_eq!(value["recovery"], "observe");
+}
+
+#[test]
+fn legacy_target_errors_map_to_the_action_taxonomy() {
+    let error = TargetError {
+        kind: TargetErrorKind::Ambiguous,
+        reason: None,
+        candidates: Vec::new(),
+        recovery: None,
+    };
+    assert_eq!(error.failure_kind(), ActionFailureKind::AmbiguousTarget);
+}
+
+#[test]
+fn verification_failures_are_bounded_and_typed() {
+    let error = ActionVerificationError {
+        kind: ActionFailureKind::VerificationFailed,
+        action: ActionKind::Click,
+        target: None,
+        revision: 4,
+        reason: "checked state did not settle".to_string(),
+    };
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(value["kind"], "verification_failed");
+    assert_eq!(value["action"], "click");
+    assert_eq!(value["revision"], 4);
 }
 
 #[test]

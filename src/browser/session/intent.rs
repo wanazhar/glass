@@ -8,6 +8,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+use super::{
+    SemanticExpansionHandle, SemanticObservation, SemanticPage, SemanticRegion, SemanticTarget,
+};
 use super::{SemanticPageKind, SemanticRegionKind, SemanticRouteIdentity};
 
 pub const INTENT_RESOLUTION_SCHEMA_VERSION: u32 = 1;
@@ -187,6 +191,409 @@ pub fn normalize_intent(
         purpose,
         terms,
     })
+}
+
+/// Resolve an intent against one current semantic observation.
+pub fn resolve_intent(
+    request: &SemanticIntentRequest,
+    observation: &super::SemanticObservation,
+) -> SemanticIntentResult {
+    let normalized = match normalize_intent(request) {
+        Ok(normalized) => normalized,
+        Err(error) => {
+            return result_for(
+                request,
+                observation,
+                IntentResultParts {
+                    normalized_intent: String::new(),
+                    resolution: SemanticResolution::UnsupportedIntent,
+                    policy_decision: IntentPolicyDecision::Rejected,
+                    candidates: Vec::new(),
+                    excluded_candidates: Vec::new(),
+                    selected_candidate: None,
+                    reason: Some(error.reason),
+                },
+            );
+        }
+    };
+    if request
+        .expected_revision
+        .is_some_and(|revision| revision != observation.revision)
+    {
+        return result_for(
+            request,
+            observation,
+            IntentResultParts {
+                normalized_intent: normalized.canonical,
+                resolution: SemanticResolution::StaleRevision,
+                policy_decision: IntentPolicyDecision::Rejected,
+                candidates: Vec::new(),
+                excluded_candidates: Vec::new(),
+                selected_candidate: None,
+                reason: Some("expected revision is no longer current".into()),
+            },
+        );
+    }
+
+    let mut candidates = Vec::new();
+    let mut excluded = Vec::new();
+    let mut candidate_index = 0usize;
+    for region in &observation.regions {
+        for target in &region.targets {
+            let id = format!("candidate_{}", candidate_index + 1);
+            candidate_index += 1;
+            let (include, evidence, excluded_reason) =
+                score_candidate(request, &normalized, observation, region, target);
+            if !include {
+                if excluded.len() < request.constraints.max_candidates {
+                    excluded.push(ExcludedIntentCandidate {
+                        id,
+                        reason: excluded_reason.unwrap_or(IntentEvidence {
+                            category: IntentEvidenceCategory::NegativeConflict,
+                            detail: "candidate did not satisfy the declared constraints".into(),
+                        }),
+                    });
+                }
+                continue;
+            }
+            if candidates.len() >= request.constraints.max_candidates {
+                continue;
+            }
+            candidates.push(SemanticIntentCandidate {
+                id,
+                reference: target.reference.clone(),
+                role: target.role.clone(),
+                name: target.name.clone(),
+                region_id: Some(region.id.clone()),
+                region_kind: Some(region.kind),
+                confidence: confidence_for(&evidence),
+                evidence,
+            });
+        }
+    }
+
+    let classification = classify_resolution(&candidates);
+    let (resolution, policy_decision, selected_candidate, reason) =
+        apply_resolution_policy(request.resolution_policy, classification, &candidates);
+    result_for(
+        request,
+        observation,
+        IntentResultParts {
+            normalized_intent: normalized.canonical,
+            resolution,
+            policy_decision,
+            candidates,
+            excluded_candidates: excluded,
+            selected_candidate,
+            reason,
+        },
+    )
+}
+
+fn score_candidate(
+    request: &SemanticIntentRequest,
+    normalized: &NormalizedSemanticIntent,
+    observation: &super::SemanticObservation,
+    region: &super::SemanticRegion,
+    target: &super::SemanticTarget,
+) -> (bool, Vec<IntentEvidence>, Option<IntentEvidence>) {
+    if request.constraints.must_be_visible || request.constraints.must_be_enabled {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::PolicyExclusion,
+                detail: "visibility or enabled state requires actionability validation".into(),
+            }),
+        );
+    }
+    if request
+        .scope
+        .page_kind
+        .is_some_and(|kind| kind != observation.page.kind)
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "page kind is outside the requested scope".into(),
+            }),
+        );
+    }
+    if request
+        .scope
+        .region_kind
+        .is_some_and(|kind| kind != region.kind)
+        || request
+            .scope
+            .region_id
+            .as_deref()
+            .is_some_and(|id| id != region.id)
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "region is outside the requested scope".into(),
+            }),
+        );
+    }
+    let name_lower = target.name.to_ascii_lowercase();
+    if request
+        .constraints
+        .exclude_text
+        .iter()
+        .any(|value| name_lower.contains(&value.to_ascii_lowercase()))
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "accessible name contains excluded text".into(),
+            }),
+        );
+    }
+    if request
+        .constraints
+        .role
+        .as_deref()
+        .is_some_and(|role| role != target.role)
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "role does not match the declared constraint".into(),
+            }),
+        );
+    }
+    if request
+        .constraints
+        .name
+        .as_deref()
+        .is_some_and(|name| name != target.name)
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "accessible name does not match the declared constraint".into(),
+            }),
+        );
+    }
+    if request
+        .constraints
+        .name_contains
+        .as_deref()
+        .is_some_and(|value| !name_lower.contains(&value.to_ascii_lowercase()))
+    {
+        return (
+            false,
+            Vec::new(),
+            Some(IntentEvidence {
+                category: IntentEvidenceCategory::NegativeConflict,
+                detail: "accessible name does not contain the declared constraint".into(),
+            }),
+        );
+    }
+
+    let mut evidence = vec![IntentEvidence {
+        category: IntentEvidenceCategory::RouteMatch,
+        detail: "candidate belongs to the observed target and frame route".into(),
+    }];
+    if request.constraints.role.is_some() {
+        evidence.push(IntentEvidence {
+            category: IntentEvidenceCategory::ExactRole,
+            detail: "role matches the declared constraint".into(),
+        });
+    }
+    if request.constraints.name.is_some() {
+        evidence.push(IntentEvidence {
+            category: IntentEvidenceCategory::ExactName,
+            detail: "accessible name matches the declared constraint".into(),
+        });
+    }
+    if request.constraints.name_contains.is_some()
+        || normalized
+            .terms
+            .iter()
+            .any(|term| name_lower.contains(term))
+        || synonyms_match(normalized, &name_lower)
+    {
+        evidence.push(IntentEvidence {
+            category: if request.constraints.name_contains.is_some() {
+                IntentEvidenceCategory::ExactName
+            } else {
+                IntentEvidenceCategory::SemanticName
+            },
+            detail: "bounded intent terms match the accessible name".into(),
+        });
+    }
+    if request.scope.region_kind.is_some() || request.scope.region_id.is_some() {
+        evidence.push(IntentEvidence {
+            category: IntentEvidenceCategory::RegionMatch,
+            detail: "candidate belongs to the requested semantic region".into(),
+        });
+    }
+    (true, evidence, None)
+}
+
+fn synonyms_match(normalized: &NormalizedSemanticIntent, name: &str) -> bool {
+    let synonyms: &[(&str, &[&str])] = &[
+        ("settings", &["preferences", "configuration", "options"]),
+        ("continue", &["proceed", "next"]),
+        ("close", &["dismiss", "exit"]),
+        ("open", &["view", "show"]),
+        ("search", &["find", "lookup"]),
+    ];
+    normalized.terms.iter().any(|term| {
+        synonyms
+            .iter()
+            .find(|(source, _)| source == term)
+            .is_some_and(|(_, alternatives)| alternatives.iter().any(|value| name.contains(value)))
+    })
+}
+
+fn confidence_for(evidence: &[IntentEvidence]) -> IntentConfidence {
+    let has = |category| evidence.iter().any(|item| item.category == category);
+    if has(IntentEvidenceCategory::ExactName) && has(IntentEvidenceCategory::ExactRole) {
+        IntentConfidence::Exact
+    } else if has(IntentEvidenceCategory::ExactName)
+        || (has(IntentEvidenceCategory::SemanticName) && has(IntentEvidenceCategory::RegionMatch))
+    {
+        IntentConfidence::High
+    } else if has(IntentEvidenceCategory::SemanticName) || has(IntentEvidenceCategory::RegionMatch)
+    {
+        IntentConfidence::Medium
+    } else {
+        IntentConfidence::Low
+    }
+}
+
+fn classify_resolution(candidates: &[SemanticIntentCandidate]) -> SemanticResolution {
+    match candidates {
+        [] => SemanticResolution::NotFound,
+        [candidate] => match candidate.confidence {
+            IntentConfidence::Exact => SemanticResolution::Exact,
+            IntentConfidence::High => SemanticResolution::UniqueHighConfidence,
+            IntentConfidence::Medium | IntentConfidence::Low | IntentConfidence::Insufficient => {
+                SemanticResolution::UniqueLowConfidence
+            }
+        },
+        _ => SemanticResolution::Ambiguous,
+    }
+}
+
+fn apply_resolution_policy(
+    policy: SemanticResolutionPolicy,
+    resolution: SemanticResolution,
+    candidates: &[SemanticIntentCandidate],
+) -> (
+    SemanticResolution,
+    IntentPolicyDecision,
+    Option<String>,
+    Option<String>,
+) {
+    if matches!(policy, SemanticResolutionPolicy::ReportOnly) {
+        return (
+            resolution,
+            IntentPolicyDecision::ReportOnly,
+            None,
+            Some("reportOnly never dispatches an action".into()),
+        );
+    }
+    if matches!(policy, SemanticResolutionPolicy::InteractiveConfirmation) {
+        return (
+            resolution,
+            IntentPolicyDecision::ConfirmationRequired,
+            None,
+            Some("caller confirmation is required before dispatch".into()),
+        );
+    }
+    let allowed = match policy {
+        SemanticResolutionPolicy::RequireExact => resolution == SemanticResolution::Exact,
+        SemanticResolutionPolicy::RequireUniqueHighConfidence => matches!(
+            resolution,
+            SemanticResolution::Exact | SemanticResolution::UniqueHighConfidence
+        ),
+        SemanticResolutionPolicy::AllowUniqueMediumConfidence => {
+            matches!(
+                resolution,
+                SemanticResolution::Exact
+                    | SemanticResolution::UniqueHighConfidence
+                    | SemanticResolution::UniqueLowConfidence
+            ) && candidates.first().is_some_and(|candidate| {
+                !matches!(
+                    candidate.confidence,
+                    IntentConfidence::Low | IntentConfidence::Insufficient
+                )
+            })
+        }
+        SemanticResolutionPolicy::ReportOnly
+        | SemanticResolutionPolicy::InteractiveConfirmation => false,
+    };
+    if allowed {
+        (
+            resolution,
+            IntentPolicyDecision::Allowed,
+            candidates.first().map(|candidate| candidate.id.clone()),
+            None,
+        )
+    } else if matches!(resolution, SemanticResolution::UniqueLowConfidence) {
+        (
+            SemanticResolution::PolicyRejected,
+            IntentPolicyDecision::Rejected,
+            None,
+            Some("candidate did not meet the declared confidence policy".into()),
+        )
+    } else {
+        (
+            resolution,
+            IntentPolicyDecision::Rejected,
+            None,
+            Some("resolution did not produce one policy-eligible candidate".into()),
+        )
+    }
+}
+
+struct IntentResultParts {
+    normalized_intent: String,
+    resolution: SemanticResolution,
+    policy_decision: IntentPolicyDecision,
+    candidates: Vec<SemanticIntentCandidate>,
+    excluded_candidates: Vec<ExcludedIntentCandidate>,
+    selected_candidate: Option<String>,
+    reason: Option<String>,
+}
+
+fn result_for(
+    request: &SemanticIntentRequest,
+    observation: &super::SemanticObservation,
+    parts: IntentResultParts,
+) -> SemanticIntentResult {
+    let result = SemanticIntentResult {
+        schema_version: INTENT_RESOLUTION_SCHEMA_VERSION,
+        intent: request.intent.clone(),
+        action: request.action,
+        normalized_intent: parts.normalized_intent,
+        resolution: parts.resolution,
+        policy_decision: parts.policy_decision,
+        route: Some(observation.route.clone()),
+        revision: Some(observation.revision),
+        excluded_count: parts.excluded_candidates.len(),
+        candidates: parts.candidates,
+        excluded_candidates: parts.excluded_candidates,
+        selected_candidate: parts.selected_candidate,
+        suggested_constraints: Vec::new(),
+        reason: parts.reason,
+    };
+    debug_assert!(result.validate().is_ok());
+    result
 }
 
 fn concrete_phrase(
@@ -875,6 +1282,107 @@ mod tests {
         request.action = SemanticIntentAction::Type;
         let error = normalize_intent(&request).unwrap_err();
         assert_eq!(error.path, "action");
+    }
+
+    fn semantic_observation() -> SemanticObservation {
+        let route = SemanticRouteIdentity {
+            target_id: "target".into(),
+            frame_id: "frame".into(),
+            url: "https://example.test/dashboard".into(),
+        };
+        let page = SemanticPage {
+            kind: SemanticPageKind::Dashboard,
+            title: "Dashboard".into(),
+            url: route.url.clone(),
+            target_id: route.target_id.clone(),
+            frame_id: route.frame_id.clone(),
+            confidence: super::super::SemanticConfidence::High,
+            evidence: vec!["fixture".into()],
+        };
+        let region = SemanticRegion {
+            id: "region_navigation_1".into(),
+            kind: SemanticRegionKind::Navigation,
+            label: "Navigation".into(),
+            interactive_count: 3,
+            item_count: None,
+            confidence: super::super::SemanticConfidence::Exact,
+            evidence: vec!["aria-role=navigation".into()],
+            targets: vec![
+                SemanticTarget {
+                    reference: "r42:b1".into(),
+                    role: "button".into(),
+                    name: "Settings".into(),
+                    input_type: None,
+                },
+                SemanticTarget {
+                    reference: "r42:b2".into(),
+                    role: "button".into(),
+                    name: "Continue shopping".into(),
+                    input_type: None,
+                },
+                SemanticTarget {
+                    reference: "r42:b3".into(),
+                    role: "button".into(),
+                    name: "Continue to payment".into(),
+                    input_type: None,
+                },
+            ],
+            expansion: Some(SemanticExpansionHandle {
+                region_id: "region_navigation_1".into(),
+                revision: 42,
+                route: route.clone(),
+            }),
+        };
+        SemanticObservation {
+            schema_version: super::INTENT_RESOLUTION_SCHEMA_VERSION,
+            revision: 42,
+            level: super::super::SemanticObservationLevel::Interactive,
+            route,
+            page,
+            regions: vec![region],
+            text: None,
+            accessibility: None,
+            raw_accessibility: None,
+            changes: None,
+            limits: super::super::SemanticObservationLimits::default(),
+        }
+    }
+
+    #[test]
+    fn resolver_returns_selected_exact_and_explicit_ambiguous_results() {
+        let observation = semantic_observation();
+        let mut request = make_request();
+        request.constraints.must_be_visible = false;
+        request.constraints.name = Some("Settings".into());
+        let result = resolve_intent(&request, &observation);
+        assert_eq!(result.resolution, SemanticResolution::Exact);
+        assert_eq!(result.policy_decision, IntentPolicyDecision::Allowed);
+        assert_eq!(result.selected_candidate.as_deref(), Some("candidate_1"));
+
+        request.intent = "continue checkout".into();
+        request.constraints.name = None;
+        request.constraints.name_contains = Some("continue".into());
+        let result = resolve_intent(&request, &observation);
+        assert_eq!(result.resolution, SemanticResolution::Ambiguous);
+        assert_eq!(result.policy_decision, IntentPolicyDecision::Rejected);
+        assert!(result.selected_candidate.is_none());
+        assert_eq!(result.candidates.len(), 2);
+    }
+
+    #[test]
+    fn resolver_fails_closed_for_stale_revision_and_unproven_state() {
+        let observation = semantic_observation();
+        let mut request = make_request();
+        request.expected_revision = Some(41);
+        let result = resolve_intent(&request, &observation);
+        assert_eq!(result.resolution, SemanticResolution::StaleRevision);
+
+        request.expected_revision = Some(42);
+        request.constraints.must_be_enabled = true;
+        let result = resolve_intent(&request, &observation);
+        assert_eq!(result.resolution, SemanticResolution::NotFound);
+        assert_eq!(result.excluded_count, 3);
+        assert!(result.selected_candidate.is_none());
     }
 
     #[test]

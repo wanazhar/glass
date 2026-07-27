@@ -73,6 +73,7 @@ pub use intent::{
     IntentPolicyDecision, IntentResolutionError, IntentScope, NormalizedSemanticIntent,
     SemanticIntentAction, SemanticIntentCandidate, SemanticIntentPurpose, SemanticIntentRequest,
     SemanticIntentResult, SemanticResolution, SemanticResolutionPolicy, normalize_intent,
+    resolve_intent,
 };
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};

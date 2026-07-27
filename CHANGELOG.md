@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-07-27
+
+### Fixed
+
+- Clear stale page routes whenever frame-tree discovery loses its CDP session.
+- Include startup failures in requested MCP failure traces.
+
 ## [0.1.5] - 2026-07-26
 
 ### Fixed

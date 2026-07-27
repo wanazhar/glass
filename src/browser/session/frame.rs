@@ -61,22 +61,20 @@ impl BrowserSession {
                 // The page route is unusable regardless of which notification
                 // arrives first, so make the recovery state deterministic.
                 let mut topology = self.topology.lock().await;
-                if topology.active_target_session_id.as_deref() == Some(target_session.as_str()) {
-                    topology.active_target_id = None;
-                    topology.active_session_id = None;
-                    topology.active_target_session_id = None;
-                    topology.active_frame_id = None;
-                    topology.frames.clear();
-                    topology.frame_sessions.clear();
-                    topology.frame_parents.clear();
-                    self.cdp.set_active_target_route(None, None, None, None);
-                    return Err(TopologyError::new(
-                        TopologyErrorKind::NoTargetSelected,
-                        "no active target is selected; call listTargets to discover available pages",
-                    )
-                    .into());
-                }
-                return Err(error.into());
+                topology.active_target_id = None;
+                topology.active_session_id = None;
+                topology.active_target_session_id = None;
+                topology.active_frame_id = None;
+                topology.frames.clear();
+                topology.frame_sessions.clear();
+                topology.frame_parents.clear();
+                self.cdp.set_active_target_route(None, None, None, None);
+                let _ = error;
+                return Err(TopologyError::new(
+                    TopologyErrorKind::NoTargetSelected,
+                    "no active target is selected; call listTargets to discover available pages",
+                )
+                .into());
             }
         };
         let mut frames = Vec::new();

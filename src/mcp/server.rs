@@ -688,15 +688,19 @@ async fn handle_request(
                 let text = typed_browser_error(error.as_ref())
                     .unwrap_or_else(|| "browser tool failed".to_string());
                 let mut content = vec![json!({"type": "text", "text": text})];
-                if requested_failure_trace(request)
-                    && let Some(browser_session) = session.as_ref()
-                {
-                    let trace = browser_session
-                        .failure_trace_for(
-                            mcp_trace_action(request.params.get("name").and_then(Value::as_str)),
-                            error.to_string(),
-                        )
-                        .await;
+                if requested_failure_trace(request) {
+                    let trace = match session.as_ref() {
+                        Some(browser_session) => browser_session
+                            .failure_trace_for(
+                                mcp_trace_action(request.params.get("name").and_then(Value::as_str)),
+                                error.to_string(),
+                            )
+                            .await,
+                        None => json!({
+                            "error": redact_diagnostic_text(&error.to_string()),
+                            "session": "not_started"
+                        }),
+                    };
                     content.push(json!({
                         "type": "text",
                         "text": serde_json::to_string(&trace).unwrap_or_else(|_| "{}".to_string())

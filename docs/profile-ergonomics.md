@@ -19,6 +19,18 @@ glass --profile myagent "navigate to https://app.example.com/dashboard"
 glass --profile myagent observe
 ```
 
+For an explicit, reviewable cookie hand-off, use bounded JSON files while the
+profile is active:
+
+```sh
+glass --profile myagent --headed export-cookies ./myagent-cookies.json
+glass --profile myagent import-cookies ./myagent-cookies.json
+```
+
+Cookie import/export is policy-gated, limited to 256 cookies and a 512 KiB
+import file, and should be treated as secret material. Keep these files out of
+source control; do not paste them into an agent prompt.
+
 ## What Profiles Persist
 
 - Cookies (session, persistent, HttpOnly)

@@ -134,6 +134,10 @@ tui
 `profiles` without an action lists profiles. `delete-profile NAME` is retained
 as a direct alias for profile deletion.
 
+`export-cookies FILE` and `import-cookies FILE` provide an explicit profile
+state hand-off. Both operations require the persistent-profile capability;
+imports are capped at 512 KiB and 256 cookies.
+
 ## One-shot prompts
 
 Glass recognizes a small set of convenience prompts, including `navigate to`,

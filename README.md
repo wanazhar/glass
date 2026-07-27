@@ -185,6 +185,15 @@ sessions without pasting credentials into the model. See the
    glass --profile work observe
    ```
 
+   To move a reviewed cookie set between profile runs, use bounded JSON files:
+
+   ```console
+   glass --profile work export-cookies ./work-cookies.json
+   glass --profile work import-cookies ./work-cookies.json
+   ```
+
+   Treat the file as a secret and keep it out of source control.
+
 ### Inspect and manage cookies at runtime
 
 Glass exposes three MCP tools for cookie inspection within a profile session:

@@ -7,8 +7,8 @@ use super::args::{CheckpointCommand, Cli, Commands, ProfileCommand};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Locator, PdfOptions,
-    ReconciliationOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
+    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
+    PdfOptions, ReconciliationOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -289,6 +289,27 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             print_json(&session.evaluate(expression).await?)?;
         }
         Commands::Cookies => print_json(&session.cookies().await?)?,
+        Commands::ExportCookies { output } => {
+            let cookies = session.cookies().await?;
+            let bytes = serde_json::to_vec_pretty(&cookies)?;
+            tokio::fs::write(output, bytes).await?;
+            println!("cookies exported to {}", output.display());
+        }
+        Commands::ImportCookies { input } => {
+            const MAX_COOKIE_FILE_BYTES: u64 = 512 * 1024;
+            let metadata = tokio::fs::metadata(input).await?;
+            if metadata.len() > MAX_COOKIE_FILE_BYTES {
+                return Err(format!(
+                    "cookie file exceeds the {}-byte limit",
+                    MAX_COOKIE_FILE_BYTES
+                )
+                .into());
+            }
+            let bytes = tokio::fs::read(input).await?;
+            let cookies: Vec<Cookie> = serde_json::from_slice(&bytes)?;
+            session.set_cookies(&cookies).await?;
+            println!("{} cookies imported", cookies.len());
+        }
         Commands::Pdf { output, background } => {
             let mut opts = PdfOptions::letter();
             if *background {

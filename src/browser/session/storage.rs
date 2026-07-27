@@ -66,6 +66,8 @@ pub struct StorageEntry {
 const STORAGE_VALUE_MAX_BYTES: usize = 1024;
 /// Maximum number of storage entries returned.
 const STORAGE_MAX_ENTRIES: usize = 64;
+/// Maximum number of cookies read or written by one operation.
+const COOKIE_MAX_ENTRIES: usize = 256;
 
 impl BrowserSession {
     /// Read all browser cookies for the current page URL.
@@ -77,14 +79,17 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let raw = self.cdp.get_cookies().await?;
-                let cookies: Vec<Cookie> = raw["cookies"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|c| serde_json::from_value(c.clone()).ok())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let array = raw["cookies"].as_array().cloned().unwrap_or_default();
+                if array.len() > COOKIE_MAX_ENTRIES {
+                    return Err(format!(
+                        "browser returned more than {COOKIE_MAX_ENTRIES} cookies; narrow the profile before exporting"
+                    )
+                    .into());
+                }
+                let cookies: Vec<Cookie> = array
+                    .into_iter()
+                    .map(serde_json::from_value)
+                    .collect::<Result<_, _>>()?;
                 Ok(cookies)
             })
             .await
@@ -98,6 +103,11 @@ impl BrowserSession {
         self.policy.require(PolicyCapability::PersistentProfile)?;
         if cookies.is_empty() {
             return Ok(());
+        }
+        if cookies.len() > COOKIE_MAX_ENTRIES {
+            return Err(
+                format!("cookie import exceeds the {COOKIE_MAX_ENTRIES}-cookie limit").into(),
+            );
         }
         self.cdp
             .with_current_route(async {

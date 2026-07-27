@@ -288,6 +288,12 @@ pub enum Commands {
     /// List all browser cookies for the current page.
     Cookies,
 
+    /// Export current browser cookies as bounded JSON.
+    ExportCookies { output: PathBuf },
+
+    /// Import browser cookies from bounded JSON.
+    ImportCookies { input: PathBuf },
+
     /// Save the current page as a PDF.
     Pdf {
         #[arg(short, long, default_value = "page.pdf")]

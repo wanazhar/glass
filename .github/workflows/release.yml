@@ -23,6 +23,35 @@ jobs:
       - name: Install release audit tools
         run: cargo install cargo-deny cargo-audit --locked
 
+      - name: Install managed Chrome for benchmark evidence
+        shell: bash
+        run: |
+          chrome_path="$(cargo run --release --locked -- install-chromium | sed -n 's/^Chrome for Testing installed at //p')"
+          test -n "$chrome_path"
+          echo "CHROME_PATH=$chrome_path" >> "$GITHUB_ENV"
+
+      - name: Generate ratified benchmark evidence
+        shell: bash
+        env:
+          GLASS_DISABLE_CHROME_SANDBOX: "1"
+          GLASS_BENCH_ITERATIONS: "50"
+          GLASS_BENCH_EXPENSIVE_ITERATIONS: "50"
+          GLASS_SCORECARD_ITERATIONS: "100"
+        run: |
+          mkdir -p dist/validation
+          cargo run --release --locked --example benchmark > dist/validation/benchmark.json
+          cargo run --release --locked --example scorecard > dist/validation/scorecard.json
+          cargo test --locked mcp::server::tests::
+          python3 scripts/derive-ratified-metrics.py \
+            dist/validation/benchmark.json \
+            dist/validation/scorecard.json \
+            --mcp-survival-rate 1.0 \
+            --mcp-raw-report 'cargo test --locked mcp::server::tests::' \
+            --output dist/validation/ratified-metrics.json
+          echo "GLASS_RATIFIED_METRICS=$(jq -c .metrics dist/validation/ratified-metrics.json)" >> "$GITHUB_ENV"
+          echo "GLASS_RATIFIED_RAW_REPORTS=$(jq -c .raw_reports dist/validation/ratified-metrics.json)" >> "$GITHUB_ENV"
+          echo "GLASS_RATIFIED_PASSED=$(jq -r .passed dist/validation/ratified-metrics.json)" >> "$GITHUB_ENV"
+
       - name: Generate release validation evidence
         run: scripts/generate-validation-evidence.sh dist/validation
 
@@ -30,6 +59,9 @@ jobs:
         with:
           name: release-validation-evidence
           path: |
+            dist/validation/benchmark.json
+            dist/validation/scorecard.json
+            dist/validation/ratified-metrics.json
             dist/validation/ratified-gates.json
             dist/validation/release-validation.json
           if-no-files-found: error
@@ -150,6 +182,9 @@ jobs:
             evidence/platform/platform-*.json
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
+          cp evidence/validation/benchmark.json dist/benchmark.json
+          cp evidence/validation/scorecard.json dist/scorecard.json
+          cp evidence/validation/ratified-metrics.json dist/ratified-metrics.json
 
       - name: Verify artifact checksums
         shell: bash

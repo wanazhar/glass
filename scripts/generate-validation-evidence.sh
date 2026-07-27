@@ -91,6 +91,20 @@ passed_checks = [
     if status == "passed"
 ]
 metrics = json.loads(os.environ.get("GLASS_RATIFIED_METRICS", "{}"))
+raw_reports = json.loads(os.environ.get("GLASS_RATIFIED_RAW_REPORTS", "{}"))
+ratified_passed = (
+    local_passed
+    and os.environ.get("GLASS_RATIFIED_PASSED", "false").lower() == "true"
+    and set(metrics) == {
+        "representative_task_success_rate",
+        "fresh_compact_observe_p95_ms",
+        "cached_compact_observe_p95_ms",
+        "fast_action_client_overhead_p95_ms",
+        "idle_glass_rss_bytes",
+        "mcp_malformed_input_survival_rate",
+    }
+    and set(raw_reports) == set(metrics)
+)
 observed_platforms = [
     {
         "target": target,
@@ -107,9 +121,9 @@ reports = {
     "ratified-gates.json": {
         **base,
         "type": "ratified_gates",
-        "passed": local_passed and bool(metrics),
+        "passed": ratified_passed,
         "metrics": metrics,
-        "raw_reports": {"local_checks": "cargo-test-fmt-clippy"},
+        "raw_reports": raw_reports,
     },
     "release-validation.json": {
         **base,

@@ -37,8 +37,8 @@ use tokio::{
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SessionOptions,
-    WorkflowDefinition,
+    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SemanticObservation,
+    SemanticObservationLevel, SessionOptions, WorkflowDefinition,
 };
 use crate::cli::args::Cli;
 
@@ -397,6 +397,7 @@ impl App {
     fn apply_page_update(&mut self, update: PageUpdate) -> BrowserResult<()> {
         match update {
             PageUpdate::Context(context) => self.apply_context(&context),
+            PageUpdate::Semantic(observation) => self.apply_semantic(&observation),
             PageUpdate::Text { page, text } => {
                 self.apply_page_header(&page);
                 self.set_page_content(text);
@@ -411,6 +412,16 @@ impl App {
         }
         self.apply_page_header(&context.page);
         self.set_page_content(serde_json::to_string_pretty(context)?);
+        Ok(())
+    }
+
+    fn apply_semantic(&mut self, observation: &SemanticObservation) -> BrowserResult<()> {
+        self.url = bounded_text(&observation.page.url, TUI_HEADER_MAX_BYTES);
+        self.title = bounded_text(
+            &format!("Glass — {}", observation.page.title),
+            TUI_HEADER_MAX_BYTES,
+        );
+        self.set_page_content(serde_json::to_string_pretty(observation)?);
         Ok(())
     }
 
@@ -501,11 +512,20 @@ enum BrowserOperation {
     Screenshot(String),
     Text,
     Dom,
-    Observe { fresh: bool },
+    Observe {
+        fresh: bool,
+    },
+    Semantic {
+        level: SemanticObservationLevel,
+        region: Option<String>,
+    },
     Click(String),
     DoubleClick(String),
     Type(String),
-    Scroll { dx: f64, dy: f64 },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
     Evaluate(String),
     Workflow(String),
 }
@@ -518,6 +538,7 @@ impl BrowserOperation {
             Self::Text => "Text",
             Self::Dom => "Compact DOM",
             Self::Observe { .. } => "Observe",
+            Self::Semantic { .. } => "Semantic observe",
             Self::Click(_) => "Click",
             Self::DoubleClick(_) => "Double-click",
             Self::Type(_) => "Type",
@@ -607,6 +628,15 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
             fresh: false,
         }));
     }
+    if command.eq_ignore_ascii_case("semantic") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::Semantic {
+            level: SemanticObservationLevel::Summary,
+            region: None,
+        }));
+    }
+    if let Some(values) = strip_ascii_prefix(command, "semantic ") {
+        return parse_semantic_observation(values).map(ParsedCommand::Browser);
+    }
     if command.eq_ignore_ascii_case("scroll") {
         return Ok(ParsedCommand::Browser(BrowserOperation::Scroll {
             dx: 0.0,
@@ -663,6 +693,32 @@ fn parse_scroll(values: &str) -> Result<BrowserOperation, String> {
     Ok(BrowserOperation::Scroll { dx, dy })
 }
 
+fn parse_semantic_observation(values: &str) -> Result<BrowserOperation, String> {
+    let mut values = values.split_whitespace();
+    let level = match values
+        .next()
+        .unwrap_or("summary")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "summary" => SemanticObservationLevel::Summary,
+        "interactive" => SemanticObservationLevel::Interactive,
+        "structured" => SemanticObservationLevel::Structured,
+        "detailed" => SemanticObservationLevel::Detailed,
+        "raw" => SemanticObservationLevel::Raw,
+        _ => {
+            return Err(
+                "semantic level must be summary, interactive, structured, detailed, or raw".into(),
+            );
+        }
+    };
+    let region = values.next().map(str::to_string);
+    if values.next().is_some() {
+        return Err("semantic accepts a level and optional region ID".into());
+    }
+    Ok(BrowserOperation::Semantic { level, region })
+}
+
 #[derive(Debug)]
 enum BrowserCommand {
     Execute {
@@ -708,6 +764,7 @@ enum BrowserEvent {
 #[derive(Debug)]
 enum PageUpdate {
     Context(Box<PageContext>),
+    Semantic(Box<SemanticObservation>),
     Text { page: PageInfo, text: String },
 }
 
@@ -963,6 +1020,24 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::Semantic { level, region } => {
+            let observation = session.semantic_observe(level).await?;
+            let observation = if let Some(region_id) = region {
+                session
+                    .semantic_expand_region(&region_id, observation.revision, level)
+                    .await?
+            } else {
+                observation
+            };
+            Ok(Box::new(OperationResult {
+                activity: format!(
+                    "Semantic {} observation refreshed (revision {}).",
+                    serde_json::to_value(level)?.as_str().unwrap_or("unknown"),
+                    observation.revision
+                ),
+                update: Some(PageUpdate::Semantic(Box::new(observation))),
+            }))
+        }
         BrowserOperation::Click(target) => {
             let outcome = session.click(&target).await?;
             let context = session.observe_fresh().await?;
@@ -1119,7 +1194,7 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
             );
             app.add_activity(
-                "observe | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
+                "observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -1493,6 +1568,14 @@ mod tests {
             parse_command("workflow workflow.json"),
             Ok(ParsedCommand::Browser(BrowserOperation::Workflow(path))) if path == "workflow.json"
         ));
+        assert!(matches!(
+            parse_command("semantic interactive region_search_1"),
+            Ok(ParsedCommand::Browser(BrowserOperation::Semantic {
+                level: SemanticObservationLevel::Interactive,
+                region: Some(region),
+            })) if region == "region_search_1"
+        ));
+        assert!(parse_command("semantic verbose").is_err());
         assert!(matches!(
             parse_command("profiles"),
             Ok(ParsedCommand::Local(LocalCommand::Profiles))

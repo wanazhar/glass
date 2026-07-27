@@ -70,9 +70,9 @@ pub use identity::{AgentIdentity, SignedHttpRequest};
 pub use intent::{
     ExcludedIntentCandidate, INTENT_RESOLUTION_SCHEMA_VERSION, IntentConfidence,
     IntentConstraintSuggestion, IntentConstraints, IntentEvidence, IntentEvidenceCategory,
-    IntentPolicyDecision, IntentResolutionError, IntentScope, SemanticIntentAction,
-    SemanticIntentCandidate, SemanticIntentRequest, SemanticIntentResult, SemanticResolution,
-    SemanticResolutionPolicy,
+    IntentPolicyDecision, IntentResolutionError, IntentScope, NormalizedSemanticIntent,
+    SemanticIntentAction, SemanticIntentCandidate, SemanticIntentPurpose, SemanticIntentRequest,
+    SemanticIntentResult, SemanticResolution, SemanticResolutionPolicy, normalize_intent,
 };
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};

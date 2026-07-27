@@ -47,6 +47,263 @@ pub enum SemanticIntentAction {
     Extract,
 }
 
+/// Deterministic purpose produced from a bounded intent phrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SemanticIntentPurpose {
+    Activate,
+    Open,
+    Continue,
+    Submit,
+    Cancel,
+    Close,
+    Search,
+    Filter,
+    Sort,
+    PaginationNext,
+    PaginationPrevious,
+    Select,
+    Check,
+    Uncheck,
+    Toggle,
+    Enter,
+    Clear,
+    Replace,
+    Expand,
+    Collapse,
+    Download,
+    Upload,
+    Choose,
+    Inspect,
+    Extract,
+}
+
+/// Normalized intent used by deterministic candidate generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormalizedSemanticIntent {
+    pub canonical: String,
+    pub purpose: SemanticIntentPurpose,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terms: Vec<String>,
+}
+
+/// Normalize one request without consulting a browser or external service.
+pub fn normalize_intent(
+    request: &SemanticIntentRequest,
+) -> Result<NormalizedSemanticIntent, IntentResolutionError> {
+    request.validate()?;
+    let normalized = request
+        .intent
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if normalized.is_empty()
+        || matches!(
+            normalized.as_str(),
+            "do it" | "do that" | "handle this" | "click it" | "use it"
+        )
+    {
+        return Err(IntentResolutionError::new(
+            "intent",
+            "unsupportedIntent: provide a concrete purpose or target constraint",
+        ));
+    }
+
+    let (purpose, canonical, terms) =
+        if normalized == "next" || normalized == "next page" || normalized == "go to the next page"
+        {
+            (
+                SemanticIntentPurpose::PaginationNext,
+                "paginate next".into(),
+                Vec::new(),
+            )
+        } else if normalized == "previous"
+            || normalized == "previous page"
+            || normalized == "go to the previous page"
+        {
+            (
+                SemanticIntentPurpose::PaginationPrevious,
+                "paginate previous".into(),
+                Vec::new(),
+            )
+        } else if let Some(value) = normalized.strip_prefix("search for ") {
+            concrete_phrase(
+                request.action,
+                SemanticIntentPurpose::Search,
+                "search",
+                value,
+            )?
+        } else if let Some(value) = normalized.strip_prefix("filter by ") {
+            concrete_phrase(
+                request.action,
+                SemanticIntentPurpose::Filter,
+                "filter",
+                value,
+            )?
+        } else if let Some(value) = normalized.strip_prefix("sort by ") {
+            concrete_phrase(request.action, SemanticIntentPurpose::Sort, "sort", value)?
+        } else if normalized.starts_with("continue ") {
+            compatible_phrase(
+                request.action,
+                SemanticIntentPurpose::Continue,
+                normalized.clone(),
+            )?
+        } else if normalized.starts_with("open ") {
+            compatible_phrase(
+                request.action,
+                SemanticIntentPurpose::Open,
+                normalized.clone(),
+            )?
+        } else if normalized == "submit" || normalized.starts_with("submit ") {
+            compatible_phrase(
+                request.action,
+                SemanticIntentPurpose::Submit,
+                normalized.clone(),
+            )?
+        } else if normalized == "cancel" || normalized.starts_with("cancel ") {
+            compatible_phrase(
+                request.action,
+                SemanticIntentPurpose::Cancel,
+                normalized.clone(),
+            )?
+        } else if normalized == "close" || normalized.starts_with("close ") {
+            compatible_phrase(
+                request.action,
+                SemanticIntentPurpose::Close,
+                normalized.clone(),
+            )?
+        } else {
+            let purpose = purpose_for_action(request.action);
+            let canonical = normalized.clone();
+            let terms = terms_from(&normalized);
+            (purpose, canonical, terms)
+        };
+
+    validate_text("normalizedIntent", &canonical, MAX_INTENT_BYTES, false)?;
+    Ok(NormalizedSemanticIntent {
+        canonical,
+        purpose,
+        terms,
+    })
+}
+
+fn concrete_phrase(
+    action: SemanticIntentAction,
+    purpose: SemanticIntentPurpose,
+    verb: &str,
+    value: &str,
+) -> Result<(SemanticIntentPurpose, String, Vec<String>), IntentResolutionError> {
+    if value.trim().is_empty() {
+        return Err(IntentResolutionError::new(
+            "intent",
+            "unsupportedIntent: the phrase needs a bounded value",
+        ));
+    }
+    let compatible = match purpose {
+        SemanticIntentPurpose::Search => {
+            matches!(
+                action,
+                SemanticIntentAction::Search | SemanticIntentAction::Click
+            )
+        }
+        SemanticIntentPurpose::Filter => {
+            matches!(
+                action,
+                SemanticIntentAction::Filter | SemanticIntentAction::Click
+            )
+        }
+        SemanticIntentPurpose::Sort => {
+            matches!(
+                action,
+                SemanticIntentAction::Sort | SemanticIntentAction::Click
+            )
+        }
+        _ => false,
+    };
+    if !compatible {
+        return Err(IntentResolutionError::new(
+            "action",
+            "action is incompatible with the normalized intent purpose",
+        ));
+    }
+    Ok((
+        purpose,
+        format!("{verb} {}", value.trim()),
+        terms_from(value),
+    ))
+}
+
+fn compatible_phrase(
+    action: SemanticIntentAction,
+    purpose: SemanticIntentPurpose,
+    canonical: String,
+) -> Result<(SemanticIntentPurpose, String, Vec<String>), IntentResolutionError> {
+    let compatible = match purpose {
+        SemanticIntentPurpose::Open | SemanticIntentPurpose::Continue => {
+            matches!(
+                action,
+                SemanticIntentAction::Click | SemanticIntentAction::Open
+            )
+        }
+        SemanticIntentPurpose::Submit => {
+            matches!(
+                action,
+                SemanticIntentAction::Click | SemanticIntentAction::Submit
+            )
+        }
+        SemanticIntentPurpose::Cancel | SemanticIntentPurpose::Close => {
+            matches!(
+                action,
+                SemanticIntentAction::Click | SemanticIntentAction::Close
+            )
+        }
+        _ => false,
+    };
+    if !compatible {
+        return Err(IntentResolutionError::new(
+            "action",
+            "action is incompatible with the normalized intent purpose",
+        ));
+    }
+    Ok((purpose, canonical.clone(), terms_from(&canonical)))
+}
+
+fn purpose_for_action(action: SemanticIntentAction) -> SemanticIntentPurpose {
+    match action {
+        SemanticIntentAction::Click => SemanticIntentPurpose::Activate,
+        SemanticIntentAction::Type => SemanticIntentPurpose::Enter,
+        SemanticIntentAction::Clear => SemanticIntentPurpose::Clear,
+        SemanticIntentAction::Check => SemanticIntentPurpose::Check,
+        SemanticIntentAction::Uncheck => SemanticIntentPurpose::Uncheck,
+        SemanticIntentAction::Select => SemanticIntentPurpose::Select,
+        SemanticIntentAction::Submit => SemanticIntentPurpose::Submit,
+        SemanticIntentAction::Open => SemanticIntentPurpose::Open,
+        SemanticIntentAction::Close => SemanticIntentPurpose::Close,
+        SemanticIntentAction::Search => SemanticIntentPurpose::Search,
+        SemanticIntentAction::Filter => SemanticIntentPurpose::Filter,
+        SemanticIntentAction::Sort => SemanticIntentPurpose::Sort,
+        SemanticIntentAction::Paginate => SemanticIntentPurpose::PaginationNext,
+        SemanticIntentAction::Toggle => SemanticIntentPurpose::Toggle,
+        SemanticIntentAction::Expand => SemanticIntentPurpose::Expand,
+        SemanticIntentAction::Collapse => SemanticIntentPurpose::Collapse,
+        SemanticIntentAction::Download => SemanticIntentPurpose::Download,
+        SemanticIntentAction::Upload => SemanticIntentPurpose::Upload,
+        SemanticIntentAction::Inspect => SemanticIntentPurpose::Inspect,
+        SemanticIntentAction::Extract => SemanticIntentPurpose::Extract,
+    }
+}
+
+fn terms_from(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .filter(|term| !matches!(*term, "the" | "a" | "an" | "to" | "for" | "by"))
+        .take(8)
+        .map(|term| term.to_string())
+        .collect()
+}
+
 /// Result classification exposed to every interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -590,6 +847,34 @@ mod tests {
         request.constraints.max_candidates = MAX_CANDIDATES + 1;
         let error = request.validate().unwrap_err();
         assert_eq!(error.path, "constraints.maxCandidates");
+    }
+
+    #[test]
+    fn normalization_is_deterministic_and_rejects_vague_phrases() {
+        let mut request = make_request();
+        request.intent = "go to the next page".into();
+        request.action = SemanticIntentAction::Paginate;
+        let normalized = normalize_intent(&request).unwrap();
+        assert_eq!(normalized.canonical, "paginate next");
+        assert_eq!(normalized.purpose, SemanticIntentPurpose::PaginationNext);
+
+        request.intent = "search for blue shoes".into();
+        request.action = SemanticIntentAction::Search;
+        let normalized = normalize_intent(&request).unwrap();
+        assert_eq!(normalized.canonical, "search blue shoes");
+        assert_eq!(
+            normalized.terms,
+            vec!["blue".to_string(), "shoes".to_string()]
+        );
+
+        request.intent = "do it".into();
+        let error = normalize_intent(&request).unwrap_err();
+        assert_eq!(error.path, "intent");
+
+        request.intent = "search for blue shoes".into();
+        request.action = SemanticIntentAction::Type;
+        let error = normalize_intent(&request).unwrap_err();
+        assert_eq!(error.path, "action");
     }
 
     #[test]

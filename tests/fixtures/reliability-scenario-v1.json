@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "duplicate-submit-after-timeout",
+  "category": "transactional-workflow",
+  "fixture": "checkout-submit",
+  "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+  "capabilities": ["workflow", "idempotency", "resume"],
+  "setup": {"browser": "chromium", "policy": "hardened"},
+  "steps": [
+    {"runWorkflow": "submit-request.json"},
+    {"inject": {"afterDispatch": "submit", "fault": "loseResponse"}},
+    {"resumeFromCheckpoint": "latest"}
+  ],
+  "expect": {
+    "terminalState": "completed",
+    "sideEffectCount": {"submit": 1}
+  },
+  "forbid": [
+    "nonIdempotentMutationDuplicated",
+    "falseWorkflowCompletion",
+    "secretLeaked"
+  ],
+  "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
+}

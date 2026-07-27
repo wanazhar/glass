@@ -386,6 +386,12 @@ pub enum Commands {
         expected_revision: Option<u64>,
     },
 
+    /// Execute a validated workflow document from JSON or stdin.
+    Workflow {
+        /// JSON file containing `{ "workflow": ..., "inputs": ... }`.
+        input: Option<PathBuf>,
+    },
+
     /// Evaluate a bounded JSON verification predicate.
     Verify {
         /// JSON object such as `{"urlEquals":"https://example.com"}`.
@@ -607,5 +613,15 @@ mod tests {
         assert!(cli.attach);
         assert_eq!(cli.port, 9333);
         assert_eq!(cli.target_id.as_deref(), Some("page-2"));
+    }
+
+    #[test]
+    fn workflow_command_accepts_optional_json_input() {
+        let cli = Cli::try_parse_from(["glass", "workflow", "workflow.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Workflow { input: Some(path) })
+                if path.as_os_str() == "workflow.json"
+        ));
     }
 }

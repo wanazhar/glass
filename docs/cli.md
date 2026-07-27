@@ -68,6 +68,7 @@ frames
 select-frame ID
 evaluate EXPRESSION
 batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
+workflow [JSON_FILE]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 ```
 
@@ -89,6 +90,11 @@ working root, and restores download denial on success, error, or cancellation.
 `{"urlEquals":"https://example.com"}`, `{"visible":"r7:b42"}`,
 `{"textContains":"Ready"}`, or Boolean compositions using `all`, `any`, and
 `not`. It never evaluates caller-provided JavaScript.
+
+`workflow` reads a JSON document containing `workflow` and `inputs` objects
+(or a workflow definition by itself), validates it before dispatch, and emits
+the workflow result with step states, terminal proof, typed outputs, and a
+deterministic trace.
 
 `targets` and `frames` are bounded topology queries. Creating a target or
 discovering a popup never selects it. In a one-shot CLI workflow, discover IDs

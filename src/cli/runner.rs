@@ -9,10 +9,12 @@ use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
     PdfOptions, ReconciliationOptions, SessionOptions, VerificationPredicate, VisualCaptureOptions,
-    WaitCondition,
+    WaitCondition, WorkflowDefinition,
 };
 use base64::Engine;
 use serde::Serialize;
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::Duration;
 
@@ -487,6 +489,22 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .run_batch_with_mode(&steps, *atomic, *mode, *expected_revision)
                     .await?,
             )?;
+        }
+        Commands::Workflow { input } => {
+            let payload = read_json_input(input.as_ref())?;
+            let workflow_value = payload
+                .get("workflow")
+                .cloned()
+                .unwrap_or_else(|| payload.clone());
+            let inputs_value = payload
+                .get("inputs")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+            let workflow = WorkflowDefinition::from_value(workflow_value)
+                .map_err(|error| format!("invalid workflow: {error}"))?;
+            let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs_value)
+                .map_err(|error| format!("invalid workflow inputs: {error}"))?;
+            print_json(&session.run_workflow(&workflow, &inputs).await?)?;
         }
         Commands::Verify {
             predicate,

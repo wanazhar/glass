@@ -70,10 +70,10 @@ pub use identity::{AgentIdentity, SignedHttpRequest};
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use semantic::{
-    SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticConfidence, SemanticExpansionHandle,
-    SemanticObservation, SemanticObservationError, SemanticObservationLevel,
-    SemanticObservationLimits, SemanticPage, SemanticPageKind, SemanticRegion, SemanticRegionKind,
-    SemanticRouteIdentity,
+    SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticConfidence,
+    SemanticExpansionHandle, SemanticObservation, SemanticObservationError,
+    SemanticObservationLevel, SemanticObservationLimits, SemanticPage, SemanticPageKind,
+    SemanticRegion, SemanticRegionKind, SemanticRouteIdentity, SemanticTarget,
 };
 pub use types::*;
 pub use webauthn::{WebAuthnGuard, WebAuthnOptions};

@@ -20,6 +20,9 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_LABEL_BYTES: usize = 256;
 const MAX_TITLE_BYTES: usize = 1_024;
 const MAX_URL_BYTES: usize = 2_048;
+const MAX_TARGETS: usize = 32;
+const MAX_ROLE_BYTES: usize = 64;
+const MAX_VISIBLE_TEXT_BYTES: usize = 16 * 1024;
 
 /// Amount of semantic structure requested by a caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +33,27 @@ pub enum SemanticObservationLevel {
     Structured,
     Detailed,
     Raw,
+}
+
+impl SemanticObservationLevel {
+    fn includes_targets(self) -> bool {
+        matches!(
+            self,
+            Self::Interactive | Self::Structured | Self::Detailed | Self::Raw
+        )
+    }
+
+    fn includes_text(self) -> bool {
+        matches!(self, Self::Structured | Self::Detailed | Self::Raw)
+    }
+
+    fn includes_accessibility(self) -> bool {
+        matches!(self, Self::Detailed | Self::Raw)
+    }
+
+    fn includes_raw_accessibility(self) -> bool {
+        matches!(self, Self::Raw)
+    }
 }
 
 /// Bounded confidence attached to an evidence-backed classification.
@@ -123,6 +147,31 @@ pub struct SemanticExpansionHandle {
     pub route: SemanticRouteIdentity,
 }
 
+/// A bounded, revision-scoped action reference in an interactive observation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticTarget {
+    pub reference: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+}
+
+/// A bounded accessibility node included only by detailed semantic levels.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticAccessibilityNode {
+    pub role: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<SemanticAccessibilityNode>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub interactive: bool,
+}
+
 /// A bounded semantic region summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -136,6 +185,8 @@ pub struct SemanticRegion {
     pub confidence: SemanticConfidence,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<SemanticTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expansion: Option<SemanticExpansionHandle>,
 }
@@ -163,6 +214,12 @@ pub struct SemanticObservation {
     pub page: SemanticPage,
     pub regions: Vec<SemanticRegion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessibility: Option<Vec<SemanticAccessibilityNode>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_accessibility: Option<Vec<SemanticAccessibilityNode>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes: Option<Value>,
     pub limits: SemanticObservationLimits,
 }
@@ -181,8 +238,15 @@ impl SemanticObservation {
             url: context.page.url.clone(),
         };
         let mut regions = Vec::new();
+        let mut anchors = Vec::new();
         for root in &context.accessibility.roots {
-            collect_regions(root, context.accessibility.revision, &route, &mut regions);
+            collect_regions(
+                root,
+                context.accessibility.revision,
+                &route,
+                &mut regions,
+                &mut anchors,
+            );
         }
         if regions.is_empty() {
             regions.push(SemanticRegion {
@@ -193,13 +257,21 @@ impl SemanticObservation {
                 item_count: None,
                 confidence: SemanticConfidence::Unknown,
                 evidence: vec!["no recognized landmark role".into()],
+                targets: Vec::new(),
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_main".into(),
                     revision: context.accessibility.revision,
                     route: route.clone(),
                 }),
             });
+            anchors.push(("region_main".into(), None));
         }
+        populate_level(
+            &mut regions,
+            &context.accessibility.interactive,
+            &anchors,
+            level,
+        );
         let (kind, confidence, evidence) = classify_page(context, &regions);
         let observation = Self {
             schema_version: SEMANTIC_OBSERVATION_SCHEMA_VERSION,
@@ -216,6 +288,25 @@ impl SemanticObservation {
                 evidence,
             },
             regions,
+            text: level
+                .includes_text()
+                .then(|| bounded_semantic_text(&context.text, MAX_VISIBLE_TEXT_BYTES)),
+            accessibility: level.includes_accessibility().then(|| {
+                context
+                    .accessibility
+                    .roots
+                    .iter()
+                    .map(to_semantic_node)
+                    .collect()
+            }),
+            raw_accessibility: level.includes_raw_accessibility().then(|| {
+                context
+                    .accessibility
+                    .roots
+                    .iter()
+                    .map(to_semantic_node)
+                    .collect()
+            }),
             changes: None,
             limits: SemanticObservationLimits {
                 truncated: context.accessibility.truncated
@@ -226,6 +317,37 @@ impl SemanticObservation {
                 omitted_bytes: None,
             },
         };
+        observation.validate()?;
+        Ok(observation)
+    }
+
+    /// Build a revision-scoped observation containing one previously named
+    /// region. The source context is still classified in full so the region
+    /// ID and its target grouping follow the same deterministic rules as the
+    /// page-level observation.
+    pub fn scoped_region_from_page_context(
+        context: &PageContext,
+        level: SemanticObservationLevel,
+        region_id: &str,
+    ) -> Result<Self, SemanticObservationError> {
+        let mut observation = Self::from_page_context(context, level)?;
+        let region_index = observation
+            .regions
+            .iter()
+            .position(|region| region.id == region_id)
+            .ok_or_else(|| {
+                SemanticObservationError::new(
+                    "regionId",
+                    format!(
+                        "region {region_id:?} is not present at revision {}",
+                        observation.revision
+                    ),
+                )
+            })?;
+        let omitted_regions = observation.regions.len().saturating_sub(1);
+        observation.regions = vec![observation.regions.remove(region_index)];
+        observation.limits.omitted_regions = omitted_regions;
+        observation.limits.truncated |= omitted_regions > 0;
         observation.validate()?;
         Ok(observation)
     }
@@ -256,6 +378,7 @@ impl SemanticObservation {
                 format!("contains more than {MAX_REGIONS} regions"),
             ));
         }
+        validate_level_payload(self)?;
         if self.page.target_id != self.route.target_id
             || self.page.frame_id != self.route.frame_id
             || self.page.url != self.route.url
@@ -282,6 +405,41 @@ impl SemanticObservation {
                 false,
             )?;
             validate_evidence(&format!("{path}.evidence"), &region.evidence)?;
+            if region.targets.len() > MAX_TARGETS {
+                return Err(SemanticObservationError::new(
+                    format!("{path}.targets"),
+                    format!("contains more than {MAX_TARGETS} targets"),
+                ));
+            }
+            for (target_index, target) in region.targets.iter().enumerate() {
+                let target_path = format!("{path}.targets[{target_index}]");
+                validate_text(
+                    &format!("{target_path}.reference"),
+                    &target.reference,
+                    MAX_ID_BYTES,
+                    false,
+                )?;
+                validate_text(
+                    &format!("{target_path}.role"),
+                    &target.role,
+                    MAX_ROLE_BYTES,
+                    false,
+                )?;
+                validate_text(
+                    &format!("{target_path}.name"),
+                    &target.name,
+                    MAX_LABEL_BYTES,
+                    true,
+                )?;
+                if let Some(input_type) = &target.input_type {
+                    validate_text(
+                        &format!("{target_path}.inputType"),
+                        input_type,
+                        MAX_ROLE_BYTES,
+                        false,
+                    )?;
+                }
+            }
             if let Some(expansion) = &region.expansion {
                 if expansion.region_id != region.id || expansion.revision != self.revision {
                     return Err(SemanticObservationError::new(
@@ -315,6 +473,40 @@ impl SemanticObservation {
         serde_json::to_string(self)
             .map_err(|error| SemanticObservationError::new("$", error.to_string()))
     }
+}
+
+fn validate_level_payload(
+    observation: &SemanticObservation,
+) -> Result<(), SemanticObservationError> {
+    let has_targets = observation
+        .regions
+        .iter()
+        .any(|region| !region.targets.is_empty());
+    if has_targets && !observation.level.includes_targets() {
+        return Err(SemanticObservationError::new(
+            "regions.targets",
+            "target payload is not available at the summary observation level",
+        ));
+    }
+    if observation.text.is_some() != observation.level.includes_text() {
+        return Err(SemanticObservationError::new(
+            "text",
+            "visible text payload does not match observation level",
+        ));
+    }
+    if observation.accessibility.is_some() != observation.level.includes_accessibility() {
+        return Err(SemanticObservationError::new(
+            "accessibility",
+            "accessibility payload does not match observation level",
+        ));
+    }
+    if observation.raw_accessibility.is_some() != observation.level.includes_raw_accessibility() {
+        return Err(SemanticObservationError::new(
+            "rawAccessibility",
+            "raw accessibility payload does not match observation level",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_route(
@@ -397,6 +589,7 @@ fn collect_regions(
     revision: u64,
     route: &SemanticRouteIdentity,
     regions: &mut Vec<SemanticRegion>,
+    anchors: &mut Vec<(String, Option<String>)>,
 ) {
     if let Some(kind) = region_kind(&node.role) {
         let ordinal = regions.iter().filter(|region| region.kind == kind).count() + 1;
@@ -424,15 +617,65 @@ fn collect_regions(
             item_count,
             confidence: SemanticConfidence::Exact,
             evidence: vec![format!("aria-role={}", node.role)],
+            targets: Vec::new(),
             expansion: Some(SemanticExpansionHandle {
-                region_id: id,
+                region_id: id.clone(),
                 revision,
                 route: route.clone(),
             }),
         });
+        anchors.push((id, Some(format!("{}:{}", node.role, node.name))));
     }
     for child in &node.children {
-        collect_regions(child, revision, route, regions);
+        collect_regions(child, revision, route, regions, anchors);
+    }
+}
+
+fn populate_level(
+    regions: &mut [SemanticRegion],
+    controls: &[crate::browser::dom::CompactInteractiveElement],
+    anchors: &[(String, Option<String>)],
+    level: SemanticObservationLevel,
+) {
+    if !level.includes_targets() {
+        return;
+    }
+    for control in controls.iter().take(MAX_TARGETS) {
+        let region_index = anchors
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, anchor))| {
+                anchor
+                    .as_ref()
+                    .is_some_and(|anchor| control.ancestor_path.iter().any(|item| item == anchor))
+            })
+            .map(|(index, _)| index)
+            .next_back()
+            .unwrap_or_else(|| regions.len().saturating_sub(1));
+        if let Some(region) = regions.get_mut(region_index) {
+            region.targets.push(SemanticTarget {
+                reference: control.reference.clone(),
+                role: bounded_semantic_text(&control.role, MAX_ROLE_BYTES),
+                name: bounded_semantic_text(&control.name, MAX_LABEL_BYTES),
+                input_type: control
+                    .input_type
+                    .as_deref()
+                    .map(|value| bounded_semantic_text(value, MAX_ROLE_BYTES)),
+            });
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn to_semantic_node(node: &CompactAxNode) -> SemanticAccessibilityNode {
+    SemanticAccessibilityNode {
+        role: bounded_semantic_text(&node.role, MAX_ROLE_BYTES),
+        name: bounded_semantic_text(&node.name, MAX_LABEL_BYTES),
+        children: node.children.iter().map(to_semantic_node).collect(),
+        interactive: node.interactive,
     }
 }
 
@@ -574,6 +817,28 @@ impl super::BrowserSession {
         let context = self.observe_fresh().await?;
         SemanticObservation::from_page_context(&context, level).map_err(Into::into)
     }
+
+    /// Expand one semantic region only when its page revision is still current.
+    pub async fn semantic_expand_region(
+        &self,
+        region_id: &str,
+        revision: u64,
+        level: SemanticObservationLevel,
+    ) -> super::types::BrowserResult<SemanticObservation> {
+        let context = self.observe_fresh().await?;
+        if context.accessibility.revision != revision {
+            return Err(SemanticObservationError::new(
+                "revision",
+                format!(
+                    "semantic region revision {revision} is stale; current revision is {}",
+                    context.accessibility.revision
+                ),
+            )
+            .into());
+        }
+        SemanticObservation::scoped_region_from_page_context(&context, level, region_id)
+            .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -607,12 +872,16 @@ mod tests {
                 item_count: Some(10),
                 confidence: SemanticConfidence::High,
                 evidence: vec!["repeated item structure".into()],
+                targets: Vec::new(),
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_results".into(),
                     revision: 42,
                     route: route.clone(),
                 }),
             }],
+            text: None,
+            accessibility: None,
+            raw_accessibility: None,
             changes: None,
             limits: SemanticObservationLimits::default(),
             route,
@@ -662,7 +931,7 @@ mod tests {
             target_id: "target".into(),
             frame_id: "frame".into(),
         };
-        let context = PageContext {
+        let mut context = PageContext {
             page,
             text: "results".into(),
             dom: None,
@@ -704,12 +973,53 @@ mod tests {
             incomplete: Vec::new(),
             screenshot: None,
         };
+        context
+            .accessibility
+            .interactive
+            .push(crate::browser::dom::CompactInteractiveElement {
+                reference: "axr-7-9".into(),
+                role: "textbox".into(),
+                name: "Query".into(),
+                backend_dom_node_id: 9,
+                ancestor_path: vec!["search:Site search".into()],
+                shadow_host_path: None,
+                input_type: Some("search".into()),
+                value: None,
+                checked: None,
+                selected_option: None,
+                empty: false,
+                read_only: false,
+                required: false,
+            });
         let semantic =
             SemanticObservation::from_page_context(&context, SemanticObservationLevel::Summary)
                 .unwrap();
         assert_eq!(semantic.page.kind, SemanticPageKind::SearchResults);
         assert_eq!(semantic.regions[0].id, "region_search_1");
         assert_eq!(semantic.regions[0].interactive_count, 1);
+        assert!(semantic.regions[0].targets.is_empty());
         assert!(!semantic.limits.truncated);
+
+        let interactive =
+            SemanticObservation::from_page_context(&context, SemanticObservationLevel::Interactive)
+                .unwrap();
+        assert_eq!(interactive.regions[0].targets[0].reference, "axr-7-9");
+        assert!(interactive.text.is_none());
+
+        let detailed =
+            SemanticObservation::from_page_context(&context, SemanticObservationLevel::Detailed)
+                .unwrap();
+        assert_eq!(detailed.text.as_deref(), Some("results"));
+        assert!(detailed.accessibility.is_some());
+        assert!(detailed.raw_accessibility.is_none());
+
+        let scoped = SemanticObservation::scoped_region_from_page_context(
+            &context,
+            SemanticObservationLevel::Structured,
+            "region_search_1",
+        )
+        .unwrap();
+        assert_eq!(scoped.regions.len(), 1);
+        assert_eq!(scoped.limits.omitted_regions, 0);
     }
 }

@@ -12,6 +12,9 @@
     "route": {"$ref": "#/$defs/route"},
     "page": {"$ref": "#/$defs/page"},
     "regions": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/region"}},
+    "text": {"type": "string", "maxLength": 16384},
+    "accessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
+    "rawAccessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
     "changes": {},
     "limits": {"$ref": "#/$defs/limits"}
   },
@@ -52,7 +55,30 @@
         "itemCount": {"type": "integer", "minimum": 0},
         "confidence": {"enum": ["exact", "high", "medium", "low", "unknown"]},
         "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 128}},
+        "targets": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/target"}},
         "expansion": {"$ref": "#/$defs/expansion"}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "role"],
+      "properties": {
+        "reference": {"type": "string", "minLength": 1, "maxLength": 128},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "name": {"type": "string", "maxLength": 256},
+        "inputType": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "accessibilityNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "name": {"type": "string", "maxLength": 256},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
+        "interactive": {"type": "boolean"}
       }
     },
     "expansion": {

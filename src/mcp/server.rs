@@ -24,8 +24,9 @@ use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SessionOptions, TargetError, VerificationPredicate,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    PreflightAction, ReconciliationOptions, SemanticObservationLevel, SessionOptions, TargetError,
+    VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
+    WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -222,6 +223,8 @@ enum ToolInvocation<'a> {
         include_dom: bool,
         include_screenshot: bool,
         include_form_values: bool,
+        level: Option<SemanticObservationLevel>,
+        region: Option<&'a str>,
     },
     GetDom,
     GetText,
@@ -1022,7 +1025,29 @@ async fn call_tool(
             include_dom,
             include_screenshot,
             include_form_values,
+            level,
+            region,
         } => {
+            if let Some(level) = level {
+                if include_dom || include_screenshot || include_form_values {
+                    return Err(
+                        "semantic observation cannot be combined with DOM, screenshot, or form values"
+                            .into(),
+                    );
+                }
+                if let Some(region_id) = region {
+                    let page = session.semantic_observe(level).await?;
+                    return serialized_result(
+                        &session
+                            .semantic_expand_region(region_id, page.revision, level)
+                            .await?,
+                    );
+                }
+                return serialized_result(&session.semantic_observe(level).await?);
+            }
+            if region.is_some() {
+                return Err("semantic region expansion requires an explicit level".into());
+            }
             let mut context = match (include_dom, include_screenshot, include_form_values) {
                 (false, false, false) => session.observe().await?,
                 (true, false, false) => session.observe_with_dom().await?,
@@ -1406,6 +1431,8 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             include_dom: optional_bool(arguments, "includeDom")?,
             include_screenshot: optional_bool(arguments, "includeScreenshot")?,
             include_form_values: optional_bool(arguments, "includeFormValues")?,
+            level: optional_semantic_level(arguments)?,
+            region: optional_string(arguments, "region")?,
         }),
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
@@ -1684,7 +1711,9 @@ fn tools() -> Vec<Tool> {
                 "properties": {
                     "includeDom": {"type": "boolean", "default": false},
                     "includeScreenshot": {"type": "boolean", "default": false},
-                    "includeFormValues": {"type": "boolean", "default": false}
+                    "includeFormValues": {"type": "boolean", "default": false},
+                    "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"]},
+                    "region": {"type": "string", "minLength": 1, "maxLength": 128}
                 }
             }),
         },
@@ -2093,6 +2122,18 @@ fn optional_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Option
     }
 }
 
+fn optional_semantic_level(arguments: &Value) -> BrowserResult<Option<SemanticObservationLevel>> {
+    match optional_string(arguments, "level")? {
+        None => Ok(None),
+        Some("summary") => Ok(Some(SemanticObservationLevel::Summary)),
+        Some("interactive") => Ok(Some(SemanticObservationLevel::Interactive)),
+        Some("structured") => Ok(Some(SemanticObservationLevel::Structured)),
+        Some("detailed") => Ok(Some(SemanticObservationLevel::Detailed)),
+        Some("raw") => Ok(Some(SemanticObservationLevel::Raw)),
+        Some(_) => Err("level must be summary, interactive, structured, detailed, or raw".into()),
+    }
+}
+
 fn optional_bool(arguments: &Value, name: &str) -> BrowserResult<bool> {
     match arguments.get(name) {
         None => Ok(false),
@@ -2456,6 +2497,10 @@ mod tests {
             observe["inputSchema"]["properties"]["includeDom"]["default"],
             false
         );
+        assert_eq!(
+            observe["inputSchema"]["properties"]["level"]["enum"],
+            json!(["summary", "interactive", "structured", "detailed", "raw"])
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
         for tool_name in [
@@ -2586,6 +2631,29 @@ mod tests {
             .err()
             .expect("invalid boolean option should fail");
         assert!(error.to_string().contains("includeDom must be a boolean"));
+
+        let semantic = json!({
+            "name": "observe",
+            "arguments": {"level": "interactive", "region": "region_search_1"}
+        });
+        assert!(matches!(
+            parse_tool_invocation(&semantic).unwrap(),
+            ToolInvocation::Observe {
+                level: Some(SemanticObservationLevel::Interactive),
+                region: Some("region_search_1"),
+                ..
+            }
+        ));
+
+        let invalid_level = json!({
+            "name": "observe",
+            "arguments": {"level": "verbose"}
+        });
+        let error = match parse_tool_invocation(&invalid_level) {
+            Ok(_) => panic!("invalid semantic level should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("level must be"));
     }
 
     #[test]

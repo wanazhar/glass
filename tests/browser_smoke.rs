@@ -2,8 +2,8 @@ use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
     ActionKind, BatchStep, BrowserSession, InteractionMode, SessionOptions, TargetError,
     TargetErrorKind, VerificationPredicate, WaitCondition, WaitTimeout, WorkflowBudgets,
-    WorkflowDefinition, WorkflowRunStatus, WorkflowStep, WorkflowStepState,
-    WorkflowTransactionClass,
+    WorkflowDefinition, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowRunStatus,
+    WorkflowStep, WorkflowStepState, WorkflowTransactionClass,
 };
 use serde_json::{Value, json};
 use std::{
@@ -867,7 +867,14 @@ async fn browser_session_drives_a_local_fixture() {
         terminal_condition: VerificationPredicate::TitleContains {
             value: "Glass Fixture".into(),
         },
-        outputs: BTreeMap::new(),
+        outputs: BTreeMap::from([(
+            "title".into(),
+            WorkflowOutputDeclaration {
+                value_type: glass::browser::session::WorkflowValueType::String,
+                source: WorkflowOutputSource::PageTitle,
+                required: true,
+            },
+        )]),
     };
     let workflow_result = session
         .run_workflow(&workflow, &BTreeMap::new())
@@ -876,6 +883,10 @@ async fn browser_session_drives_a_local_fixture() {
     assert_eq!(workflow_result.status, WorkflowRunStatus::Completed);
     assert_eq!(workflow_result.steps[0].state, WorkflowStepState::Committed);
     assert_eq!(workflow_result.steps[0].attempts, 1);
+    assert_eq!(
+        workflow_result.outputs["title"].value,
+        json!("Glass Fixture")
+    );
     let workflow_checkpoint = session
         .export_workflow_checkpoint(&workflow, &workflow_result)
         .await

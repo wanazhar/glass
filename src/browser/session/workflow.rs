@@ -576,6 +576,15 @@ pub enum WorkflowRunStatus {
     Failed,
 }
 
+/// Evidence that the workflow's terminal condition was satisfied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTerminalProof {
+    pub predicate: VerificationPredicate,
+    pub revision: u64,
+    pub state: String,
+}
+
 /// Result of a linear workflow run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -584,6 +593,9 @@ pub struct WorkflowRunResult {
     pub workflow_version: String,
     pub status: WorkflowRunStatus,
     pub steps: Vec<WorkflowStepRecord>,
+    pub outputs: BTreeMap<String, WorkflowOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_proof: Option<WorkflowTerminalProof>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed_step: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -703,6 +715,8 @@ impl WorkflowRunResult {
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Failed,
             steps,
+            outputs: BTreeMap::new(),
+            terminal_proof: None,
             failed_step,
             failure: Some(bound_workflow_text(&failure.into(), 512)),
             initial_revision,
@@ -879,11 +893,50 @@ impl super::BrowserSession {
             let _ = record.transition(WorkflowStepState::Committed);
         }
 
+        let terminal_proof = match self
+            .verify(
+                workflow.terminal_condition.clone(),
+                Duration::from_millis(workflow.budgets.max_duration_ms),
+            )
+            .await
+        {
+            Ok(outcome) => WorkflowTerminalProof {
+                predicate: outcome.predicate,
+                revision: current_revision(self),
+                state: outcome.state,
+            },
+            Err(error) => {
+                return Ok(WorkflowRunResult::failed(
+                    workflow,
+                    records,
+                    None,
+                    format!("workflow terminal condition was not proven: {error}"),
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
+        };
+        let outputs = match extract_workflow_outputs(self, workflow).await {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                return Ok(WorkflowRunResult::failed(
+                    workflow,
+                    records,
+                    None,
+                    format!("workflow output extraction failed: {error}"),
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
+        };
+
         Ok(WorkflowRunResult {
             name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Completed,
             steps: records,
+            outputs,
+            terminal_proof: Some(terminal_proof),
             failed_step: None,
             failure: None,
             initial_revision,
@@ -1098,6 +1151,71 @@ fn workflow_definition_hash(
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+async fn extract_workflow_outputs(
+    session: &super::BrowserSession,
+    workflow: &WorkflowDefinition,
+) -> BrowserResult<BTreeMap<String, WorkflowOutput>> {
+    let page = if workflow
+        .outputs
+        .values()
+        .any(|output| !matches!(output.source, WorkflowOutputSource::VisibleText))
+    {
+        Some(session.page_info().await?)
+    } else {
+        None
+    };
+    let visible_text = if workflow
+        .outputs
+        .values()
+        .any(|output| matches!(output.source, WorkflowOutputSource::VisibleText))
+    {
+        Some(session.text().await?)
+    } else {
+        None
+    };
+    let mut outputs = BTreeMap::new();
+    for (name, declaration) in &workflow.outputs {
+        let text = match declaration.source {
+            WorkflowOutputSource::PageUrl => page.as_ref().map(|page| page.url.as_str()),
+            WorkflowOutputSource::PageTitle => page.as_ref().map(|page| page.title.as_str()),
+            WorkflowOutputSource::VisibleText => visible_text.as_deref(),
+        }
+        .ok_or_else(|| format!("output {name:?} has no extraction source"))?;
+        if text.len() > workflow.budgets.max_extracted_bytes {
+            return Err(format!(
+                "output {name:?} exceeds maxExtractedBytes {}",
+                workflow.budgets.max_extracted_bytes
+            )
+            .into());
+        }
+        let value = match declaration.value_type {
+            WorkflowValueType::String => Value::String(text.to_string()),
+            WorkflowValueType::Url => {
+                if Url::parse(text).is_err() {
+                    return Err(format!("output {name:?} is not a valid URL").into());
+                }
+                Value::String(text.to_string())
+            }
+            WorkflowValueType::Integer | WorkflowValueType::Number | WorkflowValueType::Boolean => {
+                return Err(format!(
+                    "output {name:?} source {} cannot produce {}",
+                    declaration.source, declaration.value_type
+                )
+                .into());
+            }
+        };
+        outputs.insert(
+            name.clone(),
+            WorkflowOutput {
+                value_type: declaration.value_type,
+                source: declaration.source,
+                value,
+            },
+        );
+    }
+    Ok(outputs)
+}
+
 fn current_revision(session: &super::BrowserSession) -> u64 {
     session
         .page_revision
@@ -1151,19 +1269,68 @@ fn bound_workflow_text(value: &str, max_bytes: usize) -> String {
     format!("{}\n[truncated]", &value[..end])
 }
 
-/// A declared output captured by a future workflow executor.
+/// A declared output captured after terminal verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowOutputDeclaration {
     pub value_type: WorkflowValueType,
+    pub source: WorkflowOutputSource,
     #[serde(default)]
     pub required: bool,
 }
 
 impl WorkflowOutputDeclaration {
-    fn validate(&self, _path: &str) -> Result<(), WorkflowValidationError> {
+    fn validate(&self, path: &str) -> Result<(), WorkflowValidationError> {
+        let compatible = match self.source {
+            WorkflowOutputSource::PageUrl => {
+                matches!(
+                    self.value_type,
+                    WorkflowValueType::String | WorkflowValueType::Url
+                )
+            }
+            WorkflowOutputSource::PageTitle | WorkflowOutputSource::VisibleText => {
+                self.value_type == WorkflowValueType::String
+            }
+        };
+        if !compatible {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.valueType"),
+                format!(
+                    "{} output source requires a compatible value type",
+                    self.source
+                ),
+            ));
+        }
         Ok(())
     }
+}
+
+/// Bounded, non-JavaScript sources for workflow outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOutputSource {
+    PageUrl,
+    PageTitle,
+    VisibleText,
+}
+
+impl fmt::Display for WorkflowOutputSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PageUrl => "page_url",
+            Self::PageTitle => "page_title",
+            Self::VisibleText => "visible_text",
+        })
+    }
+}
+
+/// A typed output value with its declared extraction source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowOutput {
+    pub value_type: WorkflowValueType,
+    pub source: WorkflowOutputSource,
+    pub value: Value,
 }
 
 /// A path-aware validation failure.

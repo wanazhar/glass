@@ -57,7 +57,8 @@ pub use browser::{
     ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, NavigationOutcome,
     PageInfo, SessionOptions, SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets,
     WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
-    WorkflowInput, WorkflowOutputDeclaration, WorkflowResumeError, WorkflowResumePlan,
-    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
-    WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTransactionClass,
+    WorkflowValidationError, WorkflowValueType,
 };

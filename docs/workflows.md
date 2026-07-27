@@ -36,7 +36,13 @@ started or an action is dispatched.
     }
   ],
   "terminalCondition": { "urlEquals": "https://example.com/" },
-  "outputs": {}
+  "outputs": {
+    "title": {
+      "valueType": "string",
+      "source": "page_title",
+      "required": true
+    }
+  }
 }
 ```
 
@@ -65,6 +71,10 @@ The runner retries only failures proven to occur before dispatch and only for a
 retry-safe class. A failure after dispatch is recorded and stops the workflow;
 Glass does not claim that an external effect was rolled back or replay it
 automatically.
+
+Outputs use bounded sources such as `page_url`, `page_title`, or
+`visible_text`. Their declared type is checked before the value is returned;
+arbitrary JavaScript is not an output source.
 
 ## Checkpoints and resume
 

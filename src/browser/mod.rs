@@ -51,12 +51,22 @@ pub use session::GeoLocation;
 pub use session::InteractionMode;
 /// A guard that disables CDP Fetch domain interception on drop.
 pub use session::InterceptGuard;
+/// Fresh-state scope and landmark assessment for one knowledge record.
+pub use session::KnowledgeAssessment;
+/// One bounded assessment signal.
+pub use session::KnowledgeAssessmentSignal;
+/// Assessment status after scope and freshness checks.
+pub use session::KnowledgeAssessmentStatus;
 /// Versioned confidence and lifecycle state for persisted browser knowledge.
 pub use session::KnowledgeConfidence;
 /// Invalidation rules for persisted browser knowledge.
 pub use session::KnowledgeInvalidation;
 /// Auditable confidence-state transition for persisted browser knowledge.
 pub use session::KnowledgeLifecycleEvent;
+/// Current session dimensions used to assess remembered knowledge.
+pub use session::KnowledgeLookupContext;
+/// Explicit session inputs for constructing a knowledge lookup context.
+pub use session::KnowledgeLookupOptions;
 /// Profile isolation class for persisted browser knowledge.
 pub use session::KnowledgeProfileScope;
 /// One persisted browser knowledge record.
@@ -65,6 +75,8 @@ pub use session::KnowledgeRecord;
 pub use session::KnowledgeRecordKind;
 /// Scope dimensions preventing knowledge leakage across sessions.
 pub use session::KnowledgeScope;
+/// Assessment signal category for remembered knowledge.
+pub use session::KnowledgeSignalKind;
 /// Provenance for a persisted browser knowledge record.
 pub use session::KnowledgeSource;
 /// Crash-safe local persistence for bounded knowledge records.

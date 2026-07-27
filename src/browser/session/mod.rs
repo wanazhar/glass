@@ -78,8 +78,10 @@ pub use intent::{
 };
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use knowledge::{
-    KNOWLEDGE_SCHEMA_VERSION, KnowledgeConfidence, KnowledgeInvalidation, KnowledgeLifecycleEvent,
-    KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordKind, KnowledgeScope, KnowledgeSource,
+    KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeAssessmentSignal,
+    KnowledgeAssessmentStatus, KnowledgeConfidence, KnowledgeInvalidation, KnowledgeLifecycleEvent,
+    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeProfileScope, KnowledgeRecord,
+    KnowledgeRecordKind, KnowledgeScope, KnowledgeSignalKind, KnowledgeSource,
     KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 pub use knowledge_store::{

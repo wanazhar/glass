@@ -4,11 +4,13 @@
 //! recognize a recurring page or reduce inspection work, but it never contains
 //! an executable target reference and never authorizes a browser mutation.
 
+use super::SemanticObservation;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
+use url::Url;
 
 pub const KNOWLEDGE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_KNOWLEDGE_RECORDS: usize = 256;
@@ -23,6 +25,137 @@ const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_OBJECT_ENTRIES: usize = 64;
 const MAX_JSON_ARRAY_ENTRIES: usize = 64;
 const MAX_JSON_STRING_BYTES: usize = 4096;
+
+/// Current browser/session dimensions used to assess one stored record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeLookupContext {
+    pub origin: String,
+    pub path: String,
+    pub profile_scope: KnowledgeProfileScope,
+    pub profile_key: Option<String>,
+    pub locale: Option<String>,
+    pub tenant_key: Option<String>,
+    pub browser_family: String,
+    pub browser_version: Option<String>,
+    pub glass_schema_version: u32,
+    pub policy_preset: String,
+    pub landmarks: Vec<String>,
+    pub now_epoch_seconds: i64,
+}
+
+/// Explicit session inputs used to construct a lookup context from an
+/// observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeLookupOptions {
+    pub profile_scope: KnowledgeProfileScope,
+    pub profile_key: Option<String>,
+    pub locale: Option<String>,
+    pub tenant_key: Option<String>,
+    pub browser_family: String,
+    pub browser_version: Option<String>,
+    pub glass_schema_version: u32,
+    pub policy_preset: String,
+    pub now_epoch_seconds: i64,
+}
+
+impl KnowledgeLookupContext {
+    /// Build matching dimensions from a semantic observation and explicit
+    /// session scope. Current element references are never retained here.
+    pub fn from_observation(
+        observation: &SemanticObservation,
+        options: KnowledgeLookupOptions,
+    ) -> Result<Self, KnowledgeValidationError> {
+        let url = Url::parse(&observation.route.url).map_err(|error| {
+            KnowledgeValidationError::new("observation.route.url", format!("invalid URL: {error}"))
+        })?;
+        let origin = url.origin().ascii_serialization();
+        let path = if url.path().is_empty() {
+            "/".to_string()
+        } else {
+            url.path().to_string()
+        };
+        let mut landmarks = BTreeSet::new();
+        landmarks.insert(
+            serde_json::to_string(&observation.page.kind).map_err(|error| {
+                KnowledgeValidationError::new("observation.page.kind", error.to_string())
+            })?,
+        );
+        for region in &observation.regions {
+            landmarks.insert(serde_json::to_string(&region.kind).map_err(|error| {
+                KnowledgeValidationError::new("observation.regions.kind", error.to_string())
+            })?);
+        }
+        Ok(Self {
+            origin,
+            path,
+            profile_scope: options.profile_scope,
+            profile_key: options.profile_key,
+            locale: options.locale,
+            tenant_key: options.tenant_key,
+            browser_family: options.browser_family,
+            browser_version: options.browser_version,
+            glass_schema_version: options.glass_schema_version,
+            policy_preset: options.policy_preset,
+            landmarks: landmarks
+                .into_iter()
+                .map(|landmark| landmark.trim_matches('"').to_string())
+                .collect(),
+            now_epoch_seconds: options.now_epoch_seconds,
+        })
+    }
+}
+
+/// Why one remembered record matched or failed to match current state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeSignalKind {
+    OriginMatch,
+    PathMatch,
+    ProfileScopeMatch,
+    LocaleMatch,
+    TenantMatch,
+    BrowserMatch,
+    SchemaMatch,
+    PolicyMatch,
+    LandmarkMatch,
+    FreshnessMatch,
+}
+
+/// One bounded positive or negative assessment explanation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeAssessmentSignal {
+    pub kind: KnowledgeSignalKind,
+    pub detail: String,
+}
+
+/// Eligibility state after current scope, freshness, and landmark checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeAssessmentStatus {
+    Eligible,
+    OutOfScope,
+    Stale,
+    Contradicted,
+    Quarantined,
+}
+
+/// Fresh-state assessment of one stored record. This result contains no target
+/// reference and cannot authorize a browser mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeAssessment {
+    pub record_id: String,
+    pub status: KnowledgeAssessmentStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<KnowledgeAssessmentSignal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_landmarks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<i64>,
+}
 
 /// Knowledge record categories supported by the versioned store contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,12 +289,7 @@ impl KnowledgeRecord {
                 MAX_SCOPE_VALUE_BYTES,
                 false,
             )?;
-            validate_text(
-                &format!("history[{index}].observedAt"),
-                &event.observed_at,
-                MAX_TIMESTAMP_BYTES,
-                false,
-            )?;
+            validate_timestamp(&format!("history[{index}].observedAt"), &event.observed_at)?;
         }
         validate_json_value("data", &self.data, 0)?;
         let data_bytes = serde_json::to_vec(&self.data).map_err(|error| {
@@ -197,6 +325,151 @@ impl KnowledgeRecord {
         let canonical = self.to_canonical_json()?;
         let digest = Sha256::digest(canonical.as_bytes());
         Ok(format!("sha256:{digest:x}"))
+    }
+
+    /// Assess this record against current scope and fresh observation signals.
+    /// A positive assessment never includes an executable target reference.
+    pub fn assess(&self, context: &KnowledgeLookupContext) -> KnowledgeAssessment {
+        let mut signals = Vec::new();
+        let mut conflicts = Vec::new();
+        let mut missing_landmarks = Vec::new();
+
+        if self.scope.origin == context.origin {
+            signals.push(signal(KnowledgeSignalKind::OriginMatch, "origin matches"));
+        } else {
+            conflicts.push("origin does not match".into());
+        }
+        if path_matches(&self.scope.path_pattern, &context.path) {
+            signals.push(signal(
+                KnowledgeSignalKind::PathMatch,
+                "path pattern matches",
+            ));
+        } else {
+            conflicts.push("path is outside the record pattern".into());
+        }
+        if self.scope.profile_scope == context.profile_scope
+            && self.scope.profile_key == context.profile_key
+        {
+            signals.push(signal(
+                KnowledgeSignalKind::ProfileScopeMatch,
+                "profile scope matches",
+            ));
+        } else {
+            conflicts.push("profile scope does not match".into());
+        }
+        compare_optional_scope(
+            &mut signals,
+            &mut conflicts,
+            KnowledgeSignalKind::LocaleMatch,
+            "locale",
+            &self.scope.locale,
+            &context.locale,
+        );
+        compare_optional_scope(
+            &mut signals,
+            &mut conflicts,
+            KnowledgeSignalKind::TenantMatch,
+            "tenant",
+            &self.scope.tenant_key,
+            &context.tenant_key,
+        );
+        if self.scope.browser_family == context.browser_family
+            && browser_version_matches(
+                self.scope.browser_version_range.as_deref(),
+                context.browser_version.as_deref(),
+            )
+        {
+            signals.push(signal(
+                KnowledgeSignalKind::BrowserMatch,
+                "browser scope matches",
+            ));
+        } else {
+            conflicts.push("browser family or version does not match".into());
+        }
+        if self.scope.glass_schema_version == context.glass_schema_version {
+            signals.push(signal(
+                KnowledgeSignalKind::SchemaMatch,
+                "schema scope matches",
+            ));
+        } else {
+            conflicts.push("Glass schema scope does not match".into());
+        }
+        if self.scope.policy_preset == context.policy_preset {
+            signals.push(signal(
+                KnowledgeSignalKind::PolicyMatch,
+                "policy scope matches",
+            ));
+        } else {
+            conflicts.push("policy scope does not match".into());
+        }
+        for required in &self.invalidation.required_landmarks {
+            if context.landmarks.iter().any(|current| current == required) {
+                signals.push(signal(
+                    KnowledgeSignalKind::LandmarkMatch,
+                    format!("landmark {required} is present"),
+                ));
+            } else {
+                missing_landmarks.push(required.clone());
+            }
+        }
+
+        let age_seconds =
+            parse_age_seconds(&self.source.last_verified_at, context.now_epoch_seconds);
+        if let Some(age) = age_seconds {
+            if self
+                .invalidation
+                .max_age_seconds
+                .is_none_or(|maximum| age <= maximum as i64)
+            {
+                signals.push(signal(
+                    KnowledgeSignalKind::FreshnessMatch,
+                    format!("record age is {age} seconds"),
+                ));
+            } else {
+                conflicts.push("record exceeded its maximum age".into());
+            }
+        } else {
+            conflicts.push("lastVerifiedAt is not a valid RFC3339 timestamp".into());
+        }
+
+        let scope_conflict = conflicts.iter().any(|conflict| {
+            matches!(
+                conflict.as_str(),
+                "origin does not match"
+                    | "path is outside the record pattern"
+                    | "profile scope does not match"
+                    | "locale does not match"
+                    | "tenant does not match"
+                    | "browser family or version does not match"
+                    | "Glass schema scope does not match"
+                    | "policy scope does not match"
+            )
+        });
+        let status = if self.confidence == KnowledgeConfidence::Contradicted {
+            KnowledgeAssessmentStatus::Contradicted
+        } else if self.confidence == KnowledgeConfidence::Quarantined {
+            KnowledgeAssessmentStatus::Quarantined
+        } else if scope_conflict {
+            KnowledgeAssessmentStatus::OutOfScope
+        } else if !missing_landmarks.is_empty()
+            || age_seconds.is_none()
+            || self
+                .invalidation
+                .max_age_seconds
+                .is_some_and(|maximum| age_seconds.is_some_and(|age| age > maximum as i64))
+        {
+            KnowledgeAssessmentStatus::Stale
+        } else {
+            KnowledgeAssessmentStatus::Eligible
+        };
+        KnowledgeAssessment {
+            record_id: self.record_id.clone(),
+            status,
+            signals,
+            conflicts,
+            missing_landmarks,
+            age_seconds,
+        }
     }
 
     /// Apply a lifecycle transition. Promotion to `verified` and recovery from
@@ -242,6 +515,58 @@ impl KnowledgeRecord {
         self.history.push(event);
         self.validate()
     }
+}
+
+fn signal(kind: KnowledgeSignalKind, detail: impl Into<String>) -> KnowledgeAssessmentSignal {
+    KnowledgeAssessmentSignal {
+        kind,
+        detail: detail.into(),
+    }
+}
+
+fn compare_optional_scope(
+    signals: &mut Vec<KnowledgeAssessmentSignal>,
+    conflicts: &mut Vec<String>,
+    kind: KnowledgeSignalKind,
+    label: &str,
+    expected: &Option<String>,
+    actual: &Option<String>,
+) {
+    if expected
+        .as_ref()
+        .is_none_or(|expected| Some(expected) == actual.as_ref())
+    {
+        signals.push(signal(kind, format!("{label} scope matches")));
+    } else {
+        conflicts.push(format!("{label} does not match"));
+    }
+}
+
+fn browser_version_matches(expected_range: Option<&str>, actual: Option<&str>) -> bool {
+    match (expected_range, actual) {
+        (None, _) => true,
+        (Some(expected), Some(actual)) => expected == actual || expected == ">=current",
+        (Some(_), None) => false,
+    }
+}
+
+fn parse_age_seconds(last_verified_at: &str, now_epoch_seconds: i64) -> Option<i64> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(last_verified_at).ok()?;
+    Some(
+        now_epoch_seconds
+            .saturating_sub(timestamp.timestamp())
+            .max(0),
+    )
+}
+
+fn path_matches(pattern: &str, path: &str) -> bool {
+    if pattern == path {
+        return true;
+    }
+    let Some(prefix) = pattern.strip_suffix('*') else {
+        return false;
+    };
+    path.starts_with(prefix)
 }
 
 /// The persisted top-level store document.
@@ -341,24 +666,22 @@ fn validate_scope(scope: &KnowledgeScope) -> Result<(), KnowledgeValidationError
 }
 
 fn validate_source(source: &KnowledgeSource) -> Result<(), KnowledgeValidationError> {
-    validate_text(
-        "source.firstSeenAt",
-        &source.first_seen_at,
-        MAX_TIMESTAMP_BYTES,
-        false,
-    )?;
-    validate_text(
-        "source.lastVerifiedAt",
-        &source.last_verified_at,
-        MAX_TIMESTAMP_BYTES,
-        false,
-    )?;
+    validate_timestamp("source.firstSeenAt", &source.first_seen_at)?;
+    validate_timestamp("source.lastVerifiedAt", &source.last_verified_at)?;
     validate_text(
         "source.glassVersion",
         &source.glass_version,
         MAX_SCOPE_VALUE_BYTES,
         false,
     )
+}
+
+fn validate_timestamp(path: &str, value: &str) -> Result<(), KnowledgeValidationError> {
+    validate_text(path, value, MAX_TIMESTAMP_BYTES, false)?;
+    chrono::DateTime::parse_from_rfc3339(value).map_err(|error| {
+        KnowledgeValidationError::new(path, format!("must be RFC3339: {error}"))
+    })?;
+    Ok(())
 }
 
 fn validate_invalidation(
@@ -606,5 +929,54 @@ mod tests {
         };
         let error = snapshot.validate().unwrap_err();
         assert_eq!(error.path, "records[1].recordId");
+    }
+
+    fn lookup_context() -> KnowledgeLookupContext {
+        KnowledgeLookupContext {
+            origin: "https://example.test".into(),
+            path: "/docs/getting-started".into(),
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: Some("en-US".into()),
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: Some(">=120".into()),
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            landmarks: vec!["documentation".into(), "main".into(), "search".into()],
+            now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:00Z")
+                .unwrap()
+                .timestamp(),
+        }
+    }
+
+    #[test]
+    fn assessment_accepts_fresh_matching_scope_and_landmarks() {
+        let assessment = record().assess(&lookup_context());
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Eligible);
+        assert_eq!(assessment.missing_landmarks, Vec::<String>::new());
+        assert!(assessment.conflicts.is_empty());
+    }
+
+    #[test]
+    fn assessment_marks_missing_landmarks_stale() {
+        let mut context = lookup_context();
+        context.landmarks.retain(|landmark| landmark != "search");
+        let assessment = record().assess(&context);
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Stale);
+        assert_eq!(assessment.missing_landmarks, vec!["search"]);
+    }
+
+    #[test]
+    fn assessment_rejects_cross_origin_scope() {
+        let mut context = lookup_context();
+        context.origin = "https://other.test".into();
+        let assessment = record().assess(&context);
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::OutOfScope);
+        assert!(
+            assessment
+                .conflicts
+                .contains(&"origin does not match".to_string())
+        );
     }
 }

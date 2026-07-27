@@ -54,9 +54,11 @@ pub mod tui;
 // capability-specific APIs remain organized under `glass::browser`.
 pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
-    ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, KnowledgeConfidence,
-    KnowledgeInvalidation, KnowledgeLifecycleEvent, KnowledgeProfileScope, KnowledgeRecord,
-    KnowledgeRecordKind, KnowledgeScope, KnowledgeSource, KnowledgeStore, KnowledgeStoreChange,
+    ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, KnowledgeAssessment,
+    KnowledgeAssessmentSignal, KnowledgeAssessmentStatus, KnowledgeConfidence,
+    KnowledgeInvalidation, KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
+    KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordKind, KnowledgeScope,
+    KnowledgeSignalKind, KnowledgeSource, KnowledgeStore, KnowledgeStoreChange,
     KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreSnapshot, KnowledgeValidationError,
     NavigationOutcome, PageInfo, SessionOptions, SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION,
     WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep,

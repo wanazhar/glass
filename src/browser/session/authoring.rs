@@ -230,7 +230,7 @@ pub fn format_workflow_yaml(
                 "$",
                 None,
                 None,
-                &error.to_string(),
+                error.to_string(),
             ),
         )
     })

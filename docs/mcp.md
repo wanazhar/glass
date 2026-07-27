@@ -135,6 +135,8 @@ reversible.
 | `upload` | `target`, `files`, optional `expectedRevision` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
 | `observe` | optional `includeDom`, `includeScreenshot`, `includeFormValues`, `level`, `region` | Return compact page context or a bounded semantic observation. |
+| `resolveIntent` | `schemaVersion`, `intent`, `action`, optional scope and constraints, `resolutionPolicy` | Resolve one bounded intent and return candidates and evidence without dispatch. |
+| `executeIntent` | the resolve request plus `candidateId`, optional `value` | Repeat resolution and dispatch one supported guarded action when policy permits. |
 | `getDOM` | none | Return the full DOM tree. |
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
@@ -165,6 +167,10 @@ the versioned semantic contract. `region` requires an explicit level and
 returns one revision-checked region; semantic levels cannot be combined with
 DOM, screenshot, or form-value overlays. See
 [semantic observations](semantic-observation.md) for the payload rules.
+`resolveIntent` and `executeIntent` use the versioned contract described in
+[intent resolution](intent-resolution.md). Execution is revision-checked and
+returns separate resolution and action evidence; unsupported intent actions
+are rejected before dispatch.
 `wait.timeoutMs` defaults to 10,000 and must be positive. Cancellation ends an
 active wait and scoped network subscriptions are disabled on drop.
 Diagnostic and download durations are limited to 30 seconds. Console argument

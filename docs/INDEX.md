@@ -17,6 +17,9 @@
   and security.
 - [Semantic observations](semantic-observation.md) — bounded page and region
   state, levels, expansion, revisions, diffs, and privacy boundaries.
+- [Intent resolution](intent-resolution.md) — bounded candidate resolution,
+  confidence policies, guarded execution, semantic workflow steps, and TUI
+  review.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
   and design principles for keeping the surface lean.
 - [Logged-in session ergonomics](profile-ergonomics.md) — using persistent

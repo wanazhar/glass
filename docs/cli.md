@@ -72,6 +72,8 @@ batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision
 workflow [JSON_FILE]
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
+resolve-intent [JSON_FILE]
+execute-intent [JSON_FILE]
 ```
 
 `screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and
@@ -87,6 +89,13 @@ only captured by `screenshot` or `observe --screenshot`.
 combined with deep DOM, screenshots, or form values; see
 [semantic observations](semantic-observation.md) for payload levels and
 revision behavior.
+
+`resolve-intent` reads a versioned request and returns bounded candidates,
+evidence, confidence, and the policy decision without dispatching an action.
+`execute-intent` reads a request containing the selected `candidateId`, repeats
+resolution against a fresh observation, and dispatches only when the selected
+policy permits it. See [intent resolution](intent-resolution.md) for the JSON
+shapes and supported action classes.
 
 `diagnostics` explicitly leases console and network domains for at most 30
 seconds and returns bounded, secret-redacted metadata. Dialog commands act only

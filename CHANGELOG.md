@@ -15,6 +15,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Semantic observation surfaces for the Rust library, CLI, MCP, TUI,
   TypeScript client, and Python client, plus deterministic fixture canaries and
   an offline scorecard.
+- Bounded semantic intent resolution with candidate evidence, confidence
+  policies, stale-revision handling, guarded execution, and semantic workflow
+  steps across the library, CLI, MCP, TUI, TypeScript client, and Python client.
 
 ### Changed
 

@@ -120,6 +120,11 @@ revision-aware diffs. Start with `glass observe --level summary`; use
 `--level interactive` when an action reference is needed. See the
 [semantic observation guide](docs/semantic-observation.md).
 
+Intent resolution can compare semantic candidates before acting. Use
+`glass resolve-intent request.json` to inspect evidence, then submit an
+explicit candidate with `glass execute-intent execution.json`. See the
+[intent resolution guide](docs/intent-resolution.md).
+
 Use `glass --help` for the complete CLI surface. Detailed command syntax is in
 the [CLI reference](docs/cli.md), and the corresponding MCP names and
 arguments are in the [MCP guide](docs/mcp.md).
@@ -185,6 +190,7 @@ profiles, screenshots, DOM output, cookies, and logs as sensitive. Review
 - [CLI reference](docs/cli.md)
 - [Action contract](docs/actions.md)
 - [MCP integration](docs/mcp.md)
+- [Intent resolution](docs/intent-resolution.md)
 - [Profiles and authenticated sessions](docs/profile-ergonomics.md)
 - [Policy reference](docs/policy.md)
 - [Security policy](SECURITY.md)

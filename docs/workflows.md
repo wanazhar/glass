@@ -80,6 +80,11 @@ Outputs use bounded sources such as `page_url`, `page_title`, or
 `visible_text`. Their declared type is checked before the value is returned;
 arbitrary JavaScript is not an output source.
 
+Every run result also includes a deterministic trace of step-state transitions.
+The trace has contiguous sequence numbers and a fixed event budget, making it
+suitable for replay inspection without retaining page contents or input
+values.
+
 ## Checkpoints and resume
 
 `export_workflow_checkpoint` produces deterministic JSON capped at 8 KiB. It

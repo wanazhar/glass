@@ -59,6 +59,6 @@ pub use browser::{
     WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
     WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
     WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTransactionClass,
-    WorkflowValidationError, WorkflowValueType,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
+    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };

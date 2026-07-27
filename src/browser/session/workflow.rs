@@ -27,6 +27,7 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_TARGET_BYTES: usize = 1_024;
 const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
 const MAX_STEP_REPETITIONS: u32 = 8;
+const MAX_WORKFLOW_TRACE_EVENTS: usize = 2_048;
 const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
 const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
 
@@ -625,6 +626,7 @@ pub struct WorkflowRunResult {
     pub workflow_version: String,
     pub status: WorkflowRunStatus,
     pub steps: Vec<WorkflowStepRecord>,
+    pub trace: WorkflowTrace,
     pub outputs: BTreeMap<String, WorkflowOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_proof: Option<WorkflowTerminalProof>,
@@ -634,6 +636,63 @@ pub struct WorkflowRunResult {
     pub failure: Option<String>,
     pub initial_revision: u64,
     pub final_revision: u64,
+}
+
+/// Deterministic state-transition trace for replay and debugging.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTrace {
+    pub events: Vec<WorkflowTraceEvent>,
+}
+
+/// One ordered state transition in a workflow trace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTraceEvent {
+    pub sequence: u64,
+    pub step_id: String,
+    pub state: WorkflowStepState,
+    pub attempt: u32,
+}
+
+impl WorkflowTrace {
+    /// Build a stable trace from retained step histories.
+    pub fn from_steps(steps: &[WorkflowStepRecord]) -> Self {
+        let mut events = Vec::new();
+        for step in steps {
+            for state in &step.history {
+                if events.len() == MAX_WORKFLOW_TRACE_EVENTS {
+                    break;
+                }
+                events.push(WorkflowTraceEvent {
+                    sequence: events.len() as u64,
+                    step_id: step.id.clone(),
+                    state: *state,
+                    attempt: step.attempts,
+                });
+            }
+        }
+        Self { events }
+    }
+
+    /// Validate sequence ordering and the trace event budget.
+    pub fn validate(&self) -> Result<(), WorkflowValidationError> {
+        if self.events.len() > MAX_WORKFLOW_TRACE_EVENTS {
+            return Err(WorkflowValidationError::new(
+                "trace.events",
+                format!("must contain at most {MAX_WORKFLOW_TRACE_EVENTS} events"),
+            ));
+        }
+        for (index, event) in self.events.iter().enumerate() {
+            if event.sequence != index as u64 {
+                return Err(WorkflowValidationError::new(
+                    format!("trace.events[{index}].sequence"),
+                    "sequence must be contiguous from zero",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Bounded, deterministic workflow checkpoint. Input values and page content
@@ -742,11 +801,13 @@ impl WorkflowRunResult {
         initial_revision: u64,
         final_revision: u64,
     ) -> Self {
+        let trace = WorkflowTrace::from_steps(&steps);
         Self {
             name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Failed,
             steps,
+            trace,
             outputs: BTreeMap::new(),
             terminal_proof: None,
             failed_step,
@@ -968,11 +1029,13 @@ impl super::BrowserSession {
             }
         };
 
+        let trace = WorkflowTrace::from_steps(&records);
         Ok(WorkflowRunResult {
             name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Completed,
             steps: records,
+            trace,
             outputs,
             terminal_proof: Some(terminal_proof),
             failed_step: None,
@@ -1770,5 +1833,12 @@ mod tests {
         assert_eq!(record.state, WorkflowStepState::Committed);
         assert_eq!(record.history.len(), 9);
         assert!(record.transition(WorkflowStepState::Preflight).is_err());
+        let trace = WorkflowTrace::from_steps(&[record]);
+        trace.validate().unwrap();
+        assert_eq!(trace.events[0].sequence, 0);
+        assert_eq!(
+            trace.events.last().unwrap().state,
+            WorkflowStepState::Committed
+        );
     }
 }

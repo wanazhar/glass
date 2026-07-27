@@ -13,7 +13,7 @@ Glass provides four interfaces over the same browser session:
 
 ## Status
 
-Glass `0.1.10` is available on crates.io. The supported release targets are
+Glass `0.1.11` is available on crates.io. The supported release targets are
 Linux x86-64 and macOS x86-64/arm64. The CLI, terminal UI, MCP server, and Rust
 library share the same browser session runtime.
 

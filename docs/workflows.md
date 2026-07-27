@@ -137,6 +137,9 @@ follows legal state transitions, and preserves attempt boundaries without
 contacting Chrome or replaying an effect. This makes traces suitable for
 offline diagnostics and test fixtures.
 
+Replay also requires the first event to belong to the first declared step; a
+trace cannot skip an earlier step and still be accepted as a valid prefix.
+
 Trace schema versioning is independent from the workflow definition and
 checkpoint schema versions. Older traces that omit the version field are read
 as trace schema version 1; unsupported explicit versions fail before replay.

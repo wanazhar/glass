@@ -1056,6 +1056,7 @@ impl WorkflowTrace {
             .collect();
         let mut seen = vec![false; records.len()];
         let mut highest_step = 0usize;
+        let mut started = false;
 
         for (event_index, event) in self.events.iter().enumerate() {
             let step_index = workflow
@@ -1068,6 +1069,15 @@ impl WorkflowTrace {
                         "step ID is not declared by the workflow",
                     )
                 })?;
+            if !started {
+                if step_index != 0 {
+                    return Err(WorkflowValidationError::new(
+                        format!("trace.events[{event_index}].stepId"),
+                        "trace must begin with the first declared step",
+                    ));
+                }
+                started = true;
+            }
             if step_index > highest_step.saturating_add(1) {
                 return Err(WorkflowValidationError::new(
                     format!("trace.events[{event_index}].stepId"),
@@ -2857,6 +2867,24 @@ mod tests {
         assert_eq!(trace.events[7].attempt, 2);
         assert_eq!(replayed[0].state, WorkflowStepState::Committed);
         assert_eq!(replayed[0].attempts, 2);
+    }
+
+    #[test]
+    fn trace_replay_rejects_a_prefix_that_skips_the_first_step() {
+        let mut workflow = definition();
+        workflow.steps.push(WorkflowStep {
+            id: "save".into(),
+            action: BatchStep::Screenshot,
+            when: None,
+            expect: None,
+            transaction: WorkflowTransactionClass::ReadOnly,
+            idempotency_key: None,
+            max_retries: 0,
+            repeat: 1,
+        });
+        let trace = WorkflowTrace::from_steps(&[WorkflowStepRecord::new("save")]);
+        let error = trace.replay(&workflow).unwrap_err();
+        assert_eq!(error.path, "trace.events[0].stepId");
     }
 
     #[test]

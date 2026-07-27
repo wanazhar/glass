@@ -640,9 +640,12 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
         return;
     }
-    if cfg!(target_os = "macos") && std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+    if cfg!(target_os = "macos")
+        && cfg!(target_arch = "x86_64")
+        && std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+    {
         eprintln!(
-            "skipping persistent-profile smoke test on GitHub-hosted macOS; the runner's CDP is too slow for this bounded scenario"
+            "skipping persistent-profile smoke test on GitHub-hosted Intel macOS; the runner's CDP is too slow for this bounded scenario"
         );
         return;
     }
@@ -757,6 +760,15 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
 async fn browser_session_drives_a_local_fixture() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    if cfg!(target_os = "macos")
+        && cfg!(target_arch = "x86_64")
+        && std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+    {
+        eprintln!(
+            "skipping local-fixture smoke test on GitHub-hosted Intel macOS; the runner's CDP is too slow for this bounded scenario"
+        );
         return;
     }
     let chrome_path = required_chrome();

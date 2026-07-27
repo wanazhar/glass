@@ -25,7 +25,7 @@ const MAX_BROWSER_ACTIONS: u32 = 1_024;
 const MAX_REPLAY_EVENTS: usize = 1_024;
 
 /// Supported platform labels for deterministic reliability evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReliabilityPlatform {
     LinuxX86_64,
@@ -217,7 +217,6 @@ pub struct ReliabilityReplayBundle {
     pub scenario_hash: String,
     pub fixture_id: String,
     pub fixture_hash: String,
-    pub metadata: ReliabilityRunMetadata,
     pub events: Vec<ReliabilityReplayEvent>,
     pub observation: ReliabilityScenarioObservation,
 }
@@ -262,7 +261,9 @@ impl ReliabilityReplayBundle {
                 "replay bundle is not bound to the exact scenario content",
             ));
         }
-        self.metadata.validate("metadata", &scenario.budgets)?;
+        self.observation
+            .metadata
+            .validate("observation.metadata", &scenario.budgets)?;
         if self.events.is_empty() || self.events.len() > MAX_REPLAY_EVENTS {
             return Err(ReliabilityScenarioError::new(
                 "events",
@@ -372,6 +373,7 @@ pub enum ReliabilityRunClassification {
 pub struct ReliabilityScenarioObservation {
     pub scenario_id: String,
     pub scenario_hash: String,
+    pub metadata: ReliabilityRunMetadata,
     pub classification: ReliabilityRunClassification,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_state: Option<String>,
@@ -466,6 +468,7 @@ impl ReliabilityScenario {
                 "must list at least one supported platform",
             ));
         }
+        validate_unique("platforms", &self.platforms)?;
         if self.capabilities.len() > MAX_CAPABILITIES {
             return Err(ReliabilityScenarioError::new(
                 "capabilities",
@@ -660,6 +663,20 @@ pub fn evaluate_reliability_gate(
                 "required release evidence artifacts are incomplete",
             ));
         }
+        if !scenario.platforms.contains(&observation.metadata.platform) {
+            failures.push(gate_failure(
+                &scenario.id,
+                "unsupported_platform",
+                "observation platform is not listed by the scenario",
+            ));
+        }
+        if let Err(error) = observation.metadata.validate("metadata", &scenario.budgets) {
+            failures.push(gate_failure(
+                &scenario.id,
+                "invalid_run_metadata",
+                &error.to_string(),
+            ));
+        }
         match observation.classification {
             ReliabilityRunClassification::Passed => passed += 1,
             ReliabilityRunClassification::SafeRefusal => safe_refusals += 1,
@@ -670,6 +687,16 @@ pub fn evaluate_reliability_gate(
                 "scenario_failed",
                 "scenario classification is failed",
             )),
+        }
+        if matches!(
+            observation.classification,
+            ReliabilityRunClassification::Indeterminate | ReliabilityRunClassification::Unsupported
+        ) {
+            failures.push(gate_failure(
+                &scenario.id,
+                "non_certifying_classification",
+                "indeterminate and unsupported runs cannot certify a release",
+            ));
         }
         if observation.terminal_state.as_deref() != Some(scenario.expect.terminal_state.as_str()) {
             failures.push(gate_failure(
@@ -872,13 +899,6 @@ mod tests {
             scenario_hash: scenario.content_hash().unwrap(),
             fixture_id: scenario.fixture.clone(),
             fixture_hash: format!("sha256:{}", "a".repeat(64)),
-            metadata: ReliabilityRunMetadata {
-                platform: ReliabilityPlatform::LinuxX86_64,
-                browser: "chromium".into(),
-                browser_version: "stable".into(),
-                duration_ms: 100,
-                browser_actions: 3,
-            },
             events: vec![ReliabilityReplayEvent {
                 sequence: 0,
                 operation: "runWorkflow".into(),
@@ -904,13 +924,6 @@ mod tests {
             scenario_hash: scenario.content_hash().unwrap(),
             fixture_id: scenario.fixture.clone(),
             fixture_hash: format!("sha256:{}", "b".repeat(64)),
-            metadata: ReliabilityRunMetadata {
-                platform: ReliabilityPlatform::LinuxX86_64,
-                browser: "chromium".into(),
-                browser_version: "stable".into(),
-                duration_ms: 100,
-                browser_actions: 3,
-            },
             events: vec![ReliabilityReplayEvent {
                 sequence: 1,
                 operation: "runWorkflow".into(),
@@ -953,6 +966,13 @@ mod tests {
         ReliabilityScenarioObservation {
             scenario_id: scenario.id.clone(),
             scenario_hash: scenario.content_hash().unwrap(),
+            metadata: ReliabilityRunMetadata {
+                platform: ReliabilityPlatform::LinuxX86_64,
+                browser: "chromium".into(),
+                browser_version: "stable".into(),
+                duration_ms: 100,
+                browser_actions: 3,
+            },
             classification,
             terminal_state: Some(scenario.expect.terminal_state.clone()),
             side_effect_count: scenario.expect.side_effect_count.clone(),
@@ -999,6 +1019,39 @@ mod tests {
                 .failures
                 .iter()
                 .any(|failure| failure.code == "incomplete_artifacts")
+        );
+    }
+
+    #[test]
+    fn reliability_gate_blocks_non_certifying_platform_and_classification() {
+        let scenario = scenario();
+        let mut unsupported = observation(
+            &scenario,
+            ReliabilityRunClassification::Indeterminate,
+            Vec::new(),
+        );
+        unsupported.metadata.platform = ReliabilityPlatform::MacosArm64;
+        unsupported.metadata.duration_ms = scenario.budgets.max_duration_ms + 1;
+        let report =
+            evaluate_reliability_gate(std::slice::from_ref(&scenario), &[unsupported]).unwrap();
+        assert!(!report.certified);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.code == "unsupported_platform")
+        );
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.code == "non_certifying_classification")
+        );
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.code == "invalid_run_metadata")
         );
     }
 }

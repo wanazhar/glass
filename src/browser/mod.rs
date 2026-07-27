@@ -75,6 +75,8 @@ pub use session::KnowledgeObservationReport;
 pub use session::KnowledgeProfileScope;
 /// One persisted browser knowledge record.
 pub use session::KnowledgeRecord;
+/// Inputs for building a bounded page-family knowledge record.
+pub use session::KnowledgeRecordBuildOptions;
 /// Knowledge record category.
 pub use session::KnowledgeRecordKind;
 /// Scope dimensions preventing knowledge leakage across sessions.

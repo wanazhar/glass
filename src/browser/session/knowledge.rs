@@ -6,7 +6,7 @@
 
 use super::SemanticObservation;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -56,6 +56,15 @@ pub struct KnowledgeLookupOptions {
     pub glass_schema_version: u32,
     pub policy_preset: String,
     pub now_epoch_seconds: i64,
+}
+
+/// Inputs for creating one page-family record from fresh semantic evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeRecordBuildOptions {
+    pub record_id: String,
+    pub scope: KnowledgeScope,
+    pub glass_version: String,
+    pub observed_at: String,
 }
 
 impl KnowledgeLookupContext {
@@ -286,6 +295,70 @@ pub struct KnowledgeRecord {
 }
 
 impl KnowledgeRecord {
+    /// Build an observed page-family record from fresh semantic structure.
+    ///
+    /// Only page/region kinds are retained. Current revisioned target
+    /// references, labels, text, accessibility trees, and form values are not
+    /// copied into persistent knowledge.
+    pub fn from_page_observation(
+        observation: &SemanticObservation,
+        options: KnowledgeRecordBuildOptions,
+    ) -> Result<Self, KnowledgeValidationError> {
+        observation.validate().map_err(|error| {
+            KnowledgeValidationError::new("observation", format!("invalid observation: {error}"))
+        })?;
+        validate_text("recordId", &options.record_id, MAX_RECORD_ID_BYTES, false)?;
+        validate_text(
+            "source.glassVersion",
+            &options.glass_version,
+            MAX_SCOPE_VALUE_BYTES,
+            false,
+        )?;
+        validate_timestamp("source.observedAt", &options.observed_at)?;
+        validate_scope(&options.scope)?;
+        let page_kind = serde_json::to_value(observation.page.kind)
+            .map_err(|error| KnowledgeValidationError::new("data.pageKind", error.to_string()))?;
+        let region_kinds = observation
+            .regions
+            .iter()
+            .map(|region| serde_json::to_value(region.kind))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                KnowledgeValidationError::new("data.regionKinds", error.to_string())
+            })?;
+        let mut required_landmarks = BTreeSet::new();
+        required_landmarks.insert(page_kind.as_str().unwrap_or_default().to_owned());
+        for kind in &region_kinds {
+            if let Some(kind) = kind.as_str() {
+                required_landmarks.insert(kind.to_owned());
+            }
+        }
+        let record = Self {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            record_id: options.record_id,
+            kind: KnowledgeRecordKind::PageFamily,
+            scope: options.scope,
+            source: KnowledgeSource {
+                first_seen_at: options.observed_at.clone(),
+                last_verified_at: options.observed_at,
+                glass_version: options.glass_version,
+                verification_count: 0,
+            },
+            confidence: KnowledgeConfidence::Observed,
+            invalidation: KnowledgeInvalidation {
+                max_age_seconds: Some(604_800),
+                required_landmarks: required_landmarks.into_iter().collect(),
+            },
+            data: json!({
+                "pageKind": page_kind,
+                "regionKinds": region_kinds,
+            }),
+            history: Vec::new(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     /// Validate one record against the stable contract and all payload bounds.
     pub fn validate(&self) -> Result<(), KnowledgeValidationError> {
         if self.schema_version != KNOWLEDGE_SCHEMA_VERSION {
@@ -1003,5 +1076,30 @@ mod tests {
                 .conflicts
                 .contains(&"origin does not match".to_string())
         );
+    }
+
+    #[test]
+    fn page_record_keeps_shape_but_not_current_targets() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../benchmarks/scenarios/semantic-observation-v1.json"
+        ))
+        .unwrap();
+        let observation =
+            SemanticObservation::from_json(&corpus["fixtures"][1]["observation"].to_string())
+                .unwrap();
+        let record = KnowledgeRecord::from_page_observation(
+            &observation,
+            KnowledgeRecordBuildOptions {
+                record_id: "knowledge_search".into(),
+                scope: record().scope,
+                glass_version: "0.2.0".into(),
+                observed_at: "2026-07-27T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        let data = serde_json::to_string(&record.data).unwrap();
+        assert!(data.contains("searchResults"));
+        assert!(!data.contains("axr-8-9"));
+        assert_eq!(record.confidence, KnowledgeConfidence::Observed);
     }
 }

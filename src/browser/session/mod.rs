@@ -81,9 +81,9 @@ pub use knowledge::{
     KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeAssessmentSignal,
     KnowledgeAssessmentStatus, KnowledgeConfidence, KnowledgeInvalidation, KnowledgeLifecycleEvent,
     KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeObservationMode,
-    KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordKind,
-    KnowledgeScope, KnowledgeSignalKind, KnowledgeSource, KnowledgeStoreSnapshot,
-    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeRecord,
+    KnowledgeRecordBuildOptions, KnowledgeRecordKind, KnowledgeScope, KnowledgeSignalKind,
+    KnowledgeSource, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgeStore, KnowledgeStoreChange, KnowledgeStoreError,

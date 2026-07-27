@@ -28,7 +28,8 @@ part of this delivery.
    reliability scorecard.
 7. **Release preparation** — documentation, migration notes, and a local-only
    `0.1.19` tag. No push, GitHub release, crates.io publication, or npm/PyPI
-   publication is allowed in this phase.
+   publication is allowed in this phase. The public workflow milestone remains
+   `0.2.0`.
 
 ## Contract boundaries
 

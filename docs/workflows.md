@@ -188,5 +188,6 @@ linear completion, conditional skipping, budget exhaustion, marker
 reconciliation, and terminal-proof refusal. The command prints JSON and fails
 if any scenario diverges from the corpus.
 
-This is a local, unreleased 0.1.19 development surface. The complete workflow
-roadmap remains targeted for the 0.2.0 release.
+This is a local, unreleased 0.1.19 development surface. It is not a public
+registry or GitHub release; the complete workflow roadmap remains targeted for
+the 0.2.0 release.

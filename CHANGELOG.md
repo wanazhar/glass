@@ -3,6 +3,27 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.19] - Unreleased (local only)
+
+### Added
+
+- Versioned transactional workflows with typed inputs, bounded control flow,
+  terminal proofs, typed outputs, deterministic traces, and reviewed recorder
+  drafts.
+- Safe checkpoint reconciliation and suffix resume with redacted evidence,
+  CLI/MCP/TUI adapters, typed TypeScript and Python client contracts, and a
+  deterministic workflow scorecard.
+
+### Changed
+
+- Retry handling now distinguishes proven pre-dispatch failures from
+  indeterminate and post-dispatch outcomes; effect markers can prevent a
+  duplicate dispatch when a success marker is already present.
+- Workflow definitions reject unknown fields and duplicate idempotency keys.
+
+This entry describes local development work. It is not a GitHub, crates.io,
+npm, or PyPI release; the public workflow milestone remains 0.2.0.
+
 ## [0.1.18] - 2026-07-27
 
 ### Added

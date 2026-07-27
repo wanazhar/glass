@@ -893,6 +893,27 @@ async fn browser_session_drives_a_local_fixture() {
         workflow_result.outputs["title"].value,
         json!("Glass Fixture")
     );
+
+    let mut marker_workflow = workflow.clone();
+    marker_workflow.budgets.max_retries = 1;
+    marker_workflow.steps[0].action = BatchStep::Click {
+        target: "css=#missing-marker-target".into(),
+    };
+    marker_workflow.steps[0].expect = None;
+    marker_workflow.steps[0].max_retries = 1;
+    marker_workflow.steps[0].before_retry = Some(VerificationPredicate::TitleContains {
+        value: "Glass Fixture".into(),
+    });
+    let marker_result = session
+        .run_workflow(&marker_workflow, &BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(marker_result.status, WorkflowRunStatus::Completed);
+    assert_eq!(marker_result.steps[0].state, WorkflowStepState::Committed);
+    assert_eq!(marker_result.steps[0].attempts, 1);
+    assert!(marker_result.steps[0].execution_ids.is_empty());
+    assert!(marker_result.steps[0].effect_observed);
+
     let workflow_checkpoint = session
         .export_workflow_checkpoint(&workflow, &workflow_result)
         .await

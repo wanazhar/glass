@@ -12,7 +12,7 @@ from glass_client import GlassClient
 glass = GlassClient(command="/absolute/path/to/glass")
 try:
     glass.navigate("https://example.com")
-    print(glass.observe())
+    print(glass.observe_semantic("structured"))
     print(glass.workflow({
         "schemaVersion": 1,
         "name": "read-title",

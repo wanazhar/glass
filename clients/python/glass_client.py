@@ -68,6 +68,42 @@ class WorkflowDefinition(TypedDict, total=False):
 
 WorkflowInputs = dict[str, Any]
 
+SemanticObservationLevel = Literal["summary", "interactive", "structured", "detailed", "raw"]
+SemanticConfidence = Literal["exact", "high", "medium", "low", "unknown"]
+
+
+class SemanticTarget(TypedDict, total=False):
+    reference: str
+    role: str
+    name: str
+    inputType: str
+
+
+class SemanticRegion(TypedDict, total=False):
+    id: str
+    kind: str
+    label: str
+    interactiveCount: int
+    itemCount: int
+    confidence: SemanticConfidence
+    evidence: list[str]
+    targets: list[SemanticTarget]
+    expansion: dict[str, Any]
+
+
+class SemanticObservation(TypedDict, total=False):
+    schemaVersion: Literal[1]
+    revision: int
+    level: SemanticObservationLevel
+    route: dict[str, str]
+    page: dict[str, Any]
+    regions: list[SemanticRegion]
+    text: str
+    accessibility: list[dict[str, Any]]
+    rawAccessibility: list[dict[str, Any]]
+    changes: dict[str, Any]
+    limits: dict[str, Any]
+
 
 class WorkflowCheckpointStep(TypedDict, total=False):
     id: str
@@ -145,8 +181,24 @@ class GlassClient:
                     return text
         return result
 
-    def observe(self) -> Any:
-        return self.call("observe")
+    def observe(
+        self,
+        level: Optional[SemanticObservationLevel] = None,
+        region: Optional[str] = None,
+    ) -> Any:
+        args: dict[str, Any] = {}
+        if level is not None:
+            args["level"] = level
+        if region is not None:
+            args["region"] = region
+        return self.call("observe", args)
+
+    def observe_semantic(
+        self,
+        level: SemanticObservationLevel,
+        region: Optional[str] = None,
+    ) -> SemanticObservation:
+        return self.observe(level, region)
 
     def navigate(
         self,

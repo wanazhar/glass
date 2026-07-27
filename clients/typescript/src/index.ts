@@ -32,6 +32,71 @@ export type WorkflowStepState =
   | "committed" | "failed_before_dispatch" | "failed_after_dispatch"
   | "indeterminate" | "skipped";
 
+export type SemanticObservationLevel = "summary" | "interactive" | "structured" | "detailed" | "raw";
+export type SemanticConfidence = "exact" | "high" | "medium" | "low" | "unknown";
+export type SemanticPageKind =
+  | "generic" | "home" | "search" | "searchResults" | "article" | "documentation"
+  | "listing" | "detail" | "form" | "authentication" | "checkout" | "confirmation"
+  | "dashboard" | "settings" | "error" | "accessDenied" | "unknown";
+export type SemanticRegionKind =
+  | "navigation" | "main" | "search" | "form" | "dialog" | "alert" | "status"
+  | "toolbar" | "filterPanel" | "results" | "collection" | "table" | "pagination"
+  | "article" | "sidebar" | "checkoutSummary" | "authentication" | "footer" | "unknown";
+
+export interface SemanticRouteIdentity { targetId: string; frameId: string; url: string; }
+export interface SemanticTarget { reference: string; role: string; name?: string; inputType?: string; }
+export interface SemanticAccessibilityNode {
+  role: string;
+  name?: string;
+  children?: SemanticAccessibilityNode[];
+  interactive?: boolean;
+}
+export interface SemanticRegion {
+  id: string;
+  kind: SemanticRegionKind;
+  label: string;
+  interactiveCount: number;
+  itemCount?: number;
+  confidence: SemanticConfidence;
+  evidence?: string[];
+  targets?: SemanticTarget[];
+  expansion?: { regionId: string; revision: number; route: SemanticRouteIdentity };
+}
+export interface SemanticChangeSet {
+  fromRevision: number;
+  toRevision: number;
+  route: SemanticRouteIdentity;
+  regions?: Array<{ id: string; kind: "added" | "removed" | "updated"; previousId?: string }>;
+  targets?: Array<{ regionId: string; targetId: string; kind: "added" | "removed" | "updated"; previousTargetId?: string }>;
+  continuity?: Array<{
+    previousReference: string;
+    currentReference: string;
+    confidence: SemanticConfidence;
+    evidence: string;
+  }>;
+}
+export interface SemanticObservation {
+  schemaVersion: 1;
+  revision: number;
+  level: SemanticObservationLevel;
+  route: SemanticRouteIdentity;
+  page: {
+    kind: SemanticPageKind;
+    title: string;
+    url: string;
+    targetId: string;
+    frameId: string;
+    confidence: SemanticConfidence;
+    evidence?: string[];
+  };
+  regions: SemanticRegion[];
+  text?: string;
+  accessibility?: SemanticAccessibilityNode[];
+  rawAccessibility?: SemanticAccessibilityNode[];
+  changes?: SemanticChangeSet;
+  limits: { truncated: boolean; omittedRegions: number; omittedTargets?: number; omittedBytes?: number };
+}
+
 export interface WorkflowInput {
   valueType: WorkflowValueType;
   required?: boolean;
@@ -173,7 +238,12 @@ export class GlassClient {
     return response as T;
   }
 
-  observe<T = Record<string, unknown>>(): Promise<T> { return this.call<T>("observe"); }
+  observe<T = Record<string, unknown>>(level?: SemanticObservationLevel, region?: string): Promise<T> {
+    return this.call<T>("observe", { ...(level === undefined ? {} : { level }), ...(region === undefined ? {} : { region }) });
+  }
+  observeSemantic<T = SemanticObservation>(level: SemanticObservationLevel, region?: string): Promise<T> {
+    return this.observe<T>(level, region);
+  }
   navigate<T = Record<string, unknown>>(url: string, timeoutMs?: number, expectedRevision?: number): Promise<T> {
     return this.call<T>("navigate", { url, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }

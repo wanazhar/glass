@@ -12,7 +12,8 @@ import { GlassClient } from "@glass-browser/client";
 
 const glass = new GlassClient({ command: "/absolute/path/to/glass" });
 await glass.navigate("https://example.com");
-const context = await glass.observe();
+const context = await glass.observeSemantic("structured");
+const search = await glass.observeSemantic("interactive", "region_search_1");
 await glass.click("name=More information");
 const run = await glass.workflow({
   schemaVersion: 1,

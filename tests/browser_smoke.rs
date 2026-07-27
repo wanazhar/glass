@@ -717,7 +717,7 @@ async fn named_profile_mcp_persists_fixture_storage_between_sessions() {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "navigate", "arguments": {"url": url}}
+                "params": {"name": "navigate", "arguments": {"url": url, "includeTrace": true}}
             }),
             json!({
                 "jsonrpc": "2.0",

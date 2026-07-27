@@ -11,16 +11,13 @@ impl BrowserSession {
     /// Discovers iframe/out-of-process frames and marks the currently active
     /// frame. Call this before `select_frame` to discover available frame IDs.
     pub async fn list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
-        let (target_id, target_session, active, target_present) = {
+        let (target_id, target_session, active) = {
             let topology = self.topology.lock().await;
             let target_id = topology.active_target_id.clone();
             (
                 target_id.clone(),
                 topology.active_target_session_id.clone(),
                 topology.active_frame_id.clone(),
-                target_id
-                    .as_deref()
-                    .is_some_and(|id| topology.targets.iter().any(|target| target.id == id)),
             )
         };
         if target_id.is_none() {
@@ -30,7 +27,7 @@ impl BrowserSession {
             )
             .into());
         }
-        if !target_present && target_session.is_none() {
+        if target_session.is_none() {
             let mut topology = self.topology.lock().await;
             topology.active_target_id = None;
             topology.active_session_id = None;

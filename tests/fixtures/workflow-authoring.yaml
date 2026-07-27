@@ -1,0 +1,42 @@
+schemaVersion: 1
+name: account-search
+workflowVersion: 1.0.0
+description: Search an account area with caller-provided input.
+inputs:
+  query:
+    type: string
+    required: true
+    maxLength: 128
+  session_token:
+    type: string
+    required: true
+budgets:
+  maxSteps: 3
+  maxDurationMs: 30000
+  maxRetries: 1
+  maxExtractedBytes: 4096
+preconditions: []
+steps:
+  - id: open-account
+    action: navigate
+    url: https://example.test/account
+    timeoutMs: 20000
+    transaction: read_only
+    expect:
+      urlEquals: https://example.test/account
+  - id: enter-query
+    action: type
+    text: ${inputs.query}
+    target: role=textbox;name=Account search
+    transaction: idempotent
+    expect:
+      visible: role=textbox;name=Account search
+  - id: inspect-results
+    action: observe
+    includeDom: false
+    includeScreenshot: false
+    includeFormValues: false
+    transaction: read_only
+terminalCondition:
+  textContains: Search results
+outputs: {}

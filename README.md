@@ -122,6 +122,13 @@ the store with `glass knowledge list`, `glass knowledge show ID`, or
 `glass knowledge explain ID`; MCP callers can opt into `observeKnowledge` and
 `resolveIntentWithKnowledge`.
 
+Workflow authoring is available in the 0.2.0 development checkout. Use
+`glass workflow validate`, `lint`, `preview`, or `diff` for offline review of
+YAML/JSON definitions; `glass workflow record` imports explicit semantic
+resolution evidence into a reviewable draft. Authoring never starts Chrome,
+and input values remain outside the workflow source. See the
+[workflow authoring guide](docs/workflow-authoring.md).
+
 Use `glass --help` for the complete CLI surface. Detailed command syntax is in
 the [CLI reference](docs/cli.md), and the corresponding MCP names and
 arguments are in the [MCP guide](docs/mcp.md).

@@ -142,11 +142,15 @@ pub enum BatchStepOutcome {
         action: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         response_bytes: Option<usize>,
+        #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
+        execution_id: Option<String>,
     },
     Error {
         index: usize,
         action: String,
         message: String,
+        #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
+        execution_id: Option<String>,
     },
 }
 

@@ -79,11 +79,12 @@ impl BrowserSession {
             let action = step_action_name(step);
             let step_revision = chained_revision;
             match execute_batch_step(self, step, step_revision).await {
-                Ok((response_bytes, resulting_revision)) => {
+                Ok((response_bytes, resulting_revision, execution_id)) => {
                     outcomes.push(BatchStepOutcome::Success {
                         index,
                         action,
                         response_bytes,
+                        execution_id,
                     });
                     completed += 1;
                     if mode == BatchMode::Chain {
@@ -97,6 +98,7 @@ impl BrowserSession {
                         index,
                         action,
                         message,
+                        execution_id: None,
                     });
                     failed += 1;
                     break;
@@ -170,7 +172,7 @@ async fn execute_batch_step(
     session: &BrowserSession,
     step: &BatchStep,
     expected_revision: Option<u64>,
-) -> BrowserResult<(Option<usize>, Option<u64>)> {
+) -> BrowserResult<(Option<usize>, Option<u64>, Option<String>)> {
     match step {
         BatchStep::Navigate { url, timeout_ms } => {
             if let Some(revision) = expected_revision {
@@ -178,13 +180,17 @@ async fn execute_batch_step(
                     .navigate_with_revision(url, Duration::from_millis(*timeout_ms), revision)
                     .await?;
                 let bytes = serde_json::to_string(&info).ok().map(|s| s.len());
-                Ok((bytes, Some(info.current_revision)))
+                Ok((bytes, Some(info.current_revision), Some(info.execution_id)))
             } else {
                 let info = session
                     .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
                     .await?;
                 let bytes = serde_json::to_string(&info).ok().map(|s| s.len());
-                Ok((bytes, Some(session.page_revision.load(Ordering::Relaxed))))
+                Ok((
+                    bytes,
+                    Some(session.page_revision.load(Ordering::Relaxed)),
+                    None,
+                ))
             }
         }
         BatchStep::Click { target } => {
@@ -193,7 +199,11 @@ async fn execute_batch_step(
                 None => session.click(target).await?,
             };
             let bytes = serde_json::to_string(&outcome).ok().map(|s| s.len());
-            Ok((bytes, Some(outcome.current_revision)))
+            Ok((
+                bytes,
+                Some(outcome.current_revision),
+                Some(outcome.execution_id),
+            ))
         }
         BatchStep::Type { text, target } => {
             let outcome = session
@@ -202,6 +212,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Check { target } => {
@@ -211,6 +222,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Uncheck { target } => {
@@ -220,6 +232,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Select { target, value } => {
@@ -229,6 +242,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Clear { target } => {
@@ -238,6 +252,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Scroll { dx, dy } => {
@@ -247,6 +262,7 @@ async fn execute_batch_step(
             Ok((
                 serde_json::to_string(&outcome).ok().map(|s| s.len()),
                 Some(outcome.current_revision),
+                Some(outcome.execution_id),
             ))
         }
         BatchStep::Wait {
@@ -257,7 +273,7 @@ async fn execute_batch_step(
             session
                 .wait(cond, Duration::from_millis(*timeout_ms))
                 .await?;
-            Ok((None, None))
+            Ok((None, None, None))
         }
         BatchStep::Observe {
             include_dom,
@@ -277,24 +293,28 @@ async fn execute_batch_step(
                 }
             };
             let bytes = serde_json::to_string(&context).ok().map(|s| s.len());
-            Ok((bytes, Some(session.page_revision.load(Ordering::Relaxed))))
+            Ok((
+                bytes,
+                Some(session.page_revision.load(Ordering::Relaxed)),
+                None,
+            ))
         }
         BatchStep::Screenshot => {
             let data = session.screenshot_base64().await?;
-            Ok((Some(data.len()), None))
+            Ok((Some(data.len()), None, None))
         }
         BatchStep::Evaluate { expression } => {
             let result = session.evaluate(expression).await?;
             let bytes = serde_json::to_string(&result).ok().map(|s| s.len());
-            Ok((bytes, None))
+            Ok((bytes, None, None))
         }
         BatchStep::AcceptDialog => {
             session.accept_dialog().await?;
-            Ok((None, None))
+            Ok((None, None, None))
         }
         BatchStep::DismissDialog => {
             session.dismiss_dialog().await?;
-            Ok((None, None))
+            Ok((None, None, None))
         }
     }
 }

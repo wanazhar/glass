@@ -112,7 +112,9 @@ The trace has contiguous sequence numbers and a fixed event budget, making it
 suitable for replay inspection without retaining page contents or input
 values. Each step result also records whether dispatch was acknowledged, an
 effect was observed, its postcondition was verified, whether retry is safe, and
-the bounded revision boundary. Each result, trace, and exported checkpoint carries the same bounded
+the bounded revision boundary. When the shared action executor returns an
+execution ID, it is retained in `executionIds`; retries retain each returned
+ID in order. Each result, trace, and exported checkpoint carries the same bounded
 `runId`; a resumed suffix receives a new run ID so separate invocations remain
 auditable.
 

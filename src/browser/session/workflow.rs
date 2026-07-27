@@ -827,6 +827,8 @@ pub struct WorkflowStepRecord {
     pub state: WorkflowStepState,
     pub history: Vec<WorkflowStepState>,
     pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_ids: Vec<String>,
     #[serde(default)]
     pub dispatch_acknowledged: bool,
     #[serde(default)]
@@ -852,6 +854,7 @@ impl WorkflowStepRecord {
             state: WorkflowStepState::Pending,
             history: vec![WorkflowStepState::Pending],
             attempts: 0,
+            execution_ids: Vec::new(),
             dispatch_acknowledged: false,
             effect_observed: false,
             postcondition_verified: false,
@@ -1572,6 +1575,15 @@ impl super::BrowserSession {
                 }
 
                 {
+                    for execution_id in outcome.steps.iter().filter_map(|step| match step {
+                        super::types::BatchStepOutcome::Success {
+                            execution_id: Some(execution_id),
+                            ..
+                        } => Some(execution_id.clone()),
+                        _ => None,
+                    }) {
+                        records[index].execution_ids.push(execution_id);
+                    }
                     let record = &mut records[index];
                     record.dispatch_acknowledged = true;
                     record.effect_observed = true;
@@ -2774,6 +2786,7 @@ mod tests {
     #[test]
     fn step_record_serializes_bounded_execution_evidence() {
         let mut record = WorkflowStepRecord::new("open");
+        record.execution_ids = vec!["act_7".into(), "act_8".into()];
         record.dispatch_acknowledged = true;
         record.effect_observed = true;
         record.postcondition_verified = true;
@@ -2782,6 +2795,7 @@ mod tests {
         record.current_revision = Some(8);
 
         let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["executionIds"], serde_json::json!(["act_7", "act_8"]));
         assert_eq!(value["dispatchAcknowledged"], true);
         assert_eq!(value["effectObserved"], true);
         assert_eq!(value["postconditionVerified"], true);

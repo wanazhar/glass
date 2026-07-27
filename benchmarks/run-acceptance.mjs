@@ -41,7 +41,7 @@ try {
   if (!chromePath) throw new Error("CHROME_PATH is required");
   if (!fs.statSync(chromePath).isFile()) throw new Error(`CHROME_PATH is not a file: ${chromePath}`);
   await run("cargo", ["build", "--release", "--locked"], { stderrFile: path.join(rawDir, "glass-build.stderr.log") });
-  await run("npm", ["install", "--prefix", npmPrefix, "--no-save", "playwright@1.61.1", "@playwright/mcp@0.0.78"], {
+  await run("npm", ["install", "--prefix", npmPrefix, "--no-save", "playwright@1.61.1", "@playwright/mcp@0.0.78", "agent-browser@0.33.0"], {
     env: { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" }, stderrFile: path.join(rawDir, "npm-install.stderr.log"),
   });
 
@@ -58,15 +58,17 @@ try {
 
   // agent-browser: install and run if the adapter is listed in the contract
   const agentBrowserContract = contract.adapters.find(({ id }) => id === "agent-browser");
-  const agentBrowserCmd = process.env.AGENT_BROWSER_COMMAND;
+  const agentBrowserCmd = process.env.AGENT_BROWSER_COMMAND ?? path.join(npmPrefix, "node_modules/.bin/agent-browser");
   if (agentBrowserContract && agentBrowserCmd) {
-    const agentBrowserVersion = agentBrowserContract.version ?? "1.3.30";
+    const agentBrowserVersion = agentBrowserContract.version;
     await runAdapter("agent-browser", process.execPath, [path.join(root, "benchmarks/adapters/agent-browser-scorecard.mjs")], {
       CHROME_PATH: chromePath,
       AGENT_BROWSER_COMMAND: agentBrowserCmd,
       AGENT_BROWSER_VERSION: agentBrowserVersion,
       AGENT_BROWSER_REQUEST_TIMEOUT_MS: "30000",
     }, commandDeadlineMs);
+  } else if (agentBrowserContract?.required) {
+    throw new Error("agent-browser is required by the acceptance contract but no command was installed");
   } else if (agentBrowserContract) {
     adapters.push({ id: "agent-browser", status: "not_run", report: null,
       reason: "AGENT_BROWSER_COMMAND is not set; install agent-browser globally and set this env var." });
@@ -342,7 +344,7 @@ function validateRows(rows, expectedIds, kind, label) {
   return { passed: true };
 }
 
-function expectedTools() { return { glass: readCargoVersion(), playwright: "1.61.1", "playwright-mcp": "0.0.78", "agent-browser": "1.3.30", "codex-browser": null }; }
+function expectedTools() { return { glass: readCargoVersion(), playwright: "1.61.1", "playwright-mcp": "0.0.78", "agent-browser": "0.33.0", "codex-browser": null }; }
 function exactKeys(value, expected, label) { if (!value || typeof value !== "object" || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) throw new Error(`${label} has unexpected or missing keys`); }
 function budget(value, maximum) { return Number.isFinite(value) && value <= maximum; }
 function atLeast(value, minimum) { return Number.isFinite(value) && value >= minimum; }

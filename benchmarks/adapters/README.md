@@ -46,16 +46,22 @@ same-revision retry cannot inherit stale progress.
 `agent-browser-scorecard.mjs` is the agent-browser comparator adapter. It is a
 dependency-free MCP client that invokes a separately installed, exactly pinned
 `agent-browser` executable (from npm) in MCP server mode. The adapter uses
-`agent-browser mcp --tools all --no-auto-dialog` and validates the required
-tool surface (`navigate`, `click`, `fill`, `snapshot`, `evaluate`) before
+`agent-browser mcp --tools all` with automatic dialog dismissal disabled via
+environment, and validates the required prefixed tool surface (`agent_browser_open`,
+`agent_browser_click`, `agent_browser_fill`, `agent_browser_snapshot`,
+`agent_browser_eval`) before
 running. Popup and download scenarios are reported as `unsupported` because
 agent-browser's MCP surface has no published typed primitives for causal popup
 verification or download-integrity assertions; the matrix fails closed.
 
+The adapter resolves snap's `/snap/bin/chromium` launcher to the underlying
+Chromium executable because agent-browser passes Chrome flags directly to the
+browser process.
+
 **Installation (outside the Glass crate):**
 
 ```sh
-npm install -g agent-browser@1.3.30
+npm install -g agent-browser@0.33.0
 agent-browser install  # download managed Chromium
 ```
 
@@ -67,7 +73,7 @@ environment. The runner supplies these if the adapter is listed in
 
 ```sh
 AGENT_BROWSER_COMMAND=$(which agent-browser) \
-AGENT_BROWSER_VERSION=1.3.30 \
+AGENT_BROWSER_VERSION=0.33.0 \
 CHROME_PATH=/path/to/chromium \
 GLASS_SCORECARD_GIT_REVISION=$(git rev-parse HEAD) \
 GLASS_SCORECARD_CHECKPOINT_PATH=/tmp/agent-browser-checkpoint.json \

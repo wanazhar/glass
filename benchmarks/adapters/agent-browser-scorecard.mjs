@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { spawn, execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { atomicWriteJson } from "../checkpoint.mjs";
 
 class TransportError extends Error {}
+class UnsupportedScenario extends Error {}
 
 const corpus = JSON.parse(fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"));
 const fixture = fs.readFileSync(new URL("../../tests/fixtures/scorecard.html", import.meta.url), "utf8");
@@ -18,7 +20,15 @@ const checkpointPath = requiredEnv("GLASS_SCORECARD_CHECKPOINT_PATH");
 const invocation = { run_id: requiredEnv("GLASS_SCORECARD_RUN_ID"), started_at: requiredEnv("GLASS_SCORECARD_STARTED_AT") };
 const requestTimeoutMs = positiveInteger("AGENT_BROWSER_REQUEST_TIMEOUT_MS", process.env.AGENT_BROWSER_REQUEST_TIMEOUT_MS ?? "30000");
 const startupStarted = performance.now();
-const client = createMcpClient(command, ["mcp", "--tools", "all", "--executable-path", chromePath, "--no-auto-dialog"]);
+const chromeExecutable = resolveChromeExecutable(chromePath);
+const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "gabs-"));
+const client = createMcpClient(command, ["mcp", "--tools", "all"], {
+  AGENT_BROWSER_EXECUTABLE_PATH: chromeExecutable,
+  AGENT_BROWSER_NO_AUTO_DIALOG: "true",
+  AGENT_BROWSER_NAMESPACE: `g${process.pid}`,
+  AGENT_BROWSER_SESSION: `g${process.pid}`,
+  AGENT_BROWSER_SOCKET_DIR: socketDir,
+});
 
 let outcomes = [];
 let startupMs = 0;
@@ -26,36 +36,46 @@ try {
   const initialized = await client.initialize();
   const serverName = initialized.serverInfo?.name ?? "unknown";
   if (!/agent.?browser/i.test(serverName)) throw new Error(`unexpected MCP server identity: ${serverName}`);
-  const listed = await client.request("tools/list", {});
-  const availableTools = new Set(listed.tools.map(({ name }) => name));
-  for (const required of ["navigate", "click", "fill", "snapshot", "evaluate"]) {
+  const availableTools = new Set();
+  let cursor;
+  do {
+    const listed = await client.request("tools/list", cursor ? { cursor } : {});
+    for (const { name } of listed.tools) availableTools.add(name);
+    cursor = listed.nextCursor;
+  } while (cursor);
+  for (const required of ["agent_browser_open", "agent_browser_click", "agent_browser_fill", "agent_browser_snapshot", "agent_browser_eval"]) {
     if (!availableTools.has(required)) throw new Error(`agent-browser MCP missing required tool: ${required}`);
   }
   const caps = {
-    hasSnapshot: availableTools.has("snapshot"),
-    hasEvaluate: availableTools.has("evaluate"),
-    hasGetText: availableTools.has("get_text"),
-    hasAcceptDialog: availableTools.has("handle_dialog"),
+    hasSnapshot: availableTools.has("agent_browser_snapshot"),
+    hasEvaluate: availableTools.has("agent_browser_eval"),
+    hasGetText: availableTools.has("agent_browser_get_text"),
+    hasAcceptDialog: availableTools.has("agent_browser_dialog_accept"),
   };
-  await client.tool("navigate", { url: `data:text/html;base64,${Buffer.from(fixture).toString("base64")}` });
+  await client.tool("agent_browser_open", { url: `data:text/html;base64,${Buffer.from(fixture).toString("base64")}` });
   startupMs = performance.now() - startupStarted;
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     for (const scenario of corpus.scenarios) {
-      await client.tool("evaluate", { function: "() => { window.resetFixture(); document.querySelector('#name').value = ''; return true; }" }).catch(() => {});
+      await client.tool("agent_browser_eval", { script: "(() => { window.resetFixture(); document.querySelector('#name').value = ''; return true; })()" }).catch(() => {});
       const started = performance.now();
       let actual = null;
       let error = null;
+      let unsupportedScenario = false;
       try { actual = await runScenario(client, scenario.id, caps); } catch (caught) {
         if (caught instanceof TransportError) throw caught;
+        unsupportedScenario = caught instanceof UnsupportedScenario;
         error = boundedText(caught?.message ?? caught);
       }
       if (typeof actual === "string") actual = boundedText(actual);
-      const status = actual === scenario.expected ? "success" : scenario.forbidden.includes(actual) ? "wrong_action" : actual === "unsupported" ? "unsupported" : "failure";
+      const status = actual === scenario.expected ? "success" : scenario.forbidden.includes(actual) ? "wrong_action" : unsupportedScenario ? "unsupported" : "failure";
       outcomes.push({ id: scenario.id, category: scenario.category, iteration, expected: scenario.expected, actual, status, error, latency_ms: performance.now() - started, cdp_requests: null });
     }
     writeCheckpoint(iteration);
   }
-} finally { await client.close(); }
+} finally {
+  try { await client.tool("agent_browser_close", {}); } catch {}
+  await client.close();
+}
 
 const successes = count("success");
 const failures = count("failure");
@@ -80,72 +100,82 @@ async function runScenario(mcp, id, caps) {
     case "delayed-content": return runDelayedContent(mcp, caps);
     case "spa-navigation": return runSpaNavigation(mcp, caps);
     case "form": return runForm(mcp, caps);
-    case "popup": return "unsupported";
+    case "popup": throw new UnsupportedScenario("agent-browser 0.33.0 exposes no typed popup witness primitive");
     case "frame": return runFrame(mcp, caps);
     case "dialog": return runDialog(mcp, caps);
-    case "download": return "unsupported";
+    case "download": throw new UnsupportedScenario("agent-browser 0.33.0 exposes no typed download-integrity primitive");
     case "failure-recovery": return runFailureRecovery(mcp, caps);
     default: throw new Error(`unknown scenario ${id}`);
   }
 }
-async function result(mcp) { return evaluate(mcp, "() => document.querySelector('#result').value"); }
+async function result(mcp) { return evaluate(mcp, "document.querySelector('#result').value"); }
 async function evaluate(mcp, fn) {
-  const r = await mcp.tool("evaluate", { function: fn });
+  const r = await mcp.tool("agent_browser_eval", { script: fn });
+  const structuredResult = r.structuredContent?.response?.data?.result;
+  if (structuredResult !== undefined) return String(structuredResult);
   const text = r.content?.filter(({ type }) => type === "text").map(({ text }) => text).join("\n");
   if (!text) throw new Error("evaluate returned no text");
   const m = text.match(/^### Result\n([^\n]*)/m);
-  if (m) return m[1];
-  try { const p = JSON.parse(text); if (p.result !== undefined) return String(p.result); } catch {}
+  if (m) return decodeEvalScalar(m[1]);
+  try { const p = JSON.parse(text); if (p.result !== undefined) return decodeEvalScalar(p.result); } catch {}
   return text.trim();
+}
+function decodeEvalScalar(value) {
+  if (typeof value !== "string") return String(value);
+  try {
+    const decoded = JSON.parse(value);
+    if (typeof decoded === "string") return decoded;
+  } catch {}
+  return value;
 }
 
 async function runDuplicateLabel(mcp, caps) {
   if (caps.hasSnapshot) {
-    const snap = await mcp.tool("snapshot", {});
+    const snap = await mcp.tool("agent_browser_snapshot", {});
     const text = snap.content?.filter(({ type }) => type === "text").map(({ text }) => text).join("\n") ?? "";
     const refs = [...text.matchAll(/@(\w+)\b.*?Delete(?!\s*draft)/g)];
     if (refs.length > 0) {
-      try { await mcp.tool("click", { selector: `@${refs[refs.length - 1][1]}` }); return await result(mcp); } catch {}
+      try { await mcp.tool("agent_browser_click", { selector: `@${refs[refs.length - 1][1]}` }); return await result(mcp); } catch {}
     }
     const allRefs = [...text.matchAll(/@(\w+)\b.*?Delete/g)];
     if (allRefs.length > 1) {
-      try { await mcp.tool("click", { selector: `@${allRefs[1][1]}` }); return await result(mcp); } catch {}
+      try { await mcp.tool("agent_browser_click", { selector: `@${allRefs[1][1]}` }); return await result(mcp); } catch {}
     }
   }
-  try { await mcp.tool("click", { selector: "#duplicate-right" }); } catch { return "blocked"; }
+  try { await mcp.tool("agent_browser_click", { selector: "#duplicate-right" }); } catch { return "blocked"; }
   return await result(mcp);
 }
 async function runOverlay(mcp, caps) {
-  await mcp.tool("evaluate", { function: "() => { document.querySelector('#overlay').style.display='block'; return true; }" });
-  try { await mcp.tool("click", { selector: "#overlay-target" }); return await result(mcp); } catch { return "blocked"; }
+  await mcp.tool("agent_browser_eval", { script: "(() => { document.querySelector('#overlay').style.display='block'; return true; })()" });
+  try { await mcp.tool("agent_browser_click", { selector: "#overlay-target" }); return await result(mcp); } catch { return "blocked"; }
 }
 async function runReflow(mcp, caps) {
-  try { await mcp.tool("click", { selector: "#moving" }); } catch { return "blocked"; }
+  try { await mcp.tool("agent_browser_click", { selector: "#moving" }); } catch { return "blocked"; }
   return (await result(mcp)) === "idle" ? "blocked" : await result(mcp);
 }
 async function runDelayedContent(mcp, caps) {
-  await mcp.tool("evaluate", { function: "async () => { window.scheduleDelayed(); await new Promise(r => setTimeout(r, 200)); return true; }" });
-  return evaluate(mcp, "() => document.querySelector('#delayed')?.textContent ?? 'missing'");
+  await mcp.tool("agent_browser_eval", { script: "(async () => { window.scheduleDelayed(); await new Promise(r => setTimeout(r, 200)); return true; })()" });
+  return evaluate(mcp, "document.querySelector('#delayed')?.textContent ?? 'missing'");
 }
 async function runSpaNavigation(mcp, caps) {
-  await mcp.tool("click", { selector: "#spa" });
+  await mcp.tool("agent_browser_click", { selector: "#spa" });
   return await result(mcp);
 }
 async function runForm(mcp, caps) {
-  await mcp.tool("fill", { selector: "#name", text: "Glass" });
-  await mcp.tool("click", { selector: "#form button" });
+  await mcp.tool("agent_browser_fill", { selector: "#name", text: "Glass" });
+  await mcp.tool("agent_browser_click", { selector: "#form button" });
   return await result(mcp);
 }
 async function runFrame(mcp, caps) {
   try {
-    await mcp.tool("evaluate", { function: "() => { const b = document.querySelector('#frame')?.contentDocument?.querySelector('#frame-action'); if (b) { b.click(); return 'frame-clicked'; } return 'frame-not-found'; }" });
+    await mcp.tool("agent_browser_eval", { script: "(() => { const b = document.querySelector('#frame')?.contentDocument?.querySelector('#frame-action'); if (b) { b.click(); return 'frame-clicked'; } return 'frame-not-found'; })()" });
     return await result(mcp);
-  } catch { return "unsupported"; }
+  } catch { throw new UnsupportedScenario("agent-browser frame interaction was not available"); }
 }
 async function runDialog(mcp, caps) {
   try {
-    await mcp.tool("click", { selector: "#dialog" });
-    if (caps.hasAcceptDialog) await mcp.tool("handle_dialog", { accept: true });
+    await mcp.tool("agent_browser_click", { selector: "#dialog" });
+    if (caps.hasAcceptDialog) await mcp.tool("agent_browser_dialog_accept", {});
     for (let i = 0; i < 20; i++) {
       try { const v = await result(mcp); if (v === "dialog-accepted") return v; } catch {}
       await new Promise((r) => setTimeout(r, 25));
@@ -154,8 +184,8 @@ async function runDialog(mcp, caps) {
   } catch { return "blocked"; }
 }
 async function runFailureRecovery(mcp, caps) {
-  try { await mcp.tool("click", { selector: "#definitely-missing" }); return "unexpected-action"; } catch {}
-  await mcp.tool("evaluate", { function: "() => { document.querySelector('#result').value = 'recovered'; return true; }" });
+  try { await mcp.tool("agent_browser_click", { selector: "#definitely-missing" }); return "unexpected-action"; } catch {}
+  await mcp.tool("agent_browser_eval", { script: "(() => { document.querySelector('#result').value = 'recovered'; return true; })()" });
   return "recovered";
 }
 
@@ -165,12 +195,20 @@ function positiveInteger(envName, value) { const p = parseInt(value, 10); if (!N
 function requiredEnv(name) { const v = process.env[name]; if (!v) throw new Error(`${name} is required`); return v; }
 function boundedText(value) { const t = String(value ?? ""); return t.length > 1024 ? t.slice(0, 1024) : t; }
 function commandVersion(path) { try { return execFileSync(path, ["--version"], { encoding: "utf8" }).trim(); } catch { return null; } }
+function resolveChromeExecutable(pathname) {
+  const resolved = fs.realpathSync(pathname);
+  if (process.platform === "linux" && (resolved === "/usr/bin/snap" || pathname === "/snap/bin/chromium")) {
+    const snapChrome = "/snap/chromium/current/usr/lib/chromium-browser/chrome";
+    if (fs.existsSync(snapChrome)) return fs.realpathSync(snapChrome);
+  }
+  return resolved;
+}
 function processRss(pid) { try { return parseInt(fs.readFileSync(`/proc/${pid}/stat`).toString().split(" ")[23], 10) * 4096; } catch { return null; } }
 
-function createMcpClient(command, args) {
+function createMcpClient(command, args, environment) {
   return new (class McpClient {
   constructor(command, args) {
-    this.child = spawn(command, args, { stdio: ["pipe", "pipe", "inherit"] });
+    this.child = spawn(command, args, { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, ...environment } });
     this.pid = this.child.pid;
     this.nextId = 0;
     this.pending = new Map();

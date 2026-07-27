@@ -157,6 +157,31 @@ pub struct KnowledgeAssessment {
     pub age_seconds: Option<i64>,
 }
 
+/// Whether a semantic observation consulted the local knowledge store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeObservationMode {
+    FreshOnly,
+    Assessed,
+}
+
+/// Fresh semantic observation plus explicit, non-authorizing knowledge
+/// assessment evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeObservationReport {
+    pub observation: SemanticObservation,
+    pub mode: KnowledgeObservationMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assessments: Vec<KnowledgeAssessment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub eligible_record_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_record_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub out_of_scope_record_ids: Vec<String>,
+}
+
 /// Knowledge record categories supported by the versioned store contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

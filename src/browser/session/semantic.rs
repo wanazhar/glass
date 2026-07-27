@@ -1184,6 +1184,60 @@ impl super::BrowserSession {
         SemanticObservation::from_page_context(&context, level).map_err(Into::into)
     }
 
+    /// Collect a fresh semantic observation and, unless `fresh_only` is set,
+    /// assess stored knowledge against its current route and landmarks.
+    ///
+    /// The store is read-only for this operation. Assessment never supplies a
+    /// target reference or authorizes an action; callers must still use the
+    /// current observation and guarded action APIs.
+    pub async fn semantic_observe_with_knowledge(
+        &self,
+        level: SemanticObservationLevel,
+        store: &super::KnowledgeStore,
+        options: super::KnowledgeLookupOptions,
+        fresh_only: bool,
+    ) -> super::types::BrowserResult<super::KnowledgeObservationReport> {
+        let observation = self.semantic_observe(level).await?;
+        if fresh_only {
+            return Ok(super::KnowledgeObservationReport {
+                observation,
+                mode: super::KnowledgeObservationMode::FreshOnly,
+                assessments: Vec::new(),
+                eligible_record_ids: Vec::new(),
+                stale_record_ids: Vec::new(),
+                out_of_scope_record_ids: Vec::new(),
+            });
+        }
+        let context = super::KnowledgeLookupContext::from_observation(&observation, options)?;
+        let assessments = store.assess(&context);
+        let mut eligible_record_ids = Vec::new();
+        let mut stale_record_ids = Vec::new();
+        let mut out_of_scope_record_ids = Vec::new();
+        for assessment in &assessments {
+            match assessment.status {
+                super::KnowledgeAssessmentStatus::Eligible => {
+                    eligible_record_ids.push(assessment.record_id.clone())
+                }
+                super::KnowledgeAssessmentStatus::Stale => {
+                    stale_record_ids.push(assessment.record_id.clone())
+                }
+                super::KnowledgeAssessmentStatus::OutOfScope => {
+                    out_of_scope_record_ids.push(assessment.record_id.clone())
+                }
+                super::KnowledgeAssessmentStatus::Contradicted
+                | super::KnowledgeAssessmentStatus::Quarantined => {}
+            }
+        }
+        Ok(super::KnowledgeObservationReport {
+            observation,
+            mode: super::KnowledgeObservationMode::Assessed,
+            assessments,
+            eligible_record_ids,
+            stale_record_ids,
+            out_of_scope_record_ids,
+        })
+    }
+
     /// Expand one semantic region only when its page revision is still current.
     pub async fn semantic_expand_region(
         &self,

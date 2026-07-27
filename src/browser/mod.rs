@@ -67,6 +67,10 @@ pub use session::KnowledgeLifecycleEvent;
 pub use session::KnowledgeLookupContext;
 /// Explicit session inputs for constructing a knowledge lookup context.
 pub use session::KnowledgeLookupOptions;
+/// Whether a semantic observation was fresh-only or store-assessed.
+pub use session::KnowledgeObservationMode;
+/// Fresh semantic observation with non-authorizing knowledge assessments.
+pub use session::KnowledgeObservationReport;
 /// Profile isolation class for persisted browser knowledge.
 pub use session::KnowledgeProfileScope;
 /// One persisted browser knowledge record.

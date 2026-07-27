@@ -63,8 +63,8 @@
           "maxItems": 32,
           "items": {"enum": ["wrongTargetExecuted", "staleRevisionExecuted", "ambiguousTargetSilentlyExecuted", "nonIdempotentMutationDuplicated", "falseWorkflowCompletion", "unsafeResumeReplay", "secretLeaked", "crossProfileKnowledgeLeak", "unboundedLoopEscapedBudget", "policyBypassed", "checkpointAcceptedAfterIncompatibleDefinitionChange", "semanticCacheHidCriticalUnexpectedState"]}
         },
-        "oracleEvidence": {"const": true},
-        "artifactsComplete": {"const": true}
+        "oracleEvidence": {"type": "boolean"},
+        "artifactsComplete": {"type": "boolean"}
       }
     }
   }

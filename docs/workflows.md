@@ -2,8 +2,9 @@
 
 Glass 0.1.19 introduces the validated definition contract and a linear runner
 for the transactional workflow runtime. Definitions are validated before
-execution, and each step records its state transition history. Checkpoints,
-retries, and resume reconciliation are being added in later phases.
+execution, and each step records its state transition history. The local
+development surface also includes bounded retries, traces, checkpoints, and
+resume reconciliation.
 
 ## Contract
 
@@ -104,7 +105,9 @@ provenance.
 Every run result also includes a deterministic trace of step-state transitions.
 The trace has contiguous sequence numbers and a fixed event budget, making it
 suitable for replay inspection without retaining page contents or input
-values.
+values. Each result, trace, and exported checkpoint carries the same bounded
+`runId`; a resumed suffix receives a new run ID so separate invocations remain
+auditable.
 
 ## Checkpoints and resume
 
@@ -133,6 +136,5 @@ draft for review, and store typed values as `${inputs.name}` placeholders.
 Recorder drafts are not execution evidence and do not automatically attach to
 or observe a browser session.
 
-This is a local, unreleased 0.1.19 development surface. Checkpoint persistence
-and resume reconciliation are not complete yet. The eventual public release
-target for the complete roadmap is 0.2.0.
+This is a local, unreleased 0.1.19 development surface. The complete workflow
+roadmap remains targeted for the 0.2.0 release.

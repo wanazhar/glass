@@ -885,6 +885,7 @@ pub struct WorkflowTerminalProof {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRunResult {
+    pub run_id: String,
     pub name: String,
     pub workflow_version: String,
     pub status: WorkflowRunStatus,
@@ -914,6 +915,8 @@ pub struct WorkflowBranchDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTrace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub events: Vec<WorkflowTraceEvent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branch_decisions: Vec<WorkflowBranchDecision>,
@@ -955,6 +958,7 @@ impl WorkflowTrace {
             .filter_map(|step| step.branch_decision.clone())
             .collect();
         Self {
+            run_id: None,
             events,
             branch_decisions,
         }
@@ -962,6 +966,16 @@ impl WorkflowTrace {
 
     /// Validate sequence ordering and the trace event budget.
     pub fn validate(&self) -> Result<(), WorkflowValidationError> {
+        if self
+            .run_id
+            .as_ref()
+            .is_some_and(|run_id| run_id.is_empty() || run_id.len() > 128)
+        {
+            return Err(WorkflowValidationError::new(
+                "trace.runId",
+                "run ID must contain 1 to 128 bytes",
+            ));
+        }
         if self.events.len() > MAX_WORKFLOW_TRACE_EVENTS {
             return Err(WorkflowValidationError::new(
                 "trace.events",
@@ -1094,6 +1108,8 @@ impl WorkflowTrace {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowCheckpoint {
     pub schema_version: u8,
+    #[serde(default)]
+    pub run_id: String,
     pub workflow_name: String,
     pub workflow_version: String,
     pub definition_hash: String,
@@ -1188,14 +1204,17 @@ impl std::error::Error for WorkflowResumeError {}
 impl WorkflowRunResult {
     fn failed(
         workflow: &WorkflowDefinition,
+        run_id: String,
         steps: Vec<WorkflowStepRecord>,
         failed_step: Option<String>,
         failure: impl Into<String>,
         initial_revision: u64,
         final_revision: u64,
     ) -> Self {
-        let trace = WorkflowTrace::from_steps(&steps);
+        let mut trace = WorkflowTrace::from_steps(&steps);
+        trace.run_id = Some(run_id.clone());
         Self {
+            run_id,
             name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Failed,
@@ -1226,6 +1245,7 @@ impl super::BrowserSession {
         let initial_revision = self
             .page_revision
             .load(std::sync::atomic::Ordering::Relaxed);
+        let run_id = format!("run_{}", self.next_execution_id());
         let mut records: Vec<_> = resolved_steps
             .iter()
             .map(|step| WorkflowStepRecord::new(&step.id))
@@ -1242,6 +1262,7 @@ impl super::BrowserSession {
                 skip_remaining(&mut records, 0);
                 return Ok(WorkflowRunResult::failed(
                     workflow,
+                    run_id.clone(),
                     records,
                     None,
                     format!("workflow precondition failed: {error}"),
@@ -1285,6 +1306,7 @@ impl super::BrowserSession {
                             skip_remaining(&mut records, index + 1);
                             return Ok(WorkflowRunResult::failed(
                                 workflow,
+                                run_id.clone(),
                                 records,
                                 Some(step.id.clone()),
                                 message,
@@ -1343,6 +1365,7 @@ impl super::BrowserSession {
                             skip_remaining(&mut records, index + 1);
                             return Ok(WorkflowRunResult::failed(
                                 workflow,
+                                run_id.clone(),
                                 records,
                                 Some(step.id.clone()),
                                 message,
@@ -1376,6 +1399,7 @@ impl super::BrowserSession {
                     skip_remaining(&mut records, index + 1);
                     return Ok(WorkflowRunResult::failed(
                         workflow,
+                        run_id.clone(),
                         records,
                         Some(step.id.clone()),
                         message,
@@ -1408,6 +1432,7 @@ impl super::BrowserSession {
                     skip_remaining(&mut records, index + 1);
                     return Ok(WorkflowRunResult::failed(
                         workflow,
+                        run_id.clone(),
                         records,
                         Some(step.id.clone()),
                         message,
@@ -1437,6 +1462,7 @@ impl super::BrowserSession {
             Err(error) => {
                 return Ok(WorkflowRunResult::failed(
                     workflow,
+                    run_id.clone(),
                     records,
                     None,
                     format!("workflow terminal condition was not proven: {error}"),
@@ -1450,6 +1476,7 @@ impl super::BrowserSession {
             Err(error) => {
                 return Ok(WorkflowRunResult::failed(
                     workflow,
+                    run_id.clone(),
                     records,
                     None,
                     format!("workflow output extraction failed: {error}"),
@@ -1459,8 +1486,10 @@ impl super::BrowserSession {
             }
         };
 
-        let trace = WorkflowTrace::from_steps(&records);
+        let mut trace = WorkflowTrace::from_steps(&records);
+        trace.run_id = Some(run_id.clone());
         Ok(WorkflowRunResult {
+            run_id,
             name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             status: WorkflowRunStatus::Completed,
@@ -1501,6 +1530,7 @@ impl super::BrowserSession {
             .unwrap_or(result.steps.len());
         let checkpoint = WorkflowCheckpoint {
             schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+            run_id: result.run_id.clone(),
             workflow_name: workflow.name.clone(),
             workflow_version: workflow.workflow_version.clone(),
             definition_hash: workflow_definition_hash(workflow)?,
@@ -1685,6 +1715,11 @@ impl WorkflowCheckpoint {
         if self.steps.len() > MAX_STEPS {
             return Err(WorkflowResumeError::CheckpointShape(
                 "checkpoint contains too many steps".into(),
+            ));
+        }
+        if self.run_id.len() > 128 {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "checkpoint runId is too long".into(),
             ));
         }
         let bytes = serde_json::to_vec(self)
@@ -2325,6 +2360,7 @@ mod tests {
     fn workflow_checkpoint_is_deterministic_and_redacted() {
         let checkpoint = WorkflowCheckpoint {
             schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+            run_id: "run_test".into(),
             workflow_name: "example".into(),
             workflow_version: "1.0.0".into(),
             definition_hash: "a".repeat(64),

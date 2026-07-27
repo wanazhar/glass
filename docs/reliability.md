@@ -18,6 +18,8 @@ not part of the supported platform set.
 - [Replay v1](schema/reliability-replay-v1.schema.json) binds redacted ordered
   events and an observation to the exact scenario and records platform and
   browser budget metadata.
+- [Capability suite v1](schema/reliability-capability-suite-v1.schema.json)
+  packages multiple scenarios for deterministic matrix validation.
 
 The checked-in examples are
 `tests/fixtures/reliability-scenario-v1.json`,

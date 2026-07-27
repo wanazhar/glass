@@ -20,13 +20,15 @@
 //! - **har**: network recording (HAR-like capture)
 //! - **intercept**: CDP Fetch domain request interception
 //! - **locator**: element resolution with fallback chains
-//! - **navigate**: page navigation and JavaScript evaluation
+//! - **navigate**: page navigation and page metadata
+//! - **evaluate**: policy-gated JavaScript evaluation
 //! - **observe**: compact page observation
 //! - **popup**: popup window click and witness tracking
 //! - **retry**: retry policies for transport/CDP errors
 //! - **storage**: cookies, localStorage, sessionStorage
 //! - **target**: page target discovery, selection, creation
 //! - **targets**: parallel multi-target operations
+//! - **topology**: bounded topology projections for recovery diagnostics
 //! - **visual**: screenshots, visual capture, screencast
 //! - **wait**: page wait conditions and lifecycle detection
 //! - **webauthn**: virtual WebAuthn authenticator
@@ -79,6 +81,7 @@ mod dialog;
 mod diff;
 mod download;
 mod emulation;
+mod evaluate;
 mod fill;
 mod frame;
 mod har;
@@ -94,6 +97,7 @@ pub mod storage;
 pub use storage::{Cookie, StorageEntry, StorageItems};
 mod target;
 mod targets;
+mod topology;
 mod visual;
 mod wait;
 mod webauthn;
@@ -804,17 +808,7 @@ impl BrowserSession {
                     completeness: cached.context.accessibility.completeness.clone(),
                 });
 
-        let topology = {
-            let t = self.topology.lock().await;
-            TopologyTrace {
-                sequence: t.sequence,
-                active_target_id: t.active_target_id.clone(),
-                active_frame_id: t.active_frame_id.clone(),
-                target_count: t.targets.len(),
-                frame_count: t.frames.len(),
-                event_loss_count: t.event_loss_count,
-            }
-        };
+        let topology = topology::trace_for(&self.topology).await;
 
         let pack = FailureTracePack {
             outcome,

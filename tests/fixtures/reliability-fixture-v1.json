@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "checkout-submit",
+  "entrypoint": "tests/fixtures/reliability-lab.html",
+  "controls": [
+    "reset",
+    "replaceTarget",
+    "renameTarget",
+    "duplicateTarget",
+    "moveTargetToOtherRegion",
+    "showOverlay",
+    "moveTarget",
+    "detachFrame",
+    "scheduleEffectMarker",
+    "commitSubmit"
+  ],
+  "faults": [
+    "loseResponse",
+    "rendererDisconnect",
+    "browserDisconnect",
+    "delayedEffect",
+    "dropEvent"
+  ],
+  "oracles": ["snapshot", "submitSideEffectCount"]
+}

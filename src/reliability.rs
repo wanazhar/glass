@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const RELIABILITY_SCENARIO_SCHEMA_VERSION: u32 = 1;
+pub const RELIABILITY_FIXTURE_SCHEMA_VERSION: u32 = 1;
 const MAX_SCENARIO_ID_BYTES: usize = 128;
 const MAX_CATEGORY_BYTES: usize = 128;
 const MAX_FIXTURE_BYTES: usize = 256;
@@ -48,6 +49,111 @@ pub enum ReliabilityForbiddenOutcome {
     SemanticCacheHidCriticalUnexpectedState,
 }
 
+/// Faults that the reliability lab can inject without relying on timing races.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReliabilityFaultKind {
+    LoseResponse,
+    RendererDisconnect,
+    BrowserDisconnect,
+    DelayedEffect,
+    DropEvent,
+}
+
+/// Deterministic controls exposed by the checked-in adversarial fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReliabilityFixtureControl {
+    Reset,
+    ReplaceTarget,
+    RenameTarget,
+    DuplicateTarget,
+    MoveTargetToOtherRegion,
+    ShowOverlay,
+    MoveTarget,
+    DetachFrame,
+    ScheduleEffectMarker,
+    CommitSubmit,
+}
+
+/// Independent oracle exposed by a reliability fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReliabilityFixtureOracle {
+    Snapshot,
+    SubmitSideEffectCount,
+}
+
+/// Versioned manifest for a deterministic browser fixture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityFixtureManifest {
+    pub schema_version: u32,
+    pub id: String,
+    pub entrypoint: String,
+    pub controls: Vec<ReliabilityFixtureControl>,
+    pub faults: Vec<ReliabilityFaultKind>,
+    pub oracles: Vec<ReliabilityFixtureOracle>,
+}
+
+impl ReliabilityFixtureManifest {
+    /// Parse and validate one fixture manifest.
+    pub fn from_json(input: &str) -> Result<Self, ReliabilityScenarioError> {
+        let manifest: Self = serde_json::from_str(input).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("invalid fixture JSON: {error}"))
+        })?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    /// Validate the fixture identity, controls, faults, and independent oracles.
+    pub fn validate(&self) -> Result<(), ReliabilityScenarioError> {
+        if self.schema_version != RELIABILITY_FIXTURE_SCHEMA_VERSION {
+            return Err(ReliabilityScenarioError::new(
+                "schemaVersion",
+                format!(
+                    "unsupported fixture schema {}; expected {}",
+                    self.schema_version, RELIABILITY_FIXTURE_SCHEMA_VERSION
+                ),
+            ));
+        }
+        validate_text("id", &self.id, MAX_SCENARIO_ID_BYTES)?;
+        validate_text("entrypoint", &self.entrypoint, MAX_FIXTURE_BYTES)?;
+        validate_unique("controls", &self.controls)?;
+        validate_unique("faults", &self.faults)?;
+        validate_unique("oracles", &self.oracles)?;
+        if self.controls.is_empty() {
+            return Err(ReliabilityScenarioError::new(
+                "controls",
+                "must expose at least one deterministic control",
+            ));
+        }
+        if self.faults.is_empty() {
+            return Err(ReliabilityScenarioError::new(
+                "faults",
+                "must expose at least one deterministic fault",
+            ));
+        }
+        if self.oracles.is_empty() {
+            return Err(ReliabilityScenarioError::new(
+                "oracles",
+                "must expose at least one independent oracle",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return the stable content hash used to bind fixture evidence.
+    pub fn content_hash(&self) -> Result<String, ReliabilityScenarioError> {
+        self.validate()?;
+        let canonical = serde_json::to_string(self).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("cannot serialize fixture: {error}"))
+        })?;
+        let digest = Sha256::digest(canonical.as_bytes());
+        Ok(format!("sha256:{digest:x}"))
+    }
+}
+
 /// Browser and policy setup for a scenario.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,7 +167,7 @@ pub struct ReliabilityScenarioSetup {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReliabilityFaultInjection {
     pub after_dispatch: String,
-    pub fault: String,
+    pub fault: ReliabilityFaultKind,
 }
 
 /// One declarative scenario operation.
@@ -251,11 +357,6 @@ impl ReliabilityScenario {
                     &format!("{path}.inject.afterDispatch"),
                     &injection.after_dispatch,
                     MAX_SCENARIO_ID_BYTES,
-                )?;
-                validate_text(
-                    &format!("{path}.inject.fault"),
-                    &injection.fault,
-                    MAX_CATEGORY_BYTES,
                 )?;
             }
         }
@@ -478,6 +579,19 @@ fn default_platforms() -> Vec<ReliabilityPlatform> {
     ]
 }
 
+fn validate_unique<T: Ord>(path: &str, values: &[T]) -> Result<(), ReliabilityScenarioError> {
+    let mut unique = BTreeSet::new();
+    for value in values {
+        if !unique.insert(value) {
+            return Err(ReliabilityScenarioError::new(
+                path,
+                "must not contain duplicates",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_text(path: &str, value: &str, maximum: usize) -> Result<(), ReliabilityScenarioError> {
     if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
         return Err(ReliabilityScenarioError::new(
@@ -539,7 +653,7 @@ mod tests {
                     run_workflow: None,
                     inject: Some(ReliabilityFaultInjection {
                         after_dispatch: "submit".into(),
-                        fault: "loseResponse".into(),
+                        fault: ReliabilityFaultKind::LoseResponse,
                     }),
                     resume_from_checkpoint: None,
                 },

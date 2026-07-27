@@ -27,6 +27,7 @@ const MAX_TARGET_BYTES: usize = 1_024;
 const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
 const MAX_STEP_REPETITIONS: u32 = 8;
 const MAX_WORKFLOW_TRACE_EVENTS: usize = 2_048;
+const WORKFLOW_TRACE_SCHEMA_VERSION: u8 = 1;
 const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
 const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
 
@@ -934,6 +935,8 @@ pub struct WorkflowBranchDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTrace {
+    #[serde(default = "default_workflow_trace_schema_version")]
+    pub schema_version: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub events: Vec<WorkflowTraceEvent>,
@@ -977,6 +980,7 @@ impl WorkflowTrace {
             .filter_map(|step| step.branch_decision.clone())
             .collect();
         Self {
+            schema_version: WORKFLOW_TRACE_SCHEMA_VERSION,
             run_id: None,
             events,
             branch_decisions,
@@ -985,6 +989,15 @@ impl WorkflowTrace {
 
     /// Validate sequence ordering and the trace event budget.
     pub fn validate(&self) -> Result<(), WorkflowValidationError> {
+        if self.schema_version != WORKFLOW_TRACE_SCHEMA_VERSION {
+            return Err(WorkflowValidationError::new(
+                "trace.schemaVersion",
+                format!(
+                    "unsupported trace schema version {}; expected {}",
+                    self.schema_version, WORKFLOW_TRACE_SCHEMA_VERSION
+                ),
+            ));
+        }
         if self
             .run_id
             .as_ref()
@@ -1119,6 +1132,10 @@ impl WorkflowTrace {
         }
         Ok(records)
     }
+}
+
+fn default_workflow_trace_schema_version() -> u8 {
+    WORKFLOW_TRACE_SCHEMA_VERSION
 }
 
 /// Bounded, deterministic workflow checkpoint. Input values and page content
@@ -2778,6 +2795,18 @@ mod tests {
         assert_eq!(result.trace.run_id.as_deref(), Some("run_test"));
         let value = serde_json::to_value(result).unwrap();
         assert_eq!(value["status"], "budget_exhausted");
+    }
+
+    #[test]
+    fn trace_schema_version_is_independent_and_validated() {
+        let trace = WorkflowTrace::from_steps(&[]);
+        assert_eq!(trace.schema_version, WORKFLOW_TRACE_SCHEMA_VERSION);
+        trace.validate().unwrap();
+
+        let mut unsupported = trace;
+        unsupported.schema_version = WORKFLOW_TRACE_SCHEMA_VERSION + 1;
+        let error = unsupported.validate().unwrap_err();
+        assert_eq!(error.path, "trace.schemaVersion");
     }
 
     #[test]

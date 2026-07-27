@@ -106,7 +106,8 @@ run-wide `maxExtractedBytes` budget is enforced before serialization. Each
 returned output includes its source and the browser revision used as bounded
 provenance.
 
-Every run result also includes a deterministic trace of step-state transitions.
+Every run result also includes a deterministic, schema-versioned trace of
+step-state transitions.
 The trace has contiguous sequence numbers and a fixed event budget, making it
 suitable for replay inspection without retaining page contents or input
 values. Each step result also records whether dispatch was acknowledged, an
@@ -135,6 +136,10 @@ never re-dispatches the committed prefix.
 follows legal state transitions, and preserves attempt boundaries without
 contacting Chrome or replaying an effect. This makes traces suitable for
 offline diagnostics and test fixtures.
+
+Trace schema versioning is independent from the workflow definition and
+checkpoint schema versions. Older traces that omit the version field are read
+as trace schema version 1; unsupported explicit versions fail before replay.
 
 The `maxSteps` and `maxDurationMs` budgets are enforced during execution, not
 only during definition validation. Budget exhaustion returns the explicit

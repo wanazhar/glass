@@ -660,15 +660,19 @@ impl WorkflowTrace {
     pub fn from_steps(steps: &[WorkflowStepRecord]) -> Self {
         let mut events = Vec::new();
         for step in steps {
+            let mut attempt = 0u32;
             for state in &step.history {
                 if events.len() == MAX_WORKFLOW_TRACE_EVENTS {
                     break;
+                }
+                if *state == WorkflowStepState::Preflight {
+                    attempt = attempt.saturating_add(1);
                 }
                 events.push(WorkflowTraceEvent {
                     sequence: events.len() as u64,
                     step_id: step.id.clone(),
                     state: *state,
-                    attempt: step.attempts,
+                    attempt,
                 });
             }
         }
@@ -692,6 +696,83 @@ impl WorkflowTrace {
             }
         }
         Ok(())
+    }
+
+    /// Replay the trace into step records without dispatching browser work.
+    ///
+    /// Replay is intentionally an inspection operation: it checks that the
+    /// trace references the declared steps in order, follows the workflow
+    /// state machine, and carries monotonic attempt numbers. A truncated
+    /// trace is accepted as a valid prefix when it ends at the event budget.
+    pub fn replay(
+        &self,
+        workflow: &WorkflowDefinition,
+    ) -> Result<Vec<WorkflowStepRecord>, WorkflowValidationError> {
+        workflow.validate()?;
+        self.validate()?;
+        let mut records: Vec<_> = workflow
+            .steps
+            .iter()
+            .map(|step| WorkflowStepRecord::new(&step.id))
+            .collect();
+        let mut seen = vec![false; records.len()];
+        let mut highest_step = 0usize;
+
+        for (event_index, event) in self.events.iter().enumerate() {
+            let step_index = workflow
+                .steps
+                .iter()
+                .position(|step| step.id == event.step_id)
+                .ok_or_else(|| {
+                    WorkflowValidationError::new(
+                        format!("trace.events[{event_index}].stepId"),
+                        "step ID is not declared by the workflow",
+                    )
+                })?;
+            if step_index > highest_step.saturating_add(1) {
+                return Err(WorkflowValidationError::new(
+                    format!("trace.events[{event_index}].stepId"),
+                    "trace skips a declared step",
+                ));
+            }
+            if step_index < highest_step {
+                return Err(WorkflowValidationError::new(
+                    format!("trace.events[{event_index}].stepId"),
+                    "trace returns to an earlier step",
+                ));
+            }
+            highest_step = highest_step.max(step_index);
+
+            let record = &mut records[step_index];
+            if !seen[step_index] {
+                if event.state != WorkflowStepState::Pending || event.attempt != 0 {
+                    return Err(WorkflowValidationError::new(
+                        format!("trace.events[{event_index}]"),
+                        "each step must begin with pending at attempt zero",
+                    ));
+                }
+                seen[step_index] = true;
+                continue;
+            }
+            if event.state == WorkflowStepState::Preflight {
+                if event.attempt != record.attempts.saturating_add(1) {
+                    return Err(WorkflowValidationError::new(
+                        format!("trace.events[{event_index}].attempt"),
+                        "preflight attempt must increment by one",
+                    ));
+                }
+                record.attempts = event.attempt;
+            } else if event.attempt != record.attempts {
+                return Err(WorkflowValidationError::new(
+                    format!("trace.events[{event_index}].attempt"),
+                    "event attempt does not match the current step attempt",
+                ));
+            }
+            record.transition(event.state).map_err(|reason| {
+                WorkflowValidationError::new(format!("trace.events[{event_index}].state"), reason)
+            })?;
+        }
+        Ok(records)
     }
 }
 
@@ -1840,5 +1921,37 @@ mod tests {
             trace.events.last().unwrap().state,
             WorkflowStepState::Committed
         );
+    }
+
+    #[test]
+    fn trace_replay_preserves_attempt_boundaries() {
+        let mut record = WorkflowStepRecord::new("open");
+        record.transition(WorkflowStepState::Ready).unwrap();
+        record.transition(WorkflowStepState::Preflight).unwrap();
+        record.attempts = 1;
+        record.transition(WorkflowStepState::Resolving).unwrap();
+        record.transition(WorkflowStepState::NotDispatched).unwrap();
+        record.fail(WorkflowStepState::FailedBeforeDispatch, "before dispatch");
+        record.transition(WorkflowStepState::Ready).unwrap();
+        record.transition(WorkflowStepState::Preflight).unwrap();
+        record.attempts = 2;
+        record.transition(WorkflowStepState::Resolving).unwrap();
+        record.transition(WorkflowStepState::Dispatched).unwrap();
+        record
+            .transition(WorkflowStepState::EffectObserved)
+            .unwrap();
+        record.transition(WorkflowStepState::Verified).unwrap();
+        record
+            .transition(WorkflowStepState::OutputsExtracted)
+            .unwrap();
+        record.transition(WorkflowStepState::Committed).unwrap();
+
+        let workflow = definition();
+        let trace = WorkflowTrace::from_steps(&[record]);
+        let replayed = trace.replay(&workflow).unwrap();
+        assert_eq!(trace.events[2].attempt, 1);
+        assert_eq!(trace.events[7].attempt, 2);
+        assert_eq!(replayed[0].state, WorkflowStepState::Committed);
+        assert_eq!(replayed[0].attempts, 2);
     }
 }

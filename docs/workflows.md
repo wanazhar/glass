@@ -95,7 +95,12 @@ cookies, passwords, or page content.
 `reconcile_workflow_checkpoint` checks that the definition and route still
 match and returns the next safe step without dispatching an action. It rejects
 changed routes and any checkpoint whose next state could represent an already
-dispatched effect. Executing the returned resume plan is a later phase.
+dispatched effect. Callers remain responsible for executing the returned plan.
+
+`WorkflowTrace::replay` checks that a trace belongs to the declared workflow,
+follows legal state transitions, and preserves attempt boundaries without
+contacting Chrome or replaying an effect. This makes traces suitable for
+offline diagnostics and test fixtures.
 
 This is a local, unreleased 0.1.19 development surface. Checkpoint persistence
 and resume reconciliation are not complete yet. The eventual public release

@@ -25,6 +25,8 @@
   and observe-bytes scoreboard.
 - [Reliability metrics](reliability-metrics.md) — versioned action, verification,
   recovery, latency, and resource evidence.
+- [Production canary](production-canary.md) — hardened, non-destructive live-site
+  probe procedure and evidence requirements.
 - [Bot-protection & consent walls](bot-protection.md) — legitimate access paths
   when sites challenge CDP automation.
 - [Detection-surface report](detection-surface.md) — what stock CDP-driven

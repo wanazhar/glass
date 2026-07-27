@@ -89,8 +89,8 @@ pub use session::diff_accessibility;
 pub use session::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,
     WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput,
-    WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError,
-    WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,
-    WorkflowStepState, WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent,
-    WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputEvidence, WorkflowOutputSource,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
+    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };

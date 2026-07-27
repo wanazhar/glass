@@ -91,6 +91,11 @@ Outputs use bounded sources such as `page_url`, `page_title`, or
 `visible_text`. Their declared type is checked before the value is returned;
 arbitrary JavaScript is not an output source.
 
+String, URL, integer, number, and boolean outputs use strict conversions. A
+run-wide `maxExtractedBytes` budget is enforced before serialization. Each
+returned output includes its source and the browser revision used as bounded
+provenance.
+
 Every run result also includes a deterministic trace of step-state transitions.
 The trace has contiguous sequence numbers and a fixed event budget, making it
 suitable for replay inspection without retaining page contents or input

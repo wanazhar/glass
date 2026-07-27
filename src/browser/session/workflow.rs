@@ -1594,6 +1594,8 @@ async fn extract_workflow_outputs(
         None
     };
     let mut outputs = BTreeMap::new();
+    let mut extracted_bytes = 0usize;
+    let revision = current_revision(session);
     for (name, declaration) in &workflow.outputs {
         let text = match declaration.source {
             WorkflowOutputSource::PageUrl => page.as_ref().map(|page| page.url.as_str()),
@@ -1601,39 +1603,62 @@ async fn extract_workflow_outputs(
             WorkflowOutputSource::VisibleText => visible_text.as_deref(),
         }
         .ok_or_else(|| format!("output {name:?} has no extraction source"))?;
-        if text.len() > workflow.budgets.max_extracted_bytes {
+        extracted_bytes = extracted_bytes.saturating_add(text.len());
+        if extracted_bytes > workflow.budgets.max_extracted_bytes {
             return Err(format!(
-                "output {name:?} exceeds maxExtractedBytes {}",
+                "outputs exceed maxExtractedBytes {}",
                 workflow.budgets.max_extracted_bytes
             )
             .into());
         }
-        let value = match declaration.value_type {
-            WorkflowValueType::String => Value::String(text.to_string()),
-            WorkflowValueType::Url => {
-                if Url::parse(text).is_err() {
-                    return Err(format!("output {name:?} is not a valid URL").into());
-                }
-                Value::String(text.to_string())
-            }
-            WorkflowValueType::Integer | WorkflowValueType::Number | WorkflowValueType::Boolean => {
-                return Err(format!(
-                    "output {name:?} source {} cannot produce {}",
-                    declaration.source, declaration.value_type
-                )
-                .into());
-            }
-        };
+        let value = typed_output_value(name, declaration.value_type, text)?;
         outputs.insert(
             name.clone(),
             WorkflowOutput {
                 value_type: declaration.value_type,
-                source: declaration.source,
                 value,
+                evidence: WorkflowOutputEvidence {
+                    source: declaration.source,
+                    revision,
+                },
             },
         );
     }
     Ok(outputs)
+}
+
+fn typed_output_value(
+    name: &str,
+    value_type: WorkflowValueType,
+    text: &str,
+) -> BrowserResult<Value> {
+    let trimmed = text.trim();
+    match value_type {
+        WorkflowValueType::String => Ok(Value::String(text.to_string())),
+        WorkflowValueType::Url => {
+            if Url::parse(trimmed).is_err() {
+                return Err(format!("output {name:?} is not a valid URL").into());
+            }
+            Ok(Value::String(text.to_string()))
+        }
+        WorkflowValueType::Integer => trimmed
+            .parse::<i64>()
+            .map(Value::from)
+            .map_err(|_| format!("output {name:?} cannot be parsed as an integer").into()),
+        WorkflowValueType::Number => {
+            let number = trimmed
+                .parse::<f64>()
+                .map_err(|_| format!("output {name:?} cannot be parsed as a number"))?;
+            serde_json::Number::from_f64(number)
+                .map(Value::Number)
+                .ok_or_else(|| format!("output {name:?} is not a finite number").into())
+        }
+        WorkflowValueType::Boolean => match trimmed {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(format!("output {name:?} cannot be parsed as a boolean").into()),
+        },
+    }
 }
 
 fn current_revision(session: &super::BrowserSession) -> u64 {
@@ -1708,9 +1733,7 @@ impl WorkflowOutputDeclaration {
                     WorkflowValueType::String | WorkflowValueType::Url
                 )
             }
-            WorkflowOutputSource::PageTitle | WorkflowOutputSource::VisibleText => {
-                self.value_type == WorkflowValueType::String
-            }
+            WorkflowOutputSource::PageTitle | WorkflowOutputSource::VisibleText => true,
         };
         if !compatible {
             return Err(WorkflowValidationError::new(
@@ -1749,8 +1772,16 @@ impl fmt::Display for WorkflowOutputSource {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowOutput {
     pub value_type: WorkflowValueType,
-    pub source: WorkflowOutputSource,
     pub value: Value,
+    pub evidence: WorkflowOutputEvidence,
+}
+
+/// Bounded provenance for a typed workflow output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowOutputEvidence {
+    pub source: WorkflowOutputSource,
+    pub revision: u64,
 }
 
 /// A path-aware validation failure.
@@ -2151,6 +2182,20 @@ mod tests {
     }
 
     #[test]
+    fn typed_output_values_require_strict_scalar_conversions() {
+        assert_eq!(
+            typed_output_value("count", WorkflowValueType::Integer, " 42 ").unwrap(),
+            json!(42)
+        );
+        assert_eq!(
+            typed_output_value("ready", WorkflowValueType::Boolean, "false").unwrap(),
+            json!(false)
+        );
+        assert!(typed_output_value("count", WorkflowValueType::Integer, "4.2").is_err());
+        assert!(typed_output_value("ready", WorkflowValueType::Boolean, "yes").is_err());
+    }
+
+    #[test]
     fn workflow_step_flattens_batch_action() {
         let value = serde_json::to_value(&definition().steps[0]).unwrap();
         assert_eq!(value["id"], "open");
@@ -2240,6 +2285,9 @@ mod tests {
         assert!(!trace.branch_decisions[0].matched);
         let replayed = trace.replay(&workflow).unwrap();
         assert_eq!(replayed[0].state, WorkflowStepState::Skipped);
-        assert_eq!(replayed[0].branch_decision.as_ref().unwrap().predicate, predicate);
+        assert_eq!(
+            replayed[0].branch_decision.as_ref().unwrap().predicate,
+            predicate
+        );
     }
 }

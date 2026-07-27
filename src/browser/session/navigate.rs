@@ -124,6 +124,7 @@ impl BrowserSession {
         Ok(NavigationOutcome {
             status: ActionStatus::Succeeded,
             action: ActionKind::Navigate,
+            execution_id: self.next_execution_id(),
             verification: ActionVerificationEvidence {
                 revision_delta: current_revision.saturating_sub(previous_revision),
                 url_changed: before.as_ref().is_some_and(|before| before.url != page.url),

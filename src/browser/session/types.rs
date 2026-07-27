@@ -1729,6 +1729,32 @@ pub enum ActionKind {
     Scroll,
 }
 
+/// Internal request boundary shared by guarded and compatibility action paths.
+///
+/// The request intentionally starts small. Verification predicates, timeout
+/// policy, and recovery policy will be added here as their execution phases
+/// become shared across the remaining action implementations.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActionRequest<'a> {
+    pub(crate) action: ActionKind,
+    pub(crate) target: &'a str,
+    pub(crate) expected_revision: Option<u64>,
+}
+
+impl<'a> ActionRequest<'a> {
+    pub(crate) const fn new(
+        action: ActionKind,
+        target: &'a str,
+        expected_revision: Option<u64>,
+    ) -> Self {
+        Self {
+            action,
+            target,
+            expected_revision,
+        }
+    }
+}
+
 /// Status of a browser action envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1845,6 +1871,8 @@ pub struct ActionTarget {
 pub struct ActionOutcome {
     pub status: ActionStatus,
     pub action: ActionKind,
+    #[serde(rename = "executionId")]
+    pub execution_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionTarget>,
     pub revision: u64,
@@ -1866,6 +1894,8 @@ pub struct ActionOutcome {
 pub struct NavigationOutcome {
     pub status: ActionStatus,
     pub action: ActionKind,
+    #[serde(rename = "executionId")]
+    pub execution_id: String,
     pub page: PageInfo,
     #[serde(rename = "previousRevision")]
     pub previous_revision: u64,
@@ -1878,6 +1908,8 @@ pub struct NavigationOutcome {
 /// informational; the requested coordinates are never changed or guessed.
 #[derive(Debug, Clone, Serialize)]
 pub struct CoordinateClickOutcome {
+    #[serde(rename = "executionId")]
+    pub execution_id: String,
     pub x: f64,
     pub y: f64,
     pub hit: Option<CoordinateHit>,
@@ -1897,6 +1929,8 @@ pub struct CoordinateHit {
 #[derive(Debug, Clone, Serialize)]
 pub struct PopupClickOutcome {
     pub action: ActionKind,
+    #[serde(rename = "executionId")]
+    pub execution_id: String,
     pub target: ActionTarget,
     pub revision: u64,
     pub target_id: String,

@@ -51,6 +51,7 @@ impl BrowserSession {
                     x,
                     y,
                     hit,
+                    execution_id: self.next_execution_id(),
                     revision: self.invalidate_observation(),
                     target_id,
                     frame_id,
@@ -72,6 +73,7 @@ impl BrowserSession {
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Scroll,
+                    execution_id: self.next_execution_id(),
                     target: None,
                     revision: current_revision,
                     previous_revision,
@@ -111,7 +113,8 @@ impl BrowserSession {
 
     /// Click an element and return its structured action outcome.
     pub async fn click(&self, target: &str) -> BrowserResult<ActionOutcome> {
-        self.pointer_click(target, false, None).await
+        self.pointer_click(ActionRequest::new(ActionKind::Click, target, None))
+            .await
     }
 
     /// Click an element only when the caller's observation revision is current.
@@ -120,14 +123,19 @@ impl BrowserSession {
         target: &str,
         expected_revision: u64,
     ) -> BrowserResult<ActionOutcome> {
-        self.pointer_click(target, false, Some(expected_revision))
-            .await
+        self.pointer_click(ActionRequest::new(
+            ActionKind::Click,
+            target,
+            Some(expected_revision),
+        ))
+        .await
     }
 
     /// Double-click an element with the same target, scroll, and pointer
     /// contract as a single click.
     pub async fn double_click(&self, target: &str) -> BrowserResult<ActionOutcome> {
-        self.pointer_click(target, true, None).await
+        self.pointer_click(ActionRequest::new(ActionKind::DoubleClick, target, None))
+            .await
     }
 
     /// Hover the pointer over an element without clicking.
@@ -447,21 +455,17 @@ impl BrowserSession {
         Err(last_error.expect("node resolution retry loop must retain its last error"))
     }
 
-    async fn pointer_click(
-        &self,
-        target: &str,
-        double_click: bool,
-        expected_revision: Option<u64>,
-    ) -> BrowserResult<ActionOutcome> {
+    async fn pointer_click(&self, request: ActionRequest<'_>) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
-                self.require_expected_revision(expected_revision)?;
+                self.require_expected_revision(request.expected_revision)?;
                 let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 let before = self.page_info().await.ok();
-                let (element, object_id, local_point) = self.resolve_click_target(target).await?;
+                let (element, object_id, local_point) =
+                    self.resolve_click_target(request.target).await?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
                 let point = self.target_viewport_point(local_point).await?;
-                let events = if double_click {
+                let events = if request.action == ActionKind::DoubleClick {
                     self.mouse.generate_double_click_events(point)
                 } else {
                     self.mouse.generate_click_events(point)
@@ -473,11 +477,8 @@ impl BrowserSession {
                 let after = self.page_info().await.ok();
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
-                    action: if double_click {
-                        ActionKind::DoubleClick
-                    } else {
-                        ActionKind::Click
-                    },
+                    action: request.action,
+                    execution_id: self.next_execution_id(),
                     target: Some(ActionTarget {
                         label: element.label,
                         reference: element.reference,
@@ -616,9 +617,13 @@ impl BrowserSession {
                 let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 let target = match target {
                     Some(target) => {
-                        self.pointer_click(target, false, expected_revision)
-                            .await?
-                            .target
+                        self.pointer_click(ActionRequest::new(
+                            ActionKind::Click,
+                            target,
+                            expected_revision,
+                        ))
+                        .await?
+                        .target
                     }
                     None => None,
                 };
@@ -628,6 +633,7 @@ impl BrowserSession {
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Type,
+                    execution_id: self.next_execution_id(),
                     target,
                     revision: current_revision,
                     previous_revision,
@@ -777,6 +783,7 @@ impl BrowserSession {
         Ok(ActionOutcome {
             status: ActionStatus::Succeeded,
             action,
+            execution_id: self.next_execution_id(),
             target,
             revision: current_revision,
             previous_revision,

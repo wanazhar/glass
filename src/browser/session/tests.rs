@@ -24,6 +24,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         mouse: MouseEngine::new(),
         pointer: Mutex::new(None),
         page_revision: Arc::new(AtomicU64::new(1)),
+        execution_sequence: AtomicU64::new(1),
         observation_cache: Mutex::new(None),
         accessibility_cache: Mutex::new(None),
         observation_context: Arc::new(Mutex::new(None)),
@@ -837,6 +838,7 @@ fn ambiguity_candidate_labels_are_utf8_safe_and_bounded() {
 fn action_outcomes_are_compact_and_serializable() {
     let outcome = ActionOutcome {
         action: ActionKind::Click,
+        execution_id: "act_test_1".to_string(),
         target: Some(ActionTarget {
             label: "button Save".to_string(),
             reference: Some("r9:b42".to_string()),
@@ -856,6 +858,7 @@ fn action_outcomes_are_compact_and_serializable() {
 
     let value = serde_json::to_value(outcome).unwrap();
     assert_eq!(value["action"], "click");
+    assert_eq!(value["executionId"], "act_test_1");
     assert_eq!(value["target"]["reference"], "r9:b42");
     assert_eq!(value["revision"], 10);
 }

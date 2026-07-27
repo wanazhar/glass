@@ -15,6 +15,8 @@ pub struct FillFormOutcome {
     pub status: ActionStatus,
     #[serde(rename = "failureKind", skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<ActionFailureKind>,
+    #[serde(rename = "executionId")]
+    pub execution_id: String,
     /// Number of fields successfully filled.
     pub filled: usize,
     /// Total number of fields submitted.
@@ -116,6 +118,7 @@ impl BrowserSession {
                 ActionStatus::CompletedWithVerificationFailure
             },
             failure_kind: (filled != total).then_some(ActionFailureKind::VerificationFailed),
+            execution_id: self.next_execution_id(),
             filled,
             total,
             fields: results,
@@ -224,6 +227,7 @@ mod tests {
         let outcome = FillFormOutcome {
             status: ActionStatus::CompletedWithVerificationFailure,
             failure_kind: Some(ActionFailureKind::VerificationFailed),
+            execution_id: "act_test_1".to_string(),
             filled: 2,
             total: 3,
             fields: vec![

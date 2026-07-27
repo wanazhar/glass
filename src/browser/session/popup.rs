@@ -207,6 +207,7 @@ impl BrowserSession {
         *pointer = Some(point);
         Ok(PopupClickOutcome {
             action: ActionKind::ClickExpectPopup,
+            execution_id: self.next_execution_id(),
             target: ActionTarget {
                 label: element.label.clone(),
                 reference: element.reference.clone(),

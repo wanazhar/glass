@@ -114,6 +114,7 @@ pub struct BrowserSession {
     pub(crate) mouse: MouseEngine,
     pub(crate) pointer: Mutex<Option<Point>>,
     pub(crate) page_revision: Arc<AtomicU64>,
+    pub(crate) execution_sequence: AtomicU64,
     pub(crate) observation_cache: Mutex<Option<CachedObservation>>,
     pub(crate) accessibility_cache: Mutex<Option<CachedAccessibilityTree>>,
     pub(crate) observation_context: Arc<Mutex<Option<CachedObservationContext>>>,
@@ -428,6 +429,17 @@ impl BrowserSession {
         self.cdp.cdp_wait_nanos()
     }
 
+    /// Allocate a bounded, session-local identifier for one action attempt.
+    ///
+    /// The identifier is intentionally opaque to callers. It is unique within
+    /// a session and gives later trace and recovery phases one stable join key.
+    pub(crate) fn next_execution_id(&self) -> String {
+        format!(
+            "act_{}",
+            self.execution_sequence.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
     /// Measure CDP response wait time initiated by one async operation.
     pub async fn measure_cdp_wait<F>(&self, future: F) -> (F::Output, u64)
     where
@@ -678,6 +690,7 @@ impl BrowserSession {
             mouse: MouseEngine::new(),
             pointer: Mutex::new(None),
             page_revision,
+            execution_sequence: AtomicU64::new(1),
             observation_cache: Mutex::new(None),
             accessibility_cache: Mutex::new(None),
             observation_context,
@@ -853,6 +866,7 @@ impl BrowserSession {
             ActionOutcome {
                 status: ActionStatus::Succeeded,
                 action,
+                execution_id: self.next_execution_id(),
                 target: None,
                 revision: self.page_revision.load(Ordering::Relaxed),
                 previous_revision: self.page_revision.load(Ordering::Relaxed),

@@ -2438,6 +2438,7 @@ mod tests {
         let result = action_result(ActionOutcome {
             status: ActionStatus::Succeeded,
             action: ActionKind::Scroll,
+            execution_id: "act_test_1".to_string(),
             target: None,
             revision: 9,
             previous_revision: 8,
@@ -2456,7 +2457,7 @@ mod tests {
         assert!(!text.contains('\n'));
         assert_eq!(
             serde_json::from_str::<Value>(text).unwrap(),
-            json!({"status":"succeeded", "action": "scroll", "revision": 9, "previousRevision":8, "currentRevision":9, "target_id":"target-1", "frame_id":"frame-1", "verification":{"revisionDelta":1,"urlChanged":false,"titleChanged":false,"targetChanged":false,"frameChanged":false}})
+            json!({"status":"succeeded", "action": "scroll", "executionId":"act_test_1", "revision": 9, "previousRevision":8, "currentRevision":9, "target_id":"target-1", "frame_id":"frame-1", "verification":{"revisionDelta":1,"urlChanged":false,"titleChanged":false,"targetChanged":false,"frameChanged":false}})
         );
     }
 

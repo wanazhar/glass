@@ -7,6 +7,8 @@
 - [CLI reference](cli.md) — global options, commands, targets, and output.
 - [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
   bounded verification evidence.
+- [Action contract](action-contract.md) — the canonical `0.1.18` execution
+  envelope, failure phases, and explicit recovery policies.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,

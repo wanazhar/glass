@@ -53,7 +53,10 @@ Input actions return the existing action fields plus the common contract fields:
 target or frame transitions, revision delta, and count-only accessibility
 changes. Popup actions include their popup witness. Navigation results include
 the resulting page metadata. Older unguarded methods remain available for
-callers that do not need an expected revision.
+callers that do not need an expected revision. Every action result now also
+contains a session-local `executionId`, which later trace and recovery results
+will use to correlate one attempt across phases. Existing route identity fields
+remain compatibility fields until the `0.1.18` schema-normalization slice.
 
 ## Failure kinds
 

@@ -1011,7 +1011,31 @@ fn action_activity(verb: &str, outcome: &ActionOutcome) -> String {
         .as_ref()
         .map(|target| target.label.as_str())
         .unwrap_or("page");
-    format!("{verb} {target} (revision {}).", outcome.revision)
+    let mut effects = Vec::new();
+    if outcome.verification.url_changed {
+        effects.push("url");
+    }
+    if outcome.verification.title_changed {
+        effects.push("title");
+    }
+    if outcome.verification.popup_opened {
+        effects.push("popup");
+    }
+    if outcome.verification.dialog_open {
+        effects.push("dialog");
+    }
+    if outcome.verification.download_started {
+        effects.push("download");
+    }
+    let effect_text = if effects.is_empty() {
+        String::new()
+    } else {
+        format!(" effects={}", effects.join(","))
+    };
+    format!(
+        "{verb} {target} ({}; revision {}{}).",
+        outcome.execution_id, outcome.revision, effect_text
+    )
 }
 
 async fn send_browser_event(events: &mpsc::Sender<BrowserEvent>, event: BrowserEvent) -> bool {

@@ -872,6 +872,7 @@ fn revision_contract_errors_are_typed_and_recoverable() {
     assert_eq!(value["expectedRevision"], 7);
     assert_eq!(value["currentRevision"], 9);
     assert_eq!(value["recovery"], "observe");
+    assert_eq!(value["recoveryStrategy"], "report");
     assert_eq!(value["phase"], "preflight");
 }
 
@@ -892,6 +893,7 @@ fn verification_failures_are_bounded_and_typed() {
         kind: ActionFailureKind::VerificationFailed,
         action: ActionKind::Click,
         phase: ActionFailurePhase::Verification,
+        recovery_strategy: RecoveryStrategy::Report,
         execution_id: None,
         target: None,
         revision: 4,
@@ -901,6 +903,7 @@ fn verification_failures_are_bounded_and_typed() {
     assert_eq!(value["kind"], "verification_failed");
     assert_eq!(value["action"], "click");
     assert_eq!(value["phase"], "verification");
+    assert_eq!(value["recoveryStrategy"], "report");
     assert_eq!(value["revision"], 4);
 }
 

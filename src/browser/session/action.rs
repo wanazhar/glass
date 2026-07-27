@@ -882,6 +882,7 @@ impl BrowserSession {
                         kind: ActionFailureKind::VerificationFailed,
                         action,
                         phase: ActionFailurePhase::Verification,
+                        recovery_strategy: RecoveryStrategy::Report,
                         execution_id: Some(self.next_execution_id()),
                         target: Some(ActionTarget {
                             label: element.label,

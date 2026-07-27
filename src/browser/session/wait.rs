@@ -37,6 +37,7 @@ impl BrowserSession {
                     kind: ActionFailureKind::VerificationFailed,
                     action: ActionKind::Click,
                     phase: ActionFailurePhase::Verification,
+                    recovery_strategy: RecoveryStrategy::Report,
                     execution_id: Some(self.next_execution_id()),
                     target: None,
                     revision: self.page_revision.load(Ordering::Relaxed),

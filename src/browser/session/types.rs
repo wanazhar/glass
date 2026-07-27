@@ -1808,11 +1808,22 @@ pub enum ActionFailurePhase {
     Transport,
 }
 
+/// Explicit recovery policy attached to a typed action failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStrategy {
+    None,
+    Report,
+    RetrySafe,
+}
+
 /// Typed failure raised before a revision-guarded action can run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionContractError {
     pub kind: ActionFailureKind,
     pub phase: ActionFailurePhase,
+    #[serde(rename = "recoveryStrategy")]
+    pub recovery_strategy: RecoveryStrategy,
     #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(rename = "expectedRevision")]
@@ -1827,6 +1838,7 @@ impl ActionContractError {
         Self {
             kind: ActionFailureKind::StaleRevision,
             phase: ActionFailurePhase::Preflight,
+            recovery_strategy: RecoveryStrategy::Report,
             execution_id: None,
             expected_revision,
             current_revision,
@@ -1864,6 +1876,8 @@ pub struct ActionVerificationError {
     pub kind: ActionFailureKind,
     pub action: ActionKind,
     pub phase: ActionFailurePhase,
+    #[serde(rename = "recoveryStrategy")]
+    pub recovery_strategy: RecoveryStrategy,
     #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

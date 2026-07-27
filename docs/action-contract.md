@@ -99,6 +99,11 @@ Recovery is explicit:
 Automatic recovery is disabled by default. A stale reference is never silently
 relocated and executed.
 
+Typed failures also expose `recoveryStrategy`: `none`, `report`, or
+`retry_safe`. The current guarded revision and verification failures use
+`report`; `retry_safe` is reserved for an explicit caller-selected retry policy
+after the action has been proven not to dispatch.
+
 ## Delivery status
 
 The initial delivery slices add stable execution IDs, the internal request

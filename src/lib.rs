@@ -56,7 +56,8 @@ pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
     ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, NavigationOutcome,
     PageInfo, SessionOptions, SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets,
-    WorkflowDefinition, WorkflowInput, WorkflowOutputDeclaration, WorkflowRunResult,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
+    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
+    WorkflowInput, WorkflowOutputDeclaration, WorkflowResumeError, WorkflowResumePlan,
+    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
     WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };

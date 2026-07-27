@@ -103,8 +103,9 @@ mod wait;
 mod webauthn;
 mod workflow;
 pub use workflow::{
-    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
-    WorkflowOutputDeclaration, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
+    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutputDeclaration,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
     WorkflowStepRecord, WorkflowStepState, WorkflowTransactionClass, WorkflowValidationError,
     WorkflowValueType,
 };

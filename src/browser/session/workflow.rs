@@ -8,6 +8,7 @@ use super::types::{BatchMode, BatchStep, BrowserResult, VerificationPredicate};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
@@ -25,6 +26,8 @@ const MAX_EXTRACTED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_TARGET_BYTES: usize = 1_024;
 const MAX_WAIT_CONDITION_BYTES: usize = 4 * 1024;
+const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
+const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
 
 /// A complete declarative workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +592,103 @@ pub struct WorkflowRunResult {
     pub final_revision: u64,
 }
 
+/// Bounded, deterministic workflow checkpoint. Input values and page content
+/// are intentionally excluded; only route identity and step state are kept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowCheckpoint {
+    pub schema_version: u8,
+    pub workflow_name: String,
+    pub workflow_version: String,
+    pub definition_hash: String,
+    pub status: WorkflowRunStatus,
+    pub next_step_index: usize,
+    pub steps: Vec<WorkflowCheckpointStep>,
+    pub page: WorkflowCheckpointPage,
+}
+
+/// Redacted state for one checkpointed workflow step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowCheckpointStep {
+    pub id: String,
+    pub state: WorkflowStepState,
+    pub attempts: u32,
+}
+
+/// Bounded page identity used to reject unsafe resume attempts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowCheckpointPage {
+    pub target_id: String,
+    pub frame_id: String,
+    pub url: String,
+    pub title: String,
+    pub revision: u64,
+}
+
+/// Safe next action after a checkpoint has been reconciled with the live page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowResumePlan {
+    pub workflow_name: String,
+    pub workflow_version: String,
+    pub next_step_index: usize,
+    pub current_revision: u64,
+    pub reconciled: bool,
+}
+
+/// Reason a workflow checkpoint cannot be resumed safely.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowResumeError {
+    SchemaVersionMismatch {
+        expected: u8,
+        found: u8,
+    },
+    DefinitionMismatch,
+    RouteChanged,
+    InvalidState {
+        step_id: String,
+        state: WorkflowStepState,
+    },
+    CheckpointTooLarge,
+    CheckpointShape(String),
+}
+
+impl fmt::Display for WorkflowResumeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SchemaVersionMismatch { expected, found } => {
+                write!(
+                    formatter,
+                    "workflow checkpoint schema mismatch: expected {expected}, found {found}"
+                )
+            }
+            Self::DefinitionMismatch => {
+                formatter.write_str("workflow definition does not match checkpoint")
+            }
+            Self::RouteChanged => {
+                formatter.write_str("workflow checkpoint route or target changed")
+            }
+            Self::InvalidState { step_id, state } => {
+                write!(
+                    formatter,
+                    "workflow step {step_id:?} cannot be resumed from {state:?}"
+                )
+            }
+            Self::CheckpointTooLarge => {
+                formatter.write_str("workflow checkpoint exceeds the 8 KiB limit")
+            }
+            Self::CheckpointShape(message) => {
+                write!(formatter, "invalid workflow checkpoint: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkflowResumeError {}
+
 impl WorkflowRunResult {
     fn failed(
         workflow: &WorkflowDefinition,
@@ -790,6 +890,212 @@ impl super::BrowserSession {
             final_revision: current_revision(self),
         })
     }
+}
+
+impl super::BrowserSession {
+    /// Export a deterministic, redacted workflow checkpoint bounded to 8 KiB.
+    pub async fn export_workflow_checkpoint(
+        &self,
+        workflow: &WorkflowDefinition,
+        result: &WorkflowRunResult,
+    ) -> BrowserResult<WorkflowCheckpoint> {
+        workflow.validate()?;
+        if result.name != workflow.name
+            || result.workflow_version != workflow.workflow_version
+            || result.steps.len() != workflow.steps.len()
+        {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "run result does not belong to workflow definition".into(),
+            )
+            .into());
+        }
+        let page = self.page_info().await?;
+        let next_step_index = result
+            .steps
+            .iter()
+            .position(|step| step.state != WorkflowStepState::Committed)
+            .unwrap_or(result.steps.len());
+        let checkpoint = WorkflowCheckpoint {
+            schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+            workflow_name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            definition_hash: workflow_definition_hash(workflow)?,
+            status: result.status,
+            next_step_index,
+            steps: result
+                .steps
+                .iter()
+                .map(|step| WorkflowCheckpointStep {
+                    id: step.id.clone(),
+                    state: step.state,
+                    attempts: step.attempts,
+                })
+                .collect(),
+            page: WorkflowCheckpointPage {
+                target_id: bound_workflow_text(&page.target_id, 256),
+                frame_id: bound_workflow_text(&page.frame_id, 256),
+                url: bound_workflow_text(&page.url, 1_024),
+                title: bound_workflow_text(&page.title, 1_024),
+                revision: current_revision(self),
+            },
+        };
+        checkpoint.validate_size()?;
+        Ok(checkpoint)
+    }
+
+    /// Parse and validate a workflow checkpoint without contacting Chrome.
+    pub fn parse_workflow_checkpoint(
+        input: &str,
+    ) -> Result<WorkflowCheckpoint, WorkflowResumeError> {
+        let checkpoint: WorkflowCheckpoint = serde_json::from_str(input)
+            .map_err(|error| WorkflowResumeError::CheckpointShape(error.to_string()))?;
+        checkpoint.validate_size()?;
+        Ok(checkpoint)
+    }
+
+    /// Reconcile a checkpoint with the current route and return the only safe
+    /// next step. This method never dispatches a browser action.
+    pub async fn reconcile_workflow_checkpoint(
+        &self,
+        workflow: &WorkflowDefinition,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> BrowserResult<WorkflowResumePlan> {
+        workflow.validate()?;
+        checkpoint.validate_size()?;
+        if checkpoint.schema_version != WORKFLOW_CHECKPOINT_SCHEMA_VERSION {
+            return Err(WorkflowResumeError::SchemaVersionMismatch {
+                expected: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+                found: checkpoint.schema_version,
+            }
+            .into());
+        }
+        if checkpoint.workflow_name != workflow.name
+            || checkpoint.workflow_version != workflow.workflow_version
+            || checkpoint.definition_hash != workflow_definition_hash(workflow)?
+        {
+            return Err(WorkflowResumeError::DefinitionMismatch.into());
+        }
+        if checkpoint.steps.len() != workflow.steps.len()
+            || checkpoint
+                .steps
+                .iter()
+                .zip(&workflow.steps)
+                .any(|(checkpoint_step, step)| checkpoint_step.id != step.id)
+        {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "checkpoint steps do not match workflow steps".into(),
+            )
+            .into());
+        }
+
+        let page = self.page_info().await?;
+        if checkpoint.page.target_id != page.target_id
+            || checkpoint.page.frame_id != page.frame_id
+            || checkpoint.page.url != bound_workflow_text(&page.url, 1_024)
+            || checkpoint.page.title != bound_workflow_text(&page.title, 1_024)
+        {
+            return Err(WorkflowResumeError::RouteChanged.into());
+        }
+
+        let mut next_step_index = checkpoint.steps.len();
+        for (index, checkpoint_step) in checkpoint.steps.iter().enumerate() {
+            if checkpoint_step.state != WorkflowStepState::Committed {
+                next_step_index = index;
+                break;
+            }
+        }
+        if checkpoint.next_step_index != next_step_index {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "nextStepIndex does not match step states".into(),
+            )
+            .into());
+        }
+        if checkpoint.status == WorkflowRunStatus::Completed
+            && next_step_index != workflow.steps.len()
+        {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "completed checkpoint has uncommitted steps".into(),
+            )
+            .into());
+        }
+        if next_step_index < workflow.steps.len() {
+            let step = &workflow.steps[next_step_index];
+            let state = checkpoint.steps[next_step_index].state;
+            if state == WorkflowStepState::FailedBeforeDispatch
+                && !step.transaction.permits_pre_dispatch_retry()
+            {
+                return Err(WorkflowResumeError::InvalidState {
+                    step_id: step.id.clone(),
+                    state,
+                }
+                .into());
+            }
+            if !matches!(
+                state,
+                WorkflowStepState::Pending | WorkflowStepState::FailedBeforeDispatch
+            ) {
+                return Err(WorkflowResumeError::InvalidState {
+                    step_id: step.id.clone(),
+                    state,
+                }
+                .into());
+            }
+            for checkpoint_step in checkpoint.steps.iter().skip(next_step_index + 1) {
+                if checkpoint_step.state != WorkflowStepState::Skipped {
+                    return Err(WorkflowResumeError::InvalidState {
+                        step_id: checkpoint_step.id.clone(),
+                        state: checkpoint_step.state,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        Ok(WorkflowResumePlan {
+            workflow_name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            next_step_index,
+            current_revision: current_revision(self),
+            reconciled: true,
+        })
+    }
+}
+
+impl WorkflowCheckpoint {
+    /// Serialize a checkpoint after enforcing its size and schema bounds.
+    pub fn to_canonical_json(&self) -> Result<String, WorkflowResumeError> {
+        self.validate_size()?;
+        serde_json::to_string(self)
+            .map_err(|error| WorkflowResumeError::CheckpointShape(error.to_string()))
+    }
+
+    fn validate_size(&self) -> Result<(), WorkflowResumeError> {
+        if self.schema_version != WORKFLOW_CHECKPOINT_SCHEMA_VERSION {
+            return Err(WorkflowResumeError::SchemaVersionMismatch {
+                expected: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+                found: self.schema_version,
+            });
+        }
+        if self.steps.len() > MAX_STEPS {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "checkpoint contains too many steps".into(),
+            ));
+        }
+        let bytes = serde_json::to_vec(self)
+            .map_err(|error| WorkflowResumeError::CheckpointShape(error.to_string()))?;
+        if bytes.len() > MAX_WORKFLOW_CHECKPOINT_BYTES {
+            return Err(WorkflowResumeError::CheckpointTooLarge);
+        }
+        Ok(())
+    }
+}
+
+fn workflow_definition_hash(
+    workflow: &WorkflowDefinition,
+) -> Result<String, WorkflowValidationError> {
+    let canonical = workflow.to_canonical_json()?;
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn current_revision(session: &super::BrowserSession) -> u64 {
@@ -1139,9 +1445,50 @@ mod tests {
         assert!(!can_retry_before_dispatch(
             WorkflowTransactionClass::Idempotent,
             true,
-            2,
+            1,
             1
         ));
+    }
+
+    #[test]
+    fn workflow_checkpoint_is_deterministic_and_redacted() {
+        let checkpoint = WorkflowCheckpoint {
+            schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+            workflow_name: "example".into(),
+            workflow_version: "1.0.0".into(),
+            definition_hash: "a".repeat(64),
+            status: WorkflowRunStatus::Failed,
+            next_step_index: 1,
+            steps: vec![
+                WorkflowCheckpointStep {
+                    id: "open".into(),
+                    state: WorkflowStepState::Committed,
+                    attempts: 1,
+                },
+                WorkflowCheckpointStep {
+                    id: "save".into(),
+                    state: WorkflowStepState::FailedBeforeDispatch,
+                    attempts: 1,
+                },
+            ],
+            page: WorkflowCheckpointPage {
+                target_id: "target".into(),
+                frame_id: "frame".into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                revision: 3,
+            },
+        };
+        let first = checkpoint.to_canonical_json().unwrap();
+        let second = checkpoint.to_canonical_json().unwrap();
+        assert_eq!(first, second);
+        assert!(!first.contains("password"));
+        assert_eq!(
+            crate::BrowserSession::parse_workflow_checkpoint(&first)
+                .unwrap()
+                .next_step_index,
+            1
+        );
     }
 
     #[test]

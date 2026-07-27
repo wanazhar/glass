@@ -876,6 +876,18 @@ async fn browser_session_drives_a_local_fixture() {
     assert_eq!(workflow_result.status, WorkflowRunStatus::Completed);
     assert_eq!(workflow_result.steps[0].state, WorkflowStepState::Committed);
     assert_eq!(workflow_result.steps[0].attempts, 1);
+    let workflow_checkpoint = session
+        .export_workflow_checkpoint(&workflow, &workflow_result)
+        .await
+        .unwrap();
+    let checkpoint_json = workflow_checkpoint.to_canonical_json().unwrap();
+    let parsed_checkpoint = BrowserSession::parse_workflow_checkpoint(&checkpoint_json).unwrap();
+    let resume_plan = session
+        .reconcile_workflow_checkpoint(&workflow, &parsed_checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(resume_plan.next_step_index, 1);
+    assert!(resume_plan.reconciled);
     for condition in [
         WaitCondition::Lifecycle("complete".to_string()),
         WaitCondition::UrlExact(redirected.url.clone()),

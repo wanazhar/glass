@@ -66,6 +66,18 @@ retry-safe class. A failure after dispatch is recorded and stops the workflow;
 Glass does not claim that an external effect was rolled back or replay it
 automatically.
 
+## Checkpoints and resume
+
+`export_workflow_checkpoint` produces deterministic JSON capped at 8 KiB. It
+stores workflow identity, a definition hash, redacted step states, and bounded
+target/frame/URL/title/revision metadata. It does not store input values,
+cookies, passwords, or page content.
+
+`reconcile_workflow_checkpoint` checks that the definition and route still
+match and returns the next safe step without dispatching an action. It rejects
+changed routes and any checkpoint whose next state could represent an already
+dispatched effect. Executing the returned resume plan is a later phase.
+
 This is a local, unreleased 0.1.19 development surface. Checkpoint persistence
 and resume reconciliation are not complete yet. The eventual public release
 target for the complete roadmap is 0.2.0.

@@ -87,8 +87,9 @@ pub use session::WebAuthnOptions;
 pub use session::diff_accessibility;
 /// Versioned declarative workflow definition and validation types.
 pub use session::{
-    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
-    WorkflowOutputDeclaration, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
+    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutputDeclaration,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
     WorkflowStepRecord, WorkflowStepState, WorkflowTransactionClass, WorkflowValidationError,
     WorkflowValueType,
 };

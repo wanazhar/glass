@@ -61,6 +61,7 @@
         "id": {"type": "string", "minLength": 1, "maxLength": 128},
         "when": {"$ref": "#/$defs/predicate"},
         "expect": {"$ref": "#/$defs/predicate"},
+        "beforeRetry": {"$ref": "#/$defs/predicate"},
         "transaction": {"enum": ["read_only", "idempotent", "conditionally_idempotent", "non_idempotent", "unknown"]},
         "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
         "maxRetries": {"type": "integer", "minimum": 0, "maximum": 8},

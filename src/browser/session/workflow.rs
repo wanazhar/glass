@@ -340,6 +340,7 @@ pub struct WorkflowStep {
     pub action: BatchStep,
     pub when: Option<VerificationPredicate>,
     pub expect: Option<VerificationPredicate>,
+    pub before_retry: Option<VerificationPredicate>,
     pub transaction: WorkflowTransactionClass,
     pub idempotency_key: Option<String>,
     pub max_retries: u32,
@@ -508,6 +509,7 @@ impl WorkflowRecorder {
                     action: step.action,
                     when: None,
                     expect: step.expect,
+                    before_retry: None,
                     transaction: step.transaction,
                     idempotency_key: None,
                     max_retries: 0,
@@ -624,6 +626,12 @@ impl Serialize for WorkflowStep {
                 serde_json::to_value(expect).map_err(serde::ser::Error::custom)?,
             );
         }
+        if let Some(before_retry) = &self.before_retry {
+            workflow.insert(
+                "beforeRetry".into(),
+                serde_json::to_value(before_retry).map_err(serde::ser::Error::custom)?,
+            );
+        }
         workflow.insert(
             "transaction".into(),
             serde_json::to_value(self.transaction).map_err(serde::ser::Error::custom)?,
@@ -658,6 +666,11 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             .map_err(D::Error::custom)?;
         let expect = workflow
             .remove("expect")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?;
+        let before_retry = workflow
+            .remove("beforeRetry")
             .map(serde_json::from_value)
             .transpose()
             .map_err(D::Error::custom)?;
@@ -700,6 +713,7 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             action,
             when,
             expect,
+            before_retry,
             transaction,
             idempotency_key,
             max_retries,
@@ -721,6 +735,9 @@ impl WorkflowStep {
         }
         if let Some(predicate) = &self.expect {
             validate_predicate(predicate, &format!("{path}.expect"))?;
+        }
+        if let Some(predicate) = &self.before_retry {
+            validate_predicate(predicate, &format!("{path}.beforeRetry"))?;
         }
         if let Some(key) = &self.idempotency_key {
             validate_bytes(&format!("{path}.idempotencyKey"), key, 1, 256)?;
@@ -2514,6 +2531,7 @@ mod tests {
                 expect: Some(VerificationPredicate::TitleContains {
                     value: "Example".into(),
                 }),
+                before_retry: None,
                 transaction: WorkflowTransactionClass::ReadOnly,
                 idempotency_key: None,
                 max_retries: 0,
@@ -2538,6 +2556,18 @@ mod tests {
     }
 
     #[test]
+    fn before_retry_marker_is_canonical_and_validated() {
+        let mut workflow = definition();
+        workflow.steps[0].before_retry = Some(VerificationPredicate::TitleContains {
+            value: "Already saved".into(),
+        });
+        let json = workflow.to_canonical_json().unwrap();
+        assert!(json.contains("\"beforeRetry\":{"));
+        let parsed = WorkflowDefinition::from_json(&json).unwrap();
+        assert!(parsed.steps[0].before_retry.is_some());
+    }
+
+    #[test]
     fn from_json_reports_missing_top_level_path() {
         let mut value = serde_json::to_value(definition()).unwrap();
         value.as_object_mut().unwrap().remove("steps");
@@ -2553,6 +2583,7 @@ mod tests {
             action: BatchStep::Screenshot,
             when: None,
             expect: None,
+            before_retry: None,
             transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
             max_retries: 0,
@@ -2917,6 +2948,7 @@ mod tests {
             action: BatchStep::Screenshot,
             when: None,
             expect: None,
+            before_retry: None,
             transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
             max_retries: 0,

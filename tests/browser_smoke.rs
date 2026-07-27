@@ -863,6 +863,7 @@ async fn browser_session_drives_a_local_fixture() {
             expect: Some(VerificationPredicate::TitleContains {
                 value: "Glass Fixture".into(),
             }),
+            before_retry: None,
             transaction: WorkflowTransactionClass::ReadOnly,
             idempotency_key: None,
             max_retries: 0,

@@ -75,8 +75,10 @@ predicates.
 
 Each step may declare `transaction` as `read_only`, `idempotent`,
 `conditionally_idempotent`, `non_idempotent`, or `unknown`. Conditional steps
-must provide an `idempotencyKey`. `maxRetries` is bounded by the workflow
-budget and is rejected for non-idempotent or unknown steps.
+must provide an `idempotencyKey`. A retry-safe step may also declare
+`beforeRetry`, a bounded predicate used to recognize an already-visible success
+marker before another dispatch is considered. `maxRetries` is bounded by the
+workflow budget and is rejected for non-idempotent or unknown steps.
 
 The runner retries only failures proven to occur before dispatch and only for a
 retry-safe class. A failure after dispatch is recorded and stops the workflow;

@@ -1,6 +1,7 @@
 use glass::reliability::{
     RELIABILITY_SCENARIO_SCHEMA_VERSION, ReliabilityForbiddenOutcome, ReliabilityScenario,
 };
+use serde_json::Value;
 
 #[test]
 fn checked_in_reliability_scenario_is_valid_and_canonical() {
@@ -15,4 +16,25 @@ fn checked_in_reliability_scenario_is_valid_and_canonical() {
     );
     let canonical = scenario.to_canonical_json().unwrap();
     assert!(canonical.contains("nonIdempotentMutationDuplicated"));
+}
+
+#[test]
+fn checked_in_capability_suite_has_unique_valid_scenarios() {
+    let source = include_str!("fixtures/reliability-capability-suite-v1.json");
+    let values: Vec<Value> = serde_json::from_str(source).unwrap();
+    let scenarios: Vec<ReliabilityScenario> = values
+        .into_iter()
+        .map(ReliabilityScenario::from_value)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let ids: std::collections::BTreeSet<_> =
+        scenarios.iter().map(|scenario| &scenario.id).collect();
+    assert_eq!(scenarios.len(), 5);
+    assert_eq!(ids.len(), scenarios.len());
+    assert!(scenarios.iter().any(|scenario| {
+        scenario.steps.iter().any(|step| {
+            step.apply_control
+                == Some(glass::reliability::ReliabilityFixtureControl::DuplicateTarget)
+        })
+    }));
 }

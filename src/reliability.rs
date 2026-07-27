@@ -355,6 +355,8 @@ pub struct ReliabilityScenarioStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_workflow: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_control: Option<ReliabilityFixtureControl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inject: Option<ReliabilityFaultInjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_from_checkpoint: Option<String>,
@@ -514,12 +516,13 @@ impl ReliabilityScenario {
         for (index, step) in self.steps.iter().enumerate() {
             let path = format!("steps[{index}]");
             let operations = step.run_workflow.is_some() as u8
+                + step.apply_control.is_some() as u8
                 + step.inject.is_some() as u8
                 + step.resume_from_checkpoint.is_some() as u8;
             if operations != 1 {
                 return Err(ReliabilityScenarioError::new(
                     path,
-                    "provide exactly one of runWorkflow, inject, or resumeFromCheckpoint",
+                    "provide exactly one of runWorkflow, applyControl, inject, or resumeFromCheckpoint",
                 ));
             }
             if let Some(workflow) = &step.run_workflow {
@@ -869,11 +872,13 @@ mod tests {
             steps: vec![
                 ReliabilityScenarioStep {
                     run_workflow: Some("submit-request.json".into()),
+                    apply_control: None,
                     inject: None,
                     resume_from_checkpoint: None,
                 },
                 ReliabilityScenarioStep {
                     run_workflow: None,
+                    apply_control: None,
                     inject: Some(ReliabilityFaultInjection {
                         after_dispatch: "submit".into(),
                         fault: ReliabilityFaultKind::LoseResponse,
@@ -882,6 +887,7 @@ mod tests {
                 },
                 ReliabilityScenarioStep {
                     run_workflow: None,
+                    apply_control: None,
                     inject: None,
                     resume_from_checkpoint: Some("latest".into()),
                 },

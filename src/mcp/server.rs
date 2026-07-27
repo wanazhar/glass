@@ -2996,11 +2996,12 @@ mod tests {
             .unwrap();
         let result = response.result.unwrap();
         let resources = result["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 4);
+        assert_eq!(resources.len(), 5);
         let uris: Vec<&str> = resources
             .iter()
             .map(|r| r["uri"].as_str().unwrap())
             .collect();
+        assert!(uris.contains(&"glass://contract/actions"));
         assert!(uris.contains(&"glass://contract/locators"));
         assert!(uris.contains(&"glass://contract/errors"));
         assert!(uris.contains(&"glass://contract/limits"));

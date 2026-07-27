@@ -96,11 +96,18 @@ const RESOURCE_ERRORS: &str = r#"# Glass Typed Errors
 
 ## Revision-safe action contract
 
-`navigate`, `click`, `type`, and `fillForm` accept an optional
-`expectedRevision`. Successful revision-aware actions return `status`,
+All targeted mutations accept an optional `expectedRevision`, including
+`navigate`, `click`, `clickExpectPopup`, `doubleClick`, `type`, `clear`,
+`check`, `uncheck`, `select`, `scroll`, keyboard actions, drag, upload, and
+`fillForm`. Successful revision-aware actions return `status`,
 `previousRevision`, `currentRevision`, and bounded `verification` metadata.
 When the revision no longer matches, the action fails before mutation with
-`kind: "stale_revision"` and `recovery: "observe"`.
+`kind: "stale_revision"`, `phase: "preflight"`, `recovery: "observe"`, and
+`recoveryStrategy: "report"`.
+
+The `verify` tool accepts bounded predicates for URL, title, visibility, text,
+popup, dialog, download, revision, and Boolean `all`/`any`/`not` composition.
+The `batch` tool supports `fixed`, `chain`, and `unguarded` revision modes.
 
 ## Targeting errors (`TargetError`)
 
@@ -190,6 +197,19 @@ escape hatch for canvas and map surfaces.
 | Wait timeout default | 10 s |
 "#;
 
+const RESOURCE_ACTIONS: &str = r#"# Glass Action Contract
+
+Every action result has a session-local `executionId`, a page `revision`, and
+bounded verification evidence. Revisioned actions reject stale observations
+before dispatch. Failures carry a typed `kind`, `phase`, `recoveryStrategy`,
+and bounded recovery hint.
+
+Use `verify` for explicit postconditions. Its predicates are finite and
+deadline-bound; arbitrary JavaScript is not accepted. Use batch `mode: fixed`
+to reuse one revision, `mode: chain` to carry revisions forward, or
+`mode: unguarded` for compatibility behavior.
+"#;
+
 const RESOURCE_TOPOLOGY: &str = r#"# Glass Target & Frame Topology
 
 ## Target lifecycle
@@ -231,6 +251,13 @@ const RESOURCE_TOPOLOGY: &str = r#"# Glass Target & Frame Topology
 
 const RESOURCES: &[ResourceDef] = &[
     ResourceDef {
+        uri: "glass://contract/actions",
+        name: "Action Execution Contract",
+        description: "Revision guards, execution identities, verification predicates, and batch modes",
+        mime_type: "text/markdown",
+        content: RESOURCE_ACTIONS,
+    },
+    ResourceDef {
         uri: "glass://contract/locators",
         name: "Locator Grammar",
         description: "Locator forms, ambiguity rules, and delimiter syntax for targeting",
@@ -268,11 +295,12 @@ mod tests {
     fn lists_all_resources() {
         let result = list_resources().unwrap();
         let resources = result["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 4);
+        assert_eq!(resources.len(), 5);
         let uris: Vec<&str> = resources
             .iter()
             .map(|r| r["uri"].as_str().unwrap())
             .collect();
+        assert!(uris.contains(&"glass://contract/actions"));
         assert!(uris.contains(&"glass://contract/locators"));
         assert!(uris.contains(&"glass://contract/errors"));
         assert!(uris.contains(&"glass://contract/limits"));
@@ -282,6 +310,7 @@ mod tests {
     #[test]
     fn reads_each_resource_with_correct_mime_type() {
         for uri in &[
+            "glass://contract/actions",
             "glass://contract/locators",
             "glass://contract/errors",
             "glass://contract/limits",

@@ -9,6 +9,8 @@
   bounded verification evidence.
 - [Action contract](action-contract.md) — the canonical `0.1.18` execution
   envelope, failure phases, and explicit recovery policies.
+- [Schema compatibility](schema-compatibility.md) — additive cross-interface
+  field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,

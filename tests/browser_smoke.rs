@@ -1,7 +1,7 @@
 use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
     ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
-    WaitCondition, WaitTimeout,
+    VerificationPredicate, WaitCondition, WaitTimeout,
 };
 use serde_json::{Value, json};
 use std::{
@@ -820,6 +820,22 @@ async fn browser_session_drives_a_local_fixture() {
         .await
         .unwrap();
     assert!(redirected.url.ends_with("/fixture.html"));
+    session
+        .verify(
+            VerificationPredicate::All {
+                all: vec![
+                    VerificationPredicate::TitleContains {
+                        value: "Glass Fixture".to_string(),
+                    },
+                    VerificationPredicate::UrlEquals {
+                        value: redirected.url.clone(),
+                    },
+                ],
+            },
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
     for condition in [
         WaitCondition::Lifecycle("complete".to_string()),
         WaitCondition::UrlExact(redirected.url.clone()),

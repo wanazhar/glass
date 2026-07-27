@@ -88,6 +88,46 @@ class GlassClient:
             args["expectedRevision"] = expected_revision
         return self.call("click", args)
 
+    def _guarded(self, name: str, arguments: dict[str, Any], expected_revision: Optional[int]) -> Any:
+        if expected_revision is not None:
+            arguments["expectedRevision"] = expected_revision
+        return self.call(name, arguments)
+
+    def click_expect_popup(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("clickExpectPopup", {"target": target}, expected_revision)
+
+    def double_click(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("doubleClick", {"target": target}, expected_revision)
+
+    def type_text(
+        self,
+        text: str,
+        target: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> Any:
+        args: dict[str, Any] = {"text": text}
+        if target is not None:
+            args["target"] = target
+        return self._guarded("type", args, expected_revision)
+
+    def clear(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("clear", {"target": target}, expected_revision)
+
+    def check(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("check", {"target": target}, expected_revision)
+
+    def uncheck(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("uncheck", {"target": target}, expected_revision)
+
+    def select(self, target: str, value: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("select", {"target": target, "value": value}, expected_revision)
+
+    def scroll(self, dx: float = 0, dy: float = 600, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("scroll", {"dx": dx, "dy": dy}, expected_revision)
+
+    def key(self, key: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("key", {"key": key}, expected_revision)
+
     def verify(
         self,
         predicate: VerificationPredicate,

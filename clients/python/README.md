@@ -2,8 +2,8 @@
 
 `glass_client.py` uses only the Python standard library. It starts an absolute
 Glass binary, negotiates MCP, and provides `navigate`, `observe`, `click`,
-`verify`, `batch`, and `wait` helpers for Python automation programs. Navigation
-and clicks accept optional revision guards.
+`verify`, `batch`, and `wait` helpers for Python automation programs. All
+targeted mutation helpers accept optional revision guards.
 
 ```python
 from glass_client import GlassClient

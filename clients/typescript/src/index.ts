@@ -82,6 +82,33 @@ export class GlassClient {
   click<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
     return this.call<T>("click", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
+  clickExpectPopup<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("clickExpectPopup", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  doubleClick<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("doubleClick", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  typeText<T = Record<string, unknown>>(text: string, target?: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("type", { text, ...(target === undefined ? {} : { target }), ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  clear<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("clear", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  check<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("check", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  uncheck<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("uncheck", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  select<T = Record<string, unknown>>(target: string, value: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("select", { target, value, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  scroll<T = Record<string, unknown>>(dx = 0, dy = 600, expectedRevision?: number): Promise<T> {
+    return this.call<T>("scroll", { dx, dy, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  key<T = Record<string, unknown>>(key: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("key", { key, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
   verify<T = Record<string, unknown>>(predicate: VerificationPredicate, timeoutMs?: number): Promise<T> {
     return this.call<T>("verify", { predicate, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   }

@@ -568,6 +568,51 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         "check"
     );
 
+    let workflow_definition = json!({
+        "schemaVersion": 1,
+        "name": "frontend-workflow",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 1, "maxDurationMs": 30000, "maxRetries": 0, "maxExtractedBytes": 4096},
+        "steps": [{"id": "observe", "action": "observe", "transaction": "read_only"}],
+        "terminalCondition": {"titleContains": "Glass Fixture"},
+        "outputs": {}
+    });
+    let mut cli_workflow = Command::new(&binary)
+        .args([
+            "--attach",
+            "--port",
+            &port_arg,
+            "--target-id",
+            &target_id,
+            "workflow",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    cli_workflow
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            json!({"workflow": workflow_definition.clone(), "inputs": {}})
+                .to_string()
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let cli_workflow_output = cli_workflow.wait_with_output().await.unwrap();
+    assert!(
+        cli_workflow_output.status.success(),
+        "CLI workflow failed: {}",
+        String::from_utf8_lossy(&cli_workflow_output.stderr)
+    );
+    let cli_workflow_result: Value = serde_json::from_slice(&cli_workflow_output.stdout).unwrap();
+    assert_eq!(cli_workflow_result["status"], "completed");
+    assert!(cli_workflow_result["trace"]["events"].is_array());
+
     let mcp = Command::new(&binary)
         .args([
             "--mcp",
@@ -611,6 +656,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
             }),
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check","arguments":{"target":"css=#agree"}}}),
             json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"select","arguments":{"target":"css=#choice","value":"b"}}}),
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workflow","arguments":{"workflow":workflow_definition,"inputs":{}}}}),
         ],
     )
     .await;
@@ -632,6 +678,12 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert_eq!(target_error["candidates"].as_array().unwrap().len(), 2);
     assert_eq!(responses[3]["result"]["isError"], Value::Null);
     assert_eq!(responses[4]["result"]["isError"], Value::Null);
+    let mcp_workflow_text = responses[5]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let mcp_workflow_result: Value = serde_json::from_str(mcp_workflow_text).unwrap();
+    assert_eq!(mcp_workflow_result["status"], "completed");
+    assert!(mcp_workflow_result["trace"]["events"].is_array());
 
     session.close().await.unwrap();
     fixture_server.close().await;

@@ -89,5 +89,6 @@ pub use session::diff_accessibility;
 pub use session::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
     WorkflowOutputDeclaration, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowValidationError, WorkflowValueType,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTransactionClass, WorkflowValidationError,
+    WorkflowValueType,
 };

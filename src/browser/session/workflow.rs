@@ -120,7 +120,7 @@ impl WorkflowDefinition {
         let mut ids = BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
             let path = format!("steps[{index}]");
-            step.validate(&path)?;
+            step.validate(&path, self.budgets.max_retries)?;
             if !ids.insert(step.id.as_str()) {
                 return Err(WorkflowValidationError::new(
                     format!("{path}.id"),
@@ -306,6 +306,33 @@ pub struct WorkflowStep {
     pub id: String,
     pub action: BatchStep,
     pub expect: Option<VerificationPredicate>,
+    pub transaction: WorkflowTransactionClass,
+    pub idempotency_key: Option<String>,
+    pub max_retries: u32,
+}
+
+/// Effect classification used to decide whether a failed attempt may be
+/// replayed before dispatch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTransactionClass {
+    ReadOnly,
+    Idempotent,
+    ConditionallyIdempotent,
+    NonIdempotent,
+    #[default]
+    Unknown,
+}
+
+impl WorkflowTransactionClass {
+    /// Whether this class permits a retry known to have happened before
+    /// dispatch.
+    pub fn permits_pre_dispatch_retry(self) -> bool {
+        matches!(
+            self,
+            Self::ReadOnly | Self::Idempotent | Self::ConditionallyIdempotent
+        )
+    }
 }
 
 impl Serialize for WorkflowStep {
@@ -339,6 +366,16 @@ impl Serialize for WorkflowStep {
                 serde_json::to_value(expect).map_err(serde::ser::Error::custom)?,
             );
         }
+        workflow.insert(
+            "transaction".into(),
+            serde_json::to_value(self.transaction).map_err(serde::ser::Error::custom)?,
+        );
+        if let Some(key) = &self.idempotency_key {
+            workflow.insert("idempotencyKey".into(), Value::String(key.clone()));
+        }
+        if self.max_retries > 0 {
+            workflow.insert("maxRetries".into(), Value::from(self.max_retries));
+        }
         Value::Object(workflow).serialize(serializer)
     }
 }
@@ -358,6 +395,23 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             .map(serde_json::from_value)
             .transpose()
             .map_err(D::Error::custom)?;
+        let transaction = workflow
+            .remove("transaction")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?
+            .unwrap_or_default();
+        let idempotency_key = workflow
+            .remove("idempotencyKey")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?;
+        let max_retries = workflow
+            .remove("maxRetries")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?
+            .unwrap_or(0);
         for (public, internal) in [
             ("timeoutMs", "timeout_ms"),
             ("includeDom", "include_dom"),
@@ -369,16 +423,53 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             }
         }
         let action = serde_json::from_value(Value::Object(workflow)).map_err(D::Error::custom)?;
-        Ok(Self { id, action, expect })
+        Ok(Self {
+            id,
+            action,
+            expect,
+            transaction,
+            idempotency_key,
+            max_retries,
+        })
     }
 }
 
 impl WorkflowStep {
-    fn validate(&self, path: &str) -> Result<(), WorkflowValidationError> {
+    fn validate(
+        &self,
+        path: &str,
+        workflow_max_retries: u32,
+    ) -> Result<(), WorkflowValidationError> {
         validate_name(&format!("{path}.id"), &self.id)?;
         validate_batch_step(&self.action, &format!("{path}.action"))?;
         if let Some(predicate) = &self.expect {
             validate_predicate(predicate, &format!("{path}.expect"))?;
+        }
+        if let Some(key) = &self.idempotency_key {
+            validate_bytes(&format!("{path}.idempotencyKey"), key, 1, 256)?;
+        }
+        if self.max_retries > workflow_max_retries {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.maxRetries"),
+                "step retry count exceeds budgets.maxRetries",
+            ));
+        }
+        match self.transaction {
+            WorkflowTransactionClass::ConditionallyIdempotent if self.idempotency_key.is_none() => {
+                return Err(WorkflowValidationError::new(
+                    format!("{path}.idempotencyKey"),
+                    "conditionally idempotent steps require an idempotency key",
+                ));
+            }
+            WorkflowTransactionClass::NonIdempotent | WorkflowTransactionClass::Unknown
+                if self.max_retries > 0 =>
+            {
+                return Err(WorkflowValidationError::new(
+                    format!("{path}.maxRetries"),
+                    "non-idempotent or unknown steps cannot be retried automatically",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -427,6 +518,7 @@ impl WorkflowStepState {
                 )
                 | (Self::Verified, Self::OutputsExtracted)
                 | (Self::OutputsExtracted, Self::Committed)
+                | (Self::FailedBeforeDispatch, Self::Ready)
         )
     }
 }
@@ -560,43 +652,62 @@ impl super::BrowserSession {
         }
 
         for (index, step) in workflow.steps.iter().enumerate() {
-            {
-                let record = &mut records[index];
-                let _ = record.transition(WorkflowStepState::Ready);
-                let _ = record.transition(WorkflowStepState::Preflight);
-                let _ = record.transition(WorkflowStepState::Resolving);
-                record.attempts = record.attempts.saturating_add(1);
-            }
+            let mut attempt_number = 0;
+            let outcome = loop {
+                {
+                    let record = &mut records[index];
+                    if record.state == WorkflowStepState::Pending {
+                        let _ = record.transition(WorkflowStepState::Ready);
+                    }
+                    let _ = record.transition(WorkflowStepState::Preflight);
+                    let _ = record.transition(WorkflowStepState::Resolving);
+                    attempt_number += 1;
+                    record.attempts = attempt_number;
+                }
 
-            let outcome = self
-                .run_batch_with_mode(
-                    std::slice::from_ref(&step.action),
-                    false,
-                    BatchMode::Unguarded,
-                    None,
-                )
-                .await;
-            let outcome = match outcome {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    let message = {
-                        let record = &mut records[index];
-                        let _ = record.transition(WorkflowStepState::NotDispatched);
-                        record.fail(WorkflowStepState::FailedBeforeDispatch, &error.to_string());
-                        record
+                let outcome = self
+                    .run_batch_with_mode(
+                        std::slice::from_ref(&step.action),
+                        false,
+                        BatchMode::Unguarded,
+                        None,
+                    )
+                    .await;
+                match outcome {
+                    Ok(outcome) => break outcome,
+                    Err(error) => {
+                        let message = bound_workflow_text(&error.to_string(), 512);
+                        let retry = can_retry_before_dispatch(
+                            step.transaction,
+                            false,
+                            attempt_number,
+                            step.max_retries,
+                        );
+                        {
+                            let record = &mut records[index];
+                            let _ = record.transition(WorkflowStepState::NotDispatched);
+                            record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
+                            if retry {
+                                let _ = record.transition(WorkflowStepState::Ready);
+                            }
+                        }
+                        if retry {
+                            continue;
+                        }
+                        let message = records[index]
                             .error
                             .clone()
-                            .unwrap_or_else(|| "workflow step failed".into())
-                    };
-                    skip_remaining(&mut records, index + 1);
-                    return Ok(WorkflowRunResult::failed(
-                        workflow,
-                        records,
-                        Some(step.id.clone()),
-                        message,
-                        initial_revision,
-                        current_revision(self),
-                    ));
+                            .unwrap_or_else(|| "workflow step failed".into());
+                        skip_remaining(&mut records, index + 1);
+                        return Ok(WorkflowRunResult::failed(
+                            workflow,
+                            records,
+                            Some(step.id.clone()),
+                            message,
+                            initial_revision,
+                            current_revision(self),
+                        ));
+                    }
                 }
             };
 
@@ -685,6 +796,15 @@ fn current_revision(session: &super::BrowserSession) -> u64 {
     session
         .page_revision
         .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn can_retry_before_dispatch(
+    transaction: WorkflowTransactionClass,
+    dispatch_observed: bool,
+    attempt_number: u32,
+    max_retries: u32,
+) -> bool {
+    !dispatch_observed && attempt_number <= max_retries && transaction.permits_pre_dispatch_retry()
 }
 
 fn skip_remaining(records: &mut [WorkflowStepRecord], start: usize) {
@@ -931,6 +1051,9 @@ mod tests {
                 expect: Some(VerificationPredicate::TitleContains {
                     value: "Example".into(),
                 }),
+                transaction: WorkflowTransactionClass::ReadOnly,
+                idempotency_key: None,
+                max_retries: 0,
             }],
             terminal_condition: VerificationPredicate::UrlEquals {
                 value: "https://example.com/".into(),
@@ -965,6 +1088,9 @@ mod tests {
             id: "open".into(),
             action: BatchStep::Screenshot,
             expect: None,
+            transaction: WorkflowTransactionClass::ReadOnly,
+            idempotency_key: None,
+            max_retries: 0,
         });
         let error = workflow.validate().unwrap_err();
         assert_eq!(error.path, "steps[1].id");
@@ -976,6 +1102,46 @@ mod tests {
         workflow.budgets.max_steps = 0;
         let error = workflow.validate().unwrap_err();
         assert_eq!(error.path, "budgets.maxSteps");
+    }
+
+    #[test]
+    fn conditional_idempotency_requires_a_key() {
+        let mut workflow = definition();
+        workflow.steps[0].transaction = WorkflowTransactionClass::ConditionallyIdempotent;
+        let error = workflow.validate().unwrap_err();
+        assert_eq!(error.path, "steps[0].idempotencyKey");
+    }
+
+    #[test]
+    fn unknown_steps_cannot_request_automatic_retries() {
+        let mut workflow = definition();
+        workflow.steps[0].transaction = WorkflowTransactionClass::Unknown;
+        workflow.budgets.max_retries = 1;
+        workflow.steps[0].max_retries = 1;
+        let error = workflow.validate().unwrap_err();
+        assert_eq!(error.path, "steps[0].maxRetries");
+    }
+
+    #[test]
+    fn retry_policy_never_replays_after_dispatch() {
+        assert!(can_retry_before_dispatch(
+            WorkflowTransactionClass::Idempotent,
+            false,
+            1,
+            1
+        ));
+        assert!(!can_retry_before_dispatch(
+            WorkflowTransactionClass::NonIdempotent,
+            false,
+            1,
+            1
+        ));
+        assert!(!can_retry_before_dispatch(
+            WorkflowTransactionClass::Idempotent,
+            true,
+            2,
+            1
+        ));
     }
 
     #[test]

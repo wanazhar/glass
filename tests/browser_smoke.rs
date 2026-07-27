@@ -3,6 +3,7 @@ use glass::browser::session::{
     ActionKind, BatchStep, BrowserSession, InteractionMode, SessionOptions, TargetError,
     TargetErrorKind, VerificationPredicate, WaitCondition, WaitTimeout, WorkflowBudgets,
     WorkflowDefinition, WorkflowRunStatus, WorkflowStep, WorkflowStepState,
+    WorkflowTransactionClass,
 };
 use serde_json::{Value, json};
 use std::{
@@ -859,6 +860,9 @@ async fn browser_session_drives_a_local_fixture() {
             expect: Some(VerificationPredicate::TextContains {
                 value: "Saved".into(),
             }),
+            transaction: WorkflowTransactionClass::NonIdempotent,
+            idempotency_key: None,
+            max_retries: 0,
         }],
         terminal_condition: VerificationPredicate::TitleContains {
             value: "Glass Fixture".into(),

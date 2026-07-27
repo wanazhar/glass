@@ -31,6 +31,7 @@ started or an action is dispatched.
       "action": "navigate",
       "url": "https://example.com",
       "timeoutMs": 20000,
+      "transaction": "read_only",
       "expect": { "titleContains": "Example" }
     }
   ],
@@ -53,6 +54,18 @@ Arbitrary `evaluate` steps are intentionally excluded. The accepted action
 shape reuses the existing batch action schema, including bounded verification
 predicates.
 
-This is a local, unreleased 0.1.19 development surface. It is not a promise
-that checkpoints, retries, or resume support are complete yet. The eventual
-public release target for the complete roadmap is 0.2.0.
+## Retry safety
+
+Each step may declare `transaction` as `read_only`, `idempotent`,
+`conditionally_idempotent`, `non_idempotent`, or `unknown`. Conditional steps
+must provide an `idempotencyKey`. `maxRetries` is bounded by the workflow
+budget and is rejected for non-idempotent or unknown steps.
+
+The runner retries only failures proven to occur before dispatch and only for a
+retry-safe class. A failure after dispatch is recorded and stops the workflow;
+Glass does not claim that an external effect was rolled back or replay it
+automatically.
+
+This is a local, unreleased 0.1.19 development surface. Checkpoint persistence
+and resume reconciliation are not complete yet. The eventual public release
+target for the complete roadmap is 0.2.0.

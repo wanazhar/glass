@@ -105,7 +105,8 @@ mod workflow;
 pub use workflow::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
     WorkflowOutputDeclaration, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowValidationError, WorkflowValueType,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTransactionClass, WorkflowValidationError,
+    WorkflowValueType,
 };
 #[allow(private_interfaces)]
 pub struct BrowserSession {

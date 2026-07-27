@@ -896,6 +896,35 @@ impl WorkflowRecorder {
         &self.draft
     }
 
+    /// Infer declarations for the placeholders observed in the draft.
+    ///
+    /// No value is retained. Names that look sensitive are marked sensitive;
+    /// callers still decide whether the resulting declaration is appropriate
+    /// before compiling the final workflow.
+    pub fn inferred_inputs(&self) -> BTreeMap<String, WorkflowInput> {
+        let mut inputs = BTreeMap::new();
+        for step in &self.draft.steps {
+            let Some(name) = &step.input_name else {
+                continue;
+            };
+            let sensitive = step.sensitive_input;
+            inputs
+                .entry(name.clone())
+                .and_modify(|input: &mut WorkflowInput| {
+                    if sensitive {
+                        input.sensitive = Some(true);
+                    }
+                })
+                .or_insert_with(|| WorkflowInput {
+                    value_type: WorkflowValueType::String,
+                    required: true,
+                    max_length: None,
+                    sensitive: sensitive.then_some(true),
+                });
+        }
+        inputs
+    }
+
     /// Convert a reviewed draft into the normal validated workflow contract.
     pub fn into_definition(
         self,
@@ -3836,6 +3865,9 @@ mod tests {
         assert!(!serialized.contains("password-value"));
         assert!(serialized.contains("${inputs.email}"));
         assert!(draft.steps[1].review_required);
+        let inferred = recorder.inferred_inputs();
+        assert_eq!(inferred["email"].value_type, WorkflowValueType::String);
+        assert_eq!(inferred["email"].sensitive, None);
     }
 
     #[test]

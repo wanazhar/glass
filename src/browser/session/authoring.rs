@@ -8,6 +8,7 @@ use super::{BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowTransac
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt;
 
 pub const WORKFLOW_AUTHORING_SCHEMA_VERSION: u32 = 1;
@@ -149,7 +150,7 @@ pub fn compile_workflow(
             })?
         }
     };
-    let definition = WorkflowDefinition::from_value(value).map_err(|error| {
+    let mut definition = WorkflowDefinition::from_value(value).map_err(|error| {
         compile_error(
             format,
             diagnostic(
@@ -163,6 +164,7 @@ pub fn compile_workflow(
             ),
         )
     })?;
+    let mut diagnostics = infer_sensitive_inputs(&mut definition);
     let canonical_json = definition.to_canonical_json().map_err(|error| {
         compile_error(
             format,
@@ -177,7 +179,7 @@ pub fn compile_workflow(
             ),
         )
     })?;
-    let diagnostics = analyze_workflow(&definition);
+    diagnostics.extend(analyze_workflow(&definition));
     Ok(WorkflowAuthoringDocument {
         schema_version: WORKFLOW_AUTHORING_SCHEMA_VERSION,
         source_format: format,
@@ -239,6 +241,10 @@ pub fn format_workflow_yaml(
 /// Run deterministic safety and maintainability checks without a browser.
 pub fn analyze_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowDiagnostic> {
     let mut diagnostics = Vec::new();
+    let declared_inputs = definition.inputs.keys().cloned().collect::<BTreeSet<_>>();
+    if let Ok(value) = serde_json::to_value(definition) {
+        collect_input_references(&value, "$", &declared_inputs, &mut diagnostics);
+    }
     for (index, step) in definition.steps.iter().enumerate() {
         let path = format!("steps[{index}]");
         let mutating = step.intent.as_ref().map_or_else(
@@ -291,20 +297,49 @@ pub fn analyze_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowDiagnost
                 "Add an idempotency key or classify the step differently after review.",
             ));
         }
-    }
-    for (name, input) in &definition.inputs {
-        let lower = name.to_ascii_lowercase();
-        if (lower.contains("password") || lower.contains("token") || lower.contains("secret"))
-            && input.sensitive != Some(true)
+        match &step.action {
+            BatchStep::Type { text, .. } if !contains_input_placeholder(text) => {
+                diagnostics.push(diagnostic(
+                    "workflow.literal_input_value",
+                    WorkflowDiagnosticSeverity::Error,
+                    "type step contains a literal value instead of an input placeholder",
+                    format!("{path}.text"),
+                    None,
+                    None,
+                    "Declare an input and use ${inputs.name}; provide the value at execution time.",
+                ));
+            }
+            BatchStep::Select { value, .. } if !contains_input_placeholder(value) => {
+                diagnostics.push(diagnostic(
+                    "workflow.literal_input_value",
+                    WorkflowDiagnosticSeverity::Error,
+                    "select step contains a literal value instead of an input placeholder",
+                    format!("{path}.value"),
+                    None,
+                    None,
+                    "Declare an input and use ${inputs.name}; provide the value at execution time.",
+                ));
+            }
+            _ => {}
+        }
+        if let Some(intent) = &step.intent
+            && matches!(
+                intent.action,
+                SemanticIntentAction::Type | SemanticIntentAction::Select
+            )
+            && !intent
+                .value
+                .as_deref()
+                .is_some_and(contains_input_placeholder)
         {
             diagnostics.push(diagnostic(
-                "workflow.sensitive_input_unmarked",
+                "workflow.literal_input_value",
                 WorkflowDiagnosticSeverity::Error,
-                "input name suggests sensitive data but it is not marked sensitive",
-                format!("inputs.{name}.sensitive"),
+                "value-bearing intent contains a literal value instead of an input placeholder",
+                format!("{path}.intent.value"),
                 None,
                 None,
-                "Set sensitive: true and keep the value outside the workflow source.",
+                "Declare an input and use ${inputs.name}; provide the value at execution time.",
             ));
         }
     }
@@ -315,6 +350,126 @@ pub fn analyze_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowDiagnost
             .then(left.severity.cmp(&right.severity))
     });
     diagnostics
+}
+
+fn infer_sensitive_inputs(definition: &mut WorkflowDefinition) -> Vec<WorkflowDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for (name, input) in &mut definition.inputs {
+        if !looks_sensitive_input_name(name) {
+            continue;
+        }
+        match input.sensitive {
+            None => {
+                input.sensitive = Some(true);
+                diagnostics.push(diagnostic(
+                    "workflow.sensitive_input_inferred",
+                    WorkflowDiagnosticSeverity::Advisory,
+                    "input marked sensitive from its name",
+                    format!("inputs.{name}.sensitive"),
+                    None,
+                    None,
+                    "Keep the value outside the workflow source and provide it at execution time.",
+                ));
+            }
+            Some(false) => diagnostics.push(diagnostic(
+                "workflow.sensitive_input_denied",
+                WorkflowDiagnosticSeverity::Error,
+                "input name suggests sensitive data but sensitive was explicitly disabled",
+                format!("inputs.{name}.sensitive"),
+                None,
+                None,
+                "Set sensitive: true or rename the input after reviewing its data class.",
+            )),
+            Some(true) => {}
+        }
+    }
+    diagnostics
+}
+
+fn looks_sensitive_input_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    [
+        "password", "passwd", "secret", "token", "api_key", "apikey", "cookie",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
+}
+
+fn contains_input_placeholder(value: &str) -> bool {
+    value.contains("${inputs.")
+}
+
+fn collect_input_references(
+    value: &Value,
+    path: &str,
+    declared_inputs: &BTreeSet<String>,
+    diagnostics: &mut Vec<WorkflowDiagnostic>,
+) {
+    match value {
+        Value::String(text) => {
+            let marker = "${inputs.";
+            let mut remainder = text.as_str();
+            while let Some(start) = remainder.find(marker) {
+                let placeholder = &remainder[start..];
+                let Some(end) = placeholder.find('}') else {
+                    diagnostics.push(diagnostic(
+                        "workflow.invalid_input_reference",
+                        WorkflowDiagnosticSeverity::Error,
+                        "input placeholder is missing a closing brace",
+                        path,
+                        None,
+                        None,
+                        "Use a complete ${inputs.name} placeholder.",
+                    ));
+                    break;
+                };
+                let name = &placeholder[marker.len()..end];
+                if name.is_empty() || name.contains(['{', '}', '$']) {
+                    diagnostics.push(diagnostic(
+                        "workflow.invalid_input_reference",
+                        WorkflowDiagnosticSeverity::Error,
+                        "input placeholder name is invalid",
+                        path,
+                        None,
+                        None,
+                        "Use a simple declared input name inside ${inputs.name}.",
+                    ));
+                } else if !declared_inputs.contains(name) {
+                    diagnostics.push(diagnostic(
+                        "workflow.undefined_input",
+                        WorkflowDiagnosticSeverity::Error,
+                        "workflow references an input that is not declared",
+                        path,
+                        None,
+                        None,
+                        "Declare the input or remove the placeholder before execution.",
+                    ));
+                }
+                remainder = &placeholder[end + 1..];
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_input_references(
+                    item,
+                    &format!("{path}[{index}]"),
+                    declared_inputs,
+                    diagnostics,
+                );
+            }
+        }
+        Value::Object(fields) => {
+            for (name, item) in fields {
+                collect_input_references(
+                    item,
+                    &format!("{path}.{name}"),
+                    declared_inputs,
+                    diagnostics,
+                );
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn batch_step_is_mutating(step: &BatchStep) -> bool {
@@ -460,7 +615,48 @@ outputs: {}
             document
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "workflow.sensitive_input_unmarked")
+                .any(|diagnostic| diagnostic.code == "workflow.sensitive_input_inferred")
+        );
+        assert_eq!(document.definition.inputs["password"].sensitive, Some(true));
+    }
+
+    #[test]
+    fn analyzer_reports_undefined_inputs_and_literal_values() {
+        let source = r#"
+schemaVersion: 1
+name: input-check
+workflowVersion: 1.0.0
+inputs: {}
+budgets:
+  maxSteps: 1
+  maxDurationMs: 30000
+  maxRetries: 0
+  maxExtractedBytes: 4096
+steps:
+  - id: type
+    action: type
+    text: literal-secret
+    target: "role=textbox;name=Search"
+    transaction: non_idempotent
+    idempotencyKey: type-once
+    expect:
+      textContains: "${inputs.missing}"
+terminalCondition:
+  textContains: done
+outputs: {}
+"#;
+        let document = compile_workflow_yaml(&source).unwrap();
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "workflow.undefined_input")
+        );
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "workflow.literal_input_value")
         );
     }
 

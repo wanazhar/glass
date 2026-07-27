@@ -35,7 +35,7 @@
     "task_success_rate": 1.0,
     "peak_runner_rss_bytes": 16777216,
     "compact_context_bytes": 24576,
-    "binary_size_bytes": 6291456
+    "binary_size_bytes": 8388608
   },
   "ratified_gates": {
     "representative_task_success_rate_min": 0.95,

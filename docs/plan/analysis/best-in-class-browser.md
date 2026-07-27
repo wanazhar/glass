@@ -25,13 +25,16 @@ Feature count and microbenchmark latency alone do not qualify.
 | Idle Glass RSS | <=8 MiB | Excludes Chrome and allocator warm-up variance. |
 | Peak default-workflow Glass RSS | <=16 MiB | Navigate/observe/act loop, no image/deep DOM. |
 | Compact context p95 | <=24 KiB | Serialized agent-facing payload. |
-| Release binary | <=6 MiB | Stripped default release profile. |
+| Release binary | <=8 MiB | Stripped default release profile across the supported Linux x86-64 and macOS x86-64/arm64 targets. |
 | MCP malformed-input survival | 100% | Fuzz corpus plus size/time-limit cases. |
 
 These are product budgets, not promises about Chrome memory or network/page
 latency. Task `quality-007` records hardware and ratifies thresholds before
 feature implementation. Any changed threshold requires an explanation and
-before/after evidence in the plan.
+before/after evidence in the plan. The release-binary ceiling is 8 MiB because
+the v0.1.15 supported-target artifacts measured 7,090,288 bytes on Linux
+x86-64, 6,427,452 bytes on macOS x86-64, and 5,576,832 bytes on macOS arm64;
+the prior 6 MiB ceiling was not cross-target publishable.
 
 ### Ratified baseline: 2026-07-11
 

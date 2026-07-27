@@ -921,6 +921,20 @@ impl BrowserSession {
         target: Option<ActionTarget>,
     ) -> BrowserResult<ActionOutcome> {
         let previous_revision = self.page_revision.load(Ordering::Relaxed);
+        let before_page = self
+            .observation_cache
+            .lock()
+            .await
+            .as_ref()
+            .map(|cached| cached.context.page.clone());
+        let (before_popup_count, before_dialog_open, before_download_sequence) = {
+            let topology = self.topology.lock().await;
+            (
+                topology.targets.len(),
+                topology.pending_dialog.is_some(),
+                self.download_sequence.load(Ordering::Relaxed),
+            )
+        };
         if let Some(interception) = &self.policy_interception {
             // A same-route command is an ordering barrier for synchronous
             // click/form navigation. The interception itself remains active
@@ -932,6 +946,16 @@ impl BrowserSession {
             }
         }
         let (target_id, frame_id) = self.route_identity().await?;
+        let after_page = self.page_info().await.ok();
+        let (popup_opened, dialog_open) = {
+            let topology = self.topology.lock().await;
+            (
+                before_popup_count > 0 && topology.targets.len() > before_popup_count,
+                topology.pending_dialog.is_some() && !before_dialog_open,
+            )
+        };
+        let download_started =
+            self.download_sequence.load(Ordering::Relaxed) > before_download_sequence;
         let current_revision = self.invalidate_observation();
         Ok(ActionOutcome {
             status: ActionStatus::Succeeded,
@@ -945,6 +969,25 @@ impl BrowserSession {
             frame_id,
             verification: ActionVerificationEvidence {
                 revision_delta: current_revision.saturating_sub(previous_revision),
+                url_changed: before_page
+                    .as_ref()
+                    .zip(after_page.as_ref())
+                    .is_some_and(|(before, after)| before.url != after.url),
+                title_changed: before_page
+                    .as_ref()
+                    .zip(after_page.as_ref())
+                    .is_some_and(|(before, after)| before.title != after.title),
+                target_changed: before_page
+                    .as_ref()
+                    .zip(after_page.as_ref())
+                    .is_some_and(|(before, after)| before.target_id != after.target_id),
+                frame_changed: before_page
+                    .as_ref()
+                    .zip(after_page.as_ref())
+                    .is_some_and(|(before, after)| before.frame_id != after.frame_id),
+                popup_opened,
+                dialog_open,
+                download_started,
                 ..ActionVerificationEvidence::default()
             },
             evidence: None,

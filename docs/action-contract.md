@@ -103,5 +103,6 @@ relocated and executed.
 
 The initial delivery slices add stable execution IDs, the internal request
 boundary, revision guards across supported mutations, and batch modes. Bounded
-verification predicates, effect witnesses, recovery data, and diagnostics are
-still being delivered under issue #20.
+verification predicates, effect witnesses, and cross-interface helpers are now
+available. Recovery policy diagnostics and the TUI action debugger remain under
+issue #20.

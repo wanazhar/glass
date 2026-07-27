@@ -1893,6 +1893,15 @@ pub struct ActionVerificationEvidence {
     pub target_changed: bool,
     #[serde(rename = "frameChanged")]
     pub frame_changed: bool,
+    /// Whether a popup target was observed after the action.
+    #[serde(rename = "popupOpened", skip_serializing_if = "is_false")]
+    pub popup_opened: bool,
+    /// Whether a JavaScript dialog is pending after the action.
+    #[serde(rename = "dialogOpen", skip_serializing_if = "is_false")]
+    pub dialog_open: bool,
+    /// Whether a download completion was observed after the action began.
+    #[serde(rename = "downloadStarted", skip_serializing_if = "is_false")]
+    pub download_started: bool,
     /// Count-only accessibility evidence; individual page content is never
     /// included in the action envelope.
     #[serde(rename = "accessibilityDiff", skip_serializing_if = "Option::is_none")]

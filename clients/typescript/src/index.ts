@@ -9,6 +9,21 @@ export interface ToolCallResult<T = unknown> {
   [key: string]: unknown;
 }
 
+export type VerificationPredicate =
+  | { urlEquals: string }
+  | { titleContains: string }
+  | { visible: string }
+  | { textContains: string }
+  | { popupOpened: boolean }
+  | { dialogOpen: boolean }
+  | { downloadStarted: boolean }
+  | { revisionEquals: number }
+  | { all: VerificationPredicate[] }
+  | { any: VerificationPredicate[] }
+  | { not: VerificationPredicate };
+
+export type BatchMode = "fixed" | "chain" | "unguarded";
+
 export interface GlassClientOptions {
   command?: string;
   args?: string[];
@@ -61,10 +76,18 @@ export class GlassClient {
   }
 
   observe<T = Record<string, unknown>>(): Promise<T> { return this.call<T>("observe"); }
-  navigate<T = Record<string, unknown>>(url: string, timeoutMs?: number): Promise<T> {
-    return this.call<T>("navigate", { url, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  navigate<T = Record<string, unknown>>(url: string, timeoutMs?: number, expectedRevision?: number): Promise<T> {
+    return this.call<T>("navigate", { url, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
-  click<T = Record<string, unknown>>(target: string): Promise<T> { return this.call<T>("click", { target }); }
+  click<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("click", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  verify<T = Record<string, unknown>>(predicate: VerificationPredicate, timeoutMs?: number): Promise<T> {
+    return this.call<T>("verify", { predicate, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  }
+  batch<T = Record<string, unknown>>(steps: unknown[], mode: BatchMode = "unguarded", expectedRevision?: number, atomic = false): Promise<T> {
+    return this.call<T>("batch", { steps, mode, atomic, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
   wait<T = Record<string, unknown>>(condition: string, timeoutMs?: number): Promise<T> {
     return this.call<T>("wait", { condition, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   }

@@ -12,6 +12,10 @@ class GlassError(RuntimeError):
     """A bounded MCP or process failure."""
 
 
+VerificationPredicate = dict[str, Any]
+BatchMode = str
+
+
 class GlassClient:
     def __init__(
         self,
@@ -65,14 +69,46 @@ class GlassClient:
     def observe(self) -> Any:
         return self.call("observe")
 
-    def navigate(self, url: str, timeout_ms: Optional[int] = None) -> Any:
+    def navigate(
+        self,
+        url: str,
+        timeout_ms: Optional[int] = None,
+        expected_revision: Optional[int] = None,
+    ) -> Any:
         args: dict[str, Any] = {"url": url}
         if timeout_ms is not None:
             args["timeoutMs"] = timeout_ms
+        if expected_revision is not None:
+            args["expectedRevision"] = expected_revision
         return self.call("navigate", args)
 
-    def click(self, target: str) -> Any:
-        return self.call("click", {"target": target})
+    def click(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        args: dict[str, Any] = {"target": target}
+        if expected_revision is not None:
+            args["expectedRevision"] = expected_revision
+        return self.call("click", args)
+
+    def verify(
+        self,
+        predicate: VerificationPredicate,
+        timeout_ms: Optional[int] = None,
+    ) -> Any:
+        args: dict[str, Any] = {"predicate": predicate}
+        if timeout_ms is not None:
+            args["timeoutMs"] = timeout_ms
+        return self.call("verify", args)
+
+    def batch(
+        self,
+        steps: list[dict[str, Any]],
+        mode: BatchMode = "unguarded",
+        expected_revision: Optional[int] = None,
+        atomic: bool = False,
+    ) -> Any:
+        args: dict[str, Any] = {"steps": steps, "mode": mode, "atomic": atomic}
+        if expected_revision is not None:
+            args["expectedRevision"] = expected_revision
+        return self.call("batch", args)
 
     def wait(self, condition: str, timeout_ms: Optional[int] = None) -> Any:
         args: dict[str, Any] = {"condition": condition}

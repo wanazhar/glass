@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
@@ -233,6 +233,10 @@ enum ToolInvocation<'a> {
         atomic: bool,
         mode: BatchMode,
         expected_revision: Option<u64>,
+    },
+    Workflow {
+        definition: Value,
+        inputs: Value,
     },
     Verify {
         predicate: Value,
@@ -1068,6 +1072,13 @@ async fn call_tool(
                     .await?,
             )
         }
+        ToolInvocation::Workflow { definition, inputs } => {
+            let workflow = crate::browser::session::WorkflowDefinition::from_value(definition)
+                .map_err(|error| format!("invalid workflow: {error}"))?;
+            let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs)
+                .map_err(|error| format!("invalid workflow inputs: {error}"))?;
+            serialized_result(&session.run_workflow(&workflow, &inputs).await?)
+        }
         ToolInvocation::Verify {
             predicate,
             timeout_ms,
@@ -1391,6 +1402,16 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             atomic: optional_bool(arguments, "atomic")?,
             mode: optional_batch_mode(arguments)?,
             expected_revision: optional_u64_value(arguments, "expectedRevision")?,
+        }),
+        "workflow" => Ok(ToolInvocation::Workflow {
+            definition: arguments
+                .get("workflow")
+                .cloned()
+                .ok_or("workflow requires a workflow definition")?,
+            inputs: arguments
+                .get("inputs")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
         }),
         "verify" => Ok(ToolInvocation::Verify {
             predicate: arguments
@@ -1784,6 +1805,18 @@ fn tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["steps"]
+            }),
+        },
+        Tool {
+            name: "workflow",
+            description: "Validate and execute a declarative workflow with bounded states, terminal proof, typed outputs, and deterministic trace.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workflow": {"type": "object"},
+                    "inputs": {"type": "object"}
+                },
+                "required": ["workflow"]
             }),
         },
         Tool {
@@ -2389,7 +2422,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 60);
+        assert_eq!(tools.len(), 61);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2678,6 +2711,24 @@ mod tests {
                 } if actual == expected
             ));
         }
+    }
+
+    #[test]
+    fn parses_workflow_definition_and_inputs() {
+        let params = json!({
+            "name": "workflow",
+            "arguments": {
+                "workflow": {"schemaVersion": 1, "name": "demo"},
+                "inputs": {"name": "Ada"}
+            }
+        });
+        let ToolInvocation::Workflow { definition, inputs } =
+            parse_tool_invocation(&params).unwrap()
+        else {
+            panic!("expected workflow invocation");
+        };
+        assert_eq!(definition["name"], "demo");
+        assert_eq!(inputs["name"], "Ada");
     }
 
     #[test]

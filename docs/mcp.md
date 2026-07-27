@@ -106,6 +106,13 @@ mode requires the initial revision and carries each successful action's
 current revision into the next step. Unguarded mode preserves compatibility.
 The `atomic` option remains a separate target pre-resolution check.
 
+The `workflow` tool accepts a declarative `workflow` object and optional typed
+`inputs`. It validates the workflow contract before dispatch, executes its
+bounded steps through the shared browser session, and returns step states,
+terminal proof, typed outputs, and a deterministic trace. A failed step stops
+the workflow; effects observed after dispatch are never treated as safely
+reversible.
+
 ## Tools
 
 | Tool | Important arguments | Result or effect |
@@ -132,6 +139,7 @@ The `atomic` option remains a separate target pre-resolution check.
 | `evaluate` | `expression` | Evaluate JavaScript. |
 | `scroll` | optional `dx`, `dy`, `expectedRevision` | Scroll by CSS pixels. |
 | `batch` | `steps`, optional `mode`, `expectedRevision`, `atomic` | Run a bounded fixed, chain, or unguarded batch. |
+| `workflow` | `workflow`, optional `inputs` | Validate and execute a bounded workflow with terminal proof and typed outputs. |
 | `wait` | `condition`, optional `timeoutMs`, `includeTrace` | Wait for one typed condition. |
 | `diagnostics` | optional `durationMs` | Collect bounded redacted console/network evidence. |
 | `acceptDialog`, `dismissDialog` | none | Resolve the currently open JavaScript dialog. |

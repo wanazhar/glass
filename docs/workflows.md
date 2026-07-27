@@ -132,6 +132,11 @@ follows legal state transitions, and preserves attempt boundaries without
 contacting Chrome or replaying an effect. This makes traces suitable for
 offline diagnostics and test fixtures.
 
+The `maxSteps` and `maxDurationMs` budgets are enforced during execution, not
+only during definition validation. Budget exhaustion returns the explicit
+`budget_exhausted` run status, marks the remaining steps as skipped, and never
+dispatches the next step.
+
 `WorkflowRecorder` is a local draft builder for reviewed authoring flows. Its
 click and text-input helpers retain semantic role/name targets, mark every
 draft for review, and store typed values as `${inputs.name}` placeholders.

@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// The workflow definition schema understood by this crate.
@@ -887,6 +887,7 @@ impl WorkflowStepRecord {
 pub enum WorkflowRunStatus {
     Completed,
     Failed,
+    BudgetExhausted,
 }
 
 /// Evidence that the workflow's terminal condition was satisfied.
@@ -1245,6 +1246,33 @@ impl WorkflowRunResult {
             final_revision,
         }
     }
+
+    fn budget_exhausted(
+        workflow: &WorkflowDefinition,
+        run_id: String,
+        steps: Vec<WorkflowStepRecord>,
+        failed_step: Option<String>,
+        reason: impl Into<String>,
+        initial_revision: u64,
+        final_revision: u64,
+    ) -> Self {
+        let mut trace = WorkflowTrace::from_steps(&steps);
+        trace.run_id = Some(run_id.clone());
+        Self {
+            run_id,
+            name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            status: WorkflowRunStatus::BudgetExhausted,
+            steps,
+            trace,
+            outputs: BTreeMap::new(),
+            terminal_proof: None,
+            failed_step,
+            failure: Some(bound_workflow_text(&reason.into(), 512)),
+            initial_revision,
+            final_revision,
+        }
+    }
 }
 
 impl super::BrowserSession {
@@ -1262,20 +1290,46 @@ impl super::BrowserSession {
             .page_revision
             .load(std::sync::atomic::Ordering::Relaxed);
         let run_id = format!("run_{}", self.next_execution_id());
+        let started = Instant::now();
+        let duration_budget = Duration::from_millis(workflow.budgets.max_duration_ms);
+        let mut executed_steps = 0u32;
         let mut records: Vec<_> = resolved_steps
             .iter()
             .map(|step| WorkflowStepRecord::new(&step.id))
             .collect();
 
         for predicate in &workflow.preconditions {
+            if workflow_budget_expired(started, duration_budget) {
+                skip_remaining(&mut records, 0);
+                return Ok(WorkflowRunResult::budget_exhausted(
+                    workflow,
+                    run_id.clone(),
+                    records,
+                    None,
+                    "workflow maxDurationMs budget exhausted before a precondition",
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
             if let Err(error) = self
                 .verify(
                     predicate.clone(),
-                    Duration::from_millis(workflow.budgets.max_duration_ms),
+                    workflow_budget_remaining(started, duration_budget),
                 )
                 .await
             {
                 skip_remaining(&mut records, 0);
+                if workflow_budget_expired(started, duration_budget) {
+                    return Ok(WorkflowRunResult::budget_exhausted(
+                        workflow,
+                        run_id.clone(),
+                        records,
+                        None,
+                        "workflow maxDurationMs budget exhausted while checking a precondition",
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
                 return Ok(WorkflowRunResult::failed(
                     workflow,
                     run_id.clone(),
@@ -1290,6 +1344,25 @@ impl super::BrowserSession {
 
         for (index, step) in resolved_steps.iter().enumerate() {
             for repetition in 0..step.repeat {
+                if executed_steps >= workflow.budgets.max_steps
+                    || workflow_budget_expired(started, duration_budget)
+                {
+                    skip_remaining(&mut records, index);
+                    return Ok(WorkflowRunResult::budget_exhausted(
+                        workflow,
+                        run_id.clone(),
+                        records,
+                        Some(step.id.clone()),
+                        if executed_steps >= workflow.budgets.max_steps {
+                            "workflow maxSteps budget exhausted before dispatch"
+                        } else {
+                            "workflow maxDurationMs budget exhausted before dispatch"
+                        },
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
+                executed_steps = executed_steps.saturating_add(1);
                 if repetition > 0 {
                     let record = &mut records[index];
                     let _ = record.transition(WorkflowStepState::Ready);
@@ -1320,6 +1393,17 @@ impl super::BrowserSession {
                             let _ = record.transition(WorkflowStepState::Preflight);
                             record.fail(WorkflowStepState::FailedBeforeDispatch, &message);
                             skip_remaining(&mut records, index + 1);
+                            if workflow_budget_expired(started, duration_budget) {
+                                return Ok(WorkflowRunResult::budget_exhausted(
+                                    workflow,
+                                    run_id.clone(),
+                                    records,
+                                    Some(step.id.clone()),
+                                    "workflow maxDurationMs budget exhausted while evaluating a branch",
+                                    initial_revision,
+                                    current_revision(self),
+                                ));
+                            }
                             return Ok(WorkflowRunResult::failed(
                                 workflow,
                                 run_id.clone(),
@@ -1444,7 +1528,7 @@ impl super::BrowserSession {
                     && let Err(error) = self
                         .verify(
                             predicate.clone(),
-                            Duration::from_millis(workflow.budgets.max_duration_ms),
+                            workflow_budget_remaining(started, duration_budget),
                         )
                         .await
                 {
@@ -1458,6 +1542,17 @@ impl super::BrowserSession {
                             .unwrap_or_else(|| "workflow verification failed".into())
                     };
                     skip_remaining(&mut records, index + 1);
+                    if workflow_budget_expired(started, duration_budget) {
+                        return Ok(WorkflowRunResult::budget_exhausted(
+                            workflow,
+                            run_id.clone(),
+                            records,
+                            Some(step.id.clone()),
+                            "workflow maxDurationMs budget exhausted while verifying a step",
+                            initial_revision,
+                            current_revision(self),
+                        ));
+                    }
                     return Ok(WorkflowRunResult::failed(
                         workflow,
                         run_id.clone(),
@@ -1476,10 +1571,21 @@ impl super::BrowserSession {
             }
         }
 
+        if workflow_budget_expired(started, duration_budget) {
+            return Ok(WorkflowRunResult::budget_exhausted(
+                workflow,
+                run_id.clone(),
+                records,
+                None,
+                "workflow maxDurationMs budget exhausted before terminal verification",
+                initial_revision,
+                current_revision(self),
+            ));
+        }
         let terminal_proof = match self
             .verify(
                 workflow.terminal_condition.clone(),
-                Duration::from_millis(workflow.budgets.max_duration_ms),
+                workflow_budget_remaining(started, duration_budget),
             )
             .await
         {
@@ -1489,6 +1595,17 @@ impl super::BrowserSession {
                 state: outcome.state,
             },
             Err(error) => {
+                if workflow_budget_expired(started, duration_budget) {
+                    return Ok(WorkflowRunResult::budget_exhausted(
+                        workflow,
+                        run_id.clone(),
+                        records,
+                        None,
+                        "workflow maxDurationMs budget exhausted while verifying the terminal condition",
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
                 return Ok(WorkflowRunResult::failed(
                     workflow,
                     run_id.clone(),
@@ -1500,9 +1617,31 @@ impl super::BrowserSession {
                 ));
             }
         };
+        if workflow_budget_expired(started, duration_budget) {
+            return Ok(WorkflowRunResult::budget_exhausted(
+                workflow,
+                run_id.clone(),
+                records,
+                None,
+                "workflow maxDurationMs budget exhausted before output extraction",
+                initial_revision,
+                current_revision(self),
+            ));
+        }
         let outputs = match extract_workflow_outputs(self, workflow).await {
             Ok(outputs) => outputs,
             Err(error) => {
+                if workflow_budget_expired(started, duration_budget) {
+                    return Ok(WorkflowRunResult::budget_exhausted(
+                        workflow,
+                        run_id.clone(),
+                        records,
+                        None,
+                        "workflow maxDurationMs budget exhausted while extracting outputs",
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
                 return Ok(WorkflowRunResult::failed(
                     workflow,
                     run_id.clone(),
@@ -1514,6 +1653,17 @@ impl super::BrowserSession {
                 ));
             }
         };
+        if workflow_budget_expired(started, duration_budget) {
+            return Ok(WorkflowRunResult::budget_exhausted(
+                workflow,
+                run_id.clone(),
+                records,
+                None,
+                "workflow maxDurationMs budget exhausted after output extraction",
+                initial_revision,
+                current_revision(self),
+            ));
+        }
 
         let mut trace = WorkflowTrace::from_steps(&records);
         trace.run_id = Some(run_id.clone());
@@ -1968,6 +2118,14 @@ fn current_revision(session: &super::BrowserSession) -> u64 {
     session
         .page_revision
         .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn workflow_budget_expired(started: Instant, budget: Duration) -> bool {
+    started.elapsed() >= budget
+}
+
+fn workflow_budget_remaining(started: Instant, budget: Duration) -> Duration {
+    budget.saturating_sub(started.elapsed())
 }
 
 fn can_retry_before_dispatch(
@@ -2575,6 +2733,23 @@ mod tests {
         assert_eq!(value["retrySafe"], false);
         assert_eq!(value["previousRevision"], 7);
         assert_eq!(value["currentRevision"], 8);
+    }
+
+    #[test]
+    fn budget_exhaustion_is_a_typed_run_status() {
+        let result = WorkflowRunResult::budget_exhausted(
+            &definition(),
+            "run_test".into(),
+            vec![WorkflowStepRecord::new("open")],
+            Some("open".into()),
+            "maxSteps exhausted",
+            3,
+            3,
+        );
+        assert_eq!(result.status, WorkflowRunStatus::BudgetExhausted);
+        assert_eq!(result.trace.run_id.as_deref(), Some("run_test"));
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["status"], "budget_exhausted");
     }
 
     #[test]

@@ -118,6 +118,10 @@ match and returns the next safe step without dispatching an action. It rejects
 changed routes and any checkpoint whose next state could represent an already
 dispatched effect. Callers remain responsible for executing the returned plan.
 
+`BrowserSession::resume_workflow` performs that reconciliation and then runs
+only the safe pending suffix. It refuses an already-complete checkpoint and
+never re-dispatches the committed prefix.
+
 `WorkflowTrace::replay` checks that a trace belongs to the declared workflow,
 follows legal state transitions, and preserves attempt boundaries without
 contacting Chrome or replaying an effect. This makes traces suitable for

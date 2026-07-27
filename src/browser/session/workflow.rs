@@ -1643,6 +1643,28 @@ impl super::BrowserSession {
             reconciled: true,
         })
     }
+
+    /// Reconcile a checkpoint and execute only its safe pending suffix.
+    /// Previously committed steps are never re-dispatched by this method.
+    pub async fn resume_workflow(
+        &self,
+        workflow: &WorkflowDefinition,
+        inputs: &BTreeMap<String, Value>,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> BrowserResult<WorkflowRunResult> {
+        let plan = self
+            .reconcile_workflow_checkpoint(workflow, checkpoint)
+            .await?;
+        if plan.next_step_index >= workflow.steps.len() {
+            return Err(WorkflowResumeError::CheckpointShape(
+                "workflow checkpoint is already complete".into(),
+            )
+            .into());
+        }
+        let mut suffix = workflow.clone();
+        suffix.steps = workflow.steps[plan.next_step_index..].to_vec();
+        self.run_workflow(&suffix, inputs).await
+    }
 }
 
 impl WorkflowCheckpoint {

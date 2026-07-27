@@ -242,6 +242,15 @@ pub struct ReliabilityReplayEvent {
     pub result: String,
 }
 
+/// Stable comparison result for two replay runs of the same scenario.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityReplayComparison {
+    pub scenario_id: String,
+    pub equivalent: bool,
+    pub changed_fields: Vec<String>,
+}
+
 /// Versioned, redacted evidence bundle for replay and regression comparison.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -327,11 +336,13 @@ impl ReliabilityReplayBundle {
                 &event.operation,
                 MAX_CATEGORY_BYTES,
             )?;
+            validate_redacted_text(&format!("events[{index}].operation"), &event.operation)?;
             validate_text(
                 &format!("events[{index}].result"),
                 &event.result,
                 MAX_CATEGORY_BYTES,
             )?;
+            validate_redacted_text(&format!("events[{index}].result"), &event.result)?;
         }
         if self.observation.scenario_id != self.scenario_id
             || self.observation.scenario_hash != self.scenario_hash
@@ -363,6 +374,33 @@ impl ReliabilityReplayBundle {
         let canonical = self.to_canonical_json(scenario)?;
         let digest = Sha256::digest(canonical.as_bytes());
         Ok(format!("sha256:{digest:x}"))
+    }
+
+    /// Compare stable replay fields after validating both bundles.
+    pub fn compare(
+        &self,
+        other: &Self,
+        scenario: &ReliabilityScenario,
+    ) -> Result<ReliabilityReplayComparison, ReliabilityScenarioError> {
+        self.validate(scenario)?;
+        other.validate(scenario)?;
+        let left = serde_json::to_value(self).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("cannot serialize replay: {error}"))
+        })?;
+        let right = serde_json::to_value(other).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("cannot serialize replay: {error}"))
+        })?;
+        let mut changed_fields = Vec::new();
+        for field in ["fixtureId", "fixtureHash", "events", "observation"] {
+            if left[field] != right[field] {
+                changed_fields.push(field.to_string());
+            }
+        }
+        Ok(ReliabilityReplayComparison {
+            scenario_id: self.scenario_id.clone(),
+            equivalent: changed_fields.is_empty(),
+            changed_fields,
+        })
     }
 }
 
@@ -917,6 +955,26 @@ fn validate_digest(path: &str, value: &str) -> Result<(), ReliabilityScenarioErr
     Ok(())
 }
 
+fn validate_redacted_text(path: &str, value: &str) -> Result<(), ReliabilityScenarioError> {
+    let normalized = value.to_ascii_lowercase();
+    for marker in [
+        "password",
+        "secret",
+        "cookie",
+        "authorization",
+        "bearer ",
+        "token=",
+    ] {
+        if normalized.contains(marker) {
+            return Err(ReliabilityScenarioError::new(
+                path,
+                "replay text contains a sensitive-value marker",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A path-aware scenario contract failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReliabilityScenarioError {
@@ -1026,6 +1084,12 @@ mod tests {
         let parsed = ReliabilityReplayBundle::from_json(&canonical, &scenario).unwrap();
         assert_eq!(parsed.events[0].sequence, 0);
         assert!(!canonical.contains("secret"));
+
+        let mut changed = parsed.clone();
+        changed.events[0].result = "refused".into();
+        let comparison = parsed.compare(&changed, &scenario).unwrap();
+        assert!(!comparison.equivalent);
+        assert_eq!(comparison.changed_fields, vec!["events"]);
     }
 
     #[test]
@@ -1049,6 +1113,27 @@ mod tests {
         };
         let error = bundle.validate(&scenario).unwrap_err();
         assert_eq!(error.path, "events[0].sequence");
+    }
+
+    #[test]
+    fn replay_bundle_rejects_sensitive_event_markers() {
+        let scenario = scenario();
+        let observation = observation(&scenario, ReliabilityRunClassification::Passed, Vec::new());
+        let bundle = ReliabilityReplayBundle {
+            schema_version: RELIABILITY_REPLAY_SCHEMA_VERSION,
+            scenario_id: scenario.id.clone(),
+            scenario_hash: scenario.content_hash().unwrap(),
+            fixture_id: scenario.fixture.clone(),
+            fixture_hash: format!("sha256:{}", "c".repeat(64)),
+            events: vec![ReliabilityReplayEvent {
+                sequence: 0,
+                operation: "observe".into(),
+                result: "secret=redacted".into(),
+            }],
+            observation,
+        };
+        let error = bundle.validate(&scenario).unwrap_err();
+        assert_eq!(error.path, "events[0].result");
     }
 
     #[test]

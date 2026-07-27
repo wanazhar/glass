@@ -911,6 +911,7 @@ async fn browser_session_drives_a_local_fixture() {
                 include_screenshot: false,
                 include_form_values: false,
             },
+            intent: None,
             when: None,
             expect: Some(VerificationPredicate::TitleContains {
                 value: "Glass Fixture".into(),
@@ -988,6 +989,7 @@ async fn browser_session_drives_a_local_fixture() {
         action: BatchStep::Click {
             target: "name=Duplicate".into(),
         },
+        intent: None,
         when: None,
         expect: None,
         before_retry: None,

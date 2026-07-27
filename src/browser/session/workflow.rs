@@ -4,6 +4,10 @@
 //! bounded checkpointing, and resume reconciliation.
 
 use super::types::{BatchMode, BatchStep, BrowserResult, VerificationPredicate};
+use super::{
+    INTENT_RESOLUTION_SCHEMA_VERSION, IntentConstraints, IntentScope, SemanticIntentAction,
+    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticResolutionPolicy,
+};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -32,6 +36,7 @@ const WORKFLOW_CHECKPOINT_SCHEMA_VERSION: u8 = 1;
 const MAX_WORKFLOW_CHECKPOINT_BYTES: usize = 8 * 1024;
 const MAX_CHECKPOINT_HISTORY_STATES: usize = 64;
 const MAX_CHECKPOINT_EXECUTION_IDS: usize = 8;
+const MAX_INTENT_PURPOSE_BYTES: usize = 256;
 
 /// A complete declarative workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +144,7 @@ impl WorkflowDefinition {
                     &[
                         "id",
                         "action",
+                        "intent",
                         "when",
                         "expect",
                         "beforeRetry",
@@ -159,6 +165,27 @@ impl WorkflowDefinition {
                         "includeFormValues",
                     ],
                 )?;
+                if let Some(intent) = step.get("intent") {
+                    if step.get("action").is_some() {
+                        return Err(WorkflowValidationError::new(
+                            format!("steps[{index}].action"),
+                            "semantic intent steps cannot also declare a batch action",
+                        ));
+                    }
+                    reject_unknown_fields(
+                        intent,
+                        &format!("steps[{index}].intent"),
+                        &[
+                            "action",
+                            "purpose",
+                            "intent",
+                            "scope",
+                            "constraints",
+                            "resolutionPolicy",
+                            "value",
+                        ],
+                    )?;
+                }
                 for field in ["when", "expect", "beforeRetry"] {
                     if let Some(predicate) = step.get(field) {
                         reject_predicate_fields(predicate, &format!("steps[{index}].{field}"))?;
@@ -300,8 +327,19 @@ impl WorkflowDefinition {
             .enumerate()
             .map(|(index, step)| {
                 let mut resolved = step.clone();
-                resolved.action =
-                    resolve_batch_step(&step.action, values, &format!("steps[{index}].action"))?;
+                if let Some(intent) = &step.intent {
+                    resolved.intent = Some(resolve_workflow_intent(
+                        intent,
+                        values,
+                        &format!("steps[{index}].intent"),
+                    )?);
+                } else {
+                    resolved.action = resolve_batch_step(
+                        &step.action,
+                        values,
+                        &format!("steps[{index}].action"),
+                    )?;
+                }
                 resolved.validate(&format!("steps[{index}]"), self.budgets.max_retries)?;
                 Ok(resolved)
             })
@@ -439,6 +477,7 @@ impl fmt::Display for WorkflowValueType {
 pub struct WorkflowStep {
     pub id: String,
     pub action: BatchStep,
+    pub intent: Option<WorkflowIntentStep>,
     pub when: Option<VerificationPredicate>,
     pub expect: Option<VerificationPredicate>,
     pub before_retry: Option<VerificationPredicate>,
@@ -446,6 +485,104 @@ pub struct WorkflowStep {
     pub idempotency_key: Option<String>,
     pub max_retries: u32,
     pub repeat: u32,
+}
+
+/// A semantic workflow action resolved against fresh page evidence at runtime.
+/// Existing locator-based workflow actions remain unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowIntentStep {
+    pub action: SemanticIntentAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub scope: IntentScope,
+    #[serde(default)]
+    pub constraints: IntentConstraints,
+    #[serde(default = "default_workflow_resolution_policy")]
+    pub resolution_policy: SemanticResolutionPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+impl WorkflowIntentStep {
+    fn validate(&self, path: &str) -> Result<(), WorkflowValidationError> {
+        let supplied = self.purpose.is_some() as u8 + self.intent.is_some() as u8;
+        if supplied != 1 {
+            return Err(WorkflowValidationError::new(
+                format!("{path}.purpose"),
+                "provide exactly one of purpose or intent",
+            ));
+        }
+        if let Some(purpose) = &self.purpose {
+            validate_bytes(
+                &format!("{path}.purpose"),
+                purpose,
+                1,
+                MAX_INTENT_PURPOSE_BYTES,
+            )?;
+        }
+        if let Some(intent) = &self.intent {
+            validate_bytes(
+                &format!("{path}.intent"),
+                intent,
+                1,
+                MAX_INTENT_PURPOSE_BYTES * 2,
+            )?;
+        }
+        if let Some(value) = &self.value {
+            validate_bytes(&format!("{path}.value"), value, 0, 4_096)?;
+        }
+        self.execution_request(path).map(|_| ())
+    }
+
+    fn execution_request(
+        &self,
+        path: &str,
+    ) -> Result<SemanticIntentExecutionRequest, WorkflowValidationError> {
+        let intent = self
+            .intent
+            .clone()
+            .or_else(|| self.purpose.as_deref().map(purpose_to_intent))
+            .ok_or_else(|| {
+                WorkflowValidationError::new(format!("{path}.purpose"), "intent phrase is required")
+            })?;
+        let request = SemanticIntentRequest {
+            schema_version: INTENT_RESOLUTION_SCHEMA_VERSION,
+            intent,
+            action: self.action,
+            scope: self.scope.clone(),
+            constraints: self.constraints.clone(),
+            resolution_policy: self.resolution_policy,
+            expected_revision: None,
+        };
+        let execution = SemanticIntentExecutionRequest {
+            request,
+            candidate_id: "workflow-selected-candidate".into(),
+            value: self.value.clone(),
+        };
+        execution.validate().map_err(|error| {
+            WorkflowValidationError::new(format!("{path}.{}", error.path), error.reason)
+        })?;
+        Ok(execution)
+    }
+}
+
+fn default_workflow_resolution_policy() -> SemanticResolutionPolicy {
+    SemanticResolutionPolicy::RequireUniqueHighConfidence
+}
+
+fn purpose_to_intent(purpose: &str) -> String {
+    let mut result = String::with_capacity(purpose.len() + 8);
+    for (index, character) in purpose.chars().enumerate() {
+        if character.is_ascii_uppercase() && index > 0 {
+            result.push(' ');
+        }
+        result.push(character.to_ascii_lowercase());
+    }
+    result
 }
 
 /// Semantic target captured by the workflow recorder.
@@ -608,6 +745,7 @@ impl WorkflowRecorder {
                 .map(|step| WorkflowStep {
                     id: step.id,
                     action: step.action,
+                    intent: None,
                     when: None,
                     expect: step.expect,
                     before_retry: None,
@@ -695,18 +833,24 @@ impl Serialize for WorkflowStep {
     where
         S: Serializer,
     {
-        let mut action = serde_json::to_value(&self.action).map_err(serde::ser::Error::custom)?;
-        let object = action
-            .as_object_mut()
-            .ok_or_else(|| serde::ser::Error::custom("workflow action must be an object"))?;
-        for (internal, public) in [
-            ("timeout_ms", "timeoutMs"),
-            ("include_dom", "includeDom"),
-            ("include_screenshot", "includeScreenshot"),
-            ("include_form_values", "includeFormValues"),
-        ] {
-            if let Some(value) = object.remove(internal) {
-                object.insert(public.to_string(), value);
+        let mut action = if let Some(intent) = &self.intent {
+            serde_json::json!({ "intent": intent })
+        } else {
+            serde_json::to_value(&self.action).map_err(serde::ser::Error::custom)?
+        };
+        if self.intent.is_none() {
+            let object = action
+                .as_object_mut()
+                .ok_or_else(|| serde::ser::Error::custom("workflow action must be an object"))?;
+            for (internal, public) in [
+                ("timeout_ms", "timeoutMs"),
+                ("include_dom", "includeDom"),
+                ("include_screenshot", "includeScreenshot"),
+                ("include_form_values", "includeFormValues"),
+            ] {
+                if let Some(value) = object.remove(internal) {
+                    object.insert(public.to_string(), value);
+                }
             }
         }
 
@@ -798,6 +942,11 @@ impl<'de> Deserialize<'de> for WorkflowStep {
             .transpose()
             .map_err(D::Error::custom)?
             .unwrap_or(1);
+        let intent = workflow
+            .remove("intent")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?;
         for (public, internal) in [
             ("timeoutMs", "timeout_ms"),
             ("includeDom", "include_dom"),
@@ -808,10 +957,19 @@ impl<'de> Deserialize<'de> for WorkflowStep {
                 workflow.insert(internal.into(), value);
             }
         }
-        let action = serde_json::from_value(Value::Object(workflow)).map_err(D::Error::custom)?;
+        let action = if intent.is_some() {
+            BatchStep::Observe {
+                include_dom: false,
+                include_screenshot: false,
+                include_form_values: false,
+            }
+        } else {
+            serde_json::from_value(Value::Object(workflow)).map_err(D::Error::custom)?
+        };
         Ok(Self {
             id,
             action,
+            intent,
             when,
             expect,
             before_retry,
@@ -830,7 +988,11 @@ impl WorkflowStep {
         workflow_max_retries: u32,
     ) -> Result<(), WorkflowValidationError> {
         validate_name(&format!("{path}.id"), &self.id)?;
-        validate_batch_step(&self.action, &format!("{path}.action"))?;
+        if let Some(intent) = &self.intent {
+            intent.validate(&format!("{path}.intent"))?;
+        } else {
+            validate_batch_step(&self.action, &format!("{path}.action"))?;
+        }
         if let Some(predicate) = &self.when {
             validate_predicate(predicate, &format!("{path}.when"))?;
         }
@@ -2270,6 +2432,55 @@ fn workflow_target(action: &BatchStep) -> Option<&str> {
     }
 }
 
+fn resolve_workflow_intent(
+    intent: &WorkflowIntentStep,
+    inputs: &BTreeMap<String, Value>,
+    path: &str,
+) -> Result<WorkflowIntentStep, WorkflowValidationError> {
+    let resolve = |field: &str, value: &str, maximum: usize| {
+        resolve_input_template(value, inputs, &format!("{path}.{field}"), maximum)
+    };
+    let resolve_optional = |field: &str, value: &Option<String>, maximum: usize| {
+        value
+            .as_deref()
+            .map(|value| resolve(field, value, maximum))
+            .transpose()
+    };
+    let mut resolved = intent.clone();
+    resolved.purpose = resolve_optional("purpose", &intent.purpose, MAX_INTENT_PURPOSE_BYTES)?;
+    resolved.intent = resolve_optional("intent", &intent.intent, MAX_INTENT_PURPOSE_BYTES * 2)?;
+    resolved.value = resolve_optional("value", &intent.value, 4_096)?;
+    resolved.scope.region_id = resolve_optional("scope.regionId", &intent.scope.region_id, 128)?;
+    resolved.scope.form_label = resolve_optional("scope.formLabel", &intent.scope.form_label, 256)?;
+    resolved.constraints.role = resolve_optional("constraints.role", &intent.constraints.role, 64)?;
+    resolved.constraints.name = resolve_optional(
+        "constraints.name",
+        &intent.constraints.name,
+        MAX_TARGET_BYTES,
+    )?;
+    resolved.constraints.name_contains = resolve_optional(
+        "constraints.nameContains",
+        &intent.constraints.name_contains,
+        MAX_TARGET_BYTES,
+    )?;
+    resolved.constraints.exclude_text = intent
+        .constraints
+        .exclude_text
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            resolve_input_template(
+                value,
+                inputs,
+                &format!("{path}.constraints.excludeText[{index}]"),
+                MAX_TARGET_BYTES,
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    resolved.validate(path)?;
+    Ok(resolved)
+}
+
 fn resolve_batch_step(
     action: &BatchStep,
     inputs: &BTreeMap<String, Value>,
@@ -2881,6 +3092,7 @@ mod tests {
                     url: "https://example.com".into(),
                     timeout_ms: 20_000,
                 },
+                intent: None,
                 when: None,
                 expect: Some(VerificationPredicate::TitleContains {
                     value: "Example".into(),
@@ -2966,6 +3178,66 @@ mod tests {
     }
 
     #[test]
+    fn semantic_intent_steps_round_trip_with_bounded_defaults() {
+        let mut value = serde_json::to_value(definition()).unwrap();
+        value["steps"][0] = json!({
+            "id": "continue",
+            "intent": {
+                "action": "click",
+                "purpose": "continueCheckout",
+                "scope": {"regionKind": "checkoutSummary"},
+                "resolutionPolicy": "requireUniqueHighConfidence"
+            },
+            "transaction": "idempotent"
+        });
+        let workflow = WorkflowDefinition::from_value(value).unwrap();
+        let intent = workflow.steps[0].intent.as_ref().unwrap();
+        assert_eq!(intent.action, SemanticIntentAction::Click);
+        assert_eq!(intent.purpose.as_deref(), Some("continueCheckout"));
+        assert_eq!(
+            intent
+                .execution_request("steps[0].intent")
+                .unwrap()
+                .request
+                .intent,
+            "continue checkout"
+        );
+        let canonical = workflow.to_canonical_json().unwrap();
+        assert!(canonical.contains("\"resolutionPolicy\":\"requireUniqueHighConfidence\""));
+        assert!(!canonical.contains("\"action\":\"navigate\""));
+    }
+
+    #[test]
+    fn semantic_intent_steps_reject_ambiguous_shape_and_missing_values() {
+        let mut value = serde_json::to_value(definition()).unwrap();
+        value["steps"][0] = json!({
+            "id": "bad",
+            "intent": {
+                "action": "type",
+                "purpose": "enterSearch",
+                "intent": "enter search",
+                "resolutionPolicy": "requireUniqueHighConfidence"
+            },
+            "transaction": "idempotent"
+        });
+        let error = WorkflowDefinition::from_value(value).unwrap_err();
+        assert_eq!(error.path, "steps[0].intent.purpose");
+
+        let mut value = serde_json::to_value(definition()).unwrap();
+        value["steps"][0] = json!({
+            "id": "bad",
+            "intent": {
+                "action": "type",
+                "purpose": "enterSearch",
+                "resolutionPolicy": "requireUniqueHighConfidence"
+            },
+            "transaction": "idempotent"
+        });
+        let error = WorkflowDefinition::from_value(value).unwrap_err();
+        assert_eq!(error.path, "steps[0].intent.value");
+    }
+
+    #[test]
     fn unknown_predicate_fields_fail_with_their_json_path() {
         let mut value = serde_json::to_value(definition()).unwrap();
         value["terminalCondition"] = json!({"titleContains": "Example", "future": true});
@@ -2979,6 +3251,7 @@ mod tests {
         workflow.steps.push(WorkflowStep {
             id: "open".into(),
             action: BatchStep::Screenshot,
+            intent: None,
             when: None,
             expect: None,
             before_retry: None,
@@ -3015,6 +3288,7 @@ mod tests {
         workflow.steps.push(WorkflowStep {
             id: "second".into(),
             action: BatchStep::Screenshot,
+            intent: None,
             when: None,
             expect: None,
             before_retry: None,
@@ -3383,6 +3657,7 @@ mod tests {
         workflow.steps.push(WorkflowStep {
             id: "save".into(),
             action: BatchStep::Screenshot,
+            intent: None,
             when: None,
             expect: None,
             before_retry: None,

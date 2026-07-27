@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
     io,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,10 +38,10 @@ use tokio::{
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo,
+    ActionOutcome, BrowserResult, BrowserSession, KnowledgeStore, PageContext, PageInfo,
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentRequest,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
-    WorkflowDefinition,
+    WorkflowDefinition, default_knowledge_store_path,
 };
 use crate::cli::args::Cli;
 
@@ -70,6 +71,7 @@ pub struct App {
     intent_request: Option<SemanticIntentRequest>,
     intent_result: Option<SemanticIntentResult>,
     intent_selection: usize,
+    knowledge_path: PathBuf,
     browser_state: BrowserState,
     busy: Option<BusyState>,
     next_operation_id: u64,
@@ -118,6 +120,7 @@ impl App {
             intent_request: None,
             intent_result: None,
             intent_selection: 0,
+            knowledge_path: default_knowledge_store_path("default"),
             browser_state: BrowserState::Connecting,
             busy: None,
             next_operation_id: 1,
@@ -565,6 +568,7 @@ impl Drop for InputWorker {
 enum LocalCommand {
     Help,
     Profiles,
+    Knowledge(Option<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -630,6 +634,13 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     }
     if command.eq_ignore_ascii_case("profiles") {
         return Ok(ParsedCommand::Local(LocalCommand::Profiles));
+    }
+    if command.eq_ignore_ascii_case("knowledge") {
+        return Ok(ParsedCommand::Local(LocalCommand::Knowledge(None)));
+    }
+    if let Some(record_id) = strip_ascii_prefix(command, "knowledge show ") {
+        return required_command_argument(record_id, "knowledge record ID")
+            .map(|record_id| ParsedCommand::Local(LocalCommand::Knowledge(Some(record_id))));
     }
     for prefix in ["navigate ", "go to ", "go "] {
         if let Some(url) = strip_ascii_prefix(command, prefix) {
@@ -1419,7 +1430,7 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
             );
             app.add_activity(
-                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
+                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -1434,6 +1445,54 @@ fn handle_submission(
                 Ok(profiles) => {
                     for profile in profiles {
                         app.add_activity(format!("  - {profile}"));
+                    }
+                }
+                Err(error) => app.report_error(error.to_string()),
+            }
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Knowledge(record_id))) => {
+            if let Err(error) =
+                policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)
+            {
+                app.report_error(error.to_string());
+                return;
+            }
+            match KnowledgeStore::open(&app.knowledge_path) {
+                Ok(store) => {
+                    let content = match record_id {
+                        Some(record_id) => store
+                            .get(&record_id)
+                            .map(|record| {
+                                serde_json::to_string_pretty(record)
+                                    .map_err(|error| error.to_string())
+                            })
+                            .unwrap_or_else(|| {
+                                Err(format!("knowledge record not found: {record_id}"))
+                            }),
+                        None => match store.stats() {
+                            Ok(stats) => serde_json::to_string_pretty(&serde_json::json!({
+                                "path": store.path().display().to_string(),
+                                "stats": stats,
+                                "records": store.records().iter().map(|record| serde_json::json!({
+                                    "recordId": &record.record_id,
+                                    "kind": record.kind,
+                                    "confidence": record.confidence,
+                                    "origin": &record.scope.origin,
+                                    "pathPattern": &record.scope.path_pattern,
+                                })).collect::<Vec<_>>(),
+                            }))
+                            .map_err(|error| error.to_string()),
+                            Err(error) => Err(error.to_string()),
+                        },
+                    };
+                    match content {
+                        Ok(content) => {
+                            app.title = "Glass — Knowledge inspector".into();
+                            app.set_page_content(content);
+                            app.set_status("Knowledge inspector");
+                            app.add_activity("Knowledge store inspected without browser startup.");
+                        }
+                        Err(error) => app.report_error(error.to_string()),
                     }
                 }
                 Err(error) => app.report_error(error.to_string()),
@@ -1646,6 +1705,10 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     ));
     let mut input_worker = InputWorker::spawn(input_tx);
     let mut app = App::new();
+    app.knowledge_path = cli
+        .knowledge_store
+        .clone()
+        .unwrap_or_else(|| default_knowledge_store_path(&cli.profile));
 
     let loop_result = local
         .run_until(run_tui_loop(
@@ -1808,6 +1871,15 @@ mod tests {
         assert!(matches!(
             parse_command("profiles"),
             Ok(ParsedCommand::Local(LocalCommand::Profiles))
+        ));
+        assert!(matches!(
+            parse_command("knowledge"),
+            Ok(ParsedCommand::Local(LocalCommand::Knowledge(None)))
+        ));
+        assert!(matches!(
+            parse_command("knowledge show record-1"),
+            Ok(ParsedCommand::Local(LocalCommand::Knowledge(Some(record))))
+                if record == "record-1"
         ));
     }
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 if (process.env.GLASS_SKIP_DOWNLOAD === "1") process.exit(0);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const version = process.env.GLASS_VERSION ?? "v0.1.15";
+const version = process.env.GLASS_VERSION ?? "v0.1.16";
 const platform = `${process.platform}-${process.arch}`;
 const names = {
   "linux-x64": "glass-linux-x86_64",

@@ -13,7 +13,7 @@ Glass provides four interfaces over the same browser session:
 
 ## Status
 
-Glass `0.1.15` is available on crates.io. The supported release targets are
+Glass `0.1.16` is available on crates.io. The supported release targets are
 Linux x86-64 and macOS x86-64/arm64. The CLI, terminal UI, MCP server, and Rust
 library share the same browser session runtime.
 
@@ -46,7 +46,7 @@ For a machine without a Rust toolchain, download a stripped release binary and
 verify the published checksum. Set `GLASS_VERSION` to the release tag you want:
 
 ```console
-GLASS_VERSION=v0.1.15
+GLASS_VERSION=v0.1.16
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64" -o glass
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64.sha256" -o glass.sha256
 sha256sum -c glass.sha256

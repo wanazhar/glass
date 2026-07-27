@@ -22,11 +22,15 @@ click r7:b42 --expected-revision 7
 
 The same guard is available on the MCP `navigate`, `click`, `clickExpectPopup`,
 `doubleClick`, `type`, `clear`, `check`, `uncheck`, `select`, `scroll`, and
-`fillForm` tools. The Rust library exposes matching guarded methods alongside
+`fillForm` tools, as well as `drag`, `key`, `keyDown`, `keyUp`, `shortcut`, and
+`upload`. The Rust library exposes matching guarded methods alongside
 the compatibility methods, including `click_expect_popup_with_revision`,
 `double_click_with_revision`, `clear_with_revision`,
 `check_with_revision`, `uncheck_with_revision`,
-`select_option_with_revision`, and `scroll_with_revision`.
+`select_option_with_revision`, `scroll_with_revision`,
+`drag_with_revision`, `key_press_with_revision`,
+`key_down_with_revision`, `key_up_with_revision`,
+`shortcut_with_revision`, and `upload_files_with_revision`.
 
 ## Successful action result
 

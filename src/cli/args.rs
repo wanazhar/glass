@@ -147,7 +147,11 @@ pub enum Commands {
     ClickAt { x: f64, y: f64 },
 
     /// Click an element expected to open exactly one causally verified popup.
-    ClickExpectPopup { target: String },
+    ClickExpectPopup {
+        target: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Double-click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     DoubleClick {
@@ -160,7 +164,12 @@ pub enum Commands {
     Hover { target: String },
 
     /// Drag one element to another uniquely resolved element.
-    Drag { source: String, destination: String },
+    Drag {
+        source: String,
+        destination: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Type text into the focused element, optionally clicking a target first.
     Type {
@@ -172,16 +181,32 @@ pub enum Commands {
     },
 
     /// Dispatch one complete key press.
-    Key { key: String },
+    Key {
+        key: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Dispatch only a key-down event.
-    KeyDown { key: String },
+    KeyDown {
+        key: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Dispatch only a key-up event.
-    KeyUp { key: String },
+    KeyUp {
+        key: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Dispatch a modifier shortcut such as Control+A.
-    Shortcut { shortcut: String },
+    Shortcut {
+        shortcut: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
 
     /// Clear an editable element.
     Clear {
@@ -217,6 +242,8 @@ pub enum Commands {
         target: String,
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Capture a PNG screenshot.
@@ -469,7 +496,7 @@ mod tests {
         let cli = Cli::try_parse_from(["glass", "click-expect-popup", "css=#popup"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::ClickExpectPopup { target }) if target == "css=#popup"
+            Some(Commands::ClickExpectPopup { target, .. }) if target == "css=#popup"
         ));
     }
 
@@ -514,13 +541,13 @@ mod tests {
             Cli::try_parse_from(["glass", "drag", "css=#from", "css=#to"])
                 .unwrap()
                 .command,
-            Some(Commands::Drag { source, destination }) if source == "css=#from" && destination == "css=#to"
+            Some(Commands::Drag { source, destination, .. }) if source == "css=#from" && destination == "css=#to"
         ));
         assert!(matches!(
             Cli::try_parse_from(["glass", "shortcut", "Control+A"])
                 .unwrap()
                 .command,
-            Some(Commands::Shortcut { shortcut }) if shortcut == "Control+A"
+            Some(Commands::Shortcut { shortcut, .. }) if shortcut == "Control+A"
         ));
     }
 

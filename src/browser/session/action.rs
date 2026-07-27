@@ -190,8 +190,19 @@ impl BrowserSession {
     /// Performs a mouse-press on the source element, moves the pointer to the
     /// destination element, then releases.
     pub async fn drag(&self, source: &str, destination: &str) -> BrowserResult<ActionOutcome> {
+        self.drag_with_revision(source, destination, None).await
+    }
+
+    /// Drag while enforcing an optional observation revision.
+    pub async fn drag_with_revision(
+        &self,
+        source: &str,
+        destination: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let source = self.resolve_element(source).await?;
                 let source_object = self
                     .cdp
@@ -289,7 +300,16 @@ impl BrowserSession {
     ///
     /// Dispatches a `rawKeyDown` CDP event for the given key.
     pub async fn key_down(&self, key: &str) -> BrowserResult<ActionOutcome> {
-        self.keyboard_action(ActionKind::KeyDown, key, "rawKeyDown", 0)
+        self.key_down_with_revision(key, None).await
+    }
+
+    /// Press and hold a keyboard key while enforcing an optional revision.
+    pub async fn key_down_with_revision(
+        &self,
+        key: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        self.keyboard_action(ActionKind::KeyDown, key, "rawKeyDown", 0, expected_revision)
             .await
     }
 
@@ -297,7 +317,16 @@ impl BrowserSession {
     ///
     /// Dispatches a `keyUp` CDP event for the given key.
     pub async fn key_up(&self, key: &str) -> BrowserResult<ActionOutcome> {
-        self.keyboard_action(ActionKind::KeyUp, key, "keyUp", 0)
+        self.key_up_with_revision(key, None).await
+    }
+
+    /// Release a keyboard key while enforcing an optional revision.
+    pub async fn key_up_with_revision(
+        &self,
+        key: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        self.keyboard_action(ActionKind::KeyUp, key, "keyUp", 0, expected_revision)
             .await
     }
 
@@ -306,9 +335,19 @@ impl BrowserSession {
     /// Dispatches `rawKeyDown`, `char` (for single-character keys), and `keyUp`
     /// CDP events.
     pub async fn key_press(&self, key: &str) -> BrowserResult<ActionOutcome> {
+        self.key_press_with_revision(key, None).await
+    }
+
+    /// Press and release a keyboard key while enforcing an optional revision.
+    pub async fn key_press_with_revision(
+        &self,
+        key: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         validate_key(key)?;
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let code = key_code(key);
                 self.cdp
                     .dispatch_key_event_with_modifiers("rawKeyDown", key, &code, "", 0)
@@ -331,9 +370,19 @@ impl BrowserSession {
     /// Parses shortcuts like `"Ctrl+C"` or `"Meta+V"` and dispatches
     /// the corresponding key events with the specified modifiers.
     pub async fn shortcut(&self, shortcut: &str) -> BrowserResult<ActionOutcome> {
+        self.shortcut_with_revision(shortcut, None).await
+    }
+
+    /// Execute a keyboard shortcut while enforcing an optional revision.
+    pub async fn shortcut_with_revision(
+        &self,
+        shortcut: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         let (modifiers, key) = parse_shortcut(shortcut)?;
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let code = key_code(&key);
                 self.cdp
                     .dispatch_key_event_with_modifiers("rawKeyDown", &key, &code, "", modifiers)
@@ -451,8 +500,19 @@ impl BrowserSession {
         target: &str,
         paths: &[PathBuf],
     ) -> BrowserResult<ActionOutcome> {
+        self.upload_files_with_revision(target, paths, None).await
+    }
+
+    /// Upload files while enforcing an optional observation revision.
+    pub async fn upload_files_with_revision(
+        &self,
+        target: &str,
+        paths: &[PathBuf],
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.policy.require(PolicyCapability::Upload)?;
         self.cdp.with_current_route(async {
+            self.require_expected_revision(expected_revision)?;
             if paths.is_empty() || paths.len() > 16 { return Err("upload requires 1..=16 files".into()); }
             let mut files = Vec::with_capacity(paths.len());
             for path in paths {
@@ -755,10 +815,12 @@ impl BrowserSession {
         key: &str,
         event_type: &str,
         modifiers: i64,
+        expected_revision: Option<u64>,
     ) -> BrowserResult<ActionOutcome> {
         validate_key(key)?;
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 self.cdp
                     .dispatch_key_event_with_modifiers(
                         event_type,

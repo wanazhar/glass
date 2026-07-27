@@ -35,19 +35,20 @@ browsing.
 ```text
 navigate URL [--timeout-ms MILLISECONDS] [--expected-revision REVISION]
 click TARGET [--expected-revision REVISION]
+click-expect-popup TARGET [--expected-revision REVISION]
 double-click TARGET [--expected-revision REVISION]
 hover TARGET
-drag SOURCE DESTINATION
+drag SOURCE DESTINATION [--expected-revision REVISION]
 type TEXT [--target TARGET] [--expected-revision REVISION]
-key KEY
-key-down KEY
-key-up KEY
-shortcut SHORTCUT
+key KEY [--expected-revision REVISION]
+key-down KEY [--expected-revision REVISION]
+key-up KEY [--expected-revision REVISION]
+shortcut SHORTCUT [--expected-revision REVISION]
 clear TARGET [--expected-revision REVISION]
 check TARGET [--expected-revision REVISION]
 uncheck TARGET [--expected-revision REVISION]
 select TARGET VALUE [--expected-revision REVISION]
-upload TARGET FILE...
+upload TARGET FILE... [--expected-revision REVISION]
 screenshot [-o|--output FILE]
 text
 dom
@@ -116,7 +117,7 @@ For an explicit action contract, pass the revision from `observe` with
 `--expected-revision`; stale state is rejected before the action runs and the
 result includes typed status plus bounded verification metadata. The flag is
 available on navigation, click, double-click, type, clear, check, uncheck,
-select, scroll, and form-fill commands. Existing commands without the flag
+select, scroll, keyboard, drag, upload, popup, and form-fill commands. Existing commands without the flag
 remain compatible.
 Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
 with bounded candidates instead of choosing the first match.

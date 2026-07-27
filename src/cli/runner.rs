@@ -188,8 +188,15 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::ClickAt { x, y } => {
             print_json(&session.click_at(*x, *y).await?)?;
         }
-        Commands::ClickExpectPopup { target } => {
-            print_json(&session.click_expect_popup(target).await?)?;
+        Commands::ClickExpectPopup {
+            target,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .click_expect_popup_with_revision(target, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::DoubleClick {
             target,
@@ -205,8 +212,13 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         Commands::Drag {
             source,
             destination,
+            expected_revision,
         } => {
-            print_json(&session.drag(source, destination).await?)?;
+            print_json(
+                &session
+                    .drag_with_revision(source, destination, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Type {
             text,
@@ -219,10 +231,38 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .await?,
             )?;
         }
-        Commands::Key { key } => print_json(&session.key_press(key).await?)?,
-        Commands::KeyDown { key } => print_json(&session.key_down(key).await?)?,
-        Commands::KeyUp { key } => print_json(&session.key_up(key).await?)?,
-        Commands::Shortcut { shortcut } => print_json(&session.shortcut(shortcut).await?)?,
+        Commands::Key {
+            key,
+            expected_revision,
+        } => print_json(
+            &session
+                .key_press_with_revision(key, *expected_revision)
+                .await?,
+        )?,
+        Commands::KeyDown {
+            key,
+            expected_revision,
+        } => print_json(
+            &session
+                .key_down_with_revision(key, *expected_revision)
+                .await?,
+        )?,
+        Commands::KeyUp {
+            key,
+            expected_revision,
+        } => print_json(
+            &session
+                .key_up_with_revision(key, *expected_revision)
+                .await?,
+        )?,
+        Commands::Shortcut {
+            shortcut,
+            expected_revision,
+        } => print_json(
+            &session
+                .shortcut_with_revision(shortcut, *expected_revision)
+                .await?,
+        )?,
         Commands::Clear {
             target,
             expected_revision,
@@ -258,8 +298,16 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                     .await?,
             )?;
         }
-        Commands::Upload { target, files } => {
-            print_json(&session.upload_files(target, files).await?)?;
+        Commands::Upload {
+            target,
+            files,
+            expected_revision,
+        } => {
+            print_json(
+                &session
+                    .upload_files_with_revision(target, files, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::Screenshot {
             output,

@@ -165,6 +165,7 @@ enum ToolInvocation<'a> {
     Drag {
         source: Cow<'a, str>,
         destination: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Type {
         text: &'a str,
@@ -173,15 +174,19 @@ enum ToolInvocation<'a> {
     },
     Key {
         key: &'a str,
+        expected_revision: Option<u64>,
     },
     KeyDown {
         key: &'a str,
+        expected_revision: Option<u64>,
     },
     KeyUp {
         key: &'a str,
+        expected_revision: Option<u64>,
     },
     Shortcut {
         shortcut: &'a str,
+        expected_revision: Option<u64>,
     },
     Clear {
         target: Cow<'a, str>,
@@ -203,6 +208,7 @@ enum ToolInvocation<'a> {
     Upload {
         target: Cow<'a, str>,
         files: Vec<std::path::PathBuf>,
+        expected_revision: Option<u64>,
     },
     Screenshot {
         format: VisualFormat,
@@ -890,7 +896,12 @@ async fn call_tool(
         ToolInvocation::Drag {
             source,
             destination,
-        } => action_result(session.drag(source.as_ref(), destination.as_ref()).await?),
+            expected_revision,
+        } => action_result(
+            session
+                .drag_with_revision(source.as_ref(), destination.as_ref(), expected_revision)
+                .await?,
+        ),
         ToolInvocation::Type {
             text,
             target,
@@ -900,10 +911,34 @@ async fn call_tool(
                 .type_text_with_expected_revision(text, target, expected_revision)
                 .await?,
         ),
-        ToolInvocation::Key { key } => action_result(session.key_press(key).await?),
-        ToolInvocation::KeyDown { key } => action_result(session.key_down(key).await?),
-        ToolInvocation::KeyUp { key } => action_result(session.key_up(key).await?),
-        ToolInvocation::Shortcut { shortcut } => action_result(session.shortcut(shortcut).await?),
+        ToolInvocation::Key {
+            key,
+            expected_revision,
+        } => action_result(
+            session
+                .key_press_with_revision(key, expected_revision)
+                .await?,
+        ),
+        ToolInvocation::KeyDown {
+            key,
+            expected_revision,
+        } => action_result(
+            session
+                .key_down_with_revision(key, expected_revision)
+                .await?,
+        ),
+        ToolInvocation::KeyUp {
+            key,
+            expected_revision,
+        } => action_result(session.key_up_with_revision(key, expected_revision).await?),
+        ToolInvocation::Shortcut {
+            shortcut,
+            expected_revision,
+        } => action_result(
+            session
+                .shortcut_with_revision(shortcut, expected_revision)
+                .await?,
+        ),
         ToolInvocation::Clear {
             target,
             expected_revision,
@@ -937,9 +972,15 @@ async fn call_tool(
                 .select_option_with_revision(target.as_ref(), value, expected_revision)
                 .await?,
         ),
-        ToolInvocation::Upload { target, files } => {
-            action_result(session.upload_files(target.as_ref(), &files).await?)
-        }
+        ToolInvocation::Upload {
+            target,
+            files,
+            expected_revision,
+        } => action_result(
+            session
+                .upload_files_with_revision(target.as_ref(), &files, expected_revision)
+                .await?,
+        ),
         ToolInvocation::Screenshot {
             format,
             quality,
@@ -1253,6 +1294,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "drag" => Ok(ToolInvocation::Drag {
             source: Cow::Borrowed(required_string(arguments, "source")?),
             destination: Cow::Borrowed(required_string(arguments, "destination")?),
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "type" => Ok(ToolInvocation::Type {
             text: required_string(arguments, "text")?,
@@ -1261,15 +1303,19 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "key" => Ok(ToolInvocation::Key {
             key: required_string(arguments, "key")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "keyDown" => Ok(ToolInvocation::KeyDown {
             key: required_string(arguments, "key")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "keyUp" => Ok(ToolInvocation::KeyUp {
             key: required_string(arguments, "key")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "shortcut" => Ok(ToolInvocation::Shortcut {
             shortcut: required_string(arguments, "shortcut")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "clear" => Ok(ToolInvocation::Clear {
             target: required_target(arguments)?,
@@ -1291,6 +1337,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "upload" => Ok(ToolInvocation::Upload {
             target: required_target(arguments)?,
             files: required_path_array(arguments, "files")?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "screenshot" => Ok(ToolInvocation::Screenshot {
             format: parse_visual_format(optional_string(arguments, "format")?.unwrap_or("png"))?,
@@ -1487,27 +1534,27 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "drag",
             description: "Drag one actionable target to another.",
-            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["source","destination"]}),
+            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":["source","destination"]}),
         },
         Tool {
             name: "key",
             description: "Dispatch a complete browser key press.",
-            input_schema: string_schema("key"),
+            input_schema: guarded_string_schema("key"),
         },
         Tool {
             name: "keyDown",
             description: "Dispatch a browser key-down event.",
-            input_schema: string_schema("key"),
+            input_schema: guarded_string_schema("key"),
         },
         Tool {
             name: "keyUp",
             description: "Dispatch a browser key-up event.",
-            input_schema: string_schema("key"),
+            input_schema: guarded_string_schema("key"),
         },
         Tool {
             name: "shortcut",
             description: "Dispatch one explicit modifier shortcut.",
-            input_schema: string_schema("shortcut"),
+            input_schema: guarded_string_schema("shortcut"),
         },
         Tool {
             name: "clear",
@@ -1532,7 +1579,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "upload",
             description: "Set bounded local regular files on one file input; contents are never returned.",
-            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}},"includeTrace":{"type":"boolean","default":false}},"required":["target","files"]}),
+            input_schema: json!({"type":"object","properties":{"target":{"type":"string"},"files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":["target","files"]}),
         },
         Tool {
             name: "type",
@@ -1851,8 +1898,8 @@ fn guarded_target_schema() -> Value {
     json!({"type":"object","properties":{"target":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":["target"]})
 }
 
-fn string_schema(name: &str) -> Value {
-    json!({"type":"object","properties":{(name):{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":[name]})
+fn guarded_string_schema(name: &str) -> Value {
+    json!({"type":"object","properties":{(name):{"type":"string"},"expectedRevision":{"type":"integer","minimum":0},"includeTrace":{"type":"boolean","default":false}},"required":[name]})
 }
 
 fn required_u64(arguments: &Value, name: &str) -> BrowserResult<u64> {
@@ -2300,6 +2347,27 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
+        for tool_name in [
+            "clickExpectPopup",
+            "doubleClick",
+            "drag",
+            "key",
+            "keyDown",
+            "keyUp",
+            "shortcut",
+            "clear",
+            "check",
+            "uncheck",
+            "select",
+            "scroll",
+            "upload",
+        ] {
+            let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
+            assert_eq!(
+                tool["inputSchema"]["properties"]["expectedRevision"]["type"], "integer",
+                "{tool_name} must expose expectedRevision"
+            );
+        }
         let popup_click = tools
             .iter()
             .find(|tool| tool["name"] == "clickExpectPopup")
@@ -2465,6 +2533,15 @@ mod tests {
             ("uncheck", json!({"target": "r7:b42"})),
             ("select", json!({"target": "r7:b42", "value": "on"})),
             ("scroll", json!({"dy": 20})),
+            ("drag", json!({"source": "r7:b42", "destination": "r7:b43"})),
+            ("key", json!({"key": "Enter"})),
+            ("keyDown", json!({"key": "Shift"})),
+            ("keyUp", json!({"key": "Shift"})),
+            ("shortcut", json!({"shortcut": "Control+A"})),
+            (
+                "upload",
+                json!({"target": "r7:b42", "files": ["/tmp/a.txt"]}),
+            ),
         ];
         for (name, mut arguments) in cases {
             arguments["expectedRevision"] = json!(7);
@@ -2490,6 +2567,24 @@ mod tests {
                     expected_revision, ..
                 }
                 | ToolInvocation::Scroll {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Drag {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Key {
+                    expected_revision, ..
+                }
+                | ToolInvocation::KeyDown {
+                    expected_revision, ..
+                }
+                | ToolInvocation::KeyUp {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Shortcut {
+                    expected_revision, ..
+                }
+                | ToolInvocation::Upload {
                     expected_revision, ..
                 } => expected_revision,
                 _ => None,

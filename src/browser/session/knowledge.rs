@@ -455,6 +455,12 @@ impl KnowledgeRecord {
             )?;
             validate_timestamp(&format!("history[{index}].observedAt"), &event.observed_at)?;
         }
+        if !matches!(self.data, Value::Object(_) | Value::Array(_)) {
+            return Err(KnowledgeValidationError::new(
+                "data",
+                "must be a JSON object or array",
+            ));
+        }
         validate_json_value("data", &self.data, 0)?;
         let data_bytes = serde_json::to_vec(&self.data).map_err(|error| {
             KnowledgeValidationError::new("data", format!("cannot serialize data: {error}"))
@@ -1099,6 +1105,14 @@ mod tests {
         record.data = json!({"requiredLandmarks": ["main"], "password": "never"});
         let error = record.validate().unwrap_err();
         assert_eq!(error.path, "data.password");
+    }
+
+    #[test]
+    fn scalar_record_data_is_rejected_by_the_contract() {
+        let mut record = record();
+        record.data = json!("not-a-knowledge-object");
+        let error = record.validate().unwrap_err();
+        assert_eq!(error.path, "data");
     }
 
     #[test]

@@ -180,8 +180,12 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             scenarios,
             observations,
         } => {
-            let scenarios: Vec<ReliabilityScenario> =
-                serde_json::from_value(read_json_input(Some(scenarios))?)?;
+            let scenario_value = read_json_input(Some(scenarios))?;
+            let scenarios: Vec<ReliabilityScenario> = if scenario_value.is_array() {
+                serde_json::from_value(scenario_value)?
+            } else {
+                vec![serde_json::from_value(scenario_value)?]
+            };
             let observations: Vec<ReliabilityScenarioObservation> =
                 serde_json::from_value(read_json_input(Some(observations))?)?;
             let gate = evaluate_reliability_gate(&scenarios, &observations)?;

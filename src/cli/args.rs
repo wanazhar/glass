@@ -117,7 +117,7 @@ pub enum Commands {
         update: bool,
     },
 
-    /// Evaluate reliability evidence without starting a browser.
+    /// Evaluate release evidence and forbidden outcomes without starting a browser.
     Certify {
         #[command(subcommand)]
         action: CertifyCommand,

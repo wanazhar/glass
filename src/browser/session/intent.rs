@@ -320,11 +320,21 @@ pub fn resolve_intent(
     let normalized = match normalize_intent(request) {
         Ok(normalized) => normalized,
         Err(error) => {
+            let normalized_intent = request
+                .intent
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
             return result_for(
                 request,
                 observation,
                 IntentResultParts {
-                    normalized_intent: String::new(),
+                    normalized_intent: if normalized_intent.is_empty() {
+                        "unsupported".into()
+                    } else {
+                        normalized_intent
+                    },
                     resolution: SemanticResolution::UnsupportedIntent,
                     policy_decision: IntentPolicyDecision::Rejected,
                     candidates: Vec::new(),

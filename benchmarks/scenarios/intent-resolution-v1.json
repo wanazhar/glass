@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "exact-settings-action",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{
+          "id": "region-navigation",
+          "kind": "navigation",
+          "label": "Primary navigation",
+          "interactiveCount": 1,
+          "confidence": "exact",
+          "targets": [{"reference": "axr-42-1", "role": "button", "name": "Settings"}]
+        }],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "open settings",
+        "action": "click",
+        "scope": {"pageKind": "dashboard", "regionKind": "navigation"},
+        "constraints": {"role": "button", "name": "Settings"},
+        "resolutionPolicy": "requireExact",
+        "expectedRevision": 42
+      },
+      "expected": {"resolution": "exact", "policyDecision": "allowed", "candidateCount": 1}
+    },
+    {
+      "name": "ambiguous-checkout-action",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{
+          "id": "region-checkout",
+          "kind": "checkoutSummary",
+          "label": "Checkout choices",
+          "interactiveCount": 2,
+          "confidence": "high",
+          "targets": [
+            {"reference": "axr-42-2", "role": "button", "name": "Continue to payment"},
+            {"reference": "axr-42-3", "role": "button", "name": "Continue shopping"}
+          ]
+        }],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "continue checkout",
+        "action": "click",
+        "scope": {"regionKind": "checkoutSummary"},
+        "resolutionPolicy": "requireUniqueHighConfidence",
+        "expectedRevision": 42
+      },
+      "expected": {"resolution": "ambiguous", "policyDecision": "rejected", "candidateCount": 2}
+    },
+    {
+      "name": "not-found-billing-action",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{
+          "id": "region-navigation",
+          "kind": "navigation",
+          "label": "Primary navigation",
+          "interactiveCount": 1,
+          "confidence": "exact",
+          "targets": [{"reference": "axr-42-1", "role": "button", "name": "Settings"}]
+        }],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "open billing",
+        "action": "click",
+        "constraints": {"name": "Billing"},
+        "resolutionPolicy": "requireUniqueHighConfidence",
+        "expectedRevision": 42
+      },
+      "expected": {"resolution": "notFound", "policyDecision": "rejected", "candidateCount": 0}
+    },
+    {
+      "name": "stale-settings-observation",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{"id": "region-navigation", "kind": "navigation", "label": "Primary navigation", "interactiveCount": 1, "confidence": "exact", "targets": [{"reference": "axr-42-1", "role": "button", "name": "Settings"}]}],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "open settings",
+        "action": "click",
+        "constraints": {"role": "button", "name": "Settings"},
+        "resolutionPolicy": "requireExact",
+        "expectedRevision": 41
+      },
+      "expected": {"resolution": "staleRevision", "policyDecision": "rejected", "candidateCount": 0}
+    },
+    {
+      "name": "report-only-settings",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{"id": "region-navigation", "kind": "navigation", "label": "Primary navigation", "interactiveCount": 1, "confidence": "exact", "targets": [{"reference": "axr-42-1", "role": "button", "name": "Settings"}]}],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "open settings",
+        "action": "click",
+        "constraints": {"role": "button", "name": "Settings"},
+        "resolutionPolicy": "reportOnly",
+        "expectedRevision": 42
+      },
+      "expected": {"resolution": "exact", "policyDecision": "reportOnly", "candidateCount": 1}
+    },
+    {
+      "name": "unsupported-phrase",
+      "observation": {
+        "schemaVersion": 1,
+        "revision": 42,
+        "level": "interactive",
+        "route": {"targetId": "target-1", "frameId": "frame-1", "url": "https://example.test/dashboard"},
+        "page": {"kind": "dashboard", "title": "Dashboard", "url": "https://example.test/dashboard", "targetId": "target-1", "frameId": "frame-1", "confidence": "high"},
+        "regions": [{"id": "region-navigation", "kind": "navigation", "label": "Primary navigation", "interactiveCount": 1, "confidence": "exact", "targets": [{"reference": "axr-42-1", "role": "button", "name": "Settings"}]}],
+        "limits": {"truncated": false, "omittedRegions": 0, "omittedTargets": 0}
+      },
+      "request": {
+        "schemaVersion": 1,
+        "intent": "do it",
+        "action": "click",
+        "resolutionPolicy": "requireUniqueHighConfidence",
+        "expectedRevision": 42
+      },
+      "expected": {"resolution": "unsupportedIntent", "policyDecision": "rejected", "candidateCount": 0}
+    }
+  ]
+}

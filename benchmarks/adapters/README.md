@@ -19,7 +19,7 @@ Playwright installation is described in `benchmarks/README.md`. Metrics that
 cannot be collected through Playwright's public API are explicitly `null`, not
 estimated or silently omitted.
 
-`playwright-mcp-scorecard.mjs` is the released agent-browser adapter. It is a
+`playwright-mcp-scorecard.mjs` is the released Playwright MCP adapter. It is a
 dependency-free MCP client that invokes a separately installed, exactly pinned
 `@playwright/mcp` executable. Complex topology and diagnostic scenarios use
 public tools only and reports popup, frame, recovery, and download scenarios as

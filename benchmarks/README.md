@@ -49,7 +49,7 @@ than replaces the deterministic fixture gate.
 
 The release comparison is pinned by `acceptance-v1.json`. The runner builds
 Glass, installs competitor adapters into a temporary npm prefix, drives all
-three runnable adapters with one explicitly selected Chromium executable, and
+four required adapters with one explicitly selected Chromium executable, and
 retains raw reports, stderr logs, environment metadata, and the gate decision:
 
 ```sh

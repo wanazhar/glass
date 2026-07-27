@@ -16,7 +16,7 @@ install from a checkout:
 cargo install --path . --locked
 ```
 
-Install the published crate and build the `glass` binary locally:
+After publication, install the crate and build the `glass` binary locally:
 
 ```console
 cargo install glass-browser --locked

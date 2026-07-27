@@ -57,13 +57,13 @@ Input actions return the existing action fields plus the common contract fields:
 ```
 
 `verification` is deliberately bounded. It may report URL/title changes,
-target or frame transitions, revision delta, and count-only accessibility
-changes. Popup actions include their popup witness. Navigation results include
-the resulting page metadata. Older unguarded methods remain available for
-callers that do not need an expected revision. Every action result now also
-contains a session-local `executionId`, which later trace and recovery results
-will use to correlate one attempt across phases. Existing route identity fields
-remain compatibility fields until the `0.1.18` schema-normalization slice.
+target or frame transitions, revision delta, count-only accessibility changes,
+and observed popup, dialog, or download effects when present. Popup actions
+include their causal popup witness. Navigation results include the resulting
+page metadata. Older unguarded methods remain available for callers that do not
+need an expected revision. Every action result also contains a session-local
+`executionId` for correlating one attempt across its bounded evidence and
+failure phases. Existing route identity fields remain compatibility fields.
 
 ## Failure kinds
 

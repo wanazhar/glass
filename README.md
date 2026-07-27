@@ -18,23 +18,21 @@ same session runtime.
 
 ## Install
 
-Install the published command with Cargo (or use the checkout commands below
-while the next release is being prepared):
+After the `0.1.18` release is published, install the command with Cargo. Until
+then, install directly from this checkout:
 
 ```console
 cargo install glass-browser --locked
 glass --help
 ```
 
-Or build from a checkout:
-
 ```console
 cargo install --path . --locked
 ```
 
-Prebuilt Linux and macOS binaries will be available from the
-[0.1.18 GitHub release](https://github.com/wanazhar/glass/releases/tag/v0.1.18).
-The assets include SHA-256 checksum files. For example:
+The prepared release will provide Linux and macOS binaries from the
+[0.1.18 GitHub release](https://github.com/wanazhar/glass/releases/tag/v0.1.18)
+with SHA-256 checksum files after publication. For example:
 
 ```console
 GLASS_VERSION=v0.1.18
@@ -150,7 +148,7 @@ for result fields, failure kinds, and recovery examples.
 
 ## Rust library
 
-Add the published crate as `glass` in `Cargo.toml`:
+After publication, add the crate as `glass` in `Cargo.toml`:
 
 ```toml
 [dependencies]

@@ -14,31 +14,26 @@ mutations and it does not promise that every browser event was observed.
 
 ## Contract shape
 
-Successful action results will use these canonical camelCase fields:
+Successful action results use these canonical contract fields:
 
 ```json
 {
   "status": "succeeded",
   "action": "click",
   "executionId": "act_42",
+  "target": {"label": "Save", "reference": "r41:b17"},
+  "revision": 42,
   "previousRevision": 41,
   "currentRevision": 42,
-  "target": {
-    "reference": "r41:b17",
-    "role": "button",
-    "name": "Save"
-  },
-  "effects": {
+  "target_id": "page-target",
+  "frame_id": "main-frame",
+  "verification": {
+    "revisionDelta": 1,
     "urlChanged": false,
     "titleChanged": false,
-    "routeChanged": false,
-    "popupOpened": false,
-    "dialogOpened": false,
-    "downloadStarted": false,
-    "accessibilityChanged": true
-  },
-  "verification": {"status": "not_requested"},
-  "recovery": null
+    "targetChanged": false,
+    "frameChanged": false
+  }
 }
 ```
 
@@ -47,24 +42,19 @@ operation stopped:
 
 ```json
 {
-  "status": "failed",
-  "action": "click",
+  "kind": "stale_revision",
+  "phase": "preflight",
+  "recoveryStrategy": "report",
   "executionId": "act_43",
-  "failure": {
-    "kind": "stale_revision",
-    "phase": "preflight",
-    "message": "Expected revision 41, current revision is 43",
-    "retryable": true
-  },
-  "previousRevision": 41,
+  "expectedRevision": 41,
   "currentRevision": 43,
-  "recovery": {"strategy": "observe", "retryable": true}
+  "recovery": "observe"
 }
 ```
 
 The envelope is additive to the compatibility-preserving legacy methods. A
 caller that does not supply an expected revision may continue to use the
-legacy methods, but new guarded interfaces use the canonical fields.
+unguarded methods, while guarded interfaces use the same canonical fields.
 
 ## Failure phases
 
@@ -106,8 +96,9 @@ after the action has been proven not to dispatch.
 
 ## Delivery status
 
-The initial delivery slices add stable execution IDs, the internal request
-boundary, revision guards across supported mutations, and batch modes. Bounded
-verification predicates, effect witnesses, and cross-interface helpers are now
-available. Recovery policy diagnostics and the TUI action debugger remain under
-issue #20.
+The `0.1.18` reliability-runtime scope is implemented locally: execution IDs,
+revision guards across supported mutations, bounded verification predicates,
+effect witnesses, explicit recovery diagnostics, revision-aware batch modes,
+cross-interface helpers, deterministic fixture coverage, and TUI action
+evidence are available. Publication and hosted release-matrix evidence remain
+release operations; they are not claims about this checkout.

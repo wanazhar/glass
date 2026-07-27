@@ -1,7 +1,7 @@
 # `@glass-browser/client`
 
 This dependency-free TypeScript client starts `glass --mcp` and exposes typed
-helpers for guarded navigation, clicks, typing, form actions, scrolling,
+helpers for guarded navigation, clicks, typing, form filling, scrolling,
 verification, batches, and waits. The action helpers accept optional revision
 guards. It has no Playwright or browser
 runtime dependency. Build it with `npm run build` before publishing;

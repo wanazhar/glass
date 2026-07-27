@@ -49,6 +49,7 @@ check TARGET [--expected-revision REVISION]
 uncheck TARGET [--expected-revision REVISION]
 select TARGET VALUE [--expected-revision REVISION]
 upload TARGET FILE... [--expected-revision REVISION]
+fill-form --fields JSON [--expected-revision REVISION]
 screenshot [-o|--output FILE]
 text
 dom
@@ -124,8 +125,9 @@ For an explicit action contract, pass the revision from `observe` with
 `--expected-revision`; stale state is rejected before the action runs and the
 result includes typed status plus bounded verification metadata. The flag is
 available on navigation, click, double-click, type, clear, check, uncheck,
-select, scroll, keyboard, drag, upload, popup, and form-fill commands. Existing commands without the flag
-remain compatible.
+select, scroll, keyboard, drag, upload, popup, and form-fill commands. The
+`fill-form --fields` value is a JSON array of `{target, value}` objects.
+Existing commands without the flag remain compatible.
 Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
 with bounded candidates instead of choosing the first match.
 

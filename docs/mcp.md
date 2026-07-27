@@ -116,21 +116,22 @@ The `atomic` option remains a separate target pre-resolution check.
 | `doubleClick` | `target` or `selector`, optional `expectedRevision` | Double-click one element. |
 | `verify` | bounded `predicate`, optional `timeoutMs` | Verify URL, title, visibility, text, topology, dialog, download, revision, or Boolean composition. |
 | `hover` | `target` | Move over one element. |
-| `drag` | `source`, `destination` | Drag between two verified elements. |
+| `drag` | `source`, `destination`, optional `expectedRevision` | Drag between two verified elements. |
 | `type` | `text`, optional `target`, `expectedRevision` | Focus optionally, then insert text. |
-| `key`, `keyDown`, `keyUp` | `key` | Dispatch browser-faithful keyboard events. |
-| `shortcut` | `shortcut` | Dispatch an explicit modifier shortcut. |
-| `clear` | `target` | Clear one editable control. |
-| `check`, `uncheck` | `target` | Verify checkbox/radio state. |
-| `select` | `target`, `value` | Select one exact option value. |
+| `key`, `keyDown`, `keyUp` | `key`, optional `expectedRevision` | Dispatch browser-faithful keyboard events. |
+| `shortcut` | `shortcut`, optional `expectedRevision` | Dispatch an explicit modifier shortcut. |
+| `clear` | `target`, optional `expectedRevision` | Clear one editable control. |
+| `check`, `uncheck` | `target`, optional `expectedRevision` | Verify checkbox/radio state. |
+| `select` | `target`, `value`, optional `expectedRevision` | Select one exact option value. |
 | `fillForm` | `fields`, optional `expectedRevision` | Fill up to 16 fields and return per-field results. |
-| `upload` | `target`, `files` | Set 1–16 regular local files. |
+| `upload` | `target`, `files`, optional `expectedRevision` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
 | `observe` | optional `includeDom`, `includeScreenshot` | Return structured page context. |
 | `getDOM` | none | Return the full DOM tree. |
 | `getText` | none | Return visible page text. |
 | `evaluate` | `expression` | Evaluate JavaScript. |
-| `scroll` | optional `dx`, `dy` | Scroll by CSS pixels. |
+| `scroll` | optional `dx`, `dy`, `expectedRevision` | Scroll by CSS pixels. |
+| `batch` | `steps`, optional `mode`, `expectedRevision`, `atomic` | Run a bounded fixed, chain, or unguarded batch. |
 | `wait` | `condition`, optional `timeoutMs`, `includeTrace` | Wait for one typed condition. |
 | `diagnostics` | optional `durationMs` | Collect bounded redacted console/network evidence. |
 | `acceptDialog`, `dismissDialog` | none | Resolve the currently open JavaScript dialog. |
@@ -172,8 +173,8 @@ size predictable.
 Element references returned by observations include a snapshot revision. Page
 or DOM mutations invalidate earlier revisions; observe again after navigation
 or a page-changing action. For an explicit precondition, pass the observation
-revision as `expectedRevision` to `navigate`, `click`, `type`, or `fillForm`.
-Successful guarded actions return `status`, the previous and current revisions,
+revision as `expectedRevision` to any supported mutation. Successful guarded
+actions return `status`, the previous and current revisions, an execution ID,
 and bounded verification evidence. See [Actions and revisions](actions.md) for
 the complete result and failure contract.
 

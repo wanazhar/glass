@@ -194,11 +194,12 @@ next step.
 
 ## Revision-safe actions
 
-`navigate`, `click`, `type`, and `fillForm` accept `expectedRevision` from the
-latest `observe`. Successful guarded actions return `status`, the previous and
+All supported mutations accept `expectedRevision` from the latest `observe`.
+Successful guarded actions return `status`, an execution ID, the previous and
 current revision, and bounded verification evidence. A mismatched revision
 returns typed `stale_revision` before browser mutation; observe again before
-retrying.
+retrying. Batch mode `fixed` reuses one revision, while `chain` carries each
+successful action's revision forward.
 
 ## Policy errors
 

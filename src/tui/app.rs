@@ -37,8 +37,9 @@ use tokio::{
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SemanticObservation,
-    SemanticObservationLevel, SessionOptions, WorkflowDefinition,
+    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SemanticIntentRequest,
+    SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
+    WorkflowDefinition,
 };
 use crate::cli::args::Cli;
 
@@ -528,6 +529,7 @@ enum BrowserOperation {
     },
     Evaluate(String),
     Workflow(String),
+    ResolveIntent(String),
 }
 
 impl BrowserOperation {
@@ -545,6 +547,7 @@ impl BrowserOperation {
             Self::Scroll { .. } => "Scroll",
             Self::Evaluate(_) => "Evaluate",
             Self::Workflow(_) => "Workflow",
+            Self::ResolveIntent(_) => "Resolve intent",
         }
     }
 }
@@ -591,6 +594,11 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     if let Some(path) = strip_ascii_prefix(command, "workflow ") {
         return required_command_argument(path, "workflow JSON path")
             .map(BrowserOperation::Workflow)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(path) = strip_ascii_prefix(command, "resolve-intent ") {
+        return required_command_argument(path, "intent JSON path")
+            .map(BrowserOperation::ResolveIntent)
             .map(ParsedCommand::Browser);
     }
     if command.eq_ignore_ascii_case("screenshot") {
@@ -717,6 +725,72 @@ fn parse_semantic_observation(values: &str) -> Result<BrowserOperation, String> 
         return Err("semantic accepts a level and optional region ID".into());
     }
     Ok(BrowserOperation::Semantic { level, region })
+}
+
+fn format_intent_activity(result: &SemanticIntentResult) -> String {
+    format!(
+        "Intent {:?}: {} (policy={:?}, candidates={}, revision={}).",
+        result.resolution,
+        result.normalized_intent,
+        result.policy_decision,
+        result.candidates.len(),
+        result
+            .revision
+            .map(|revision| revision.to_string())
+            .unwrap_or_else(|| "unknown".into())
+    )
+}
+
+fn format_intent_debug(result: &SemanticIntentResult) -> String {
+    let mut output = vec![
+        format!("Normalized intent: {}", result.normalized_intent),
+        format!("Resolution: {:?}", result.resolution),
+        format!("Policy: {:?}", result.policy_decision),
+        format!(
+            "Revision: {}",
+            result
+                .revision
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        ),
+        String::new(),
+        "Candidates:".into(),
+    ];
+    if result.candidates.is_empty() {
+        output.push("  (none)".into());
+    } else {
+        for candidate in &result.candidates {
+            let evidence = candidate
+                .evidence
+                .iter()
+                .map(|item| format!("{:?}: {}", item.category, item.detail))
+                .collect::<Vec<_>>()
+                .join("; ");
+            output.push(format!(
+                "  {} [{}] {} — {:?}",
+                candidate.id, candidate.role, candidate.name, candidate.confidence
+            ));
+            if !evidence.is_empty() {
+                output.push(format!("    evidence: {evidence}"));
+            }
+        }
+    }
+    if !result.excluded_candidates.is_empty() {
+        output.push(format!(
+            "Excluded candidates: {}",
+            result.excluded_candidates.len()
+        ));
+        for candidate in &result.excluded_candidates {
+            output.push(format!(
+                "  {} — {:?}: {}",
+                candidate.id, candidate.reason.category, candidate.reason.detail
+            ));
+        }
+    }
+    if let Some(reason) = &result.reason {
+        output.push(format!("Reason: {reason}"));
+    }
+    output.join("\n")
 }
 
 #[derive(Debug)]
@@ -1120,6 +1194,19 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::ResolveIntent(path) => {
+            let payload = tokio::fs::read_to_string(&path).await?;
+            let request = SemanticIntentRequest::from_json(&payload)?;
+            let result = session.resolve_intent(&request).await?;
+            let page = session.page_info().await?;
+            Ok(Box::new(OperationResult {
+                activity: format_intent_activity(&result),
+                update: Some(PageUpdate::Text {
+                    page,
+                    text: format_intent_debug(&result),
+                }),
+            }))
+        }
     }
 }
 
@@ -1194,7 +1281,7 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
             );
             app.add_activity(
-                "observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
+                "resolve-intent FILE | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -1567,6 +1654,10 @@ mod tests {
         assert!(matches!(
             parse_command("workflow workflow.json"),
             Ok(ParsedCommand::Browser(BrowserOperation::Workflow(path))) if path == "workflow.json"
+        ));
+        assert!(matches!(
+            parse_command("resolve-intent intent.json"),
+            Ok(ParsedCommand::Browser(BrowserOperation::ResolveIntent(path))) if path == "intent.json"
         ));
         assert!(matches!(
             parse_command("semantic interactive region_search_1"),

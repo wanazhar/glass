@@ -348,6 +348,7 @@ pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
 pub(crate) const COMPACT_OBSERVATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) const COMPACT_OBSERVATION_MAX_ATTEMPTS: u8 = 2;
+pub(crate) const COMPACT_ACCESSIBILITY_CACHE_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
     const key = '__glassObservationRevision';
     let state = globalThis[key];

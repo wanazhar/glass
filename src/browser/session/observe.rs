@@ -168,8 +168,16 @@ impl BrowserSession {
             let attempt_result =
                 match tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
                     let start = self.compact_page_state(context_id).await?;
-                    let accessibility = self.cdp.get_accessibility_tree().await?;
-                    let end = self.compact_page_state(context_id).await?;
+                    // Keep the mutation bracket intact while overlapping the
+                    // independent accessibility and page-state reads. The
+                    // start/end snapshots still gate consistency; only their
+                    // CDP round trips are allowed to share a flight.
+                    let (accessibility, end) = tokio::join!(
+                        self.cached_accessibility_tree(&target_id, &frame_id, start_revision),
+                        self.compact_page_state(context_id),
+                    );
+                    let accessibility = accessibility?;
+                    let end = end?;
                     BrowserResult::Ok((start, accessibility, end))
                 })
                 .await
@@ -217,8 +225,8 @@ impl BrowserSession {
             url: page_state.url,
             title: page_state.title,
             ready_state: page_state.ready_state,
-            target_id,
-            frame_id,
+            target_id: target_id.clone(),
+            frame_id: frame_id.clone(),
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
         let mut compact_accessibility =
@@ -341,8 +349,50 @@ impl BrowserSession {
                 revision: end_revision,
                 context: context.clone(),
             });
+            self.cache_accessibility_tree(&target_id, &frame_id, end_revision, &accessibility_raw)
+                .await;
         }
         Ok(context)
+    }
+
+    async fn cached_accessibility_tree(
+        &self,
+        target_id: &str,
+        frame_id: &str,
+        revision: u64,
+    ) -> BrowserResult<Value> {
+        {
+            let cache = self.accessibility_cache.lock().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.revision == revision
+                && cached.target_id == target_id
+                && cached.frame_id == frame_id
+            {
+                return Ok(cached.tree.clone());
+            }
+        }
+
+        Ok(self.cdp.get_accessibility_tree().await?)
+    }
+
+    async fn cache_accessibility_tree(
+        &self,
+        target_id: &str,
+        frame_id: &str,
+        revision: u64,
+        tree: &Value,
+    ) {
+        if serde_json::to_vec(&tree)
+            .map(|serialized| serialized.len() <= COMPACT_ACCESSIBILITY_CACHE_MAX_BYTES)
+            .unwrap_or(false)
+        {
+            *self.accessibility_cache.lock().await = Some(CachedAccessibilityTree {
+                target_id: target_id.to_string(),
+                frame_id: frame_id.to_string(),
+                revision,
+                tree: tree.clone(),
+            });
+        }
     }
 
     /// Read current values of form controls and populate CompactInteractiveElement fields.

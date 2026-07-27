@@ -25,6 +25,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         pointer: Mutex::new(None),
         page_revision: Arc::new(AtomicU64::new(1)),
         observation_cache: Mutex::new(None),
+        accessibility_cache: Mutex::new(None),
         observation_context: Arc::new(Mutex::new(None)),
         network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
         diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),

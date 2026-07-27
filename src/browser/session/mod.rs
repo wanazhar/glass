@@ -111,6 +111,7 @@ pub struct BrowserSession {
     pub(crate) pointer: Mutex<Option<Point>>,
     pub(crate) page_revision: Arc<AtomicU64>,
     pub(crate) observation_cache: Mutex<Option<CachedObservation>>,
+    pub(crate) accessibility_cache: Mutex<Option<CachedAccessibilityTree>>,
     pub(crate) observation_context: Arc<Mutex<Option<CachedObservationContext>>>,
     pub(crate) network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     pub(crate) diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
@@ -128,6 +129,13 @@ pub struct BrowserSession {
 struct CachedObservation {
     revision: u64,
     context: CompactPageContext,
+}
+
+struct CachedAccessibilityTree {
+    target_id: String,
+    frame_id: String,
+    revision: u64,
+    tree: Value,
 }
 
 struct CachedObservationContext {
@@ -667,6 +675,7 @@ impl BrowserSession {
             pointer: Mutex::new(None),
             page_revision,
             observation_cache: Mutex::new(None),
+            accessibility_cache: Mutex::new(None),
             observation_context,
             network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
             diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),

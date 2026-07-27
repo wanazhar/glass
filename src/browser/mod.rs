@@ -89,7 +89,7 @@ pub use session::diff_accessibility;
 pub use session::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,
     WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowDraft,
-    WorkflowDraftStep, WorkflowInput, WorkflowIntentStep, WorkflowOutput,
+    WorkflowDraftStep, WorkflowInput, WorkflowIntentEvidence, WorkflowIntentStep, WorkflowOutput,
     WorkflowOutputDeclaration, WorkflowOutputEvidence, WorkflowOutputSource,
     WorkflowRecordedTarget, WorkflowRecorder, WorkflowRecordingConfidence, WorkflowResumeError,
     WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,

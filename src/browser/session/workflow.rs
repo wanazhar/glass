@@ -1124,7 +1124,22 @@ pub struct WorkflowStepRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_decision: Option<WorkflowBranchDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent_evidence: Option<WorkflowIntentEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Bounded evidence linking a semantic workflow step to its accepted target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowIntentEvidence {
+    pub resolution_id: String,
+    pub candidate_id: String,
+    pub revision: u64,
+    pub resolution: super::SemanticResolution,
+    pub policy_decision: super::IntentPolicyDecision,
+    pub confidence: super::IntentConfidence,
+    pub fingerprint: Option<super::SemanticTargetFingerprint>,
 }
 
 impl WorkflowStepRecord {
@@ -1142,6 +1157,7 @@ impl WorkflowStepRecord {
             previous_revision: None,
             current_revision: None,
             branch_decision: None,
+            intent_evidence: None,
             error: None,
         }
     }
@@ -1225,6 +1241,8 @@ pub struct WorkflowTrace {
     pub events: Vec<WorkflowTraceEvent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branch_decisions: Vec<WorkflowBranchDecision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent_resolutions: Vec<WorkflowIntentEvidence>,
 }
 
 /// One ordered state transition in a workflow trace.
@@ -1262,11 +1280,16 @@ impl WorkflowTrace {
             .iter()
             .filter_map(|step| step.branch_decision.clone())
             .collect();
+        let intent_resolutions = steps
+            .iter()
+            .filter_map(|step| step.intent_evidence.clone())
+            .collect();
         Self {
             schema_version: WORKFLOW_TRACE_SCHEMA_VERSION,
             run_id: None,
             events,
             branch_decisions,
+            intent_resolutions,
         }
     }
 
@@ -1473,6 +1496,8 @@ pub struct WorkflowCheckpointStep {
     pub current_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_decision: Option<WorkflowBranchDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_evidence: Option<WorkflowIntentEvidence>,
 }
 
 /// Bounded page identity used to reject unsafe resume attempts.
@@ -1636,7 +1661,7 @@ impl super::BrowserSession {
         &self,
         intent: &WorkflowIntentStep,
         expected_revision: u64,
-    ) -> BrowserResult<super::types::BatchOutcome> {
+    ) -> BrowserResult<(super::types::BatchOutcome, WorkflowIntentEvidence)> {
         let mut execution = intent.execution_request("workflow.intent")?;
         execution.request.expected_revision = Some(expected_revision);
         let resolution = self.resolve_intent(&execution.request).await?;
@@ -1650,6 +1675,24 @@ impl super::BrowserSession {
         })?;
         execution.candidate_id = candidate_id;
         let result = self.execute_intent(&execution).await?;
+        let accepted_candidate = result
+            .resolution
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == result.candidate_id)
+            .ok_or("executed intent result omitted its accepted candidate")?;
+        let evidence = WorkflowIntentEvidence {
+            resolution_id: result.resolution_id.clone(),
+            candidate_id: result.candidate_id.clone(),
+            revision: result
+                .resolution
+                .revision
+                .ok_or("executed intent result omitted revision")?,
+            resolution: result.resolution.resolution,
+            policy_decision: result.resolution.policy_decision,
+            confidence: accepted_candidate.confidence,
+            fingerprint: accepted_candidate.fingerprint.clone(),
+        };
         let Some(action) = result.action else {
             return Err(result
                 .reason
@@ -1657,21 +1700,24 @@ impl super::BrowserSession {
                 .into());
         };
         let execution_id = action.execution_id.clone();
-        Ok(super::types::BatchOutcome {
-            mode: BatchMode::Fixed,
-            initial_revision: expected_revision,
-            final_revision: current_revision(self),
-            steps: vec![super::types::BatchStepOutcome::Success {
-                index: 0,
-                action: "intent".into(),
-                response_bytes: serde_json::to_string(&action).ok().map(|value| value.len()),
-                execution_id: Some(execution_id),
-            }],
-            completed: 1,
-            failed: 0,
-            total: 1,
-            success: true,
-        })
+        Ok((
+            super::types::BatchOutcome {
+                mode: BatchMode::Fixed,
+                initial_revision: expected_revision,
+                final_revision: current_revision(self),
+                steps: vec![super::types::BatchStepOutcome::Success {
+                    index: 0,
+                    action: "intent".into(),
+                    response_bytes: serde_json::to_string(&action).ok().map(|value| value.len()),
+                    execution_id: Some(execution_id),
+                }],
+                completed: 1,
+                failed: 0,
+                total: 1,
+                success: true,
+            },
+            evidence,
+        ))
     }
 
     /// Execute a validated workflow linearly through the existing batch
@@ -1816,6 +1862,7 @@ impl super::BrowserSession {
                 }
                 let mut attempt_number = 0;
                 let mut effect_marker_completed = false;
+                let mut intent_evidence = None;
                 let outcome = loop {
                     let attempt_revision = current_revision(self);
                     {
@@ -1834,8 +1881,16 @@ impl super::BrowserSession {
                     }
 
                     let outcome = if let Some(intent) = &step.intent {
-                        self.execute_workflow_intent_step(intent, attempt_revision)
+                        match self
+                            .execute_workflow_intent_step(intent, attempt_revision)
                             .await
+                        {
+                            Ok((outcome, evidence)) => {
+                                intent_evidence = Some(evidence);
+                                Ok(outcome)
+                            }
+                            Err(error) => Err(error),
+                        }
                     } else {
                         match workflow_target(&step.action) {
                             Some(target) => match self.resolve_element(target).await {
@@ -1987,6 +2042,7 @@ impl super::BrowserSession {
                 }
 
                 {
+                    records[index].intent_evidence = intent_evidence;
                     for execution_id in outcome.steps.iter().filter_map(|step| match step {
                         super::types::BatchStepOutcome::Success {
                             execution_id: Some(execution_id),
@@ -2210,6 +2266,7 @@ impl super::BrowserSession {
                     previous_revision: step.previous_revision,
                     current_revision: step.current_revision,
                     branch_decision: step.branch_decision.clone(),
+                    intent_evidence: step.intent_evidence.clone(),
                 })
                 .collect(),
             page: WorkflowCheckpointPage {
@@ -2402,6 +2459,7 @@ fn checkpoint_step_to_record(step: &WorkflowCheckpointStep) -> WorkflowStepRecor
         previous_revision: step.previous_revision,
         current_revision: step.current_revision,
         branch_decision: step.branch_decision.clone(),
+        intent_evidence: step.intent_evidence.clone(),
         error: None,
     }
 }
@@ -3415,6 +3473,7 @@ mod tests {
                     previous_revision: None,
                     current_revision: None,
                     branch_decision: None,
+                    intent_evidence: None,
                 },
                 WorkflowCheckpointStep {
                     id: "save".into(),
@@ -3429,6 +3488,7 @@ mod tests {
                     previous_revision: None,
                     current_revision: None,
                     branch_decision: None,
+                    intent_evidence: None,
                 },
             ],
             page: WorkflowCheckpointPage {
@@ -3608,7 +3668,18 @@ mod tests {
         record.retry_safe = false;
         record.previous_revision = Some(7);
         record.current_revision = Some(8);
+        record.intent_evidence = Some(WorkflowIntentEvidence {
+            resolution_id: "res_1".into(),
+            candidate_id: "candidate_1".into(),
+            revision: 8,
+            resolution: crate::browser::session::SemanticResolution::Exact,
+            policy_decision: crate::browser::session::IntentPolicyDecision::Allowed,
+            confidence: crate::browser::session::IntentConfidence::Exact,
+            fingerprint: None,
+        });
 
+        let trace = WorkflowTrace::from_steps(std::slice::from_ref(&record));
+        assert_eq!(trace.intent_resolutions.len(), 1);
         let value = serde_json::to_value(record).unwrap();
         assert_eq!(value["executionIds"], serde_json::json!(["act_7", "act_8"]));
         assert_eq!(value["dispatchAcknowledged"], true);
@@ -3617,6 +3688,7 @@ mod tests {
         assert_eq!(value["retrySafe"], false);
         assert_eq!(value["previousRevision"], 7);
         assert_eq!(value["currentRevision"], 8);
+        assert_eq!(value["intentEvidence"]["candidateId"], "candidate_1");
     }
 
     #[test]

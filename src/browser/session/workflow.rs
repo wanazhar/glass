@@ -1715,7 +1715,7 @@ impl super::BrowserSession {
                         record.dispatch_acknowledged = true;
                         record.current_revision = Some(current_revision(self));
                         let _ = record.transition(WorkflowStepState::Dispatched);
-                        record.fail(WorkflowStepState::FailedAfterDispatch, message);
+                        record.fail(WorkflowStepState::Indeterminate, message);
                         record
                             .error
                             .clone()

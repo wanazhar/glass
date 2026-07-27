@@ -96,6 +96,9 @@ automatically.
 When dispatch was acknowledged but the step cannot be verified, the run status
 is `resume_required`. This is distinct from a pre-dispatch `failed` result and
 means the caller must reconcile the current page before deciding what to do.
+If the action itself returns an error after dispatch without an effect witness,
+the step state is `indeterminate`; a verified action whose declared
+postcondition fails remains `failed_after_dispatch`.
 
 For bounded control flow, a step may set `repeat` from 1 through 8. Repeated
 steps count toward `maxSteps` and require a retry-safe transaction class, so

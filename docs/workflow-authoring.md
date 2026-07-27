@@ -16,6 +16,9 @@ Use the following commands against a workflow source file:
 - `glass workflow preview FILE` prints a value-free execution shape.
 - `glass workflow diff BEFORE AFTER` compares two validated definitions and
   prints stable hashes, risk levels, and migration guidance.
+- `glass workflow record [--input EVENTS_JSON] [--output DRAFT_JSON]` imports
+  an explicit semantic-event envelope and emits a reviewable draft. Without
+  `--input`, the event envelope is read from stdin.
 
 The existing `glass workflow FILE` form remains the browser execution command.
 Authoring subcommands are selected before browser startup, so a malformed
@@ -56,9 +59,10 @@ Typed values are represented only by `${inputs.name}` placeholders. The
 sensitive names. Callers must review the draft and provide budgets, terminal
 conditions, outputs, and any required postconditions before execution.
 
-The interactive `glass workflow record` command and browser event interception
-are not part of the current implementation. Integrations should use the
-library recorder API or author YAML directly until that boundary is delivered.
+The record command is an offline evidence importer, not browser event
+interception. Integrations must supply semantic resolution evidence explicitly
+or use the library recorder API; the command does not attach to Chrome or
+silently observe user input.
 
 ## Preview and diff
 
@@ -70,4 +74,3 @@ Diff output is keyed by stable step IDs and reports additions, removals,
 reordering, changed effect/retry/postcondition declarations, input declaration
 changes, and terminal-condition changes. Breaking changes are marked for
 review; the diff does not authorize or migrate a workflow automatically.
-

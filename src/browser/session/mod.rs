@@ -71,9 +71,10 @@ pub use intent::{
     ExcludedIntentCandidate, FingerprintInvalidation, INTENT_RESOLUTION_SCHEMA_VERSION,
     IntentConfidence, IntentConstraintSuggestion, IntentConstraints, IntentEvidence,
     IntentEvidenceCategory, IntentPolicyDecision, IntentResolutionError, IntentScope,
-    NormalizedSemanticIntent, SemanticIntentAction, SemanticIntentCandidate, SemanticIntentPurpose,
-    SemanticIntentRequest, SemanticIntentResult, SemanticResolution, SemanticResolutionPolicy,
-    SemanticTargetFingerprint, normalize_intent, resolve_intent,
+    NormalizedSemanticIntent, SemanticIntentAction, SemanticIntentCandidate,
+    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
+    SemanticIntentPurpose, SemanticIntentRequest, SemanticIntentResult, SemanticResolution,
+    SemanticResolutionPolicy, SemanticTargetFingerprint, normalize_intent, resolve_intent,
 };
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use retry::{RetryPolicy, RetryPredicate};

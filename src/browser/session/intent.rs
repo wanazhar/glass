@@ -6,6 +6,7 @@
 //! existing guarded action executor.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 #[cfg(test)]
@@ -24,6 +25,7 @@ const MAX_EVIDENCE_BYTES: usize = 160;
 const MAX_EXCLUDE_TEXT: usize = 8;
 const MAX_CANDIDATES: usize = 32;
 const MAX_SUGGESTIONS: usize = 8;
+const MAX_EXECUTION_VALUE_BYTES: usize = 4_096;
 
 /// Action requested after intent resolution succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,123 @@ pub enum SemanticIntentAction {
     Upload,
     Inspect,
     Extract,
+}
+
+/// A caller-approved candidate and the bounded value needed by value-bearing
+/// actions. Resolution remains inspectable and separate from dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticIntentExecutionRequest {
+    pub request: SemanticIntentRequest,
+    pub candidate_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+impl SemanticIntentExecutionRequest {
+    pub fn validate(&self) -> Result<(), IntentResolutionError> {
+        self.request.validate()?;
+        validate_text("candidateId", &self.candidate_id, MAX_ID_BYTES, false)?;
+        if let Some(value) = &self.value {
+            validate_text("value", value, MAX_EXECUTION_VALUE_BYTES, true)?;
+        }
+        match self.request.action {
+            SemanticIntentAction::Type | SemanticIntentAction::Select
+                if self.value.as_deref().is_none_or(str::is_empty) =>
+            {
+                return Err(IntentResolutionError::new(
+                    "value",
+                    "this action requires a non-empty value",
+                ));
+            }
+            SemanticIntentAction::Click
+            | SemanticIntentAction::Clear
+            | SemanticIntentAction::Check
+            | SemanticIntentAction::Uncheck
+            | SemanticIntentAction::Submit
+            | SemanticIntentAction::Open
+            | SemanticIntentAction::Close
+            | SemanticIntentAction::Search
+            | SemanticIntentAction::Filter
+            | SemanticIntentAction::Sort
+            | SemanticIntentAction::Paginate
+            | SemanticIntentAction::Expand
+            | SemanticIntentAction::Collapse
+                if self.value.is_some() =>
+            {
+                return Err(IntentResolutionError::new(
+                    "value",
+                    "this action does not accept a value",
+                ));
+            }
+            SemanticIntentAction::Toggle
+            | SemanticIntentAction::Download
+            | SemanticIntentAction::Upload
+            | SemanticIntentAction::Inspect
+            | SemanticIntentAction::Extract => {
+                return Err(IntentResolutionError::new(
+                    "action",
+                    "this intent action is not supported by the guarded execution boundary yet",
+                ));
+            }
+            SemanticIntentAction::Type | SemanticIntentAction::Select => {}
+            SemanticIntentAction::Click
+            | SemanticIntentAction::Clear
+            | SemanticIntentAction::Check
+            | SemanticIntentAction::Uncheck
+            | SemanticIntentAction::Submit
+            | SemanticIntentAction::Open
+            | SemanticIntentAction::Close
+            | SemanticIntentAction::Search
+            | SemanticIntentAction::Filter
+            | SemanticIntentAction::Sort
+            | SemanticIntentAction::Paginate
+            | SemanticIntentAction::Expand
+            | SemanticIntentAction::Collapse => {}
+        }
+        Ok(())
+    }
+
+    pub fn from_json(input: &str) -> Result<Self, IntentResolutionError> {
+        let request: Self = serde_json::from_str(input).map_err(|error| {
+            IntentResolutionError::new(
+                "$",
+                format!("invalid intent execution request shape: {error}"),
+            )
+        })?;
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn to_canonical_json(&self) -> Result<String, IntentResolutionError> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map_err(|error| IntentResolutionError::new("$", error.to_string()))
+    }
+}
+
+/// Whether a resolved intent crossed the guarded action boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticIntentExecutionStatus {
+    Executed,
+    NotExecuted,
+}
+
+/// Resolution evidence and optional guarded action evidence from one attempt.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticIntentExecutionResult {
+    pub resolution_id: String,
+    pub candidate_id: String,
+    pub status: SemanticIntentExecutionStatus,
+    pub resolution: SemanticIntentResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<super::ActionOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Deterministic purpose produced from a bounded intent phrase.
@@ -1345,6 +1464,156 @@ impl super::BrowserSession {
             .await?;
         Ok(resolve_intent(request, &observation))
     }
+
+    /// Resolve and, when the caller-selected candidate remains policy-eligible,
+    /// execute one supported action through the existing guarded primitives.
+    ///
+    /// The semantic observation is fresh for this attempt. When the request
+    /// carries `expectedRevision`, any intervening page change produces a
+    /// non-executed stale result. A caller can therefore resolve first, show
+    /// the candidates, and call this method with the returned revision and
+    /// candidate ID as an explicit confirmation.
+    pub async fn execute_intent(
+        &self,
+        execution: &SemanticIntentExecutionRequest,
+    ) -> super::types::BrowserResult<SemanticIntentExecutionResult> {
+        execution.validate()?;
+        let observation = self
+            .semantic_observe(super::SemanticObservationLevel::Interactive)
+            .await?;
+        let resolution = resolve_intent(&execution.request, &observation);
+        let resolution_id = intent_resolution_id(
+            &execution.request,
+            resolution.revision.unwrap_or(observation.revision),
+            &execution.candidate_id,
+        )?;
+        let candidate = resolution
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == execution.candidate_id);
+        let eligible = candidate.is_some()
+            && match resolution.policy_decision {
+                IntentPolicyDecision::Allowed => {
+                    resolution.selected_candidate.as_deref() == Some(&execution.candidate_id)
+                }
+                IntentPolicyDecision::ConfirmationRequired => !matches!(
+                    resolution.resolution,
+                    SemanticResolution::NotFound
+                        | SemanticResolution::StaleRevision
+                        | SemanticResolution::PolicyRejected
+                        | SemanticResolution::UnsupportedIntent
+                ),
+                IntentPolicyDecision::ReportOnly | IntentPolicyDecision::Rejected => false,
+            };
+
+        let Some(candidate) = candidate else {
+            return Ok(SemanticIntentExecutionResult {
+                resolution_id,
+                candidate_id: execution.candidate_id.clone(),
+                status: SemanticIntentExecutionStatus::NotExecuted,
+                resolution,
+                action: None,
+                execution_id: None,
+                reason: Some("selected candidate is not present in the fresh resolution".into()),
+            });
+        };
+        if !eligible {
+            return Ok(SemanticIntentExecutionResult {
+                resolution_id,
+                candidate_id: execution.candidate_id.clone(),
+                status: SemanticIntentExecutionStatus::NotExecuted,
+                reason: resolution
+                    .reason
+                    .clone()
+                    .or_else(|| Some("resolution policy did not authorize this candidate".into())),
+                resolution,
+                action: None,
+                execution_id: None,
+            });
+        }
+
+        let expected_revision = resolution
+            .revision
+            .ok_or("eligible intent resolution did not contain a current revision")?;
+        let action = match execution.request.action {
+            SemanticIntentAction::Click
+            | SemanticIntentAction::Submit
+            | SemanticIntentAction::Open
+            | SemanticIntentAction::Close
+            | SemanticIntentAction::Search
+            | SemanticIntentAction::Filter
+            | SemanticIntentAction::Sort
+            | SemanticIntentAction::Paginate
+            | SemanticIntentAction::Expand
+            | SemanticIntentAction::Collapse => {
+                self.click_with_revision(&candidate.reference, expected_revision)
+                    .await?
+            }
+            SemanticIntentAction::Type => {
+                self.type_text_with_expected_revision(
+                    execution.value.as_deref().ok_or("type requires a value")?,
+                    Some(&candidate.reference),
+                    Some(expected_revision),
+                )
+                .await?
+            }
+            SemanticIntentAction::Clear => {
+                self.clear_with_revision(&candidate.reference, Some(expected_revision))
+                    .await?
+            }
+            SemanticIntentAction::Check => {
+                self.check_with_revision(&candidate.reference, Some(expected_revision))
+                    .await?
+            }
+            SemanticIntentAction::Uncheck => {
+                self.uncheck_with_revision(&candidate.reference, Some(expected_revision))
+                    .await?
+            }
+            SemanticIntentAction::Select => {
+                self.select_option_with_revision(
+                    &candidate.reference,
+                    execution
+                        .value
+                        .as_deref()
+                        .ok_or("select requires a value")?,
+                    Some(expected_revision),
+                )
+                .await?
+            }
+            SemanticIntentAction::Toggle
+            | SemanticIntentAction::Download
+            | SemanticIntentAction::Upload
+            | SemanticIntentAction::Inspect
+            | SemanticIntentAction::Extract => unreachable!("validated intent action"),
+        };
+        let execution_id = action.execution_id.clone();
+        Ok(SemanticIntentExecutionResult {
+            resolution_id,
+            candidate_id: execution.candidate_id.clone(),
+            status: SemanticIntentExecutionStatus::Executed,
+            resolution,
+            action: Some(action),
+            execution_id: Some(execution_id),
+            reason: None,
+        })
+    }
+}
+
+fn intent_resolution_id(
+    request: &SemanticIntentRequest,
+    revision: u64,
+    candidate_id: &str,
+) -> Result<String, super::IntentResolutionError> {
+    let canonical = request.to_canonical_json()?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    hasher.update(revision.to_le_bytes());
+    hasher.update(candidate_id.as_bytes());
+    Ok(format!("res_{}", hex_digest(hasher.finalize().as_slice())))
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -1398,6 +1667,47 @@ mod tests {
         request.constraints.max_candidates = MAX_CANDIDATES + 1;
         let error = request.validate().unwrap_err();
         assert_eq!(error.path, "constraints.maxCandidates");
+    }
+
+    #[test]
+    fn execution_request_requires_bounded_action_inputs() {
+        let mut request = make_request();
+        request.constraints.must_be_visible = false;
+        let mut execution = SemanticIntentExecutionRequest {
+            request,
+            candidate_id: "candidate_1".into(),
+            value: None,
+        };
+        assert_eq!(execution.validate().unwrap(), ());
+
+        execution.request.action = SemanticIntentAction::Type;
+        let error = execution.validate().unwrap_err();
+        assert_eq!(error.path, "value");
+
+        execution.value = Some("settings".into());
+        assert_eq!(execution.validate().unwrap(), ());
+
+        execution.request.action = SemanticIntentAction::Toggle;
+        let error = execution.validate().unwrap_err();
+        assert_eq!(error.path, "action");
+    }
+
+    #[test]
+    fn resolution_ids_are_stable_and_request_scoped() {
+        let request = make_request();
+        let first = intent_resolution_id(&request, 42, "candidate_1").unwrap();
+        assert_eq!(
+            first,
+            intent_resolution_id(&request, 42, "candidate_1").unwrap()
+        );
+        assert_ne!(
+            first,
+            intent_resolution_id(&request, 43, "candidate_1").unwrap()
+        );
+        assert_ne!(
+            first,
+            intent_resolution_id(&request, 42, "candidate_2").unwrap()
+        );
     }
 
     #[test]

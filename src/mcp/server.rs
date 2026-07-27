@@ -238,6 +238,10 @@ enum ToolInvocation<'a> {
     ResolveIntent {
         request: SemanticIntentRequest,
     },
+    ResolveIntentWithKnowledge {
+        request: SemanticIntentRequest,
+        lookup: KnowledgeLookupOptions,
+    },
     ExecuteIntent {
         request: SemanticIntentExecutionRequest,
     },
@@ -899,6 +903,12 @@ async fn call_tool(
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
         return call_knowledge_tool(invocation, options, knowledge_store_path);
     }
+    if matches!(
+        &invocation,
+        ToolInvocation::ResolveIntentWithKnowledge { .. }
+    ) {
+        policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
+    }
     let session = ensure_session(session, options, policy).await?;
 
     match invocation {
@@ -1168,6 +1178,29 @@ async fn call_tool(
         }
         ToolInvocation::ResolveIntent { request } => {
             serialized_result(&session.resolve_intent(&request).await?)
+        }
+        ToolInvocation::ResolveIntentWithKnowledge {
+            request,
+            mut lookup,
+        } => {
+            let path = knowledge_store_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| default_knowledge_store_path(&options.profile));
+            let store = KnowledgeStore::open(path)?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(options.profile.clone());
+            }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_string();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
+            serialized_result(
+                &session
+                    .resolve_intent_with_knowledge(&request, &store, lookup)
+                    .await?,
+            )
         }
         ToolInvocation::ExecuteIntent { request } => {
             serialized_result(&session.execute_intent(&request).await?)
@@ -1582,41 +1615,35 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             level: optional_semantic_level(arguments)?,
             region: optional_string(arguments, "region")?,
         }),
-        "observeKnowledge" => {
-            let profile_scope =
-                match optional_string(arguments, "profileScope")?.unwrap_or("profileBound") {
-                    "anonymous" => KnowledgeProfileScope::Anonymous,
-                    "authenticated" => KnowledgeProfileScope::Authenticated,
-                    "profileBound" => KnowledgeProfileScope::ProfileBound,
-                    _ => {
-                        return Err(
-                            "profileScope must be anonymous, authenticated, or profileBound".into(),
-                        );
-                    }
-                };
-            Ok(ToolInvocation::ObserveKnowledge {
-                level: optional_semantic_level(arguments)?
-                    .unwrap_or(SemanticObservationLevel::Summary),
-                fresh_only: optional_bool(arguments, "freshOnly")?,
-                lookup: KnowledgeLookupOptions {
-                    profile_scope,
-                    profile_key: optional_string(arguments, "profileKey")?.map(str::to_string),
-                    locale: optional_string(arguments, "locale")?.map(str::to_string),
-                    tenant_key: optional_string(arguments, "tenantKey")?.map(str::to_string),
-                    browser_family: optional_string(arguments, "browserFamily")?
-                        .unwrap_or("chromium")
-                        .to_string(),
-                    browser_version: optional_string(arguments, "browserVersion")?
-                        .map(str::to_string),
-                    glass_schema_version: 1,
-                    policy_preset: String::new(),
-                    now_epoch_seconds: 0,
-                },
-            })
-        }
+        "observeKnowledge" => Ok(ToolInvocation::ObserveKnowledge {
+            level: optional_semantic_level(arguments)?.unwrap_or(SemanticObservationLevel::Summary),
+            fresh_only: optional_bool(arguments, "freshOnly")?,
+            lookup: parse_knowledge_lookup_options(arguments)?,
+        }),
         "resolveIntent" => Ok(ToolInvocation::ResolveIntent {
             request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
         }),
+        "resolveIntentWithKnowledge" => {
+            let mut request = arguments.clone();
+            let object = request
+                .as_object_mut()
+                .ok_or("resolveIntentWithKnowledge arguments must be an object")?;
+            for field in [
+                "profileScope",
+                "profileKey",
+                "locale",
+                "tenantKey",
+                "browserFamily",
+                "browserVersion",
+            ] {
+                object.remove(field);
+            }
+            let request = SemanticIntentRequest::from_json(&serde_json::to_string(&request)?)?;
+            Ok(ToolInvocation::ResolveIntentWithKnowledge {
+                request,
+                lookup: parse_knowledge_lookup_options(arguments)?,
+            })
+        }
         "executeIntent" => {
             let candidate_id = required_string(arguments, "candidateId")?.to_string();
             let value = optional_string(arguments, "value")?.map(str::to_string);
@@ -1965,6 +1992,30 @@ fn tools() -> Vec<Tool> {
                     "constraints": {"type": "object"},
                     "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
                     "expectedRevision": {"type": "integer", "minimum": 0}
+                }
+            }),
+        },
+        Tool {
+            name: "resolveIntentWithKnowledge",
+            description: "Resolve declared intent against fresh candidates with eligible local fingerprints as secondary evidence; never dispatches an action.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["schemaVersion", "intent", "action", "resolutionPolicy"],
+                "properties": {
+                    "schemaVersion": {"const": 1},
+                    "intent": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "action": {"type": "string", "enum": ["click", "type", "clear", "check", "uncheck", "select", "submit", "open", "close", "search", "filter", "sort", "paginate", "toggle", "expand", "collapse", "download", "upload", "inspect", "extract"]},
+                    "scope": {"type": "object"},
+                    "constraints": {"type": "object"},
+                    "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
+                    "expectedRevision": {"type": "integer", "minimum": 0},
+                    "profileScope": {"type": "string", "enum": ["anonymous", "authenticated", "profileBound"], "default": "profileBound"},
+                    "profileKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "locale": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "tenantKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "browserFamily": {"type": "string", "minLength": 1, "maxLength": 256, "default": "chromium"},
+                    "browserVersion": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
         },
@@ -2462,6 +2513,29 @@ fn optional_semantic_level(arguments: &Value) -> BrowserResult<Option<SemanticOb
     }
 }
 
+fn parse_knowledge_lookup_options(arguments: &Value) -> BrowserResult<KnowledgeLookupOptions> {
+    let profile_scope = match optional_string(arguments, "profileScope")?.unwrap_or("profileBound")
+    {
+        "anonymous" => KnowledgeProfileScope::Anonymous,
+        "authenticated" => KnowledgeProfileScope::Authenticated,
+        "profileBound" => KnowledgeProfileScope::ProfileBound,
+        _ => return Err("profileScope must be anonymous, authenticated, or profileBound".into()),
+    };
+    Ok(KnowledgeLookupOptions {
+        profile_scope,
+        profile_key: optional_string(arguments, "profileKey")?.map(str::to_string),
+        locale: optional_string(arguments, "locale")?.map(str::to_string),
+        tenant_key: optional_string(arguments, "tenantKey")?.map(str::to_string),
+        browser_family: optional_string(arguments, "browserFamily")?
+            .unwrap_or("chromium")
+            .to_string(),
+        browser_version: optional_string(arguments, "browserVersion")?.map(str::to_string),
+        glass_schema_version: 1,
+        policy_preset: String::new(),
+        now_epoch_seconds: 0,
+    })
+}
+
 fn optional_bool(arguments: &Value, name: &str) -> BrowserResult<bool> {
     match arguments.get(name) {
         None => Ok(false),
@@ -2815,7 +2889,7 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 69);
+        assert_eq!(tools.len(), 70);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2838,6 +2912,11 @@ mod tests {
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "resolveIntent"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "resolveIntentWithKnowledge")
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "executeIntent"));
         assert!(tools.iter().any(|tool| tool["name"] == "observeKnowledge"));
         for tool_name in [
@@ -3015,6 +3094,24 @@ mod tests {
         assert_eq!(lookup.profile_scope, KnowledgeProfileScope::Anonymous);
         assert_eq!(lookup.locale.as_deref(), Some("en-US"));
         assert_eq!(lookup.browser_version.as_deref(), Some("120.0"));
+
+        let intent_with_knowledge = json!({
+            "name": "resolveIntentWithKnowledge",
+            "arguments": {
+                "schemaVersion": 1,
+                "intent": "open settings",
+                "action": "click",
+                "resolutionPolicy": "reportOnly",
+                "profileScope": "anonymous"
+            }
+        });
+        let ToolInvocation::ResolveIntentWithKnowledge { request, lookup } =
+            parse_tool_invocation(&intent_with_knowledge).unwrap()
+        else {
+            panic!("expected knowledge-backed intent invocation");
+        };
+        assert_eq!(request.intent, "open settings");
+        assert_eq!(lookup.profile_scope, KnowledgeProfileScope::Anonymous);
 
         let execute = json!({
             "name": "executeIntent",

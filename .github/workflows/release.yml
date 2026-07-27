@@ -29,7 +29,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-validation-evidence
-          path: dist/validation/release-validation.json
+          path: |
+            dist/validation/ratified-gates.json
+            dist/validation/release-validation.json
           if-no-files-found: error
 
   build:
@@ -146,6 +148,7 @@ jobs:
           python3 scripts/merge-platform-evidence.py \
             dist/platform-matrix.json \
             evidence/platform/platform-*.json
+          cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
 
       - name: Verify artifact checksums

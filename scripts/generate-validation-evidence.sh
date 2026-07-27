@@ -29,7 +29,10 @@ if command -v cargo-deny >/dev/null 2>&1 && cargo deny check >/dev/null; then de
 audit_status=failed
 if command -v cargo-audit >/dev/null 2>&1 && cargo audit >/dev/null; then audit_status=passed; fi
 fuzz_status=passed
-if ! cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets >/dev/null; then fuzz_status=failed; fi
+if ! cargo fetch --manifest-path fuzz/Cargo.toml --locked >/dev/null || \
+   ! cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets >/dev/null; then
+    fuzz_status=failed
+fi
 
 python3 - "$output_dir" "$revision" "$version" "$host_target" "$installed_targets" "$test_status" "$fmt_status" "$clippy_status" "$docs_status" "$build_status" "$package_status" "$deny_status" "$audit_status" "$fuzz_status" <<'PY'
 import json
@@ -80,7 +83,7 @@ check_commands = {
     "package": "cargo package --locked --allow-dirty --no-verify",
     "deny": "cargo deny check",
     "audit": "cargo audit",
-    "fuzz-check": "cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets",
+    "fuzz-check": "cargo fetch --manifest-path fuzz/Cargo.toml --locked && cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets",
 }
 passed_checks = [
     {"id": check_id, "status": "passed", "raw_report": check_commands[check_id]}

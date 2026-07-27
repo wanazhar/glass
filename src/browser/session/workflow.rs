@@ -350,7 +350,7 @@ impl WorkflowDefinition {
 }
 
 /// A declared workflow input and its accepted JSON type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowInput {
     #[serde(alias = "type")]

@@ -8,7 +8,7 @@ use super::{BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowTransac
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const WORKFLOW_AUTHORING_SCHEMA_VERSION: u32 = 1;
@@ -94,6 +94,47 @@ pub struct WorkflowPreviewStep {
     pub max_retries: u32,
     pub repeat: u32,
     pub input_names: Vec<String>,
+}
+
+/// Risk attached to a workflow diff change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowDiffRisk {
+    Advisory,
+    Warning,
+    Breaking,
+}
+
+/// Kind of deterministic workflow change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowDiffChangeKind {
+    Added,
+    Removed,
+    Changed,
+    Reordered,
+}
+
+/// One reviewable workflow migration change. It contains no action values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowDiffChange {
+    pub kind: WorkflowDiffChangeKind,
+    pub path: String,
+    pub risk: WorkflowDiffRisk,
+    pub summary: String,
+    pub guidance: String,
+}
+
+/// Stable, value-free diff between two validated workflow definitions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowDiff {
+    pub schema_version: u32,
+    pub before_hash: String,
+    pub after_hash: String,
+    pub breaking: bool,
+    pub changes: Vec<WorkflowDiffChange>,
 }
 
 impl fmt::Display for WorkflowCompileError {
@@ -442,6 +483,197 @@ pub fn preview_workflow(
         steps,
         has_terminal_condition: true,
     })
+}
+
+/// Compare two validated workflow definitions without exposing their values.
+pub fn diff_workflows(
+    before: &WorkflowDefinition,
+    after: &WorkflowDefinition,
+) -> Result<WorkflowDiff, WorkflowCompileError> {
+    for (label, definition) in [("before", before), ("after", after)] {
+        definition.validate().map_err(|error| {
+            compile_error(
+                WorkflowAuthoringFormat::Json,
+                diagnostic(
+                    "workflow.validation",
+                    WorkflowDiagnosticSeverity::Error,
+                    error.reason,
+                    format!("{label}.{}", error.path),
+                    None,
+                    None,
+                    "Correct both workflow definitions before diffing them.",
+                ),
+            )
+        })?;
+    }
+
+    let before_json = before.to_canonical_json().map_err(|error| {
+        compile_error(
+            WorkflowAuthoringFormat::Json,
+            diagnostic(
+                "workflow.canonicalization",
+                WorkflowDiagnosticSeverity::Error,
+                error.to_string(),
+                "before",
+                None,
+                None,
+                "Correct the earlier workflow definition.",
+            ),
+        )
+    })?;
+    let after_json = after.to_canonical_json().map_err(|error| {
+        compile_error(
+            WorkflowAuthoringFormat::Json,
+            diagnostic(
+                "workflow.canonicalization",
+                WorkflowDiagnosticSeverity::Error,
+                error.to_string(),
+                "after",
+                None,
+                None,
+                "Correct the later workflow definition.",
+            ),
+        )
+    })?;
+    let mut changes = Vec::new();
+    let mut before_steps = BTreeMap::new();
+    let mut after_steps = BTreeMap::new();
+    for (index, step) in before.steps.iter().enumerate() {
+        before_steps.insert(step.id.as_str(), (index, step));
+    }
+    for (index, step) in after.steps.iter().enumerate() {
+        after_steps.insert(step.id.as_str(), (index, step));
+    }
+    let step_ids = before_steps
+        .keys()
+        .chain(after_steps.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for id in step_ids {
+        match (before_steps.get(id), after_steps.get(id)) {
+            (None, Some(_)) => changes.push(diff_change(
+                WorkflowDiffChangeKind::Added,
+                format!("steps.{id}"),
+                WorkflowDiffRisk::Warning,
+                "step added",
+                "Review its effect, transaction class, and postcondition before approval.",
+            )),
+            (Some(_), None) => changes.push(diff_change(
+                WorkflowDiffChangeKind::Removed,
+                format!("steps.{id}"),
+                WorkflowDiffRisk::Breaking,
+                "step removed",
+                "Confirm that the workflow no longer requires this operation and update downstream expectations.",
+            )),
+            (Some((before_index, before_step)), Some((after_index, after_step))) => {
+                if before_index != after_index {
+                    changes.push(diff_change(
+                        WorkflowDiffChangeKind::Reordered,
+                        format!("steps.{id}"),
+                        WorkflowDiffRisk::Warning,
+                        "step order changed",
+                        "Review dependencies and revision-sensitive effects across the reordered steps.",
+                    ));
+                }
+                let before_value = serde_json::to_value(before_step).unwrap_or(Value::Null);
+                let after_value = serde_json::to_value(after_step).unwrap_or(Value::Null);
+                if before_value != after_value {
+                    let fields = changed_object_fields(&before_value, &after_value);
+                    let breaking = fields.iter().any(|field| {
+                        matches!(
+                            field.as_str(),
+                            "action"
+                                | "intent"
+                                | "expect"
+                                | "transaction"
+                                | "idempotencyKey"
+                                | "maxRetries"
+                                | "repeat"
+                            )
+                    });
+                    let summary = if fields.is_empty() {
+                        "step definition changed".to_string()
+                    } else {
+                        format!("step definition changed: {}", fields.join(", "))
+                    };
+                    changes.push(diff_change(
+                        WorkflowDiffChangeKind::Changed,
+                        format!("steps.{id}"),
+                        if breaking {
+                            WorkflowDiffRisk::Breaking
+                        } else {
+                            WorkflowDiffRisk::Warning
+                        },
+                        &summary,
+                        "Review the changed action, effect classification, retry policy, and postcondition before approval.",
+                    ));
+                }
+            }
+            (None, None) => unreachable!("step ID union contains an impossible empty entry"),
+        }
+    }
+    if before.inputs != after.inputs {
+        changes.push(diff_change(
+            WorkflowDiffChangeKind::Changed,
+            "inputs".into(),
+            WorkflowDiffRisk::Breaking,
+            "input declarations changed",
+            "Review requiredness, type, maximum length, and sensitivity before migrating callers.",
+        ));
+    }
+    if before.terminal_condition != after.terminal_condition {
+        changes.push(diff_change(
+            WorkflowDiffChangeKind::Changed,
+            "terminalCondition".into(),
+            WorkflowDiffRisk::Breaking,
+            "terminal condition changed",
+            "Re-run completion tests and confirm the new condition proves the intended outcome.",
+        ));
+    }
+    changes.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then((left.kind as u8).cmp(&(right.kind as u8)))
+    });
+    Ok(WorkflowDiff {
+        schema_version: WORKFLOW_AUTHORING_SCHEMA_VERSION,
+        before_hash: source_hash(&before_json),
+        after_hash: source_hash(&after_json),
+        breaking: changes
+            .iter()
+            .any(|change| change.risk == WorkflowDiffRisk::Breaking),
+        changes,
+    })
+}
+
+fn diff_change(
+    kind: WorkflowDiffChangeKind,
+    path: String,
+    risk: WorkflowDiffRisk,
+    summary: &str,
+    guidance: &str,
+) -> WorkflowDiffChange {
+    WorkflowDiffChange {
+        kind,
+        path,
+        risk,
+        summary: summary.into(),
+        guidance: guidance.into(),
+    }
+}
+
+fn changed_object_fields(before: &Value, after: &Value) -> Vec<String> {
+    let (Some(before), Some(after)) = (before.as_object(), after.as_object()) else {
+        return Vec::new();
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|key| before.get(*key) != after.get(*key))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn infer_sensitive_inputs(definition: &mut WorkflowDefinition) -> Vec<WorkflowDiagnostic> {
@@ -808,5 +1040,22 @@ outputs: {}
         let serialized = serde_json::to_string(&preview).unwrap();
         assert!(!serialized.contains("example.test/docs"));
         assert!(!serialized.contains("${inputs.query}"));
+    }
+
+    #[test]
+    fn diff_is_stable_and_redacts_step_values() {
+        let before = compile_workflow_yaml(YAML).unwrap();
+        let after = compile_workflow_yaml(
+            &YAML.replace("transaction: read_only", "transaction: idempotent"),
+        )
+        .unwrap();
+        let diff = diff_workflows(&before.definition, &after.definition).unwrap();
+        assert!(diff.breaking);
+        assert_eq!(diff.changes.len(), 1);
+        assert_eq!(diff.changes[0].path, "steps.search");
+        assert_eq!(diff.changes[0].kind, WorkflowDiffChangeKind::Changed);
+        let serialized = serde_json::to_string(&diff).unwrap();
+        assert!(!serialized.contains("example.test/docs"));
+        assert_ne!(diff.before_hash, diff.after_hash);
     }
 }

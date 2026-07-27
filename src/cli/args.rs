@@ -540,6 +540,8 @@ pub enum WorkflowAuthoringCommand {
     },
     /// Show a redacted browser-free execution preview.
     Preview { input: PathBuf },
+    /// Compare two workflow sources and print migration guidance.
+    Diff { before: PathBuf, after: PathBuf },
     /// Validate authoring source against the canonical workflow contract.
     Validate { input: PathBuf },
     /// Run static workflow diagnostics without starting a browser.

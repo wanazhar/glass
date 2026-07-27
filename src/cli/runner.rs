@@ -15,7 +15,8 @@ use crate::browser::session::{
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
     SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition,
     WorkflowAuthoringFormat, WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity,
-    compile_workflow, default_knowledge_store_path, format_workflow_yaml, preview_workflow,
+    compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
+    preview_workflow,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -281,6 +282,18 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             print_json(&serde_json::json!({
                 "preview": preview,
                 "diagnostics": document.diagnostics,
+            }))?;
+        }
+        WorkflowAuthoringCommand::Diff { before, after } => {
+            let before_source = std::fs::read_to_string(before)?;
+            let after_source = std::fs::read_to_string(after)?;
+            let before_document = compile_workflow(&before_source, authoring_format(before))?;
+            let after_document = compile_workflow(&after_source, authoring_format(after))?;
+            let diff = diff_workflows(&before_document.definition, &after_document.definition)?;
+            print_json(&serde_json::json!({
+                "diff": diff,
+                "beforeDiagnostics": before_document.diagnostics,
+                "afterDiagnostics": after_document.diagnostics,
             }))?;
         }
         WorkflowAuthoringCommand::Validate { input } => {

@@ -211,6 +211,7 @@ pub fn resolve_intent(
                     candidates: Vec::new(),
                     excluded_candidates: Vec::new(),
                     selected_candidate: None,
+                    suggested_constraints: Vec::new(),
                     reason: Some(error.reason),
                 },
             );
@@ -230,6 +231,7 @@ pub fn resolve_intent(
                 candidates: Vec::new(),
                 excluded_candidates: Vec::new(),
                 selected_candidate: None,
+                suggested_constraints: Vec::new(),
                 reason: Some("expected revision is no longer current".into()),
             },
         );
@@ -259,15 +261,34 @@ pub fn resolve_intent(
             if candidates.len() >= request.constraints.max_candidates {
                 continue;
             }
+            let confidence = confidence_for(&evidence);
             candidates.push(SemanticIntentCandidate {
                 id,
                 reference: target.reference.clone(),
                 role: target.role.clone(),
                 name: target.name.clone(),
+                input_type: target.input_type.clone(),
                 region_id: Some(region.id.clone()),
                 region_kind: Some(region.kind),
-                confidence: confidence_for(&evidence),
+                confidence,
                 evidence,
+                fingerprint: Some(SemanticTargetFingerprint {
+                    revision: observation.revision,
+                    route: observation.route.clone(),
+                    role: target.role.clone(),
+                    name: target.name.clone(),
+                    input_type: target.input_type.clone(),
+                    region_id: Some(region.id.clone()),
+                    region_kind: Some(region.kind),
+                    purpose: normalized.purpose,
+                    invalidated_by: vec![
+                        FingerprintInvalidation::Revision,
+                        FingerprintInvalidation::Route,
+                        FingerprintInvalidation::Role,
+                        FingerprintInvalidation::Name,
+                        FingerprintInvalidation::Region,
+                    ],
+                }),
             });
         }
     }
@@ -275,6 +296,7 @@ pub fn resolve_intent(
     let classification = classify_resolution(&candidates);
     let (resolution, policy_decision, selected_candidate, reason) =
         apply_resolution_policy(request.resolution_policy, classification, &candidates);
+    let suggested_constraints = suggestions_for(&candidates);
     result_for(
         request,
         observation,
@@ -285,6 +307,7 @@ pub fn resolve_intent(
             candidates,
             excluded_candidates: excluded,
             selected_candidate,
+            suggested_constraints,
             reason,
         },
     )
@@ -568,7 +591,47 @@ struct IntentResultParts {
     candidates: Vec<SemanticIntentCandidate>,
     excluded_candidates: Vec<ExcludedIntentCandidate>,
     selected_candidate: Option<String>,
+    suggested_constraints: Vec<IntentConstraintSuggestion>,
     reason: Option<String>,
+}
+
+fn suggestions_for(candidates: &[SemanticIntentCandidate]) -> Vec<IntentConstraintSuggestion> {
+    if candidates.len() < 2 {
+        return Vec::new();
+    }
+    let mut suggestions = Vec::new();
+    let mut region_kinds = Vec::new();
+    for candidate in candidates {
+        if let Some(kind) = candidate.region_kind
+            && !region_kinds.contains(&kind)
+        {
+            region_kinds.push(kind);
+        }
+    }
+    if region_kinds.len() > 1 {
+        for region_kind in region_kinds {
+            suggestions.push(IntentConstraintSuggestion {
+                region_kind: Some(region_kind),
+                ..IntentConstraintSuggestion::default()
+            });
+        }
+    }
+    let mut roles = Vec::new();
+    for candidate in candidates {
+        if !roles.contains(&candidate.role) {
+            roles.push(candidate.role.clone());
+        }
+    }
+    if roles.len() > 1 {
+        for role in roles {
+            suggestions.push(IntentConstraintSuggestion {
+                role: Some(role),
+                ..IntentConstraintSuggestion::default()
+            });
+        }
+    }
+    suggestions.truncate(MAX_SUGGESTIONS);
+    suggestions
 }
 
 fn result_for(
@@ -589,7 +652,7 @@ fn result_for(
         candidates: parts.candidates,
         excluded_candidates: parts.excluded_candidates,
         selected_candidate: parts.selected_candidate,
-        suggested_constraints: Vec::new(),
+        suggested_constraints: parts.suggested_constraints,
         reason: parts.reason,
     };
     debug_assert!(result.validate().is_ok());
@@ -851,12 +914,50 @@ pub struct SemanticIntentCandidate {
     pub role: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_kind: Option<SemanticRegionKind>,
     pub confidence: IntentConfidence,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<IntentEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<SemanticTargetFingerprint>,
+}
+
+/// Conditions that invalidate a target fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FingerprintInvalidation {
+    #[serde(rename = "revisionChanged")]
+    Revision,
+    #[serde(rename = "routeChanged")]
+    Route,
+    #[serde(rename = "roleChanged")]
+    Role,
+    #[serde(rename = "nameChanged")]
+    Name,
+    #[serde(rename = "regionChanged")]
+    Region,
+}
+
+/// Fresh evidence used to rank a later resolution attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticTargetFingerprint {
+    pub revision: u64,
+    pub route: SemanticRouteIdentity,
+    pub role: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_kind: Option<SemanticRegionKind>,
+    pub purpose: SemanticIntentPurpose,
+    pub invalidated_by: Vec<FingerprintInvalidation>,
 }
 
 /// Candidate excluded from consideration for an inspectable reason.
@@ -1128,10 +1229,39 @@ fn validate_candidate(
     ] {
         validate_text(&format!("{path}.{suffix}"), value, maximum, false)?;
     }
+    if let Some(input_type) = &candidate.input_type {
+        validate_text(
+            &format!("{path}.inputType"),
+            input_type,
+            MAX_ACTION_BYTES,
+            false,
+        )?;
+    }
     if let Some(region_id) = &candidate.region_id {
         validate_text(&format!("{path}.regionId"), region_id, MAX_ID_BYTES, false)?;
     }
-    validate_evidence(&format!("{path}.evidence"), &candidate.evidence)
+    validate_evidence(&format!("{path}.evidence"), &candidate.evidence)?;
+    if let Some(fingerprint) = &candidate.fingerprint {
+        validate_text(
+            &format!("{path}.fingerprint.role"),
+            &fingerprint.role,
+            MAX_ACTION_BYTES,
+            false,
+        )?;
+        validate_text(
+            &format!("{path}.fingerprint.name"),
+            &fingerprint.name,
+            MAX_LABEL_BYTES,
+            false,
+        )?;
+        if fingerprint.invalidated_by.is_empty() {
+            return Err(IntentResolutionError::new(
+                format!("{path}.fingerprint.invalidatedBy"),
+                "must declare at least one invalidation condition",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_evidence(path: &str, evidence: &[IntentEvidence]) -> Result<(), IntentResolutionError> {
@@ -1401,6 +1531,7 @@ mod tests {
                 reference: "r42:b17".into(),
                 role: "button".into(),
                 name: "Settings".into(),
+                input_type: None,
                 region_id: None,
                 region_kind: None,
                 confidence: IntentConfidence::High,
@@ -1408,6 +1539,7 @@ mod tests {
                     category: IntentEvidenceCategory::ExactName,
                     detail: "accessible name exact match".into(),
                 }],
+                fingerprint: None,
             }],
             excluded_candidates: Vec::new(),
             excluded_count: 0,

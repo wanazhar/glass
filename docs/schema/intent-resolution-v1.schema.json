@@ -82,10 +82,28 @@
         "reference": {"type": "string", "minLength": 1, "maxLength": 128},
         "role": {"type": "string", "minLength": 1, "maxLength": 64},
         "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "inputType": {"type": "string", "minLength": 1, "maxLength": 64},
         "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
         "regionKind": {"type": "string"},
         "confidence": {"enum": ["exact", "high", "medium", "low", "insufficient"]},
-        "evidence": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/evidence"}}
+        "evidence": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/evidence"}},
+        "fingerprint": {"$ref": "#/$defs/fingerprint"}
+      }
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "route", "role", "name", "purpose", "invalidatedBy"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 0},
+        "route": {"$ref": "#/$defs/route"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "inputType": {"type": "string", "minLength": 1, "maxLength": 64},
+        "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "regionKind": {"type": "string"},
+        "purpose": {"type": "string"},
+        "invalidatedBy": {"type": "array", "minItems": 1, "items": {"enum": ["revisionChanged", "routeChanged", "roleChanged", "nameChanged", "regionChanged"]}}
       }
     },
     "excludedCandidate": {

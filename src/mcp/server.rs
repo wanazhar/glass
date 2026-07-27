@@ -690,14 +690,19 @@ async fn handle_request(
                 let mut content = vec![json!({"type": "text", "text": text})];
                 if requested_failure_trace(request) {
                     let trace = match session.as_ref() {
-                        Some(browser_session) => browser_session
-                            .failure_trace_for(
-                                mcp_trace_action(request.params.get("name").and_then(Value::as_str)),
-                                error.to_string(),
-                            )
-                            .await,
+                        Some(browser_session) => serde_json::to_value(
+                            browser_session
+                                .failure_trace_for(
+                                    mcp_trace_action(
+                                        request.params.get("name").and_then(Value::as_str),
+                                    ),
+                                    error.to_string(),
+                                )
+                                .await,
+                        )
+                        .unwrap_or_else(|_| json!({"error": "failure trace serialization failed"})),
                         None => json!({
-                            "error": redact_diagnostic_text(&error.to_string()),
+                            "error": error.to_string(),
                             "session": "not_started"
                         }),
                     };

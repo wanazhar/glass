@@ -121,6 +121,77 @@ pub struct CdpEventWithParams {
     pub session_id: Option<String>,
 }
 
+/// Typed result envelope returned by `Runtime.evaluate` and
+/// `Runtime.callFunctionOn`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeEvaluateResponse {
+    pub result: RuntimeRemoteObject,
+    #[serde(default, rename = "exceptionDetails")]
+    pub exception_details: Option<Value>,
+}
+
+/// The bounded subset of a Runtime remote object used by session operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeRemoteObject {
+    #[serde(rename = "type")]
+    #[serde(default)]
+    pub object_type: String,
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default, rename = "objectId")]
+    pub object_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Typed response from `Page.navigate`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PageNavigateResponse {
+    #[serde(default, rename = "frameId")]
+    pub frame_id: Option<String>,
+    #[serde(default, rename = "loaderId")]
+    pub loader_id: Option<String>,
+    #[serde(default, rename = "errorText")]
+    pub error_text: Option<String>,
+}
+
+/// Typed response envelope from `Accessibility.getFullAXTree`.
+///
+/// Accessibility node properties are intentionally retained as JSON because
+/// Chrome adds protocol fields across versions; the response envelope and
+/// node collection are still validated at the CDP boundary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccessibilityTreeResponse {
+    #[serde(default)]
+    pub nodes: Vec<Value>,
+}
+
+/// Typed response envelope from `DOM.getDocument` and
+/// `DOM.getFlattenedDocument`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DomDocumentResponse {
+    pub root: Value,
+    #[serde(default)]
+    pub nodes: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DomFrameOwnerResponse {
+    #[serde(default, rename = "backendNodeId")]
+    backend_node_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DomBoxModelResponse {
+    model: DomBoxModel,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DomBoxModel {
+    #[serde(default)]
+    content: Option<Vec<Option<f64>>>,
+}
+
 #[derive(Debug)]
 pub struct CdpScreencastFrame {
     pub data: String,
@@ -700,37 +771,34 @@ impl CdpClient {
 
     /// Return the selected child frame viewport origin in target coordinates.
     pub async fn frame_viewport_offset(&self, frame_id: &str) -> Result<(f64, f64), CdpError> {
-        let owner = self
-            .send(
+        let owner: DomFrameOwnerResponse = self
+            .send_typed(
                 "DOM.getFrameOwner",
                 Some(serde_json::json!({"frameId": frame_id})),
             )
             .await?;
-        let backend_node_id = owner["backendNodeId"]
-            .as_i64()
+        let backend_node_id = owner
+            .backend_node_id
             .ok_or_else(|| CdpError::transport("frame owner contained no backend node ID"))?;
-        let model = self
-            .send(
+        let model: DomBoxModelResponse = self
+            .send_typed(
                 "DOM.getBoxModel",
                 Some(serde_json::json!({"backendNodeId": backend_node_id})),
             )
             .await?;
-        let content = model["model"]["content"]
-            .as_array()
+        let content = model
+            .model
+            .content
             .filter(|quad| quad.len() >= 2)
             .ok_or_else(|| CdpError::transport("frame owner contained no content quad"))?;
-        let x = content[0]
-            .as_f64()
-            .ok_or_else(|| CdpError::transport("frame owner x was not numeric"))?;
-        let y = content[1]
-            .as_f64()
-            .ok_or_else(|| CdpError::transport("frame owner y was not numeric"))?;
+        let x = content[0].ok_or_else(|| CdpError::transport("frame owner x was not numeric"))?;
+        let y = content[1].ok_or_else(|| CdpError::transport("frame owner y was not numeric"))?;
         Ok((x, y))
     }
 
     /// Navigate to a URL.
-    pub async fn navigate(&self, url: &str) -> Result<Value, CdpError> {
-        self.send("Page.navigate", Some(serde_json::json!({ "url": url })))
+    pub async fn navigate(&self, url: &str) -> Result<PageNavigateResponse, CdpError> {
+        self.send_typed("Page.navigate", Some(serde_json::json!({ "url": url })))
             .await
     }
 
@@ -758,9 +826,9 @@ impl CdpClient {
     }
 
     /// Get the accessibility tree.
-    pub async fn get_accessibility_tree(&self) -> Result<Value, CdpError> {
+    pub async fn get_accessibility_tree(&self) -> Result<AccessibilityTreeResponse, CdpError> {
         let frame_id = self.current_route().frame_id;
-        self.send(
+        self.send_typed(
             "Accessibility.getFullAXTree",
             frame_id.map(|frame_id| serde_json::json!({"frameId": frame_id})),
         )
@@ -769,8 +837,11 @@ impl CdpClient {
 
     /// Get a flattened document tree including shadow DOM content.
     /// Uses `pierce: true` to include open shadow roots up to the given depth.
-    pub async fn get_flattened_document(&self, depth: i64) -> Result<Value, CdpError> {
-        self.send(
+    pub async fn get_flattened_document(
+        &self,
+        depth: i64,
+    ) -> Result<DomDocumentResponse, CdpError> {
+        self.send_typed(
             "DOM.getFlattenedDocument",
             Some(serde_json::json!({ "depth": depth, "pierce": true })),
         )
@@ -778,26 +849,26 @@ impl CdpClient {
     }
 
     /// Get the full document tree for an explicit deep-DOM inspection.
-    pub async fn get_deep_document(&self) -> Result<Value, CdpError> {
-        self.send("DOM.getDocument", Some(serde_json::json!({ "depth": -1 })))
+    pub async fn get_deep_document(&self) -> Result<DomDocumentResponse, CdpError> {
+        self.send_typed("DOM.getDocument", Some(serde_json::json!({ "depth": -1 })))
             .await
     }
 
     /// Get only the document root for operations that do not need descendants.
-    pub async fn get_document_root(&self) -> Result<Value, CdpError> {
-        self.send("DOM.getDocument", Some(serde_json::json!({ "depth": 0 })))
+    pub async fn get_document_root(&self) -> Result<DomDocumentResponse, CdpError> {
+        self.send_typed("DOM.getDocument", Some(serde_json::json!({ "depth": 0 })))
             .await
     }
 
     /// Compatibility alias for the explicit deep-DOM request.
-    pub async fn get_document(&self) -> Result<Value, CdpError> {
+    pub async fn get_document(&self) -> Result<DomDocumentResponse, CdpError> {
         self.get_deep_document().await
     }
 
     /// Query a CSS selector and return the matching node.
     pub async fn query_selector(&self, selector: &str) -> Result<Value, CdpError> {
         let document = self.get_document_root().await?;
-        let root_id = document["root"]["nodeId"]
+        let root_id = document.root["nodeId"]
             .as_i64()
             .ok_or_else(|| CdpError::transport("DOM document response contained no root nodeId"))?;
         self.send(
@@ -849,8 +920,8 @@ impl CdpClient {
         &self,
         object_id: &str,
         function_declaration: &str,
-    ) -> Result<Value, CdpError> {
-        self.send(
+    ) -> Result<RuntimeEvaluateResponse, CdpError> {
+        self.send_typed(
             "Runtime.callFunctionOn",
             Some(serde_json::json!({
                 "objectId": object_id,
@@ -1007,7 +1078,7 @@ impl CdpClient {
     }
 
     /// Evaluate JavaScript in the page.
-    pub async fn evaluate(&self, expression: &str) -> Result<Value, CdpError> {
+    pub async fn evaluate(&self, expression: &str) -> Result<RuntimeEvaluateResponse, CdpError> {
         let context_id = self.current_route().context_id;
         self.evaluate_in_context(expression, context_id).await
     }
@@ -1016,7 +1087,7 @@ impl CdpClient {
         &self,
         expression: &str,
         context_id: Option<i64>,
-    ) -> Result<Value, CdpError> {
+    ) -> Result<RuntimeEvaluateResponse, CdpError> {
         let mut params = serde_json::json!({
             "expression": expression,
             "returnByValue": true,
@@ -1025,7 +1096,7 @@ impl CdpClient {
         if let Some(context_id) = context_id {
             params["contextId"] = Value::from(context_id);
         }
-        self.send("Runtime.evaluate", Some(params)).await
+        self.send_typed("Runtime.evaluate", Some(params)).await
     }
 
     /// Insert text into the currently focused element.
@@ -1170,7 +1241,7 @@ impl CdpClient {
             "window.scrollBy({:.4}, {:.4}); window.scrollX + ',' + window.scrollY",
             dx, dy
         );
-        self.evaluate(&expression).await
+        serde_json::to_value(self.evaluate(&expression).await?).map_err(CdpError::decode)
     }
 
     pub async fn get_cookies(&self) -> Result<Value, CdpError> {

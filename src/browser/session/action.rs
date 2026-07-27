@@ -88,7 +88,7 @@ impl BrowserSession {
         self.cdp
             .with_current_route(async {
                 let revision = self.page_revision.load(Ordering::Relaxed);
-                let raw = self.cdp.get_accessibility_tree().await?;
+                let raw = serde_json::to_value(self.cdp.get_accessibility_tree().await?)?;
                 let roots = parse_accessibility_tree(&raw);
                 let interactive = interactive_elements(&roots, revision);
                 Ok(AccessibilitySnapshot {

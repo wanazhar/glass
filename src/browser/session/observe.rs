@@ -29,7 +29,7 @@ impl BrowserSession {
     pub async fn deep_dom(&self) -> BrowserResult<DomNode> {
         self.cdp
             .with_current_route(async {
-                let raw = self.cdp.get_deep_document().await?;
+                let raw = serde_json::to_value(self.cdp.get_deep_document().await?)?;
                 parse_dom_tree(&raw).ok_or_else(|| {
                     "CDP deep DOM response contained no parseable root node"
                         .to_string()
@@ -278,6 +278,7 @@ impl BrowserSession {
                 .await
             {
                 Ok(flattened) => {
+                    let flattened = serde_json::to_value(flattened)?;
                     let paths = crate::browser::dom::build_shadow_host_paths(&flattened);
                     let hosts = crate::browser::dom::count_pierced_shadow_hosts(&paths);
                     (paths, hosts)
@@ -372,7 +373,9 @@ impl BrowserSession {
             }
         }
 
-        Ok(self.cdp.get_accessibility_tree().await?)
+        Ok(serde_json::to_value(
+            self.cdp.get_accessibility_tree().await?,
+        )?)
     }
 
     async fn cache_accessibility_tree(

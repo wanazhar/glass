@@ -24,7 +24,7 @@ use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
-use crate::browser::cdp::{CdpClient, CdpEventWithParams};
+use crate::browser::cdp::{CdpClient, CdpEventWithParams, RuntimeEvaluateResponse};
 use crate::browser::chrome::ChromeProcess;
 use crate::browser::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
@@ -4291,11 +4291,11 @@ pub(crate) fn parse_revisioned_reference(
     }))
 }
 
-pub(crate) fn runtime_value(raw: &Value) -> BrowserResult<Value> {
-    if let Some(exception) = raw.get("exceptionDetails") {
+pub(crate) fn runtime_value(raw: &RuntimeEvaluateResponse) -> BrowserResult<Value> {
+    if let Some(exception) = &raw.exception_details {
         return Err(format!("JavaScript evaluation failed: {exception}").into());
     }
-    Ok(raw["result"]["value"].clone())
+    Ok(raw.result.value.clone().unwrap_or(Value::Null))
 }
 
 pub(crate) async fn wait_for_ws_url(port: u16, target_id: Option<&str>) -> BrowserResult<String> {

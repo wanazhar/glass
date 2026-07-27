@@ -271,7 +271,8 @@ impl BrowserSession {
         }
 
         let revision = self.page_revision.load(Ordering::Relaxed);
-        let roots = parse_accessibility_tree(&self.cdp.get_accessibility_tree().await?);
+        let raw = serde_json::to_value(self.cdp.get_accessibility_tree().await?)?;
+        let roots = parse_accessibility_tree(&raw);
         let interactive = interactive_elements(&roots, revision);
         let matches: Vec<&InteractiveElement> = match locator {
             Locator::AccessibleName(name) => interactive

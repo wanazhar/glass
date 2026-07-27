@@ -65,7 +65,7 @@ impl BrowserSession {
                         .map_err(|_| {
                             wait_timeout("lifecycle", deadline, "navigate_command_pending")
                         })??;
-                    if let Some(frame_id) = navigation["frameId"].as_str() {
+                    if let Some(frame_id) = navigation.frame_id.as_deref() {
                         validate_topology_id(frame_id)?;
                         self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
                         self.cdp

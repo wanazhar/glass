@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     io,
     sync::{
@@ -38,6 +38,7 @@ use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SessionOptions,
+    WorkflowDefinition,
 };
 use crate::cli::args::Cli;
 
@@ -506,6 +507,7 @@ enum BrowserOperation {
     Type(String),
     Scroll { dx: f64, dy: f64 },
     Evaluate(String),
+    Workflow(String),
 }
 
 impl BrowserOperation {
@@ -521,6 +523,7 @@ impl BrowserOperation {
             Self::Type(_) => "Type",
             Self::Scroll { .. } => "Scroll",
             Self::Evaluate(_) => "Evaluate",
+            Self::Workflow(_) => "Workflow",
         }
     }
 }
@@ -562,6 +565,11 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     if let Some(text) = strip_ascii_prefix(command, "type ") {
         return required_command_argument(text, "text")
             .map(BrowserOperation::Type)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(path) = strip_ascii_prefix(command, "workflow ") {
+        return required_command_argument(path, "workflow JSON path")
+            .map(BrowserOperation::Workflow)
             .map(ParsedCommand::Browser);
     }
     if command.eq_ignore_ascii_case("screenshot") {
@@ -1002,6 +1010,41 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::Workflow(path) => {
+            let payload = tokio::fs::read_to_string(&path).await?;
+            let payload: serde_json::Value = serde_json::from_str(&payload)?;
+            let workflow_value = payload
+                .get("workflow")
+                .cloned()
+                .unwrap_or_else(|| payload.clone());
+            let inputs_value = payload
+                .get("inputs")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let workflow = WorkflowDefinition::from_value(workflow_value)?;
+            let inputs: BTreeMap<String, serde_json::Value> = serde_json::from_value(inputs_value)?;
+            let result = session.run_workflow(&workflow, &inputs).await?;
+            let step_summary = result
+                .steps
+                .iter()
+                .map(|step| format!("{}={:?}", step.id, step.state))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: bounded_text(
+                    &format!(
+                        "Workflow {} {:?}; trace={} [{}].",
+                        result.name,
+                        result.status,
+                        result.trace.events.len(),
+                        step_summary
+                    ),
+                    TUI_ACTIVITY_MAX_BYTES,
+                ),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
     }
 }
 
@@ -1072,7 +1115,9 @@ fn handle_submission(
     app.add_activity(format!("> {command}"));
     match parse_command(&command) {
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
-            app.add_activity("navigate URL | click TARGET | double click TARGET | type TEXT");
+            app.add_activity(
+                "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
+            );
             app.add_activity(
                 "observe | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
             );
@@ -1444,6 +1489,10 @@ mod tests {
             Ok(ParsedCommand::Browser(BrowserOperation::Scroll { dx, dy })) if dx == -4.0 && dy == 120.0
         ));
         assert!(parse_command("scroll nope").is_err());
+        assert!(matches!(
+            parse_command("workflow workflow.json"),
+            Ok(ParsedCommand::Browser(BrowserOperation::Workflow(path))) if path == "workflow.json"
+        ));
         assert!(matches!(
             parse_command("profiles"),
             Ok(ParsedCommand::Local(LocalCommand::Profiles))

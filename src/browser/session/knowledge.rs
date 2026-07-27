@@ -581,7 +581,13 @@ impl KnowledgeRecord {
     ) -> Result<(), KnowledgeValidationError> {
         validate_text("reason", &reason, MAX_SCOPE_VALUE_BYTES, false)?;
         validate_text("observedAt", &observed_at, MAX_TIMESTAMP_BYTES, false)?;
+        validate_timestamp("observedAt", &observed_at)?;
         if self.confidence == next {
+            if fresh_verification {
+                self.source.last_verified_at = observed_at;
+                self.source.verification_count = self.source.verification_count.saturating_add(1);
+                self.validate()?;
+            }
             return Ok(());
         }
         let requires_fresh = matches!(
@@ -607,9 +613,13 @@ impl KnowledgeRecord {
             from: self.confidence,
             to: next,
             reason,
-            observed_at,
+            observed_at: observed_at.clone(),
         };
         self.confidence = next;
+        if fresh_verification {
+            self.source.last_verified_at = observed_at;
+            self.source.verification_count = self.source.verification_count.saturating_add(1);
+        }
         self.history.push(event);
         self.validate()
     }
@@ -1015,7 +1025,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(record.confidence, KnowledgeConfidence::Verified);
+        assert_eq!(record.source.last_verified_at, "2026-07-27T00:00:01Z");
+        assert_eq!(record.source.verification_count, 2);
         assert_eq!(record.history.len(), 1);
+    }
+
+    #[test]
+    fn fresh_verification_refreshes_an_unchanged_state() {
+        let mut record = record();
+        record
+            .transition(
+                KnowledgeConfidence::Observed,
+                "fresh observation repeated".into(),
+                "2026-07-27T00:00:02Z".into(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(record.source.last_verified_at, "2026-07-27T00:00:02Z");
+        assert_eq!(record.source.verification_count, 2);
+        assert!(record.history.is_empty());
     }
 
     #[test]

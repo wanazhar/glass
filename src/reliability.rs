@@ -154,6 +154,40 @@ impl ReliabilityFixtureManifest {
         let digest = Sha256::digest(canonical.as_bytes());
         Ok(format!("sha256:{digest:x}"))
     }
+
+    /// Check that a scenario only uses controls and faults exposed by this fixture.
+    pub fn validate_scenario(
+        &self,
+        scenario: &ReliabilityScenario,
+    ) -> Result<(), ReliabilityScenarioError> {
+        self.validate()?;
+        scenario.validate()?;
+        if scenario.fixture != self.id {
+            return Err(ReliabilityScenarioError::new(
+                "fixture",
+                "scenario references a different fixture manifest",
+            ));
+        }
+        for (index, step) in scenario.steps.iter().enumerate() {
+            if let Some(control) = step.apply_control
+                && !self.controls.contains(&control)
+            {
+                return Err(ReliabilityScenarioError::new(
+                    format!("steps[{index}].applyControl"),
+                    "fixture does not expose this control",
+                ));
+            }
+            if let Some(injection) = &step.inject
+                && !self.faults.contains(&injection.fault)
+            {
+                return Err(ReliabilityScenarioError::new(
+                    format!("steps[{index}].inject.fault"),
+                    "fixture does not expose this fault",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Host and browser metadata attached to a replay bundle.

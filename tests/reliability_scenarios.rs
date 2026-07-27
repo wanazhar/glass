@@ -1,5 +1,6 @@
 use glass::reliability::{
-    RELIABILITY_SCENARIO_SCHEMA_VERSION, ReliabilityForbiddenOutcome, ReliabilityScenario,
+    RELIABILITY_SCENARIO_SCHEMA_VERSION, ReliabilityFixtureManifest, ReliabilityForbiddenOutcome,
+    ReliabilityScenario,
 };
 use serde_json::Value;
 
@@ -27,6 +28,12 @@ fn checked_in_capability_suite_has_unique_valid_scenarios() {
         .map(ReliabilityScenario::from_value)
         .collect::<Result<_, _>>()
         .unwrap();
+    let manifest =
+        ReliabilityFixtureManifest::from_json(include_str!("fixtures/reliability-fixture-v1.json"))
+            .unwrap();
+    for scenario in &scenarios {
+        manifest.validate_scenario(scenario).unwrap();
+    }
     let ids: std::collections::BTreeSet<_> =
         scenarios.iter().map(|scenario| &scenario.id).collect();
     assert_eq!(scenarios.len(), 5);

@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.9] - 2026-07-27
+
+### Fixed
+
+- Allow the persistent-profile smoke workflow to complete on slow hosted
+  macOS runners within the existing bounded navigation limit.
+
 ## [0.1.8] - 2026-07-27
 
 ### Fixed

@@ -74,6 +74,8 @@ workflow [JSON_FILE]
 workflow compile|format|validate|lint|preview SOURCE
 workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
+certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
+certify release --version VERSION --scenarios SCENARIOS_JSON --observations OBSERVATIONS_JSON
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 resolve-intent [JSON_FILE]
 execute-intent [JSON_FILE]
@@ -128,6 +130,13 @@ subcommands are offline authoring operations. They parse YAML or JSON, apply
 the same workflow validation as the runtime, and do not start Chrome. See
 [workflow authoring](workflow-authoring.md) for diagnostics and redaction
 boundaries.
+
+`certify replay` validates one redacted reliability replay bundle against its
+versioned scenario. `certify release` evaluates the complete scenario and
+observation set and exits unsuccessfully when required evidence is missing or
+unsafe outcomes are present. These commands do not start Chrome. See the
+[reliability laboratory](reliability.md) guide for the supported contracts and
+current boundaries.
 
 `workflow-resume` reconciles the definition and checkpoint against the current
 browser state, then executes only the safe pending suffix. It refuses

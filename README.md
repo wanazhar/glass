@@ -129,6 +129,12 @@ resolution evidence into a reviewable draft. Authoring never starts Chrome,
 and input values remain outside the workflow source. See the
 [workflow authoring guide](docs/workflow-authoring.md).
 
+The 0.2.0 development checkout also includes a local reliability laboratory
+for versioned scenarios, deterministic fixture checks, redacted replay
+validation, and fail-closed release evidence. It is a development and release
+check surface, not a hosted testing service. See the [reliability laboratory
+guide](docs/reliability.md).
+
 Use `glass --help` for the complete CLI surface. Detailed command syntax is in
 the [CLI reference](docs/cli.md), and the corresponding MCP names and
 arguments are in the [MCP guide](docs/mcp.md).

@@ -29,6 +29,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   migration guidance.
 - Semantic recorder drafts that retain bounded resolution evidence without
   storing replay handles or literal input values.
+- Versioned reliability scenarios and fixture manifests with typed fault
+  controls, independent side-effect oracles, redacted replay bundles, and a
+  fail-closed certification gate for Linux and macOS evidence.
 
 ### Changed
 

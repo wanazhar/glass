@@ -38,6 +38,8 @@
   and observe-bytes scoreboard.
 - [Reliability metrics](reliability-metrics.md) — versioned action, verification,
   recovery, latency, and resource evidence.
+- [Reliability laboratory](reliability.md) — versioned scenarios, adversarial
+  fixtures, replay validation, and the release gate.
 - [Production canary](production-canary.md) — hardened, non-destructive live-site
   probe procedure and evidence requirements.
 - [Bot-protection & consent walls](bot-protection.md) — legitimate access paths

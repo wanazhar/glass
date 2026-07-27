@@ -78,8 +78,8 @@ CHROME_PATH=/path/to/chromium \
   node benchmarks/run-acceptance.mjs
 ```
 
-This runs all three required adapters (Glass, Playwright, Playwright MCP)
-and optionally the agent-browser adapter against the same Chromium binary
+This runs all four required adapters (Glass, Playwright, Playwright MCP, and
+agent-browser) against the same Chromium binary
 and v1 corpus. Results are written to `benchmarks/results/compare-018/`.
 
 ## Release Policy

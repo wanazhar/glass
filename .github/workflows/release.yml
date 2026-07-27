@@ -150,8 +150,61 @@ jobs:
             dist/${{ matrix.artifact }}-browser-smoke.log
           if-no-files-found: error
 
-  release:
+  acceptance:
     needs: [build, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install managed Chrome for acceptance
+        shell: bash
+        run: |
+          chrome_path="$(cargo run --release --locked -- install-chromium | sed -n 's/^Chrome for Testing installed at //p')"
+          test -n "$chrome_path"
+          echo "CHROME_PATH=$chrome_path" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-validation-evidence
+          path: evidence/validation
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: platform-*
+          path: evidence/platform
+          merge-multiple: true
+
+      - name: Merge revision-bound prerequisites
+        run: |
+          python3 scripts/merge-platform-evidence.py \
+            evidence/platform-matrix.json \
+            evidence/platform/platform-*.json
+
+      - name: Run bounded competitive acceptance
+        shell: bash
+        env:
+          GLASS_DISABLE_CHROME_SANDBOX: "1"
+          GLASS_SCORECARD_ITERATIONS: "100"
+          GLASS_ACCEPTANCE_COMMAND_TIMEOUT_MS: "900000"
+          GLASS_ACCEPTANCE_OUTPUT_DIR: dist/acceptance
+          GLASS_RATIFIED_GATES_REPORT: ${{ github.workspace }}/evidence/validation/ratified-gates.json
+          GLASS_RELEASE_VALIDATION_REPORT: ${{ github.workspace }}/evidence/validation/release-validation.json
+          GLASS_PLATFORM_MATRIX_REPORT: ${{ github.workspace }}/evidence/platform-matrix.json
+        run: node benchmarks/run-acceptance.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-evidence
+          path: dist/acceptance
+          if-no-files-found: error
+
+  release:
+    needs: [build, validate, acceptance]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -175,6 +228,11 @@ jobs:
           name: release-validation-evidence
           path: evidence/validation
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: acceptance-evidence
+          path: evidence/acceptance
+
       - name: Merge release evidence
         run: |
           python3 scripts/merge-platform-evidence.py \
@@ -185,6 +243,9 @@ jobs:
           cp evidence/validation/benchmark.json dist/benchmark.json
           cp evidence/validation/scorecard.json dist/scorecard.json
           cp evidence/validation/ratified-metrics.json dist/ratified-metrics.json
+          cp evidence/acceptance/acceptance.json dist/acceptance.json
+          cp evidence/acceptance/environment.json dist/acceptance-environment.json
+          cp -R evidence/acceptance/raw dist/acceptance-raw
 
       - name: Verify artifact checksums
         shell: bash

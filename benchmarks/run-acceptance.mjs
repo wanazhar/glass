@@ -265,7 +265,8 @@ function controlGates(rows) {
   const details = rows.map((report) => ({ tool: report.tool.name, corpus: report.run.corpus, iterations: report.run.iterations,
     temperature: report.run.temperature, profile: report.run.profile, viewport: report.run.viewport, chrome: report.environment.chrome }));
   const chrome = details[0]?.chrome;
-  const ok = details.length === 3 && typeof chrome === "string" && details.every((row) => row.corpus === contract.corpus && row.iterations === iterations &&
+  const requiredComparisonCount = contract.adapters.filter(({ required }) => required).length;
+  const ok = details.length === requiredComparisonCount && typeof chrome === "string" && details.every((row) => row.corpus === contract.corpus && row.iterations === iterations &&
     row.temperature === contract.temperature && row.profile === contract.profile_semantics && sameViewport(row.viewport, contract.viewport) && row.chrome === chrome);
   return { ok, details };
 }

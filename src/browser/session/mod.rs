@@ -77,6 +77,11 @@ pub use intent::{
     SemanticResolutionPolicy, SemanticTargetFingerprint, normalize_intent, resolve_intent,
 };
 pub use intercept::{InterceptGuard, RequestPattern};
+pub use knowledge::{
+    KNOWLEDGE_SCHEMA_VERSION, KnowledgeConfidence, KnowledgeInvalidation, KnowledgeLifecycleEvent,
+    KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordKind, KnowledgeScope, KnowledgeSource,
+    KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+};
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use semantic::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticChangeKind,
@@ -105,6 +110,7 @@ mod har;
 mod identity;
 mod intent;
 mod intercept;
+mod knowledge;
 mod locator;
 mod navigate;
 mod observe;

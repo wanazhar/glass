@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/knowledge-v1.schema.json",
+  "title": "Glass persistent knowledge v1",
+  "$ref": "#/$defs/snapshot",
+  "$defs": {
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "records"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "records": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/record"}}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "recordId", "kind", "scope", "source", "confidence", "invalidation", "data"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "recordId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"enum": ["pageFamily", "regionModel", "targetFingerprint", "routeTransition", "workflowEntryPoint", "verifiedPostcondition", "extractionShape", "invalidationRule"]},
+        "scope": {"$ref": "#/$defs/scope"},
+        "source": {"$ref": "#/$defs/source"},
+        "confidence": {"enum": ["candidate", "observed", "verified", "stale", "contradicted", "quarantined"]},
+        "invalidation": {"$ref": "#/$defs/invalidation"},
+        "data": {"$ref": "#/$defs/data"},
+        "history": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/history"}}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "pathPattern", "profileScope", "browserFamily", "glassSchemaVersion", "policyPreset"],
+      "properties": {
+        "origin": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "pathPattern": {"type": "string", "minLength": 1, "maxLength": 512},
+        "profileScope": {"enum": ["anonymous", "authenticated", "profileBound"]},
+        "profileKey": {"type": "string", "minLength": 1, "maxLength": 256},
+        "locale": {"type": "string", "minLength": 1, "maxLength": 256},
+        "tenantKey": {"type": "string", "minLength": 1, "maxLength": 256},
+        "browserFamily": {"type": "string", "minLength": 1, "maxLength": 256},
+        "browserVersionRange": {"type": "string", "minLength": 1, "maxLength": 256},
+        "glassSchemaVersion": {"type": "integer", "minimum": 1},
+        "policyPreset": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["firstSeenAt", "lastVerifiedAt", "glassVersion", "verificationCount"],
+      "properties": {
+        "firstSeenAt": {"type": "string", "minLength": 1, "maxLength": 64},
+        "lastVerifiedAt": {"type": "string", "minLength": 1, "maxLength": 64},
+        "glassVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+        "verificationCount": {"type": "integer", "minimum": 0}
+      }
+    },
+    "invalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAgeSeconds": {"type": "integer", "minimum": 0},
+        "requiredLandmarks": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 256}}
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "reason", "observedAt"],
+      "properties": {
+        "from": {"enum": ["candidate", "observed", "verified", "stale", "contradicted", "quarantined"]},
+        "to": {"enum": ["candidate", "observed", "verified", "stale", "contradicted", "quarantined"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256},
+        "observedAt": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "data": {
+      "type": ["object", "array"],
+      "maxProperties": 64,
+      "maxItems": 64,
+      "description": "Bounded model data. The runtime rejects sensitive field names and limits the canonical payload to 16 KiB."
+    }
+  }
+}

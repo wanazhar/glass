@@ -20,6 +20,9 @@
 - [Intent resolution](intent-resolution.md) — bounded candidate resolution,
   confidence policies, guarded execution, semantic workflow steps, and TUI
   review.
+- [Persistent knowledge contract](schema/knowledge-v1.schema.json) — the
+  machine-readable v1 record and snapshot schema; persistence and runtime use
+  are introduced in later phases.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
   and design principles for keeping the surface lean.
 - [Logged-in session ergonomics](profile-ergonomics.md) — using persistent

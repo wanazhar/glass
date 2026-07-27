@@ -51,6 +51,22 @@ pub use session::GeoLocation;
 pub use session::InteractionMode;
 /// A guard that disables CDP Fetch domain interception on drop.
 pub use session::InterceptGuard;
+/// Versioned confidence and lifecycle state for persisted browser knowledge.
+pub use session::KnowledgeConfidence;
+/// Invalidation rules for persisted browser knowledge.
+pub use session::KnowledgeInvalidation;
+/// One persisted browser knowledge record.
+pub use session::KnowledgeRecord;
+/// Knowledge record category.
+pub use session::KnowledgeRecordKind;
+/// Scope dimensions preventing knowledge leakage across sessions.
+pub use session::KnowledgeScope;
+/// Provenance for a persisted browser knowledge record.
+pub use session::KnowledgeSource;
+/// Top-level persisted knowledge store document.
+pub use session::KnowledgeStoreSnapshot;
+/// Validation error for the knowledge contract.
+pub use session::KnowledgeValidationError;
 /// Revision-aware navigation result.
 pub use session::NavigationOutcome;
 /// A single captured network request/response entry.

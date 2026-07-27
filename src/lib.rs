@@ -54,11 +54,13 @@ pub mod tui;
 // capability-specific APIs remain organized under `glass::browser`.
 pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
-    ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, NavigationOutcome,
-    PageInfo, SessionOptions, SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets,
-    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
-    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
-    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
-    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, KnowledgeConfidence,
+    KnowledgeInvalidation, KnowledgeRecord, KnowledgeRecordKind, KnowledgeScope, KnowledgeSource,
+    KnowledgeStoreSnapshot, KnowledgeValidationError, NavigationOutcome, PageInfo, SessionOptions,
+    SessionOptionsBuilder, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowCheckpoint,
+    WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput,
+    WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError,
+    WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,
+    WorkflowStepState, WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent,
+    WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };

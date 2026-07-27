@@ -942,9 +942,9 @@ pub async fn get_ws_url(
 }
 
 /// Get a page target for a browser owned by Glass. A persistent profile can
-/// restore its last page while Chrome also opens Glass's startup page. When
-/// exactly one restored non-blank page exists, it is the intended profile
-/// context and is safe to adopt; attached sessions retain strict selection.
+/// restore its last page while Chrome also opens Glass's startup page. Owned
+/// sessions may adopt the first page target in that case; attached sessions
+/// retain strict selection.
 pub async fn get_owned_ws_url(
     port: u16,
     target_id: Option<&str>,
@@ -974,6 +974,12 @@ fn select_owned_page_target<'a>(
                 .collect::<Vec<_>>();
             match candidates.as_slice() {
                 [target] => Ok(target),
+                [] => targets
+                    .iter()
+                    .find(|target| {
+                        target.target_type == "page" && target.websocket_debugger_url.is_some()
+                    })
+                    .ok_or(error),
                 _ => Err(error),
             }
         }

@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.8] - 2026-07-27
+
+### Fixed
+
+- Deterministically select a page for owned sessions when Chrome reports
+  restored and startup pages without usable URL metadata.
+
 ## [0.1.7] - 2026-07-27
 
 ### Fixed

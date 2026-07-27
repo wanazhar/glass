@@ -116,6 +116,19 @@ pub enum BatchStep {
     DismissDialog,
 }
 
+/// Revision policy for an ordered batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchMode {
+    /// Require one caller-supplied revision for every mutating step.
+    Fixed,
+    /// Carry the successful action's current revision into the next step.
+    Chain,
+    /// Preserve compatibility behavior and run steps without revision guards.
+    #[default]
+    Unguarded,
+}
+
 const fn default_timeout_ms() -> u64 {
     20_000
 }
@@ -140,6 +153,11 @@ pub enum BatchStepOutcome {
 /// Aggregate batch result.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchOutcome {
+    pub mode: BatchMode,
+    #[serde(rename = "initialRevision")]
+    pub initial_revision: u64,
+    #[serde(rename = "finalRevision")]
+    pub final_revision: u64,
     pub steps: Vec<BatchStepOutcome>,
     pub completed: usize,
     pub failed: usize,

@@ -66,6 +66,7 @@ close-target ID
 frames
 select-frame ID
 evaluate EXPRESSION
+batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
 ```
 
 `screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and

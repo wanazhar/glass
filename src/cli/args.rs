@@ -7,7 +7,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::browser::policy::{PolicyCapability, PolicyPreset};
-use crate::browser::session::{InteractionMode, PreflightAction, VisualClip, VisualFormat};
+use crate::browser::session::{
+    BatchMode, InteractionMode, PreflightAction, VisualClip, VisualFormat,
+};
 
 /// Top-level CLI configuration parsed from command-line arguments.
 ///
@@ -373,6 +375,12 @@ pub enum Commands {
         input: Option<PathBuf>,
         #[arg(long)]
         atomic: bool,
+        /// Revision policy: fixed, chain, or unguarded.
+        #[arg(long, value_enum, default_value_t = BatchMode::Unguarded)]
+        mode: BatchMode,
+        /// Initial observation revision required by fixed and chain modes.
+        #[arg(long)]
+        expected_revision: Option<u64>,
     },
 
     /// Reconcile revisioned references against the current observation.

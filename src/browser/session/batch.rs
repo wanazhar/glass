@@ -22,6 +22,18 @@ impl BrowserSession {
         steps: &[BatchStep],
         atomic: bool,
     ) -> BrowserResult<BatchOutcome> {
+        self.run_batch_with_mode(steps, atomic, BatchMode::Unguarded, None)
+            .await
+    }
+
+    /// Execute a batch with an explicit revision policy.
+    pub async fn run_batch_with_mode(
+        &self,
+        steps: &[BatchStep],
+        atomic: bool,
+        mode: BatchMode,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<BatchOutcome> {
         let total = steps.len();
         if total > MAX_BATCH_STEPS {
             return Err(format!(
@@ -51,20 +63,33 @@ impl BrowserSession {
             }
         }
 
+        let initial_revision = self.page_revision.load(Ordering::Relaxed);
+        let mut chained_revision = match mode {
+            BatchMode::Unguarded => None,
+            BatchMode::Fixed | BatchMode::Chain => Some(
+                expected_revision.ok_or("batch mode fixed or chain requires expectedRevision")?,
+            ),
+        };
+
         let mut outcomes: Vec<BatchStepOutcome> = Vec::with_capacity(total);
         let mut completed = 0usize;
         let mut failed = 0usize;
 
         for (index, step) in steps.iter().enumerate() {
             let action = step_action_name(step);
-            match execute_batch_step(self, step).await {
-                Ok(response_bytes) => {
+            let step_revision = chained_revision;
+            match execute_batch_step(self, step, step_revision).await {
+                Ok((response_bytes, resulting_revision)) => {
                     outcomes.push(BatchStepOutcome::Success {
                         index,
                         action,
                         response_bytes,
                     });
                     completed += 1;
+                    if mode == BatchMode::Chain {
+                        chained_revision = resulting_revision
+                            .or_else(|| Some(self.page_revision.load(Ordering::Relaxed)));
+                    }
                 }
                 Err(error) => {
                     let message = bounded_batch_text(&format!("{error:#}"), 512);
@@ -80,6 +105,9 @@ impl BrowserSession {
         }
 
         Ok(BatchOutcome {
+            mode,
+            initial_revision,
+            final_revision: self.page_revision.load(Ordering::Relaxed),
             success: failed == 0,
             completed,
             failed,
@@ -141,43 +169,85 @@ fn bounded_batch_text(value: &str, max_bytes: usize) -> String {
 async fn execute_batch_step(
     session: &BrowserSession,
     step: &BatchStep,
-) -> BrowserResult<Option<usize>> {
+    expected_revision: Option<u64>,
+) -> BrowserResult<(Option<usize>, Option<u64>)> {
     match step {
         BatchStep::Navigate { url, timeout_ms } => {
-            let info = session
-                .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
-                .await?;
-            let bytes = serde_json::to_string(&info).ok().map(|s| s.len());
-            Ok(bytes)
+            if let Some(revision) = expected_revision {
+                let info = session
+                    .navigate_with_revision(url, Duration::from_millis(*timeout_ms), revision)
+                    .await?;
+                let bytes = serde_json::to_string(&info).ok().map(|s| s.len());
+                Ok((bytes, Some(info.current_revision)))
+            } else {
+                let info = session
+                    .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
+                    .await?;
+                let bytes = serde_json::to_string(&info).ok().map(|s| s.len());
+                Ok((bytes, Some(session.page_revision.load(Ordering::Relaxed))))
+            }
         }
         BatchStep::Click { target } => {
-            let outcome = session.click(target).await?;
+            let outcome = match expected_revision {
+                Some(revision) => session.click_with_revision(target, revision).await?,
+                None => session.click(target).await?,
+            };
             let bytes = serde_json::to_string(&outcome).ok().map(|s| s.len());
-            Ok(bytes)
+            Ok((bytes, Some(outcome.current_revision)))
         }
         BatchStep::Type { text, target } => {
-            session.type_text(text, target.as_deref()).await?;
-            Ok(None)
+            let outcome = session
+                .type_text_with_expected_revision(text, target.as_deref(), expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Check { target } => {
-            session.check(target).await?;
-            Ok(None)
+            let outcome = session
+                .check_with_revision(target, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Uncheck { target } => {
-            session.uncheck(target).await?;
-            Ok(None)
+            let outcome = session
+                .uncheck_with_revision(target, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Select { target, value } => {
-            session.select_option(target, value).await?;
-            Ok(None)
+            let outcome = session
+                .select_option_with_revision(target, value, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Clear { target } => {
-            session.clear(target).await?;
-            Ok(None)
+            let outcome = session
+                .clear_with_revision(target, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Scroll { dx, dy } => {
-            session.scroll(*dx, *dy).await?;
-            Ok(None)
+            let outcome = session
+                .scroll_with_revision(*dx, *dy, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+            ))
         }
         BatchStep::Wait {
             condition,
@@ -187,7 +257,7 @@ async fn execute_batch_step(
             session
                 .wait(cond, Duration::from_millis(*timeout_ms))
                 .await?;
-            Ok(None)
+            Ok((None, None))
         }
         BatchStep::Observe {
             include_dom,
@@ -207,24 +277,24 @@ async fn execute_batch_step(
                 }
             };
             let bytes = serde_json::to_string(&context).ok().map(|s| s.len());
-            Ok(bytes)
+            Ok((bytes, Some(session.page_revision.load(Ordering::Relaxed))))
         }
         BatchStep::Screenshot => {
             let data = session.screenshot_base64().await?;
-            Ok(Some(data.len()))
+            Ok((Some(data.len()), None))
         }
         BatchStep::Evaluate { expression } => {
             let result = session.evaluate(expression).await?;
             let bytes = serde_json::to_string(&result).ok().map(|s| s.len());
-            Ok(bytes)
+            Ok((bytes, None))
         }
         BatchStep::AcceptDialog => {
             session.accept_dialog().await?;
-            Ok(None)
+            Ok((None, None))
         }
         BatchStep::DismissDialog => {
             session.dismiss_dialog().await?;
-            Ok(None)
+            Ok((None, None))
         }
     }
 }

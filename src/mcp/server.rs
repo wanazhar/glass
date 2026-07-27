@@ -22,7 +22,7 @@ use tracing::{debug, info};
 use crate::browser::cdp::CdpError;
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
-    ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchStep,
+    ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
     PreflightAction, ReconciliationOptions, SessionOptions, TargetError, VisualCaptureOptions,
     VisualClip, VisualFormat, WaitCondition, WaitTimeout,
@@ -231,6 +231,8 @@ enum ToolInvocation<'a> {
     Batch {
         steps: Value,
         atomic: bool,
+        mode: BatchMode,
+        expected_revision: Option<u64>,
     },
     ReconcileReferences {
         from_revision: u64,
@@ -1048,10 +1050,19 @@ async fn call_tool(
         ToolInvocation::Evaluate { expression } => {
             serialized_result(&session.evaluate(expression).await?)
         }
-        ToolInvocation::Batch { steps, atomic } => {
+        ToolInvocation::Batch {
+            steps,
+            atomic,
+            mode,
+            expected_revision,
+        } => {
             let parsed: Vec<BatchStep> = serde_json::from_value(steps.clone())
                 .map_err(|e| format!("invalid batch steps: {e}"))?;
-            serialized_result(&session.run_batch_with_options(&parsed, atomic).await?)
+            serialized_result(
+                &session
+                    .run_batch_with_mode(&parsed, atomic, mode, expected_revision)
+                    .await?,
+            )
         }
         ToolInvocation::ReconcileReferences {
             from_revision,
@@ -1362,6 +1373,8 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "batch" => Ok(ToolInvocation::Batch {
             steps: arguments["steps"].clone(),
             atomic: optional_bool(arguments, "atomic")?,
+            mode: optional_batch_mode(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "reconcileReferences" => Ok(ToolInvocation::ReconcileReferences {
             from_revision: required_u64(arguments, "fromRevision")?,
@@ -1730,6 +1743,8 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "atomic": {"type": "boolean", "default": false},
+                    "mode": {"type": "string", "enum": ["fixed", "chain", "unguarded"], "default": "unguarded"},
+                    "expectedRevision": {"type": "integer", "minimum": 0},
                     "steps": {
                         "type": "array",
                         "items": {
@@ -1997,6 +2012,16 @@ fn optional_bool(arguments: &Value, name: &str) -> BrowserResult<bool> {
         None => Ok(false),
         Some(Value::Bool(value)) => Ok(*value),
         Some(_) => Err(format!("{name} must be a boolean").into()),
+    }
+}
+
+fn optional_batch_mode(arguments: &Value) -> BrowserResult<BatchMode> {
+    match optional_string(arguments, "mode")? {
+        None => Ok(BatchMode::Unguarded),
+        Some("fixed") => Ok(BatchMode::Fixed),
+        Some("chain") => Ok(BatchMode::Chain),
+        Some("unguarded") => Ok(BatchMode::Unguarded),
+        Some(_) => Err("mode must be fixed, chain, or unguarded".into()),
     }
 }
 
@@ -2590,6 +2615,32 @@ mod tests {
                 _ => None,
             };
             assert_eq!(revision, Some(7), "tool {name} lost expectedRevision");
+        }
+    }
+
+    #[test]
+    fn parses_batch_revision_modes() {
+        for (mode, expected) in [
+            ("fixed", BatchMode::Fixed),
+            ("chain", BatchMode::Chain),
+            ("unguarded", BatchMode::Unguarded),
+        ] {
+            let params = json!({
+                "name": "batch",
+                "arguments": {
+                    "mode": mode,
+                    "expectedRevision": 7,
+                    "steps": [{"action": "scroll", "dy": 10}]
+                }
+            });
+            assert!(matches!(
+                parse_tool_invocation(&params).unwrap(),
+                ToolInvocation::Batch {
+                    mode: actual,
+                    expected_revision: Some(7),
+                    ..
+                } if actual == expected
+            ));
         }
     }
 

@@ -100,14 +100,20 @@ true`.
 Evaluated source, typed text, and raw page/CDP errors never cross the MCP error
 surface.
 
+The `batch` tool accepts `mode: "fixed"`, `"chain"`, or `"unguarded"`.
+Fixed mode requires one `expectedRevision` for every guarded mutation; chain
+mode requires the initial revision and carries each successful action's
+current revision into the next step. Unguarded mode preserves compatibility.
+The `atomic` option remains a separate target pre-resolution check.
+
 ## Tools
 
 | Tool | Important arguments | Result or effect |
 |---|---|---|
 | `navigate` | `url`, optional `expectedRevision` | Navigate and return page state. |
 | `click` | `target` or `selector`, optional `expectedRevision`, `includeTrace` | Click one element. |
-| `clickExpectPopup` | `target` or `selector` | Click and return one causally verified popup target. |
-| `doubleClick` | `target` or `selector` | Double-click one element. |
+| `clickExpectPopup` | `target` or `selector`, optional `expectedRevision` | Click and return one causally verified popup target. |
+| `doubleClick` | `target` or `selector`, optional `expectedRevision` | Double-click one element. |
 | `hover` | `target` | Move over one element. |
 | `drag` | `source`, `destination` | Drag between two verified elements. |
 | `type` | `text`, optional `target`, `expectedRevision` | Focus optionally, then insert text. |

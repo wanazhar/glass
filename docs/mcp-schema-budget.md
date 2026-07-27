@@ -46,7 +46,7 @@ under 4k tokens for the full `tools/list` response.
 | `exportCheckpoint` | (none) | — | Bounded checkpoint |
 | `importCheckpoint` | checkpoint fields | schema version and fields | Bounded checkpoint |
 | `evaluate` | `expression` | `expression` | Policy-gated |
-| `batch` | `steps`, `atomic` | `steps` | Max 32 steps |
+| `batch` | `steps`, `atomic`, `mode`, `expectedRevision` | `steps` | Max 32 steps; mode is fixed, chain, or unguarded |
 | `scroll` | `dx`, `dy` | none | |
 | `wait` | `condition`, `timeoutMs` | `condition` | Bounded deadline |
 | `diagnostics` | `durationMs` | none | Bounded redacted evidence |

@@ -464,12 +464,21 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 .collect();
             print_json(&session.fill_form(&field_slices).await?)?;
         }
-        Commands::Batch { input, atomic } => {
+        Commands::Batch {
+            input,
+            atomic,
+            mode,
+            expected_revision,
+        } => {
             let payload = read_json_input(input.as_ref())?;
             let steps_value = payload.get("steps").cloned().unwrap_or(payload);
             let steps: Vec<BatchStep> = serde_json::from_value(steps_value)
                 .map_err(|error| format!("invalid batch document: {error}"))?;
-            print_json(&session.run_batch_with_options(&steps, *atomic).await?)?;
+            print_json(
+                &session
+                    .run_batch_with_mode(&steps, *atomic, *mode, *expected_revision)
+                    .await?,
+            )?;
         }
         Commands::ReconcileRefs {
             from_revision,

@@ -96,7 +96,7 @@ relocated and executed.
 
 ## Delivery status
 
-The first delivery slice adds stable execution IDs and the internal request
-boundary used to converge action implementations. Verification predicates,
-effect witnesses, recovery data, batch chaining, and cross-interface schema
-conformance land in later slices under issue #20.
+The initial delivery slices add stable execution IDs, the internal request
+boundary, revision guards across supported mutations, and batch modes. Bounded
+verification predicates, effect witnesses, recovery data, and diagnostics are
+still being delivered under issue #20.

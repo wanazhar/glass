@@ -425,6 +425,67 @@ impl KnowledgeRecord {
         Ok(record)
     }
 
+    /// Build a candidate workflow-entry record from a validated definition.
+    /// Only hashed workflow identity, hashed step/output IDs, and bounded
+    /// shape counts are retained; inputs, locators, predicates, and values are
+    /// deliberately excluded.
+    pub fn from_workflow_definition(
+        workflow: &super::WorkflowDefinition,
+        options: KnowledgeRecordBuildOptions,
+    ) -> Result<Self, KnowledgeValidationError> {
+        workflow.validate().map_err(|error| {
+            KnowledgeValidationError::new("workflow", format!("invalid workflow: {error}"))
+        })?;
+        validate_text("recordId", &options.record_id, MAX_RECORD_ID_BYTES, false)?;
+        validate_text(
+            "source.glassVersion",
+            &options.glass_version,
+            MAX_SCOPE_VALUE_BYTES,
+            false,
+        )?;
+        validate_timestamp("source.observedAt", &options.observed_at)?;
+        validate_scope(&options.scope)?;
+        let workflow_hash = hash_knowledge_identity(&[&workflow.name, &workflow.workflow_version]);
+        let step_hashes: Vec<String> = workflow
+            .steps
+            .iter()
+            .map(|step| hash_knowledge_identity(&[&step.id]))
+            .collect();
+        let output_hashes: Vec<String> = workflow
+            .outputs
+            .keys()
+            .map(|key| hash_knowledge_identity(&[key]))
+            .collect();
+        let record = Self {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            record_id: options.record_id,
+            kind: KnowledgeRecordKind::WorkflowEntryPoint,
+            scope: options.scope,
+            source: KnowledgeSource {
+                first_seen_at: options.observed_at.clone(),
+                last_verified_at: options.observed_at,
+                glass_version: options.glass_version,
+                verification_count: 0,
+            },
+            confidence: KnowledgeConfidence::Candidate,
+            invalidation: KnowledgeInvalidation {
+                max_age_seconds: Some(604_800),
+                required_landmarks: Vec::new(),
+            },
+            data: json!({
+                "workflowHash": workflow_hash,
+                "stepHashes": step_hashes,
+                "outputHashes": output_hashes,
+                "stepCount": workflow.steps.len(),
+                "intentStepCount": workflow.steps.iter().filter(|step| step.intent.is_some()).count(),
+                "postconditionCount": workflow.steps.iter().filter(|step| step.expect.is_some()).count() + 1,
+            }),
+            history: Vec::new(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     /// Validate one record against the stable contract and all payload bounds.
     pub fn validate(&self) -> Result<(), KnowledgeValidationError> {
         if self.schema_version != KNOWLEDGE_SCHEMA_VERSION {
@@ -702,6 +763,12 @@ fn signal(kind: KnowledgeSignalKind, detail: impl Into<String>) -> KnowledgeAsse
         kind,
         detail: detail.into(),
     }
+}
+
+fn hash_knowledge_identity(parts: &[&str]) -> String {
+    let canonical = serde_json::to_vec(parts).expect("JSON string arrays are serializable");
+    let digest = Sha256::digest(canonical);
+    format!("sha256:{digest:x}")
 }
 
 fn compare_optional_scope(
@@ -1050,7 +1117,7 @@ mod tests {
     use super::*;
     use crate::browser::session::{
         FingerprintInvalidation, IntentConfidence, SemanticIntentPurpose, SemanticRegionKind,
-        SemanticRouteIdentity, SemanticTargetFingerprint,
+        SemanticRouteIdentity, SemanticTargetFingerprint, WorkflowDefinition,
     };
     use serde_json::json;
 
@@ -1302,5 +1369,32 @@ mod tests {
         assert!(!data.contains("Private Settings Label"));
         assert!(!data.contains("target-1"));
         assert!(!data.contains("frame-1"));
+    }
+
+    #[test]
+    fn workflow_record_keeps_shape_without_definition_details() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../benchmarks/scenarios/workflow-v1.json"
+        ))
+        .unwrap();
+        let workflow =
+            WorkflowDefinition::from_value(corpus["scenarios"][0]["workflow"].clone()).unwrap();
+        let record = KnowledgeRecord::from_workflow_definition(
+            &workflow,
+            KnowledgeRecordBuildOptions {
+                record_id: "knowledge-workflow-entry".into(),
+                scope: record().scope,
+                glass_version: "0.2.0".into(),
+                observed_at: "2026-07-27T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(record.kind, KnowledgeRecordKind::WorkflowEntryPoint);
+        assert_eq!(record.confidence, KnowledgeConfidence::Candidate);
+        let data = serde_json::to_string(&record.data).unwrap();
+        assert!(data.contains("workflowHash"));
+        assert!(!data.contains("linear-typed-output"));
+        assert!(!data.contains("Glass Scorecard"));
+        assert!(!data.contains("target"));
     }
 }

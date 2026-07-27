@@ -14,6 +14,7 @@ reconciliation.
 
 Workflow steps now accept and validate `beforeRetry` using the existing
 verification predicate contract. It is serialized canonically and included in
-the published workflow schema. Runtime use is deliberately fail-closed until
-the marker reconciliation path consumes it; merely declaring a marker never
-authorizes an automatic post-dispatch retry.
+the published workflow schema. The marker is checked only after a proven
+pre-dispatch failure and can commit an already-visible success without a
+second dispatch; marker lookup errors stop the run. It never authorizes an
+automatic post-dispatch retry.

@@ -816,7 +816,7 @@ impl WorkflowStepState {
                 | (Self::Ready, Self::Preflight | Self::Skipped)
                 | (
                     Self::Preflight,
-                    Self::Resolving | Self::FailedBeforeDispatch
+                    Self::Resolving | Self::EffectObserved | Self::FailedBeforeDispatch
                 )
                 | (Self::Resolving, Self::NotDispatched | Self::Dispatched)
                 | (Self::NotDispatched, Self::FailedBeforeDispatch)
@@ -1492,6 +1492,7 @@ impl super::BrowserSession {
                     }
                 }
                 let mut attempt_number = 0;
+                let mut effect_marker_completed = false;
                 let outcome = loop {
                     let attempt_revision = current_revision(self);
                     {
@@ -1537,6 +1538,52 @@ impl super::BrowserSession {
                                 }
                             }
                             if retry {
+                                let marker_matches = match &step.before_retry {
+                                    Some(predicate) => {
+                                        match self.evaluate_predicate_once(predicate).await {
+                                            Ok((matched, _)) => Some(matched),
+                                            Err(error) => {
+                                                let message = bound_workflow_text(
+                                                    &format!(
+                                                        "effect marker could not be evaluated: {error}"
+                                                    ),
+                                                    512,
+                                                );
+                                                let record = &mut records[index];
+                                                let _ =
+                                                    record.transition(WorkflowStepState::Preflight);
+                                                record.fail(
+                                                    WorkflowStepState::FailedBeforeDispatch,
+                                                    &message,
+                                                );
+                                                skip_remaining(&mut records, index + 1);
+                                                return Ok(WorkflowRunResult::failed(
+                                                    workflow,
+                                                    run_id.clone(),
+                                                    records,
+                                                    Some(step.id.clone()),
+                                                    message,
+                                                    initial_revision,
+                                                    current_revision(self),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    None => None,
+                                };
+                                if marker_matches == Some(true) {
+                                    effect_marker_completed = true;
+                                    break super::types::BatchOutcome {
+                                        mode: BatchMode::Unguarded,
+                                        initial_revision: current_revision(self),
+                                        final_revision: current_revision(self),
+                                        steps: Vec::new(),
+                                        completed: 0,
+                                        failed: 0,
+                                        total: 0,
+                                        success: true,
+                                    };
+                                }
                                 continue;
                             }
                             let message = records[index]
@@ -1556,6 +1603,11 @@ impl super::BrowserSession {
                         }
                     }
                 };
+
+                if effect_marker_completed {
+                    commit_workflow_effect_marker(&mut records[index], current_revision(self));
+                    continue;
+                }
 
                 if !outcome.success {
                     let message = outcome
@@ -2231,6 +2283,21 @@ fn skip_remaining(records: &mut [WorkflowStepRecord], start: usize) {
     }
 }
 
+fn commit_workflow_effect_marker(record: &mut WorkflowStepRecord, revision: u64) {
+    if record.state == WorkflowStepState::Ready {
+        let _ = record.transition(WorkflowStepState::Preflight);
+    }
+    if record.state == WorkflowStepState::Preflight {
+        let _ = record.transition(WorkflowStepState::EffectObserved);
+    }
+    record.effect_observed = true;
+    record.postcondition_verified = true;
+    record.current_revision = Some(revision);
+    let _ = record.transition(WorkflowStepState::Verified);
+    let _ = record.transition(WorkflowStepState::OutputsExtracted);
+    let _ = record.transition(WorkflowStepState::Committed);
+}
+
 fn state_name(state: WorkflowStepState) -> &'static str {
     match state {
         WorkflowStepState::Pending => "pending",
@@ -2565,6 +2632,18 @@ mod tests {
         assert!(json.contains("\"beforeRetry\":{"));
         let parsed = WorkflowDefinition::from_json(&json).unwrap();
         assert!(parsed.steps[0].before_retry.is_some());
+    }
+
+    #[test]
+    fn effect_marker_commit_follows_evidence_states_without_dispatch() {
+        let mut record = WorkflowStepRecord::new("save");
+        record.transition(WorkflowStepState::Ready).unwrap();
+        commit_workflow_effect_marker(&mut record, 9);
+        assert_eq!(record.state, WorkflowStepState::Committed);
+        assert!(!record.dispatch_acknowledged);
+        assert!(record.effect_observed);
+        assert!(record.postcondition_verified);
+        assert_eq!(record.current_revision, Some(9));
     }
 
     #[test]

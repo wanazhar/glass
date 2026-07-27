@@ -37,7 +37,8 @@ use tokio::{
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
-    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo, SemanticIntentRequest,
+    ActionOutcome, BrowserResult, BrowserSession, PageContext, PageInfo,
+    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentRequest,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
     WorkflowDefinition,
 };
@@ -66,6 +67,9 @@ pub struct App {
     should_quit: bool,
     error_msg: Option<String>,
     status: String,
+    intent_request: Option<SemanticIntentRequest>,
+    intent_result: Option<SemanticIntentResult>,
+    intent_selection: usize,
     browser_state: BrowserState,
     busy: Option<BusyState>,
     next_operation_id: u64,
@@ -111,6 +115,9 @@ impl App {
             should_quit: false,
             error_msg: None,
             status: "Connecting to Chrome…".to_string(),
+            intent_request: None,
+            intent_result: None,
+            intent_selection: 0,
             browser_state: BrowserState::Connecting,
             busy: None,
             next_operation_id: 1,
@@ -258,6 +265,14 @@ impl App {
                 self.page_scroll = self.page_scroll.saturating_add(10);
                 UiIntent::None
             }
+            KeyCode::Up if self.input.is_empty() => {
+                self.move_intent_selection(-1);
+                UiIntent::None
+            }
+            KeyCode::Down if self.input.is_empty() => {
+                self.move_intent_selection(1);
+                UiIntent::None
+            }
             KeyCode::Char(character) => {
                 if !self.insert_char(character) {
                     self.report_error(format!(
@@ -399,6 +414,9 @@ impl App {
         match update {
             PageUpdate::Context(context) => self.apply_context(&context),
             PageUpdate::Semantic(observation) => self.apply_semantic(&observation),
+            PageUpdate::IntentResolution { request, result } => {
+                self.apply_intent_resolution(*request, *result)
+            }
             PageUpdate::Text { page, text } => {
                 self.apply_page_header(&page);
                 self.set_page_content(text);
@@ -424,6 +442,48 @@ impl App {
         );
         self.set_page_content(serde_json::to_string_pretty(observation)?);
         Ok(())
+    }
+
+    fn apply_intent_resolution(
+        &mut self,
+        request: SemanticIntentRequest,
+        result: SemanticIntentResult,
+    ) -> BrowserResult<()> {
+        self.intent_request = Some(request);
+        self.intent_selection = 0;
+        self.intent_result = Some(result.clone());
+        self.url = result
+            .route
+            .as_ref()
+            .map(|route| bounded_text(&route.url, TUI_HEADER_MAX_BYTES))
+            .unwrap_or_default();
+        self.title = "Glass — Intent resolution".into();
+        self.set_page_content(format_intent_debug(&result, self.intent_selection));
+        Ok(())
+    }
+
+    fn move_intent_selection(&mut self, delta: isize) {
+        let Some(result) = self.intent_result.as_ref() else {
+            return;
+        };
+        if result.candidates.is_empty() {
+            return;
+        }
+        let maximum = result.candidates.len() - 1;
+        self.intent_selection = if delta.is_negative() {
+            self.intent_selection.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.intent_selection
+                .saturating_add(delta as usize)
+                .min(maximum)
+        };
+        let content = format_intent_debug(result, self.intent_selection);
+        let candidate_id = result.candidates[self.intent_selection].id.clone();
+        self.set_page_content(content);
+        self.set_status(format!(
+            "Selected {} — submit: intent execute.",
+            candidate_id
+        ));
     }
 
     fn apply_page_header(&mut self, page: &PageInfo) {
@@ -530,6 +590,7 @@ enum BrowserOperation {
     Evaluate(String),
     Workflow(String),
     ResolveIntent(String),
+    ExecuteIntent(Box<SemanticIntentExecutionRequest>),
 }
 
 impl BrowserOperation {
@@ -548,6 +609,7 @@ impl BrowserOperation {
             Self::Evaluate(_) => "Evaluate",
             Self::Workflow(_) => "Workflow",
             Self::ResolveIntent(_) => "Resolve intent",
+            Self::ExecuteIntent(_) => "Execute intent",
         }
     }
 }
@@ -741,7 +803,27 @@ fn format_intent_activity(result: &SemanticIntentResult) -> String {
     )
 }
 
-fn format_intent_debug(result: &SemanticIntentResult) -> String {
+fn format_intent_execution_activity(result: &SemanticIntentExecutionResult) -> String {
+    match result.status {
+        crate::browser::session::SemanticIntentExecutionStatus::Executed => format!(
+            "Intent executed: candidate={} resolution={} execution={}.",
+            result.candidate_id,
+            result.resolution_id,
+            result.execution_id.as_deref().unwrap_or("unknown")
+        ),
+        crate::browser::session::SemanticIntentExecutionStatus::NotExecuted => format!(
+            "Intent not executed: candidate={} resolution={:?}; {}.",
+            result.candidate_id,
+            result.resolution.resolution,
+            result
+                .reason
+                .as_deref()
+                .unwrap_or("policy did not authorize dispatch")
+        ),
+    }
+}
+
+fn format_intent_debug(result: &SemanticIntentResult, selected: usize) -> String {
     let mut output = vec![
         format!("Normalized intent: {}", result.normalized_intent),
         format!("Resolution: {:?}", result.resolution),
@@ -759,7 +841,7 @@ fn format_intent_debug(result: &SemanticIntentResult) -> String {
     if result.candidates.is_empty() {
         output.push("  (none)".into());
     } else {
-        for candidate in &result.candidates {
+        for (index, candidate) in result.candidates.iter().enumerate() {
             let evidence = candidate
                 .evidence
                 .iter()
@@ -767,8 +849,12 @@ fn format_intent_debug(result: &SemanticIntentResult) -> String {
                 .collect::<Vec<_>>()
                 .join("; ");
             output.push(format!(
-                "  {} [{}] {} — {:?}",
-                candidate.id, candidate.role, candidate.name, candidate.confidence
+                "  {}{} [{}] {} — {:?}",
+                if index == selected { "> " } else { "  " },
+                candidate.id,
+                candidate.role,
+                candidate.name,
+                candidate.confidence
             ));
             if !evidence.is_empty() {
                 output.push(format!("    evidence: {evidence}"));
@@ -839,7 +925,14 @@ enum BrowserEvent {
 enum PageUpdate {
     Context(Box<PageContext>),
     Semantic(Box<SemanticObservation>),
-    Text { page: PageInfo, text: String },
+    IntentResolution {
+        request: Box<SemanticIntentRequest>,
+        result: Box<SemanticIntentResult>,
+    },
+    Text {
+        page: PageInfo,
+        text: String,
+    },
 }
 
 #[derive(Debug)]
@@ -1198,13 +1291,20 @@ async fn execute_browser_operation(
             let payload = tokio::fs::read_to_string(&path).await?;
             let request = SemanticIntentRequest::from_json(&payload)?;
             let result = session.resolve_intent(&request).await?;
-            let page = session.page_info().await?;
             Ok(Box::new(OperationResult {
                 activity: format_intent_activity(&result),
-                update: Some(PageUpdate::Text {
-                    page,
-                    text: format_intent_debug(&result),
+                update: Some(PageUpdate::IntentResolution {
+                    request: Box::new(request),
+                    result: Box::new(result),
                 }),
+            }))
+        }
+        BrowserOperation::ExecuteIntent(execution) => {
+            let result = session.execute_intent(&execution).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format_intent_execution_activity(&result),
+                update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
     }
@@ -1275,13 +1375,51 @@ fn handle_submission(
     command: String,
 ) {
     app.add_activity(format!("> {command}"));
+    if command.eq_ignore_ascii_case("intent execute")
+        || strip_ascii_prefix(&command, "intent execute ").is_some()
+    {
+        let value = strip_ascii_prefix(&command, "intent execute ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let Some(request) = app.intent_request.clone() else {
+            app.report_error("Resolve an intent before executing a selected candidate.");
+            return;
+        };
+        let Some(result) = app.intent_result.as_ref() else {
+            app.report_error("No intent resolution is available for execution.");
+            return;
+        };
+        let Some(candidate) = result.candidates.get(app.intent_selection) else {
+            app.report_error("No candidate is selected.");
+            return;
+        };
+        let execution = SemanticIntentExecutionRequest {
+            request: SemanticIntentRequest {
+                expected_revision: result.revision,
+                ..request
+            },
+            candidate_id: candidate.id.clone(),
+            value,
+        };
+        if let Err(error) = execution.validate() {
+            app.report_error(error.to_string());
+            return;
+        }
+        queue_browser_operation(
+            app,
+            commands,
+            BrowserOperation::ExecuteIntent(Box::new(execution)),
+        );
+        return;
+    }
     match parse_command(&command) {
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
             app.add_activity(
                 "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
             );
             app.add_activity(
-                "resolve-intent FILE | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
+                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {

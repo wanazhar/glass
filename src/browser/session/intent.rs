@@ -55,7 +55,7 @@ pub enum SemanticIntentAction {
 
 /// A caller-approved candidate and the bounded value needed by value-bearing
 /// actions. Resolution remains inspectable and separate from dispatch.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SemanticIntentExecutionRequest {
     pub request: SemanticIntentRequest,

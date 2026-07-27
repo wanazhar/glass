@@ -160,8 +160,8 @@ The library exposes `BrowserSession`, typed session options and policies,
 compact observations, revision-safe actions, target/frame management, storage,
 downloads, screenshots, PDFs, and the MCP server implementation.
 
-Small optional MCP clients are included for [TypeScript](clients/typescript/)
-and [Python](clients/python/). They launch a local Glass binary and do not
+Small optional MCP clients are included for [TypeScript](https://github.com/wanazhar/glass/tree/main/clients/typescript)
+and [Python](https://github.com/wanazhar/glass/tree/main/clients/python). They launch a local Glass binary and do not
 include a browser runtime.
 
 ## Scope and safety

@@ -31,7 +31,7 @@
 
 - [Contributing](../CONTRIBUTING.md) — development workflow and checks.
 - [Release checklist](release-checklist.md) — repeatable `0.x` release process.
-- [Benchmarks](../benchmarks/README.md) — performance methodology.
+- [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.
 
 ## Design
 

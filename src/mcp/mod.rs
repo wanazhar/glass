@@ -1,7 +1,7 @@
 //! Model Context Protocol (MCP) server.
 //!
 //! JSON-RPC 2.0 stdio server implementing the MCP 2024-11-05 protocol.
-//! Provides browser automation tools, prompts, and resources to AI clients
+//! Provides browser automation tools, prompts, and resources to MCP clients
 //! with policy-gated execution and bounded response sizes.
 
 pub mod prompts;

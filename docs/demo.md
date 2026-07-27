@@ -36,7 +36,7 @@ claim.
    as structured errors.
 
 The MCP server or either thin client from
-[`clients/typescript`](../clients/typescript) and
-[`clients/python`](../clients/python). Keep the terminal visible, show the
+[`clients/typescript`](https://github.com/wanazhar/glass/tree/main/clients/typescript) and
+[`clients/python`](https://github.com/wanazhar/glass/tree/main/clients/python). Keep the terminal visible, show the
 compact JSON response, and omit credentials, cookies, screenshots, and page
 secrets.

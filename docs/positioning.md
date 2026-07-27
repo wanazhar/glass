@@ -50,5 +50,5 @@ Glass is not a test framework, a hosted browser, or a workflow generator.
 For command details, see the [CLI reference](cli.md), [MCP guide](mcp.md), and
 [action contract](actions.md). For resource measurements and comparison
 methodology, see the [category metric guide](category-metric.md) and
-[benchmarks](../benchmarks/README.md); those measurements are version- and
+[benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks); those measurements are version- and
 environment-specific and are not product guarantees.

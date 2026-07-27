@@ -237,6 +237,7 @@ enum ToolInvocation<'a> {
     Workflow {
         definition: Value,
         inputs: Value,
+        checkpoint: Option<Value>,
     },
     Verify {
         predicate: Value,
@@ -1072,12 +1073,26 @@ async fn call_tool(
                     .await?,
             )
         }
-        ToolInvocation::Workflow { definition, inputs } => {
+        ToolInvocation::Workflow {
+            definition,
+            inputs,
+            checkpoint,
+        } => {
             let workflow = crate::browser::session::WorkflowDefinition::from_value(definition)
                 .map_err(|error| format!("invalid workflow: {error}"))?;
             let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs)
                 .map_err(|error| format!("invalid workflow inputs: {error}"))?;
-            serialized_result(&session.run_workflow(&workflow, &inputs).await?)
+            let result = match checkpoint {
+                Some(checkpoint) => {
+                    let checkpoint = serde_json::from_value(checkpoint)
+                        .map_err(|error| format!("invalid workflow checkpoint: {error}"))?;
+                    session
+                        .resume_workflow(&workflow, &inputs, &checkpoint)
+                        .await?
+                }
+                None => session.run_workflow(&workflow, &inputs).await?,
+            };
+            serialized_result(&result)
         }
         ToolInvocation::Verify {
             predicate,
@@ -1412,6 +1427,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .get("inputs")
                 .cloned()
                 .unwrap_or_else(|| json!({})),
+            checkpoint: arguments.get("checkpoint").cloned(),
         }),
         "verify" => Ok(ToolInvocation::Verify {
             predicate: arguments
@@ -1814,7 +1830,8 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "workflow": {"type": "object"},
-                    "inputs": {"type": "object"}
+                    "inputs": {"type": "object"},
+                    "checkpoint": {"type": "object"}
                 },
                 "required": ["workflow"]
             }),
@@ -2722,8 +2739,9 @@ mod tests {
                 "inputs": {"name": "Ada"}
             }
         });
-        let ToolInvocation::Workflow { definition, inputs } =
-            parse_tool_invocation(&params).unwrap()
+        let ToolInvocation::Workflow {
+            definition, inputs, ..
+        } = parse_tool_invocation(&params).unwrap()
         else {
             panic!("expected workflow invocation");
         };

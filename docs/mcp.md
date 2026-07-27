@@ -106,9 +106,10 @@ mode requires the initial revision and carries each successful action's
 current revision into the next step. Unguarded mode preserves compatibility.
 The `atomic` option remains a separate target pre-resolution check.
 
-The `workflow` tool accepts a declarative `workflow` object and optional typed
-`inputs`. It validates the workflow contract before dispatch, executes its
-bounded steps through the shared browser session, and returns step states,
+The `workflow` tool accepts a declarative `workflow` object, optional typed
+`inputs`, and an optional reconciled `checkpoint`. Without a checkpoint it
+validates the workflow contract before dispatch; with one it validates the
+checkpoint and runs only its safe pending suffix. Results contain step states,
 terminal proof, typed outputs, and a deterministic trace. A failed step stops
 the workflow; effects observed after dispatch are never treated as safely
 reversible.

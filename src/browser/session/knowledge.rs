@@ -91,7 +91,7 @@ pub struct KnowledgeSource {
 }
 
 /// Conditions that make remembered knowledge stale or unusable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeInvalidation {
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -82,6 +82,10 @@ pub use knowledge::{
     KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordKind, KnowledgeScope, KnowledgeSource,
     KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
+pub use knowledge_store::{
+    DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgeStore, KnowledgeStoreChange, KnowledgeStoreError,
+    KnowledgeStoreLimits,
+};
 pub use retry::{RetryPolicy, RetryPredicate};
 pub use semantic::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticChangeKind,
@@ -111,6 +115,7 @@ mod identity;
 mod intent;
 mod intercept;
 mod knowledge;
+mod knowledge_store;
 mod locator;
 mod navigate;
 mod observe;

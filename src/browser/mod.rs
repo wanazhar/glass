@@ -55,6 +55,10 @@ pub use session::InterceptGuard;
 pub use session::KnowledgeConfidence;
 /// Invalidation rules for persisted browser knowledge.
 pub use session::KnowledgeInvalidation;
+/// Auditable confidence-state transition for persisted browser knowledge.
+pub use session::KnowledgeLifecycleEvent;
+/// Profile isolation class for persisted browser knowledge.
+pub use session::KnowledgeProfileScope;
 /// One persisted browser knowledge record.
 pub use session::KnowledgeRecord;
 /// Knowledge record category.
@@ -63,6 +67,14 @@ pub use session::KnowledgeRecordKind;
 pub use session::KnowledgeScope;
 /// Provenance for a persisted browser knowledge record.
 pub use session::KnowledgeSource;
+/// Crash-safe local persistence for bounded knowledge records.
+pub use session::KnowledgeStore;
+/// Result of a knowledge store mutation, including pruning evidence.
+pub use session::KnowledgeStoreChange;
+/// Knowledge store I/O, contract, and capacity error.
+pub use session::KnowledgeStoreError;
+/// Record and byte limits for a knowledge store.
+pub use session::KnowledgeStoreLimits;
 /// Top-level persisted knowledge store document.
 pub use session::KnowledgeStoreSnapshot;
 /// Validation error for the knowledge contract.

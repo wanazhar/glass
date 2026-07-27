@@ -888,6 +888,7 @@ pub enum WorkflowRunStatus {
     Completed,
     Failed,
     BudgetExhausted,
+    ResumeRequired,
 }
 
 /// Evidence that the workflow's terminal condition was satisfied.
@@ -1273,6 +1274,33 @@ impl WorkflowRunResult {
             final_revision,
         }
     }
+
+    fn resume_required(
+        workflow: &WorkflowDefinition,
+        run_id: String,
+        steps: Vec<WorkflowStepRecord>,
+        failed_step: Option<String>,
+        reason: impl Into<String>,
+        initial_revision: u64,
+        final_revision: u64,
+    ) -> Self {
+        let mut trace = WorkflowTrace::from_steps(&steps);
+        trace.run_id = Some(run_id.clone());
+        Self {
+            run_id,
+            name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            status: WorkflowRunStatus::ResumeRequired,
+            steps,
+            trace,
+            outputs: BTreeMap::new(),
+            terminal_proof: None,
+            failed_step,
+            failure: Some(bound_workflow_text(&reason.into(), 512)),
+            initial_revision,
+            final_revision,
+        }
+    }
 }
 
 impl super::BrowserSession {
@@ -1505,7 +1533,7 @@ impl super::BrowserSession {
                             .unwrap_or_else(|| "workflow step failed".into())
                     };
                     skip_remaining(&mut records, index + 1);
-                    return Ok(WorkflowRunResult::failed(
+                    return Ok(WorkflowRunResult::resume_required(
                         workflow,
                         run_id.clone(),
                         records,
@@ -1553,7 +1581,7 @@ impl super::BrowserSession {
                             current_revision(self),
                         ));
                     }
-                    return Ok(WorkflowRunResult::failed(
+                    return Ok(WorkflowRunResult::resume_required(
                         workflow,
                         run_id.clone(),
                         records,
@@ -2750,6 +2778,24 @@ mod tests {
         assert_eq!(result.trace.run_id.as_deref(), Some("run_test"));
         let value = serde_json::to_value(result).unwrap();
         assert_eq!(value["status"], "budget_exhausted");
+    }
+
+    #[test]
+    fn post_dispatch_failures_require_resume_reconciliation() {
+        let result = WorkflowRunResult::resume_required(
+            &definition(),
+            "run_test".into(),
+            vec![WorkflowStepRecord::new("open")],
+            Some("open".into()),
+            "postcondition was not proven",
+            3,
+            4,
+        );
+        assert_eq!(result.status, WorkflowRunStatus::ResumeRequired);
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["status"],
+            "resume_required"
+        );
     }
 
     #[test]

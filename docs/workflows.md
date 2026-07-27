@@ -83,6 +83,10 @@ retry-safe class. A failure after dispatch is recorded and stops the workflow;
 Glass does not claim that an external effect was rolled back or replay it
 automatically.
 
+When dispatch was acknowledged but the step cannot be verified, the run status
+is `resume_required`. This is distinct from a pre-dispatch `failed` result and
+means the caller must reconcile the current page before deciding what to do.
+
 For bounded control flow, a step may set `repeat` from 1 through 8. Repeated
 steps count toward `maxSteps` and require a retry-safe transaction class, so
 `repeat` cannot be used to replay an unknown or non-idempotent effect.

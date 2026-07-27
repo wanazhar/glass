@@ -1,5 +1,12 @@
 # Glass delivery plans
 
+## Active post-0.1.18 roadmap
+
+Issue #21 is being delivered first as a serial, local-only workflow-runtime
+sprint. See [transactional workflow analysis](analysis/transactional-workflows-019.md)
+and [workflow foundation task](tasks/workflow-019-001.md). Issues #22–#27 remain
+queued until #21 is complete and verified.
+
 ## Active plan: best-in-class agent browser
 
 Status: Draft — requires owner approval before implementation

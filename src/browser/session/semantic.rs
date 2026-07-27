@@ -6,6 +6,7 @@
 //! semantic surface is built incrementally.
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -21,6 +22,7 @@ const MAX_LABEL_BYTES: usize = 256;
 const MAX_TITLE_BYTES: usize = 1_024;
 const MAX_URL_BYTES: usize = 2_048;
 const MAX_TARGETS: usize = 32;
+const MAX_CHANGE_ITEMS: usize = 128;
 const MAX_ROLE_BYTES: usize = 64;
 const MAX_VISIBLE_TEXT_BYTES: usize = 16 * 1024;
 
@@ -148,7 +150,7 @@ pub struct SemanticExpansionHandle {
 }
 
 /// A bounded, revision-scoped action reference in an interactive observation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SemanticTarget {
     pub reference: String,
@@ -160,7 +162,7 @@ pub struct SemanticTarget {
 }
 
 /// A bounded accessibility node included only by detailed semantic levels.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SemanticAccessibilityNode {
     pub role: String,
@@ -172,8 +174,63 @@ pub struct SemanticAccessibilityNode {
     pub interactive: bool,
 }
 
+/// Kind of bounded semantic entity change between two compatible revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SemanticChangeKind {
+    Added,
+    Removed,
+    Updated,
+}
+
+/// Region-level change identified by stable semantic IDs where possible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticRegionChange {
+    pub id: String,
+    pub kind: SemanticChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_id: Option<String>,
+}
+
+/// Target-level change scoped to a semantic region.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticTargetChange {
+    pub region_id: String,
+    pub target_id: String,
+    pub kind: SemanticChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_target_id: Option<String>,
+}
+
+/// Conservative advisory mapping between revision-scoped target references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticContinuity {
+    pub previous_reference: String,
+    pub current_reference: String,
+    pub confidence: SemanticConfidence,
+    pub evidence: String,
+}
+
+/// Bounded changes between two observations on the same route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticChangeSet {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub route: SemanticRouteIdentity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<SemanticRegionChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<SemanticTargetChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuity: Vec<SemanticContinuity>,
+}
+
 /// A bounded semantic region summary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SemanticRegion {
     pub id: String,
@@ -220,7 +277,7 @@ pub struct SemanticObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_accessibility: Option<Vec<SemanticAccessibilityNode>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub changes: Option<Value>,
+    pub changes: Option<SemanticChangeSet>,
     pub limits: SemanticObservationLimits,
 }
 
@@ -352,6 +409,110 @@ impl SemanticObservation {
         Ok(observation)
     }
 
+    /// Compute bounded changes from an earlier compatible observation.
+    pub fn diff_from(
+        &self,
+        previous: &SemanticObservation,
+    ) -> Result<SemanticChangeSet, SemanticObservationError> {
+        self.validate()?;
+        previous.validate()?;
+        if self.route != previous.route {
+            return Err(SemanticObservationError::new(
+                "route",
+                "semantic diff requires the same target, frame, and URL",
+            ));
+        }
+        if self.level != previous.level {
+            return Err(SemanticObservationError::new(
+                "level",
+                "semantic diff requires matching observation levels",
+            ));
+        }
+        if self.revision < previous.revision {
+            return Err(SemanticObservationError::new(
+                "revision",
+                "semantic diff cannot move backwards in revision",
+            ));
+        }
+
+        let mut regions = Vec::new();
+        let mut matched_current = BTreeSet::new();
+        for previous_region in &previous.regions {
+            let exact = self
+                .regions
+                .iter()
+                .position(|region| region.id == previous_region.id);
+            let fallback = exact.or_else(|| {
+                let candidates: Vec<usize> = self
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, region)| {
+                        !matched_current.contains(index)
+                            && region.kind == previous_region.kind
+                            && region.label == previous_region.label
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                (candidates.len() == 1).then_some(candidates[0])
+            });
+            if let Some(current_index) = fallback {
+                matched_current.insert(current_index);
+                let current_region = &self.regions[current_index];
+                if current_region != previous_region {
+                    regions.push(SemanticRegionChange {
+                        id: current_region.id.clone(),
+                        kind: SemanticChangeKind::Updated,
+                        previous_id: (current_region.id != previous_region.id)
+                            .then(|| previous_region.id.clone()),
+                    });
+                }
+            } else {
+                regions.push(SemanticRegionChange {
+                    id: previous_region.id.clone(),
+                    kind: SemanticChangeKind::Removed,
+                    previous_id: None,
+                });
+            }
+        }
+        for (index, current_region) in self.regions.iter().enumerate() {
+            if !matched_current.contains(&index)
+                && !previous
+                    .regions
+                    .iter()
+                    .any(|region| region.id == current_region.id)
+            {
+                regions.push(SemanticRegionChange {
+                    id: current_region.id.clone(),
+                    kind: SemanticChangeKind::Added,
+                    previous_id: None,
+                });
+            }
+        }
+
+        let (targets, continuity) = diff_targets(previous, self);
+        let changes = SemanticChangeSet {
+            from_revision: previous.revision,
+            to_revision: self.revision,
+            route: self.route.clone(),
+            regions,
+            targets,
+            continuity,
+        };
+        validate_change_set(&changes)?;
+        Ok(changes)
+    }
+
+    /// Attach a revision-aware diff to this observation.
+    pub fn with_changes_from(
+        mut self,
+        previous: &SemanticObservation,
+    ) -> Result<Self, SemanticObservationError> {
+        self.changes = Some(self.diff_from(previous)?);
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Validate bounds and cross-field identity invariants.
     pub fn validate(&self) -> Result<(), SemanticObservationError> {
         if self.schema_version != SEMANTIC_OBSERVATION_SCHEMA_VERSION {
@@ -379,6 +540,15 @@ impl SemanticObservation {
             ));
         }
         validate_level_payload(self)?;
+        if let Some(changes) = &self.changes {
+            validate_change_set(changes)?;
+            if changes.to_revision != self.revision || changes.route != self.route {
+                return Err(SemanticObservationError::new(
+                    "changes",
+                    "change set does not belong to this observation",
+                ));
+            }
+        }
         if self.page.target_id != self.route.target_id
             || self.page.frame_id != self.route.frame_id
             || self.page.url != self.route.url
@@ -507,6 +677,202 @@ fn validate_level_payload(
         ));
     }
     Ok(())
+}
+
+fn validate_change_set(changes: &SemanticChangeSet) -> Result<(), SemanticObservationError> {
+    validate_route("changes.route", &changes.route)?;
+    if changes.from_revision > changes.to_revision {
+        return Err(SemanticObservationError::new(
+            "changes.fromRevision",
+            "cannot be newer than toRevision",
+        ));
+    }
+    if changes.regions.len() > MAX_CHANGE_ITEMS {
+        return Err(SemanticObservationError::new(
+            "changes.regions",
+            format!("contains more than {MAX_CHANGE_ITEMS} changes"),
+        ));
+    }
+    if changes.targets.len() > MAX_CHANGE_ITEMS {
+        return Err(SemanticObservationError::new(
+            "changes.targets",
+            format!("contains more than {MAX_CHANGE_ITEMS} changes"),
+        ));
+    }
+    if changes.continuity.len() > MAX_CHANGE_ITEMS {
+        return Err(SemanticObservationError::new(
+            "changes.continuity",
+            format!("contains more than {MAX_CHANGE_ITEMS} mappings"),
+        ));
+    }
+    for (index, change) in changes.regions.iter().enumerate() {
+        validate_text(
+            &format!("changes.regions[{index}].id"),
+            &change.id,
+            MAX_ID_BYTES,
+            false,
+        )?;
+        if let Some(previous_id) = &change.previous_id {
+            validate_text(
+                &format!("changes.regions[{index}].previousId"),
+                previous_id,
+                MAX_ID_BYTES,
+                false,
+            )?;
+        }
+    }
+    for (index, change) in changes.targets.iter().enumerate() {
+        validate_text(
+            &format!("changes.targets[{index}].regionId"),
+            &change.region_id,
+            MAX_ID_BYTES,
+            false,
+        )?;
+        validate_text(
+            &format!("changes.targets[{index}].targetId"),
+            &change.target_id,
+            MAX_ID_BYTES,
+            false,
+        )?;
+        if let Some(previous_target_id) = &change.previous_target_id {
+            validate_text(
+                &format!("changes.targets[{index}].previousTargetId"),
+                previous_target_id,
+                MAX_ID_BYTES,
+                false,
+            )?;
+        }
+    }
+    for (index, continuity) in changes.continuity.iter().enumerate() {
+        validate_text(
+            &format!("changes.continuity[{index}].previousReference"),
+            &continuity.previous_reference,
+            MAX_ID_BYTES,
+            false,
+        )?;
+        validate_text(
+            &format!("changes.continuity[{index}].currentReference"),
+            &continuity.current_reference,
+            MAX_ID_BYTES,
+            false,
+        )?;
+        validate_text(
+            &format!("changes.continuity[{index}].evidence"),
+            &continuity.evidence,
+            MAX_EVIDENCE_BYTES,
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+fn diff_targets(
+    previous: &SemanticObservation,
+    current: &SemanticObservation,
+) -> (Vec<SemanticTargetChange>, Vec<SemanticContinuity>) {
+    let mut changes = Vec::new();
+    let mut continuity = Vec::new();
+    let mut matched_current = BTreeSet::new();
+    for previous_region in &previous.regions {
+        let Some(current_region) = current
+            .regions
+            .iter()
+            .find(|region| region.id == previous_region.id)
+        else {
+            for target in &previous_region.targets {
+                changes.push(SemanticTargetChange {
+                    region_id: previous_region.id.clone(),
+                    target_id: target.reference.clone(),
+                    kind: SemanticChangeKind::Removed,
+                    previous_target_id: None,
+                });
+            }
+            continue;
+        };
+        for previous_target in &previous_region.targets {
+            let exact = current_region
+                .targets
+                .iter()
+                .position(|target| target.reference == previous_target.reference);
+            let fallback = exact.or_else(|| {
+                let candidates: Vec<usize> = current_region
+                    .targets
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, target)| {
+                        !matched_current.contains(&(*index, current_region.id.clone()))
+                            && target.role == previous_target.role
+                            && target.name == previous_target.name
+                            && target.input_type == previous_target.input_type
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                (candidates.len() == 1).then_some(candidates[0])
+            });
+            if let Some(current_index) = fallback {
+                matched_current.insert((current_index, current_region.id.clone()));
+                let current_target = &current_region.targets[current_index];
+                if current_target != previous_target {
+                    changes.push(SemanticTargetChange {
+                        region_id: current_region.id.clone(),
+                        target_id: current_target.reference.clone(),
+                        kind: SemanticChangeKind::Updated,
+                        previous_target_id: (current_target.reference != previous_target.reference)
+                            .then(|| previous_target.reference.clone()),
+                    });
+                }
+                if current_target.reference != previous_target.reference {
+                    continuity.push(SemanticContinuity {
+                        previous_reference: previous_target.reference.clone(),
+                        current_reference: current_target.reference.clone(),
+                        confidence: SemanticConfidence::Medium,
+                        evidence: "unique role/name/inputType match".into(),
+                    });
+                }
+            } else {
+                changes.push(SemanticTargetChange {
+                    region_id: previous_region.id.clone(),
+                    target_id: previous_target.reference.clone(),
+                    kind: SemanticChangeKind::Removed,
+                    previous_target_id: None,
+                });
+            }
+        }
+        for (index, current_target) in current_region.targets.iter().enumerate() {
+            if !matched_current.contains(&(index, current_region.id.clone()))
+                && !previous_region
+                    .targets
+                    .iter()
+                    .any(|target| target.reference == current_target.reference)
+            {
+                changes.push(SemanticTargetChange {
+                    region_id: current_region.id.clone(),
+                    target_id: current_target.reference.clone(),
+                    kind: SemanticChangeKind::Added,
+                    previous_target_id: None,
+                });
+            }
+        }
+    }
+    for current_region in &current.regions {
+        if !previous
+            .regions
+            .iter()
+            .any(|region| region.id == current_region.id)
+        {
+            for target in &current_region.targets {
+                changes.push(SemanticTargetChange {
+                    region_id: current_region.id.clone(),
+                    target_id: target.reference.clone(),
+                    kind: SemanticChangeKind::Added,
+                    previous_target_id: None,
+                });
+            }
+        }
+    }
+    changes.truncate(MAX_CHANGE_ITEMS);
+    continuity.truncate(MAX_CHANGE_ITEMS);
+    (changes, continuity)
 }
 
 fn validate_route(
@@ -920,6 +1286,54 @@ mod tests {
         value["futureField"] = Value::Bool(true);
         let error = SemanticObservation::from_json(&value.to_string()).unwrap_err();
         assert_eq!(error.path, "$");
+    }
+
+    #[test]
+    fn computes_revision_changes_and_conservative_target_continuity() {
+        let mut previous = observation();
+        previous.level = SemanticObservationLevel::Interactive;
+        previous.regions[0].targets.push(SemanticTarget {
+            reference: "axr-42-9".into(),
+            role: "button".into(),
+            name: "Continue".into(),
+            input_type: None,
+        });
+
+        let mut current = previous.clone();
+        current.revision = 43;
+        current.regions[0].expansion.as_mut().unwrap().revision = 43;
+        current.regions[0].targets[0].reference = "axr-43-9".into();
+        current.changes = None;
+
+        let changes = current.diff_from(&previous).unwrap();
+        assert_eq!(changes.from_revision, 42);
+        assert_eq!(changes.to_revision, 43);
+        assert_eq!(changes.targets.len(), 1);
+        assert_eq!(changes.targets[0].kind, SemanticChangeKind::Updated);
+        assert_eq!(changes.continuity.len(), 1);
+        assert_eq!(changes.continuity[0].confidence, SemanticConfidence::Medium);
+
+        let enriched = current.with_changes_from(&previous).unwrap();
+        assert!(enriched.changes.is_some());
+        assert!(SemanticObservation::from_json(&enriched.to_canonical_json().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn rejects_backwards_or_cross_route_semantic_diffs() {
+        let previous = observation();
+        let mut current = observation();
+        current.revision = 41;
+        current.regions[0].expansion.as_mut().unwrap().revision = 41;
+        let error = current.diff_from(&previous).unwrap_err();
+        assert_eq!(error.path, "revision");
+
+        current.revision = 42;
+        current.regions[0].expansion.as_mut().unwrap().revision = 42;
+        current.route.url = "https://other.test".into();
+        current.page.url = "https://other.test".into();
+        current.regions[0].expansion.as_mut().unwrap().route = current.route.clone();
+        let error = current.diff_from(&previous).unwrap_err();
+        assert_eq!(error.path, "route");
     }
 
     #[test]

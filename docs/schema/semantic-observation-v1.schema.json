@@ -15,7 +15,7 @@
     "text": {"type": "string", "maxLength": 16384},
     "accessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
     "rawAccessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
-    "changes": {},
+    "changes": {"$ref": "#/$defs/changeSet"},
     "limits": {"$ref": "#/$defs/limits"}
   },
   "$defs": {
@@ -79,6 +79,51 @@
         "name": {"type": "string", "maxLength": 256},
         "children": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
         "interactive": {"type": "boolean"}
+      }
+    },
+    "changeSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fromRevision", "toRevision", "route"],
+      "properties": {
+        "fromRevision": {"type": "integer", "minimum": 0},
+        "toRevision": {"type": "integer", "minimum": 0},
+        "route": {"$ref": "#/$defs/route"},
+        "regions": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/regionChange"}},
+        "targets": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/targetChange"}},
+        "continuity": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/continuity"}}
+      }
+    },
+    "regionChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"enum": ["added", "removed", "updated"]},
+        "previousId": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "targetChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regionId", "targetId", "kind"],
+      "properties": {
+        "regionId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "targetId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"enum": ["added", "removed", "updated"]},
+        "previousTargetId": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "continuity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previousReference", "currentReference", "confidence", "evidence"],
+      "properties": {
+        "previousReference": {"type": "string", "minLength": 1, "maxLength": 128},
+        "currentReference": {"type": "string", "minLength": 1, "maxLength": 128},
+        "confidence": {"enum": ["exact", "high", "medium", "low", "unknown"]},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 128}
       }
     },
     "expansion": {

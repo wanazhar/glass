@@ -3,6 +3,17 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [0.1.18] - 2026-07-27
+
+### Added
+
+- Revision guards for all supported targeted mutations across the Rust, CLI,
+  MCP, TypeScript, and Python interfaces.
+- Bounded verification predicates, execution identities, effect witnesses,
+  explicit recovery strategies, and revision-aware batch modes.
+- Deterministic fixture coverage, MCP contract resources, and TUI action
+  evidence for Linux and macOS workflows.
+
 ## [0.1.17] - 2026-07-27
 
 ### Added

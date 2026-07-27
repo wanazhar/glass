@@ -9,8 +9,8 @@ silently retarget an action.
 
 ## Status
 
-Glass `0.1.17` is published as the `glass-browser` crate. Release binaries are
-provided for Linux x86-64 and macOS x86-64/arm64. Windows is not a supported
+Glass `0.1.18` is prepared as the next `glass-browser` release. The release
+workflow builds Linux x86-64 and macOS x86-64/arm64 binaries. Windows is not a supported
 target.
 
 The command-line interface, terminal UI, MCP server, and Rust library share the
@@ -18,7 +18,8 @@ same session runtime.
 
 ## Install
 
-Install the published command with Cargo:
+Install the published command with Cargo (or use the checkout commands below
+while the next release is being prepared):
 
 ```console
 cargo install glass-browser --locked
@@ -31,12 +32,12 @@ Or build from a checkout:
 cargo install --path . --locked
 ```
 
-Prebuilt Linux and macOS binaries are available from the
-[0.1.17 GitHub release](https://github.com/wanazhar/glass/releases/tag/v0.1.17).
+Prebuilt Linux and macOS binaries will be available from the
+[0.1.18 GitHub release](https://github.com/wanazhar/glass/releases/tag/v0.1.18).
 The assets include SHA-256 checksum files. For example:
 
 ```console
-GLASS_VERSION=v0.1.17
+GLASS_VERSION=v0.1.18
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64" -o glass
 curl -fL "https://github.com/wanazhar/glass/releases/download/${GLASS_VERSION}/glass-linux-x86_64.sha256" -o glass.sha256
 sha256sum -c glass.sha256

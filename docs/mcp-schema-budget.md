@@ -74,7 +74,7 @@ under 4k tokens for the full `tools/list` response.
 | `clearGeolocation` | (none) | — | |
 | `setTimezone` | `timezoneId` | `timezoneId` | IANA timezone ID |
 
-**Total: 59 tools.**
+**Total: 60 tools.**
 
 ## Schema Size Estimate
 
@@ -83,7 +83,7 @@ Each tool contributes:
 - `description`: ~40-80 bytes
 - `inputSchema`: ~80-300 bytes (typically `{"type":"object","properties":{...}}`)
 
-The 0.1.17 build currently measures 14,076 UTF-8 bytes, or an estimated 3,519
+The 0.1.18 build currently measures 15,190 UTF-8 bytes, or an estimated 3,798
 tokens using the repository's four-bytes-per-token method. Re-measure a local
 build with `GLASS_BINARY_PATH=target/debug/glass node
 benchmarks/schema-scoreboard.mjs` when the tool descriptions or schemas change.

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Glass Reliability Lab Fixture v1</title>
+    <style>
+      #overlay { position: fixed; inset: 0; display: none; z-index: 10; background: #fff8; }
+      #moving { position: relative; }
+      #region-b { min-height: 40px; border: 1px dashed #888; }
+      iframe { width: 300px; height: 80px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section id="region-a" aria-label="Primary controls">
+        <button id="target">Submit request</button>
+        <button id="duplicate">Submit request</button>
+        <button id="moving">Moving target</button>
+      </section>
+      <section id="region-b" aria-label="Secondary controls"></section>
+      <div id="overlay" aria-label="Blocking overlay">Overlay</div>
+      <iframe id="frame" title="Embedded controls" srcdoc="<button id='frame-target'>Frame target</button>"></iframe>
+      <output id="state">idle</output>
+      <output id="submit-count" data-side-effect-count="submit">0</output>
+    </main>
+    <script>
+      const state = document.querySelector("#state");
+      const submitCount = document.querySelector("#submit-count");
+      const original = document.querySelector("#target");
+      const lab = {
+        reset() {
+          document.querySelector("#overlay").style.display = "none";
+          document.querySelector("#moving").style.left = "0";
+          document.querySelector("#region-a").append(document.querySelector("#target"));
+          state.value = "idle";
+          submitCount.value = "0";
+        },
+        replaceTarget() {
+          const current = document.querySelector("#target");
+          const replacement = current.cloneNode(true);
+          replacement.id = "replacement";
+          current.replaceWith(replacement);
+          state.value = "target-replaced";
+        },
+        renameTarget() {
+          document.querySelector("#target").textContent = "Changed request";
+          state.value = "target-renamed";
+        },
+        duplicateTarget() {
+          document.querySelector("#target").after(document.querySelector("#duplicate"));
+          state.value = "duplicate-inserted";
+        },
+        moveTargetToOtherRegion() {
+          document.querySelector("#region-b").append(document.querySelector("#target"));
+          state.value = "region-moved";
+        },
+        showOverlay() {
+          document.querySelector("#overlay").style.display = "block";
+          state.value = "overlay-visible";
+        },
+        moveTarget() {
+          document.querySelector("#moving").style.left = "240px";
+          state.value = "target-moved";
+        },
+        detachFrame() {
+          document.querySelector("#frame").remove();
+          state.value = "frame-detached";
+        },
+        scheduleEffectMarker(delayMs = 100) {
+          state.value = "effect-pending";
+          setTimeout(() => { state.value = "effect-visible"; }, delayMs);
+        },
+        commitSubmit() {
+          const count = Number(submitCount.value) + 1;
+          submitCount.value = String(count);
+          state.value = "submitted";
+        },
+        snapshot() {
+          return {
+            state: state.value,
+            submitCount: Number(submitCount.value),
+            targetPresent: Boolean(document.querySelector("#target")),
+            framePresent: Boolean(document.querySelector("#frame")),
+            overlayVisible: getComputedStyle(document.querySelector("#overlay")).display !== "none"
+          };
+        }
+      };
+      original.onclick = lab.commitSubmit;
+      window.reliabilityLab = lab;
+    </script>
+  </body>
+</html>

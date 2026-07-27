@@ -9,6 +9,8 @@
   bounded verification evidence.
 - [Workflow definitions](workflows.md) — versioned declarative workflows,
   typed inputs, budgets, and pre-execution validation.
+- [Workflow authoring](workflow-authoring.md) — YAML compilation, diagnostics,
+  safe input inference, preview, diff, and the semantic recorder boundary.
 - [Action contract](action-contract.md) — the canonical `0.1.18` execution
   envelope, failure phases, and explicit recovery policies.
 - [Schema compatibility](schema-compatibility.md) — additive cross-interface

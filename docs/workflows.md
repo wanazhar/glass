@@ -1,10 +1,11 @@
 # Workflow definitions
 
-Glass 0.1.19 introduces the validated definition contract and a linear runner
-for the transactional workflow runtime. Definitions are validated before
-execution, and each step records its state transition history. The local
-development surface also includes bounded retries, traces, checkpoints, and
-resume reconciliation.
+The current 0.2.0 development surface includes the validated definition
+contract and a linear runner for the transactional workflow runtime.
+Definitions are validated before execution, and each step records its state
+transition history. The local development surface also includes bounded
+retries, traces, checkpoints, resume reconciliation, and offline authoring
+tools.
 
 ## Contract
 
@@ -173,9 +174,13 @@ dispatches the next step.
 
 `WorkflowRecorder` is a local draft builder for reviewed authoring flows. Its
 click and text-input helpers retain semantic role/name targets, mark every
-draft for review, and store typed values as `${inputs.name}` placeholders.
-Recorder drafts are not execution evidence and do not automatically attach to
-or observe a browser session.
+draft for review, and store typed values as `${inputs.name}` placeholders. It
+can also capture bounded semantic resolution evidence, including ambiguity,
+revision, semantic region kind, route context, and digest-only target/frame
+fingerprints. Recorder drafts are not execution evidence and do not
+automatically attach to or observe a browser session. See
+[workflow authoring](workflow-authoring.md) for the current compiler,
+diagnostic, preview, and diff boundaries.
 
 ## Workflow scorecard
 
@@ -188,6 +193,6 @@ linear completion, conditional skipping, budget exhaustion, marker
 reconciliation, and terminal-proof refusal. The command prints JSON and fails
 if any scenario diverges from the corpus.
 
-This is a local, unreleased 0.1.19 development surface. It is not a public
-registry or GitHub release; the complete workflow roadmap remains targeted for
-the 0.2.0 release.
+This is a local, unreleased 0.2.0 development surface. It is not a public
+registry or GitHub release; the remaining workflow roadmap is still being
+completed before publication.

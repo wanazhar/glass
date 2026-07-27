@@ -71,6 +71,8 @@ select-frame ID
 evaluate EXPRESSION
 batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
 workflow [JSON_FILE]
+workflow compile|format|validate|lint|preview SOURCE
+workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 resolve-intent [JSON_FILE]
@@ -120,6 +122,12 @@ working root, and restores download denial on success, error, or cancellation.
 (or a workflow definition by itself), validates it before dispatch, and emits
 the workflow result with step states, terminal proof, typed outputs, and a
 deterministic trace.
+
+The `workflow compile`, `format`, `validate`, `lint`, `preview`, and `diff`
+subcommands are offline authoring operations. They parse YAML or JSON, apply
+the same workflow validation as the runtime, and do not start Chrome. See
+[workflow authoring](workflow-authoring.md) for diagnostics and redaction
+boundaries.
 
 `workflow-resume` reconciles the definition and checkpoint against the current
 browser state, then executes only the safe pending suffix. It refuses

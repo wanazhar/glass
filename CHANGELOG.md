@@ -24,6 +24,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Fresh-only and assessed semantic knowledge observations, plus explicit
   knowledge-backed intent resolution using historical fingerprints only as
   secondary evidence.
+- YAML/JSON workflow authoring with canonical compilation, source diagnostics,
+  safe parameter inference, redacted preview, stable diff output, and
+  migration guidance.
+- Semantic recorder drafts that retain bounded resolution evidence without
+  storing replay handles or literal input values.
 
 ### Changed
 

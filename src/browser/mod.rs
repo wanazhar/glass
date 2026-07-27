@@ -73,6 +73,8 @@ pub use session::KnowledgeObservationMode;
 pub use session::KnowledgeObservationReport;
 /// Profile isolation class for persisted browser knowledge.
 pub use session::KnowledgeProfileScope;
+/// Result of purging records scoped to one origin.
+pub use session::KnowledgePurgeResult;
 /// One persisted browser knowledge record.
 pub use session::KnowledgeRecord;
 /// Inputs for building a bounded page-family knowledge record.
@@ -95,6 +97,8 @@ pub use session::KnowledgeStoreError;
 pub use session::KnowledgeStoreLimits;
 /// Top-level persisted knowledge store document.
 pub use session::KnowledgeStoreSnapshot;
+/// Bounded record counts and serialized size for a knowledge store.
+pub use session::KnowledgeStoreStats;
 /// Validation error for the knowledge contract.
 pub use session::KnowledgeValidationError;
 /// Revision-aware navigation result.

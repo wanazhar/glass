@@ -9,6 +9,7 @@ use super::{
     KnowledgeRecord, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 use fs2::FileExt;
+use serde::Serialize;
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -52,11 +53,27 @@ impl KnowledgeStoreLimits {
 }
 
 /// Result of an upsert or removal, including deterministic pruning evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeStoreChange {
     pub record_id: String,
     pub retained: bool,
+    pub removed: bool,
     pub pruned_record_ids: Vec<String>,
+}
+
+/// Bounded store statistics suitable for CLI/TUI display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeStoreStats {
+    pub record_count: usize,
+    pub serialized_bytes: usize,
+    pub candidate_count: usize,
+    pub observed_count: usize,
+    pub verified_count: usize,
+    pub stale_count: usize,
+    pub contradicted_count: usize,
+    pub quarantined_count: usize,
 }
 
 /// A validated local knowledge store backed by one JSON snapshot file.
@@ -134,6 +151,107 @@ impl KnowledgeStore {
             .collect()
     }
 
+    /// Return the validated records for inspection or export.
+    pub fn records(&self) -> &[KnowledgeRecord] {
+        &self.snapshot.records
+    }
+
+    /// Return bounded serialized-size and lifecycle counts.
+    pub fn stats(&self) -> Result<KnowledgeStoreStats, KnowledgeStoreError> {
+        let mut stats = KnowledgeStoreStats {
+            record_count: self.snapshot.records.len(),
+            serialized_bytes: serialized_size(&self.snapshot)?,
+            candidate_count: 0,
+            observed_count: 0,
+            verified_count: 0,
+            stale_count: 0,
+            contradicted_count: 0,
+            quarantined_count: 0,
+        };
+        for record in &self.snapshot.records {
+            match record.confidence {
+                KnowledgeConfidence::Candidate => stats.candidate_count += 1,
+                KnowledgeConfidence::Observed => stats.observed_count += 1,
+                KnowledgeConfidence::Verified => stats.verified_count += 1,
+                KnowledgeConfidence::Stale => stats.stale_count += 1,
+                KnowledgeConfidence::Contradicted => stats.contradicted_count += 1,
+                KnowledgeConfidence::Quarantined => stats.quarantined_count += 1,
+            }
+        }
+        Ok(stats)
+    }
+
+    /// Replace the complete store only after validating its schema and bounds.
+    pub fn replace_snapshot(
+        &mut self,
+        snapshot: KnowledgeStoreSnapshot,
+    ) -> Result<(), KnowledgeStoreError> {
+        snapshot
+            .validate()
+            .map_err(KnowledgeStoreError::InvalidContract)?;
+        if snapshot.records.len() > self.limits.max_records {
+            return Err(KnowledgeStoreError::Capacity(
+                "snapshot exceeds the configured record limit".into(),
+            ));
+        }
+        validate_snapshot_size(&snapshot, self.limits.max_bytes)?;
+        let _lock = StoreLock::acquire(&self.path)?;
+        write_snapshot(&self.path, &snapshot, self.limits.max_bytes)?;
+        self.snapshot = snapshot;
+        self.last_pruned = None;
+        Ok(())
+    }
+
+    /// Transition one record and retain the lifecycle evidence in its history.
+    pub fn transition(
+        &mut self,
+        record_id: &str,
+        next: KnowledgeConfidence,
+        reason: String,
+        observed_at: String,
+        fresh_verification: bool,
+    ) -> Result<KnowledgeStoreChange, KnowledgeStoreError> {
+        let record_id = record_id.to_owned();
+        self.mutate(|snapshot| {
+            let record = snapshot
+                .records
+                .iter_mut()
+                .find(|record| record.record_id == record_id)
+                .ok_or_else(|| KnowledgeStoreError::NotFound(record_id.clone()))?;
+            record.transition(next, reason, observed_at, fresh_verification)?;
+            Ok(())
+        })?;
+        Ok(KnowledgeStoreChange {
+            retained: true,
+            removed: false,
+            record_id,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
+    }
+
+    /// Remove every record scoped to one exact origin.
+    pub fn purge_origin(
+        &mut self,
+        origin: &str,
+    ) -> Result<KnowledgePurgeResult, KnowledgeStoreError> {
+        let mut removed_record_ids = Vec::new();
+        self.mutate(|snapshot| {
+            snapshot.records.retain(|record| {
+                if record.scope.origin == origin {
+                    removed_record_ids.push(record.record_id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            Ok(())
+        })?;
+        Ok(KnowledgePurgeResult {
+            removed_record_ids,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
+    }
+
     /// Insert or replace a record, then prune the least useful records first.
     pub fn upsert(
         &mut self,
@@ -167,6 +285,7 @@ impl KnowledgeStore {
         Ok(KnowledgeStoreChange {
             record_id,
             retained,
+            removed: false,
             pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
         })
     }
@@ -184,6 +303,7 @@ impl KnowledgeStore {
         Ok(KnowledgeStoreChange {
             record_id,
             retained: false,
+            removed: existed,
             pruned_record_ids: if existed {
                 self.last_pruned.take().unwrap_or_default()
             } else {
@@ -389,6 +509,7 @@ pub enum KnowledgeStoreError {
     InvalidContract(KnowledgeValidationError),
     InvalidConfiguration(String),
     Capacity(String),
+    NotFound(String),
 }
 
 impl std::fmt::Display for KnowledgeStoreError {
@@ -401,8 +522,19 @@ impl std::fmt::Display for KnowledgeStoreError {
                 write!(formatter, "invalid knowledge store configuration: {reason}")
             }
             Self::Capacity(reason) => write!(formatter, "knowledge store capacity: {reason}"),
+            Self::NotFound(record_id) => {
+                write!(formatter, "knowledge record not found: {record_id}")
+            }
         }
     }
+}
+
+/// Result of purging records for one origin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgePurgeResult {
+    pub removed_record_ids: Vec<String>,
+    pub pruned_record_ids: Vec<String>,
 }
 
 impl std::error::Error for KnowledgeStoreError {}
@@ -537,6 +669,35 @@ mod tests {
         assert_eq!(assessments.len(), 1);
         assert_eq!(assessments[0].record_id, "knowledge_1");
         assert_eq!(store.snapshot().records.len(), 1);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    #[test]
+    fn lifecycle_management_and_stats_are_persisted() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("keep", KnowledgeConfidence::Observed, "01"))
+            .unwrap();
+        store
+            .upsert(record("purge", KnowledgeConfidence::Observed, "02"))
+            .unwrap();
+        store
+            .transition(
+                "keep",
+                KnowledgeConfidence::Verified,
+                "fresh landmark verification".into(),
+                "2026-07-27T00:00:03Z".into(),
+                true,
+            )
+            .unwrap();
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.record_count, 2);
+        assert_eq!(stats.verified_count, 1);
+        let purge = store.purge_origin("https://example.test").unwrap();
+        assert_eq!(purge.removed_record_ids, vec!["keep", "purge"]);
+        assert!(store.records().is_empty());
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
     }

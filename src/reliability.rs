@@ -12,6 +12,7 @@ use std::fmt;
 
 pub const RELIABILITY_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RELIABILITY_FIXTURE_SCHEMA_VERSION: u32 = 1;
+pub const RELIABILITY_REPLAY_SCHEMA_VERSION: u32 = 1;
 const MAX_SCENARIO_ID_BYTES: usize = 128;
 const MAX_CATEGORY_BYTES: usize = 128;
 const MAX_FIXTURE_BYTES: usize = 256;
@@ -21,6 +22,7 @@ const MAX_FORBIDDEN_OUTCOMES: usize = 32;
 const MAX_SIDE_EFFECT_COUNTERS: usize = 32;
 const MAX_DURATION_MS: u64 = 15 * 60 * 1_000;
 const MAX_BROWSER_ACTIONS: u32 = 1_024;
+const MAX_REPLAY_EVENTS: usize = 1_024;
 
 /// Supported platform labels for deterministic reliability evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +153,160 @@ impl ReliabilityFixtureManifest {
         })?;
         let digest = Sha256::digest(canonical.as_bytes());
         Ok(format!("sha256:{digest:x}"))
+    }
+}
+
+/// Host and browser metadata attached to a replay bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityRunMetadata {
+    pub platform: ReliabilityPlatform,
+    pub browser: String,
+    pub browser_version: String,
+    pub duration_ms: u64,
+    pub browser_actions: u32,
+}
+
+impl ReliabilityRunMetadata {
+    fn validate(
+        &self,
+        path: &str,
+        budgets: &ReliabilityScenarioBudgets,
+    ) -> Result<(), ReliabilityScenarioError> {
+        validate_text(
+            &format!("{path}.browser"),
+            &self.browser,
+            MAX_CATEGORY_BYTES,
+        )?;
+        validate_text(
+            &format!("{path}.browserVersion"),
+            &self.browser_version,
+            MAX_CATEGORY_BYTES,
+        )?;
+        if self.duration_ms == 0 || self.duration_ms > budgets.max_duration_ms {
+            return Err(ReliabilityScenarioError::new(
+                format!("{path}.durationMs"),
+                "must be positive and within the scenario duration budget",
+            ));
+        }
+        if self.browser_actions == 0 || self.browser_actions > budgets.max_browser_actions {
+            return Err(ReliabilityScenarioError::new(
+                format!("{path}.browserActions"),
+                "must be positive and within the scenario action budget",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Redacted replay event. Values and page content are intentionally absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityReplayEvent {
+    pub sequence: u32,
+    pub operation: String,
+    pub result: String,
+}
+
+/// Versioned, redacted evidence bundle for replay and regression comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityReplayBundle {
+    pub schema_version: u32,
+    pub scenario_id: String,
+    pub scenario_hash: String,
+    pub fixture_id: String,
+    pub fixture_hash: String,
+    pub metadata: ReliabilityRunMetadata,
+    pub events: Vec<ReliabilityReplayEvent>,
+    pub observation: ReliabilityScenarioObservation,
+}
+
+impl ReliabilityReplayBundle {
+    /// Parse and validate one redacted replay bundle against its scenario.
+    pub fn from_json(
+        input: &str,
+        scenario: &ReliabilityScenario,
+    ) -> Result<Self, ReliabilityScenarioError> {
+        let bundle: Self = serde_json::from_str(input).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("invalid replay JSON: {error}"))
+        })?;
+        bundle.validate(scenario)?;
+        Ok(bundle)
+    }
+
+    /// Validate binding, budgets, event ordering, and redacted evidence shape.
+    pub fn validate(&self, scenario: &ReliabilityScenario) -> Result<(), ReliabilityScenarioError> {
+        if self.schema_version != RELIABILITY_REPLAY_SCHEMA_VERSION {
+            return Err(ReliabilityScenarioError::new(
+                "schemaVersion",
+                format!(
+                    "unsupported replay schema {}; expected {}",
+                    self.schema_version, RELIABILITY_REPLAY_SCHEMA_VERSION
+                ),
+            ));
+        }
+        validate_text("scenarioId", &self.scenario_id, MAX_SCENARIO_ID_BYTES)?;
+        validate_text("fixtureId", &self.fixture_id, MAX_SCENARIO_ID_BYTES)?;
+        validate_digest("scenarioHash", &self.scenario_hash)?;
+        validate_digest("fixtureHash", &self.fixture_hash)?;
+        if self.scenario_id != scenario.id {
+            return Err(ReliabilityScenarioError::new(
+                "scenarioId",
+                "replay bundle is bound to a different scenario",
+            ));
+        }
+        if self.scenario_hash != scenario.content_hash()? {
+            return Err(ReliabilityScenarioError::new(
+                "scenarioHash",
+                "replay bundle is not bound to the exact scenario content",
+            ));
+        }
+        self.metadata.validate("metadata", &scenario.budgets)?;
+        if self.events.is_empty() || self.events.len() > MAX_REPLAY_EVENTS {
+            return Err(ReliabilityScenarioError::new(
+                "events",
+                format!("must contain 1..={MAX_REPLAY_EVENTS} entries"),
+            ));
+        }
+        for (index, event) in self.events.iter().enumerate() {
+            if event.sequence != index as u32 {
+                return Err(ReliabilityScenarioError::new(
+                    format!("events[{index}].sequence"),
+                    "must be contiguous and start at zero",
+                ));
+            }
+            validate_text(
+                &format!("events[{index}].operation"),
+                &event.operation,
+                MAX_CATEGORY_BYTES,
+            )?;
+            validate_text(
+                &format!("events[{index}].result"),
+                &event.result,
+                MAX_CATEGORY_BYTES,
+            )?;
+        }
+        if self.observation.scenario_id != self.scenario_id
+            || self.observation.scenario_hash != self.scenario_hash
+        {
+            return Err(ReliabilityScenarioError::new(
+                "observation",
+                "observation identity does not match the replay bundle",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return stable JSON suitable for replay storage and comparison.
+    pub fn to_canonical_json(
+        &self,
+        scenario: &ReliabilityScenario,
+    ) -> Result<String, ReliabilityScenarioError> {
+        self.validate(scenario)?;
+        serde_json::to_string(self).map_err(|error| {
+            ReliabilityScenarioError::new("$", format!("cannot serialize replay: {error}"))
+        })
     }
 }
 
@@ -602,6 +758,25 @@ fn validate_text(path: &str, value: &str, maximum: usize) -> Result<(), Reliabil
     Ok(())
 }
 
+fn validate_digest(path: &str, value: &str) -> Result<(), ReliabilityScenarioError> {
+    if !value.starts_with("sha256:") || value.len() != "sha256:".len() + 64 {
+        return Err(ReliabilityScenarioError::new(
+            path,
+            "must be a sha256 digest",
+        ));
+    }
+    if value["sha256:".len()..]
+        .chars()
+        .any(|character| !character.is_ascii_hexdigit())
+    {
+        return Err(ReliabilityScenarioError::new(
+            path,
+            "must contain only hexadecimal digest characters",
+        ));
+    }
+    Ok(())
+}
+
 /// A path-aware scenario contract failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReliabilityScenarioError {
@@ -685,6 +860,66 @@ mod tests {
         let parsed = ReliabilityScenario::from_json(&canonical).unwrap();
         assert_eq!(parsed.id, "duplicate-submit");
         assert!(canonical.contains("nonIdempotentMutationDuplicated"));
+    }
+
+    #[test]
+    fn replay_bundle_is_redacted_bound_and_ordered() {
+        let scenario = scenario();
+        let observation = observation(&scenario, ReliabilityRunClassification::Passed, Vec::new());
+        let bundle = ReliabilityReplayBundle {
+            schema_version: RELIABILITY_REPLAY_SCHEMA_VERSION,
+            scenario_id: scenario.id.clone(),
+            scenario_hash: scenario.content_hash().unwrap(),
+            fixture_id: scenario.fixture.clone(),
+            fixture_hash: format!("sha256:{}", "a".repeat(64)),
+            metadata: ReliabilityRunMetadata {
+                platform: ReliabilityPlatform::LinuxX86_64,
+                browser: "chromium".into(),
+                browser_version: "stable".into(),
+                duration_ms: 100,
+                browser_actions: 3,
+            },
+            events: vec![ReliabilityReplayEvent {
+                sequence: 0,
+                operation: "runWorkflow".into(),
+                result: "committed".into(),
+            }],
+            observation,
+        };
+        let canonical = bundle.to_canonical_json(&scenario).unwrap();
+        let parsed = ReliabilityReplayBundle::from_json(&canonical, &scenario).unwrap();
+        assert_eq!(parsed.events[0].sequence, 0);
+        assert!(!canonical.contains("secret"));
+    }
+
+    #[test]
+    fn replay_bundle_rejects_non_contiguous_events() {
+        let scenario = scenario();
+        let mut observation =
+            observation(&scenario, ReliabilityRunClassification::Passed, Vec::new());
+        observation.scenario_hash = scenario.content_hash().unwrap();
+        let bundle = ReliabilityReplayBundle {
+            schema_version: RELIABILITY_REPLAY_SCHEMA_VERSION,
+            scenario_id: scenario.id.clone(),
+            scenario_hash: scenario.content_hash().unwrap(),
+            fixture_id: scenario.fixture.clone(),
+            fixture_hash: format!("sha256:{}", "b".repeat(64)),
+            metadata: ReliabilityRunMetadata {
+                platform: ReliabilityPlatform::LinuxX86_64,
+                browser: "chromium".into(),
+                browser_version: "stable".into(),
+                duration_ms: 100,
+                browser_actions: 3,
+            },
+            events: vec![ReliabilityReplayEvent {
+                sequence: 1,
+                operation: "runWorkflow".into(),
+                result: "committed".into(),
+            }],
+            observation,
+        };
+        let error = bundle.validate(&scenario).unwrap_err();
+        assert_eq!(error.path, "events[0].sequence");
     }
 
     #[test]

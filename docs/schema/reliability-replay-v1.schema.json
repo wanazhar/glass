@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/reliability-replay-v1.schema.json",
+  "title": "Glass reliability replay bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenarioId", "scenarioHash", "fixtureId", "fixtureHash", "metadata", "events", "observation"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "scenarioHash": {"$ref": "#/$defs/digest"},
+    "fixtureId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "fixtureHash": {"$ref": "#/$defs/digest"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "browser", "browserVersion", "durationMs", "browserActions"],
+      "properties": {
+        "platform": {"enum": ["linux-x86-64", "macos-x86-64", "macos-arm64"]},
+        "browser": {"type": "string", "minLength": 1, "maxLength": 128},
+        "browserVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "durationMs": {"type": "integer", "minimum": 1},
+        "browserActions": {"type": "integer", "minimum": 1, "maximum": 1024}
+      }
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "operation", "result"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 0},
+          "operation": {"type": "string", "minLength": 1, "maxLength": 128},
+          "result": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "observation": {"type": "object"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -17,7 +17,7 @@ export interface GlassClientOptions {
   maxFrameBytes?: number;
 }
 
-/** Small MCP client with typed helpers for the stable Glass agent surface. */
+/** Small MCP client with typed helpers for the stable Glass surface. */
 export class GlassClient {
   private readonly child: ChildProcessByStdio<Writable, Readable, null>;
   private readonly maxFrameBytes: number;

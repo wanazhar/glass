@@ -110,7 +110,7 @@ Use `click-expect-popup TARGET` when the selected element is expected to open
 one popup. It returns the verified popup target without implicitly selecting
 it. Ordinary `click` retains strict CDP acknowledgement semantics.
 
-Prefer revisioned references for agent workflows. They let Glass reject a
+Prefer revisioned references for automation workflows. They let Glass reject a
 reference after page state changes instead of acting on a stale element.
 For an explicit action contract, pass the revision from `observe` with
 `--expected-revision`; stale state is rejected before the action runs and the
@@ -153,6 +153,6 @@ glass "navigate to https://example.com"
 glass "click Sign in"
 ```
 
-This is command parsing, not a natural-language model. Unrecognized prompt
+This is command parsing, not a general-purpose language interpreter. Unrecognized prompt
 text is evaluated as JavaScript in the current page; scripts should prefer
 explicit subcommands to avoid ambiguity.

@@ -2,7 +2,7 @@
 
 `glass_client.py` uses only the Python standard library. It starts an absolute
 Glass binary, negotiates MCP, and provides `navigate`, `observe`, `click`, and
-`wait` helpers for agent frameworks.
+`wait` helpers for Python automation programs.
 
 ```python
 from glass_client import GlassClient

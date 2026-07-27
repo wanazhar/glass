@@ -18,9 +18,9 @@ sessions do not. Common detection signals include:
 Detection is not a Glass bug — it is a deliberate Chrome behaviour that
 distinguishes automation from organic browsing.
 
-## Path 1: Allowlist Your Own Agent (Sites You Operate)
+## Path 1: Allowlist Your Own Automation (Sites You Operate)
 
-If you control the target site, the strongest answer is to register your agent:
+If you control the target site, the strongest answer is to register your automation:
 
 ### Verified Bot Registration
 
@@ -29,10 +29,10 @@ If you control the target site, the strongest answer is to register your agent:
   HTTP message signing (see Gate F.3) to present a `Signature-Agent` header.
   Cloudflare will verify the signature and admit your traffic.
 
-- **IP Allowlisting**: If your agent runs from a known IP range (CI, staging),
+- **IP Allowlisting**: If your automation runs from a known IP range (CI, staging),
   configure your WAF/CDN to bypass bot detection for those addresses.
 
-- **Custom Header / Token**: Issue a static bearer token to your agent and
+- **Custom Header / Token**: Issue a static bearer token to your automation and
   validate it in your application middleware behind the CDN. Combine with rate
   limiting per token.
 
@@ -52,10 +52,10 @@ logged-in sessions.
 
 ```sh
 # Create a named persistent profile
-glass profiles create myagent
+glass profiles create work
 
 # Use it for every session
-glass --profile myagent "navigate to https://example.com"
+glass --profile work "navigate to https://example.com"
 ```
 
 The profile persists cookies, local storage, and service-worker registrations
@@ -64,7 +64,7 @@ subsequent sessions will carry the authenticated session state.
 
 ### What Profiles Enable
 
-- OAuth / SSO session cookies survive across agent runs
+- OAuth / SSO session cookies survive across automation runs
 - Site preferences and consent decisions are remembered
 - Rate limits are scoped to the authenticated identity, not a fresh fingerprint
 
@@ -76,7 +76,7 @@ subsequent sessions will carry the authenticated session state.
 
 ## Path 3: Use the Site's API
 
-When a site offers a documented API, the agent should use it instead of screen
+When a site offers a documented API, the calling program should use it instead of screen
 automation:
 
 - **Higher reliability**: APIs are versioned and contract-bound; DOM scraping
@@ -109,7 +109,7 @@ Outcomes are typed: `dismissed`, `no_consent_found`,
 with visible consent UI exactly as a user would. They are part of Glass's
 overlay corpus and subject to the same zero-wrong-action gate.
 
-## Path 5: Polite-Agent Mode (Gate F.5)
+## Path 5: Polite Automation Mode (Gate F.5)
 
 Opt-in mode for public-facing sites:
 
@@ -145,7 +145,7 @@ wrong tool. Consider a dedicated web scraping framework instead.
 | Scenario | Recommended Path |
 |----------|-----------------|
 | CI testing on your own site | Path 1: IP allowlisting or verified bot |
-| Authenticated agent on a SaaS you pay for | Path 2: `--profile` with login session |
+| Authenticated automation on a SaaS you pay for | Path 2: `--profile` with login session |
 | Public data from a site with an API | Path 3: Use the API |
 | One-off navigation past a consent wall | Path 4: Consent dismissal helper |
 | Polite crawl of public pages | Path 5: `--policy polite` |
@@ -155,4 +155,4 @@ wrong tool. Consider a dedicated web scraping framework instead.
 
 - [Detection-surface transparency report](detection-surface.md)
 - [Security policy](../SECURITY.md)
-- [MCP integration](mcp.md) — policy presets for hardened agent deployments
+- [MCP integration](mcp.md) — policy presets for hardened deployments

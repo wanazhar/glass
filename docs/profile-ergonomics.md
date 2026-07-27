@@ -1,35 +1,34 @@
 # Logged-in Session Ergonomics
 
-Glass supports persistent browser profiles so agents can use authenticated
-sessions without pasting credentials into the model.
+Glass supports persistent browser profiles so automation programs can reuse
+authenticated sessions without copying credentials into command input.
 
 ## Quick Start
 
-Create a named profile, log in once, and reuse it across agent runs:
+Create a named profile, log in once, and reuse it across runs:
 
 ```sh
 # Create and use a profile
-glass --profile myagent navigate https://app.example.com/login
+glass --headed --profile work navigate https://app.example.com/login
 
-# Log in manually (or via one-shot automation), then close
-glass --profile myagent close
+# Log in manually, then close the headed browser window
 
 # Subsequent sessions carry the authenticated state
-glass --profile myagent "navigate to https://app.example.com/dashboard"
-glass --profile myagent observe
+glass --profile work "navigate to https://app.example.com/dashboard"
+glass --profile work observe
 ```
 
 For an explicit, reviewable cookie hand-off, use bounded JSON files while the
 profile is active:
 
 ```sh
-glass --profile myagent --headed export-cookies ./myagent-cookies.json
-glass --profile myagent import-cookies ./myagent-cookies.json
+glass --profile work export-cookies ./work-cookies.json
+glass --profile work import-cookies ./work-cookies.json
 ```
 
 Cookie import/export is policy-gated, limited to 256 cookies and a 512 KiB
 import file, and should be treated as secret material. Keep these files out of
-source control; do not paste them into an agent prompt.
+source control; do not pass them through untrusted command input.
 
 ## What Profiles Persist
 
@@ -47,7 +46,7 @@ source control; do not paste them into an agent prompt.
 glass profiles
 
 # Delete a profile (all stored state is gone)
-glass delete-profile myagent
+glass delete-profile work
 ```
 
 Profiles are stored as Chrome user-data directories. Each profile is isolated
@@ -68,10 +67,10 @@ from others — cookies, storage, and extensions are not shared.
 
 ## Use an Existing Login Without Pasting Passwords
 
-1. **Create a profile:** `glass --profile myagent navigate https://app.example.com`
+1. **Create a profile:** `glass --headed --profile work navigate https://app.example.com`
 2. **Log in once:** Use the headed browser (`--headed`) to complete the login
    flow manually. Close the session normally.
-3. **Subsequent runs:** `glass --profile myagent navigate https://app.example.com/dashboard`
+3. **Subsequent runs:** `glass --profile work navigate https://app.example.com/dashboard`
    — the session cookie is already present.
 4. **Token refresh:** If the session expires, repeat step 2. OAuth refresh
    tokens stored in cookies will work automatically.
@@ -86,7 +85,7 @@ This pattern works for:
 Instead of launching Chrome, connect to an existing instance:
 
 ```sh
-glass --attach 9222 navigate https://example.com
+glass --attach --port 9222 navigate https://example.com
 ```
 
 Attach mode uses whatever profile the target Chrome instance is currently

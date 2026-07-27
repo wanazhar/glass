@@ -13,54 +13,64 @@ under 4k tokens for the full `tools/list` response.
 
 | Tool | Properties | Required | Notes |
 |------|-----------|----------|-------|
-| `navigate` | `url`, `timeoutMs` | `url` | |
-| `click` | `target`, `selector` | one of | Locator forms |
+| `navigate` | `url`, `timeoutMs`, `expectedRevision` | `url` | Optional revision guard |
+| `click` | `target`, `selector`, `expectedRevision` | one of | Locator forms; optional revision guard |
 | `clickExpectPopup` | `target`, `selector` | one of | Causal popup verification |
 | `doubleClick` | `target`, `selector` | one of | |
-| `hover` | `target` | `target` | |
+| `hover` | `target`, `selector` | one of | |
 | `drag` | `source`, `destination` | both | |
-| `type` | `text`, `target` | `text` | |
 | `key` | `key` | `key` | |
 | `keyDown` | `key` | `key` | |
 | `keyUp` | `key` | `key` | |
 | `shortcut` | `shortcut` | `shortcut` | |
-| `clear` | `target` | `target` | |
-| `check` | `target` | `target` | |
-| `uncheck` | `target` | `target` | |
+| `clear` | `target`, `selector` | one of | |
+| `check` | `target`, `selector` | one of | |
+| `uncheck` | `target`, `selector` | one of | |
 | `select` | `target`, `value` | `target` | |
-| `upload` | `target`, `files` | `target` | |
-| `screenshot` | `format`, `quality`, `scale`, `fullPage`, `clip`, `target` | none | Seven optional properties |
-| `observe` | `includeDom`, `includeScreenshot`, `includeFormValues` | none | Opt-in heavy payloads |
-| `getDom` | (none) | — | |
-| `getText` | (none) | — | |
-| `reconcileReferences` | `fromRevision`, `refs` | both | Max 16 refs |
-| `exportCheckpoint` | (none) | — | ≤ 4 KiB output |
-| `importCheckpoint` | `checkpoint` | `checkpoint` | |
+| `upload` | `target`, `files` | `target` | 1–16 regular files |
+| `type` | `text`, `target`, `expectedRevision` | `text` | Optional target and revision guard |
+| `screenshot` | `format`, `quality`, `scale`, `fullPage`, `clip`, `target` | none | Explicit visual capture |
+| `observe` | `includeDom`, `includeScreenshot`, `includeFormValues` | none | Heavy payloads are opt-in |
+| `preflight` | `target`, `action` | `target` | No browser mutation |
+| `clickAt` | `x`, `y` | both | Policy-gated coordinate click |
+| `getDOM` | (none) | — | Full DOM |
+| `getText` | (none) | — | Visible text |
+| `reconcileReferences` | `fromRevision`, `refs`, `hints`, `scopeRef` | `fromRevision`, `refs` | Bounded reconciliation |
+| `observeDelta` | (none) | — | Bounded observation delta |
+| `setNetworkConditions` | `preset`, `offline`, `latencyMs`, `downloadThroughput`, `uploadThroughput` | none | Scoped emulation |
+| `clearNetworkConditions` | (none) | — | |
+| `setCpuThrottling` | `rate` | `rate` | Scoped emulation |
+| `clearCpuThrottling` | (none) | — | |
+| `setUserAgent` | `userAgent`, `acceptLanguage`, `platform` | `userAgent` | Scoped override |
+| `clearUserAgent` | (none) | — | |
+| `exportCheckpoint` | (none) | — | Bounded checkpoint |
+| `importCheckpoint` | checkpoint fields | schema version and fields | Bounded checkpoint |
 | `evaluate` | `expression` | `expression` | Policy-gated |
-| `batch` | `steps` | `steps` | Max 32 steps; 14 action enum values |
+| `batch` | `steps`, `atomic` | `steps` | Max 32 steps |
 | `scroll` | `dx`, `dy` | none | |
-| `wait` | `condition`, `timeoutMs` | `condition` | |
-| `diagnostics` | `durationMs` | none | 1–30s range |
+| `wait` | `condition`, `timeoutMs` | `condition` | Bounded deadline |
+| `diagnostics` | `durationMs` | none | Bounded redacted evidence |
 | `acceptDialog` | (none) | — | |
 | `dismissDialog` | (none) | — | |
-| `download` | `destination`, `timeoutMs` | `destination` | |
+| `dismissConsent` | (none) | — | Recognized consent controls |
+| `download` | `destination`, `timeoutMs` | `destination` | Scoped download lifecycle |
 | `listTargets` | (none) | — | |
-| `createTarget` | `url` | `url` | |
+| `createTarget` | `url` | `url` | Does not select the target |
 | `selectTarget` | `id` | `id` | |
 | `closeTarget` | `id` | `id` | |
 | `listFrames` | (none) | — | |
 | `selectFrame` | `id` | `id` | |
-| `cookies` | (none) | — | Requires persistent profile |
-| `setCookies` | `cookies` | `cookies` | Array of cookie objects |
-| `clearCookies` | (none) | — | Requires persistent profile |
-| `localStorage` | (none) | — | Bounded: 64 entries, 1 KiB per value |
-| `sessionStorage` | (none) | — | Bounded: 64 entries, 1 KiB per value |
-| `printToPdf` | `paperWidth`, `paperHeight`, `printBackground` | none | Returns base64 data |
-| `fillForm` | `fields` | `fields` | Max 16 fields, atomic resolution |
-| `clipboardRead` | (none) | — | Returns up to 8 KiB |
-| `clipboardWrite` | `text` | `text` | Truncated to 8 KiB |
-| `setGeolocation` | `latitude`, `longitude` | both | Override browser geolocation |
-| `clearGeolocation` | (none) | — | Reset geolocation override |
+| `cookies` | (none) | — | Persistent profile |
+| `setCookies` | `cookies` | `cookies` | Persistent profile |
+| `clearCookies` | (none) | — | Persistent profile |
+| `localStorage` | (none) | — | Bounded storage |
+| `sessionStorage` | (none) | — | Bounded storage |
+| `printToPdf` | `paperWidth`, `paperHeight`, `printBackground` | none | Returns PDF data |
+| `fillForm` | `fields`, `expectedRevision` | `fields` | Max 16 fields; optional revision guard |
+| `clipboardRead` | (none) | — | Bounded text |
+| `clipboardWrite` | `text` | `text` | Bounded text |
+| `setGeolocation` | `latitude`, `longitude` | both | Override geolocation |
+| `clearGeolocation` | (none) | — | |
 | `setTimezone` | `timezoneId` | `timezoneId` | IANA timezone ID |
 
 **Total: 59 tools.**
@@ -72,10 +82,10 @@ Each tool contributes:
 - `description`: ~40-80 bytes
 - `inputSchema`: ~80-300 bytes (typically `{"type":"object","properties":{...}}`)
 
-Measured `tools/list` response size: **~13.6 KiB** (about 3.5k tokens using
-the repository's four-bytes-per-token estimate, well under the 18k-token
-reference for Chrome DevTools MCP). Re-measure with
-`GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs`.
+The 0.1.17 build currently measures 14,076 UTF-8 bytes, or an estimated 3,519
+tokens using the repository's four-bytes-per-token method. Re-measure a local
+build with `GLASS_BINARY_PATH=target/debug/glass node
+benchmarks/schema-scoreboard.mjs` when the tool descriptions or schemas change.
 
 ## Design Principles
 

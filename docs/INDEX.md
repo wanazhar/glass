@@ -5,6 +5,8 @@
 - [Installation and operations](installation.md) — build, browser discovery,
   profiles, attach mode, logging, and production deployment.
 - [CLI reference](cli.md) — global options, commands, targets, and output.
+- [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
+  bounded verification evidence.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
 - [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
@@ -37,7 +39,7 @@
   observation, MCP, and TUI contracts.
 - [Browser data plane](architecture/browser.md) — CDP, observation, action,
   and profile rules.
-- [Agent browser automation](architecture/automation.md) — correctness,
+- [Automation contracts](architecture/automation.md) — correctness,
   waiting, targeting, safety, and resource-budget contracts for the next
   generation.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker

@@ -106,7 +106,7 @@ stdout reserved for protocol messages.
 ## Safety presets
 
 `--policy development` is the default and preserves normal local workflows.
-For an untrusted agent, use an owned disposable session with exact host rules:
+For an untrusted caller, use an owned disposable session with exact host rules:
 
 ```console
 glass --policy hardened --incognito \

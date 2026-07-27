@@ -90,12 +90,13 @@ Glass accepts requests concurrently so cancellation remains responsive, while
 browser operations are serialized through the single owned session. Requests
 beyond the active limit receive a bounded overload error.
 
-Targeting failures return bounded JSON with a typed `kind`, an optional
-actionability `reason`, and at most eight candidate summaries. Stale reference
-failures include a typed `recovery` object pointing to `reconcileReferences`.
-These values are derived from the same bounded agent-facing target data as
-observations; raw targets/selectors are never echoed. Any tool call may opt into
-an additional bounded failure-trace content item with `includeTrace: true`.
+Targeting failures return bounded JSON with a typed `kind`, a normalized
+`failureKind`, an optional actionability `reason`, and at most eight candidate
+summaries. Stale reference failures include a typed `recovery` object pointing
+to `reconcileReferences`. These values are derived from the same bounded target
+data as observations; raw targets/selectors are never echoed. Any tool call may
+opt into an additional bounded failure-trace content item with `includeTrace:
+true`.
 Evaluated source, typed text, and raw page/CDP errors never cross the MCP error
 surface.
 
@@ -103,18 +104,19 @@ surface.
 
 | Tool | Important arguments | Result or effect |
 |---|---|---|
-| `navigate` | `url` | Navigate and return page state. |
-| `click` | `target` or `selector`, optional `includeTrace` | Click one element. |
+| `navigate` | `url`, optional `expectedRevision` | Navigate and return page state. |
+| `click` | `target` or `selector`, optional `expectedRevision`, `includeTrace` | Click one element. |
 | `clickExpectPopup` | `target` or `selector` | Click and return one causally verified popup target. |
 | `doubleClick` | `target` or `selector` | Double-click one element. |
 | `hover` | `target` | Move over one element. |
 | `drag` | `source`, `destination` | Drag between two verified elements. |
-| `type` | `text`, optional `target` | Focus optionally, then insert text. |
+| `type` | `text`, optional `target`, `expectedRevision` | Focus optionally, then insert text. |
 | `key`, `keyDown`, `keyUp` | `key` | Dispatch browser-faithful keyboard events. |
 | `shortcut` | `shortcut` | Dispatch an explicit modifier shortcut. |
 | `clear` | `target` | Clear one editable control. |
 | `check`, `uncheck` | `target` | Verify checkbox/radio state. |
 | `select` | `target`, `value` | Select one exact option value. |
+| `fillForm` | `fields`, optional `expectedRevision` | Fill up to 16 fields and return per-field results. |
 | `upload` | `target`, `files` | Set 1–16 regular local files. |
 | `screenshot` | none | Return a PNG image. |
 | `observe` | optional `includeDom`, `includeScreenshot` | Return structured page context. |
@@ -149,20 +151,24 @@ directories inside the authorized working root.
 
 Target and frame IDs come from the corresponding list tools and are bounded
 before Glass retains them. Popup discovery never changes the active target.
-Select targets and frames explicitly so an agent cannot drift into a newly
-opened tab or unrelated frame.
+Select targets and frames explicitly so a newly opened tab or unrelated frame
+cannot become active implicitly.
 
 ## Observation strategy
 
-Start with `observe`. Its compact result is designed for agent context and
-contains page identity, bounded visible text, and accessible controls. Request
+Start with `observe`. Its compact result contains page identity, bounded
+visible text, and accessible controls. Request
 `includeDom` only for a task that needs deep structure and
 `includeScreenshot` only when pixels are needed. This keeps latency and context
 size predictable.
 
 Element references returned by observations include a snapshot revision. Page
 or DOM mutations invalidate earlier revisions; observe again after navigation
-or a page-changing action.
+or a page-changing action. For an explicit precondition, pass the observation
+revision as `expectedRevision` to `navigate`, `click`, `type`, or `fillForm`.
+Successful guarded actions return `status`, the previous and current revisions,
+and bounded verification evidence. See [Actions and revisions](actions.md) for
+the complete result and failure contract.
 
 ## Session lifecycle and security
 
@@ -173,13 +179,12 @@ selected existing endpoint but does not claim ownership of its settings.
 An MCP client can navigate, execute JavaScript, read page content, and act with
 the permissions of the selected browser profile. Use a dedicated profile,
 avoid exposing CDP remotely, and review [SECURITY.md](../SECURITY.md) before
-granting an AI client access to authenticated pages.
+granting access to authenticated pages.
 
 ## MCP Registry & Discovery
 
-The [registry submission metadata](mcp-registry.json) and copy-paste
-configuration needed to submit Glass to the MCP Registry and other agent-tool
-directories are checked in. External
+The [registry submission metadata](mcp-registry.json) and configuration needed
+to submit Glass to the MCP Registry are checked in. External
 registry publication is a maintainer action and is not implied by this local
 checkout.
 
@@ -194,9 +199,9 @@ checkout.
 
 ### Discoverability
 
-After submission, Glass should appear alongside Playwright MCP, agent-browser,
-and Chrome DevTools MCP. The README includes copy-paste client configs for
-Claude Desktop, Cursor, and generic hosts.
+After submission, Glass can be listed alongside other MCP browser tools. The
+generic configuration above is suitable for clients that launch local stdio
+servers.
 
 If Glass is not yet listed on a registry, file an issue or PR with the
 registry's submission process. The metadata above should be sufficient for

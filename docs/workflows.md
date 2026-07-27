@@ -174,5 +174,16 @@ draft for review, and store typed values as `${inputs.name}` placeholders.
 Recorder drafts are not execution evidence and do not automatically attach to
 or observe a browser session.
 
+## Workflow scorecard
+
+The deterministic workflow corpus lives at
+`benchmarks/scenarios/workflow-v1.json` and uses the local
+`tests/fixtures/scorecard.html` page. Run it with
+`GLASS_WORKFLOW_SCORECARD_ITERATIONS=10 cargo run --release --example workflow_scorecard`.
+The hard gate checks the expected run status and every retained step state for
+linear completion, conditional skipping, budget exhaustion, marker
+reconciliation, and terminal-proof refusal. The command prints JSON and fails
+if any scenario diverges from the corpus.
+
 This is a local, unreleased 0.1.19 development surface. The complete workflow
 roadmap remains targeted for the 0.2.0 release.

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "corpus": "glass-workflow-v1",
+  "fixture": "tests/fixtures/scorecard.html",
+  "scenarios": [
+    {
+      "id": "linear-typed-output",
+      "expectedStatus": "completed",
+      "expectedStepStates": ["committed"],
+      "workflow": {
+        "schemaVersion": 1,
+        "name": "linear-typed-output",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 1, "maxDurationMs": 30000, "maxRetries": 0, "maxExtractedBytes": 4096},
+        "steps": [{"id": "observe", "action": "observe", "transaction": "read_only", "expect": {"titleContains": "Glass Scorecard"}}],
+        "terminalCondition": {"titleContains": "Glass Scorecard"},
+        "outputs": {"title": {"valueType": "string", "source": "page_title", "required": true}}
+      }
+    },
+    {
+      "id": "conditional-skip",
+      "expectedStatus": "completed",
+      "expectedStepStates": ["skipped"],
+      "workflow": {
+        "schemaVersion": 1,
+        "name": "conditional-skip",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 1, "maxDurationMs": 30000, "maxRetries": 0, "maxExtractedBytes": 4096},
+        "steps": [{"id": "guarded-click", "action": "click", "target": "css=#missing", "transaction": "idempotent", "when": {"textContains": "text-that-is-not-present"}}],
+        "terminalCondition": {"titleContains": "Glass Scorecard"},
+        "outputs": {}
+      }
+    },
+    {
+      "id": "bounded-budget",
+      "expectedStatus": "budget_exhausted",
+      "expectedStepStates": ["committed"],
+      "workflow": {
+        "schemaVersion": 1,
+        "name": "bounded-budget",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 2, "maxDurationMs": 1, "maxRetries": 0, "maxExtractedBytes": 4096},
+        "steps": [{"id": "repeat-observe", "action": "observe", "transaction": "read_only", "repeat": 2}],
+        "terminalCondition": {"titleContains": "Glass Scorecard"},
+        "outputs": {}
+      }
+    },
+    {
+      "id": "marker-reconciliation",
+      "expectedStatus": "completed",
+      "expectedStepStates": ["committed"],
+      "workflow": {
+        "schemaVersion": 1,
+        "name": "marker-reconciliation",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 1, "maxDurationMs": 30000, "maxRetries": 1, "maxExtractedBytes": 4096},
+        "steps": [{"id": "already-done", "action": "click", "target": "css=#missing", "transaction": "idempotent", "beforeRetry": {"titleContains": "Glass Scorecard"}, "maxRetries": 1}],
+        "terminalCondition": {"titleContains": "Glass Scorecard"},
+        "outputs": {}
+      }
+    },
+    {
+      "id": "terminal-proof-required",
+      "expectedStatus": "budget_exhausted",
+      "expectedStepStates": ["committed"],
+      "workflow": {
+        "schemaVersion": 1,
+        "name": "terminal-proof-required",
+        "workflowVersion": "1.0.0",
+        "inputs": {},
+        "budgets": {"maxSteps": 1, "maxDurationMs": 1, "maxRetries": 0, "maxExtractedBytes": 4096},
+        "steps": [{"id": "observe", "action": "observe", "transaction": "read_only"}],
+        "terminalCondition": {"textContains": "text-that-is-not-present"},
+        "outputs": {}
+      }
+    }
+  ]
+}

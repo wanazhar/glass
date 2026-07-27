@@ -1,9 +1,9 @@
 # Workflow definitions
 
-Glass 0.1.19 introduces the validated definition contract for the transactional
-workflow runtime. This first phase describes workflows as data; execution,
-checkpoints, retries, and resume reconciliation are being added in later
-phases.
+Glass 0.1.19 introduces the validated definition contract and a linear runner
+for the transactional workflow runtime. Definitions are validated before
+execution, and each step records its state transition history. Checkpoints,
+retries, and resume reconciliation are being added in later phases.
 
 ## Contract
 
@@ -54,5 +54,5 @@ shape reuses the existing batch action schema, including bounded verification
 predicates.
 
 This is a local, unreleased 0.1.19 development surface. It is not a promise
-that workflow execution or resume support is complete yet. The eventual public
-release target for the complete roadmap is 0.2.0.
+that checkpoints, retries, or resume support are complete yet. The eventual
+public release target for the complete roadmap is 0.2.0.

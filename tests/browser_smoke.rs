@@ -1,10 +1,12 @@
 use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
-    ActionKind, BrowserSession, InteractionMode, SessionOptions, TargetError, TargetErrorKind,
-    VerificationPredicate, WaitCondition, WaitTimeout,
+    ActionKind, BatchStep, BrowserSession, InteractionMode, SessionOptions, TargetError,
+    TargetErrorKind, VerificationPredicate, WaitCondition, WaitTimeout, WorkflowBudgets,
+    WorkflowDefinition, WorkflowRunStatus, WorkflowStep, WorkflowStepState,
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
@@ -836,6 +838,40 @@ async fn browser_session_drives_a_local_fixture() {
         )
         .await
         .unwrap();
+    let workflow = WorkflowDefinition {
+        schema_version: 1,
+        name: "save-fixture-result".into(),
+        workflow_version: "1.0.0".into(),
+        description: None,
+        inputs: BTreeMap::new(),
+        budgets: WorkflowBudgets {
+            max_steps: 1,
+            max_duration_ms: 10_000,
+            max_retries: 0,
+            max_extracted_bytes: 4_096,
+        },
+        preconditions: vec![],
+        steps: vec![WorkflowStep {
+            id: "save".into(),
+            action: BatchStep::Click {
+                target: "name=Save".into(),
+            },
+            expect: Some(VerificationPredicate::TextContains {
+                value: "Saved".into(),
+            }),
+        }],
+        terminal_condition: VerificationPredicate::TitleContains {
+            value: "Glass Fixture".into(),
+        },
+        outputs: BTreeMap::new(),
+    };
+    let workflow_result = session
+        .run_workflow(&workflow, &BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(workflow_result.status, WorkflowRunStatus::Completed);
+    assert_eq!(workflow_result.steps[0].state, WorkflowStepState::Committed);
+    assert_eq!(workflow_result.steps[0].attempts, 1);
     for condition in [
         WaitCondition::Lifecycle("complete".to_string()),
         WaitCondition::UrlExact(redirected.url.clone()),

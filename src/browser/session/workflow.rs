@@ -4,12 +4,13 @@
 //! resume reconciliation build on these validated definitions in later
 //! workflow phases.
 
-use super::types::{BatchStep, VerificationPredicate};
+use super::types::{BatchMode, BatchStep, BrowserResult, VerificationPredicate};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::time::Duration;
 use url::Url;
 
 /// The workflow definition schema understood by this crate.
@@ -383,6 +384,347 @@ impl WorkflowStep {
     }
 }
 
+/// Durable state of one workflow step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepState {
+    Pending,
+    Ready,
+    Preflight,
+    Resolving,
+    NotDispatched,
+    Dispatched,
+    EffectObserved,
+    Verified,
+    OutputsExtracted,
+    Committed,
+    FailedBeforeDispatch,
+    FailedAfterDispatch,
+    Indeterminate,
+    Skipped,
+}
+
+impl WorkflowStepState {
+    /// Return whether a state transition is valid for the linear runner.
+    pub fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Pending, Self::Ready | Self::Skipped)
+                | (Self::Ready, Self::Preflight | Self::Skipped)
+                | (
+                    Self::Preflight,
+                    Self::Resolving | Self::FailedBeforeDispatch
+                )
+                | (Self::Resolving, Self::NotDispatched | Self::Dispatched)
+                | (Self::NotDispatched, Self::FailedBeforeDispatch)
+                | (
+                    Self::Dispatched,
+                    Self::EffectObserved | Self::FailedAfterDispatch | Self::Indeterminate
+                )
+                | (
+                    Self::EffectObserved,
+                    Self::Verified | Self::FailedAfterDispatch | Self::Indeterminate
+                )
+                | (Self::Verified, Self::OutputsExtracted)
+                | (Self::OutputsExtracted, Self::Committed)
+        )
+    }
+}
+
+/// The retained state and transition history for one workflow step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepRecord {
+    pub id: String,
+    pub state: WorkflowStepState,
+    pub history: Vec<WorkflowStepState>,
+    pub attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl WorkflowStepRecord {
+    fn new(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            state: WorkflowStepState::Pending,
+            history: vec![WorkflowStepState::Pending],
+            attempts: 0,
+            error: None,
+        }
+    }
+
+    fn transition(&mut self, next: WorkflowStepState) -> Result<(), String> {
+        if !self.state.can_transition_to(next) {
+            return Err(format!(
+                "invalid workflow step transition {} -> {}",
+                state_name(self.state),
+                state_name(next)
+            ));
+        }
+        self.state = next;
+        self.history.push(next);
+        Ok(())
+    }
+
+    fn fail(&mut self, state: WorkflowStepState, error: &str) {
+        let _ = self.transition(state);
+        self.error = Some(bound_workflow_text(error, 512));
+    }
+}
+
+/// Overall outcome of a workflow run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Completed,
+    Failed,
+}
+
+/// Result of a linear workflow run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunResult {
+    pub name: String,
+    pub workflow_version: String,
+    pub status: WorkflowRunStatus,
+    pub steps: Vec<WorkflowStepRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    pub initial_revision: u64,
+    pub final_revision: u64,
+}
+
+impl WorkflowRunResult {
+    fn failed(
+        workflow: &WorkflowDefinition,
+        steps: Vec<WorkflowStepRecord>,
+        failed_step: Option<String>,
+        failure: impl Into<String>,
+        initial_revision: u64,
+        final_revision: u64,
+    ) -> Self {
+        Self {
+            name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            status: WorkflowRunStatus::Failed,
+            steps,
+            failed_step,
+            failure: Some(bound_workflow_text(&failure.into(), 512)),
+            initial_revision,
+            final_revision,
+        }
+    }
+}
+
+impl super::BrowserSession {
+    /// Execute a validated workflow linearly through the existing batch
+    /// policy and action runtime. This phase records state in memory; durable
+    /// checkpoints and resume reconciliation are added separately.
+    pub async fn run_workflow(
+        &self,
+        workflow: &WorkflowDefinition,
+        inputs: &BTreeMap<String, Value>,
+    ) -> BrowserResult<WorkflowRunResult> {
+        workflow.validate()?;
+        workflow.validate_inputs(inputs)?;
+        let initial_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut records: Vec<_> = workflow
+            .steps
+            .iter()
+            .map(|step| WorkflowStepRecord::new(&step.id))
+            .collect();
+
+        for predicate in &workflow.preconditions {
+            if let Err(error) = self
+                .verify(
+                    predicate.clone(),
+                    Duration::from_millis(workflow.budgets.max_duration_ms),
+                )
+                .await
+            {
+                skip_remaining(&mut records, 0);
+                return Ok(WorkflowRunResult::failed(
+                    workflow,
+                    records,
+                    None,
+                    format!("workflow precondition failed: {error}"),
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
+        }
+
+        for (index, step) in workflow.steps.iter().enumerate() {
+            {
+                let record = &mut records[index];
+                let _ = record.transition(WorkflowStepState::Ready);
+                let _ = record.transition(WorkflowStepState::Preflight);
+                let _ = record.transition(WorkflowStepState::Resolving);
+                record.attempts = record.attempts.saturating_add(1);
+            }
+
+            let outcome = self
+                .run_batch_with_mode(
+                    std::slice::from_ref(&step.action),
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await;
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    let message = {
+                        let record = &mut records[index];
+                        let _ = record.transition(WorkflowStepState::NotDispatched);
+                        record.fail(WorkflowStepState::FailedBeforeDispatch, &error.to_string());
+                        record
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "workflow step failed".into())
+                    };
+                    skip_remaining(&mut records, index + 1);
+                    return Ok(WorkflowRunResult::failed(
+                        workflow,
+                        records,
+                        Some(step.id.clone()),
+                        message,
+                        initial_revision,
+                        current_revision(self),
+                    ));
+                }
+            };
+
+            if !outcome.success {
+                let message = outcome
+                    .steps
+                    .last()
+                    .and_then(|step| match step {
+                        super::types::BatchStepOutcome::Error { message, .. } => {
+                            Some(message.as_str())
+                        }
+                        super::types::BatchStepOutcome::Success { .. } => None,
+                    })
+                    .unwrap_or("workflow action failed after dispatch");
+                let message = {
+                    let record = &mut records[index];
+                    let _ = record.transition(WorkflowStepState::Dispatched);
+                    record.fail(WorkflowStepState::FailedAfterDispatch, message);
+                    record
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "workflow step failed".into())
+                };
+                skip_remaining(&mut records, index + 1);
+                return Ok(WorkflowRunResult::failed(
+                    workflow,
+                    records,
+                    Some(step.id.clone()),
+                    message,
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
+
+            {
+                let record = &mut records[index];
+                let _ = record.transition(WorkflowStepState::Dispatched);
+                let _ = record.transition(WorkflowStepState::EffectObserved);
+            }
+            if let Some(predicate) = &step.expect
+                && let Err(error) = self
+                    .verify(
+                        predicate.clone(),
+                        Duration::from_millis(workflow.budgets.max_duration_ms),
+                    )
+                    .await
+            {
+                let message = {
+                    let record = &mut records[index];
+                    record.fail(WorkflowStepState::FailedAfterDispatch, &error.to_string());
+                    record
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "workflow verification failed".into())
+                };
+                skip_remaining(&mut records, index + 1);
+                return Ok(WorkflowRunResult::failed(
+                    workflow,
+                    records,
+                    Some(step.id.clone()),
+                    message,
+                    initial_revision,
+                    current_revision(self),
+                ));
+            }
+            let record = &mut records[index];
+            let _ = record.transition(WorkflowStepState::Verified);
+            let _ = record.transition(WorkflowStepState::OutputsExtracted);
+            let _ = record.transition(WorkflowStepState::Committed);
+        }
+
+        Ok(WorkflowRunResult {
+            name: workflow.name.clone(),
+            workflow_version: workflow.workflow_version.clone(),
+            status: WorkflowRunStatus::Completed,
+            steps: records,
+            failed_step: None,
+            failure: None,
+            initial_revision,
+            final_revision: current_revision(self),
+        })
+    }
+}
+
+fn current_revision(session: &super::BrowserSession) -> u64 {
+    session
+        .page_revision
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn skip_remaining(records: &mut [WorkflowStepRecord], start: usize) {
+    for record in records.iter_mut().skip(start) {
+        if record.state == WorkflowStepState::Pending {
+            let _ = record.transition(WorkflowStepState::Skipped);
+        }
+    }
+}
+
+fn state_name(state: WorkflowStepState) -> &'static str {
+    match state {
+        WorkflowStepState::Pending => "pending",
+        WorkflowStepState::Ready => "ready",
+        WorkflowStepState::Preflight => "preflight",
+        WorkflowStepState::Resolving => "resolving",
+        WorkflowStepState::NotDispatched => "not_dispatched",
+        WorkflowStepState::Dispatched => "dispatched",
+        WorkflowStepState::EffectObserved => "effect_observed",
+        WorkflowStepState::Verified => "verified",
+        WorkflowStepState::OutputsExtracted => "outputs_extracted",
+        WorkflowStepState::Committed => "committed",
+        WorkflowStepState::FailedBeforeDispatch => "failed_before_dispatch",
+        WorkflowStepState::FailedAfterDispatch => "failed_after_dispatch",
+        WorkflowStepState::Indeterminate => "indeterminate",
+        WorkflowStepState::Skipped => "skipped",
+    }
+}
+
+fn bound_workflow_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(13);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[truncated]", &value[..end])
+}
+
 /// A declared output captured by a future workflow executor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -674,5 +1016,29 @@ mod tests {
         assert_eq!(value["id"], "open");
         assert_eq!(value["action"], "navigate");
         assert_eq!(value["timeoutMs"], 20_000);
+    }
+
+    #[test]
+    fn state_machine_accepts_linear_commit_and_rejects_invalid_jump() {
+        assert!(WorkflowStepState::Pending.can_transition_to(WorkflowStepState::Ready));
+        assert!(WorkflowStepState::Resolving.can_transition_to(WorkflowStepState::Dispatched));
+        assert!(!WorkflowStepState::Pending.can_transition_to(WorkflowStepState::Committed));
+
+        let mut record = WorkflowStepRecord::new("open");
+        for state in [
+            WorkflowStepState::Ready,
+            WorkflowStepState::Preflight,
+            WorkflowStepState::Resolving,
+            WorkflowStepState::Dispatched,
+            WorkflowStepState::EffectObserved,
+            WorkflowStepState::Verified,
+            WorkflowStepState::OutputsExtracted,
+            WorkflowStepState::Committed,
+        ] {
+            record.transition(state).unwrap();
+        }
+        assert_eq!(record.state, WorkflowStepState::Committed);
+        assert_eq!(record.history.len(), 9);
+        assert!(record.transition(WorkflowStepState::Ready).is_err());
     }
 }

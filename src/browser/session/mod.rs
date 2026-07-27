@@ -104,7 +104,8 @@ mod webauthn;
 mod workflow;
 pub use workflow::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowDefinition, WorkflowInput,
-    WorkflowOutputDeclaration, WorkflowStep, WorkflowValidationError, WorkflowValueType,
+    WorkflowOutputDeclaration, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepRecord, WorkflowStepState, WorkflowValidationError, WorkflowValueType,
 };
 #[allow(private_interfaces)]
 pub struct BrowserSession {

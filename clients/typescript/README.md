@@ -18,8 +18,9 @@ const run = await glass.workflow({
   schemaVersion: 1,
   name: "read-title",
   workflowVersion: "1.0.0",
+  inputs: {},
   budgets: { maxSteps: 1, maxDurationMs: 10_000, maxRetries: 0, maxExtractedBytes: 8_192 },
-  steps: [{ id: "observe", action: { type: "observe" }, transaction: "readOnly" }],
+  steps: [{ id: "observe", action: "observe", transaction: "read_only" }],
   terminalCondition: { titleContains: "Example" },
   outputs: {},
 });

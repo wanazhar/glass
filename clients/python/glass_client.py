@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Any, Optional
+from typing import Any, Literal, Optional, TypedDict
 
 
 class GlassError(RuntimeError):
@@ -14,6 +14,60 @@ class GlassError(RuntimeError):
 
 VerificationPredicate = dict[str, Any]
 BatchMode = str
+WorkflowValueType = Literal["string", "integer", "number", "boolean", "url"]
+WorkflowTransaction = Literal[
+    "read_only", "idempotent", "conditionally_idempotent", "non_idempotent", "unknown"
+]
+
+
+class WorkflowInput(TypedDict, total=False):
+    valueType: WorkflowValueType
+    required: bool
+    maxLength: int
+    sensitive: bool
+
+
+class WorkflowBudgets(TypedDict):
+    maxSteps: int
+    maxDurationMs: int
+    maxRetries: int
+    maxExtractedBytes: int
+
+
+class WorkflowStep(TypedDict, total=False):
+    id: str
+    action: str
+    transaction: WorkflowTransaction
+    when: VerificationPredicate
+    expect: VerificationPredicate
+    beforeRetry: VerificationPredicate
+    idempotencyKey: str
+    maxRetries: int
+    repeat: int
+
+
+class WorkflowOutputDeclaration(TypedDict, total=False):
+    valueType: WorkflowValueType
+    source: Literal["page_url", "page_title", "visible_text"]
+    required: bool
+    sensitive: bool
+
+
+class WorkflowDefinition(TypedDict, total=False):
+    schemaVersion: Literal[1]
+    name: str
+    workflowVersion: str
+    description: str
+    inputs: dict[str, WorkflowInput]
+    budgets: WorkflowBudgets
+    preconditions: list[VerificationPredicate]
+    steps: list[WorkflowStep]
+    terminalCondition: VerificationPredicate
+    outputs: dict[str, WorkflowOutputDeclaration]
+
+
+WorkflowInputs = dict[str, Any]
+WorkflowCheckpoint = dict[str, Any]
 
 
 class GlassClient:
@@ -159,9 +213,9 @@ class GlassClient:
 
     def workflow(
         self,
-        definition: dict[str, Any],
-        inputs: Optional[dict[str, Any]] = None,
-        checkpoint: Optional[dict[str, Any]] = None,
+        definition: WorkflowDefinition,
+        inputs: Optional[WorkflowInputs] = None,
+        checkpoint: Optional[WorkflowCheckpoint] = None,
     ) -> Any:
         args: dict[str, Any] = {"workflow": definition, "inputs": inputs or {}}
         if checkpoint is not None:

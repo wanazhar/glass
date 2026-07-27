@@ -23,9 +23,78 @@ export type VerificationPredicate =
   | { not: VerificationPredicate };
 
 export type BatchMode = "fixed" | "chain" | "unguarded";
-export type WorkflowDefinition = Record<string, unknown>;
+export type WorkflowValueType = "string" | "integer" | "number" | "boolean" | "url";
+export type WorkflowTransaction = "read_only" | "idempotent" | "conditionally_idempotent" | "non_idempotent" | "unknown";
+export type WorkflowOutputSource = "page_url" | "page_title" | "visible_text";
+
+export interface WorkflowInput {
+  valueType: WorkflowValueType;
+  required?: boolean;
+  maxLength?: number;
+  sensitive?: boolean;
+}
+
+export interface WorkflowBudgets {
+  maxSteps: number;
+  maxDurationMs: number;
+  maxRetries: number;
+  maxExtractedBytes: number;
+}
+
+export interface WorkflowStep {
+  id: string;
+  action: string;
+  transaction?: WorkflowTransaction;
+  when?: VerificationPredicate;
+  expect?: VerificationPredicate;
+  beforeRetry?: VerificationPredicate;
+  idempotencyKey?: string;
+  maxRetries?: number;
+  repeat?: number;
+  [field: string]: unknown;
+}
+
+export interface WorkflowOutputDeclaration {
+  valueType: WorkflowValueType;
+  source: WorkflowOutputSource;
+  required?: boolean;
+  sensitive?: boolean;
+}
+
+export interface WorkflowDefinition {
+  schemaVersion: 1;
+  name: string;
+  workflowVersion: string;
+  description?: string;
+  inputs: Record<string, WorkflowInput>;
+  budgets: WorkflowBudgets;
+  preconditions?: VerificationPredicate[];
+  steps: WorkflowStep[];
+  terminalCondition: VerificationPredicate;
+  outputs: Record<string, WorkflowOutputDeclaration>;
+}
 export type WorkflowInputs = Record<string, unknown>;
-export type WorkflowCheckpoint = Record<string, unknown>;
+export interface WorkflowCheckpoint {
+  schemaVersion: number;
+  runId?: string;
+  workflowName: string;
+  workflowVersion: string;
+  definitionHash: string;
+  status: string;
+  nextStepIndex: number;
+  [field: string]: unknown;
+}
+
+export interface WorkflowRunResult {
+  runId: string;
+  name: string;
+  workflowVersion: string;
+  status: "completed" | "failed" | "budget_exhausted" | "resume_required";
+  steps: Array<Record<string, unknown>>;
+  trace: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  [field: string]: unknown;
+}
 
 export interface FormField {
   target: string;
@@ -126,7 +195,7 @@ export class GlassClient {
   batch<T = Record<string, unknown>>(steps: unknown[], mode: BatchMode = "unguarded", expectedRevision?: number, atomic = false): Promise<T> {
     return this.call<T>("batch", { steps, mode, atomic, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
-  workflow<T = Record<string, unknown>>(definition: WorkflowDefinition, inputs: WorkflowInputs = {}, checkpoint?: WorkflowCheckpoint): Promise<T> {
+  workflow<T = WorkflowRunResult>(definition: WorkflowDefinition, inputs: WorkflowInputs = {}, checkpoint?: WorkflowCheckpoint): Promise<T> {
     return this.call<T>("workflow", { workflow: definition, inputs, ...(checkpoint === undefined ? {} : { checkpoint }) });
   }
   wait<T = Record<string, unknown>>(condition: string, timeoutMs?: number): Promise<T> {

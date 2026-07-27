@@ -97,6 +97,60 @@ export interface SemanticObservation {
   limits: { truncated: boolean; omittedRegions: number; omittedTargets?: number; omittedBytes?: number };
 }
 
+export type SemanticIntentAction =
+  | "click" | "type" | "clear" | "check" | "uncheck" | "select" | "submit"
+  | "open" | "close" | "search" | "filter" | "sort" | "paginate" | "toggle"
+  | "expand" | "collapse" | "download" | "upload" | "inspect" | "extract";
+export type SemanticResolutionPolicy =
+  | "reportOnly" | "requireExact" | "requireUniqueHighConfidence"
+  | "allowUniqueMediumConfidence" | "interactiveConfirmation";
+export interface SemanticIntentRequest {
+  schemaVersion: 1;
+  intent: string;
+  action: SemanticIntentAction;
+  scope?: { pageKind?: string; regionKind?: string; regionId?: string; formLabel?: string };
+  constraints?: {
+    role?: string;
+    name?: string;
+    nameContains?: string;
+    mustBeVisible?: boolean;
+    mustBeEnabled?: boolean;
+    excludeText?: string[];
+    maxCandidates?: number;
+  };
+  resolutionPolicy: SemanticResolutionPolicy;
+  expectedRevision?: number;
+}
+export interface SemanticIntentResult {
+  schemaVersion: 1;
+  intent: string;
+  action: SemanticIntentAction;
+  normalizedIntent: string;
+  resolution: "exact" | "uniqueHighConfidence" | "uniqueLowConfidence" | "ambiguous" | "notFound" | "staleRevision" | "policyRejected" | "unsupportedIntent";
+  policyDecision: "allowed" | "reportOnly" | "confirmationRequired" | "rejected";
+  revision?: number;
+  candidates?: SemanticIntentCandidate[];
+  excludedCandidates?: Array<{ id: string; reason: SemanticEvidence }>;
+  excludedCount: number;
+  selectedCandidate?: string;
+  suggestedConstraints?: Array<{ regionKind?: string; nameContains?: string; role?: string }>;
+  reason?: string;
+  route?: SemanticRouteIdentity;
+}
+export interface SemanticEvidence { category: string; detail: string; }
+export interface SemanticIntentCandidate {
+  id: string;
+  reference: string;
+  role: string;
+  name: string;
+  inputType?: string;
+  regionId?: string;
+  regionKind?: SemanticRegionKind;
+  confidence: "exact" | "high" | "medium" | "low" | "insufficient";
+  evidence?: SemanticEvidence[];
+  fingerprint?: Record<string, unknown>;
+}
+
 export interface WorkflowInput {
   valueType: WorkflowValueType;
   required?: boolean;
@@ -243,6 +297,9 @@ export class GlassClient {
   }
   observeSemantic<T = SemanticObservation>(level: SemanticObservationLevel, region?: string): Promise<T> {
     return this.observe<T>(level, region);
+  }
+  resolveIntent<T = SemanticIntentResult>(request: SemanticIntentRequest): Promise<T> {
+    return this.call<T>("resolveIntent", request as unknown as Record<string, unknown>);
   }
   navigate<T = Record<string, unknown>>(url: string, timeoutMs?: number, expectedRevision?: number): Promise<T> {
     return this.call<T>("navigate", { url, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(expectedRevision === undefined ? {} : { expectedRevision }) });

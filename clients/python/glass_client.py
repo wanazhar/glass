@@ -105,6 +105,44 @@ class SemanticObservation(TypedDict, total=False):
     limits: dict[str, Any]
 
 
+SemanticIntentAction = Literal[
+    "click", "type", "clear", "check", "uncheck", "select", "submit", "open", "close",
+    "search", "filter", "sort", "paginate", "toggle", "expand", "collapse", "download",
+    "upload", "inspect", "extract",
+]
+SemanticResolutionPolicy = Literal[
+    "reportOnly", "requireExact", "requireUniqueHighConfidence",
+    "allowUniqueMediumConfidence", "interactiveConfirmation",
+]
+
+
+class SemanticIntentRequest(TypedDict, total=False):
+    schemaVersion: Literal[1]
+    intent: str
+    action: SemanticIntentAction
+    scope: dict[str, Any]
+    constraints: dict[str, Any]
+    resolutionPolicy: SemanticResolutionPolicy
+    expectedRevision: int
+
+
+class SemanticIntentResult(TypedDict, total=False):
+    schemaVersion: Literal[1]
+    intent: str
+    action: SemanticIntentAction
+    normalizedIntent: str
+    resolution: str
+    policyDecision: str
+    revision: int
+    candidates: list[dict[str, Any]]
+    excludedCandidates: list[dict[str, Any]]
+    excludedCount: int
+    selectedCandidate: str
+    suggestedConstraints: list[dict[str, Any]]
+    reason: str
+    route: dict[str, str]
+
+
 class WorkflowCheckpointStep(TypedDict, total=False):
     id: str
     state: str
@@ -199,6 +237,9 @@ class GlassClient:
         region: Optional[str] = None,
     ) -> SemanticObservation:
         return self.observe(level, region)
+
+    def resolve_intent(self, request: SemanticIntentRequest) -> SemanticIntentResult:
+        return self.call("resolveIntent", dict(request))
 
     def navigate(
         self,

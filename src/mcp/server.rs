@@ -24,9 +24,9 @@ use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SemanticObservationLevel, SessionOptions, TargetError,
-    VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
-    WaitTimeout,
+    PreflightAction, ReconciliationOptions, SemanticIntentRequest, SemanticObservationLevel,
+    SessionOptions, TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip,
+    VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -225,6 +225,9 @@ enum ToolInvocation<'a> {
         include_form_values: bool,
         level: Option<SemanticObservationLevel>,
         region: Option<&'a str>,
+    },
+    ResolveIntent {
+        request: SemanticIntentRequest,
     },
     GetDom,
     GetText,
@@ -1079,6 +1082,9 @@ async fn call_tool(
                 }}
             }))
         }
+        ToolInvocation::ResolveIntent { request } => {
+            serialized_result(&session.resolve_intent(&request).await?)
+        }
         ToolInvocation::GetDom => serialized_result(&session.deep_dom().await?),
         ToolInvocation::GetText => Ok(text_result(session.text().await?)),
         ToolInvocation::Evaluate { expression } => {
@@ -1434,6 +1440,9 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             level: optional_semantic_level(arguments)?,
             region: optional_string(arguments, "region")?,
         }),
+        "resolveIntent" => Ok(ToolInvocation::ResolveIntent {
+            request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
+        }),
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
         "evaluate" => Ok(ToolInvocation::Evaluate {
@@ -1714,6 +1723,24 @@ fn tools() -> Vec<Tool> {
                     "includeFormValues": {"type": "boolean", "default": false},
                     "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"]},
                     "region": {"type": "string", "minLength": 1, "maxLength": 128}
+                }
+            }),
+        },
+        Tool {
+            name: "resolveIntent",
+            description: "Resolve declared browser intent into bounded, inspectable candidates without dispatching an action.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["schemaVersion", "intent", "action", "resolutionPolicy"],
+                "properties": {
+                    "schemaVersion": {"const": 1},
+                    "intent": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "action": {"type": "string", "enum": ["click", "type", "clear", "check", "uncheck", "select", "submit", "open", "close", "search", "filter", "sort", "paginate", "toggle", "expand", "collapse", "download", "upload", "inspect", "extract"]},
+                    "scope": {"type": "object"},
+                    "constraints": {"type": "object"},
+                    "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
+                    "expectedRevision": {"type": "integer", "minimum": 0}
                 }
             }),
         },
@@ -2480,7 +2507,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 61);
+        assert_eq!(tools.len(), 62);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2502,6 +2529,7 @@ mod tests {
             json!(["summary", "interactive", "structured", "detailed", "raw"])
         );
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
+        assert!(tools.iter().any(|tool| tool["name"] == "resolveIntent"));
         assert!(tools.iter().any(|tool| tool["name"] == "doubleClick"));
         for tool_name in [
             "clickExpectPopup",
@@ -2654,6 +2682,21 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("level must be"));
+
+        let intent = json!({
+            "name": "resolveIntent",
+            "arguments": {
+                "schemaVersion": 1,
+                "intent": "open settings",
+                "action": "click",
+                "resolutionPolicy": "reportOnly"
+            }
+        });
+        assert!(matches!(
+            parse_tool_invocation(&intent).unwrap(),
+            ToolInvocation::ResolveIntent { request }
+                if request.intent == "open settings"
+        ));
     }
 
     #[test]

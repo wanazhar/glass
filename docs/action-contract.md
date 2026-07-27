@@ -78,6 +78,11 @@ Every typed failure belongs to one phase:
 - `verification`
 - `transport`
 
+Revision failures include an `executionId` when the browser session had begun
+an attempt. Compatibility constructors may omit that field when a failure is
+created independently of a session. Postcondition failures use the
+`verification` phase and carry the same bounded identity in their typed error.
+
 Failures are bounded and must not include raw page contents, credentials,
 typed values, arbitrary JavaScript, or unbounded CDP payloads.
 

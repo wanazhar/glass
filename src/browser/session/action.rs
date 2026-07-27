@@ -881,6 +881,8 @@ impl BrowserSession {
                     return Err(ActionVerificationError {
                         kind: ActionFailureKind::VerificationFailed,
                         action,
+                        phase: ActionFailurePhase::Verification,
+                        execution_id: Some(self.next_execution_id()),
                         target: Some(ActionTarget {
                             label: element.label,
                             reference: element.reference,
@@ -1013,9 +1015,10 @@ impl BrowserSession {
         if let Some(expected_revision) = expected_revision {
             let current_revision = self.page_revision.load(Ordering::Relaxed);
             if expected_revision != current_revision {
-                return Err(ActionContractError::stale_revision(
+                return Err(ActionContractError::stale_revision_with_execution(
                     expected_revision,
                     current_revision,
+                    self.next_execution_id(),
                 )
                 .into());
             }

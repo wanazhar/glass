@@ -340,4 +340,10 @@ mod tests {
         assert!(parsed.http_only);
         assert_eq!(parsed.priority, Some("High".to_string()));
     }
+
+    #[test]
+    fn cookie_entry_budget_is_bounded_and_power_of_two() {
+        assert_eq!(COOKIE_MAX_ENTRIES, 256);
+        assert_eq!(COOKIE_MAX_ENTRIES.count_ones(), 1);
+    }
 }

@@ -492,6 +492,8 @@ pub enum KnowledgeCommand {
     List,
     /// Show one record by ID.
     Show { record_id: String },
+    /// Explain one record's provenance, lifecycle, and invalidation rules.
+    Explain { record_id: String },
     /// Print lifecycle and serialized-size statistics.
     Stats,
     /// Export the validated snapshot to stdout or a file.
@@ -785,6 +787,13 @@ mod tests {
             cli.command,
             Some(Commands::Knowledge {
                 action: KnowledgeCommand::List
+            })
+        ));
+        let cli = Cli::try_parse_from(["glass", "knowledge", "explain", "record-1"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Knowledge {
+                action: KnowledgeCommand::Explain { .. }
             })
         ));
         let cli = Cli::try_parse_from([

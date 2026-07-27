@@ -174,6 +174,22 @@ fn dispatch_knowledge(
                 .ok_or_else(|| format!("knowledge record not found: {record_id}"))?;
             print_json(record)?;
         }
+        KnowledgeCommand::Explain { record_id } => {
+            let record = store
+                .get(record_id)
+                .ok_or_else(|| format!("knowledge record not found: {record_id}"))?;
+            print_json(&serde_json::json!({
+                "recordId": &record.record_id,
+                "kind": record.kind,
+                "confidence": record.confidence,
+                "scope": &record.scope,
+                "source": &record.source,
+                "invalidation": &record.invalidation,
+                "history": &record.history,
+                "contentHash": record.content_hash()?,
+                "assessment": "requires a fresh observation; stored knowledge is never an authorization",
+            }))?;
+        }
         KnowledgeCommand::Stats => print_json(&store.stats()?)?,
         KnowledgeCommand::Export { output } => {
             let canonical = store.snapshot().to_canonical_json()?;

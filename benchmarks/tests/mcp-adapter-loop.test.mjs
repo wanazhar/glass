@@ -14,8 +14,10 @@ test("scenario tool errors are recorded through every requested iteration", () =
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.scenarios.length, 22);
-    assert.equal(report.summary.failures, 22);
-    assert.equal(report.scenarios.every(({ error, status }) => status === "failure" && error.includes("fixture tool error")), true);
+    assert.equal(report.summary.failures, 16);
+    assert.equal(report.summary.unsupported, 6);
+    assert.equal(report.scenarios.filter(({ status }) => status === "failure")
+      .every(({ error }) => error.includes("fixture tool error")), true);
     assert.equal(JSON.parse(fs.readFileSync(fixture.checkpoint, "utf8")).progress.completed_iterations, 2);
   } finally { fs.rmSync(fixture.directory, { recursive: true, force: true }); }
 });
@@ -46,7 +48,7 @@ function setupFakeServer(dropTransport) {
   fs.writeFileSync(server, `#!/usr/bin/env node
 import readline from "node:readline";
 let calls = 0;
-const tools = ["browser_navigate","browser_click","browser_evaluate","browser_fill_form","browser_handle_dialog","browser_run_code_unsafe","browser_resize"];
+const tools = ["browser_navigate","browser_click","browser_evaluate","browser_fill_form","browser_handle_dialog","browser_resize","browser_snapshot"];
 readline.createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (!request.id) return;

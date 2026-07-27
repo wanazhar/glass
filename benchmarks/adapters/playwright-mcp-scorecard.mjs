@@ -34,7 +34,7 @@ try {
   if (initialized.serverInfo?.name !== "Playwright") throw new Error("unexpected MCP server identity");
   const listed = await client.request("tools/list", {});
   const availableTools = new Set(listed.tools.map(({ name }) => name));
-  for (const required of ["browser_navigate", "browser_click", "browser_evaluate", "browser_fill_form", "browser_handle_dialog", "browser_run_code_unsafe"]) {
+  for (const required of ["browser_navigate", "browser_click", "browser_evaluate", "browser_fill_form", "browser_handle_dialog"]) {
     if (!availableTools.has(required)) throw new Error(`released MCP surface is missing ${required}`);
   }
   await client.tool("browser_resize", { width: 1280, height: 720 });
@@ -116,9 +116,9 @@ async function runScenario(mcp, id) {
       await mcp.tool("browser_click", { element: "Submit", target: "#form button" });
       return result(mcp);
     case "popup":
-      return runCode(mcp, "async (page) => { const opened = page.waitForEvent('popup'); await page.locator('#popup').click(); const popup = await opened; await popup.waitForLoadState(); await popup.close(); return 'popup-controlled'; }");
+      throw new UnsupportedScenario("Playwright MCP 0.0.78 publishes no typed public popup-witness primitive");
     case "frame":
-      return runCode(mcp, "async (page) => { await page.frameLocator('#frame').locator('#frame-action').click(); return 'frame-clicked'; }");
+      throw new UnsupportedScenario("Playwright MCP 0.0.78 publishes no typed public frame-locator primitive");
     case "dialog":
       await mcp.tool("browser_click", { element: "Dialog", target: "#dialog" });
       await mcp.tool("browser_handle_dialog", { accept: true });
@@ -126,14 +126,13 @@ async function runScenario(mcp, id) {
     case "download":
       return downloadWithPublicTools(mcp);
     case "failure-recovery":
-      return runCode(mcp, "async (page) => { try { await page.getByText('Definitely missing', { exact: true }).click({ timeout: 100 }); return 'unexpected-action'; } catch { await page.locator('#result').evaluate(node => node.value='recovered'); return 'recovered'; } }");
+      throw new UnsupportedScenario("Playwright MCP 0.0.78 has no public typed recovery primitive for this scenario");
     default: throw new Error(`unknown scenario ${id}`);
   }
 }
 
 async function result(mcp) { return evaluate(mcp, "() => document.querySelector('#result').value"); }
 async function evaluate(mcp, fn) { return parseResult(await mcp.tool("browser_evaluate", { function: fn })); }
-async function runCode(mcp, code) { return parseResult(await mcp.tool("browser_run_code_unsafe", { code })); }
 async function waitForDialogCompletion(mcp) {
   const attempts = 20;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {

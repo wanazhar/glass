@@ -25,10 +25,12 @@ use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
-    KnowledgeStore, Locator, PopupClickError, PreflightAction, ReconciliationOptions,
-    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
-    SessionOptions, TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip,
-    VisualFormat, WaitCondition, WaitTimeout, default_knowledge_store_path,
+    KnowledgeLookupOptions, KnowledgeObservationMode, KnowledgeObservationReport,
+    KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError, PreflightAction,
+    ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    SemanticObservationLevel, SessionOptions, TargetError, VerificationPredicate,
+    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    default_knowledge_store_path,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -227,6 +229,11 @@ enum ToolInvocation<'a> {
         include_form_values: bool,
         level: Option<SemanticObservationLevel>,
         region: Option<&'a str>,
+    },
+    ObserveKnowledge {
+        level: SemanticObservationLevel,
+        fresh_only: bool,
+        lookup: KnowledgeLookupOptions,
     },
     ResolveIntent {
         request: SemanticIntentRequest,
@@ -1124,6 +1131,41 @@ async fn call_tool(
                 }}
             }))
         }
+        ToolInvocation::ObserveKnowledge {
+            level,
+            fresh_only,
+            mut lookup,
+        } => {
+            if fresh_only {
+                let observation = session.semantic_observe(level).await?;
+                return serialized_result(&KnowledgeObservationReport {
+                    observation,
+                    mode: KnowledgeObservationMode::FreshOnly,
+                    assessments: Vec::new(),
+                    eligible_record_ids: Vec::new(),
+                    stale_record_ids: Vec::new(),
+                    out_of_scope_record_ids: Vec::new(),
+                });
+            }
+            let path = knowledge_store_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| default_knowledge_store_path(&options.profile));
+            let store = KnowledgeStore::open(path)?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(options.profile.clone());
+            }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_string();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
+            serialized_result(
+                &session
+                    .semantic_observe_with_knowledge(level, &store, lookup, false)
+                    .await?,
+            )
+        }
         ToolInvocation::ResolveIntent { request } => {
             serialized_result(&session.resolve_intent(&request).await?)
         }
@@ -1540,6 +1582,38 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             level: optional_semantic_level(arguments)?,
             region: optional_string(arguments, "region")?,
         }),
+        "observeKnowledge" => {
+            let profile_scope =
+                match optional_string(arguments, "profileScope")?.unwrap_or("profileBound") {
+                    "anonymous" => KnowledgeProfileScope::Anonymous,
+                    "authenticated" => KnowledgeProfileScope::Authenticated,
+                    "profileBound" => KnowledgeProfileScope::ProfileBound,
+                    _ => {
+                        return Err(
+                            "profileScope must be anonymous, authenticated, or profileBound".into(),
+                        );
+                    }
+                };
+            Ok(ToolInvocation::ObserveKnowledge {
+                level: optional_semantic_level(arguments)?
+                    .unwrap_or(SemanticObservationLevel::Summary),
+                fresh_only: optional_bool(arguments, "freshOnly")?,
+                lookup: KnowledgeLookupOptions {
+                    profile_scope,
+                    profile_key: optional_string(arguments, "profileKey")?.map(str::to_string),
+                    locale: optional_string(arguments, "locale")?.map(str::to_string),
+                    tenant_key: optional_string(arguments, "tenantKey")?.map(str::to_string),
+                    browser_family: optional_string(arguments, "browserFamily")?
+                        .unwrap_or("chromium")
+                        .to_string(),
+                    browser_version: optional_string(arguments, "browserVersion")?
+                        .map(str::to_string),
+                    glass_schema_version: 1,
+                    policy_preset: String::new(),
+                    now_epoch_seconds: 0,
+                },
+            })
+        }
         "resolveIntent" => Ok(ToolInvocation::ResolveIntent {
             request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
         }),
@@ -1855,6 +1929,24 @@ fn tools() -> Vec<Tool> {
                     "includeFormValues": {"type": "boolean", "default": false},
                     "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"]},
                     "region": {"type": "string", "minLength": 1, "maxLength": 128}
+                }
+            }),
+        },
+        Tool {
+            name: "observeKnowledge",
+            description: "Collect fresh semantic evidence and optionally assess scoped local knowledge; stored knowledge never authorizes an action.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"], "default": "summary"},
+                    "freshOnly": {"type": "boolean", "default": false},
+                    "profileScope": {"type": "string", "enum": ["anonymous", "authenticated", "profileBound"], "default": "profileBound"},
+                    "profileKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "locale": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "tenantKey": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "browserFamily": {"type": "string", "minLength": 1, "maxLength": 256, "default": "chromium"},
+                    "browserVersion": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
         },
@@ -2723,7 +2815,7 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 68);
+        assert_eq!(tools.len(), 69);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2747,6 +2839,7 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "screenshot"));
         assert!(tools.iter().any(|tool| tool["name"] == "resolveIntent"));
         assert!(tools.iter().any(|tool| tool["name"] == "executeIntent"));
+        assert!(tools.iter().any(|tool| tool["name"] == "observeKnowledge"));
         for tool_name in [
             "knowledgeList",
             "knowledgeShow",
@@ -2898,6 +2991,30 @@ mod tests {
                 ..
             }
         ));
+
+        let knowledge = json!({
+            "name": "observeKnowledge",
+            "arguments": {
+                "level": "summary",
+                "freshOnly": true,
+                "profileScope": "anonymous",
+                "locale": "en-US",
+                "browserVersion": "120.0"
+            }
+        });
+        let ToolInvocation::ObserveKnowledge {
+            level,
+            fresh_only,
+            lookup,
+        } = parse_tool_invocation(&knowledge).unwrap()
+        else {
+            panic!("expected knowledge observation invocation");
+        };
+        assert_eq!(level, SemanticObservationLevel::Summary);
+        assert!(fresh_only);
+        assert_eq!(lookup.profile_scope, KnowledgeProfileScope::Anonymous);
+        assert_eq!(lookup.locale.as_deref(), Some("en-US"));
+        assert_eq!(lookup.browser_version.as_deref(), Some("120.0"));
 
         let execute = json!({
             "name": "executeIntent",

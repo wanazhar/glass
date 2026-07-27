@@ -221,6 +221,7 @@ impl WorkflowDefinition {
         }
 
         let mut ids = BTreeSet::new();
+        let mut idempotency_keys = BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
             let path = format!("steps[{index}]");
             step.validate(&path, self.budgets.max_retries)?;
@@ -228,6 +229,14 @@ impl WorkflowDefinition {
                 return Err(WorkflowValidationError::new(
                     format!("{path}.id"),
                     format!("duplicate step ID {:?}", step.id),
+                ));
+            }
+            if let Some(key) = &step.idempotency_key
+                && !idempotency_keys.insert(key.as_str())
+            {
+                return Err(WorkflowValidationError::new(
+                    format!("{path}.idempotencyKey"),
+                    format!("duplicate idempotency key {:?}", key),
                 ));
             }
         }
@@ -2996,6 +3005,27 @@ mod tests {
         workflow.steps[0].transaction = WorkflowTransactionClass::ConditionallyIdempotent;
         let error = workflow.validate().unwrap_err();
         assert_eq!(error.path, "steps[0].idempotencyKey");
+    }
+
+    #[test]
+    fn duplicate_idempotency_keys_are_rejected() {
+        let mut workflow = definition();
+        workflow.steps[0].transaction = WorkflowTransactionClass::ConditionallyIdempotent;
+        workflow.steps[0].idempotency_key = Some("save-once".into());
+        workflow.steps.push(WorkflowStep {
+            id: "second".into(),
+            action: BatchStep::Screenshot,
+            when: None,
+            expect: None,
+            before_retry: None,
+            transaction: WorkflowTransactionClass::ConditionallyIdempotent,
+            idempotency_key: Some("save-once".into()),
+            max_retries: 0,
+            repeat: 1,
+        });
+        workflow.budgets.max_steps = 2;
+        let error = workflow.validate().unwrap_err();
+        assert_eq!(error.path, "steps[1].idempotencyKey");
     }
 
     #[test]

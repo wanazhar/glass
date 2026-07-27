@@ -415,6 +415,12 @@ pub enum Commands {
         input: Option<PathBuf>,
     },
 
+    /// Resolve and execute one explicitly selected intent candidate.
+    ExecuteIntent {
+        /// JSON file containing the versioned execution request; omit to read stdin.
+        input: Option<PathBuf>,
+    },
+
     /// Evaluate a bounded JSON verification predicate.
     Verify {
         /// JSON object such as `{"urlEquals":"https://example.com"}`.
@@ -716,5 +722,16 @@ mod tests {
                 if path.as_os_str() == "intent.json"
         ));
         assert!(Cli::try_parse_from(["glass", "resolve-intent"]).is_ok());
+    }
+
+    #[test]
+    fn execute_intent_command_accepts_optional_json_input() {
+        let cli = Cli::try_parse_from(["glass", "execute-intent", "intent.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ExecuteIntent { input: Some(path) })
+                if path.as_os_str() == "intent.json"
+        ));
+        assert!(Cli::try_parse_from(["glass", "execute-intent"]).is_ok());
     }
 }

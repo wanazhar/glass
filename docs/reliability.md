@@ -55,7 +55,9 @@ The release gate fails closed when a scenario is missing, hashes do not match,
 oracle or artifact evidence is incomplete, budgets are invalid, a forbidden
 outcome is present, or the run is failed, indeterminate, or unsupported. A
 safe refusal can certify only when its declared terminal state and independent
-oracle agree with the scenario.
+oracle agree with the scenario. The JSON result includes the detailed gate and
+a category-level scorecard; the scorecard is derived from the same gate and is
+not a separate source of truth.
 
 ## Boundaries
 

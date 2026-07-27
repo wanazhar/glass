@@ -26,9 +26,46 @@
         }
       }
     },
-    "observation": {"type": "object"}
+    "observation": {"$ref": "#/$defs/observation"}
   },
   "$defs": {
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "browser", "browserVersion", "durationMs", "browserActions"],
+      "properties": {
+        "platform": {"enum": ["linux-x86-64", "macos-x86-64", "macos-arm64"]},
+        "browser": {"type": "string", "minLength": 1, "maxLength": 128},
+        "browserVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "durationMs": {"type": "integer", "minimum": 1},
+        "browserActions": {"type": "integer", "minimum": 1, "maximum": 1024}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenarioId", "scenarioHash", "metadata", "classification", "sideEffectCount", "forbiddenOutcomes", "oracleEvidence", "artifactsComplete"],
+      "properties": {
+        "scenarioId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "scenarioHash": {"$ref": "#/$defs/digest"},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "classification": {"enum": ["passed", "failed", "safe_refusal", "indeterminate", "unsupported"]},
+        "terminalState": {"type": ["string", "null"], "maxLength": 128},
+        "sideEffectCount": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 1024}
+        },
+        "forbiddenOutcomes": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": {"enum": ["wrongTargetExecuted", "staleRevisionExecuted", "ambiguousTargetSilentlyExecuted", "nonIdempotentMutationDuplicated", "falseWorkflowCompletion", "unsafeResumeReplay", "secretLeaked", "crossProfileKnowledgeLeak", "unboundedLoopEscapedBudget", "policyBypassed", "checkpointAcceptedAfterIncompatibleDefinitionChange", "semanticCacheHidCriticalUnexpectedState"]}
+        },
+        "oracleEvidence": {"const": true},
+        "artifactsComplete": {"const": true}
+      }
+    }
   }
 }

@@ -23,6 +23,7 @@ const run = await glass.workflow({
   terminalCondition: { titleContains: "Example" },
   outputs: {},
 });
+// Pass a serialized checkpoint as the third argument to resume its safe suffix.
 glass.close();
 ```
 

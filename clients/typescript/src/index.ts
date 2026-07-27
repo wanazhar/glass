@@ -25,6 +25,7 @@ export type VerificationPredicate =
 export type BatchMode = "fixed" | "chain" | "unguarded";
 export type WorkflowDefinition = Record<string, unknown>;
 export type WorkflowInputs = Record<string, unknown>;
+export type WorkflowCheckpoint = Record<string, unknown>;
 
 export interface FormField {
   target: string;
@@ -125,8 +126,8 @@ export class GlassClient {
   batch<T = Record<string, unknown>>(steps: unknown[], mode: BatchMode = "unguarded", expectedRevision?: number, atomic = false): Promise<T> {
     return this.call<T>("batch", { steps, mode, atomic, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
-  workflow<T = Record<string, unknown>>(definition: WorkflowDefinition, inputs: WorkflowInputs = {}): Promise<T> {
-    return this.call<T>("workflow", { workflow: definition, inputs });
+  workflow<T = Record<string, unknown>>(definition: WorkflowDefinition, inputs: WorkflowInputs = {}, checkpoint?: WorkflowCheckpoint): Promise<T> {
+    return this.call<T>("workflow", { workflow: definition, inputs, ...(checkpoint === undefined ? {} : { checkpoint }) });
   }
   wait<T = Record<string, unknown>>(condition: string, timeoutMs?: number): Promise<T> {
     return this.call<T>("wait", { condition, ...(timeoutMs === undefined ? {} : { timeoutMs }) });

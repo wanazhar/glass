@@ -161,8 +161,12 @@ class GlassClient:
         self,
         definition: dict[str, Any],
         inputs: Optional[dict[str, Any]] = None,
+        checkpoint: Optional[dict[str, Any]] = None,
     ) -> Any:
-        return self.call("workflow", {"workflow": definition, "inputs": inputs or {}})
+        args: dict[str, Any] = {"workflow": definition, "inputs": inputs or {}}
+        if checkpoint is not None:
+            args["checkpoint"] = checkpoint
+        return self.call("workflow", args)
 
     def wait(self, condition: str, timeout_ms: Optional[int] = None) -> Any:
         args: dict[str, Any] = {"condition": condition}

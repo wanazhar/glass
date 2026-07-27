@@ -22,6 +22,7 @@ try:
         "terminalCondition": {"titleContains": "Example"},
         "outputs": {},
     }))
+    # Pass checkpoint=... to resume only its reconciled safe suffix.
 finally:
     glass.close()
 ```

@@ -23,6 +23,8 @@
   vs cloud browser, and when to use each tool.
 - [Category metric](category-metric.md) — wrong-action count, runner RSS,
   and observe-bytes scoreboard.
+- [Reliability metrics](reliability-metrics.md) — versioned action, verification,
+  recovery, latency, and resource evidence.
 - [Bot-protection & consent walls](bot-protection.md) — legitimate access paths
   when sites challenge CDP automation.
 - [Detection-surface report](detection-surface.md) — what stock CDP-driven

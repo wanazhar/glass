@@ -62,6 +62,10 @@ transaction retry safety.
 validator also accepts the issue-era `type` spelling as an additive input alias;
 canonical serialization always writes `valueType`.
 
+The workflow contract uses a strict unknown-field policy. Unknown top-level,
+input, budget, output, step, and predicate fields fail validation with a JSON
+path; future fields require an explicit schema-version or compatibility update.
+
 Action strings may reference declared values with the bounded
 `${inputs.name}` form. Glass resolves these placeholders after input type
 validation and before browser dispatch; unknown, missing, non-scalar, or

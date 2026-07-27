@@ -75,6 +75,95 @@ impl WorkflowDefinition {
                 "outputs",
             ],
         )?;
+        reject_unknown_fields(
+            &value,
+            "$",
+            &[
+                "schemaVersion",
+                "name",
+                "workflowVersion",
+                "description",
+                "inputs",
+                "budgets",
+                "preconditions",
+                "steps",
+                "terminalCondition",
+                "outputs",
+            ],
+        )?;
+        if let Some(inputs) = value.get("inputs").and_then(Value::as_object) {
+            for (name, input) in inputs {
+                reject_unknown_fields(
+                    input,
+                    &format!("inputs.{name}"),
+                    &["valueType", "type", "required", "maxLength", "sensitive"],
+                )?;
+            }
+        }
+        if let Some(budgets) = value.get("budgets") {
+            reject_unknown_fields(
+                budgets,
+                "budgets",
+                &[
+                    "maxSteps",
+                    "maxDurationMs",
+                    "maxRetries",
+                    "maxExtractedBytes",
+                ],
+            )?;
+        }
+        if let Some(outputs) = value.get("outputs").and_then(Value::as_object) {
+            for (name, output) in outputs {
+                reject_unknown_fields(
+                    output,
+                    &format!("outputs.{name}"),
+                    &["valueType", "type", "source", "required", "sensitive"],
+                )?;
+            }
+        }
+        if let Some(preconditions) = value.get("preconditions").and_then(Value::as_array) {
+            for (index, predicate) in preconditions.iter().enumerate() {
+                reject_predicate_fields(predicate, &format!("preconditions[{index}]"))?;
+            }
+        }
+        if let Some(predicate) = value.get("terminalCondition") {
+            reject_predicate_fields(predicate, "terminalCondition")?;
+        }
+        if let Some(steps) = value.get("steps").and_then(Value::as_array) {
+            for (index, step) in steps.iter().enumerate() {
+                reject_unknown_fields(
+                    step,
+                    &format!("steps[{index}]"),
+                    &[
+                        "id",
+                        "action",
+                        "when",
+                        "expect",
+                        "beforeRetry",
+                        "transaction",
+                        "idempotencyKey",
+                        "maxRetries",
+                        "repeat",
+                        "url",
+                        "timeoutMs",
+                        "target",
+                        "text",
+                        "value",
+                        "condition",
+                        "dx",
+                        "dy",
+                        "includeDom",
+                        "includeScreenshot",
+                        "includeFormValues",
+                    ],
+                )?;
+                for field in ["when", "expect", "beforeRetry"] {
+                    if let Some(predicate) = step.get(field) {
+                        reject_predicate_fields(predicate, &format!("steps[{index}].{field}"))?;
+                    }
+                }
+            }
+        }
         let definition: Self = serde_json::from_value(value).map_err(|error| {
             WorkflowValidationError::new("$", format!("invalid workflow shape: {error}"))
         })?;
@@ -2447,6 +2536,76 @@ fn require_object_fields(value: &Value, fields: &[&str]) -> Result<(), WorkflowV
     Ok(())
 }
 
+fn reject_unknown_fields(
+    value: &Value,
+    path: &str,
+    allowed: &[&str],
+) -> Result<(), WorkflowValidationError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| WorkflowValidationError::new(path, "expected a JSON object"))?;
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(WorkflowValidationError::new(
+            format!("{path}.{field}"),
+            "unknown workflow field",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_predicate_fields(value: &Value, path: &str) -> Result<(), WorkflowValidationError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| WorkflowValidationError::new(path, "expected a predicate object"))?;
+    let allowed = [
+        "urlEquals",
+        "titleContains",
+        "visible",
+        "textContains",
+        "popupOpened",
+        "dialogOpen",
+        "downloadStarted",
+        "revisionEquals",
+        "all",
+        "any",
+        "not",
+    ];
+    if object.len() != 1 {
+        return Err(WorkflowValidationError::new(
+            path,
+            "predicate must contain exactly one recognized field",
+        ));
+    }
+    let Some((field, nested)) = object.iter().next() else {
+        return Err(WorkflowValidationError::new(
+            path,
+            "predicate must not be empty",
+        ));
+    };
+    if !allowed.contains(&field.as_str()) {
+        return Err(WorkflowValidationError::new(
+            format!("{path}.{field}"),
+            "unknown predicate field",
+        ));
+    }
+    match field.as_str() {
+        "all" | "any" => {
+            let predicates = nested.as_array().ok_or_else(|| {
+                WorkflowValidationError::new(format!("{path}.{field}"), "must be an array")
+            })?;
+            for (index, predicate) in predicates.iter().enumerate() {
+                reject_predicate_fields(predicate, &format!("{path}.{field}[{index}]"))?;
+            }
+        }
+        "not" => reject_predicate_fields(nested, &format!("{path}.not"))?,
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_name(path: &str, value: &str) -> Result<(), WorkflowValidationError> {
     validate_bytes(path, value, 1, MAX_NAME_BYTES)?;
     if value.trim() != value {
@@ -2667,6 +2826,25 @@ mod tests {
         value.as_object_mut().unwrap().remove("steps");
         let error = WorkflowDefinition::from_value(value).unwrap_err();
         assert_eq!(error.path, "$.steps");
+    }
+
+    #[test]
+    fn unknown_definition_fields_fail_before_deserialization() {
+        let mut value = serde_json::to_value(definition()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("futureField".into(), json!(true));
+        let error = WorkflowDefinition::from_value(value).unwrap_err();
+        assert_eq!(error.path, "$.futureField");
+    }
+
+    #[test]
+    fn unknown_predicate_fields_fail_with_their_json_path() {
+        let mut value = serde_json::to_value(definition()).unwrap();
+        value["terminalCondition"] = json!({"titleContains": "Example", "future": true});
+        let error = WorkflowDefinition::from_value(value).unwrap_err();
+        assert_eq!(error.path, "terminalCondition");
     }
 
     #[test]

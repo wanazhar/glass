@@ -123,6 +123,12 @@ follows legal state transitions, and preserves attempt boundaries without
 contacting Chrome or replaying an effect. This makes traces suitable for
 offline diagnostics and test fixtures.
 
+`WorkflowRecorder` is a local draft builder for reviewed authoring flows. Its
+click and text-input helpers retain semantic role/name targets, mark every
+draft for review, and store typed values as `${inputs.name}` placeholders.
+Recorder drafts are not execution evidence and do not automatically attach to
+or observe a browser session.
+
 This is a local, unreleased 0.1.19 development surface. Checkpoint persistence
 and resume reconciliation are not complete yet. The eventual public release
 target for the complete roadmap is 0.2.0.

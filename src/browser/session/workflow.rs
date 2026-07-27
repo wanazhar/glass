@@ -346,6 +346,223 @@ pub struct WorkflowStep {
     pub repeat: u32,
 }
 
+/// Semantic target captured by the workflow recorder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRecordedTarget {
+    pub role: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+/// Confidence attached to a recorded draft, never to a runtime guarantee.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRecordingConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+/// One reviewable semantic recorder draft step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDraftStep {
+    pub id: String,
+    pub action: BatchStep,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<WorkflowRecordedTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect: Option<VerificationPredicate>,
+    pub transaction: WorkflowTransactionClass,
+    pub confidence: WorkflowRecordingConfidence,
+    pub review_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_name: Option<String>,
+}
+
+/// A bounded recorder output that remains a draft until explicitly reviewed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDraft {
+    pub schema_version: u32,
+    pub name: String,
+    pub workflow_version: String,
+    pub steps: Vec<WorkflowDraftStep>,
+}
+
+/// In-memory recorder for semantic workflow drafts.
+#[derive(Debug, Clone)]
+pub struct WorkflowRecorder {
+    draft: WorkflowDraft,
+}
+
+impl WorkflowRecorder {
+    /// Start a bounded recorder draft. Recording is local and does not attach
+    /// to Chrome or intercept browser traffic.
+    pub fn new(name: impl Into<String>, workflow_version: impl Into<String>) -> Self {
+        Self {
+            draft: WorkflowDraft {
+                schema_version: WORKFLOW_SCHEMA_VERSION,
+                name: name.into(),
+                workflow_version: workflow_version.into(),
+                steps: Vec::new(),
+            },
+        }
+    }
+
+    /// Record a semantic click draft using an explicit role and accessible name.
+    pub fn record_click(
+        &mut self,
+        id: impl Into<String>,
+        role: impl Into<String>,
+        name: impl Into<String>,
+        expect: Option<VerificationPredicate>,
+    ) -> Result<(), WorkflowValidationError> {
+        let target = recorded_target(role.into(), name.into(), None)?;
+        let locator = format!("role={};name={}", target.role, target.name);
+        self.push(WorkflowDraftStep {
+            id: id.into(),
+            action: BatchStep::Click { target: locator },
+            target: Some(target),
+            expect,
+            transaction: WorkflowTransactionClass::Unknown,
+            confidence: WorkflowRecordingConfidence::High,
+            review_required: true,
+            input_name: None,
+        })
+    }
+
+    /// Record text as a typed input placeholder, never as a literal value.
+    pub fn record_type_input(
+        &mut self,
+        id: impl Into<String>,
+        role: impl Into<String>,
+        name: impl Into<String>,
+        input_name: impl Into<String>,
+    ) -> Result<(), WorkflowValidationError> {
+        let target = recorded_target(role.into(), name.into(), None)?;
+        let input_name = input_name.into();
+        validate_name("inputName", &input_name)?;
+        let locator = format!("role={};name={}", target.role, target.name);
+        self.push(WorkflowDraftStep {
+            id: id.into(),
+            action: BatchStep::Type {
+                text: format!("${{inputs.{input_name}}}"),
+                target: Some(locator),
+            },
+            target: Some(target),
+            expect: None,
+            transaction: WorkflowTransactionClass::Unknown,
+            confidence: WorkflowRecordingConfidence::High,
+            review_required: true,
+            input_name: Some(input_name),
+        })
+    }
+
+    /// Record a read-only observation draft.
+    pub fn record_observe(&mut self, id: impl Into<String>) -> Result<(), WorkflowValidationError> {
+        self.push(WorkflowDraftStep {
+            id: id.into(),
+            action: BatchStep::Observe {
+                include_dom: false,
+                include_screenshot: false,
+                include_form_values: false,
+            },
+            target: None,
+            expect: None,
+            transaction: WorkflowTransactionClass::ReadOnly,
+            confidence: WorkflowRecordingConfidence::High,
+            review_required: true,
+            input_name: None,
+        })
+    }
+
+    pub fn draft(&self) -> &WorkflowDraft {
+        &self.draft
+    }
+
+    /// Convert a reviewed draft into the normal validated workflow contract.
+    pub fn into_definition(
+        self,
+        inputs: BTreeMap<String, WorkflowInput>,
+        budgets: WorkflowBudgets,
+        terminal_condition: VerificationPredicate,
+        outputs: BTreeMap<String, WorkflowOutputDeclaration>,
+    ) -> Result<WorkflowDefinition, WorkflowValidationError> {
+        let definition = WorkflowDefinition {
+            schema_version: self.draft.schema_version,
+            name: self.draft.name,
+            workflow_version: self.draft.workflow_version,
+            description: Some("Recorded draft; review before execution.".into()),
+            inputs,
+            budgets,
+            preconditions: Vec::new(),
+            steps: self
+                .draft
+                .steps
+                .into_iter()
+                .map(|step| WorkflowStep {
+                    id: step.id,
+                    action: step.action,
+                    when: None,
+                    expect: step.expect,
+                    transaction: step.transaction,
+                    idempotency_key: None,
+                    max_retries: 0,
+                    repeat: 1,
+                })
+                .collect(),
+            terminal_condition,
+            outputs,
+        };
+        definition.validate()?;
+        Ok(definition)
+    }
+
+    fn push(&mut self, step: WorkflowDraftStep) -> Result<(), WorkflowValidationError> {
+        if self.draft.steps.len() >= MAX_STEPS {
+            return Err(WorkflowValidationError::new(
+                "steps",
+                format!("must contain at most {MAX_STEPS} entries"),
+            ));
+        }
+        validate_name("steps.id", &step.id)?;
+        if self.draft.steps.iter().any(|item| item.id == step.id) {
+            return Err(WorkflowValidationError::new(
+                "steps.id",
+                format!("duplicate step ID {:?}", step.id),
+            ));
+        }
+        self.draft.steps.push(step);
+        Ok(())
+    }
+}
+
+fn recorded_target(
+    role: String,
+    name: String,
+    context: Option<String>,
+) -> Result<WorkflowRecordedTarget, WorkflowValidationError> {
+    validate_bytes("target.role", &role, 1, 128)?;
+    validate_bytes("target.name", &name, 1, MAX_TARGET_BYTES)?;
+    if role.contains([';', '\n', '\r']) || name.contains([';', '\n', '\r']) {
+        return Err(WorkflowValidationError::new(
+            "target",
+            "semantic target fields cannot contain locator separators or newlines",
+        ));
+    }
+    if let Some(context) = &context {
+        validate_bytes("target.context", context, 1, 256)?;
+    }
+    Ok(WorkflowRecordedTarget {
+        role,
+        name,
+        context,
+    })
+}
+
 /// Effect classification used to decide whether a failed attempt may be
 /// replayed before dispatch.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2193,6 +2410,26 @@ mod tests {
         );
         assert!(typed_output_value("count", WorkflowValueType::Integer, "4.2").is_err());
         assert!(typed_output_value("ready", WorkflowValueType::Boolean, "yes").is_err());
+    }
+
+    #[test]
+    fn recorder_keeps_semantic_targets_and_redacts_typed_values() {
+        let mut recorder = WorkflowRecorder::new("checkout", "1.0.0");
+        recorder
+            .record_click("continue", "button", "Continue", None)
+            .unwrap();
+        recorder
+            .record_type_input("email", "textbox", "Email", "email")
+            .unwrap();
+        let draft = recorder.draft();
+        let BatchStep::Click { target } = &draft.steps[0].action else {
+            panic!("expected semantic click draft");
+        };
+        assert_eq!(target, "role=button;name=Continue");
+        let serialized = serde_json::to_string(draft).unwrap();
+        assert!(!serialized.contains("password-value"));
+        assert!(serialized.contains("${inputs.email}"));
+        assert!(draft.steps[1].review_required);
     }
 
     #[test]

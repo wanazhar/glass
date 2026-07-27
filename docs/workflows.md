@@ -52,6 +52,11 @@ invalid URLs, unbounded budgets, invalid input values, and unsafe arbitrary
 JavaScript steps. `to_canonical_json` returns deterministic JSON with ordered
 map keys for hashing or audit records.
 
+Action strings may reference declared values with the bounded
+`${inputs.name}` form. Glass resolves these placeholders after input type
+validation and before browser dispatch; unknown, missing, non-scalar, or
+oversized substitutions fail before an action can run.
+
 ## Current boundary
 
 The definition contract currently accepts navigation, pointer and form

@@ -186,6 +186,27 @@ impl WorkflowDefinition {
         }
         Ok(())
     }
+
+    /// Resolve bounded `${inputs.name}` placeholders in declared actions.
+    /// Resolution happens before browser startup or dispatch and never
+    /// evaluates arbitrary expressions.
+    pub fn resolve_actions(
+        &self,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<Vec<WorkflowStep>, WorkflowValidationError> {
+        self.validate_inputs(values)?;
+        self.steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                let mut resolved = step.clone();
+                resolved.action =
+                    resolve_batch_step(&step.action, values, &format!("steps[{index}].action"))?;
+                resolved.validate(&format!("steps[{index}]"), self.budgets.max_retries)?;
+                Ok(resolved)
+            })
+            .collect()
+    }
 }
 
 /// A declared workflow input and its accepted JSON type.
@@ -910,11 +931,11 @@ impl super::BrowserSession {
     ) -> BrowserResult<WorkflowRunResult> {
         workflow.validate()?;
         workflow.validate_inputs(inputs)?;
+        let resolved_steps = workflow.resolve_actions(inputs)?;
         let initial_revision = self
             .page_revision
             .load(std::sync::atomic::Ordering::Relaxed);
-        let mut records: Vec<_> = workflow
-            .steps
+        let mut records: Vec<_> = resolved_steps
             .iter()
             .map(|step| WorkflowStepRecord::new(&step.id))
             .collect();
@@ -939,7 +960,7 @@ impl super::BrowserSession {
             }
         }
 
-        for (index, step) in workflow.steps.iter().enumerate() {
+        for (index, step) in resolved_steps.iter().enumerate() {
             for repetition in 0..step.repeat {
                 if repetition > 0 {
                     let record = &mut records[index];
@@ -1331,6 +1352,112 @@ fn workflow_definition_hash(
     let canonical = workflow.to_canonical_json()?;
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn resolve_batch_step(
+    action: &BatchStep,
+    inputs: &BTreeMap<String, Value>,
+    path: &str,
+) -> Result<BatchStep, WorkflowValidationError> {
+    let resolve = |field: &str, value: &str, maximum: usize| {
+        resolve_input_template(value, inputs, &format!("{path}.{field}"), maximum)
+    };
+    Ok(match action {
+        BatchStep::Navigate { url, timeout_ms } => BatchStep::Navigate {
+            url: resolve("url", url, MAX_TARGET_BYTES)?,
+            timeout_ms: *timeout_ms,
+        },
+        BatchStep::Click { target } => BatchStep::Click {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+        },
+        BatchStep::Type { text, target } => BatchStep::Type {
+            text: resolve("text", text, MAX_TEXT_BYTES)?,
+            target: target
+                .as_deref()
+                .map(|value| resolve("target", value, MAX_TARGET_BYTES))
+                .transpose()?,
+        },
+        BatchStep::Check { target } => BatchStep::Check {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+        },
+        BatchStep::Uncheck { target } => BatchStep::Uncheck {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+        },
+        BatchStep::Select { target, value } => BatchStep::Select {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+            value: resolve("value", value, MAX_TEXT_BYTES)?,
+        },
+        BatchStep::Clear { target } => BatchStep::Clear {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+        },
+        BatchStep::Wait {
+            condition,
+            timeout_ms,
+        } => BatchStep::Wait {
+            condition: resolve("condition", condition, MAX_WAIT_CONDITION_BYTES)?,
+            timeout_ms: *timeout_ms,
+        },
+        BatchStep::Scroll { dx, dy } => BatchStep::Scroll { dx: *dx, dy: *dy },
+        BatchStep::Observe {
+            include_dom,
+            include_screenshot,
+            include_form_values,
+        } => BatchStep::Observe {
+            include_dom: *include_dom,
+            include_screenshot: *include_screenshot,
+            include_form_values: *include_form_values,
+        },
+        BatchStep::Screenshot => BatchStep::Screenshot,
+        BatchStep::Evaluate { expression } => BatchStep::Evaluate {
+            expression: resolve("expression", expression, MAX_TEXT_BYTES)?,
+        },
+        BatchStep::AcceptDialog => BatchStep::AcceptDialog,
+        BatchStep::DismissDialog => BatchStep::DismissDialog,
+    })
+}
+
+fn resolve_input_template(
+    value: &str,
+    inputs: &BTreeMap<String, Value>,
+    path: &str,
+    maximum: usize,
+) -> Result<String, WorkflowValidationError> {
+    let marker = "${inputs.";
+    let mut resolved = String::with_capacity(value.len());
+    let mut remainder = value;
+    while let Some(start) = remainder.find(marker) {
+        resolved.push_str(&remainder[..start]);
+        let placeholder = &remainder[start..];
+        let end = placeholder.find('}').ok_or_else(|| {
+            WorkflowValidationError::new(path, "input placeholder is missing a closing brace")
+        })?;
+        let name = &placeholder[marker.len()..end];
+        if name.is_empty() || name.contains(['{', '}', '$']) {
+            return Err(WorkflowValidationError::new(
+                path,
+                "input placeholder name is invalid",
+            ));
+        }
+        let input = inputs.get(name).ok_or_else(|| {
+            WorkflowValidationError::new(path, format!("input {name:?} is missing or not declared"))
+        })?;
+        let text = match input {
+            Value::String(text) => text.clone(),
+            Value::Bool(value) => value.to_string(),
+            Value::Number(value) => value.to_string(),
+            _ => {
+                return Err(WorkflowValidationError::new(
+                    path,
+                    format!("input {name:?} cannot be inserted into an action string"),
+                ));
+            }
+        };
+        resolved.push_str(&text);
+        remainder = &placeholder[end + 1..];
+    }
+    resolved.push_str(remainder);
+    validate_bytes(path, &resolved, 0, maximum)?;
+    Ok(resolved)
 }
 
 async fn extract_workflow_outputs(
@@ -1882,6 +2009,32 @@ mod tests {
         let bad_values = BTreeMap::from([("url".into(), json!("not a url"))]);
         let error = workflow.validate_inputs(&bad_values).unwrap_err();
         assert_eq!(error.path, "inputs.url");
+    }
+
+    #[test]
+    fn resolve_actions_substitutes_bounded_inputs() {
+        let mut workflow = definition();
+        workflow.steps[0].action = BatchStep::Navigate {
+            url: "${inputs.url}".into(),
+            timeout_ms: 20_000,
+        };
+        let values = BTreeMap::from([("url".into(), json!("https://docs.example.com"))]);
+        let steps = workflow.resolve_actions(&values).unwrap();
+        let BatchStep::Navigate { url, .. } = &steps[0].action else {
+            panic!("expected navigate action");
+        };
+        assert_eq!(url, "https://docs.example.com");
+    }
+
+    #[test]
+    fn resolve_actions_rejects_unknown_placeholders_before_dispatch() {
+        let mut workflow = definition();
+        workflow.steps[0].action = BatchStep::Click {
+            target: "name=${inputs.missing}".into(),
+        };
+        let values = BTreeMap::from([("url".into(), json!("https://example.com"))]);
+        let error = workflow.resolve_actions(&values).unwrap_err();
+        assert_eq!(error.path, "steps[0].action.target");
     }
 
     #[test]

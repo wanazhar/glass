@@ -8,7 +8,8 @@ use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, Locator,
-    PdfOptions, ReconciliationOptions, SessionOptions, VisualCaptureOptions, WaitCondition,
+    PdfOptions, ReconciliationOptions, SessionOptions, VerificationPredicate, VisualCaptureOptions,
+    WaitCondition,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -477,6 +478,18 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             print_json(
                 &session
                     .run_batch_with_mode(&steps, *atomic, *mode, *expected_revision)
+                    .await?,
+            )?;
+        }
+        Commands::Verify {
+            predicate,
+            timeout_ms,
+        } => {
+            let predicate: VerificationPredicate = serde_json::from_str(predicate)
+                .map_err(|error| format!("invalid verification predicate: {error}"))?;
+            print_json(
+                &session
+                    .verify(predicate, Duration::from_millis(*timeout_ms))
                     .await?,
             )?;
         }

@@ -383,6 +383,14 @@ pub enum Commands {
         expected_revision: Option<u64>,
     },
 
+    /// Evaluate a bounded JSON verification predicate.
+    Verify {
+        /// JSON object such as `{"urlEquals":"https://example.com"}`.
+        predicate: String,
+        #[arg(long, default_value_t = 10_000)]
+        timeout_ms: u64,
+    },
+
     /// Reconcile revisioned references against the current observation.
     ReconcileRefs {
         #[arg(long)]

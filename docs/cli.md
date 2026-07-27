@@ -67,6 +67,7 @@ frames
 select-frame ID
 evaluate EXPRESSION
 batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
+verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 ```
 
 `screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and
@@ -82,6 +83,11 @@ seconds and returns bounded, secret-redacted metadata. Dialog commands act only
 on an already open dialog. `download` serializes one browser-global download
 scope, restricts its destination to an existing directory under the authorized
 working root, and restores download denial on success, error, or cancellation.
+
+`verify` accepts bounded JSON predicates such as
+`{"urlEquals":"https://example.com"}`, `{"visible":"r7:b42"}`,
+`{"textContains":"Ready"}`, or Boolean compositions using `all`, `any`, and
+`not`. It never evaluates caller-provided JavaScript.
 
 `targets` and `frames` are bounded topology queries. Creating a target or
 discovering a popup never selects it. In a one-shot CLI workflow, discover IDs

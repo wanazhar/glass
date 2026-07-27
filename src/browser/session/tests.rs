@@ -31,6 +31,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         network_wait_leases: Arc::new(Mutex::new(NetworkLeaseState::default())),
         diagnostic_leases: Arc::new(Mutex::new(DiagnosticLeaseState::default())),
         download_scope: Arc::new(Mutex::new(())),
+        download_sequence: AtomicU64::new(0),
         topology: Arc::new(Mutex::new(TopologyRegistry {
             active_target_id: Some("test-target".to_string()),
             active_frame_id: Some("test-frame".to_string()),
@@ -871,6 +872,7 @@ fn revision_contract_errors_are_typed_and_recoverable() {
     assert_eq!(value["expectedRevision"], 7);
     assert_eq!(value["currentRevision"], 9);
     assert_eq!(value["recovery"], "observe");
+    assert_eq!(value["phase"], "preflight");
 }
 
 #[test]
@@ -889,6 +891,8 @@ fn verification_failures_are_bounded_and_typed() {
     let error = ActionVerificationError {
         kind: ActionFailureKind::VerificationFailed,
         action: ActionKind::Click,
+        phase: ActionFailurePhase::Verification,
+        execution_id: None,
         target: None,
         revision: 4,
         reason: "checked state did not settle".to_string(),
@@ -896,6 +900,7 @@ fn verification_failures_are_bounded_and_typed() {
     let value = serde_json::to_value(error).unwrap();
     assert_eq!(value["kind"], "verification_failed");
     assert_eq!(value["action"], "click");
+    assert_eq!(value["phase"], "verification");
     assert_eq!(value["revision"], 4);
 }
 

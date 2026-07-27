@@ -1794,10 +1794,27 @@ pub enum ActionFailureKind {
     VerificationFailed,
 }
 
+/// Phase at which a bounded action attempt stopped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionFailurePhase {
+    #[default]
+    Preflight,
+    Policy,
+    TargetResolution,
+    Dispatch,
+    BrowserEffect,
+    Verification,
+    Transport,
+}
+
 /// Typed failure raised before a revision-guarded action can run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionContractError {
     pub kind: ActionFailureKind,
+    pub phase: ActionFailurePhase,
+    #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
     #[serde(rename = "expectedRevision")]
     pub expected_revision: u64,
     #[serde(rename = "currentRevision")]
@@ -1809,9 +1826,22 @@ impl ActionContractError {
     pub(crate) fn stale_revision(expected_revision: u64, current_revision: u64) -> Self {
         Self {
             kind: ActionFailureKind::StaleRevision,
+            phase: ActionFailurePhase::Preflight,
+            execution_id: None,
             expected_revision,
             current_revision,
             recovery: "observe",
+        }
+    }
+
+    pub(crate) fn stale_revision_with_execution(
+        expected_revision: u64,
+        current_revision: u64,
+        execution_id: String,
+    ) -> Self {
+        Self {
+            execution_id: Some(execution_id),
+            ..Self::stale_revision(expected_revision, current_revision)
         }
     }
 }
@@ -1833,6 +1863,9 @@ impl Error for ActionContractError {}
 pub struct ActionVerificationError {
     pub kind: ActionFailureKind,
     pub action: ActionKind,
+    pub phase: ActionFailurePhase,
+    #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionTarget>,
     pub revision: u64,
@@ -1864,6 +1897,109 @@ pub struct ActionVerificationEvidence {
     /// included in the action envelope.
     #[serde(rename = "accessibilityDiff", skip_serializing_if = "Option::is_none")]
     pub accessibility_diff: Option<AccessibilityDiffSummary>,
+}
+
+/// A bounded, composable postcondition that can be checked against the live
+/// browser session. No predicate accepts arbitrary JavaScript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VerificationPredicate {
+    UrlEquals {
+        #[serde(rename = "urlEquals")]
+        value: String,
+    },
+    TitleContains {
+        #[serde(rename = "titleContains")]
+        value: String,
+    },
+    Visible {
+        visible: String,
+    },
+    TextContains {
+        #[serde(rename = "textContains")]
+        value: String,
+    },
+    PopupOpened {
+        #[serde(rename = "popupOpened")]
+        value: bool,
+    },
+    DialogOpen {
+        #[serde(rename = "dialogOpen")]
+        value: bool,
+    },
+    DownloadStarted {
+        #[serde(rename = "downloadStarted")]
+        value: bool,
+    },
+    RevisionEquals {
+        #[serde(rename = "revisionEquals")]
+        value: u64,
+    },
+    All {
+        all: Vec<VerificationPredicate>,
+    },
+    Any {
+        any: Vec<VerificationPredicate>,
+    },
+    Not {
+        not: Box<VerificationPredicate>,
+    },
+}
+
+impl VerificationPredicate {
+    pub(crate) fn validate(&self, depth: usize) -> BrowserResult<()> {
+        const MAX_DEPTH: usize = 4;
+        const MAX_COMPOSITION: usize = 8;
+        if depth > MAX_DEPTH {
+            return Err("verification predicate nesting exceeds four levels".into());
+        }
+        match self {
+            Self::UrlEquals { value }
+            | Self::TitleContains { value }
+            | Self::TextContains { value } => {
+                if value.is_empty() || value.len() > 1024 {
+                    return Err("verification text must be 1..=1024 bytes".into());
+                }
+            }
+            Self::Visible { visible } => {
+                if visible.is_empty() || visible.len() > 1024 {
+                    return Err("verification target must be 1..=1024 bytes".into());
+                }
+            }
+            Self::All { all } => {
+                if all.is_empty() || all.len() > MAX_COMPOSITION {
+                    return Err("verification composition must contain 1..=8 predicates".into());
+                }
+                for predicate in all {
+                    predicate.validate(depth + 1)?;
+                }
+            }
+            Self::Any { any } => {
+                if any.is_empty() || any.len() > MAX_COMPOSITION {
+                    return Err("verification composition must contain 1..=8 predicates".into());
+                }
+                for predicate in any {
+                    predicate.validate(depth + 1)?;
+                }
+            }
+            Self::Not { not } => not.validate(depth + 1)?,
+            Self::PopupOpened { .. }
+            | Self::DialogOpen { .. }
+            | Self::DownloadStarted { .. }
+            | Self::RevisionEquals { .. } => {}
+        }
+        Ok(())
+    }
+}
+
+/// Result returned by a bounded predicate evaluation.
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationOutcome {
+    pub status: &'static str,
+    pub predicate: VerificationPredicate,
+    #[serde(rename = "elapsedMs")]
+    pub elapsed_ms: u64,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -2133,6 +2269,7 @@ pub struct BrowserSession {
     pub(crate) network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
     pub(crate) diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
     pub(crate) download_scope: Arc<Mutex<()>>,
+    pub(crate) download_sequence: AtomicU64,
     pub(crate) topology: Arc<Mutex<TopologyRegistry>>,
     pub(crate) popup_click_scope: Mutex<()>,
     pub(crate) upload_root: PathBuf,

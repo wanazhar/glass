@@ -4,8 +4,124 @@
 //! appearance, navigation completion, or configurable timeouts.
 
 use super::*;
+use std::future::Future;
+use std::pin::Pin;
+
+type VerificationCheckFuture<'a> =
+    Pin<Box<dyn Future<Output = BrowserResult<(bool, String)>> + 'a>>;
 
 impl BrowserSession {
+    /// Evaluate a bounded, composable postcondition until it becomes true.
+    pub async fn verify(
+        &self,
+        predicate: VerificationPredicate,
+        deadline: Duration,
+    ) -> BrowserResult<VerificationOutcome> {
+        validate_wait_deadline(deadline)?;
+        predicate.validate(0)?;
+        let started = tokio::time::Instant::now();
+        let expires = started + deadline;
+        loop {
+            let (matched, observed) = self.check_verification_predicate(&predicate).await?;
+            let state = bounded_diagnostic_text(&observed);
+            if matched {
+                return Ok(VerificationOutcome {
+                    status: "satisfied",
+                    predicate,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    state,
+                });
+            }
+            if tokio::time::Instant::now() >= expires {
+                return Err(ActionVerificationError {
+                    kind: ActionFailureKind::VerificationFailed,
+                    action: ActionKind::Click,
+                    phase: ActionFailurePhase::Verification,
+                    execution_id: Some(self.next_execution_id()),
+                    target: None,
+                    revision: self.page_revision.load(Ordering::Relaxed),
+                    reason: format!("verification predicate not satisfied: {state}"),
+                }
+                .into());
+            }
+            tokio::time::sleep(WAIT_POLL_INTERVAL).await;
+        }
+    }
+
+    fn check_verification_predicate<'a>(
+        &'a self,
+        predicate: &'a VerificationPredicate,
+    ) -> VerificationCheckFuture<'a> {
+        Box::pin(async move {
+            match predicate {
+                VerificationPredicate::UrlEquals { value } => {
+                    let url = self.page_info().await?.url;
+                    Ok((url == *value, format!("url={url}")))
+                }
+                VerificationPredicate::TitleContains { value } => {
+                    let title = self.page_info().await?.title;
+                    Ok((title.contains(value), format!("title={title}")))
+                }
+                VerificationPredicate::Visible { visible } => {
+                    let (matched, state, _) = self
+                        .check_wait_condition(&WaitCondition::TargetVisible(visible.clone()), None)
+                        .await?;
+                    Ok((matched, state))
+                }
+                VerificationPredicate::TextContains { value } => {
+                    let (matched, state, _) = self
+                        .check_wait_condition(&WaitCondition::Text(value.clone()), None)
+                        .await?;
+                    Ok((matched, state))
+                }
+                VerificationPredicate::PopupOpened { value } => {
+                    let topology = self.topology.lock().await;
+                    let opened = topology.targets.len() > 1;
+                    Ok((opened == *value, format!("popupOpened={opened}")))
+                }
+                VerificationPredicate::DialogOpen { value } => {
+                    let topology = self.topology.lock().await;
+                    let open = topology.pending_dialog.is_some();
+                    Ok((open == *value, format!("dialogOpen={open}")))
+                }
+                VerificationPredicate::DownloadStarted { value } => {
+                    let started = self.download_sequence.load(Ordering::Relaxed) > 0;
+                    Ok((started == *value, format!("downloadStarted={started}")))
+                }
+                VerificationPredicate::RevisionEquals { value } => {
+                    let revision = self.page_revision.load(Ordering::Relaxed);
+                    Ok((revision == *value, format!("revision={revision}")))
+                }
+                VerificationPredicate::All { all } => {
+                    let mut states = Vec::with_capacity(all.len());
+                    let mut matched = true;
+                    for child in all {
+                        let (child_matched, state) =
+                            self.check_verification_predicate(child).await?;
+                        matched &= child_matched;
+                        states.push(state);
+                    }
+                    Ok((matched, format!("all=[{}]", states.join(","))))
+                }
+                VerificationPredicate::Any { any } => {
+                    let mut states = Vec::with_capacity(any.len());
+                    let mut matched = false;
+                    for child in any {
+                        let (child_matched, state) =
+                            self.check_verification_predicate(child).await?;
+                        matched |= child_matched;
+                        states.push(state);
+                    }
+                    Ok((matched, format!("any=[{}]", states.join(","))))
+                }
+                VerificationPredicate::Not { not } => {
+                    let (matched, state) = self.check_verification_predicate(not).await?;
+                    Ok((!matched, format!("not({state})")))
+                }
+            }
+        })
+    }
+
     /// Wait for a condition to be satisfied on the page.
     ///
     /// Supported conditions include lifecycle events (`"complete"`, `"interactive"`),

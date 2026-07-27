@@ -24,8 +24,8 @@ use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SessionOptions, TargetError, VisualCaptureOptions,
-    VisualClip, VisualFormat, WaitCondition, WaitTimeout,
+    PreflightAction, ReconciliationOptions, SessionOptions, TargetError, VerificationPredicate,
+    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
 };
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
@@ -233,6 +233,10 @@ enum ToolInvocation<'a> {
         atomic: bool,
         mode: BatchMode,
         expected_revision: Option<u64>,
+    },
+    Verify {
+        predicate: Value,
+        timeout_ms: u64,
     },
     ReconcileReferences {
         from_revision: u64,
@@ -1064,6 +1068,18 @@ async fn call_tool(
                     .await?,
             )
         }
+        ToolInvocation::Verify {
+            predicate,
+            timeout_ms,
+        } => {
+            let predicate: VerificationPredicate = serde_json::from_value(predicate)
+                .map_err(|error| format!("invalid verification predicate: {error}"))?;
+            serialized_result(
+                &session
+                    .verify(predicate, Duration::from_millis(timeout_ms))
+                    .await?,
+            )
+        }
         ToolInvocation::ReconcileReferences {
             from_revision,
             refs,
@@ -1375,6 +1391,14 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             atomic: optional_bool(arguments, "atomic")?,
             mode: optional_batch_mode(arguments)?,
             expected_revision: optional_u64_value(arguments, "expectedRevision")?,
+        }),
+        "verify" => Ok(ToolInvocation::Verify {
+            predicate: arguments
+                .get("predicate")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or("verify requires an object predicate")?,
+            timeout_ms: optional_u64(arguments, "timeoutMs", 10_000)?,
         }),
         "reconcileReferences" => Ok(ToolInvocation::ReconcileReferences {
             from_revision: required_u64(arguments, "fromRevision")?,
@@ -1760,6 +1784,18 @@ fn tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["steps"]
+            }),
+        },
+        Tool {
+            name: "verify",
+            description: "Evaluate a bounded URL, title, visibility, text, topology, dialog, download, revision, or boolean-composed predicate.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "predicate": {"type": "object"},
+                    "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 300000, "default": 10000}
+                },
+                "required": ["predicate"]
             }),
         },
         Tool {
@@ -2353,7 +2389,7 @@ mod tests {
             .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 59);
+        assert_eq!(tools.len(), 60);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -2642,6 +2678,32 @@ mod tests {
                 } if actual == expected
             ));
         }
+    }
+
+    #[test]
+    fn parses_bounded_verification_predicates() {
+        let params = json!({
+            "name": "verify",
+            "arguments": {
+                "timeoutMs": 5000,
+                "predicate": {
+                    "all": [
+                        {"urlEquals": "https://example.test"},
+                        {"any": [{"titleContains": "Ready"}, {"dialogOpen": false}]}
+                    ]
+                }
+            }
+        });
+        let ToolInvocation::Verify {
+            predicate,
+            timeout_ms,
+        } = parse_tool_invocation(&params).unwrap()
+        else {
+            panic!("expected verify invocation");
+        };
+        let predicate: VerificationPredicate = serde_json::from_value(predicate).unwrap();
+        predicate.validate(0).unwrap();
+        assert_eq!(timeout_ms, 5000);
     }
 
     #[test]

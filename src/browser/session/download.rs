@@ -92,6 +92,7 @@ impl BrowserSession {
                         }
                         let state = event.params["state"].as_str().unwrap_or("inProgress");
                         if matches!(state, "completed" | "canceled") {
+                            self.download_sequence.fetch_add(1, Ordering::Relaxed);
                             self.record_audit(
                                 "download",
                                 format!("{} (state={})", filename, state),

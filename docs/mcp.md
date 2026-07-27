@@ -114,6 +114,7 @@ The `atomic` option remains a separate target pre-resolution check.
 | `click` | `target` or `selector`, optional `expectedRevision`, `includeTrace` | Click one element. |
 | `clickExpectPopup` | `target` or `selector`, optional `expectedRevision` | Click and return one causally verified popup target. |
 | `doubleClick` | `target` or `selector`, optional `expectedRevision` | Double-click one element. |
+| `verify` | bounded `predicate`, optional `timeoutMs` | Verify URL, title, visibility, text, topology, dialog, download, revision, or Boolean composition. |
 | `hover` | `target` | Move over one element. |
 | `drag` | `source`, `destination` | Drag between two verified elements. |
 | `type` | `text`, optional `target`, `expectedRevision` | Focus optionally, then insert text. |

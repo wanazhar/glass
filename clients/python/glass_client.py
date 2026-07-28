@@ -68,6 +68,21 @@ class WorkflowDefinition(TypedDict, total=False):
 
 WorkflowInputs = dict[str, Any]
 
+
+class GlassCapabilityConstraints(TypedDict):
+    platform: str
+    browserFamily: Literal["chromium"]
+    policy: str
+    maxSessions: int
+
+
+class GlassCapabilityManifest(TypedDict):
+    protocolVersion: Literal[1]
+    glassVersion: str
+    schemas: dict[str, list[int]]
+    capabilities: dict[str, bool]
+    constraints: GlassCapabilityConstraints
+
 SemanticObservationLevel = Literal["summary", "interactive", "structured", "detailed", "raw"]
 SemanticConfidence = Literal["exact", "high", "medium", "low", "unknown"]
 
@@ -206,6 +221,7 @@ class GlassClient:
         )
         self._next_id = 1
         self._initialized = False
+        self.capabilities: Optional[GlassCapabilityManifest] = None
 
     def initialize(self) -> Any:
         if self._initialized:
@@ -214,13 +230,21 @@ class GlassClient:
             "initialize",
             {
                 "protocolVersion": "2024-11-05",
+                "glass": {
+                    "protocolVersion": 1,
+                    "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1]},
+                },
                 "capabilities": {},
                 "clientInfo": {"name": "glass-python-client", "version": "0.1.0"},
             },
         )
+        manifest = result.get("glass") if isinstance(result, dict) else None
+        if not isinstance(manifest, dict):
+            raise GlassError("Glass capability manifest missing from initialize response")
+        self.capabilities = manifest
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         self._initialized = True
-        return result
+        return manifest
 
     def call(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         self.initialize()

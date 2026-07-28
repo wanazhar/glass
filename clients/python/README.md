@@ -32,3 +32,8 @@ Install the thin client from this directory with `python -m pip install .`.
 
 The client accepts newline-delimited and `Content-Length` MCP frames and caps
 individual frames at 4 MiB.
+
+`glass.initialize()` negotiates Glass schema versions and returns the
+`GlassCapabilityManifest`. The same manifest is stored at
+`glass.capabilities`; callers should inspect its capability flags before using
+optional operations.

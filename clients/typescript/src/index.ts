@@ -262,6 +262,21 @@ export interface GlassClientOptions {
   maxFrameBytes?: number;
 }
 
+export interface GlassCapabilityConstraints {
+  platform: string;
+  browserFamily: "chromium";
+  policy: string;
+  maxSessions: number;
+}
+
+export interface GlassCapabilityManifest {
+  protocolVersion: 1;
+  glassVersion: string;
+  schemas: Record<string, number[]>;
+  capabilities: Record<string, boolean>;
+  constraints: GlassCapabilityConstraints;
+}
+
 /** Small MCP client with typed helpers for the stable Glass surface. */
 export class GlassClient {
   private readonly child: ChildProcessByStdio<Writable, Readable, null>;
@@ -270,6 +285,7 @@ export class GlassClient {
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private initialized = false;
+  private manifest?: GlassCapabilityManifest;
 
   constructor(options: GlassClientOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? 4 * 1024 * 1024;
@@ -283,17 +299,26 @@ export class GlassClient {
     this.child.on("exit", (code, signal) => this.rejectAll(new Error(`Glass exited (${code ?? signal})`)));
   }
 
-  async initialize(): Promise<unknown> {
+  async initialize(): Promise<GlassCapabilityManifest | undefined> {
     if (this.initialized) return undefined;
     const result = await this.request("initialize", {
       protocolVersion: "2024-11-05",
+      glass: {
+        protocolVersion: 1,
+        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1] },
+      },
       capabilities: {},
       clientInfo: { name: "glass-typescript-client", version: "0.1.0" },
     });
+    const manifest = (result as { glass?: GlassCapabilityManifest }).glass;
+    if (!manifest) throw new Error("Glass capability manifest missing from initialize response");
+    this.manifest = manifest;
     this.send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
     this.initialized = true;
-    return result;
+    return manifest;
   }
+
+  get capabilities(): GlassCapabilityManifest | undefined { return this.manifest; }
 
   async call<T = ToolCallResult>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     await this.initialize();

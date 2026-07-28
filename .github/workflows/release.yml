@@ -344,16 +344,6 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             dist/SHA256SUMS
 
-      - name: Publish crate to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          test -n "$CARGO_REGISTRY_TOKEN"
-          expected_version="${GITHUB_REF_NAME#v}"
-          actual_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "glass-browser") | .version')"
-          test "$expected_version" = "$actual_version"
-          cargo publish --locked --package glass-browser
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

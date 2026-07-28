@@ -40,6 +40,7 @@ use crate::daemon::{
 };
 use crate::mcp::prompts;
 use crate::mcp::resources;
+use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -549,6 +550,20 @@ where
             continue;
         }
 
+        if request.method == "tools/call"
+            && let Err(error) = canonical_tool_request(&request)
+        {
+            if !request.id.is_notification() {
+                send_response(
+                    &outbound_tx,
+                    error_response(request.id.response_value(), -32602, error),
+                    format,
+                )
+                .await?;
+            }
+            continue;
+        }
+
         if local_daemon && is_lease_method(&request.method) {
             let lease_context = lease_context
                 .as_ref()
@@ -737,6 +752,42 @@ fn workflow_request_id(request: &JsonRpcRequest) -> Option<String> {
         RequestId::Present(Value::Number(value)) => Some(value.to_string()),
         _ => None,
     }
+}
+
+fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, String> {
+    let name = request
+        .params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tools/call requires a string name".to_string())?;
+    let arguments = request
+        .params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if !arguments.is_object() {
+        return Err("tools/call arguments must be an object".into());
+    }
+    let request_id = match &request.id {
+        RequestId::Present(Value::String(value)) if !value.is_empty() => value.clone(),
+        RequestId::Present(Value::Number(value)) => value.to_string(),
+        RequestId::Missing => "notification".into(),
+        RequestId::Present(Value::Null) => "null-request".into(),
+        RequestId::Present(_) => return Err("tools/call request id is not canonical".into()),
+    };
+    let operation = format!("browser.{name}");
+    let canonical = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id,
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation,
+        payload: arguments,
+        deadline_ms: None,
+    };
+    canonical.validate().map_err(|error| error.to_string())?;
+    Ok(canonical)
 }
 
 fn task_cancellations_remove(cancellations: &CancellationMap, key: &str) {
@@ -3165,6 +3216,27 @@ mod tests {
         let rendered = format!("{metadata:?}");
         assert!(!rendered.contains("private-request-id"));
         assert!(!rendered.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn mcp_tool_calls_map_to_the_canonical_glass_request() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "request-1",
+            "method": "tools/call",
+            "params": {
+                "name": "observe",
+                "arguments": {"level": "interactive"}
+            }
+        }))
+        .unwrap();
+
+        let canonical = canonical_tool_request(&request).unwrap();
+
+        assert_eq!(canonical.operation, "browser.observe");
+        assert_eq!(canonical.request_id, "request-1");
+        assert_eq!(canonical.payload["level"], "interactive");
+        canonical.validate().unwrap();
     }
 
     #[tokio::test]

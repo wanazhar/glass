@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// Stable Glass protocol version negotiated independently from MCP.
-pub const GLASS_PROTOCOL_VERSION: u32 = 1;
+pub use crate::protocol::GLASS_PROTOCOL_VERSION;
 
 /// A bounded, machine-readable description of one Glass runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +165,7 @@ impl GlassCapabilityManifest {
 
 fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
     BTreeMap::from([
+        ("protocol".into(), vec![GLASS_PROTOCOL_VERSION]),
         ("action".into(), vec![1]),
         (
             "observation".into(),

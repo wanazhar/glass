@@ -1,5 +1,8 @@
 # Schema compatibility
 
+The transport-neutral operation mapping is documented in
+[protocol.md](protocol.md).
+
 Glass 0.2.x treats the versioned protocol and schema inventory as a stable
 compatibility boundary. Existing action names and legacy result fields remain
 available; new fields use camelCase at the CLI JSON and MCP boundaries while
@@ -59,6 +62,7 @@ must inspect the negotiated manifest and the policy-sensitive booleans.
 
 The current machine-readable contract set is:
 
+- [transport-neutral protocol v1](schema/glass-protocol-v1.schema.json)
 - [action v1](schema/glass-action-v1.schema.json)
 - [policy error v1](schema/glass-policy-error-v1.schema.json)
 - [session checkpoint v1](schema/glass-checkpoint-v1.schema.json)

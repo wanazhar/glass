@@ -884,6 +884,28 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
         let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
         assert!(!host.sandbox().label().is_empty());
+        assert_eq!(
+            host.invocations.available_permits(),
+            MAX_EXTENSION_CONCURRENT_INVOCATIONS
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_sandbox_never_falls_back_to_an_unsandboxed_process() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
+        let error = host
+            .invoke_internal(
+                "glass.first-party.title-extractor",
+                ExtensionCapability::ExtractionTransform,
+                "example.com",
+                "extract",
+                serde_json::json!({"title": "Example Domain"}),
+                Some(ExtensionSandbox::Unavailable),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("no supported native extension sandbox"));
     }
 
     #[test]

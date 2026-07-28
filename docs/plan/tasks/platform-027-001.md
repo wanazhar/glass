@@ -34,6 +34,8 @@ This phase covers the first platform boundary for issue #27:
   command; acknowledgement does not resume work or grant a lease.
 - daemon request governance enforces both a global in-flight limit and a
   per-client limit.
+- daemon status exposes the current mutation lease owner without persisting
+  the lease token, and the protocol fixture covers acquire/release visibility.
 - the TUI exposes read-only daemon status, doctor, logs, and recovery views
   without starting a browser operation.
 - Python and TypeScript SDKs expose bounded capability and schema support

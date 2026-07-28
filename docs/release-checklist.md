@@ -4,9 +4,9 @@ Use this checklist for each public release.
 
 ## Current candidate
 
-The local candidate is `glass-browser` `0.1.18`, dated 2026-07-27. The
+The local candidate is `glass-browser` `0.2.0`, prepared on 2026-07-28. The
 supported release targets are Linux x86-64 and macOS x86-64/arm64. Windows is
-outside the release contract. This checkout is prepared locally; a GitHub
+outside the release contract. This checkout is prepared locally only; a GitHub
 release, crates.io publication, npm publication, and release tag are separate
 steps and must not be described as complete until they have succeeded.
 
@@ -15,7 +15,7 @@ steps and must not be described as complete until they have succeeded.
 - [ ] Confirm the intended version and release date.
 - [ ] Ensure `Cargo.toml` contains the correct version, description, license,
       README, and finalized repository metadata.
-- [x] Move the `0.1.18` changelog entries into a dated version section.
+- [x] Keep the local `0.2.0` changelog entry explicitly marked unreleased.
 - [x] Verify README installation steps and `glass --help` output.
 - [ ] Review dependency and browser-facing security changes.
 - [ ] Confirm the working tree contains no profiles, screenshots, logs, or
@@ -25,11 +25,11 @@ steps and must not be described as complete until they have succeeded.
 
 ```console
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo test --all --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
 cargo build --release --locked
-cargo package --locked
+cargo package --locked --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
@@ -47,7 +47,7 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 ## Publish
 
 - [ ] Commit the version and changelog update.
-- [ ] Create a signed, annotated version tag such as `v0.1.0`.
+- [ ] Create a signed, annotated version tag such as `v0.2.0`.
 - [ ] Publish or upload artifacts only from the tagged commit.
 - [ ] Include supported platforms, checksums, changelog notes, and known
       limitations in the release entry.

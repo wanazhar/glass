@@ -170,7 +170,7 @@ After publication, add the crate as `glass` in `Cargo.toml`:
 
 ```toml
 [dependencies]
-glass = { package = "glass-browser", version = "0.1" }
+glass = { package = "glass-browser", version = "0.2" }
 ```
 
 The library exposes `BrowserSession`, typed session options and policies,

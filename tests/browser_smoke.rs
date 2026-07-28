@@ -1967,6 +1967,7 @@ async fn reliability_lab_controls_produce_independent_oracle_state() {
 
     for operation in [
         "duplicateTarget",
+        "reorderTargets",
         "renameTarget",
         "showOverlay",
         "moveTarget",

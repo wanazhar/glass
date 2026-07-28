@@ -28,6 +28,8 @@ This phase covers the first platform boundary for issue #27:
 - daemon status records bounded owner-scoped active workflow requests, and
   shutdown/stale startup recovery logs each interrupted request as requiring
   checkpoint reconciliation.
+- interrupted workflow records persist as a versioned recovery artifact and
+  are surfaced by `glass daemon doctor`.
 - the transport-neutral protocol envelope is published as schema v1 and MCP
   tool calls validate against the same canonical operation mapping.
 - two first-party reference extensions exercise the manifest, permission, and

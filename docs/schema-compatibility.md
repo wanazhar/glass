@@ -63,6 +63,7 @@ must inspect the negotiated manifest and the policy-sensitive booleans.
 The current machine-readable contract set is:
 
 - [transport-neutral protocol v1](schema/glass-protocol-v1.schema.json)
+- [daemon recovery v1](schema/glass-daemon-recovery-v1.schema.json)
 - [action v1](schema/glass-action-v1.schema.json)
 - [policy error v1](schema/glass-policy-error-v1.schema.json)
 - [session checkpoint v1](schema/glass-checkpoint-v1.schema.json)

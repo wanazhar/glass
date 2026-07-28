@@ -16,6 +16,8 @@ use crate::cli::args::Cli;
 
 /// Version of the local daemon status and lifecycle contract.
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+/// Version of the persisted interrupted-run recovery record.
+pub const DAEMON_RECOVERY_SCHEMA_VERSION: u32 = 1;
 /// Maximum number of isolated MCP child sessions per daemon.
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
 /// Maximum number of in-flight MCP operations across all daemon clients.
@@ -194,6 +196,16 @@ pub struct DaemonActiveRun {
     pub started_at: String,
 }
 
+/// Persisted evidence that workflow requests need checkpoint reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DaemonRecovery {
+    pub schema_version: u32,
+    pub state: String,
+    pub recovered_at: String,
+    pub runs: Vec<DaemonActiveRun>,
+}
+
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -205,6 +217,8 @@ pub struct DaemonStatus {
     pub status_path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_path: Option<PathBuf>,
     pub started_at: String,
     pub transport: String,
     pub client_sessions: u32,
@@ -270,6 +284,7 @@ impl DaemonStatusState {
 
     pub async fn record_interrupted_workflows(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let status = self.status.lock().await;
+        write_recovery_report(&self.path, &status.active_runs)?;
         for run in &status.active_runs {
             append_daemon_log(
                 &self.path,
@@ -295,6 +310,10 @@ fn log_path_for(status_path: &Path) -> PathBuf {
     status_path.with_extension("log")
 }
 
+fn recovery_path_for(status_path: &Path) -> PathBuf {
+    status_path.with_extension("recovery.json")
+}
+
 fn append_daemon_log(status_path: &Path, message: &str) -> Result<(), std::io::Error> {
     use std::io::Write;
 
@@ -304,6 +323,38 @@ fn append_daemon_log(status_path: &Path, message: &str) -> Result<(), std::io::E
         .append(true)
         .open(path)?;
     writeln!(log, "{message}")
+}
+
+fn write_recovery_report(
+    status_path: &Path,
+    runs: &[DaemonActiveRun],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let report = DaemonRecovery {
+        schema_version: DAEMON_RECOVERY_SCHEMA_VERSION,
+        state: "reconciliation_required".into(),
+        recovered_at: chrono::Utc::now().to_rfc3339(),
+        runs: runs.to_vec(),
+    };
+    std::fs::write(
+        recovery_path_for(status_path),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(())
+}
+
+fn read_recovery(status_path: &Path) -> Result<Option<DaemonRecovery>, Box<dyn std::error::Error>> {
+    let path = recovery_path_for(status_path);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let report: DaemonRecovery = serde_json::from_slice(&std::fs::read(path)?)?;
+    if report.schema_version != DAEMON_RECOVERY_SCHEMA_VERSION {
+        return Err("unsupported daemon recovery schema".into());
+    }
+    Ok(Some(report))
 }
 
 /// Start one background daemon and return its status contract.
@@ -325,6 +376,7 @@ pub async fn start(
             if process_is_alive(existing.pid) {
                 return Err(format!("daemon is already running as pid {}", existing.pid).into());
             }
+            write_recovery_report(status_path, &existing.active_runs)?;
             append_daemon_log(
                 status_path,
                 &format!(
@@ -442,12 +494,33 @@ pub fn doctor(
         Ok(status) => Ok(serde_json::json!({
             "status": "healthy",
             "daemon": status,
+            "recovery": read_recovery(&status.status_path)?,
             "socketExists": status.socket.exists(),
             "pidAlive": process_is_alive(status.pid),
         })),
         Err(error) => Ok(serde_json::json!({
             "status": "unavailable",
             "detail": error.to_string(),
+        })),
+    }
+}
+
+/// Read the persisted interrupted-workflow recovery state.
+pub fn recovery(
+    status_path: Option<&Path>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let (_, default_status) = default_paths();
+    let status_path = status_path.unwrap_or(&default_status);
+    let path = recovery_path_for(status_path);
+    match read_recovery(status_path)? {
+        Some(report) => Ok(serde_json::json!({
+            "status": "reconciliation_required",
+            "path": path,
+            "recovery": report,
+        })),
+        None => Ok(serde_json::json!({
+            "status": "clear",
+            "path": path,
         })),
     }
 }
@@ -509,6 +582,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         socket: socket.to_path_buf(),
         status_path: status_path.to_path_buf(),
         log_path: Some(log_path_for(status_path)),
+        recovery_path: Some(recovery_path_for(status_path)),
         started_at: chrono::Utc::now().to_rfc3339(),
         transport: "unix-mcp-shared-session".into(),
         client_sessions: 0,
@@ -695,6 +769,7 @@ mod tests {
             socket: PathBuf::from("/tmp/glass.sock"),
             status_path: PathBuf::from("/tmp/glass.json"),
             log_path: None,
+            recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
@@ -779,6 +854,7 @@ mod tests {
             socket: root.join("glass.sock"),
             status_path: status_path.clone(),
             log_path: None,
+            recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
@@ -808,6 +884,7 @@ mod tests {
 
         std::fs::remove_file(status_path).unwrap();
         std::fs::remove_file(log_path_for(&root.join("daemon.json"))).unwrap();
+        std::fs::remove_file(recovery_path_for(&root.join("daemon.json"))).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 
@@ -826,6 +903,7 @@ mod tests {
             socket: socket.clone(),
             status_path: status_path.clone(),
             log_path: None,
+            recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,

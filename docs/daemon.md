@@ -28,6 +28,8 @@ While a workflow request is running, the status also records its bounded
 request ID and owner. On shutdown or restart after a crash, those entries are
 reported as interrupted and must be reconciled from a checkpoint before a
 caller resumes work.
+The status points to a versioned recovery record when one exists; `glass
+daemon doctor` reports it as `reconciliation_required`.
 
 The daemon is intentionally limited in this release: it provides local
 lifecycle supervision and a shared browser session namespace. Clients must

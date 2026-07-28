@@ -66,6 +66,21 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     assert!(socket.exists());
     assert!(status.exists());
 
+    let doctor = Command::new(glass_binary())
+        .args([
+            "daemon",
+            "doctor",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--status",
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .expect("daemon recovery doctor should run");
+    assert!(doctor.status.success());
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doctor["recovery"]["state"], "reconciliation_required");
+
     let logs = Command::new(glass_binary())
         .args(["daemon", "logs", "--status", status.to_str().unwrap()])
         .output()
@@ -96,5 +111,6 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     assert!(!socket.exists());
     assert!(!status.exists());
     std::fs::remove_file(log).unwrap();
+    std::fs::remove_file(status.with_extension("recovery.json")).unwrap();
     std::fs::remove_dir(root).unwrap();
 }

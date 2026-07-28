@@ -1,158 +1,76 @@
-# Bot-Protection & Consent Walls: The Honest Lane
+# Bot protection and consent controls
 
-Glass takes an explicit **honest lane** through bot protection. It never spoofs
-fingerprints, evades detection, or solves CAPTCHAs. Instead it uses signed
-identity, verified-bot registration, authenticated profiles, and consent
-dismissal — the legitimate paths site operators expect from automation.
+Glass does not hide browser automation. It does not spoof fingerprints, solve
+CAPTCHAs, evade bot checks, or rotate identities.
 
-## Why CDP Automation Gets Challenged
+Use a site-approved access path.
 
-Chrome DevTools Protocol (CDP) exposes browser internals that normal user
-sessions do not. Common detection signals include:
+## If you operate the site
 
-- `navigator.webdriver` is `true` (set by Chrome when `--remote-debugging-port` is active)
-- `Runtime.enable` and `Runtime.runIfWaitingForDebugger` leave detectable traces
-- Headless mode (`--headless`) exposes distinct rendering and font stacks
-- CDP keeps the renderer in a slightly different scheduling mode
+Register Glass as an allowed client. Possible controls include:
 
-Detection is not a Glass bug — it is a deliberate Chrome behaviour that
-distinguishes automation from organic browsing.
+- verified bot registration;
+- IP allowlisting for a known CI or staging range;
+- an application token checked by site middleware; and
+- a documented API.
 
-## Path 1: Allowlist Your Own Automation (Sites You Operate)
+Use the site API when it provides the required operation. An API has a versioned
+contract and does not depend on page layout.
 
-If you control the target site, the strongest answer is to register your automation:
+## Use an authenticated profile
 
-### Verified Bot Registration
+A site may allow an authenticated session where it blocks an unauthenticated
+browser. Use a persistent profile only when your deployment policy permits it:
 
-- **Cloudflare Web Bot Auth**: Register a key pair, publish your public key at
-  `/.well-known/http-message-signatures-directory`, and use Glass's RFC 9421
-  HTTP message signing (see Gate F.3) to present a `Signature-Agent` header.
-  Cloudflare will verify the signature and admit your traffic.
-
-- **IP Allowlisting**: If your automation runs from a known IP range (CI, staging),
-  configure your WAF/CDN to bypass bot detection for those addresses.
-
-- **Custom Header / Token**: Issue a static bearer token to your automation and
-  validate it in your application middleware behind the CDN. Combine with rate
-  limiting per token.
-
-### Why This Beats Stealth
-
-- No fingerprint-spoofing arms race
-- No risk of violating site ToS
-- Verifiable, auditable, and revocable
-- Survives browser updates that change detection surfaces
-
-## Path 2: Authenticated `--profile` Sessions
-
-Many sites challenge *unauthenticated* automation more aggressively than
-logged-in sessions.
-
-### How to Use Profiles
-
-```sh
-# Create a named persistent profile
+`console
 glass profiles create work
+glass --headed --profile work navigate https://example.com/login
+glass --profile work navigate https://example.com/dashboard
+`
 
-# Use it for every session
-glass --profile work "navigate to https://example.com"
-```
+Profiles contain cookies and storage. Protect them.
 
-The profile persists cookies, local storage, and service-worker registrations
-across restarts. Log in once manually (or via a one-time automated flow), and
-subsequent sessions will carry the authenticated session state.
+Glass does not automate multi-factor authentication as a bypass. If the site
+requires a new verification step, stop and complete the approved flow.
 
-### What Profiles Enable
+## Consent controls
 
-- OAuth / SSO session cookies survive across automation runs
-- Site preferences and consent decisions are remembered
-- Rate limits are scoped to the authenticated identity, not a fresh fingerprint
+Glass has bounded helpers for recognized OneTrust and Cookiebot controls.
 
-### Limitations
+| Framework | Control |
+|---|---|
+| OneTrust | A recognized visible consent button. |
+| Cookiebot | A recognized visible consent button. |
 
-- Some sites expire sessions aggressively; you may need a periodic refresh flow
-- Multi-factor authentication cannot be fully automated (by design)
-- Profiles are Chrome user-data directories — treat them as secrets
+The helper returns `dismissed`, `no_consent_found`, or
+`unrecognized_framework`. It does not click generic text matches.
 
-## Path 3: Use the Site's API
+A consent helper is a page interaction. It is not a bot-protection bypass.
 
-When a site offers a documented API, the calling program should use it instead of screen
-automation:
+## Polite policy
 
-- **Higher reliability**: APIs are versioned and contract-bound; DOM scraping
-  breaks on redesigns.
-- **Lower cost**: API calls consume fewer tokens than full page observations.
-- **No bot-detection risk**: API traffic is expected and rate-limited, not
-  challenged.
+Use the optional `polite` policy for public pages:
 
-Glass is a browser control plane, not a universal web scraper. When the target
-offers a first-class API path, prefer it.
+`console
+glass --policy polite navigate https://example.com/public-page
+`
 
-## Path 4: Consent & Overlay Dismissal
+The policy checks `robots.txt`, applies a bounded delay, and identifies
+requests with the Glass user agent. A robots error or disallowed path fails
+closed.
 
-Many sites present consent walls (cookie banners, age gates, newsletter popups)
-that must be dismissed before page interaction.
+The policy does not bypass bot protection.
 
-### Glass Consent Helpers (Gate F.4)
+## Unsupported actions
 
-Glass provides bounded helpers for common consent frameworks:
+Glass does not provide:
 
-| Framework | Detection | Action |
-|-----------|-----------|--------|
-| OneTrust | CSS class `.onetrust-*` | Click "Accept All" or "Reject All" button |
-| Cookiebot | `#CybotCookiebotDialog` | Click configured consent button |
+- fingerprint spoofing;
+- CAPTCHA solving;
+- anti-bot evasion;
+- `navigator.webdriver` removal;
+- user-agent rotation; or
+- proxy identity rotation.
 
-Outcomes are typed: `dismissed`, `no_consent_found`,
-`unrecognized_framework`. Glass does not click generic text matches.
-
-**Important:** Consent helpers are UX assistance, not evasion. They interact
-with visible consent UI exactly as a user would. They are part of Glass's
-overlay corpus and subject to the same zero-wrong-action gate.
-
-## Path 5: Polite Automation Mode (Gate F.5)
-
-Opt-in mode for public-facing sites:
-
-```sh
-glass --policy polite "navigate to https://example.com"
-```
-
-When enabled:
-
-- `robots.txt` is fetched and respected (disallowed paths are denied)
-- `Crawl-Delay` directives are honoured between requests
-- A declared Glass `User-Agent` string is sent
-- Policy can be set to `warn` (log violations) or `fail-closed` (deny)
-
-This does not bypass bot protection, but it declares intent honestly and
-respects site owner preferences.
-
-## What Glass Does NOT Do
-
-Glass will **never** include:
-
-- Stealth / fingerprint spoofing
-- CAPTCHA solving services
-- Anti-bot evasions
-- `navigator.webdriver` removal patches
-- User-agent rotation or IP proxy chaining
-
-These are explicit non-goals. If your use case requires them, Glass is the
-wrong tool. Consider a dedicated web scraping framework instead.
-
-## Decision Matrix
-
-| Scenario | Recommended Path |
-|----------|-----------------|
-| CI testing on your own site | Path 1: IP allowlisting or verified bot |
-| Authenticated automation on a SaaS you pay for | Path 2: `--profile` with login session |
-| Public data from a site with an API | Path 3: Use the API |
-| One-off navigation past a consent wall | Path 4: Consent dismissal helper |
-| Polite crawl of public pages | Path 5: `--policy polite` |
-| Bypassing bot protection on a third-party site | **Not supported** — use the site's API or contact the operator |
-
-## Further Reading
-
-- [Detection-surface transparency report](detection-surface.md)
-- [Security policy](../SECURITY.md)
-- [MCP integration](mcp.md) — policy presets for hardened deployments
+If a site blocks the supported access path, contact the site operator or use its
+documented API.

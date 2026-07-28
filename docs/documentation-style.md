@@ -76,3 +76,6 @@ Use explicit status labels:
 
 Review this file and the [documentation index](INDEX.md) when a public command,
 capability, platform, or release process changes.
+
+For the standard definition, see the [official ASD-STE100
+site](https://www.asd-ste100.org/).

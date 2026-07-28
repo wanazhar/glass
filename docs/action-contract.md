@@ -1,7 +1,7 @@
 # Action contract
 
-This document is the source of truth for the `0.1.18` action contract. Glass
-keeps the Rust API, CLI JSON, MCP results, and client libraries aligned around
+This document records the compatibility contract introduced in `0.1.18`.
+Glass keeps the Rust API, CLI JSON, MCP results, and client libraries aligned around
 the same execution model:
 
 ```text
@@ -96,7 +96,7 @@ after the action has been proven not to dispatch.
 
 ## Delivery status
 
-The `0.1.18` reliability-runtime scope is implemented locally: execution IDs,
+The action reliability scope is implemented locally: execution IDs,
 revision guards across supported mutations, bounded verification predicates,
 effect witnesses, explicit recovery diagnostics, revision-aware batch modes,
 cross-interface helpers, deterministic fixture coverage, and TUI action

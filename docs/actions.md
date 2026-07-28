@@ -1,51 +1,41 @@
 # Actions and revisions
 
-Glass actions can be used as ordinary commands or tied to a specific
-observation. The revision-safe form is useful when a page may change between
-inspection and execution.
+Glass can run an action without a revision guard. Use a revision guard when the
+page may change between observation and execution.
 
-## Observation to action
+## Guard an action
 
-1. Call `observe` and retain its page revision and the target reference.
-2. Pass both values to `expectedRevision` (MCP), `--expected-revision` (CLI),
-   or the corresponding Rust method.
-3. Use the returned status and verification fields.
-4. If the revision is stale, observe again before retrying.
+1. Run `observe`.
+2. Save the page revision and target reference.
+3. Pass both values to the action.
+4. Read the typed result.
+5. Run `observe` again when Glass reports a stale revision.
 
-Example CLI flow inside the terminal UI:
+Example:
 
-```text
-navigate https://example.com
-observe
-click r7:b42 --expected-revision 7
-```
+`console
+glass navigate https://example.com
+glass observe
+glass click r7:b42 --expected-revision 7
+`
 
-The same guard is available on the MCP `navigate`, `click`, `clickExpectPopup`,
-`doubleClick`, `type`, `clear`, `check`, `uncheck`, `select`, `scroll`, and
-`fillForm` tools, as well as `drag`, `key`, `keyDown`, `keyUp`, `shortcut`, and
-`upload`. The Rust library exposes matching guarded methods alongside
-the compatibility methods, including `click_expect_popup_with_revision`,
-`double_click_with_revision`, `clear_with_revision`,
-`check_with_revision`, `uncheck_with_revision`,
-`select_option_with_revision`, `scroll_with_revision`,
-`drag_with_revision`, `key_press_with_revision`,
-`key_down_with_revision`, `key_up_with_revision`,
-`shortcut_with_revision`, and `upload_files_with_revision`.
+The guard is available for navigation, click, popup click, double-click, type,
+clear, check, uncheck, select, scroll, fill-form, drag, keyboard, and upload
+operations.
 
-## Successful action result
+## Result
 
-Input actions return the existing action fields plus the common contract fields:
+A successful action returns bounded evidence:
 
-```json
+`json
 {
   "status": "succeeded",
   "action": "click",
+  "executionId": "act_42",
+  "target": {"label": "Save", "reference": "r7:b42"},
   "revision": 8,
   "previousRevision": 7,
   "currentRevision": 8,
-  "target": {"label": "Save", "reference": "r7:b42"},
-  "target_id": "page-target",
-  "frame_id": "main-frame",
   "verification": {
     "revisionDelta": 1,
     "urlChanged": false,
@@ -54,39 +44,56 @@ Input actions return the existing action fields plus the common contract fields:
     "frameChanged": false
   }
 }
-```
+`
 
-`verification` is deliberately bounded. It may report URL/title changes,
-target or frame transitions, revision delta, count-only accessibility changes,
-and observed popup, dialog, or download effects when present. Popup actions
-include their causal popup witness. Navigation results include the resulting
-page metadata. Older unguarded methods remain available for callers that do not
-need an expected revision. Every action result also contains a session-local
-`executionId` for correlating one attempt across its bounded evidence and
-failure phases. Existing route identity fields remain compatibility fields.
+The result may include URL and title changes, target and frame changes, a
+revision delta, count-only accessibility changes, popup evidence, dialog
+evidence, or download evidence.
+
+The `executionId` identifies one attempt. A retry has a new ID.
+
+An unguarded action remains available for compatibility.
 
 ## Failure kinds
 
-Clients should branch on structured fields rather than matching display text.
+Branch on typed fields. Do not match display text.
 
-| Kind | Meaning | Recovery |
+| Kind | Meaning | Action |
 |---|---|---|
-| `stale_revision` | The expected page revision is no longer current | Observe again and retry with the new revision |
-| `ambiguous_target` | More than one target matched | Refine the locator; never choose a candidate implicitly |
-| `target_not_found` | No target matched | Check the locator or observe the current page |
-| `denied` | The active policy disallows the operation | Change policy configuration or the operation |
-| `confirmation_required` | The operation needs an explicit capability approval | Supply the configured confirmation token |
-| `transport` | The CDP connection or protocol failed | Check browser health and retry when appropriate |
-| `verification_failed` | The action ran but its postcondition was not satisfied | Observe the result and decide whether a retry is safe |
+| `stale_revision` | The expected revision is not current. | Observe again. Use the new revision. |
+| `ambiguous_target` | More than one target matches. | Refine the locator. |
+| `target_not_found` | No target matches. | Check the locator and current page. |
+| `denied` | Policy blocks the operation. | Change fixed policy or operation. |
+| `confirmation_required` | Policy requires approval. | Supply the configured token. |
+| `transport` | CDP or protocol failed. | Check browser health. |
+| `verification_failed` | The action ran but the postcondition failed. | Inspect the page before retry. |
 
-Legacy target errors retain their original `kind` field and also expose the
-normalized `failureKind` field. Candidate lists and verification metadata are
-bounded; page text, selectors, typed values, and raw CDP details are not copied
-into the normal action envelope.
+Legacy errors retain `kind`. The normalized `failureKind` is also present.
 
-## Related references
+Candidate data and evidence are bounded. Glass does not copy page text,
+selectors, typed values, or raw CDP details into the ordinary result.
 
-- [CLI reference](cli.md)
-- [MCP integration](mcp.md)
-- [Architecture: browser data plane](architecture/browser.md)
-- [Security policy](../SECURITY.md)
+## Execution phases
+
+The action contract uses these phases:
+
+`policy` → `preflight` → `target_resolution` → `dispatch` →
+`browser_effect` → `verification` → `transport`
+
+A failure before dispatch is different from a failure after dispatch.
+
+## Recovery
+
+Recovery is explicit:
+
+- `none` stops and reports the failure;
+- `report` returns a bounded reconciliation suggestion; and
+- `retry_safe` permits a retry only after Glass proves that dispatch did not
+  occur and the operation is safe to retry.
+
+Automatic recovery is disabled by default. Glass never moves a stale reference
+to a new target without a new observation.
+
+The stable machine-readable action contract is
+[action-v1.schema.json](schema/glass-action-v1.schema.json). The compatibility
+contract remains available in [Action contract](action-contract.md).

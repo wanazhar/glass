@@ -7,7 +7,7 @@ Status: Accepted
 - Preserve the existing two-panel interface and command-first workflow.
 - Never block input or rendering on browser I/O.
 - Retain only bounded, compact page state in the UI process.
-- Make action state auditable without showing hidden model reasoning.
+- Make action state auditable without exposing internal decision data.
 
 ## Overall structure
 

@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Version of the local daemon status and lifecycle contract.
@@ -189,12 +190,21 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
             client_sessions: 0,
         };
         std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
+        let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
         loop {
             let (stream, _) = listener.accept().await?;
+            let client_sessions = Arc::clone(&client_sessions);
+            let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            update_client_sessions(status_path, active)?;
+            let status_path = status_path.to_path_buf();
             tokio::spawn(async move {
                 if let Err(error) = bridge_client(stream).await {
                     tracing::warn!(%error, "daemon client bridge stopped");
                 }
+                let active = client_sessions
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                    .saturating_sub(1);
+                let _ = update_client_sessions(&status_path, active);
             });
         }
     }
@@ -243,6 +253,18 @@ fn read_status(path: &Path) -> Result<Option<DaemonStatus>, Box<dyn std::error::
         return Err("unsupported daemon status protocol".into());
     }
     Ok(Some(status))
+}
+
+fn update_client_sessions(
+    path: &Path,
+    client_sessions: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(mut status) = read_status(path)? else {
+        return Ok(());
+    };
+    status.client_sessions = client_sessions;
+    std::fs::write(path, serde_json::to_vec_pretty(&status)?)?;
+    Ok(())
 }
 
 #[cfg(unix)]

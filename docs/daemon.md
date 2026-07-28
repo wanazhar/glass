@@ -1,58 +1,90 @@
 # Local daemon
 
-Glass can supervise local MCP client sessions through a Unix-domain socket on
-Linux and macOS. The daemon does not bind a TCP port and does not expose a
-remote service. Connected clients use the daemon's shared session namespace;
-mutation operations are serialized by an owner-bound lease.
+The Glass daemon accepts local MCP clients through a Unix-domain socket. It
+runs on Linux and macOS. It does not open a TCP port. It does not provide a
+remote service.
 
-## Lifecycle
+The current daemon uses one shared browser-session namespace. It does not
+provide independent browser sessions for each client.
 
-```console
+## Start and stop
+
+Run:
+
+`console
 glass daemon start
 glass daemon status
 glass daemon doctor
 glass daemon logs
-glass daemon acknowledge-recovery --request-id REQUEST_ID [...]
 glass daemon stop
-```
+`
 
-Use `--socket PATH` and `--status PATH` to select explicit locations. The
-default paths are under the platform local-data directory. The socket is
-created with mode `0600`. On Linux, the daemon also checks `SO_PEERCRED` and
-accepts only clients running as the same operating-system user. On macOS,
-socket ownership and mode are the local authentication boundary. The status JSON follows
-[glass-daemon-v1.schema.json](schema/glass-daemon-v1.schema.json) and includes
-the daemon PID, protocol version, transport, and active client-session count.
-The transport identifier is `unix-mcp-shared-session`.
-`glass daemon logs` returns at most the last 64 KiB of the local log file.
-Status also exposes the current mutation lease owner when one exists; the
-lease token is never written to status or logs.
-While a workflow request is running, the status also records its bounded
-request ID and owner. On shutdown or restart after a crash, those entries are
-reported as interrupted and must be reconciled from a checkpoint before a
-caller resumes work.
-The status points to a versioned recovery record when one exists; `glass
-daemon doctor` reports it as `reconciliation_required`.
-After reconciling each listed run from a checkpoint, an operator must explicitly
-name every recovered request ID with `glass daemon acknowledge-recovery
---request-id REQUEST_ID`. Glass rejects partial, unknown, or duplicate
-acknowledgements and only then clears the recovery marker. This never resumes a
-workflow or grants a mutation lease.
+Use `--socket PATH` and `--status PATH` to set explicit paths. The default
+paths are in the platform local-data directory.
 
-The daemon is intentionally limited in this release: it provides local
-lifecycle supervision and a shared browser session namespace. Clients must
-negotiate the daemon capability before using it, then use these MCP methods:
+## Access control
 
-```text
+The socket has mode `0600`.
+
+On Linux, Glass checks `SO_PEERCRED`. Only the same operating-system user may
+connect.
+
+On macOS, socket ownership and mode provide the local access boundary.
+
+The daemon does not support remote network access.
+
+## Status and recovery
+
+The status document follows
+[glass-daemon-v1.schema.json](schema/glass-daemon-v1.schema.json). It includes:
+
+- the daemon process ID;
+- the protocol version;
+- the Unix transport;
+- the active client-session count;
+- the current mutation lease owner;
+- active workflow request IDs; and
+- the recovery state.
+
+The daemon never writes a lease token to status or logs.
+
+`glass daemon logs` returns at most 64 KiB from the local log file.
+
+When the daemon stops or restarts, active workflow requests become interrupted.
+A caller must reconcile each request from its checkpoint before it resumes.
+
+The daemon stores recovery data in a versioned record. The doctor command
+reports this state as `reconciliation_required`.
+
+After reconciliation, acknowledge every request:
+
+`console
+glass daemon acknowledge-recovery --request-id REQUEST_ID [...]
+`
+
+Glass rejects partial, unknown, and duplicate acknowledgements. Acknowledgement
+does not resume a workflow. It does not grant a lease.
+
+## Mutation leases
+
+Clients must negotiate the `localDaemon` capability before they use daemon
+operations.
+
+Use these MCP methods:
+
+`text
 glass/lease/acquire  {"ttlMs": 1000..900000}
 glass/lease/renew    {"token": "...", "ttlMs": 1000..900000}
 glass/lease/release  {"token": "..."}
-```
+`
 
-The returned token is owner-bound to the local socket connection. At most one
-client can hold the mutation lease for `daemon-default`; observation tools may
-run without it. Mutation `tools/call` requests must carry the token as
-`arguments.leaseToken`. A disconnected client releases its lease after its
-in-flight requests finish. Each client has at most four in-flight requests,
-within a daemon-wide limit of sixteen, so one client cannot consume the entire
-request budget. Remote network access is not supported.
+One client may hold the mutation lease for `daemon-default`. Observation
+operations do not require the lease. Mutation requests must send the token as
+`arguments.leaseToken`.
+
+A disconnected client releases its lease after its active requests finish.
+Each client has a maximum of four in-flight requests. The daemon has a maximum
+of sixteen in-flight requests.
+
+The lease owner is tied to the local socket connection. Do not write the lease
+token to a log or file.

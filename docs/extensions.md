@@ -1,40 +1,76 @@
 # Extensions
 
-Glass 0.2 defines an extension manifest, permission boundary, and a bounded
-process host. `ExtensionRegistry::load_dir` loads JSON manifests without
-executing them; `ExtensionHost::invoke` can then run one declared entrypoint
-request at a time.
+Glass defines a versioned extension manifest and a bounded process host. The
+extension capability is not enabled in the current 0.2.0 candidate.
 
-An extension must declare an ID, API version, capability, exact host list, and
-bounded action list. Wildcard hosts, `evaluate`, raw CDP, arbitrary browser
-commands, and undeclared mutations are rejected by the manifest validator.
-The host confines entrypoints below its configured root, allows only declared
-capabilities, exact hosts, and actions, caps each request/response at 256 KiB,
-limits concurrent invocations to four, and terminates calls after five seconds.
-A host response must use the versioned one-result/one-error protocol. Response
-values are bounded and reject sensitive field names such as cookies, tokens,
-passwords, secrets, and authorization data. Registering metadata alone never
-executes code.
+## Manifest
 
-The host does not receive browser handles. `ExtensionHost::invoke_guarded`
-accepts only a bounded revision-pinned action result and routes supported
-click, type, clear, check, uncheck, and select operations through the core
-`BrowserSession` guarded methods. Policy checks, target resolution, revision
-checks, verification, and effect recording remain in Glass. Therefore the
-negotiated `extensions` capability remains disabled until lifecycle,
-redaction, certification, and cross-transport conformance are complete.
+An extension manifest declares:
 
-Two reference extensions live under `extensions/first-party/`. They exercise
-the manifest, exact-host/action permissions, and bounded host protocol for an
-extraction transform and an intent-evidence pack. They are fixtures for the
-extension design, not automatically loaded or enabled by the runtime.
+- an extension ID;
+- an API version;
+- a capability;
+- exact allowed hosts; and
+- bounded allowed actions.
 
-`ExtensionHost::invoke_sandboxed` is an explicit opt-in boundary. On Linux it
-requires `bubblewrap`; on macOS it uses the system sandbox profile. If neither
-boundary is available, the call fails instead of falling back to the ordinary
-bounded subprocess host. The sandboxed path still does not grant browser
-handles or bypass policy.
+The validator rejects wildcard hosts, JavaScript evaluation, raw CDP,
+undeclared browser commands, and undeclared mutations.
 
-See [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
-Native sandboxing, lifecycle certification, and cross-transport extension
-conformance remain required before the capability can be enabled.
+Load manifests without executing extension code:
+
+`rust
+ExtensionRegistry::load_dir
+`
+
+The host confines entrypoints to its configured root. It checks declared
+capabilities, hosts, and actions. It limits each request and response to
+256 KiB. It permits four concurrent calls. It stops a call after five seconds.
+
+The host accepts one result or one error for each request. It rejects
+oversized values and sensitive field names, including cookies, tokens,
+passwords, secrets, and authorization data.
+
+Registering a manifest does not execute code.
+
+## Guarded browser actions
+
+An extension does not receive a browser handle.
+
+`rust
+ExtensionHost::invoke_guarded
+`
+
+accepts a bounded revision-pinned action result. Glass then performs supported
+click, type, clear, check, uncheck, and select actions through the core
+`BrowserSession` methods.
+
+Glass keeps policy checks, target resolution, revision checks, verification, and
+effect recording in the core runtime.
+
+## Sandbox
+
+Use the explicit sandbox entry point:
+
+`rust
+ExtensionHost::invoke_sandboxed
+`
+
+On Linux, the host requires `bubblewrap`. On macOS, it uses the system
+sandbox profile. If the sandbox is not available, the call fails. Glass does
+not fall back to the ordinary subprocess host.
+
+The sandbox does not provide browser handles. It does not bypass policy.
+
+## First-party fixtures
+
+Two reference extensions are in `extensions/first-party/`. They test:
+
+- manifest validation;
+- exact host and action permissions; and
+- the bounded host protocol.
+
+They are fixtures. Glass does not load or enable them automatically.
+
+Read [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
+Extension lifecycle certification, redaction certification, and
+cross-transport conformance must pass before Glass enables the capability.

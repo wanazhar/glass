@@ -35,6 +35,9 @@ use crate::browser::session::{
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
+use crate::daemon::{
+    DAEMON_DEFAULT_SESSION_ID, DaemonLeaseContext, LeaseError, MutationLeaseManager,
+};
 use crate::mcp::prompts;
 use crate::mcp::resources;
 
@@ -400,6 +403,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         Arc::new(Mutex::new(None)),
         true,
         false,
+        None,
     )
     .await
 }
@@ -416,6 +420,7 @@ pub async fn run_mcp_stream<R, W>(
     session: Arc<Mutex<Option<BrowserSession>>>,
     close_session_on_eof: bool,
     local_daemon: bool,
+    lease_context: Option<Arc<DaemonLeaseContext>>,
 ) -> BrowserResult<()>
 where
     R: AsyncBufRead + Unpin,
@@ -541,6 +546,31 @@ where
             continue;
         }
 
+        if local_daemon && is_lease_method(&request.method) {
+            let lease_context = lease_context
+                .as_ref()
+                .expect("daemon lease context available");
+            let response =
+                handle_lease_request(&request, &lease_context.manager, &lease_context.owner_id)
+                    .await;
+            if !request.id.is_notification() {
+                send_response(&outbound_tx, response, format).await?;
+            }
+            continue;
+        }
+        if local_daemon
+            && request.method == "tools/call"
+            && let Some(lease_context) = lease_context.as_ref()
+            && let Some(error) =
+                mutation_lease_error(&request, &lease_context.manager, &lease_context.owner_id)
+                    .await
+        {
+            if !request.id.is_notification() {
+                send_response(&outbound_tx, error, format).await?;
+            }
+            continue;
+        }
+
         let permit = match Arc::clone(&permits).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
@@ -637,7 +667,168 @@ where
             session.close().await?;
         }
     }
+    if let Some(lease_context) = lease_context {
+        lease_context
+            .manager
+            .lock()
+            .await
+            .release_owner(&lease_context.owner_id);
+    }
     Ok(())
+}
+
+fn is_lease_method(method: &str) -> bool {
+    matches!(
+        method,
+        "glass/lease/acquire" | "glass/lease/renew" | "glass/lease/release"
+    )
+}
+
+async fn handle_lease_request(
+    request: &JsonRpcRequest,
+    lease_manager: &Arc<Mutex<MutationLeaseManager>>,
+    owner_id: &str,
+) -> JsonRpcResponse {
+    let params = &request.params;
+    let mut manager = lease_manager.lock().await;
+    let now_ms = current_time_ms();
+    let result = match request.method.as_str() {
+        "glass/lease/acquire" => {
+            let Some(ttl_ms) = params.get("ttlMs").and_then(Value::as_u64) else {
+                return error_response(
+                    request.id.response_value(),
+                    -32602,
+                    "glass/lease/acquire requires numeric ttlMs",
+                );
+            };
+            manager.acquire(DAEMON_DEFAULT_SESSION_ID, owner_id, now_ms, ttl_ms)
+        }
+        "glass/lease/renew" => {
+            let Some(token) = params.get("token").and_then(Value::as_str) else {
+                return error_response(
+                    request.id.response_value(),
+                    -32602,
+                    "glass/lease/renew requires string token",
+                );
+            };
+            let Some(ttl_ms) = params.get("ttlMs").and_then(Value::as_u64) else {
+                return error_response(
+                    request.id.response_value(),
+                    -32602,
+                    "glass/lease/renew requires numeric ttlMs",
+                );
+            };
+            manager.renew(DAEMON_DEFAULT_SESSION_ID, owner_id, token, now_ms, ttl_ms)
+        }
+        "glass/lease/release" => {
+            let Some(token) = params.get("token").and_then(Value::as_str) else {
+                return error_response(
+                    request.id.response_value(),
+                    -32602,
+                    "glass/lease/release requires string token",
+                );
+            };
+            return match manager.release(DAEMON_DEFAULT_SESSION_ID, owner_id, token) {
+                Ok(()) => success_response(
+                    request.id.response_value(),
+                    json!({"sessionId": DAEMON_DEFAULT_SESSION_ID, "released": true}),
+                ),
+                Err(error) => lease_error_response(request, error),
+            };
+        }
+        _ => {
+            return error_response(
+                request.id.response_value(),
+                -32601,
+                "unknown Glass lease method",
+            );
+        }
+    };
+    match result {
+        Ok(lease) => success_response(request.id.response_value(), json!(lease)),
+        Err(error) => lease_error_response(request, error),
+    }
+}
+
+async fn mutation_lease_error(
+    request: &JsonRpcRequest,
+    lease_manager: &Arc<Mutex<MutationLeaseManager>>,
+    owner_id: &str,
+) -> Option<JsonRpcResponse> {
+    let tool_name = request.params.get("name").and_then(Value::as_str)?;
+    if !tool_requires_mutation_lease(tool_name) {
+        return None;
+    }
+    let token = request
+        .params
+        .get("arguments")
+        .and_then(|arguments| arguments.get("leaseToken"))
+        .and_then(Value::as_str);
+    let Some(token) = token else {
+        return Some(error_response(
+            request.id.response_value(),
+            -32003,
+            "mutation lease required; call glass/lease/acquire first",
+        ));
+    };
+    let manager = lease_manager.lock().await;
+    manager
+        .validate(
+            DAEMON_DEFAULT_SESSION_ID,
+            owner_id,
+            token,
+            current_time_ms(),
+        )
+        .err()
+        .map(|error| lease_error_response(request, error))
+}
+
+fn tool_requires_mutation_lease(tool_name: &str) -> bool {
+    !matches!(
+        tool_name,
+        "screenshot"
+            | "observe"
+            | "observeKnowledge"
+            | "resolveIntent"
+            | "resolveIntentWithKnowledge"
+            | "knowledgeList"
+            | "knowledgeShow"
+            | "knowledgeStats"
+            | "preflight"
+            | "getDOM"
+            | "getText"
+            | "listTargets"
+            | "listFrames"
+            | "cookies"
+            | "localStorage"
+            | "sessionStorage"
+            | "diagnostics"
+            | "verify"
+            | "observeDelta"
+    )
+}
+
+fn lease_error_response(request: &JsonRpcRequest, error: LeaseError) -> JsonRpcResponse {
+    let (code, retryable) = match error {
+        LeaseError::AlreadyHeld => ("leaseHeld", true),
+        LeaseError::Expired => ("leaseExpired", true),
+        LeaseError::NotFound => ("leaseNotFound", true),
+        LeaseError::NotOwner => ("leaseNotOwner", false),
+        LeaseError::InvalidInput(_) => ("invalidLease", false),
+    };
+    error_response_with_data(
+        request.id.response_value(),
+        -32003,
+        error.to_string(),
+        json!({"code": code, "retryable": retryable}),
+    )
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 async fn send_response(
@@ -2713,13 +2904,22 @@ fn success_response(id: Option<Value>, result: Value) -> JsonRpcResponse {
 }
 
 fn error_response(id: Option<Value>, code: i32, message: impl Into<String>) -> JsonRpcResponse {
+    error_response_with_data(id, code, message, Value::Null)
+}
+
+fn error_response_with_data(
+    id: Option<Value>,
+    code: i32,
+    message: impl Into<String>,
+    data: Value,
+) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0",
         result: None,
         error: Some(JsonRpcError {
             code,
             message: message.into(),
-            data: None,
+            data: (!data.is_null()).then_some(data),
         }),
         id,
     }

@@ -5,6 +5,7 @@
 //! silently transfer a browser session or workflow lease to another client.
 
 use clap::Parser;
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,8 @@ use crate::cli::args::Cli;
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 /// Maximum number of isolated MCP child sessions per daemon.
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
+/// Stable session namespace used by the first shared daemon runtime.
+pub const DAEMON_DEFAULT_SESSION_ID: &str = "daemon-default";
 const MIN_LEASE_TTL_MS: u64 = 100;
 const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
 
@@ -59,6 +62,13 @@ impl std::error::Error for LeaseError {}
 pub struct MutationLeaseManager {
     leases: BTreeMap<String, MutationLease>,
     next_token: u64,
+}
+
+/// Lease authority and owner identity for one daemon socket connection.
+#[derive(Debug, Clone)]
+pub struct DaemonLeaseContext {
+    pub manager: Arc<tokio::sync::Mutex<MutationLeaseManager>>,
+    pub owner_id: String,
 }
 
 impl MutationLeaseManager {
@@ -134,6 +144,29 @@ impl MutationLeaseManager {
         }
         self.leases.remove(session_id);
         Ok(())
+    }
+
+    /// Verify that a mutation request is still owned by the given client.
+    pub fn validate(
+        &self,
+        session_id: &str,
+        owner_id: &str,
+        token: &str,
+        now_ms: u64,
+    ) -> Result<(), LeaseError> {
+        let lease = self.leases.get(session_id).ok_or(LeaseError::NotFound)?;
+        if lease.owner_id != owner_id || lease.token != token {
+            return Err(LeaseError::NotOwner);
+        }
+        if lease.expires_at_ms <= now_ms {
+            return Err(LeaseError::Expired);
+        }
+        Ok(())
+    }
+
+    /// Release every lease held by a disconnected client owner.
+    pub fn release_owner(&mut self, owner_id: &str) {
+        self.leases.retain(|_, lease| lease.owner_id != owner_id);
     }
 }
 
@@ -330,6 +363,8 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let shared_session = Arc::new(tokio::sync::Mutex::new(None));
+    let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
+    let next_owner_id = std::sync::atomic::AtomicU64::new(0);
     let mut terminate = signal(SignalKind::terminate())?;
     let mut clients = Vec::new();
     loop {
@@ -354,19 +389,31 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         let status_path = status_path.to_path_buf();
         let shared_session = Arc::clone(&shared_session);
         let cli = Cli::parse_from(["glass", "--mcp"]);
+        let owner_id = format!(
+            "daemon-client-{}",
+            next_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+        );
+        let lease_context = Arc::new(DaemonLeaseContext {
+            manager: Arc::clone(&lease_manager),
+            owner_id,
+        });
         clients.push(tokio::task::spawn_local(async move {
             let (socket_read, socket_write) = stream.into_split();
-            let result = crate::mcp::server::run_mcp_stream(
+            let result = std::panic::AssertUnwindSafe(crate::mcp::server::run_mcp_stream(
                 tokio::io::BufReader::new(socket_read),
                 socket_write,
                 &cli,
                 shared_session,
                 false,
                 true,
-            )
+                Some(lease_context),
+            ))
+            .catch_unwind()
             .await;
-            if let Err(error) = result {
-                tracing::warn!(%error, "daemon client bridge stopped");
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "daemon client bridge stopped"),
+                Err(panic) => tracing::error!(?panic, "daemon client bridge panicked"),
             }
             let active = client_sessions
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
@@ -529,6 +576,18 @@ mod tests {
             .unwrap();
         assert_eq!(
             manager.release("session-1", "owner-a", &lease.token),
+            Err(LeaseError::NotFound)
+        );
+
+        let lease = manager
+            .acquire("session-1", "owner-a", 2_000, 1_000)
+            .unwrap();
+        manager
+            .validate("session-1", "owner-a", &lease.token, 2_500)
+            .unwrap();
+        manager.release_owner("owner-a");
+        assert_eq!(
+            manager.validate("session-1", "owner-a", &lease.token, 2_500),
             Err(LeaseError::NotFound)
         );
     }

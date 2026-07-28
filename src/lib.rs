@@ -43,6 +43,8 @@
 
 /// Browser control modules and the reusable [`browser::BrowserSession`] API.
 pub mod browser;
+/// Versioned Glass protocol and capability negotiation.
+pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.
 pub mod cli;
 /// MCP stdio server, prompts, resources, and tool dispatch.

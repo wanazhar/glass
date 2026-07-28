@@ -33,6 +33,7 @@ use crate::browser::session::{
     VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
     default_knowledge_store_path,
 };
+use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::mcp::prompts;
 use crate::mcp::resources;
@@ -484,7 +485,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
                 .await?;
                 continue;
             }
-            let response = initialize_response(&request);
+            let response = initialize_response(&request, &policy);
             if response.error.is_none() {
                 lifecycle = Lifecycle::Negotiated;
             }
@@ -654,7 +655,7 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
     }
 }
 
-fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
+fn initialize_response(request: &JsonRpcRequest, policy: &BrowserPolicy) -> JsonRpcResponse {
     if request.jsonrpc != "2.0" {
         return error_response(request.id.response_value(), -32600, "jsonrpc must be 2.0");
     }
@@ -676,6 +677,29 @@ fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
             "unsupported MCP protocol version",
         );
     }
+    let manifest = GlassCapabilityManifest::for_policy(policy);
+    let Some(glass_request) = request.params.get("glass") else {
+        return success_response(
+            request.id.response_value(),
+            json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {"listChanged": false},
+                    "prompts": {"listChanged": false},
+                    "resources": {"subscribe": false, "listChanged": false}
+                },
+                "glass": manifest,
+                "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
+            }),
+        );
+    };
+    if let Err(error) = manifest.negotiate(Some(glass_request)) {
+        return error_response(
+            request.id.response_value(),
+            -32602,
+            format!("Glass capability negotiation failed: {error}"),
+        );
+    }
     success_response(
         request.id.response_value(),
         json!({
@@ -685,6 +709,7 @@ fn initialize_response(request: &JsonRpcRequest) -> JsonRpcResponse {
                 "prompts": {"listChanged": false},
                 "resources": {"subscribe": false, "listChanged": false}
             },
+            "glass": manifest,
             "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
         }),
     )
@@ -709,7 +734,7 @@ async fn handle_request(
     }
 
     let response = match request.method.as_str() {
-        "initialize" => initialize_response(request),
+        "initialize" => initialize_response(request, policy),
         "ping" => success_response(request.id.response_value(), json!({})),
         "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
         "prompts/list" => match prompts::list_prompts() {
@@ -2870,10 +2895,14 @@ mod tests {
         .await
         .unwrap();
         let caps = &initialized.result.as_ref().unwrap()["capabilities"];
+        let glass = &initialized.result.as_ref().unwrap()["glass"];
         assert_eq!(
             initialized.result.as_ref().unwrap()["serverInfo"]["name"],
             "glass"
         );
+        assert_eq!(glass["protocolVersion"], 1);
+        assert_eq!(glass["schemas"]["workflow"], json!([1]));
+        assert_eq!(glass["capabilities"]["localDaemon"], false);
         assert_eq!(caps["tools"]["listChanged"], false);
         assert_eq!(caps["prompts"]["listChanged"], false);
         assert_eq!(caps["resources"]["subscribe"], false);
@@ -3007,11 +3036,39 @@ mod tests {
         }))
         .unwrap();
 
-        let response = initialize_response(&request);
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = initialize_response(&request, &policy);
         let error = response.error.unwrap();
         assert_eq!(error.code, -32602);
         assert_eq!(error.message, "unsupported MCP protocol version");
         assert!(!error.message.contains("private-future-version"));
+    }
+
+    #[test]
+    fn rejects_an_incompatible_glass_schema_before_ready_state() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "glass": {
+                    "protocolVersion": 1,
+                    "schemas": {"workflow": [99]}
+                }
+            }
+        }))
+        .unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = initialize_response(&request, &policy);
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32602);
+        assert!(
+            error
+                .message
+                .contains("Glass capability negotiation failed")
+        );
     }
 
     #[test]

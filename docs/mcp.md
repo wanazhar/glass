@@ -9,6 +9,14 @@ After the initialize response, the client must send
 `notifications/initialized`; normal requests are rejected until that
 notification arrives. Repeated initialize requests are invalid.
 
+The initialization result also contains a `glass` capability manifest with the
+Glass protocol version, supported schema versions, policy-sensitive capability
+flags, and platform/browser constraints. See [schema compatibility](schema-compatibility.md)
+and the [capability manifest schema](schema/glass-capabilities-v1.schema.json).
+Clients that need a specific Glass contract may send `params.glass` with
+`protocolVersion` and requested schema versions; incompatible requests fail
+before the MCP session becomes ready.
+
 ## Configure a client
 
 Build or install Glass, then configure the MCP client to execute the binary

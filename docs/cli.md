@@ -1,67 +1,66 @@
 # CLI reference
 
-Run `glass --help` or `glass COMMAND --help` for the authoritative reference
-for the installed version.
+Run `glass --help` or `glass COMMAND --help` for the exact syntax for the
+installed version.
 
-## Global session options
+## Global options
 
-| Option | Default | Purpose |
-|---|---:|---|
-| `--profile NAME` | `default` | Persistent browser profile. |
-| `--incognito` | off | Disposable browser session. |
+| Option | Default | Function |
+|---|---|---|
+| `--profile NAME` | `default` | Use a persistent browser profile. |
+| `--incognito` | off | Use a disposable browser profile. |
 | `--attach` | off | Connect to an existing CDP endpoint. |
-| `--target-id ID` | automatic | Select a page on an attached endpoint. |
-| `--frame-id ID` | main frame | Select a frame for this CLI invocation. |
-| `--port PORT` | `9222` | CDP debugging port. |
-| `--headed` | off | Display the Chrome window. |
-| `--interaction human|fast` | `human` | Smooth or direct pointer events. |
-| `--trace-on-error` | off | Emit one bounded JSON failure trace on stderr when an operation fails. |
-| `--chrome-path PATH` | discovered | Explicit Chrome/Chromium executable. |
-| `--knowledge-store PATH` | profile-scoped | Select the persistent knowledge snapshot. |
-| `--mcp` | off | Run the MCP stdio server. |
+| `--target-id ID` | automatic | Select a page target. |
+| `--frame-id ID` | main frame | Select a frame. |
+| `--port PORT` | `9222` | Set the local CDP port. |
+| `--headed` | off | Show the Chrome window. |
+| `--interaction human|fast` | `human` | Select pointer event mode. |
+| `--trace-on-error` | off | Write one bounded failure trace to stderr. |
+| `--chrome-path PATH` | discovered | Select the browser executable. |
+| `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
+| `--mcp` | off | Start the MCP stdio server. |
 
-Global options can be written before or after a subcommand.
+Place global options before or after the subcommand.
 
-Set `GLASS_CONFIG_HOME` to place Glass configuration and named profiles under
-an explicit root on every platform. When unset, Glass uses the operating
-system's standard configuration directory.
+Set `GLASS_CONFIG_HOME` to select the configuration and profile root. If it is
+not set, Glass uses the operating system configuration directory.
 
-Chrome's process sandbox remains enabled by default. In a container or CI
-kernel that cannot provide Chrome's sandbox, set `GLASS_DISABLE_CHROME_SANDBOX=1`
-only inside that already-isolated environment; do not use it for ordinary
-browsing.
+Chrome sandboxing is enabled by default. Set
+`GLASS_DISABLE_CHROME_SANDBOX=1` only in an already isolated container or CI
+environment.
 
 ## Browser commands
 
-```text
-navigate URL [--timeout-ms MILLISECONDS] [--expected-revision REVISION]
-click TARGET [--expected-revision REVISION]
-click-expect-popup TARGET [--expected-revision REVISION]
-double-click TARGET [--expected-revision REVISION]
+The main commands are:
+
+`text
+navigate URL
+click TARGET
+click-expect-popup TARGET
+double-click TARGET
 hover TARGET
-drag SOURCE DESTINATION [--expected-revision REVISION]
-type TEXT [--target TARGET] [--expected-revision REVISION]
-key KEY [--expected-revision REVISION]
-key-down KEY [--expected-revision REVISION]
-key-up KEY [--expected-revision REVISION]
-shortcut SHORTCUT [--expected-revision REVISION]
-clear TARGET [--expected-revision REVISION]
-check TARGET [--expected-revision REVISION]
-uncheck TARGET [--expected-revision REVISION]
-select TARGET VALUE [--expected-revision REVISION]
-upload TARGET FILE... [--expected-revision REVISION]
-fill-form --fields JSON [--expected-revision REVISION]
-screenshot [-o|--output FILE]
+drag SOURCE DESTINATION
+type TEXT [--target TARGET]
+key KEY
+key-down KEY
+key-up KEY
+shortcut SHORTCUT
+clear TARGET
+check TARGET
+uncheck TARGET
+select TARGET VALUE
+upload TARGET FILE...
+fill-form --fields JSON
+screenshot
 text
 dom
-observe [--deep-dom] [--screenshot] [--form-values]
-observe --level summary|interactive|structured|detailed|raw [--region REGION_ID]
-scroll [--dx PIXELS] [--dy PIXELS] [--expected-revision REVISION]
-wait CONDITION [--timeout-ms MILLISECONDS]
-diagnostics [--duration-ms MILLISECONDS]
+observe
+scroll
+wait CONDITION
+diagnostics
 accept-dialog
 dismiss-dialog
-download DIRECTORY [--timeout-ms MILLISECONDS]
+download DIRECTORY
 targets
 new-target URL
 select-target ID
@@ -69,172 +68,186 @@ close-target ID
 frames
 select-frame ID
 evaluate EXPRESSION
-batch [JSON_FILE] [--atomic] [--mode fixed|chain|unguarded] [--expected-revision REVISION]
+batch [JSON_FILE]
 workflow [JSON_FILE]
-workflow compile|format|validate|lint|preview SOURCE
-workflow diff BEFORE AFTER
-workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
-capabilities
-daemon start|status|doctor|stop [--socket PATH] [--status PATH]
-doctor
-certify run --scenario SCENARIO_JSON --fixture FIXTURE_JSON --url URL [--workflow-root DIRECTORY] [--inputs INPUTS_JSON] [--output EVIDENCE_JSON]
-certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
-certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
-certify replay-diff --scenario SCENARIO_JSON --before REPLAY_JSON --after REPLAY_JSON
-certify release --version VERSION --scenarios SCENARIOS_JSON --observations OBSERVATIONS_JSON [--replays REPLAYS_JSON]
-verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
+verify PREDICATE_JSON
 resolve-intent [JSON_FILE]
 execute-intent [JSON_FILE]
-knowledge list|show|explain|stats|export|import|invalidate|purge
-```
+knowledge SUBCOMMAND
+capabilities
+doctor
+tui
+`
 
-`screenshot` defaults to `screenshot.png`. `scroll` defaults to `dx=0` and
-`dy=600`. `dom` and `observe --deep-dom` are explicit deep-inspection actions;
-`wait` defaults to a 10-second bounded deadline and accepts the typed condition
-forms documented in the browser architecture (`lifecycle=`, `url=`,
-`url-prefix=`, target states, `text=`, `js=`, and `network-quiet=`);
-normal observations do not collect the full DOM. Likewise, screenshots are
-only captured by `screenshot` or `observe --screenshot`.
+Use `glass --help` for options and defaults for each command.
 
-`observe --level` returns the versioned semantic observation contract. Use
-`--region` for a revision-checked scoped expansion. Semantic options cannot be
-combined with deep DOM, screenshots, or form values; see
-[semantic observations](semantic-observation.md) for payload levels and
-revision behavior.
+Important defaults:
 
-`resolve-intent` reads a versioned request and returns bounded candidates,
-evidence, confidence, and the policy decision without dispatching an action.
-`execute-intent` reads a request containing the selected `candidateId`, repeats
-resolution against a fresh observation, and dispatches only when the selected
-policy permits it. See [intent resolution](intent-resolution.md) for the JSON
-shapes and supported action classes.
+- `screenshot` writes `screenshot.png`;
+- `scroll` uses `dx=0` and `dy=600`;
+- `wait` uses a bounded 10-second deadline;
+- `upload` accepts 1 to 16 regular files; and
+- `diagnostics` and `download` use a maximum 30-second duration.
 
-Knowledge commands inspect or manage the bounded profile-scoped store without
-starting Chrome. `list`, `show`, `explain`, and `stats` are read-only;
-`export`, `import`, `invalidate`, and `purge` are explicit lifecycle operations.
-See [persistent knowledge](knowledge.md) for scope, privacy, and freshness
-rules.
+Glass does not collect deep DOM, screenshots, or form values during a normal
+observation. Request those operations explicitly.
 
-`diagnostics` explicitly leases console and network domains for at most 30
-seconds and returns bounded, secret-redacted metadata. Dialog commands act only
-on an already open dialog. `download` serializes one browser-global download
-scope, restricts its destination to an existing directory under the authorized
-working root, and restores download denial on success, error, or cancellation.
+## Semantic observations
 
-`verify` accepts bounded JSON predicates such as
-`{"urlEquals":"https://example.com"}`, `{"visible":"r7:b42"}`,
-`{"textContains":"Ready"}`, or Boolean compositions using `all`, `any`, and
-`not`. It never evaluates caller-provided JavaScript.
+Use a semantic level when you need structured page state:
 
-`workflow` reads a JSON document containing `workflow` and `inputs` objects
-(or a workflow definition by itself), validates it before dispatch, and emits
-the workflow result with step states, terminal proof, typed outputs, and a
-deterministic trace.
+`console
+glass observe --level summary
+glass observe --level interactive
+glass observe --level structured --region REGION_ID
+`
 
-The `workflow compile`, `format`, `validate`, `lint`, `preview`, and `diff`
-subcommands are offline authoring operations. They parse YAML or JSON, apply
-the same workflow validation as the runtime, and do not start Chrome. See
-[workflow authoring](workflow-authoring.md) for diagnostics and redaction
-boundaries.
+Do not combine a semantic level with `--deep-dom`, `--screenshot`, or
+`--form-values`. Read [semantic observations](semantic-observation.md) for
+levels, revisions, regions, and diffs.
 
-`capabilities` prints the versioned Glass capability manifest without starting
-Chrome. It is the CLI equivalent of the `glass` manifest returned by MCP
-initialization and reflects the active policy and supported platform.
+## Targets and revisions
 
-`doctor` prints a bounded local health report for Chrome discovery and CDP
-reachability, the daemon, profiles, policy capabilities, knowledge-store
-presence, and extension-loader state. It does not start Chrome or load
-extensions.
+Target forms are:
 
-`certify replay` validates one redacted reliability replay bundle against its
-versioned scenario. `certify run` navigates a fixture URL, executes one
-manifest-bound scenario in Chrome, and emits the observation and redacted
-replay bundle; `--output` writes the same JSON to disk. `certify release`
-evaluates the complete scenario and observation set and exits unsuccessfully
-when required evidence is missing or unsafe outcomes are present. Only
-`certify run` starts Chrome. See the [reliability laboratory](reliability.md)
-guide for the supported contracts and boundaries.
-
-`workflow-resume` reconciles the definition and checkpoint against the current
-browser state, then executes only the safe pending suffix. It refuses
-post-dispatch ambiguity, route changes, definition mismatches, and completed
-checkpoints.
-
-`targets` and `frames` are bounded topology queries. Creating a target or
-discovering a popup never selects it. In a one-shot CLI workflow, discover IDs
-first and pass `--target-id` and `--frame-id` on the action invocation. MCP and
-library sessions can also use `select-target` and `select-frame` without
-restarting. Closing the active target leaves no implicit replacement.
-
-Navigation, action, observation, DOM, scroll, and evaluation results are
-compact JSON on stdout. `text` emits plain text. `screenshot` writes a PNG and
-prints its destination. With `--trace-on-error`, failures additionally emit a
-bounded trace pack on stderr containing the last compact observation and active
-target/frame topology.
-
-Keyboard commands emit browser key events; `type` remains the efficient plain
-text path. Shortcuts use `Control+A`/`Shift+Enter` syntax. Upload accepts 1–16
-regular files and never includes paths or contents in its result.
-
-## Element targets
-
-`click`, `double-click`, and `type --target` accept explicit locator forms:
-
-- `ref=r7:b42` (or the bare `r7:b42` fast-path reference);
-- `name=Save` (a bare string is an exact accessible name for compatibility);
+- `ref=r7:b42` or `r7:b42`;
+- `name=Save`;
 - `role=button;name=Save`;
-- `text=Continue`, `css=button.primary`, or `ordinal=2`.
+- `text=Continue`;
+- `css=button.primary`; and
+- `ordinal=2`.
 
-Use `click-expect-popup TARGET` when the selected element is expected to open
-one popup. It returns the verified popup target without implicitly selecting
-it. Ordinary `click` retains strict CDP acknowledgement semantics.
+Every locator must resolve one target. An ambiguous locator fails with bounded
+candidate data.
 
-Prefer revisioned references for automation workflows. They let Glass reject a
-reference after page state changes instead of acting on a stale element.
-For an explicit action contract, pass the revision from `observe` with
-`--expected-revision`; stale state is rejected before the action runs and the
-result includes typed status plus bounded verification metadata. The flag is
-available on navigation, click, double-click, type, clear, check, uncheck,
-select, scroll, keyboard, drag, upload, popup, and form-fill commands. The
-`fill-form --fields` value is a JSON array of `{target, value}` objects.
-Existing commands without the flag remain compatible.
-Every locator must resolve uniquely. Ambiguous names, text, or selectors fail
-with bounded candidates instead of choosing the first match.
+Prefer a revisioned reference for automation. Pass the revision from
+`observe`:
 
-Quote selectors or text containing spaces or shell metacharacters:
+`console
+glass click r7:b42 --expected-revision 7
+glass type 'hello' --target r7:b43 --expected-revision 7
+`
 
-```console
+Glass rejects a stale revision before it sends the browser action. The result
+contains typed status, previous and current revisions, an execution ID, and
+bounded verification evidence.
+
+The revision option is available on navigation, actions, scrolling, keyboard,
+drag, upload, popup, and form-fill commands. Existing calls without the option
+remain compatible.
+
+## Workflow and authoring
+
+`glass workflow FILE` validates and runs a bounded workflow.
+
+These commands are offline. They do not start Chrome:
+
+`console
+glass workflow compile FILE
+glass workflow format FILE
+glass workflow validate FILE
+glass workflow lint FILE
+glass workflow preview FILE
+glass workflow diff BEFORE AFTER
+glass workflow record
+`
+
+`glass workflow-resume` reconciles a checkpoint and runs only the safe
+pending suffix. It refuses post-dispatch ambiguity, route changes, definition
+mismatches, and completed checkpoints.
+
+Read [workflows](workflows.md) and [workflow authoring](workflow-authoring.md).
+
+## Intent and knowledge
+
+Resolve an intent without dispatch:
+
+`console
+glass resolve-intent request.json
+glass execute-intent execution.json
+`
+
+The execute command observes and resolves again before it acts.
+
+Knowledge commands do not start Chrome:
+
+`console
+glass knowledge list
+glass knowledge show RECORD_ID
+glass knowledge explain RECORD_ID
+glass knowledge stats
+glass knowledge export [PATH]
+glass knowledge import SNAPSHOT.json
+glass knowledge invalidate RECORD_ID stale
+glass knowledge purge ORIGIN
+`
+
+Read [intent resolution](intent-resolution.md) and [persistent knowledge](knowledge.md).
+
+## Daemon and diagnostics
+
+Run:
+
+`console
+glass capabilities
+glass daemon start
+glass daemon status
+glass daemon doctor
+glass daemon logs
+glass daemon stop
+glass doctor
+`
+
+`capabilities` prints the negotiated capability manifest without starting
+Chrome. `doctor` prints bounded browser, daemon, profile, policy, store, and
+extension-loader status. It does not start Chrome or load extensions.
+
+The daemon is local-only. Read [Local daemon](daemon.md).
+
+## Profiles and files
+
+Run:
+
+`console
+glass install-chromium
+glass profiles
+glass profiles create NAME
+glass profiles delete NAME
+glass delete-profile NAME
+glass tui
+`
+
+`delete-profile` remains an alias for profile deletion.
+
+`export-cookies FILE` and `import-cookies FILE` provide explicit profile
+state transfer. They require the persistent-profile capability. Imports are
+limited to 512 KiB and 256 cookies.
+
+Quote selectors and values that contain spaces or shell metacharacters:
+
+`console
 glass click 'css=button[type="submit"]'
 glass type 'hello world' --target 'css=#message'
-```
+`
 
-## Profile and utility commands
+## Convenience prompts
 
-```text
-install-chromium
-profiles [list|create NAME|delete NAME]
-delete-profile NAME
-tui
-```
+Glass accepts a limited set of prompts:
 
-`profiles` without an action lists profiles. `delete-profile NAME` is retained
-as a direct alias for profile deletion.
-
-`export-cookies FILE` and `import-cookies FILE` provide an explicit profile
-state hand-off. Both operations require the persistent-profile capability;
-imports are capped at 512 KiB and 256 cookies.
-
-## One-shot prompts
-
-Glass recognizes a small set of convenience prompts, including `navigate to`,
-`go to`, `open`, `click`, `double click`, `type`, `screenshot`, `text`, `dom`,
-and `observe`:
-
-```console
+`console
 glass "navigate to https://example.com"
 glass "click Sign in"
-```
+`
 
-This is command parsing, not a general-purpose language interpreter. Unrecognized prompt
-text is evaluated as JavaScript in the current page; scripts should prefer
-explicit subcommands to avoid ambiguity.
+This feature parses known command forms. It is not a general language
+interpreter. Use explicit subcommands in scripts.
+
+## Output
+
+Navigation, action, observation, DOM, scroll, and evaluation results use JSON on
+stdout. `text` emits plain text. `screenshot` writes a PNG and prints its
+path.
+
+Diagnostics use stderr. With `--trace-on-error`, Glass writes a bounded
+failure trace to stderr. The trace includes compact observation and target and
+frame state. It does not include raw page data or secret values.

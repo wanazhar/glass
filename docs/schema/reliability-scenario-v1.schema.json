@@ -41,7 +41,7 @@
         "maxProperties": 1,
         "oneOf": [
           {"required": ["runWorkflow"], "properties": {"runWorkflow": {"type": "string", "minLength": 1, "maxLength": 256}}},
-          {"required": ["applyControl"], "properties": {"applyControl": {"enum": ["reset", "replaceTarget", "renameTarget", "duplicateTarget", "moveTargetToOtherRegion", "showOverlay", "moveTarget", "detachFrame", "scheduleEffectMarker", "commitSubmit"]}}},
+          {"required": ["applyControl"], "properties": {"applyControl": {"enum": ["reset", "replaceTarget", "renameTarget", "duplicateTarget", "reorderTargets", "moveTargetToOtherRegion", "showOverlay", "moveTarget", "detachFrame", "scheduleEffectMarker", "commitSubmit"]}}},
           {"required": ["inject"], "properties": {"inject": {"$ref": "#/$defs/injection"}}},
           {"required": ["resumeFromCheckpoint"], "properties": {"resumeFromCheckpoint": {"type": "string", "minLength": 1, "maxLength": 256}}}
         ]

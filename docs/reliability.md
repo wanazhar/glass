@@ -26,8 +26,9 @@ The checked-in examples are
 `tests/fixtures/reliability-fixture-v1.json`, and
 `tests/fixtures/reliability-lab.html`.
 
-The fixture exposes target replacement, renaming, duplication, movement,
-overlays, frame detachment, delayed effects, and a counted submit side effect.
+The fixture exposes target replacement, renaming, duplication, reordering,
+movement, overlays, frame detachment, delayed effects, and a counted submit
+side effect.
 It contains no Glass runtime logic. The browser smoke test is opt-in:
 
 ```console

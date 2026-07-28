@@ -13,7 +13,7 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"enum": ["reset", "replaceTarget", "renameTarget", "duplicateTarget", "moveTargetToOtherRegion", "showOverlay", "moveTarget", "detachFrame", "scheduleEffectMarker", "commitSubmit"]}
+      "items": {"enum": ["reset", "replaceTarget", "renameTarget", "duplicateTarget", "reorderTargets", "moveTargetToOtherRegion", "showOverlay", "moveTarget", "detachFrame", "scheduleEffectMarker", "commitSubmit"]}
     },
     "faults": {
       "type": "array",

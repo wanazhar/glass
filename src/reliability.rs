@@ -70,6 +70,7 @@ pub enum ReliabilityFixtureControl {
     ReplaceTarget,
     RenameTarget,
     DuplicateTarget,
+    ReorderTargets,
     MoveTargetToOtherRegion,
     ShowOverlay,
     MoveTarget,

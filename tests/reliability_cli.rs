@@ -20,7 +20,7 @@ fn release_certification_blocks_a_suite_without_observations() {
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "blocked");
-    assert_eq!(report["gate"]["scenarioCount"], 5);
+    assert_eq!(report["gate"]["scenarioCount"], 6);
     assert_eq!(report["gate"]["certified"], false);
     assert_eq!(report["gate"]["failures"][0]["code"], "missing_evidence");
 }

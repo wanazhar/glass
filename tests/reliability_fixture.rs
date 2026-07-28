@@ -7,6 +7,7 @@ fn reliability_fixture_exposes_independent_fault_controls_and_oracles() {
         "replaceTarget",
         "renameTarget",
         "duplicateTarget",
+        "reorderTargets",
         "moveTargetToOtherRegion",
         "showOverlay",
         "detachFrame",

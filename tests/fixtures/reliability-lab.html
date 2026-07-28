@@ -56,6 +56,12 @@
           document.querySelector("#target").after(document.querySelector("#duplicate"));
           state.value = "duplicate-inserted";
         },
+        reorderTargets() {
+          const region = document.querySelector("#region-a");
+          region.append(document.querySelector("#moving"));
+          region.prepend(document.querySelector("#duplicate"));
+          state.value = "targets-reordered";
+        },
         moveTargetToOtherRegion() {
           document.querySelector("#region-b").append(document.querySelector("#target"));
           state.value = "region-moved";

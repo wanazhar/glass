@@ -36,7 +36,7 @@ fn checked_in_capability_suite_has_unique_valid_scenarios() {
     }
     let ids: std::collections::BTreeSet<_> =
         scenarios.iter().map(|scenario| &scenario.id).collect();
-    assert_eq!(scenarios.len(), 5);
+    assert_eq!(scenarios.len(), 6);
     assert_eq!(ids.len(), scenarios.len());
     assert!(scenarios.iter().any(|scenario| {
         scenario.steps.iter().any(|step| {

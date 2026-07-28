@@ -1,6 +1,22 @@
 [
   {
     "schemaVersion": 1,
+    "id": "targets-reordered-before-action",
+    "category": "targeting",
+    "fixture": "checkout-submit",
+    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "capabilities": ["targeting", "reorder"],
+    "setup": {"browser": "chromium", "policy": "hardened"},
+    "steps": [
+      {"applyControl": "reorderTargets"},
+      {"runWorkflow": "submit-request.json"}
+    ],
+    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "forbid": ["wrongTargetExecuted", "staleRevisionExecuted"],
+    "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
+  },
+  {
+    "schemaVersion": 1,
     "id": "target-replaced-before-action",
     "category": "targeting",
     "fixture": "checkout-submit",

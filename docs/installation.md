@@ -1,152 +1,174 @@
 # Installation and operations
 
-## Build and install
+## Requirements
 
-Glass uses the Rust 2024 edition. Build with the current stable Rust toolchain
-and the checked-in dependency lockfile:
+Glass requires:
 
-```console
+- stable Rust for a source build;
+- Chrome, Chromium, or Chrome for Testing; and
+- Linux x86-64, macOS x86-64, or macOS arm64.
+
+Windows is not a supported target. Glass does not install Playwright or another
+browser runtime.
+
+## Install from source
+
+Build the release executable:
+
+`console
 cargo build --release --locked
-```
+`
 
-The optimized executable is `target/release/glass` on Linux and macOS. To
-install from a checkout:
+The executable is `target/release/glass`.
 
-```console
+Install the local checkout:
+
+`console
 cargo install --path . --locked
-```
+`
 
-After publication, install the crate and build the `glass` binary locally:
+Install the published crate after a release:
 
-```console
+`console
 cargo install glass-browser --locked
-```
+`
 
-Cargo is the supported installation path for the current release. It builds the
-native `glass` executable for Linux x86-64 and macOS x86-64/arm64 without
-installing Playwright or another browser runtime.
+The local 0.2.0 checkout is not published.
 
-## Browser selection
+## Select a browser
 
-Glass resolves the browser in this order:
+Glass checks these locations in this order:
 
-1. the path passed through `--chrome-path PATH` (or its `--chrome` alias);
-2. Chrome for Testing previously downloaded by `glass install-chromium`; then
+1. the path from `--chrome-path PATH` or `--chrome`;
+2. the Chrome for Testing installation from `glass install-chromium`; and
 3. a detected system Chrome or Chromium installation.
 
-Override discovery when deployments use a nonstandard browser location:
+Use an explicit path when the browser is in a non-standard location:
 
-```console
+`console
 glass --chrome-path /opt/chrome/chrome navigate https://example.com
-```
+`
 
-`glass install-chromium` installs the Chrome for Testing version pinned by this
-Glass release for Linux x86-64 or macOS x86-64/arm64.
-Glass streams the bounded archive, checks its pinned size and digest, extracts
-it with an in-process ZIP reader, and atomically publishes only a validated
-executable. It does not require an external `unzip` program. Reinstall the
-release-pinned browser explicitly with `glass install-chromium --update`.
-Production systems may instead update a system browser independently.
+Install the Glass-pinned Chrome for Testing build:
 
-## Session modes
+`console
+glass install-chromium
+glass install-chromium --update
+`
 
-By default, Glass launches headless Chrome on CDP port `9222` with the named
-profile `default`.
+The installer checks the archive size and digest. It extracts the archive in
+the Glass process. It publishes the browser only after validation. It does not
+require the `unzip` program.
 
-- `--profile NAME` persists cookies and browser storage in Glass's local data
-  directory. Profile names may contain ASCII letters, digits, `_`, and `-`.
-- `--incognito` creates a disposable user-data directory and removes it after
-  the owned session closes.
-- `--headed` displays the browser window.
-- `--port PORT` changes the local CDP port.
+## Start a session
 
-List and manage named profiles with:
+By default, Glass starts headless Chrome on CDP port `9222` with the profile
+`default`.
 
-```console
+Use these options:
+
+| Option | Result |
+|---|---|
+| `--profile NAME` | Use persistent cookies and browser storage. |
+| `--incognito` | Use a disposable profile and remove it when Glass exits. |
+| `--headed` | Show the browser window. |
+| `--port PORT` | Use another local CDP port. |
+
+Profile names may contain ASCII letters, digits, `_`, and `-`.
+
+List and manage profiles:
+
+`console
 glass profiles
 glass profiles create work
 glass profiles delete work
-```
+`
 
-Deleting a profile permanently removes its browser data. Do not place files
-you want to retain inside a Glass-managed profile directory.
+Profile deletion removes the browser data. Do not store other files in a
+Glass-managed profile directory.
 
-## Attach to an existing browser
+## Attach to a browser
 
-Glass will not silently take over a process already listening on the selected
-CDP port. Start Chrome with remote debugging enabled, then opt in explicitly:
+Glass does not take over an occupied CDP port without an explicit option.
 
-```console
+Start Chrome with remote debugging. Then attach:
+
+`console
 glass --attach --port 9222 observe
-```
+`
 
-When the endpoint exposes multiple page targets, select one explicitly:
+If the endpoint has more than one page target, select one:
 
-```console
+`console
 glass --attach --port 9222 --target-id TARGET_ID observe
-```
+`
 
-Attach mode uses settings owned by the existing Chrome process. It therefore
-rejects `--incognito`, `--headed`, `--chrome-path`, and a non-default named
-profile.
+Attach mode uses the settings of the existing Chrome process. It rejects
+`--incognito`, `--headed`, `--chrome-path`, and a non-default named profile.
 
 ## Logging
 
-Glass writes structured diagnostics through `tracing`. Set `RUST_LOG` to
-control verbosity:
+Glass writes diagnostics with `tracing`. Set `RUST_LOG` to change the level:
 
-```console
+`console
 RUST_LOG=glass=info glass observe
 RUST_LOG=glass=debug glass --headed navigate https://example.com
-```
+`
 
-CLI results use stdout, while diagnostics use stderr. MCP clients must keep
-stdout reserved for protocol messages.
+CLI results use stdout. Diagnostics use stderr. MCP clients must keep stdout
+reserved for protocol messages.
 
-## Safety presets
+## Use a safety policy
 
-`--policy development` is the default and preserves normal local workflows.
-For an untrusted caller, use an owned disposable session with exact host rules:
+The default `development` policy supports local work. For untrusted input, use
+a disposable session and an exact host allowlist:
 
-```console
+`console
 glass --policy hardened --incognito \
   --policy-allow-host example.com \
   navigate https://example.com
-```
+`
 
-Repeat `--policy-allow-host` or `--policy-deny-host` for exact DNS names or
-public IPv4 literals. Wildcards, overlapping allow/deny rules, private or
-reserved addresses, and hardened startup without an allow host are rejected.
-Owned hardened sessions pin allowed names in Chrome to prevent a second DNS
-resolution from rebinding to a private address. Hardened attach therefore
-requires an explicit `attach` capability and IP-literal host rules.
+Repeat `--policy-allow-host` or `--policy-deny-host` for exact host names or
+public IPv4 literals. Glass rejects wildcards, overlapping rules, private
+addresses, reserved addresses, and hardened startup without an allow host.
 
-Privileged capabilities are `attach`, `persistent-profile`, `evaluate`,
-`upload`, `download`, `screenshot`, and `raw-cdp`. For example, this allows one
-confirmed screenshot and then returns to confirmation-required behavior:
+Hardened owned sessions pin allowed host names in Chrome. Hardened attach mode
+requires the `attach` capability and IP-literal host rules.
 
-```console
+These capabilities require policy decisions:
+
+- `attach`;
+- `persistent-profile`;
+- `evaluate`;
+- `upload`;
+- `download`;
+- `screenshot`; and
+- `raw-cdp`.
+
+Request one confirmed screenshot:
+
+`console
 glass --policy hardened --incognito \
   --policy-allow-host example.com \
   --policy-confirm screenshot --policy-confirm-once screenshot \
   screenshot --output evidence.png
-```
+`
 
-Policy flags are global and apply identically to one-shot CLI, MCP, and TUI
-sessions. Invalid combinations fail before Chrome starts.
-`raw-cdp` is an unlimited library escape hatch and therefore supports explicit
-allow only, not confirmation tokens.
+Policy flags have the same meaning in CLI, MCP, and TUI sessions. Glass
+rejects invalid combinations before it starts Chrome. `raw-cdp` supports an
+explicit allow decision. It does not support a confirmation token.
 
-## Production deployment
+## Deploy Glass
 
-- Build with `cargo build --release --locked` on the target platform.
-- Keep Chrome/Chromium patched and compatible with CDP.
-- Bind the debugging endpoint only to a trusted local interface and do not
-  publish its port through a container or firewall.
-- Use a dedicated OS account and a dedicated profile for automation.
-- Prefer `--incognito` for jobs that do not require persistent login state.
-- Treat screenshots, DOM output, logs, and profiles as potentially sensitive.
-- Gracefully terminate Glass so it can close Chrome and remove disposable
-  profile data.
+For a deployment:
 
-See [SECURITY.md](../SECURITY.md) for the complete trust model.
+1. Build on the target platform with `cargo build --release --locked`.
+2. Keep Chrome or Chromium current.
+3. Keep the CDP endpoint on a trusted local interface.
+4. Use a dedicated operating-system account and browser profile.
+5. Use `--incognito` when the job does not need persistent login state.
+6. Treat screenshots, DOM output, logs, and profiles as sensitive.
+7. Stop Glass cleanly so it can close owned Chrome and remove disposable data.
+
+Read [the security policy](../SECURITY.md) for the trust model.

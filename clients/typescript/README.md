@@ -1,45 +1,55 @@
-# `@glass-browser/client`
+# @glass-browser/client
 
-This dependency-free TypeScript client starts `glass --mcp` and exposes typed
-helpers for guarded navigation, clicks, typing, form filling, scrolling,
-verification, batches, workflows, waits, semantic observations, knowledge,
-targets, frames, storage, checkpoints, diagnostics, and browser controls. The
-action helpers accept optional revision guards. It has no Playwright or browser
-runtime dependency. Build it with `npm run build` before publishing;
-the package exports compiled JavaScript and declaration files.
+The dependency-free TypeScript client starts `glass --mcp`. It provides typed
+helpers for navigation, actions, verification, batches, workflows, waits,
+semantic observations, knowledge, targets, frames, storage, checkpoints,
+diagnostics, and browser controls.
 
-```ts
+The client does not include Chrome, Chromium, or another browser runtime.
+
+## Build
+
+Run:
+
+`console
+npm run build
+`
+
+The package exports JavaScript and TypeScript declaration files.
+
+## Start a client
+
+`typescript
 import { GlassClient } from "@glass-browser/client";
 
 const glass = new GlassClient({ command: "/absolute/path/to/glass" });
 await glass.navigate("https://example.com");
-const context = await glass.observeSemantic("structured");
-const search = await glass.observeSemantic("interactive", "region_search_1");
-await glass.click("name=More information");
-const run = await glass.workflow({
-  schemaVersion: 1,
-  name: "read-title",
-  workflowVersion: "1.0.0",
-  inputs: {},
-  budgets: { maxSteps: 1, maxDurationMs: 10_000, maxRetries: 0, maxExtractedBytes: 8_192 },
-  steps: [{ id: "observe", action: "observe", transaction: "read_only" }],
-  terminalCondition: { titleContains: "Example" },
-  outputs: {},
-});
-// Pass a serialized checkpoint as the third argument to resume its safe suffix.
+const page = await glass.observeSemantic("structured");
+console.log(page);
 glass.close();
-```
+`
 
-To connect to a running Linux or macOS daemon, pass
-`daemonSocket: "/path/to/glass.sock"`. Check `glass.capabilities?.capabilities`
-after initialization and call `acquireMutationLease()` before mutation helpers;
-the client adds the lease token to subsequent calls.
+Use `daemonSocket: "/path/to/glass.sock"` to connect to a running Linux or
+macOS daemon.
 
-The client accepts both newline-delimited MCP responses and `Content-Length`
-frames, and enforces a 4 MiB frame budget by default.
+Call `await glass.initialize()` before an optional operation. The call
+negotiates Glass schema versions and returns a `GlassCapabilityManifest`. The
+manifest is also available as `glass.capabilities`.
 
-`await glass.initialize()` negotiates Glass schema versions and returns the
-`GlassCapabilityManifest`. The same manifest is available at
-`glass.capabilities`; callers should check its capability flags before using
-optional operations. `supportsCapability`, `supportsSchema`, and
-`requireCapability` provide helpers for those checks.
+Use `supportsCapability`, `supportsSchema`, and
+`requireCapability` before you call an optional operation. The client returns
+a bounded error when the server does not support the requested item.
+
+## Daemon mutations
+
+A daemon mutation requires a lease. Check the `localDaemon` capability. Then
+call `acquireMutationLease()`. The client adds the lease token to later
+mutation calls.
+
+Release the lease when the mutation sequence ends. Do not store the lease token
+in logs or persistent files.
+
+## Frames
+
+The client accepts newline-delimited MCP responses and `Content-Length` frames.
+It limits each frame to 4 MiB.

@@ -1,80 +1,88 @@
 # Glass
 
-Glass is a lightweight browser control tool written in Rust. It drives Chrome
-or Chromium directly through the Chrome DevTools Protocol (CDP), without
-Playwright, WebDriver, or an embedded browser runtime.
+Glass is a Rust browser control tool. It controls Chrome or Chromium through
+the Chrome DevTools Protocol (CDP). It does not include a browser runtime.
 
-Glass executes explicit browser commands. It does not choose a workflow or
-silently retarget an action.
+Glass runs declared browser actions. It does not create an action plan or
+change a target without an explicit request.
 
-## Status
+## Support status
 
-Glass supports Linux x86-64 and macOS x86-64/arm64. Windows is not a supported
-target. The current checkout contains the 0.2.0 development version.
+| Item | Status |
+|---|---|
+| Linux x86-64 | Supported target |
+| macOS x86-64 | Supported target |
+| macOS arm64 | Supported target |
+| Windows | Unsupported |
+| 0.2.0 checkout | Local only; not published |
+| Chrome and Chromium | Supported browser families |
+| Firefox, WebKit, and Safari | Unsupported browser families |
 
-The command-line interface, terminal UI, MCP server, and Rust library share the
-same session runtime.
+The command-line interface (CLI), terminal user interface (TUI), Model
+Context Protocol (MCP) server, and Rust library use the same session runtime.
 
-## Install
+## Install the local checkout
 
-To install the current checkout:
+Prerequisite: install stable Rust and a supported Chrome or Chromium browser.
 
-```console
+Run:
+
+`console
 cargo install --path . --locked
 glass --help
-```
+`
+
+The command builds and installs the local `glass` executable.
 
 The latest published package can be installed with:
 
-```console
+`console
 cargo install glass-browser --locked
-```
+`
 
-The current 0.2.0 development version is not published yet. The binary must be
-able to find Chrome, Chromium, or Chrome for Testing. Use
-`glass install-chromium` when a system browser is not available.
+The 0.2.0 checkout is not published. Use `glass install-chromium` when no
+supported system browser is available.
 
-See [installation and operations](docs/installation.md) for browser discovery,
-profiles, attach mode, logging, policy presets, and deployment guidance.
+Read [Installation and operations](docs/installation.md) for browser
+discovery, profiles, attach mode, logging, policy, and deployment.
 
-## First run
+## Run Glass
 
-The terminal UI keeps one browser session open for a sequence of commands:
+Start the TUI for a visible session:
 
-```console
+`console
 glass tui
-```
+`
 
-Inside the UI:
+Enter these commands in the TUI:
 
-```text
+`text
 navigate https://example.com
 observe
-```
+`
 
-For a single explicit operation, use a CLI subcommand. Results are JSON on
-stdout and diagnostics are written to stderr:
+Run one operation from the CLI:
 
-```console
+`console
 glass navigate https://example.com
 glass --incognito --headed navigate https://example.com
-```
+`
 
-Use `--profile NAME` for persistent cookies and storage, or `--incognito` for
-a disposable browser profile.
+Use `--profile NAME` for persistent cookies and storage. Use `--incognito`
+for a disposable browser profile.
 
 ## Interfaces
 
-| Surface | Use it for | Entry point |
+| Interface | Use | Entry point |
 |---|---|---|
-| CLI | Scripts and one-shot commands | `glass <command>` |
-| Terminal UI | A visible, interactive session | `glass tui` |
-| MCP | A long-lived stdio session from an MCP-compatible client | `glass --mcp` |
-| Rust library | Embedding the session runtime | `glass-browser` crate, imported as `glass` |
+| CLI | Scripts and one operation | `glass <command>` |
+| TUI | An interactive session | `glass tui` |
+| MCP | A long-lived stdio connection | `glass --mcp` |
+| Rust library | An embedded session runtime | crate `glass-browser`, import `glass` |
 
-Configure an MCP client to launch the binary directly:
+Example MCP configuration:
 
-```json
+`json
 {
   "mcpServers": {
     "glass": {
@@ -83,145 +91,121 @@ Configure an MCP client to launch the binary directly:
     }
   }
 }
-```
+`
 
-Keep stdout reserved for MCP frames. Use an absolute binary path when the
-client does not inherit the shell's `PATH`. The [MCP guide](docs/mcp.md) lists
-the tools, framing limits, lifecycle, and security rules.
+Use an absolute path when the MCP client does not inherit your shell path.
+Keep stdout reserved for MCP frames. Read the [MCP guide](docs/mcp.md) for
+frame limits, tools, lifecycle, and security.
 
-## Command surface
+## Main capabilities
 
-The main browser operations are available from the CLI and MCP:
+Glass provides these browser operations:
 
 - navigate, click, double-click, hover, drag, type, clear, check, uncheck, and
   select;
-- scroll, wait, inspect visible text, inspect DOM, evaluate JavaScript, and
-  capture screenshots or PDFs;
-- upload files, handle JavaScript dialogs, dismiss recognized consent walls,
-  and verify a popup opened from a click;
-- list and select page targets and frames;
-- inspect cookies and web storage;
-- export/import cookies and bounded session checkpoints; and
-- run bounded typed batches and reconcile revisioned references.
+- scroll, wait, inspect text, inspect the DOM, evaluate JavaScript, and capture
+  screenshots or PDFs;
+- upload files, handle JavaScript dialogs, and dismiss recognized consent
+  controls;
+- select page targets and frames;
+- inspect and export cookies and web storage;
+- run bounded batches and workflows; and
+- use revision guards and bounded verification evidence.
 
-Semantic observations provide bounded page and region summaries, grouped
-interactive references, visible text, accessibility projections, and
-revision-aware diffs. Start with `glass observe --level summary`; use
-`--level interactive` when an action reference is needed. See the
-[semantic observation guide](docs/semantic-observation.md).
+Semantic observations provide bounded page and region data. Start with:
 
-Intent resolution can compare semantic candidates before acting. Use
-`glass resolve-intent request.json` to inspect evidence, then submit an
-explicit candidate with `glass execute-intent execution.json`. See the
-[intent resolution guide](docs/intent-resolution.md).
+`console
+glass observe --level summary
+glass observe --level interactive
+`
 
-Optional persistent knowledge records capture bounded page shapes and hashed
-target fingerprints. They are scoped by origin, path, profile, browser, locale,
-tenant, schema, and policy. Fresh observations remain authoritative. Inspect
-the store with `glass knowledge list`, `glass knowledge show ID`, or
-`glass knowledge explain ID`; MCP callers can opt into `observeKnowledge` and
-`resolveIntentWithKnowledge`.
+Read the [semantic observation guide](docs/semantic-observation.md) before
+using observation references for actions.
 
-Workflow authoring is available in the 0.2.0 development checkout. Use
-`glass workflow validate`, `lint`, `preview`, or `diff` for offline review of
-YAML/JSON definitions; `glass workflow record` imports explicit semantic
-resolution evidence into a reviewable draft. Authoring never starts Chrome,
-and input values remain outside the workflow source. See the
-[workflow authoring guide](docs/workflow-authoring.md).
+Intent resolution compares semantic candidates before an action. Use:
 
-The 0.2.0 development checkout also includes a local reliability laboratory
-for versioned scenarios, deterministic fixture checks, redacted replay
-validation, and fail-closed release evidence. It is a development and release
-check surface, not a hosted testing service. See the [reliability laboratory
-guide](docs/reliability.md).
+`console
+glass resolve-intent request.json
+glass execute-intent execution.json
+`
 
-Use `glass --help` for the complete CLI surface. Detailed command syntax is in
-the [CLI reference](docs/cli.md), and the corresponding MCP names and
-arguments are in the [MCP guide](docs/mcp.md).
+Read the [intent resolution guide](docs/intent-resolution.md) for evidence,
+ambiguity, and revision rules.
+
+The local 0.2.0 checkout also contains workflow authoring and the reliability
+laboratory. These features are local-only until the 0.2.0 release gates pass.
+Read [Workflow authoring](docs/workflow-authoring.md) and [Reliability
+laboratory](docs/reliability.md).
 
 ## Targets and revisions
 
-Observations publish bounded accessibility data and revisioned element
-references such as `r7:b42`. Locators can also use an accessible name, an
-explicit role and name, text, CSS, or an ordinal:
+An observation returns bounded accessibility data and revisioned target
+references such as `r7:b42`. You can also use explicit locators:
 
-```console
+`console
 glass click 'name=Save'
 glass click 'role=button;name=Save'
 glass click 'css=button.primary'
-```
+`
 
-For an action tied to a specific observation, pass its revision:
+Guard an action with the revision from the observation:
 
-```console
+`console
 glass click r7:b42 --expected-revision 7
 glass type 'hello' --target r7:b43 --expected-revision 7
-```
+`
 
-The guarded click, type, fill, and navigation APIs return a structured status,
-the previous and current revisions, and bounded verification metadata. A
-stale revision is rejected before the browser action runs. Legacy commands
-without an expected revision remain available. See the [action contract](docs/actions.md)
-for result fields, failure kinds, and recovery examples.
+Glass rejects a stale revision before it sends the browser action. Read the
+[action guide](docs/actions.md) for result fields and recovery.
 
-## Rust library
+## Rust library and clients
 
-After publication, add the crate as `glass` in `Cargo.toml`:
+After publication, add the crate as `glass`:
 
-```toml
+`toml
 [dependencies]
 glass = { package = "glass-browser", version = "0.2" }
-```
+`
 
-The library exposes `BrowserSession`, typed session options and policies,
-compact observations, revision-safe actions, target/frame management, storage,
-downloads, screenshots, PDFs, semantic observations, and the MCP server
-implementation.
+The library provides `BrowserSession`, session options, policies, observations,
+revision-safe actions, target and frame management, storage, downloads,
+screenshots, PDFs, semantic observations, and the MCP server.
 
-Small optional MCP clients are included for [TypeScript](https://github.com/wanazhar/glass/tree/main/clients/typescript)
-and [Python](https://github.com/wanazhar/glass/tree/main/clients/python). They launch a local Glass binary and do not
-include a browser runtime.
+The optional [TypeScript client](clients/typescript) and [Python
+client](clients/python) start a local Glass binary. They do not include a
+browser runtime.
 
-## Scope and safety
+## Safety and scope
 
-Glass currently supports Linux x86-64 and macOS x86-64/arm64. It requires a
-local Chrome, Chromium, or Chrome for Testing process and a local CDP
-connection. It does not provide a browser runtime, a hosted browser service,
-or cross-platform Windows support.
+Glass requires a local Chrome or Chromium process and a local CDP connection.
+It does not provide a hosted browser service or Windows support.
 
-Use a dedicated browser profile, keep the CDP endpoint local, and treat
-profiles, screenshots, DOM output, cookies, and logs as sensitive. Review
-[SECURITY.md](SECURITY.md) before using authenticated sessions or attach mode.
+Use a dedicated browser profile. Keep the CDP endpoint local. Treat profiles,
+screenshots, DOM output, cookies, and logs as sensitive. Read the
+[security policy](SECURITY.md) before using authenticated sessions or attach
+mode.
 
 ## Documentation
 
-- [Documentation index](docs/INDEX.md)
-- [Installation and operations](docs/installation.md)
-- [CLI reference](docs/cli.md)
-- [Action contract](docs/actions.md)
-- [MCP integration](docs/mcp.md)
-- [Intent resolution](docs/intent-resolution.md)
-- [Persistent knowledge](docs/knowledge.md)
-- [Profiles and authenticated sessions](docs/profile-ergonomics.md)
-- [Policy reference](docs/policy.md)
-- [Security policy](SECURITY.md)
-- [Architecture](docs/architecture/README.md)
-- [Changelog](CHANGELOG.md)
-- [Contributing](CONTRIBUTING.md)
+Start with the [documentation index](docs/INDEX.md). It links to installation,
+CLI, actions, workflows, MCP, daemon mode, policy, security, architecture,
+and release guides.
 
 ## Development
 
-```console
+Run the checks before you submit a change:
+
+`console
 cargo fmt --all -- --check
 cargo test --all-targets --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
-```
+`
 
-The opt-in browser smoke test requires a detectable Chrome or Chromium:
+Run the browser smoke test only when a supported browser is available:
 
-```console
+`console
 GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture
-```
+`
 
 ## License
 

@@ -1,45 +1,54 @@
-# Glass Python thin client
+# Glass Python client
 
-`glass_client.py` uses only the Python standard library. It starts an absolute
-Glass binary, negotiates MCP, and provides typed helpers for navigation,
-observation, intent resolution, actions, verification, batches, workflows,
-knowledge, targets, frames, storage, diagnostics, and browser controls. All
-targeted mutation helpers accept optional revision guards.
+The Python client uses only the Python standard library. It starts one local
+Glass binary, negotiates MCP, and provides typed helpers for browser actions,
+observations, workflows, knowledge, targets, frames, storage, diagnostics,
+and browser controls.
 
-```python
+## Install
+
+From this directory, run:
+
+`console
+python -m pip install .
+`
+
+The client does not install Chrome or Chromium.
+
+## Start a client
+
+`python
 from glass_client import GlassClient
 
 glass = GlassClient(command="/absolute/path/to/glass")
 try:
     glass.navigate("https://example.com")
     print(glass.observe_semantic("structured"))
-    print(glass.workflow({
-        "schemaVersion": 1,
-        "name": "read-title",
-        "workflowVersion": "1.0.0",
-        "inputs": {},
-        "budgets": {"maxSteps": 1, "maxDurationMs": 10000, "maxRetries": 0, "maxExtractedBytes": 8192},
-        "steps": [{"id": "observe", "action": "observe", "transaction": "read_only"}],
-        "terminalCondition": {"titleContains": "Example"},
-        "outputs": {},
-    }))
-    # Pass checkpoint=... to resume only its reconciled safe suffix.
 finally:
     glass.close()
-```
+`
 
-To connect to a running Linux or macOS daemon, pass
-`daemon_socket="/path/to/glass.sock"` instead. Inspect the negotiated
-`localDaemon` capability, then call `acquire_mutation_lease()` before mutation
-helpers; the client adds the lease token to subsequent calls.
+Use `daemon_socket="/path/to/glass.sock"` to connect to a running Linux or
+macOS daemon.
 
-Install the thin client from this directory with `python -m pip install .`.
+Call `glass.initialize()` before an optional operation. The call negotiates
+Glass schema versions and returns a `GlassCapabilityManifest`. The manifest is
+also available as `glass.capabilities`.
 
-The client accepts newline-delimited and `Content-Length` MCP frames and caps
-individual frames at 4 MiB.
+Use `supports_capability`, `supports_schema`, and
+`require_capability` before you call an optional operation. The client
+returns a bounded error when the server does not support the requested item.
 
-`glass.initialize()` negotiates Glass schema versions and returns the
-`GlassCapabilityManifest`. The same manifest is stored at
-`glass.capabilities`; callers should inspect its capability flags before using
-optional operations. `supports_capability`, `supports_schema`, and
-`require_capability` provide bounded checks for those decisions.
+## Daemon mutations
+
+A daemon mutation requires a lease. Check the `localDaemon` capability. Then
+call `acquire_mutation_lease()`. The client adds the lease token to later
+mutation calls.
+
+Release the lease when the mutation sequence ends. Do not store the lease token
+in logs or persistent files.
+
+## Frames
+
+The client accepts newline-delimited MCP frames and `Content-Length` frames.
+It limits each frame to 4 MiB.

@@ -1,50 +1,75 @@
 # Contributing to Glass
 
-## Development setup
+## Before you start
 
-Install stable Rust with `rustfmt` and Clippy, plus Chrome or Chromium for
-browser smoke tests. Build and inspect the CLI with:
+Install stable Rust with `rustfmt` and Clippy. Install Chrome or Chromium when
+you need to run browser tests.
 
-```console
-cargo build
-cargo run -- --help
-```
+Read the [documentation style](docs/documentation-style.md) before you edit a
+user guide. Keep commands, field names, and status statements exact.
 
-Keep changes focused and follow `rustfmt` defaults. Use typed structures and
-`Result`-based error propagation, emit diagnostics through `tracing`, and keep
-intentional CLI results on stdout.
+## Build and test
 
-## Validation
+Run:
 
-Run these checks before submitting a change:
-
-```console
+`console
+cargo build --locked
+cargo test --all-targets --locked
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-```
+cargo clippy --all-targets --all-features --locked -- -D warnings
+`
 
-For browser lifecycle or CDP changes, also run the opt-in local fixture test:
+Run the browser test only when a supported browser is available:
 
-```console
+`console
 GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture
-```
+`
 
-The test uses a local fixture but requires a detectable Chrome/Chromium.
+The test uses a local fixture. It does not use a public site.
 
-## Tests and documentation
+## Code rules
 
-Put deterministic unit tests beside the module under test and end-to-end tests
-under `tests/`. Keep network- or Chrome-dependent tests explicit and isolated.
-Update the README, relevant guide, and changelog whenever user-visible behavior
-changes. Commands in documentation must work with the current CLI.
+- Keep each change focused.
+- Use four spaces for indentation and the default `rustfmt` format.
+- Use typed structures and `Result` for fallible operations.
+- Use `tracing` for diagnostics.
+- Write intentional CLI results to stdout.
+- Keep network and browser tests explicit.
+- Put unit tests beside the module under test.
+- Put end-to-end tests in `tests/`.
+- Update the relevant guide and changelog for user-visible behavior.
+- Do not add a platform to the support contract without release evidence.
 
-## Changes and reviews
+## Documentation rules
 
-Use short, imperative commit subjects, such as `browser: handle CDP timeouts`.
-A change request should explain behavior and motivation, list validation
-commands, link the relevant issue, and include a screenshot or recording for
-terminal UI changes.
+Use short sentences and active voice. State the default, limit, failure result,
+and recovery action. Do not use internal planning text in user guides. Do not
+make claims that the current tests do not support.
 
-Never commit browser profiles, cookies, screenshots containing private data,
-credentials, or verbose logs from authenticated sessions.
+Check documentation changes with:
+
+`console
+git diff --check
+`
+
+## Commit and review
+
+Use a short conventional commit subject. Examples:
+
+`text
+docs(cli): clarify target selection
+fix(browser): reject stale target references
+test(daemon): cover lease expiry
+`
+
+A change request must include:
+
+- the behavior and reason for the change;
+- the validation commands;
+- the related issue; and
+- a terminal screenshot or recording for a TUI change.
+
+## Sensitive data
+
+Do not commit browser profiles, cookies, screenshots with private data,
+credentials, or logs from an authenticated session.

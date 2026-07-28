@@ -571,9 +571,13 @@ where
             let lease_context = lease_context
                 .as_ref()
                 .expect("daemon lease context available");
-            let response =
-                handle_lease_request(&request, &lease_context.manager, &lease_context.owner_id)
-                    .await;
+            let response = handle_lease_request(
+                &request,
+                &lease_context.manager,
+                &lease_context.owner_id,
+                Some(&lease_context.status),
+            )
+            .await;
             if !request.id.is_notification() {
                 send_response(&outbound_tx, response, format).await?;
             }
@@ -749,11 +753,14 @@ where
         }
     }
     if let Some(lease_context) = lease_context {
-        lease_context
-            .manager
-            .lock()
-            .await
-            .release_owner(&lease_context.owner_id);
+        let mut manager = lease_context.manager.lock().await;
+        manager.release_owner(&lease_context.owner_id);
+        let owner = manager.current_owner(DAEMON_DEFAULT_SESSION_ID, current_time_ms());
+        drop(manager);
+        let _ = lease_context
+            .status
+            .update_mutation_lease_owner(owner)
+            .await;
     }
     Ok(())
 }
@@ -827,6 +834,7 @@ async fn handle_lease_request(
     request: &JsonRpcRequest,
     lease_manager: &Arc<Mutex<MutationLeaseManager>>,
     owner_id: &str,
+    status: Option<&Arc<crate::daemon::DaemonStatusState>>,
 ) -> JsonRpcResponse {
     let params = &request.params;
     let mut manager = lease_manager.lock().await;
@@ -868,10 +876,17 @@ async fn handle_lease_request(
                 );
             };
             return match manager.release(DAEMON_DEFAULT_SESSION_ID, owner_id, token) {
-                Ok(()) => success_response(
-                    request.id.response_value(),
-                    json!({"sessionId": DAEMON_DEFAULT_SESSION_ID, "released": true}),
-                ),
+                Ok(()) => {
+                    if let Some(status) = status
+                        && let Err(error) = status.update_mutation_lease_owner(None).await
+                    {
+                        tracing::warn!(%error, "failed to clear daemon lease owner status");
+                    }
+                    success_response(
+                        request.id.response_value(),
+                        json!({"sessionId": DAEMON_DEFAULT_SESSION_ID, "released": true}),
+                    )
+                }
                 Err(error) => lease_error_response(request, error),
             };
         }
@@ -884,7 +899,16 @@ async fn handle_lease_request(
         }
     };
     match result {
-        Ok(lease) => success_response(request.id.response_value(), json!(lease)),
+        Ok(lease) => {
+            if let Some(status) = status
+                && let Err(error) = status
+                    .update_mutation_lease_owner(Some(owner_id.to_string()))
+                    .await
+            {
+                tracing::warn!(%error, "failed to record daemon lease owner status");
+            }
+            success_response(request.id.response_value(), json!(lease))
+        }
         Err(error) => lease_error_response(request, error),
     }
 }

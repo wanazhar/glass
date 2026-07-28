@@ -25,6 +25,8 @@ socket ownership and mode are the local authentication boundary. The status JSON
 the daemon PID, protocol version, transport, and active client-session count.
 The transport identifier is `unix-mcp-shared-session`.
 `glass daemon logs` returns at most the last 64 KiB of the local log file.
+Status also exposes the current mutation lease owner when one exists; the
+lease token is never written to status or logs.
 While a workflow request is running, the status also records its bounded
 request ID and owner. On shutdown or restart after a crash, those entries are
 reported as interrupted and must be reconciled from a checkpoint before a

@@ -114,6 +114,7 @@ fn daemon_handshake_advertises_shared_session_mode() {
     );
 
     let mut stream = UnixStream::connect(&socket).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
     writeln!(
         stream,
         "{}",
@@ -126,14 +127,61 @@ fn daemon_handshake_advertises_shared_session_mode() {
     )
     .unwrap();
     let mut response = String::new();
-    BufReader::new(stream.try_clone().unwrap())
-        .read_line(&mut response)
-        .unwrap();
-    let response: Value = serde_json::from_str(&response).unwrap();
+    reader.read_line(&mut response).unwrap();
+    let response_value: Value = serde_json::from_str(&response).unwrap();
     assert_eq!(
-        response["result"]["glass"]["capabilities"]["localDaemon"],
+        response_value["result"]["glass"]["capabilities"]["localDaemon"],
         true
     );
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        })
+    )
+    .unwrap();
+
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "lease-acquire",
+            "method": "glass/lease/acquire",
+            "params": {"ttlMs": 1000}
+        })
+    )
+    .unwrap();
+    response.clear();
+    reader.read_line(&mut response).unwrap();
+    let lease_response: Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(lease_response["result"]["ownerId"], "daemon-client-1");
+    let status_value: Value = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
+    assert_eq!(status_value["mutationLeaseOwner"], "daemon-client-1");
+    assert!(status_value.get("mutationLease").is_none());
+
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "lease-release",
+            "method": "glass/lease/release",
+            "params": {"token": lease_response["result"]["token"]}
+        })
+    )
+    .unwrap();
+    response.clear();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&response).unwrap()["result"]["released"],
+        true
+    );
+    let status_value: Value = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
+    assert!(status_value.get("mutationLeaseOwner").is_none());
 
     let stop = Command::new(glass_binary())
         .args([

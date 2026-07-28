@@ -179,6 +179,14 @@ impl MutationLeaseManager {
     pub fn release_owner(&mut self, owner_id: &str) {
         self.leases.retain(|_, lease| lease.owner_id != owner_id);
     }
+
+    /// Return the current owner for a session without exposing its token.
+    pub fn current_owner(&self, session_id: &str, now_ms: u64) -> Option<String> {
+        self.leases
+            .get(session_id)
+            .filter(|lease| lease.expires_at_ms > now_ms)
+            .map(|lease| lease.owner_id.clone())
+    }
 }
 
 fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
@@ -225,6 +233,8 @@ pub struct DaemonStatus {
     pub started_at: String,
     pub transport: String,
     pub client_sessions: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_lease_owner: Option<String>,
     #[serde(default)]
     pub active_runs: Vec<DaemonActiveRun>,
 }
@@ -250,6 +260,15 @@ impl DaemonStatusState {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut status = self.status.lock().await;
         status.client_sessions = client_sessions;
+        write_status(&self.path, &status)
+    }
+
+    pub async fn update_mutation_lease_owner(
+        &self,
+        owner: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut status = self.status.lock().await;
+        status.mutation_lease_owner = owner;
         write_status(&self.path, &status)
     }
 
@@ -644,6 +663,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         started_at: chrono::Utc::now().to_rfc3339(),
         transport: "unix-mcp-shared-session".into(),
         client_sessions: 0,
+        mutation_lease_owner: None,
         active_runs: Vec::new(),
     };
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
@@ -834,6 +854,7 @@ mod tests {
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
+            mutation_lease_owner: None,
             active_runs: Vec::new(),
         };
         let value = serde_json::to_value(&status).unwrap();
@@ -933,6 +954,7 @@ mod tests {
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
+            mutation_lease_owner: None,
             active_runs: Vec::new(),
         };
         write_status(&status_path, &status).unwrap();
@@ -982,6 +1004,7 @@ mod tests {
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
+            mutation_lease_owner: None,
             active_runs: Vec::new(),
         };
         std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();

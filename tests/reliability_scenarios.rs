@@ -1,6 +1,6 @@
 use glass::reliability::{
     RELIABILITY_SCENARIO_SCHEMA_VERSION, ReliabilityFixtureManifest, ReliabilityForbiddenOutcome,
-    ReliabilityScenario,
+    ReliabilityPlatform, ReliabilityScenario,
 };
 use serde_json::Value;
 
@@ -46,4 +46,31 @@ fn checked_in_capability_suite_has_unique_valid_scenarios() {
     }));
     let plan = scenarios[0].execution_plan(&manifest).unwrap();
     assert_eq!(plan.operations.len(), 2);
+}
+
+#[test]
+fn capability_suite_covers_the_supported_release_platform_matrix() {
+    let values: Vec<Value> = serde_json::from_str(include_str!(
+        "fixtures/reliability-capability-suite-v1.json"
+    ))
+    .unwrap();
+    let scenarios: Vec<ReliabilityScenario> = values
+        .into_iter()
+        .map(ReliabilityScenario::from_value)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let expected = std::collections::BTreeSet::from([
+        ReliabilityPlatform::LinuxX86_64,
+        ReliabilityPlatform::MacosX86_64,
+        ReliabilityPlatform::MacosArm64,
+    ]);
+
+    for scenario in scenarios {
+        let platforms: std::collections::BTreeSet<_> = scenario.platforms.iter().copied().collect();
+        assert_eq!(
+            platforms, expected,
+            "scenario {} has an incomplete matrix",
+            scenario.id
+        );
+    }
 }

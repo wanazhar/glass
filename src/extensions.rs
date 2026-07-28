@@ -21,6 +21,47 @@ const EXTENSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Version of the extension manifest contract.
 pub const EXTENSION_SCHEMA_VERSION: u32 = 1;
 
+/// Native process sandbox available for an extension invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionSandbox {
+    LinuxBubblewrap,
+    MacSandboxExec,
+    Unavailable,
+}
+
+impl ExtensionSandbox {
+    /// Detect a supported native sandbox without claiming that one exists.
+    pub fn detect() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            if std::process::Command::new("bwrap")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                return Self::LinuxBubblewrap;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if Path::new("/usr/bin/sandbox-exec").is_file() {
+                return Self::MacSandboxExec;
+            }
+        }
+        Self::Unavailable
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LinuxBubblewrap => "linux-bubblewrap",
+            Self::MacSandboxExec => "macos-sandbox-exec",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// Extension points that can be negotiated without granting raw browser access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -252,6 +293,11 @@ impl ExtensionHost {
         Ok(Self { root, registry })
     }
 
+    /// Report the sandbox that an explicit guarded invocation would use.
+    pub fn sandbox(&self) -> ExtensionSandbox {
+        ExtensionSandbox::detect()
+    }
+
     /// Invoke one declared extension capability through a bounded subprocess.
     pub async fn invoke(
         &self,
@@ -260,6 +306,45 @@ impl ExtensionHost {
         host: &str,
         action: &str,
         payload: Value,
+    ) -> Result<Value, ExtensionError> {
+        self.invoke_internal(extension_id, capability, host, action, payload, None)
+            .await
+    }
+
+    /// Invoke one extension only inside the detected native sandbox.
+    pub async fn invoke_sandboxed(
+        &self,
+        extension_id: &str,
+        capability: ExtensionCapability,
+        host: &str,
+        action: &str,
+        payload: Value,
+    ) -> Result<Value, ExtensionError> {
+        let sandbox = self.sandbox();
+        if sandbox == ExtensionSandbox::Unavailable {
+            return Err(ExtensionError(
+                "no supported native extension sandbox is available".into(),
+            ));
+        }
+        self.invoke_internal(
+            extension_id,
+            capability,
+            host,
+            action,
+            payload,
+            Some(sandbox),
+        )
+        .await
+    }
+
+    async fn invoke_internal(
+        &self,
+        extension_id: &str,
+        capability: ExtensionCapability,
+        host: &str,
+        action: &str,
+        payload: Value,
+        sandbox: Option<ExtensionSandbox>,
     ) -> Result<Value, ExtensionError> {
         let manifest = self
             .registry
@@ -310,7 +395,52 @@ impl ExtensionHost {
                 "extension request exceeds the size limit".into(),
             ));
         }
-        let mut child = Command::new(entrypoint)
+        let mut command = match sandbox {
+            None => Command::new(entrypoint),
+            Some(ExtensionSandbox::LinuxBubblewrap) => {
+                let mut command = Command::new("bwrap");
+                command.args([
+                    "--die-with-parent",
+                    "--new-session",
+                    "--unshare-all",
+                    "--proc",
+                    "/proc",
+                    "--dev",
+                    "/dev",
+                    "--tmpfs",
+                    "/tmp",
+                    "--ro-bind",
+                ]);
+                command.arg(&self.root).arg(&self.root);
+                for path in ["/bin", "/usr", "/lib", "/lib64"] {
+                    if Path::new(path).is_dir() {
+                        command.arg("--ro-bind").arg(path).arg(path);
+                    }
+                }
+                command.arg("--chdir").arg(&self.root).arg(entrypoint);
+                command
+            }
+            Some(ExtensionSandbox::MacSandboxExec) => {
+                let root = self
+                    .root
+                    .to_str()
+                    .ok_or_else(|| ExtensionError("extension root is not valid UTF-8".into()))?
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let profile = format!(
+                    "(version 1)(deny default)(allow process-exec)(allow file-read* (subpath \"{root}\"))(allow file-read* (subpath \"/bin\"))(allow file-read* (subpath \"/usr/bin\"))(allow file-read* (subpath \"/usr/lib\"))(allow file-write* (subpath \"/tmp\"))"
+                );
+                let mut command = Command::new("/usr/bin/sandbox-exec");
+                command.arg("-p").arg(profile).arg(entrypoint);
+                command
+            }
+            Some(ExtensionSandbox::Unavailable) => {
+                return Err(ExtensionError(
+                    "no supported native extension sandbox is available".into(),
+                ));
+            }
+        };
+        let mut child = command
             .current_dir(&self.root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -543,6 +673,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(evidence["extension"], "intent-evidence");
+    }
+
+    #[test]
+    fn sandbox_detection_is_explicit_and_never_falls_back_silently() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
+        assert!(!host.sandbox().label().is_empty());
     }
 
     #[test]

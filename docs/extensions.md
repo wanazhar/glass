@@ -23,6 +23,12 @@ the manifest, exact-host/action permissions, and bounded host protocol for an
 extraction transform and an intent-evidence pack. They are fixtures for the
 extension design, not automatically loaded or enabled by the runtime.
 
+`ExtensionHost::invoke_sandboxed` is an explicit opt-in boundary. On Linux it
+requires `bubblewrap`; on macOS it uses the system sandbox profile. If neither
+boundary is available, the call fails instead of falling back to the ordinary
+bounded subprocess host. The sandboxed path still does not grant browser
+handles or bypass policy; guarded-executor integration remains a separate gate.
+
 See [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
 Native sandboxing, lifecycle supervision, guarded executor adapters, and
 extension conformance remain required before the capability can be enabled.

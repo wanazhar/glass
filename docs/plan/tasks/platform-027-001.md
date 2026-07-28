@@ -32,13 +32,15 @@ This phase covers the first platform boundary for issue #27:
   tool calls validate against the same canonical operation mapping.
 - two first-party reference extensions exercise the manifest, permission, and
   bounded host protocol without enabling the unfinished extension capability.
+- the extension host exposes an explicit Linux/macOS native-sandbox path that
+  fails closed when its platform boundary is unavailable.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
-The remaining platform work includes native sandboxing and guarded executor
-integration for extensions, checkpoint-acknowledgement handling for active
-runs, broader cross-transport golden scenarios, and the complete client/TUI
-operation inventory. This task must not be marked complete until those paths
-have executable conformance coverage.
+The remaining platform work includes guarded executor integration for
+extensions, checkpoint-acknowledgement handling for active runs, broader
+cross-transport golden scenarios, and the complete client/TUI operation
+inventory. This task must not be marked complete until those paths have
+executable conformance coverage.

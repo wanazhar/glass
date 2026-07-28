@@ -661,6 +661,12 @@ impl ReliabilityScenario {
                 format!("must contain at most {MAX_FORBIDDEN_OUTCOMES} entries"),
             ));
         }
+        if self.forbid.is_empty() {
+            return Err(ReliabilityScenarioError::new(
+                "forbid",
+                "must declare at least one release-blocking outcome",
+            ));
+        }
         let mut forbidden = BTreeSet::new();
         for outcome in &self.forbid {
             if !forbidden.insert(*outcome) {
@@ -727,6 +733,10 @@ pub fn evaluate_reliability_gate(
             "observations.scenarioId",
             &observation.scenario_id,
             MAX_SCENARIO_ID_BYTES,
+        )?;
+        validate_unique(
+            "observations.forbiddenOutcomes",
+            &observation.forbidden_outcomes,
         )?;
         if observation_map
             .insert(observation.scenario_id.as_str(), observation)
@@ -1157,6 +1167,11 @@ mod tests {
         value["forbid"] = json!(["secretLeaked", "secretLeaked"]);
         let error = ReliabilityScenario::from_value(value).unwrap_err();
         assert_eq!(error.path, "forbid");
+
+        let mut value = serde_json::to_value(scenario()).unwrap();
+        value["forbid"] = json!([]);
+        let error = ReliabilityScenario::from_value(value).unwrap_err();
+        assert_eq!(error.path, "forbid");
     }
 
     fn observation(
@@ -1273,5 +1288,20 @@ mod tests {
                 .iter()
                 .any(|failure| failure.code == "invalid_run_metadata")
         );
+    }
+
+    #[test]
+    fn reliability_gate_rejects_duplicate_observed_forbidden_outcomes() {
+        let scenario = scenario();
+        let mut observation = observation(
+            &scenario,
+            ReliabilityRunClassification::Passed,
+            vec![ReliabilityForbiddenOutcome::SecretLeaked],
+        );
+        observation
+            .forbidden_outcomes
+            .push(ReliabilityForbiddenOutcome::SecretLeaked);
+        let error = evaluate_reliability_gate(&[scenario], &[observation]).unwrap_err();
+        assert_eq!(error.path, "observations.forbiddenOutcomes");
     }
 }

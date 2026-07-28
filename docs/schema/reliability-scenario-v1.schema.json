@@ -50,6 +50,7 @@
     "expect": {"$ref": "#/$defs/expectation"},
     "forbid": {
       "type": "array",
+      "minItems": 1,
       "uniqueItems": true,
       "maxItems": 32,
       "items": {"enum": ["wrongTargetExecuted", "staleRevisionExecuted", "ambiguousTargetSilentlyExecuted", "nonIdempotentMutationDuplicated", "falseWorkflowCompletion", "unsafeResumeReplay", "secretLeaked", "crossProfileKnowledgeLeak", "unboundedLoopEscapedBudget", "policyBypassed", "checkpointAcceptedAfterIncompatibleDefinitionChange", "semanticCacheHidCriticalUnexpectedState"]}

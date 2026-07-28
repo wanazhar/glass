@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createConnection, type Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 
 export interface JsonRpcResult<T> { result: T; }
@@ -257,6 +258,7 @@ export interface FormField {
 export interface GlassClientOptions {
   command?: string;
   args?: string[];
+  daemonSocket?: string;
   env?: Record<string, string>;
   cwd?: string;
   maxFrameBytes?: number;
@@ -279,24 +281,39 @@ export interface GlassCapabilityManifest {
 
 /** Small MCP client with typed helpers for the stable Glass surface. */
 export class GlassClient {
-  private readonly child: ChildProcessByStdio<Writable, Readable, null>;
+  private readonly input: Writable;
+  private readonly output: Readable;
+  private readonly closeTransport: () => void;
   private readonly maxFrameBytes: number;
   private readonly pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private initialized = false;
   private manifest?: GlassCapabilityManifest;
+  private leaseToken?: string;
 
   constructor(options: GlassClientOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? 4 * 1024 * 1024;
-    this.child = spawn(options.command ?? "glass", options.args ?? ["--mcp"], {
-      cwd: options.cwd,
-      env: options.env ? { ...process.env, ...options.env } : process.env,
-      stdio: ["pipe", "pipe", "inherit"],
-    });
-    this.child.stdout.on("data", (chunk: Buffer) => this.consume(chunk));
-    this.child.on("error", (error) => this.rejectAll(error));
-    this.child.on("exit", (code, signal) => this.rejectAll(new Error(`Glass exited (${code ?? signal})`)));
+    if (options.daemonSocket) {
+      const socket: Socket = createConnection(options.daemonSocket);
+      this.input = socket;
+      this.output = socket;
+      this.closeTransport = () => socket.destroy();
+      socket.on("error", (error) => this.rejectAll(error));
+      socket.on("close", () => this.rejectAll(new Error("Glass daemon socket closed")));
+    } else {
+      const child = spawn(options.command ?? "glass", options.args ?? ["--mcp"], {
+        cwd: options.cwd,
+        env: options.env ? { ...process.env, ...options.env } : process.env,
+        stdio: ["pipe", "pipe", "inherit"],
+      });
+      this.input = child.stdin;
+      this.output = child.stdout;
+      this.closeTransport = () => child.kill();
+      child.on("error", (error) => this.rejectAll(error));
+      child.on("exit", (code, signal) => this.rejectAll(new Error(`Glass exited (${code ?? signal})`)));
+    }
+    this.output.on("data", (chunk: Buffer) => this.consume(chunk));
   }
 
   async initialize(): Promise<GlassCapabilityManifest | undefined> {
@@ -322,12 +339,34 @@ export class GlassClient {
 
   async call<T = ToolCallResult>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     await this.initialize();
-    const response = await this.request("tools/call", { name, arguments: args }) as { content?: Array<{ text?: string }> };
+    const callArgs = { ...args, ...(this.leaseToken === undefined ? {} : { leaseToken: this.leaseToken }) };
+    const response = await this.request("tools/call", { name, arguments: callArgs }) as { content?: Array<{ text?: string }> };
     const text = response.content?.find((part) => typeof part.text === "string")?.text;
     if (text) {
       try { return JSON.parse(text) as T; } catch { /* plain text is still a valid MCP result */ }
     }
     return response as T;
+  }
+
+  async acquireMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
+    await this.initialize();
+    const lease = await this.request("glass/lease/acquire", { ttlMs }) as Record<string, unknown>;
+    if (typeof lease.token !== "string") throw new Error("daemon lease response did not include a token");
+    this.leaseToken = lease.token;
+    return lease;
+  }
+
+  async renewMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
+    await this.initialize();
+    if (this.leaseToken === undefined) throw new Error("no daemon mutation lease is held");
+    return await this.request("glass/lease/renew", { token: this.leaseToken, ttlMs }) as Record<string, unknown>;
+  }
+
+  async releaseMutationLease(): Promise<void> {
+    await this.initialize();
+    if (this.leaseToken === undefined) return;
+    await this.request("glass/lease/release", { token: this.leaseToken });
+    this.leaseToken = undefined;
   }
 
   observe<T = Record<string, unknown>>(level?: SemanticObservationLevel, region?: string): Promise<T> {
@@ -394,8 +433,8 @@ export class GlassClient {
   close(): void {
     for (const pending of this.pending.values()) pending.reject(new Error("Glass client closed"));
     this.pending.clear();
-    this.child.stdin.end();
-    this.child.kill();
+    this.input.end();
+    this.closeTransport();
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -407,7 +446,7 @@ export class GlassClient {
   }
 
   private send(message: Record<string, unknown>): void {
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    this.input.write(`${JSON.stringify(message)}\n`);
   }
 
   private consume(chunk: Buffer): void {

@@ -53,6 +53,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             dispatch_daemon(action).await?;
             return Ok(());
         }
+        Some(Commands::Doctor) => {
+            dispatch_doctor(&cli, &policy).await?;
+            return Ok(());
+        }
         Some(Commands::Certify { action }) if !matches!(action, CertifyCommand::Run { .. }) => {
             dispatch_certify(action)?;
             return Ok(());
@@ -148,6 +152,51 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
             crate::daemon::serve(socket, status).await?;
         }
     }
+    Ok(())
+}
+
+async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy) -> BrowserResult<()> {
+    let chrome_path =
+        crate::browser::chrome::resolve_chrome_path(None).map(|path| path.display().to_string());
+    let (daemon_socket, daemon_status) = crate::daemon::default_paths();
+    let daemon = crate::daemon::doctor(Some(&daemon_socket), Some(&daemon_status))?;
+    let profiles = ProfileManager::new().list_profiles().unwrap_or_default();
+    let knowledge_path = cli
+        .knowledge_store
+        .clone()
+        .unwrap_or_else(|| default_knowledge_store_path(&cli.profile));
+    let knowledge_exists = knowledge_path.is_file();
+    let manifest = GlassCapabilityManifest::for_policy(policy);
+    let platform_supported = manifest.constraints.platform != "unsupported";
+    print_json(&serde_json::json!({
+        "status": if chrome_path.is_some() && platform_supported { "ready" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": manifest.constraints.platform,
+        "browser": {
+            "family": manifest.constraints.browser_family,
+            "chromeAvailable": chrome_path.is_some(),
+            "chromePath": chrome_path,
+            "cdpPort": cli.port,
+            "cdpReachable": crate::browser::chrome::check_chrome_health(cli.port).await,
+        },
+        "daemon": daemon,
+        "profiles": {
+            "count": profiles.len(),
+            "names": profiles,
+        },
+        "policy": {
+            "preset": manifest.constraints.policy,
+            "capabilities": manifest.capabilities,
+        },
+        "knowledgeStore": {
+            "path": knowledge_path,
+            "exists": knowledge_exists,
+        },
+        "extensions": {
+            "enabled": manifest.capabilities.get("extensions").copied().unwrap_or(false),
+            "loader": "disabled",
+        },
+    }))?;
     Ok(())
 }
 
@@ -577,6 +626,7 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::Capabilities
         | Commands::Daemon { .. }
+        | Commands::Doctor
         | Commands::Certify { .. }
         | Commands::Knowledge { .. } => {
             unreachable!("offline commands are handled before browser startup")

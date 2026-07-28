@@ -132,6 +132,9 @@ pub enum Commands {
         action: DaemonCommand,
     },
 
+    /// Inspect local browser, daemon, profile, policy, and store health.
+    Doctor,
+
     /// List or manage saved profiles.
     Profiles {
         #[command(subcommand)]
@@ -1137,6 +1140,12 @@ mod tests {
             }) if socket.as_os_str() == "/tmp/glass.sock"
                 && status.as_os_str() == "/tmp/glass.json"
         ));
+    }
+
+    #[test]
+    fn doctor_command_is_available_without_starting_a_browser() {
+        let cli = Cli::try_parse_from(["glass", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Doctor)));
     }
 
     #[test]

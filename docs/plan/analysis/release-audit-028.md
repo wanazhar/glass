@@ -44,6 +44,22 @@ macOS release runners, and it does not prove a clean published artifact.
 
 These results prove local behavior. They do not prove a published release.
 
+Additional Linux ARM64 release-candidate evidence is now available:
+
+- the six-scenario reliability capability suite passes with only `passed` or
+  `safe_refusal` classifications and validates every replay bundle;
+- the release binary smoke reports the CLI/MCP contract and all 70 MCP tools;
+- TypeScript, Python, and npm package checks pass against the release binary;
+- a temporary Cargo home installed published `0.1.18`, installed the packaged
+  `0.2.0` crate, and upgraded the same installation root successfully; and
+- Linux bubblewrap extension sandbox, redaction, permission, and lifecycle
+  tests pass on this host.
+
+The release workflow now runs client compatibility and clean-install checks,
+verifies artifact checksums, and creates and verifies a keyless Sigstore bundle
+for the checksum manifest. These workflow checks still require a tagged GitHub
+run with OIDC signing enabled.
+
 ## Release blockers
 
 The 0.2.0 release checklist remains open for these items:
@@ -55,16 +71,18 @@ The 0.2.0 release checklist remains open for these items:
    now checks CLI help, the capability manifest, MCP initialization, and the
    complete tool inventory. Browser, screenshot, and TUI startup evidence is
    still external release evidence.
-3. Run full package inspection and a clean verified package-install test.
+3. Run full package inspection and repeat the clean verified package-install
+   test on each release runner; Linux ARM64 now passes this locally.
 4. Generate and verify artifact checksums and Sigstore provenance.
 5. Attach dependency, license, and vulnerability reports.
-6. Complete clean-machine install and upgrade checks.
-7. Complete the deterministic reliability certification matrix.
+6. Complete clean-machine install and upgrade checks on the release
+   environments. Linux ARM64 passes locally.
+7. Complete the deterministic reliability certification matrix on every
+   release platform and publish the scorecard evidence.
 8. Publish the client compatibility matrix and test clients against released
-   binaries.
+   binaries. The Linux ARM64 release binary passes locally.
 9. Complete extension redaction and native-sandbox certification on the
-   release environments. Lifecycle and cross-transport conformance now pass
-   locally.
+   release environments. Linux ARM64 passes locally; macOS remains unverified.
 
 ## Publication boundary
 

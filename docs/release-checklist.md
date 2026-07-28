@@ -38,6 +38,7 @@ cargo package --locked --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
+GLASS_PREVIOUS_VERSION=0.1.18 scripts/smoke-clean-install.sh
 `
 
 Then complete these release checks:
@@ -52,6 +53,9 @@ Then complete these release checks:
 - [ ] Verify the Sigstore bundle with `cosign verify-blob`.
 - [ ] Review dependency, license, and vulnerability JSON reports.
 - [ ] Run a clean-machine install and upgrade test.
+
+The isolated install command above has passed on the current Linux ARM64 host.
+Repeat it on each release runner before checking this release gate.
 
 ## Publish
 

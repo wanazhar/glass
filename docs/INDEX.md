@@ -40,6 +40,9 @@
   recovery, latency, and resource evidence.
 - [Reliability laboratory](reliability.md) — versioned scenarios, adversarial
   fixtures, replay validation, and the release gate.
+- [Read-only real-site certification](reliability-real-site.md) — safe
+  operator boundaries for live evidence without credentials or destructive
+  actions.
 - [Production canary](production-canary.md) — hardened, non-destructive live-site
   probe procedure and evidence requirements.
 - [Bot-protection & consent walls](bot-protection.md) — legitimate access paths

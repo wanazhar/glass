@@ -78,4 +78,5 @@ The current checkout validates contracts and exercises the local fixture; it
 does not yet provide a browser-run scenario orchestrator, a real-site
 certification workflow, or a public scorecard publisher. Those remain release
 work for the 0.2.0 milestone. Do not place credentials, cookies, page values,
-or unredacted traces in replay bundles.
+or unredacted traces in replay bundles. The safe operator boundary for any
+future live check is documented in [read-only real-site certification](reliability-real-site.md).

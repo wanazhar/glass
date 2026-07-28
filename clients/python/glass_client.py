@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
-from typing import Any, Literal, Optional, TypedDict
+from typing import Any, BinaryIO, Literal, Optional, TypedDict
 
 
 class GlassError(RuntimeError):
@@ -207,21 +208,35 @@ class GlassClient:
         *,
         env: Optional[dict[str, str]] = None,
         cwd: Optional[str] = None,
+        daemon_socket: Optional[str] = None,
         max_frame_bytes: int = 4 * 1024 * 1024,
     ) -> None:
         self._max_frame_bytes = max_frame_bytes
-        merged_env = os.environ | (env or {})
-        self._process = subprocess.Popen(
-            [command, *(args or ["--mcp"])],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            cwd=cwd,
-            env=merged_env,
-        )
+        self._socket: Optional[socket.socket] = None
+        self._process: Optional[subprocess.Popen[bytes]] = None
+        if daemon_socket is not None:
+            self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._socket.connect(daemon_socket)
+            self._stdin: BinaryIO = self._socket.makefile("wb")
+            self._stdout: BinaryIO = self._socket.makefile("rb")
+        else:
+            merged_env = os.environ | (env or {})
+            self._process = subprocess.Popen(
+                [command, *(args or ["--mcp"])],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                cwd=cwd,
+                env=merged_env,
+            )
+            if self._process.stdin is None or self._process.stdout is None:
+                raise GlassError("Glass MCP pipes are unavailable")
+            self._stdin = self._process.stdin
+            self._stdout = self._process.stdout
         self._next_id = 1
         self._initialized = False
         self.capabilities: Optional[GlassCapabilityManifest] = None
+        self._lease_token: Optional[str] = None
 
     def initialize(self) -> Any:
         if self._initialized:
@@ -248,7 +263,10 @@ class GlassClient:
 
     def call(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         self.initialize()
-        result = self._request("tools/call", {"name": name, "arguments": arguments or {}})
+        call_arguments = dict(arguments or {})
+        if self._lease_token is not None:
+            call_arguments.setdefault("leaseToken", self._lease_token)
+        result = self._request("tools/call", {"name": name, "arguments": call_arguments})
         for part in result.get("content", []) if isinstance(result, dict) else []:
             text = part.get("text") if isinstance(part, dict) else None
             if isinstance(text, str):
@@ -257,6 +275,35 @@ class GlassClient:
                 except json.JSONDecodeError:
                     return text
         return result
+
+    def acquire_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
+        """Acquire the daemon mutation lease for this connection."""
+        self.initialize()
+        result = self._request("glass/lease/acquire", {"ttlMs": ttl_ms})
+        if not isinstance(result, dict) or not isinstance(result.get("token"), str):
+            raise GlassError("daemon lease response did not include a token")
+        self._lease_token = result["token"]
+        return result
+
+    def renew_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
+        """Renew the daemon mutation lease held by this connection."""
+        self.initialize()
+        if self._lease_token is None:
+            raise GlassError("no daemon mutation lease is held")
+        result = self._request(
+            "glass/lease/renew", {"token": self._lease_token, "ttlMs": ttl_ms}
+        )
+        if not isinstance(result, dict):
+            raise GlassError("daemon lease renewal returned an invalid response")
+        return result
+
+    def release_mutation_lease(self) -> None:
+        """Release the daemon mutation lease held by this connection."""
+        self.initialize()
+        if self._lease_token is None:
+            return
+        self._request("glass/lease/release", {"token": self._lease_token})
+        self._lease_token = None
 
     def observe(
         self,
@@ -391,9 +438,15 @@ class GlassClient:
         return self.call("wait", args)
 
     def close(self) -> None:
-        if self._process.poll() is None:
-            self._process.terminate()
-            self._process.wait(timeout=5)
+        if self._process is not None:
+            if self._process.poll() is None:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+        else:
+            self._stdin.close()
+            self._stdout.close()
+            if self._socket is not None:
+                self._socket.close()
 
     def _request(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_id
@@ -409,27 +462,23 @@ class GlassClient:
             return message.get("result")
 
     def _send(self, message: dict[str, Any]) -> None:
-        if self._process.stdin is None:
-            raise GlassError("Glass stdin is closed")
-        self._process.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
-        self._process.stdin.flush()
+        self._stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
+        self._stdin.flush()
 
     def _read_message(self) -> dict[str, Any]:
-        if self._process.stdout is None:
-            raise GlassError("Glass stdout is closed")
-        first = self._process.stdout.readline(self._max_frame_bytes + 1)
+        first = self._stdout.readline(self._max_frame_bytes + 1)
         if not first:
             raise GlassError("Glass exited before returning an MCP response")
         if len(first) > self._max_frame_bytes:
             raise GlassError("MCP frame exceeds client limit")
         if first.lower().startswith(b"content-length:"):
-            headers = first + self._process.stdout.readline(8192)
+            headers = first + self._stdout.readline(8192)
             while not headers.endswith(b"\r\n\r\n"):
-                headers += self._process.stdout.readline(8192)
+                headers += self._stdout.readline(8192)
             length = next((int(line.split(b":", 1)[1]) for line in headers.splitlines() if line.lower().startswith(b"content-length:")), -1)
             if length < 0 or length > self._max_frame_bytes:
                 raise GlassError("invalid MCP Content-Length")
-            body = self._process.stdout.read(length)
+            body = self._stdout.read(length)
         else:
             body = first.strip()
         try:

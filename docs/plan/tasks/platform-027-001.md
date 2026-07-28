@@ -48,6 +48,8 @@ This phase covers the first platform boundary for issue #27:
   dispatch only through the core revision-guarded browser methods.
 - checked-in protocol golden scenarios cover read, leased mutation, workflow,
   success, and typed-error envelopes.
+- browser-free Python and TypeScript client handshake smoke tests exercise
+  capability and schema checks against the local binary.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension

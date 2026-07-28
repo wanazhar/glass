@@ -50,6 +50,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Glass for client smoke tests
+        run: cargo build --locked
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -62,6 +68,12 @@ jobs:
           npm run typecheck
           npm pack --dry-run
 
+      - name: Run TypeScript client handshake smoke test
+        env:
+          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
+        run: node smoke.mjs
+        working-directory: clients/typescript
+
       - name: Validate npm launcher package
         working-directory: clients/npm
         run: npm pack --dry-run
@@ -73,3 +85,9 @@ jobs:
       - name: Build Python client wheel
         working-directory: clients/python
         run: python -m pip wheel --no-deps . -w /tmp/glass-python-wheel
+
+      - name: Run Python client handshake smoke test
+        env:
+          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
+        run: python smoke.py
+        working-directory: clients/python

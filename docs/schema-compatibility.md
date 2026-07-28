@@ -1,8 +1,9 @@
 # Schema compatibility
 
-The `0.1.18` reliability contract is additive. Existing action names and
-legacy result fields remain available; new fields use camelCase at the CLI JSON
-and MCP boundaries while Rust field names remain idiomatic.
+Glass 0.2.x treats the versioned protocol and schema inventory as a stable
+compatibility boundary. Existing action names and legacy result fields remain
+available; new fields use camelCase at the CLI JSON and MCP boundaries while
+Rust field names remain idiomatic.
 
 Compatibility rules:
 
@@ -15,6 +16,18 @@ Compatibility rules:
   explicit initial `expectedRevision`.
 - Unknown fields are ignored where the existing parser is permissive; unknown
   action names, invalid types, and unbounded values are rejected.
+
+## Release policy
+
+- Patch releases may fix implementation defects, add optional fields, and add
+  capabilities that are discoverable through negotiation.
+- New required fields, changed enum meaning, or changed validation semantics
+  require a new schema version and a migration note.
+- Removed fields require a deprecation period and a compatibility test.
+- Capability availability is negotiated independently from the binary version;
+  a client must not infer support from `glassVersion` alone.
+- Persisted checkpoints, traces, knowledge snapshots, and replay bundles must
+  retain their schema version and reject incompatible future data safely.
 
 The Rust library, CLI, MCP server, TypeScript client, and Python client use the
 same argument names and result vocabulary. Removing or renaming a published

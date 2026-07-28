@@ -28,6 +28,11 @@ finally:
     glass.close()
 ```
 
+To connect to a running Linux or macOS daemon, pass
+`daemon_socket="/path/to/glass.sock"` instead. Inspect the negotiated
+`localDaemon` capability, then call `acquire_mutation_lease()` before mutation
+helpers; the client adds the lease token to subsequent calls.
+
 Install the thin client from this directory with `python -m pip install .`.
 
 The client accepts newline-delimited and `Content-Length` MCP frames and caps

@@ -29,6 +29,11 @@ const run = await glass.workflow({
 glass.close();
 ```
 
+To connect to a running Linux or macOS daemon, pass
+`daemonSocket: "/path/to/glass.sock"`. Check `glass.capabilities?.capabilities`
+after initialization and call `acquireMutationLease()` before mutation helpers;
+the client adds the lease token to subsequent calls.
+
 The client accepts both newline-delimited MCP responses and `Content-Length`
 frames, and enforces a 4 MiB frame budget by default.
 

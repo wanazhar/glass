@@ -53,6 +53,8 @@ pub mod daemon;
 pub mod extensions;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
+/// Transport-neutral versioned request and response envelopes.
+pub mod protocol;
 /// Versioned browser-free reliability scenario contracts.
 pub mod reliability;
 /// Bounded browser execution for reliability scenarios and replay evidence.

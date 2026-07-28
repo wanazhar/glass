@@ -1,10 +1,10 @@
 # Glass Python thin client
 
 `glass_client.py` uses only the Python standard library. It starts an absolute
-Glass binary, negotiates MCP, and provides `navigate`, `observe`, `click`,
-`verify`, `batch`, `workflow`, and `wait` helpers for Python automation programs, including
-guarded form filling. All targeted mutation helpers accept optional revision
-guards.
+Glass binary, negotiates MCP, and provides typed helpers for navigation,
+observation, intent resolution, actions, verification, batches, workflows,
+knowledge, targets, frames, storage, diagnostics, and browser controls. All
+targeted mutation helpers accept optional revision guards.
 
 ```python
 from glass_client import GlassClient

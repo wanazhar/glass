@@ -309,12 +309,21 @@ class GlassClient:
         self,
         level: Optional[SemanticObservationLevel] = None,
         region: Optional[str] = None,
+        include_dom: Optional[bool] = None,
+        include_screenshot: Optional[bool] = None,
+        include_form_values: Optional[bool] = None,
     ) -> Any:
         args: dict[str, Any] = {}
         if level is not None:
             args["level"] = level
         if region is not None:
             args["region"] = region
+        if include_dom is not None:
+            args["includeDom"] = include_dom
+        if include_screenshot is not None:
+            args["includeScreenshot"] = include_screenshot
+        if include_form_values is not None:
+            args["includeFormValues"] = include_form_values
         return self.call("observe", args)
 
     def observe_semantic(
@@ -436,6 +445,198 @@ class GlassClient:
         if timeout_ms is not None:
             args["timeoutMs"] = timeout_ms
         return self.call("wait", args)
+
+    def hover(self, target: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("hover", {"target": target}, expected_revision)
+
+    def drag(self, source: str, destination: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded(
+            "drag", {"source": source, "destination": destination}, expected_revision
+        )
+
+    def key_down(self, key: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("keyDown", {"key": key}, expected_revision)
+
+    def key_up(self, key: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("keyUp", {"key": key}, expected_revision)
+
+    def shortcut(self, shortcut: str, expected_revision: Optional[int] = None) -> Any:
+        return self._guarded("shortcut", {"shortcut": shortcut}, expected_revision)
+
+    def upload(
+        self,
+        target: str,
+        files: list[str],
+        expected_revision: Optional[int] = None,
+    ) -> Any:
+        return self._guarded("upload", {"target": target, "files": files}, expected_revision)
+
+    def screenshot(self, arguments: Optional[dict[str, Any]] = None) -> Any:
+        return self.call("screenshot", arguments or {})
+
+    def observe_knowledge(self, arguments: Optional[dict[str, Any]] = None) -> Any:
+        return self.call("observeKnowledge", arguments or {})
+
+    def resolve_intent_with_knowledge(self, arguments: dict[str, Any]) -> SemanticIntentResult:
+        return self.call("resolveIntentWithKnowledge", arguments)
+
+    def knowledge_list(self) -> Any:
+        return self.call("knowledgeList")
+
+    def knowledge_show(self, record_id: str) -> Any:
+        return self.call("knowledgeShow", {"recordId": record_id})
+
+    def knowledge_stats(self) -> Any:
+        return self.call("knowledgeStats")
+
+    def knowledge_invalidate(
+        self,
+        record_id: str,
+        state: str,
+        reason: Optional[str] = None,
+        observed_at: Optional[str] = None,
+    ) -> Any:
+        arguments: dict[str, Any] = {"recordId": record_id, "state": state}
+        if reason is not None:
+            arguments["reason"] = reason
+        if observed_at is not None:
+            arguments["observedAt"] = observed_at
+        return self.call("knowledgeInvalidate", arguments)
+
+    def knowledge_purge(self, origin: str) -> Any:
+        return self.call("knowledgePurge", {"origin": origin})
+
+    def preflight(self, target: str, action: str = "click") -> Any:
+        return self.call("preflight", {"target": target, "action": action})
+
+    def click_at(self, x: float, y: float) -> Any:
+        return self.call("clickAt", {"x": x, "y": y})
+
+    def dom(self) -> Any:
+        return self.call("getDOM")
+
+    def text(self) -> Any:
+        return self.call("getText")
+
+    def reconcile_references(
+        self,
+        from_revision: int,
+        refs: list[str],
+        hints: Optional[list[str]] = None,
+        scope_ref: Optional[str] = None,
+    ) -> Any:
+        arguments: dict[str, Any] = {"fromRevision": from_revision, "refs": refs}
+        if hints is not None:
+            arguments["hints"] = hints
+        if scope_ref is not None:
+            arguments["scopeRef"] = scope_ref
+        return self.call("reconcileReferences", arguments)
+
+    def observe_delta(self) -> Any:
+        return self.call("observeDelta")
+
+    def set_network_conditions(self, arguments: dict[str, Any]) -> Any:
+        return self.call("setNetworkConditions", arguments)
+
+    def clear_network_conditions(self) -> Any:
+        return self.call("clearNetworkConditions")
+
+    def set_cpu_throttling(self, rate: float) -> Any:
+        return self.call("setCpuThrottling", {"rate": rate})
+
+    def clear_cpu_throttling(self) -> Any:
+        return self.call("clearCpuThrottling")
+
+    def set_user_agent(
+        self,
+        user_agent: str,
+        accept_language: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> Any:
+        arguments: dict[str, Any] = {"userAgent": user_agent}
+        if accept_language is not None:
+            arguments["acceptLanguage"] = accept_language
+        if platform is not None:
+            arguments["platform"] = platform
+        return self.call("setUserAgent", arguments)
+
+    def clear_user_agent(self) -> Any:
+        return self.call("clearUserAgent")
+
+    def export_checkpoint(self) -> Any:
+        return self.call("exportCheckpoint")
+
+    def import_checkpoint(self, checkpoint: dict[str, Any]) -> Any:
+        return self.call("importCheckpoint", checkpoint)
+
+    def evaluate(self, expression: str) -> Any:
+        return self.call("evaluate", {"expression": expression})
+
+    def diagnostics(self, duration_ms: int = 1_000) -> Any:
+        return self.call("diagnostics", {"durationMs": duration_ms})
+
+    def accept_dialog(self) -> Any:
+        return self.call("acceptDialog")
+
+    def dismiss_dialog(self) -> Any:
+        return self.call("dismissDialog")
+
+    def dismiss_consent(self) -> Any:
+        return self.call("dismissConsent")
+
+    def download(self, destination: str, timeout_ms: int = 30_000) -> Any:
+        return self.call("download", {"destination": destination, "timeoutMs": timeout_ms})
+
+    def list_targets(self) -> Any:
+        return self.call("listTargets")
+
+    def create_target(self, url: str) -> Any:
+        return self.call("createTarget", {"url": url})
+
+    def select_target(self, target_id: str) -> Any:
+        return self.call("selectTarget", {"id": target_id})
+
+    def close_target(self, target_id: str) -> Any:
+        return self.call("closeTarget", {"id": target_id})
+
+    def list_frames(self) -> Any:
+        return self.call("listFrames")
+
+    def select_frame(self, frame_id: str) -> Any:
+        return self.call("selectFrame", {"id": frame_id})
+
+    def cookies(self) -> Any:
+        return self.call("cookies")
+
+    def set_cookies(self, cookies: Any) -> Any:
+        return self.call("setCookies", {"cookies": cookies})
+
+    def clear_cookies(self) -> Any:
+        return self.call("clearCookies")
+
+    def local_storage(self) -> Any:
+        return self.call("localStorage")
+
+    def session_storage(self) -> Any:
+        return self.call("sessionStorage")
+
+    def print_to_pdf(self, options: Optional[dict[str, Any]] = None) -> Any:
+        return self.call("printToPdf", options or {})
+
+    def clipboard_read(self) -> Any:
+        return self.call("clipboardRead")
+
+    def clipboard_write(self, text: str) -> Any:
+        return self.call("clipboardWrite", {"text": text})
+
+    def set_geolocation(self, latitude: float, longitude: float) -> Any:
+        return self.call("setGeolocation", {"latitude": latitude, "longitude": longitude})
+
+    def clear_geolocation(self) -> Any:
+        return self.call("clearGeolocation")
+
+    def set_timezone(self, timezone_id: str) -> Any:
+        return self.call("setTimezone", {"timezoneId": timezone_id})
 
     def close(self) -> None:
         if self._process is not None:

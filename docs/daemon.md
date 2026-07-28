@@ -23,5 +23,8 @@ the daemon PID, protocol version, transport, and child-session count.
 
 The daemon is intentionally limited in this release: it provides local
 lifecycle supervision and per-client session isolation, but not shared browser
-sessions, workflow lease transfer, or remote network access. Those features
-must be negotiated and implemented as separate protocol additions.
+sessions or workflow lease transfer. The reusable lease authority enforces one
+owner-bound mutation lease per session with bounded renewal, but the daemon
+does not expose shared-session lease messages yet. Remote network access is
+not supported. Those features must be negotiated and implemented as separate
+protocol additions.

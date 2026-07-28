@@ -5,6 +5,7 @@
 //! silently transfer a browser session or workflow lease to another client.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +14,134 @@ use std::time::Duration;
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 /// Maximum number of isolated MCP child sessions per daemon.
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
+const MIN_LEASE_TTL_MS: u64 = 100;
+const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
+
+/// A single mutation lease held by one local client owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MutationLease {
+    pub session_id: String,
+    pub owner_id: String,
+    pub token: String,
+    pub expires_at_ms: u64,
+}
+
+/// Typed lease failure used by daemon/session integrations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseError {
+    InvalidInput(String),
+    AlreadyHeld,
+    NotFound,
+    NotOwner,
+    Expired,
+}
+
+impl std::fmt::Display for LeaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(detail) => write!(formatter, "invalid lease input: {detail}"),
+            Self::AlreadyHeld => formatter.write_str("mutation lease is already held"),
+            Self::NotFound => formatter.write_str("mutation lease was not found"),
+            Self::NotOwner => formatter.write_str("mutation lease is held by another owner"),
+            Self::Expired => formatter.write_str("mutation lease has expired"),
+        }
+    }
+}
+
+impl std::error::Error for LeaseError {}
+
+/// In-memory lease authority for one daemon session namespace.
+#[derive(Debug, Default)]
+pub struct MutationLeaseManager {
+    leases: BTreeMap<String, MutationLease>,
+    next_token: u64,
+}
+
+impl MutationLeaseManager {
+    /// Acquire the only mutation lease for a session.
+    pub fn acquire(
+        &mut self,
+        session_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<MutationLease, LeaseError> {
+        validate_lease_identity(session_id, "sessionId")?;
+        validate_lease_identity(owner_id, "ownerId")?;
+        if !(MIN_LEASE_TTL_MS..=MAX_LEASE_TTL_MS).contains(&ttl_ms) {
+            return Err(LeaseError::InvalidInput(format!(
+                "ttlMs must be {MIN_LEASE_TTL_MS}..={MAX_LEASE_TTL_MS}"
+            )));
+        }
+        if let Some(existing) = self.leases.get(session_id)
+            && existing.expires_at_ms > now_ms
+        {
+            return Err(LeaseError::AlreadyHeld);
+        }
+        self.next_token = self.next_token.saturating_add(1);
+        let lease = MutationLease {
+            session_id: session_id.into(),
+            owner_id: owner_id.into(),
+            token: format!("lease-{}", self.next_token),
+            expires_at_ms: now_ms.saturating_add(ttl_ms),
+        };
+        self.leases.insert(session_id.into(), lease.clone());
+        Ok(lease)
+    }
+
+    /// Renew a lease without allowing a different owner to take it over.
+    pub fn renew(
+        &mut self,
+        session_id: &str,
+        owner_id: &str,
+        token: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<MutationLease, LeaseError> {
+        if !(MIN_LEASE_TTL_MS..=MAX_LEASE_TTL_MS).contains(&ttl_ms) {
+            return Err(LeaseError::InvalidInput(format!(
+                "ttlMs must be {MIN_LEASE_TTL_MS}..={MAX_LEASE_TTL_MS}"
+            )));
+        }
+        let lease = self
+            .leases
+            .get_mut(session_id)
+            .ok_or(LeaseError::NotFound)?;
+        if lease.owner_id != owner_id || lease.token != token {
+            return Err(LeaseError::NotOwner);
+        }
+        if lease.expires_at_ms <= now_ms {
+            return Err(LeaseError::Expired);
+        }
+        lease.expires_at_ms = now_ms.saturating_add(ttl_ms);
+        Ok(lease.clone())
+    }
+
+    /// Release a lease only when the owner and token match.
+    pub fn release(
+        &mut self,
+        session_id: &str,
+        owner_id: &str,
+        token: &str,
+    ) -> Result<(), LeaseError> {
+        let lease = self.leases.get(session_id).ok_or(LeaseError::NotFound)?;
+        if lease.owner_id != owner_id || lease.token != token {
+            return Err(LeaseError::NotOwner);
+        }
+        self.leases.remove(session_id);
+        Ok(())
+    }
+}
+
+fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_whitespace) {
+        return Err(LeaseError::InvalidInput(format!(
+            "{field} must be a bounded non-whitespace identifier"
+        )));
+    }
+    Ok(())
+}
 
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,5 +436,32 @@ mod tests {
         assert_eq!(value["protocolVersion"], 1);
         assert_eq!(value["transport"], "unix-mcp-stdio-bridge");
         assert!(value["socket"].as_str().unwrap().starts_with('/'));
+    }
+
+    #[test]
+    fn mutation_leases_are_exclusive_and_owner_bound() {
+        let mut manager = MutationLeaseManager::default();
+        let lease = manager
+            .acquire("session-1", "owner-a", 1_000, 1_000)
+            .unwrap();
+        assert_eq!(lease.token, "lease-1");
+        assert_eq!(
+            manager.acquire("session-1", "owner-b", 1_100, 1_000),
+            Err(LeaseError::AlreadyHeld)
+        );
+        assert_eq!(
+            manager.renew("session-1", "owner-b", &lease.token, 1_200, 1_000),
+            Err(LeaseError::NotOwner)
+        );
+        manager
+            .renew("session-1", "owner-a", &lease.token, 1_200, 1_000)
+            .unwrap();
+        manager
+            .release("session-1", "owner-a", &lease.token)
+            .unwrap();
+        assert_eq!(
+            manager.release("session-1", "owner-a", &lease.token),
+            Err(LeaseError::NotFound)
+        );
     }
 }

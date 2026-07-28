@@ -210,6 +210,17 @@ fn log_path_for(status_path: &Path) -> PathBuf {
     status_path.with_extension("log")
 }
 
+fn append_daemon_log(status_path: &Path, message: &str) -> Result<(), std::io::Error> {
+    use std::io::Write;
+
+    let path = log_path_for(status_path);
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(log, "{message}")
+}
+
 /// Start one background daemon and return its status contract.
 pub async fn start(
     socket: Option<&Path>,
@@ -229,6 +240,13 @@ pub async fn start(
             if process_is_alive(existing.pid) {
                 return Err(format!("daemon is already running as pid {}", existing.pid).into());
             }
+            append_daemon_log(
+                status_path,
+                &format!(
+                    "recovered stale daemon pid {}; active workflows are indeterminate and require checkpoint reconciliation",
+                    existing.pid
+                ),
+            )?;
             let _ = std::fs::remove_file(status_path);
             let _ = remove_socket_if_safe(&existing.socket);
         }

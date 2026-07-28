@@ -61,6 +61,16 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     assert!(socket.exists());
     assert!(status.exists());
 
+    let logs = Command::new(glass_binary())
+        .args(["daemon", "logs", "--status", status.to_str().unwrap()])
+        .output()
+        .expect("daemon recovery logs should run");
+    assert!(logs.status.success());
+    let logs: serde_json::Value = serde_json::from_slice(&logs.stdout).unwrap();
+    let content = logs["content"].as_str().unwrap();
+    assert!(content.contains("active workflows are indeterminate"));
+    assert!(content.contains("checkpoint reconciliation"));
+
     let stop = Command::new(glass_binary())
         .args([
             "daemon",

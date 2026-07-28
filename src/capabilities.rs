@@ -106,7 +106,7 @@ impl GlassCapabilityManifest {
                 platform: platform_label().into(),
                 browser_family: "chromium".into(),
                 policy: policy_label(policy.preset()).into(),
-                max_sessions: 1,
+                max_sessions: 4,
             },
         }
     }
@@ -231,6 +231,7 @@ mod tests {
         assert_eq!(manifest.protocol_version, 1);
         assert_eq!(manifest.schemas["workflow"], vec![1]);
         assert_eq!(manifest.schemas["reliabilityReplay"], vec![1]);
+        assert_eq!(manifest.constraints.max_sessions, 4);
         assert!(manifest.capabilities["workflowResume"]);
         assert!(!manifest.capabilities["localDaemon"]);
     }

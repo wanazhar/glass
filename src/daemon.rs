@@ -11,6 +11,8 @@ use std::time::Duration;
 
 /// Version of the local daemon status and lifecycle contract.
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+/// Maximum number of isolated MCP child sessions per daemon.
+pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
 
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +196,13 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
         loop {
             let (stream, _) = listener.accept().await?;
             let client_sessions = Arc::clone(&client_sessions);
+            if client_sessions.load(std::sync::atomic::Ordering::Relaxed)
+                >= MAX_DAEMON_CLIENT_SESSIONS
+            {
+                tracing::warn!("daemon client session limit reached");
+                drop(stream);
+                continue;
+            }
             let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             update_client_sessions(status_path, active)?;
             let status_path = status_path.to_path_buf();

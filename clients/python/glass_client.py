@@ -277,6 +277,15 @@ class GlassClient:
         if not self.supports_capability(capability):
             raise GlassError(f"Glass capability is unavailable: {capability}")
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        """Return the negotiated MCP tool inventory."""
+        self.initialize()
+        result = self._request("tools/list", {})
+        tools = result.get("tools") if isinstance(result, dict) else None
+        if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
+            raise GlassError("MCP tools/list returned an invalid tool inventory")
+        return tools
+
     def call(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         self.initialize()
         call_arguments = dict(arguments or {})

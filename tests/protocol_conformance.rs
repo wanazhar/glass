@@ -41,12 +41,54 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
         })
     )
     .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        })
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        })
+    )
+    .unwrap();
     drop(stdin);
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let mcp_response: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(mcp_response["result"]["glass"], cli_manifest);
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    let tools_response: Value = serde_json::from_str(&line).unwrap();
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/client-conformance-v1.json"))
+        .expect("client conformance fixture should be valid JSON");
+    let mut tool_names = tools_response["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    tool_names.sort();
+    assert_eq!(
+        tool_names,
+        fixture["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    );
     let _ = child.kill();
     let _ = child.wait();
 }

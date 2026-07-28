@@ -40,6 +40,9 @@ Use `supportsCapability`, `supportsSchema`, and
 `requireCapability` before you call an optional operation. The client returns
 a bounded error when the server does not support the requested item.
 
+`listTools()` returns the negotiated MCP tool inventory. The repository smoke
+test compares this inventory with the versioned client conformance fixture.
+
 ## Daemon mutations
 
 A daemon mutation requires a lease. Check the `localDaemon` capability. Then

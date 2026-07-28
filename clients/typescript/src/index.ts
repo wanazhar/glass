@@ -347,6 +347,15 @@ export class GlassClient {
     if (!this.supportsCapability(capability)) throw new Error(`Glass capability is unavailable: ${capability}`);
   }
 
+  async listTools(): Promise<Array<Record<string, unknown>>> {
+    await this.initialize();
+    const result = await this.request("tools/list", {}) as { tools?: unknown };
+    if (!Array.isArray(result.tools) || !result.tools.every((tool) => typeof tool === "object" && tool !== null)) {
+      throw new Error("MCP tools/list returned an invalid tool inventory");
+    }
+    return result.tools as Array<Record<string, unknown>>;
+  }
+
   async call<T = ToolCallResult>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     await this.initialize();
     const callArgs = { ...args, ...(this.leaseToken === undefined ? {} : { leaseToken: this.leaseToken }) };

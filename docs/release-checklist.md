@@ -25,6 +25,7 @@ steps and must not be described as complete until they have succeeded.
 
 ```console
 cargo fmt --all -- --check
+python3 scripts/check-version-sync.py
 cargo test --all --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps

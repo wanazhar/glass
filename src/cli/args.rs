@@ -617,6 +617,9 @@ pub enum DaemonCommand {
     AcknowledgeRecovery {
         #[arg(long)]
         status: Option<PathBuf>,
+        /// Request ID for every recovery record reconciled from a checkpoint.
+        #[arg(long = "request-id", required = true)]
+        request_ids: Vec<String>,
     },
     /// Internal foreground server used by `daemon start`.
     #[command(hide = true)]

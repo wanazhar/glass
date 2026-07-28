@@ -81,12 +81,28 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
     assert_eq!(doctor["recovery"]["state"], "reconciliation_required");
 
+    let partial = Command::new(glass_binary())
+        .args([
+            "daemon",
+            "acknowledge-recovery",
+            "--status",
+            status.to_str().unwrap(),
+            "--request-id",
+            "wrong-request",
+        ])
+        .output()
+        .expect("partial recovery acknowledgement should run");
+    assert!(!partial.status.success());
+    assert!(status.with_extension("recovery.json").exists());
+
     let acknowledge = Command::new(glass_binary())
         .args([
             "daemon",
             "acknowledge-recovery",
             "--status",
             status.to_str().unwrap(),
+            "--request-id",
+            "workflow-recovery-1",
         ])
         .output()
         .expect("daemon recovery acknowledgement should run");
@@ -94,6 +110,10 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     let acknowledge: serde_json::Value = serde_json::from_slice(&acknowledge.stdout).unwrap();
     assert_eq!(acknowledge["status"], "acknowledged");
     assert_eq!(acknowledge["runs"], 1);
+    assert_eq!(
+        acknowledge["reconciledRequestIds"][0],
+        "workflow-recovery-1"
+    );
     assert!(!status.with_extension("recovery.json").exists());
 
     let logs = Command::new(glass_binary())

@@ -151,8 +151,14 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
         DaemonCommand::Logs { status } => {
             print_json(&crate::daemon::logs(status.as_deref())?)?;
         }
-        DaemonCommand::AcknowledgeRecovery { status } => {
-            print_json(&crate::daemon::acknowledge_recovery(status.as_deref())?)?;
+        DaemonCommand::AcknowledgeRecovery {
+            status,
+            request_ids,
+        } => {
+            print_json(&crate::daemon::acknowledge_recovery(
+                status.as_deref(),
+                request_ids,
+            )?)?;
         }
         DaemonCommand::Serve { socket, status } => {
             crate::daemon::serve(socket, status).await?;

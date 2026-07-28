@@ -265,6 +265,13 @@ impl DaemonStatusState {
         if status.active_runs.len() >= MAX_DAEMON_ACTIVE_RUNS {
             return Err("daemon active workflow limit reached".into());
         }
+        if status
+            .active_runs
+            .iter()
+            .any(|run| run.request_id == request_id)
+        {
+            return Err("daemon workflow request id is already active".into());
+        }
         status.active_runs.push(DaemonActiveRun {
             request_id: request_id.into(),
             owner_id: owner_id.into(),
@@ -531,6 +538,7 @@ pub fn recovery(
 /// Clear the recovery requirement after the caller reconciles every listed run.
 pub fn acknowledge_recovery(
     status_path: Option<&Path>,
+    reconciled_request_ids: &[String],
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let (_, default_status) = default_paths();
     let status_path = status_path.unwrap_or(&default_status);
@@ -542,11 +550,35 @@ pub fn acknowledge_recovery(
             "acknowledged": false,
         }));
     };
+    let expected: std::collections::BTreeSet<&str> = report
+        .runs
+        .iter()
+        .map(|run| run.request_id.as_str())
+        .collect();
+    let provided: std::collections::BTreeSet<&str> =
+        reconciled_request_ids.iter().map(String::as_str).collect();
+    if reconciled_request_ids.len() != provided.len() || expected != provided {
+        return Err(format!(
+            "recovery acknowledgement must name exactly these request IDs: {}",
+            report
+                .runs
+                .iter()
+                .map(|run| run.request_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .into());
+    }
     std::fs::remove_file(&path)?;
     Ok(serde_json::json!({
         "status": "acknowledged",
         "path": path,
         "runs": report.runs.len(),
+        "reconciledRequestIds": report
+            .runs
+            .iter()
+            .map(|run| run.request_id.as_str())
+            .collect::<Vec<_>>(),
         "acknowledged": true,
     }))
 }

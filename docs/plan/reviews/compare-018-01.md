@@ -208,7 +208,7 @@ This review is limited to the three code blockers recorded for `03a4522`.
    marked invalid, and all affected gates were false.
 
 2. **Unauditable release/platform assertions — resolved.** The contract now
-   declares the exact nine release checks and five platform targets
+   declares the exact nine release checks and four platform targets
    (`benchmarks/acceptance-v1.json:9-17`). Evidence must identify its type,
    tested revision, producer name/version/command/run URL, and per-row raw
    report; release and platform rows are exact-key validated, must all pass,

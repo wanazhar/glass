@@ -11,6 +11,7 @@ change a target without an explicit request.
 | Item | Status |
 |---|---|
 | Linux x86-64 | Supported target |
+| Linux arm64 | Supported target; use system Chromium or `--chrome-path` |
 | macOS x86-64 | Supported target |
 | macOS arm64 | Supported target |
 | Windows | Unsupported |

@@ -76,6 +76,7 @@ workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 capabilities
 daemon start|status|doctor|stop [--socket PATH] [--status PATH]
+doctor
 certify run --scenario SCENARIO_JSON --fixture FIXTURE_JSON --url URL [--workflow-root DIRECTORY] [--inputs INPUTS_JSON] [--output EVIDENCE_JSON]
 certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
@@ -139,6 +140,11 @@ boundaries.
 `capabilities` prints the versioned Glass capability manifest without starting
 Chrome. It is the CLI equivalent of the `glass` manifest returned by MCP
 initialization and reflects the active policy and supported platform.
+
+`doctor` prints a bounded local health report for Chrome discovery and CDP
+reachability, the daemon, profiles, policy capabilities, knowledge-store
+presence, and extension-loader state. It does not start Chrome or load
+extensions.
 
 `certify replay` validates one redacted reliability replay bundle against its
 versioned scenario. `certify run` navigates a fixture URL, executes one

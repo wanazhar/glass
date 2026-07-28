@@ -15,14 +15,14 @@ not available from a published package.
   typed inputs, budgets, and pre-execution validation.
 - [Workflow authoring](workflow-authoring.md) — YAML compilation, diagnostics,
   safe input inference, preview, diff, and the semantic recorder boundary.
-- [Action contract](action-contract.md) — the canonical `0.1.18` execution
+- [Action contract](action-contract.md) — the compatibility execution
   envelope, failure phases, and explicit recovery policies.
 - [Schema compatibility](schema-compatibility.md) — additive cross-interface
   field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
-- [Local daemon](daemon.md) — Unix-socket lifecycle, status, and per-client
-  MCP session boundaries.
+- [Local daemon](daemon.md) — Unix-socket lifecycle, status, shared-session
+  boundaries, and mutation leases.
 - [Extensions](extensions.md) — versioned manifests, bounded hosts, native
   sandboxing, and guarded action boundaries.
 - [Semantic observations](semantic-observation.md) — bounded page and region

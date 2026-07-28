@@ -187,9 +187,7 @@ pub async fn start(
             let _ = std::fs::remove_file(status_path);
             let _ = std::fs::remove_file(&existing.socket);
         }
-        if socket.exists() {
-            std::fs::remove_file(socket)?;
-        }
+        remove_socket_if_safe(socket)?;
         std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
         let executable = std::env::current_exe()?;
@@ -267,7 +265,7 @@ pub fn stop(
             }
         }
         let _ = std::fs::remove_file(status_path);
-        let _ = std::fs::remove_file(socket);
+        let _ = remove_socket_if_safe(socket);
         Ok(())
     }
 }
@@ -303,9 +301,7 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
         use std::os::unix::fs::PermissionsExt;
         use tokio::net::UnixListener;
 
-        if socket.exists() {
-            std::fs::remove_file(socket)?;
-        }
+        remove_socket_if_safe(socket)?;
         std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
         let listener = UnixListener::bind(socket)?;
@@ -393,6 +389,26 @@ fn read_status(path: &Path) -> Result<Option<DaemonStatus>, Box<dyn std::error::
     Ok(Some(status))
 }
 
+#[cfg(unix)]
+fn remove_socket_if_safe(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_socket() {
+        return Err(format!(
+            "refusing to replace non-socket daemon path {}",
+            path.display()
+        )
+        .into());
+    }
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
 fn update_client_sessions(
     path: &Path,
     client_sessions: u32,
@@ -463,5 +479,15 @@ mod tests {
             manager.release("session-1", "owner-a", &lease.token),
             Err(LeaseError::NotFound)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_cleanup_refuses_to_replace_a_regular_file() {
+        let path =
+            std::env::temp_dir().join(format!("glass-daemon-regular-{}", std::process::id()));
+        std::fs::write(&path, b"not a socket").unwrap();
+        assert!(remove_socket_if_safe(&path).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

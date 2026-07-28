@@ -369,8 +369,16 @@ export class GlassClient {
     this.leaseToken = undefined;
   }
 
-  observe<T = Record<string, unknown>>(level?: SemanticObservationLevel, region?: string): Promise<T> {
-    return this.call<T>("observe", { ...(level === undefined ? {} : { level }), ...(region === undefined ? {} : { region }) });
+  observe<T = Record<string, unknown>>(
+    level?: SemanticObservationLevel,
+    region?: string,
+    options: { includeDom?: boolean; includeScreenshot?: boolean; includeFormValues?: boolean } = {},
+  ): Promise<T> {
+    return this.call<T>("observe", {
+      ...(level === undefined ? {} : { level }),
+      ...(region === undefined ? {} : { region }),
+      ...options,
+    });
   }
   observeSemantic<T = SemanticObservation>(level: SemanticObservationLevel, region?: string): Promise<T> {
     return this.observe<T>(level, region);
@@ -429,7 +437,173 @@ export class GlassClient {
   wait<T = Record<string, unknown>>(condition: string, timeoutMs?: number): Promise<T> {
     return this.call<T>("wait", { condition, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   }
-
+  hover<T = Record<string, unknown>>(target: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("hover", { target, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  drag<T = Record<string, unknown>>(source: string, destination: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("drag", { source, destination, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  keyDown<T = Record<string, unknown>>(key: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("keyDown", { key, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  keyUp<T = Record<string, unknown>>(key: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("keyUp", { key, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  shortcut<T = Record<string, unknown>>(shortcut: string, expectedRevision?: number): Promise<T> {
+    return this.call<T>("shortcut", { shortcut, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  upload<T = Record<string, unknown>>(target: string, files: string[], expectedRevision?: number): Promise<T> {
+    return this.call<T>("upload", { target, files, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+  screenshot<T = Record<string, unknown>>(args: Record<string, unknown> = {}): Promise<T> {
+    return this.call<T>("screenshot", args);
+  }
+  observeKnowledge<T = Record<string, unknown>>(args: Record<string, unknown> = {}): Promise<T> {
+    return this.call<T>("observeKnowledge", args);
+  }
+  resolveIntentWithKnowledge<T = SemanticIntentResult>(args: Record<string, unknown>): Promise<T> {
+    return this.call<T>("resolveIntentWithKnowledge", args);
+  }
+  knowledgeList<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("knowledgeList");
+  }
+  knowledgeShow<T = Record<string, unknown>>(recordId: string): Promise<T> {
+    return this.call<T>("knowledgeShow", { recordId });
+  }
+  knowledgeStats<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("knowledgeStats");
+  }
+  knowledgeInvalidate<T = Record<string, unknown>>(recordId: string, state: string, reason?: string, observedAt?: string): Promise<T> {
+    return this.call<T>("knowledgeInvalidate", {
+      recordId,
+      state,
+      ...(reason === undefined ? {} : { reason }),
+      ...(observedAt === undefined ? {} : { observedAt }),
+    });
+  }
+  knowledgePurge<T = Record<string, unknown>>(origin: string): Promise<T> {
+    return this.call<T>("knowledgePurge", { origin });
+  }
+  preflight<T = Record<string, unknown>>(target: string, action = "click"): Promise<T> {
+    return this.call<T>("preflight", { target, action });
+  }
+  clickAt<T = Record<string, unknown>>(x: number, y: number): Promise<T> {
+    return this.call<T>("clickAt", { x, y });
+  }
+  dom<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("getDOM");
+  }
+  text<T = string>(): Promise<T> {
+    return this.call<T>("getText");
+  }
+  reconcileReferences<T = Record<string, unknown>>(fromRevision: number, refs: string[], hints: string[] = [], scopeRef?: string): Promise<T> {
+    return this.call<T>("reconcileReferences", {
+      fromRevision,
+      refs,
+      hints,
+      ...(scopeRef === undefined ? {} : { scopeRef }),
+    });
+  }
+  observeDelta<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("observeDelta");
+  }
+  setNetworkConditions<T = Record<string, unknown>>(args: Record<string, unknown>): Promise<T> {
+    return this.call<T>("setNetworkConditions", args);
+  }
+  clearNetworkConditions<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("clearNetworkConditions");
+  }
+  setCpuThrottling<T = Record<string, unknown>>(rate: number): Promise<T> {
+    return this.call<T>("setCpuThrottling", { rate });
+  }
+  clearCpuThrottling<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("clearCpuThrottling");
+  }
+  setUserAgent<T = Record<string, unknown>>(userAgent: string, acceptLanguage?: string, platform?: string): Promise<T> {
+    return this.call<T>("setUserAgent", {
+      userAgent,
+      ...(acceptLanguage === undefined ? {} : { acceptLanguage }),
+      ...(platform === undefined ? {} : { platform }),
+    });
+  }
+  clearUserAgent<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("clearUserAgent");
+  }
+  exportCheckpoint<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("exportCheckpoint");
+  }
+  importCheckpoint<T = Record<string, unknown>>(checkpoint: Record<string, unknown>): Promise<T> {
+    return this.call<T>("importCheckpoint", checkpoint);
+  }
+  evaluate<T = unknown>(expression: string): Promise<T> {
+    return this.call<T>("evaluate", { expression });
+  }
+  diagnostics<T = Record<string, unknown>>(durationMs = 1_000): Promise<T> {
+    return this.call<T>("diagnostics", { durationMs });
+  }
+  acceptDialog<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("acceptDialog");
+  }
+  dismissDialog<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("dismissDialog");
+  }
+  dismissConsent<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("dismissConsent");
+  }
+  download<T = Record<string, unknown>>(destination: string, timeoutMs = 30_000): Promise<T> {
+    return this.call<T>("download", { destination, timeoutMs });
+  }
+  listTargets<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("listTargets");
+  }
+  createTarget<T = Record<string, unknown>>(url: string): Promise<T> {
+    return this.call<T>("createTarget", { url });
+  }
+  selectTarget<T = Record<string, unknown>>(id: string): Promise<T> {
+    return this.call<T>("selectTarget", { id });
+  }
+  closeTarget<T = Record<string, unknown>>(id: string): Promise<T> {
+    return this.call<T>("closeTarget", { id });
+  }
+  listFrames<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("listFrames");
+  }
+  selectFrame<T = Record<string, unknown>>(id: string): Promise<T> {
+    return this.call<T>("selectFrame", { id });
+  }
+  cookies<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("cookies");
+  }
+  setCookies<T = Record<string, unknown>>(cookies: unknown): Promise<T> {
+    return this.call<T>("setCookies", { cookies });
+  }
+  clearCookies<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("clearCookies");
+  }
+  localStorage<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("localStorage");
+  }
+  sessionStorage<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("sessionStorage");
+  }
+  printToPdf<T = string>(options: Record<string, unknown> = {}): Promise<T> {
+    return this.call<T>("printToPdf", options);
+  }
+  clipboardRead<T = string>(): Promise<T> {
+    return this.call<T>("clipboardRead");
+  }
+  clipboardWrite<T = Record<string, unknown>>(text: string): Promise<T> {
+    return this.call<T>("clipboardWrite", { text });
+  }
+  setGeolocation<T = Record<string, unknown>>(latitude: number, longitude: number): Promise<T> {
+    return this.call<T>("setGeolocation", { latitude, longitude });
+  }
+  clearGeolocation<T = Record<string, unknown>>(): Promise<T> {
+    return this.call<T>("clearGeolocation");
+  }
+  setTimezone<T = Record<string, unknown>>(timezoneId: string): Promise<T> {
+    return this.call<T>("setTimezone", { timezoneId });
+  }
   close(): void {
     for (const pending of this.pending.values()) pending.reject(new Error("Glass client closed"));
     this.pending.clear();

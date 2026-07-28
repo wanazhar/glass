@@ -413,6 +413,34 @@ pub struct ReliabilityScenarioSetup {
     pub policy: String,
 }
 
+/// One operation handed to a reliability scenario runner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReliabilityExecutionOperation {
+    RunWorkflow {
+        source: String,
+    },
+    ApplyControl {
+        control: ReliabilityFixtureControl,
+    },
+    InjectFault {
+        injection: ReliabilityFaultInjection,
+    },
+    ResumeFromCheckpoint {
+        checkpoint: String,
+    },
+}
+
+/// Ordered, manifest-bound execution plan for one scenario.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReliabilityExecutionPlan {
+    pub scenario_id: String,
+    pub fixture_id: String,
+    pub operations: Vec<ReliabilityExecutionOperation>,
+    pub budgets: ReliabilityScenarioBudgets,
+}
+
 /// A controlled fault injected during a scenario step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -562,6 +590,46 @@ impl ReliabilityScenario {
         })?;
         scenario.validate()?;
         Ok(scenario)
+    }
+
+    /// Expand validated steps into an ordered plan for a browser runner.
+    pub fn execution_plan(
+        &self,
+        fixture: &ReliabilityFixtureManifest,
+    ) -> Result<ReliabilityExecutionPlan, ReliabilityScenarioError> {
+        fixture.validate_scenario(self)?;
+        let operations = self
+            .steps
+            .iter()
+            .map(|step| {
+                Ok(if let Some(source) = &step.run_workflow {
+                    ReliabilityExecutionOperation::RunWorkflow {
+                        source: source.clone(),
+                    }
+                } else if let Some(control) = step.apply_control {
+                    ReliabilityExecutionOperation::ApplyControl { control }
+                } else if let Some(injection) = &step.inject {
+                    ReliabilityExecutionOperation::InjectFault {
+                        injection: injection.clone(),
+                    }
+                } else if let Some(checkpoint) = &step.resume_from_checkpoint {
+                    ReliabilityExecutionOperation::ResumeFromCheckpoint {
+                        checkpoint: checkpoint.clone(),
+                    }
+                } else {
+                    return Err(ReliabilityScenarioError::new(
+                        "steps",
+                        "validated scenario step has no executable operation",
+                    ));
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ReliabilityExecutionPlan {
+            scenario_id: self.id.clone(),
+            fixture_id: self.fixture.clone(),
+            operations,
+            budgets: self.budgets.clone(),
+        })
     }
 
     /// Validate bounds, supported platforms, operations, and outcome oracles.

@@ -44,4 +44,6 @@ fn checked_in_capability_suite_has_unique_valid_scenarios() {
                 == Some(glass::reliability::ReliabilityFixtureControl::DuplicateTarget)
         })
     }));
+    let plan = scenarios[0].execution_plan(&manifest).unwrap();
+    assert_eq!(plan.operations.len(), 2);
 }

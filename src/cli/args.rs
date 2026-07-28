@@ -126,6 +126,12 @@ pub enum Commands {
     /// Print the versioned Glass capability manifest without starting Chrome.
     Capabilities,
 
+    /// Start, inspect, stop, or diagnose the local Unix-socket daemon.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCommand,
+    },
+
     /// List or manage saved profiles.
     Profiles {
         #[command(subcommand)]
@@ -566,6 +572,46 @@ pub enum WorkflowAuthoringCommand {
         input: PathBuf,
         #[arg(long)]
         warnings_as_errors: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DaemonCommand {
+    /// Start the daemon in the background.
+    Start {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
+    /// Read the daemon status contract.
+    Status {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
+    /// Stop the daemon recorded by the status contract.
+    Stop {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
+    /// Check the daemon process, status, and local socket.
+    Doctor {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
+    /// Internal foreground server used by `daemon start`.
+    #[command(hide = true)]
+    Serve {
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long)]
+        status: PathBuf,
     },
 }
 
@@ -1070,6 +1116,27 @@ mod tests {
     fn capabilities_command_is_explicitly_offline() {
         let cli = Cli::try_parse_from(["glass", "capabilities"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Capabilities)));
+    }
+
+    #[test]
+    fn daemon_lifecycle_commands_accept_explicit_local_paths() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "daemon",
+            "start",
+            "--socket",
+            "/tmp/glass.sock",
+            "--status",
+            "/tmp/glass.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Daemon {
+                action: DaemonCommand::Start { socket: Some(socket), status: Some(status) }
+            }) if socket.as_os_str() == "/tmp/glass.sock"
+                && status.as_os_str() == "/tmp/glass.json"
+        ));
     }
 
     #[test]

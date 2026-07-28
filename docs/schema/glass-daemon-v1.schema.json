@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/glass-daemon-v1.schema.json",
+  "title": "Glass local daemon status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "state", "pid", "socket", "statusPath", "startedAt", "transport", "clientSessions"],
+  "properties": {
+    "protocolVersion": {"const": 1},
+    "state": {"enum": ["running", "stopped"]},
+    "pid": {"type": "integer", "minimum": 1},
+    "socket": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "statusPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "startedAt": {"type": "string", "minLength": 1, "maxLength": 64},
+    "transport": {"const": "unix-mcp-stdio-bridge"},
+    "clientSessions": {"type": "integer", "minimum": 0, "maximum": 64}
+  }
+}

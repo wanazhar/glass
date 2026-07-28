@@ -47,6 +47,8 @@ pub mod browser;
 pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.
 pub mod cli;
+/// Local Unix-socket daemon lifecycle and MCP bridge.
+pub mod daemon;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
 /// Versioned browser-free reliability scenario contracts.

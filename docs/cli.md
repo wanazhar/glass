@@ -75,6 +75,7 @@ workflow compile|format|validate|lint|preview SOURCE
 workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 capabilities
+daemon start|status|doctor|stop [--socket PATH] [--status PATH]
 certify run --scenario SCENARIO_JSON --fixture FIXTURE_JSON --url URL [--workflow-root DIRECTORY] [--inputs INPUTS_JSON] [--output EVIDENCE_JSON]
 certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON

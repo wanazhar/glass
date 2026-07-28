@@ -4,8 +4,8 @@
 //! commands, interactive TUI, or the MCP stdio server.
 
 use super::args::{
-    CertifyCommand, CheckpointCommand, Cli, Commands, KnowledgeCommand, KnowledgeInvalidationState,
-    ProfileCommand, WorkflowAuthoringCommand,
+    CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, KnowledgeCommand,
+    KnowledgeInvalidationState, ProfileCommand, WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -47,6 +47,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         }
         Some(Commands::Capabilities) => {
             print_json(&GlassCapabilityManifest::for_policy(&policy))?;
+            return Ok(());
+        }
+        Some(Commands::Daemon { action }) => {
+            dispatch_daemon(action).await?;
             return Ok(());
         }
         Some(Commands::Certify { action }) if !matches!(action, CertifyCommand::Run { .. }) => {
@@ -117,6 +121,34 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     let close_result = session.close().await;
     result?;
     close_result
+}
+
+async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
+    match action {
+        DaemonCommand::Start { socket, status } => {
+            print_json(&crate::daemon::start(socket.as_deref(), status.as_deref()).await?)?;
+        }
+        DaemonCommand::Status { socket, status } => {
+            print_json(&crate::daemon::status(
+                socket.as_deref(),
+                status.as_deref(),
+            )?)?;
+        }
+        DaemonCommand::Stop { socket, status } => {
+            crate::daemon::stop(socket.as_deref(), status.as_deref())?;
+            print_json(&serde_json::json!({"status": "stopped"}))?;
+        }
+        DaemonCommand::Doctor { socket, status } => {
+            print_json(&crate::daemon::doctor(
+                socket.as_deref(),
+                status.as_deref(),
+            )?)?;
+        }
+        DaemonCommand::Serve { socket, status } => {
+            crate::daemon::serve(socket, status).await?;
+        }
+    }
+    Ok(())
 }
 
 fn cli_trace_action(command: Option<&Commands>, prompt: Option<&str>) -> ActionKind {
@@ -543,7 +575,10 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             )
             .await?;
         }
-        Commands::Capabilities | Commands::Certify { .. } | Commands::Knowledge { .. } => {
+        Commands::Capabilities
+        | Commands::Daemon { .. }
+        | Commands::Certify { .. }
+        | Commands::Knowledge { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
         Commands::Navigate {

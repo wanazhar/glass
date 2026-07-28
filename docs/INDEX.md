@@ -17,6 +17,8 @@
   field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
+- [Local daemon](daemon.md) — Unix-socket lifecycle, status, and per-client
+  MCP session boundaries.
 - [Semantic observations](semantic-observation.md) — bounded page and region
   state, levels, expansion, revisions, diffs, and privacy boundaries.
 - [Intent resolution](intent-resolution.md) — bounded candidate resolution,

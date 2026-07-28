@@ -61,6 +61,8 @@ Repeat it on each release runner before checking this release gate.
 - [ ] Commit the version and changelog update.
 - [ ] Create a signed annotated tag such as `v0.2.0`.
 - [ ] Publish artifacts only from the tagged commit.
+- [ ] Configure the `CARGO_REGISTRY_TOKEN` GitHub Actions secret for crate
+      publication.
 - [ ] Include supported platforms, checksums, changelog entries, and known
       limitations in the release entry.
 - [ ] Verify installation from each published artifact in a clean environment.

@@ -4,8 +4,6 @@ The 0.2.0 checkout supports validated workflow definitions and a linear
 workflow runner. The checkout also supports bounded retries, traces,
 checkpoints, resume reconciliation, and offline authoring.
 
-These features are local-only until the 0.2.0 release gates pass.
-
 ## Definition
 
 A workflow definition contains:

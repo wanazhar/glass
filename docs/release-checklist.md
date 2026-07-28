@@ -4,20 +4,19 @@ Use this checklist for each public release.
 
 ## Candidate status
 
-The current local candidate is `glass-browser` version `0.2.0`. The target
+The current release is `glass-browser` version `0.2.0`. The target
 platforms are Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
 Windows is unsupported.
 
-This checkout is local-only. Do not describe a GitHub release, tag, crates.io
-package, npm package, or binary artifact as published until the corresponding
-operation succeeds.
+Do not describe a GitHub release, tag, crates.io package, npm package, or
+binary artifact as published until the corresponding operation succeeds.
 
 ## Prepare
 
 - [ ] Confirm the version and release date.
 - [ ] Check the package name, description, license, README, and repository
   metadata in `Cargo.toml`.
-- [x] Mark the local 0.2.0 changelog entry as unreleased.
+- [x] Record the 0.2.0 release date in the changelog.
 - [x] Check the README installation commands against `glass --help`.
 - [ ] Review dependency and browser-facing security changes.
 - [ ] Check that the working tree has no profiles, screenshots, logs, or other

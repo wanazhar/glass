@@ -33,8 +33,6 @@ Install the published crate after a release:
 cargo install glass-browser --locked
 `
 
-The local 0.2.0 checkout is not published.
-
 ## Select a browser
 
 Glass checks these locations in this order:

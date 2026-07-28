@@ -1,8 +1,8 @@
 # Glass documentation
 
 The guides use [the project documentation style](documentation-style.md).
-They describe the current local checkout. A feature marked `Local only` is
-not available from a published package.
+They describe the current release. A feature marked `Local only` is part of an
+unreleased development build.
 
 ## User guides
 

@@ -3,8 +3,6 @@
 Workflow authoring converts YAML or JSON into the validated workflow contract.
 The commands are offline. They do not start Chrome.
 
-The authoring feature is local-only in the 0.2.0 checkout.
-
 ## Commands
 
 Use these commands with a source file:

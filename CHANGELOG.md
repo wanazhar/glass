@@ -3,7 +3,7 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] - Unreleased (local only)
+## [0.2.0] - 2026-07-28
 
 ### Added
 
@@ -37,31 +37,6 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 - Documentation now separates the semantic observation guide from the compact
   legacy observation and keeps deep DOM, screenshots, and form values explicit.
-
-This milestone is prepared locally only. It has not been pushed or published to
-GitHub, crates.io, npm, or PyPI. Public release remains gated on the 0.2.0
-release process.
-
-## [0.1.19] - Unreleased (local only)
-
-### Added
-
-- Versioned transactional workflows with typed inputs, bounded control flow,
-  terminal proofs, typed outputs, deterministic traces, and reviewed recorder
-  drafts.
-- Safe checkpoint reconciliation and suffix resume with redacted evidence,
-  CLI/MCP/TUI adapters, typed TypeScript and Python client contracts, and a
-  deterministic workflow scorecard.
-
-### Changed
-
-- Retry handling now distinguishes proven pre-dispatch failures from
-  indeterminate and post-dispatch outcomes; effect markers can prevent a
-  duplicate dispatch when a success marker is already present.
-- Workflow definitions reject unknown fields and duplicate idempotency keys.
-
-This entry describes local development work. It is not a GitHub, crates.io,
-npm, or PyPI release; the public workflow milestone remains 0.2.0.
 
 ## [0.1.18] - 2026-07-27
 

@@ -83,7 +83,7 @@ Each tool contributes:
 - `description`: ~40-80 bytes
 - `inputSchema`: ~80-300 bytes (typically `{"type":"object","properties":{...}}`)
 
-The 0.2.0 local candidate measures 21,070 UTF-8 bytes, or an estimated 5,268
+The 0.2.0 release measures 21,070 UTF-8 bytes, or an estimated 5,268
 tokens using the repository's four-bytes-per-token method. Re-measure a local
 build with `GLASS_BINARY_PATH=target/debug/glass node
 benchmarks/schema-scoreboard.mjs` when the tool descriptions or schemas change.

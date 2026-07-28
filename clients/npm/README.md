@@ -13,5 +13,4 @@ Windows is not a supported target.
 Set `GLASS_VERSION=vX.Y.Z` to select a release. Set
 `GLASS_SKIP_DOWNLOAD=1` when you provide a local binary.
 
-The package version must match the native release version. The 0.2.0 package is
-local-only until the GitHub release exists.
+The package version must match the native Glass release version.

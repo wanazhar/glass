@@ -15,7 +15,7 @@ change a target without an explicit request.
 | macOS x86-64 | Supported target |
 | macOS arm64 | Supported target |
 | Windows | Unsupported |
-| 0.2.0 checkout | Local only; not published |
+| 0.2.0 | Current release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
 
@@ -41,8 +41,7 @@ The latest published package can be installed with:
 cargo install glass-browser --locked
 `
 
-The 0.2.0 checkout is not published. Use `glass install-chromium` when no
-supported system browser is available.
+Use `glass install-chromium` when no supported system browser is available.
 
 Read [Installation and operations](docs/installation.md) for browser
 discovery, profiles, attach mode, logging, policy, and deployment.
@@ -133,10 +132,8 @@ glass execute-intent execution.json
 Read the [intent resolution guide](docs/intent-resolution.md) for evidence,
 ambiguity, and revision rules.
 
-The local 0.2.0 checkout also contains workflow authoring and the reliability
-laboratory. These features are local-only until the 0.2.0 release gates pass.
-Read [Workflow authoring](docs/workflow-authoring.md) and [Reliability
-laboratory](docs/reliability.md).
+Glass also includes workflow authoring and reliability checks. Read [Workflow
+authoring](docs/workflow-authoring.md) and [Reliability laboratory](docs/reliability.md).
 
 ## Targets and revisions
 

@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
@@ -54,6 +54,39 @@ jobs:
 
       - name: Generate release validation evidence
         run: scripts/generate-validation-evidence.sh dist/validation
+
+      - name: Verify clean install and upgrade
+        env:
+          GLASS_PREVIOUS_VERSION: "0.1.18"
+        run: scripts/smoke-clean-install.sh
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate TypeScript client against release binary
+        working-directory: clients/typescript
+        env:
+          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm run typecheck
+          node smoke.mjs
+          npm pack --dry-run
+
+      - name: Validate Python client against release binary
+        working-directory: clients/python
+        env:
+          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
+        run: |
+          python3 -m pip wheel --no-deps . -w "$RUNNER_TEMP/glass-python-wheel"
+          python3 smoke.py
+
+      - name: Validate npm launcher package
+        working-directory: clients/npm
+        run: npm pack --dry-run
 
       - uses: actions/upload-artifact@v4
         with:
@@ -225,6 +258,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -280,6 +314,20 @@ jobs:
             dist/glass-macos-x86_64 \
             dist/glass-macos-aarch64 \
             > dist/SHA256SUMS
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.0
+
+      - name: Sign checksum manifest with Sigstore
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
+
+      - name: Verify Sigstore bundle
+        run: |
+          cosign verify-blob \
+            --bundle dist/SHA256SUMS.bundle \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -53,8 +53,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Glass for client smoke tests
-        run: cargo build --locked
+      - name: Build release Glass for client smoke tests
+        run: cargo build --release --locked
 
       - uses: actions/setup-node@v4
         with:
@@ -70,7 +70,7 @@ jobs:
 
       - name: Run TypeScript client handshake smoke test
         env:
-          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
+          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
         run: node smoke.mjs
         working-directory: clients/typescript
 
@@ -88,6 +88,6 @@ jobs:
 
       - name: Run Python client handshake smoke test
         env:
-          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
+          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
         run: python smoke.py
         working-directory: clients/python

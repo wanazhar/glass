@@ -22,12 +22,16 @@ This phase covers the first platform boundary for issue #27:
   integration coverage;
 - Python and TypeScript clients can connect to the daemon socket and expose
   the same mutation-lease lifecycle helpers.
+- policy failures expose a versioned rule/phase/remediation contract;
+- the TUI displays the negotiated schema count and daemon capability state;
+- daemon operations share a bounded global in-flight request budget.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
 The remaining platform work includes active-run classification beyond stale
-socket recovery, a real extension host, broader cross-transport golden
-scenarios, and the complete client/TUI contract inventory. This task must not
-be marked complete until those paths have executable conformance coverage.
+socket recovery, a real extension host and first-party extensions, broader
+cross-transport golden scenarios, and the complete client/TUI operation
+inventory. This task must not be marked complete until those paths have
+executable conformance coverage.

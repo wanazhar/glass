@@ -19,8 +19,8 @@
   and security.
 - [Local daemon](daemon.md) — Unix-socket lifecycle, status, and per-client
   MCP session boundaries.
-- [Extensions](extensions.md) — metadata-only extension manifests and
-  permission boundaries.
+- [Extensions](extensions.md) — versioned manifests, bounded hosts, native
+  sandboxing, and guarded action boundaries.
 - [Semantic observations](semantic-observation.md) — bounded page and region
   state, levels, expansion, revisions, diffs, and privacy boundaries.
 - [Intent resolution](intent-resolution.md) — bounded candidate resolution,

@@ -1991,11 +1991,17 @@ async fn reliability_lab_controls_produce_independent_oracle_state() {
         .evaluate("window.reliabilityLab.scheduleEffectMarker(0); true")
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    assert_eq!(
-        reliability_snapshot(&session).await["state"],
-        "effect-visible"
-    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if reliability_snapshot(&session).await["state"] == "effect-visible" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "effect marker did not become visible within the bounded wait"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     session.close().await.unwrap();
     fixture_server.close().await;

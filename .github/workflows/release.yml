@@ -92,6 +92,9 @@ jobs:
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Smoke release binary contract
+        run: scripts/smoke-release-binary.sh target/${{ matrix.target }}/release/glass
+
       - name: Run tests
         run: cargo test --all-targets --locked --target ${{ matrix.target }}
 

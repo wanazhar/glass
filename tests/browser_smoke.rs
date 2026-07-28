@@ -5,6 +5,10 @@ use glass::browser::session::{
     WorkflowDefinition, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowRunStatus,
     WorkflowStep, WorkflowStepState, WorkflowTrace, WorkflowTransactionClass,
 };
+use glass::reliability::{
+    ReliabilityFixtureManifest, ReliabilityRunClassification, ReliabilityScenario,
+};
+use glass::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -1992,6 +1996,86 @@ async fn reliability_lab_controls_produce_independent_oracle_state() {
         reliability_snapshot(&session).await["state"],
         "effect-visible"
     );
+
+    session.close().await.unwrap();
+    fixture_server.close().await;
+}
+
+#[tokio::test]
+async fn reliability_runner_generates_live_fixture_evidence() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping reliability runner smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    if !(cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        || cfg!(all(target_os = "macos", target_arch = "x86_64"))
+        || cfg!(all(target_os = "macos", target_arch = "aarch64")))
+    {
+        eprintln!("skipping reliability runner smoke test on an unsupported release target");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "reliability-runner-e2e".to_string(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+
+    let scenario = ReliabilityScenario::from_json(
+        r#"{
+          "schemaVersion": 1,
+          "id": "live-submit-runner",
+          "category": "transactional-workflow",
+          "fixture": "checkout-submit",
+          "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+          "capabilities": ["workflow", "idempotency"],
+          "setup": {"browser": "chromium", "policy": "development"},
+          "steps": [
+            {"applyControl": "reset"},
+            {"runWorkflow": "reliability-submit.json"}
+          ],
+          "expect": {
+            "terminalState": "submitted",
+            "sideEffectCount": {"submit": 1}
+          },
+          "forbid": ["nonIdempotentMutationDuplicated", "falseWorkflowCompletion"],
+          "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 8}
+        }"#,
+    )
+    .unwrap();
+    let fixture =
+        ReliabilityFixtureManifest::from_json(include_str!("fixtures/reliability-fixture-v1.json"))
+            .unwrap();
+    let options = ReliabilityRunOptions {
+        workflow_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+        inputs: BTreeMap::new(),
+    };
+
+    let evidence = run_reliability_scenario(&session, &scenario, &fixture, &options)
+        .await
+        .unwrap();
+    assert_eq!(
+        evidence.observation.classification,
+        ReliabilityRunClassification::Passed
+    );
+    assert_eq!(evidence.observation.side_effect_count["submit"], 1);
+    assert!(evidence.observation.oracle_evidence);
+    evidence.replay.validate(&scenario).unwrap();
 
     session.close().await.unwrap();
     fixture_server.close().await;

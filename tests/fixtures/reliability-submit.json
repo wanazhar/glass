@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "name": "reliability-submit",
+  "workflowVersion": "1.0.0",
+  "inputs": {},
+  "budgets": {
+    "maxSteps": 1,
+    "maxDurationMs": 30000,
+    "maxRetries": 0,
+    "maxExtractedBytes": 4096
+  },
+  "steps": [
+    {
+      "id": "submit",
+      "action": "click",
+      "target": "css=#target",
+      "transaction": "non_idempotent",
+      "idempotencyKey": "reliability-submit-once",
+      "maxRetries": 0,
+      "repeat": 1
+    }
+  ],
+  "terminalCondition": {
+    "visible": "css=#target"
+  },
+  "outputs": {}
+}

@@ -568,6 +568,27 @@ pub enum WorkflowAuthoringCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CertifyCommand {
+    /// Run one scenario in a navigated browser fixture and emit evidence.
+    Run {
+        /// JSON scenario to execute.
+        #[arg(long)]
+        scenario: PathBuf,
+        /// JSON fixture manifest used to bind controls and faults.
+        #[arg(long)]
+        fixture: PathBuf,
+        /// Fixture URL to navigate before execution.
+        #[arg(long)]
+        url: String,
+        /// Directory containing workflow sources referenced by the scenario.
+        #[arg(long, default_value = ".")]
+        workflow_root: PathBuf,
+        /// Optional JSON object containing declared workflow inputs.
+        #[arg(long)]
+        inputs: Option<PathBuf>,
+        /// Optional path for the redacted evidence bundle.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Expand a scenario into its manifest-bound execution plan.
     Plan {
         /// JSON scenario to plan.
@@ -1000,6 +1021,46 @@ mod tests {
                 if path.as_os_str() == "intent.json"
         ));
         assert!(Cli::try_parse_from(["glass", "execute-intent"]).is_ok());
+    }
+
+    #[test]
+    fn reliability_run_command_requires_fixture_url_and_sources() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "certify",
+            "run",
+            "--scenario",
+            "scenario.json",
+            "--fixture",
+            "fixture.json",
+            "--url",
+            "http://127.0.0.1:8000/fixture.html",
+            "--workflow-root",
+            "fixtures",
+            "--inputs",
+            "inputs.json",
+            "--output",
+            "evidence.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Certify {
+                action: CertifyCommand::Run {
+                    scenario,
+                    fixture,
+                    url,
+                    workflow_root,
+                    inputs: Some(inputs),
+                    output: Some(output),
+                }
+            }) if scenario.as_os_str() == "scenario.json"
+                && fixture.as_os_str() == "fixture.json"
+                && url == "http://127.0.0.1:8000/fixture.html"
+                && workflow_root.as_os_str() == "fixtures"
+                && inputs.as_os_str() == "inputs.json"
+                && output.as_os_str() == "evidence.json"
+        ));
     }
 
     #[test]

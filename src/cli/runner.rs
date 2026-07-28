@@ -22,6 +22,7 @@ use crate::reliability::{
     ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
     ReliabilityScenarioObservation, build_reliability_scorecard,
 };
+use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
@@ -43,7 +44,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             println!("Chrome for Testing installed at {}", path.display());
             return Ok(());
         }
-        Some(Commands::Certify { action }) => {
+        Some(Commands::Certify { action }) if !matches!(action, CertifyCommand::Run { .. }) => {
             dispatch_certify(action)?;
             return Ok(());
         }
@@ -176,6 +177,9 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
 
 fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
     match action {
+        CertifyCommand::Run { .. } => {
+            unreachable!("browser-backed reliability runs are handled after startup")
+        }
         CertifyCommand::Plan { scenario, fixture } => {
             let scenario = ReliabilityScenario::from_value(read_json_input(Some(scenario))?)?;
             let fixture =
@@ -290,6 +294,44 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             }))?;
         }
     }
+    Ok(())
+}
+
+async fn dispatch_certify_run(
+    session: &BrowserSession,
+    scenario_path: &std::path::Path,
+    fixture_path: &std::path::Path,
+    url: &str,
+    workflow_root: &std::path::Path,
+    inputs_path: Option<&std::path::Path>,
+    output: Option<&std::path::Path>,
+) -> BrowserResult<()> {
+    let scenario = ReliabilityScenario::from_json(&std::fs::read_to_string(scenario_path)?)?;
+    let fixture = ReliabilityFixtureManifest::from_json(&std::fs::read_to_string(fixture_path)?)?;
+    let inputs: BTreeMap<String, Value> = match inputs_path {
+        Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)
+            .map_err(|error| format!("invalid workflow inputs: {error}"))?,
+        None => BTreeMap::new(),
+    };
+    session.navigate(url).await?;
+    let evidence = run_reliability_scenario(
+        session,
+        &scenario,
+        &fixture,
+        &ReliabilityRunOptions {
+            workflow_root: workflow_root.to_path_buf(),
+            inputs,
+        },
+    )
+    .await?;
+    let value = serde_json::json!({
+        "observation": evidence.observation,
+        "replay": evidence.replay,
+    });
+    if let Some(output) = output {
+        tokio::fs::write(output, serde_json::to_vec_pretty(&value)?).await?;
+    }
+    print_json(&value)?;
     Ok(())
 }
 
@@ -474,8 +516,30 @@ fn authoring_format(path: &std::path::Path) -> WorkflowAuthoringFormat {
 
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
+        Commands::Certify {
+            action:
+                CertifyCommand::Run {
+                    scenario,
+                    fixture,
+                    url,
+                    workflow_root,
+                    inputs,
+                    output,
+                },
+        } => {
+            dispatch_certify_run(
+                session,
+                scenario,
+                fixture,
+                url,
+                workflow_root,
+                inputs.as_deref(),
+                output.as_deref(),
+            )
+            .await?;
+        }
         Commands::Certify { .. } | Commands::Knowledge { .. } => {
-            unreachable!("knowledge commands are handled before browser startup")
+            unreachable!("offline commands are handled before browser startup")
         }
         Commands::Navigate {
             url,

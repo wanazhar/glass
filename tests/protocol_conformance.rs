@@ -128,7 +128,7 @@ fn daemon_handshake_advertises_isolated_session_mode() {
     use std::os::unix::net::UnixStream;
 
     let root = std::env::temp_dir().join(format!(
-        "glass-protocol-daemon-{}-{}",
+        "glass-pc-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

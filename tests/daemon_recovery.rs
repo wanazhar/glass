@@ -14,7 +14,7 @@ fn glass_binary() -> PathBuf {
 #[test]
 fn daemon_recovers_dead_status_and_stale_socket() {
     let root = std::env::temp_dir().join(format!(
-        "glass-daemon-recovery-{}-{}",
+        "glass-dr-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

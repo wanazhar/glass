@@ -49,6 +49,8 @@ pub mod capabilities;
 pub mod cli;
 /// Local Unix-socket daemon lifecycle and MCP bridge.
 pub mod daemon;
+/// Validated extension metadata and permission boundaries.
+pub mod extensions;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
 /// Versioned browser-free reliability scenario contracts.

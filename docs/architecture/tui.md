@@ -56,6 +56,26 @@ back a CDP input event that Chrome already received.
 The TUI is an operational dashboard, so full DOM inspection remains an explicit
 CLI/MCP capability rather than an unbounded right-panel payload.
 
+## Command inventory
+
+The TUI exposes the common interactive and platform-console operations without
+requiring raw JSON:
+
+| Area | Commands |
+|---|---|
+| Navigation and observation | `navigate`, `observe`, `semantic`, `text`, `dom`, `screenshot` |
+| Guarded interactions | `click`, `double click`, `hover`, `type`, `clear`, `check`, `uncheck`, `select`, `scroll`, `press`, `shortcut` |
+| Browser handling | `accept-dialog`, `dismiss-dialog`, `dismiss-consent`, `evaluate` |
+| Workflows and intent | `workflow`, `resolve-intent`, `intent execute` |
+| Local platform state | `profiles`, `knowledge`, `daemon status`, `daemon doctor`, `daemon logs`, `daemon recovery` |
+
+Target discovery, frame selection, storage, downloads, uploads, diagnostics,
+policy configuration, certification, and extension administration remain
+explicit CLI/MCP/library operations. Keeping those bounded interfaces out of
+the command prompt avoids inventing a second syntax for their structured
+inputs; their supported fields and semantics are documented in the respective
+interface guides.
+
 ## State variants
 
 - Loading: show connection status and activity entry while session starts.

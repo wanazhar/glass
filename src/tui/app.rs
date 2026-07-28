@@ -598,11 +598,24 @@ enum BrowserOperation {
     },
     Click(String),
     DoubleClick(String),
+    Hover(String),
+    Clear(String),
+    Check(String),
+    Uncheck(String),
+    Select {
+        target: String,
+        value: String,
+    },
     Type(String),
+    KeyPress(String),
+    Shortcut(String),
     Scroll {
         dx: f64,
         dy: f64,
     },
+    AcceptDialog,
+    DismissDialog,
+    DismissConsent,
     Evaluate(String),
     Workflow(String),
     ResolveIntent(String),
@@ -620,8 +633,18 @@ impl BrowserOperation {
             Self::Semantic { .. } => "Semantic observe",
             Self::Click(_) => "Click",
             Self::DoubleClick(_) => "Double-click",
+            Self::Hover(_) => "Hover",
+            Self::Clear(_) => "Clear",
+            Self::Check(_) => "Check",
+            Self::Uncheck(_) => "Uncheck",
+            Self::Select { .. } => "Select",
             Self::Type(_) => "Type",
+            Self::KeyPress(_) => "Key press",
+            Self::Shortcut(_) => "Shortcut",
             Self::Scroll { .. } => "Scroll",
+            Self::AcceptDialog => "Accept dialog",
+            Self::DismissDialog => "Dismiss dialog",
+            Self::DismissConsent => "Dismiss consent",
             Self::Evaluate(_) => "Evaluate",
             Self::Workflow(_) => "Workflow",
             Self::ResolveIntent(_) => "Resolve intent",
@@ -689,9 +712,52 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
             .map(BrowserOperation::Click)
             .map(ParsedCommand::Browser);
     }
+    if let Some(target) = strip_ascii_prefix(command, "hover ") {
+        return required_command_argument(target, "hover target")
+            .map(BrowserOperation::Hover)
+            .map(ParsedCommand::Browser);
+    }
+    for (prefix, operation, name) in [
+        (
+            "clear ",
+            BrowserOperation::Clear as fn(String) -> BrowserOperation,
+            "clear target",
+        ),
+        (
+            "check ",
+            BrowserOperation::Check as fn(String) -> BrowserOperation,
+            "check target",
+        ),
+        (
+            "uncheck ",
+            BrowserOperation::Uncheck as fn(String) -> BrowserOperation,
+            "uncheck target",
+        ),
+    ] {
+        if let Some(target) = strip_ascii_prefix(command, prefix) {
+            return required_command_argument(target, name)
+                .map(operation)
+                .map(ParsedCommand::Browser);
+        }
+    }
+    if let Some(values) = strip_ascii_prefix(command, "select ") {
+        return parse_target_value(values, "select target and value").map(|(target, value)| {
+            ParsedCommand::Browser(BrowserOperation::Select { target, value })
+        });
+    }
     if let Some(text) = strip_ascii_prefix(command, "type ") {
         return required_command_argument(text, "text")
             .map(BrowserOperation::Type)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(key) = strip_ascii_prefix(command, "press ") {
+        return required_command_argument(key, "key")
+            .map(BrowserOperation::KeyPress)
+            .map(ParsedCommand::Browser);
+    }
+    if let Some(shortcut) = strip_ascii_prefix(command, "shortcut ") {
+        return required_command_argument(shortcut, "shortcut")
+            .map(BrowserOperation::Shortcut)
             .map(ParsedCommand::Browser);
     }
     if let Some(path) = strip_ascii_prefix(command, "workflow ") {
@@ -757,6 +823,15 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     if let Some(values) = strip_ascii_prefix(command, "scroll ") {
         return parse_scroll(values).map(ParsedCommand::Browser);
     }
+    if command.eq_ignore_ascii_case("accept-dialog") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::AcceptDialog));
+    }
+    if command.eq_ignore_ascii_case("dismiss-dialog") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::DismissDialog));
+    }
+    if command.eq_ignore_ascii_case("dismiss-consent") {
+        return Ok(ParsedCommand::Browser(BrowserOperation::DismissConsent));
+    }
     Ok(ParsedCommand::Browser(BrowserOperation::Evaluate(
         command.to_string(),
     )))
@@ -802,6 +877,16 @@ fn parse_scroll(values: &str) -> Result<BrowserOperation, String> {
         return Err("scroll accepts at most dx and dy".to_string());
     }
     Ok(BrowserOperation::Scroll { dx, dy })
+}
+
+fn parse_target_value(values: &str, name: &str) -> Result<(String, String), String> {
+    let mut values = values.trim().splitn(2, char::is_whitespace);
+    let target = values.next().unwrap_or_default().trim();
+    let value = values.next().unwrap_or_default().trim();
+    if target.is_empty() || value.is_empty() {
+        return Err(format!("{name} requires two non-empty arguments"));
+    }
+    Ok((target.to_string(), value.to_string()))
 }
 
 fn parse_semantic_observation(values: &str) -> Result<BrowserOperation, String> {
@@ -1262,6 +1347,46 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::Hover(target) => {
+            let outcome = session.hover(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Hovered", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Clear(target) => {
+            let outcome = session.clear(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Cleared", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Check(target) => {
+            let outcome = session.check(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Checked", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Uncheck(target) => {
+            let outcome = session.uncheck(&target).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Unchecked", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Select { target, value } => {
+            let outcome = session.select_option(&target, &value).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Selected", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
         BrowserOperation::Type(text) => {
             let character_count = text.chars().count();
             let outcome = session.type_text(&text, None).await?;
@@ -1274,11 +1399,51 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::KeyPress(key) => {
+            let outcome = session.key_press(&key).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Pressed", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::Shortcut(shortcut) => {
+            let outcome = session.shortcut(&shortcut).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: action_activity("Ran shortcut", &outcome),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
         BrowserOperation::Scroll { dx, dy } => {
             let outcome = session.scroll(dx, dy).await?;
             let context = session.observe_fresh().await?;
             Ok(Box::new(OperationResult {
                 activity: format!("Scrolled (revision {}).", outcome.revision),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::AcceptDialog => {
+            session.accept_dialog().await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: "Accepted the JavaScript dialog.".into(),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::DismissDialog => {
+            session.dismiss_dialog().await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: "Dismissed the JavaScript dialog.".into(),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::DismissConsent => {
+            let outcome = session.dismiss_consent().await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Consent dismissal: {outcome:?}."),
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
@@ -1457,10 +1622,10 @@ fn handle_submission(
     match parse_command(&command) {
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
             app.add_activity(
-                "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
+                "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "press KEY | shortcut MOD+KEY | scroll [DX [DY]] | accept-dialog | dismiss-dialog | dismiss-consent | workflow FILE | resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -1912,6 +2077,21 @@ mod tests {
             parse_command("double click r7:b42"),
             Ok(ParsedCommand::Browser(BrowserOperation::DoubleClick(target))) if target == "r7:b42"
         ));
+        assert!(matches!(
+            parse_command("select ref=r7:b42 premium"),
+            Ok(ParsedCommand::Browser(BrowserOperation::Select { target, value }))
+                if target == "ref=r7:b42" && value == "premium"
+        ));
+        assert!(matches!(
+            parse_command("shortcut Ctrl+K"),
+            Ok(ParsedCommand::Browser(BrowserOperation::Shortcut(shortcut)))
+                if shortcut == "Ctrl+K"
+        ));
+        assert!(matches!(
+            parse_command("dismiss-consent"),
+            Ok(ParsedCommand::Browser(BrowserOperation::DismissConsent))
+        ));
+        assert!(parse_command("select target").is_err());
         assert!(matches!(
             parse_command("scroll -4 120"),
             Ok(ParsedCommand::Browser(BrowserOperation::Scroll { dx, dy })) if dx == -4.0 && dy == 120.0

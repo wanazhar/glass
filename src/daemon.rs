@@ -185,7 +185,7 @@ pub async fn start(
                 return Err(format!("daemon is already running as pid {}", existing.pid).into());
             }
             let _ = std::fs::remove_file(status_path);
-            let _ = std::fs::remove_file(&existing.socket);
+            let _ = remove_socket_if_safe(&existing.socket);
         }
         remove_socket_if_safe(socket)?;
         std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
@@ -489,5 +489,34 @@ mod tests {
         std::fs::write(&path, b"not a socket").unwrap();
         assert!(remove_socket_if_safe(&path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_status_cleanup_refuses_a_regular_recorded_socket() {
+        let root = std::env::temp_dir().join(format!("glass-daemon-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let socket = root.join("glass.sock");
+        let status_path = root.join("daemon.json");
+        std::fs::write(&socket, b"not a socket").unwrap();
+        let status = DaemonStatus {
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            state: "running".into(),
+            pid: std::process::id().saturating_add(1_000_000),
+            socket: socket.clone(),
+            status_path: status_path.clone(),
+            started_at: "2026-07-28T00:00:00Z".into(),
+            transport: "unix-mcp-stdio-bridge".into(),
+            client_sessions: 0,
+        };
+        std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
+
+        let result = start(Some(&socket), Some(&status_path)).await;
+
+        assert!(result.is_err());
+        assert!(socket.is_file());
+        assert!(!status_path.exists());
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }

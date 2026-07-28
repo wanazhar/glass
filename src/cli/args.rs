@@ -568,6 +568,15 @@ pub enum WorkflowAuthoringCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CertifyCommand {
+    /// Expand a scenario into its manifest-bound execution plan.
+    Plan {
+        /// JSON scenario to plan.
+        #[arg(long)]
+        scenario: PathBuf,
+        /// JSON fixture manifest used to bind controls and faults.
+        #[arg(long)]
+        fixture: PathBuf,
+    },
     /// Evaluate a release-blocking reliability gate.
     Release {
         #[arg(long)]
@@ -881,6 +890,26 @@ mod tests {
             }) if version == "0.2.0"
                 && scenarios.as_os_str() == "scenarios.json"
                 && observations.as_os_str() == "observations.json"
+        ));
+    }
+
+    #[test]
+    fn certify_plan_command_accepts_scenario_and_fixture_paths() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "certify",
+            "plan",
+            "--scenario",
+            "scenario.json",
+            "--fixture",
+            "fixture.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Certify {
+                action: CertifyCommand::Plan { scenario, fixture },
+            }) if scenario.as_os_str() == "scenario.json" && fixture.as_os_str() == "fixture.json"
         ));
     }
 

@@ -37,6 +37,14 @@ GLASS_E2E=1 cargo test --test browser_smoke reliability_lab_controls
 
 ## Offline validation
 
+Inspect a manifest-bound execution plan without starting Chrome:
+
+```console
+glass certify plan \
+  --scenario tests/fixtures/reliability-scenario-v1.json \
+  --fixture tests/fixtures/reliability-fixture-v1.json
+```
+
 Validate one replay bundle without starting Chrome:
 
 ```console

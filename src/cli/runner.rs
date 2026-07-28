@@ -19,8 +19,8 @@ use crate::browser::session::{
     format_workflow_yaml, preview_workflow, record_semantic_events,
 };
 use crate::reliability::{
-    ReliabilityReplayBundle, ReliabilityScenario, ReliabilityScenarioObservation,
-    build_reliability_scorecard,
+    ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
+    ReliabilityScenarioObservation, build_reliability_scorecard,
 };
 use base64::Engine;
 use serde::Serialize;
@@ -176,6 +176,16 @@ fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
 
 fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
     match action {
+        CertifyCommand::Plan { scenario, fixture } => {
+            let scenario = ReliabilityScenario::from_value(read_json_input(Some(scenario))?)?;
+            let fixture =
+                ReliabilityFixtureManifest::from_json(&std::fs::read_to_string(fixture)?)?;
+            let plan = scenario.execution_plan(&fixture)?;
+            print_json(&serde_json::json!({
+                "status": "valid",
+                "plan": plan,
+            }))?;
+        }
         CertifyCommand::Release {
             version,
             scenarios,

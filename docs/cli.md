@@ -74,6 +74,7 @@ workflow [JSON_FILE]
 workflow compile|format|validate|lint|preview SOURCE
 workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
+certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
 certify replay-diff --scenario SCENARIO_JSON --before REPLAY_JSON --after REPLAY_JSON
 certify release --version VERSION --scenarios SCENARIOS_JSON --observations OBSERVATIONS_JSON [--replays REPLAYS_JSON]

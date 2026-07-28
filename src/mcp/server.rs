@@ -444,7 +444,10 @@ where
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
-    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+    let permits = lease_context
+        .as_ref()
+        .map(|context| Arc::clone(&context.request_permits))
+        .unwrap_or_else(|| Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)));
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(MAX_QUEUED_RESPONSES);
     let writer = tokio::task::spawn_local(async move {
         let mut writer = writer;

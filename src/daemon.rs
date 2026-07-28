@@ -18,6 +18,8 @@ use crate::cli::args::Cli;
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 /// Maximum number of isolated MCP child sessions per daemon.
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
+/// Maximum number of in-flight MCP operations across all daemon clients.
+pub const MAX_DAEMON_CONCURRENT_REQUESTS: usize = 16;
 /// Stable session namespace used by the first shared daemon runtime.
 pub const DAEMON_DEFAULT_SESSION_ID: &str = "daemon-default";
 const MIN_LEASE_TTL_MS: u64 = 100;
@@ -69,6 +71,7 @@ pub struct MutationLeaseManager {
 pub struct DaemonLeaseContext {
     pub manager: Arc<tokio::sync::Mutex<MutationLeaseManager>>,
     pub owner_id: String,
+    pub request_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl MutationLeaseManager {
@@ -402,6 +405,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let shared_session = Arc::new(tokio::sync::Mutex::new(None));
     let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
+    let request_permits = Arc::new(tokio::sync::Semaphore::new(MAX_DAEMON_CONCURRENT_REQUESTS));
     let next_owner_id = std::sync::atomic::AtomicU64::new(0);
     let mut terminate = signal(SignalKind::terminate())?;
     let mut clients = Vec::new();
@@ -434,6 +438,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         let lease_context = Arc::new(DaemonLeaseContext {
             manager: Arc::clone(&lease_manager),
             owner_id,
+            request_permits: Arc::clone(&request_permits),
         });
         clients.push(tokio::task::spawn_local(async move {
             let (socket_read, socket_write) = stream.into_split();

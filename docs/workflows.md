@@ -1,20 +1,29 @@
 # Workflow definitions
 
-The current 0.2.0 development surface includes the validated definition
-contract and a linear runner for the transactional workflow runtime.
-Definitions are validated before execution, and each step records its state
-transition history. The local development surface also includes bounded
-retries, traces, checkpoints, resume reconciliation, and offline authoring
-tools.
+The 0.2.0 checkout supports validated workflow definitions and a linear
+workflow runner. The checkout also supports bounded retries, traces,
+checkpoints, resume reconciliation, and offline authoring.
 
-## Contract
+These features are local-only until the 0.2.0 release gates pass.
 
-A workflow definition contains a schema version, a caller-owned workflow
-version, typed inputs, resource budgets, preconditions, named steps, a terminal
-condition, and declared outputs. Definitions are validated before a browser is
-started or an action is dispatched.
+## Definition
 
-```json
+A workflow definition contains:
+
+- a schema version;
+- a workflow name and version;
+- typed inputs;
+- resource budgets;
+- optional preconditions;
+- named steps;
+- a terminal condition; and
+- declared outputs.
+
+Glass validates the definition before it starts Chrome or dispatches an action.
+
+Example:
+
+`json
 {
   "schemaVersion": 1,
   "name": "open-example",
@@ -46,153 +55,124 @@ started or an action is dispatched.
     }
   }
 }
-```
+`
 
-`WorkflowDefinition::from_json` and `WorkflowDefinition::from_value` reject
-missing required fields, unsupported schema versions, duplicate step IDs,
-invalid URLs, unbounded budgets, invalid input values, and unsafe arbitrary
-JavaScript steps. `to_canonical_json` returns deterministic JSON with ordered
-map keys for hashing or audit records.
+Use [workflow-v1.schema.json](schema/workflow-v1.schema.json) for the external
+JSON contract.
 
-The pinned external contract is [workflow-v1.schema.json](schema/workflow-v1.schema.json).
-It describes the supported JSON shape; runtime validation additionally checks
-cross-field rules such as unique step IDs, expanded repetition budgets, and
-transaction retry safety.
+`WorkflowDefinition::from_json` and `WorkflowDefinition::from_value` reject:
 
-`valueType` is the canonical serialized field for inputs and outputs. The
-validator also accepts the issue-era `type` spelling as an additive input alias;
-canonical serialization always writes `valueType`.
+- missing required fields;
+- unsupported schema versions;
+- duplicate step IDs;
+- invalid URLs;
+- unbounded budgets;
+- invalid input values;
+- unsafe JavaScript steps; and
+- unknown fields.
 
-The workflow contract uses a strict unknown-field policy. Unknown top-level,
-input, budget, output, step, and predicate fields fail validation with a JSON
-path; future fields require an explicit schema-version or compatibility update.
+Validation errors include the JSON path. Canonical JSON uses ordered map keys.
+The runtime accepts the issue-era `type` alias for inputs and outputs. It
+writes the canonical field `valueType`.
 
-Action strings may reference declared values with the bounded
-`${inputs.name}` form. Glass resolves these placeholders after input type
-validation and before browser dispatch; unknown, missing, non-scalar, or
-oversized substitutions fail before an action can run.
+## Actions and conditions
 
-## Current boundary
+The current definition accepts navigation, pointer and form actions, scrolling,
+waits, observations, screenshots, and dialog decisions. It reuses the batch
+action contract. It does not accept arbitrary `evaluate` steps.
 
-The definition contract currently accepts navigation, pointer and form
-actions, scrolling, waits, observations, screenshots, and dialog decisions.
-Arbitrary `evaluate` steps are intentionally excluded. The accepted action
-shape reuses the existing batch action schema, including bounded verification
-predicates.
+Action strings may use the bounded `${inputs.name}` form. Glass validates the
+input before it substitutes the value.
+
+A step may declare `when`. Glass evaluates the condition before dispatch. A
+false condition records `skipped`. A predicate error fails before dispatch.
+
+A step may declare `repeat` from 1 through 8. Repeated steps count toward
+`maxSteps` and must use a retry-safe transaction class.
 
 ## Retry safety
 
-Each step may declare `transaction` as `read_only`, `idempotent`,
-`conditionally_idempotent`, `non_idempotent`, or `unknown`. Conditional steps
-must provide an `idempotencyKey`, and keys must be unique within one workflow
-definition. The key is a bounded declaration used to identify one effect
-contract; it is not presented as a distributed server-side deduplication
-service. A retry-safe step may also declare
-`beforeRetry`, a bounded predicate used to recognize an already-visible success
-marker before another dispatch is considered. `maxRetries` is bounded by the
-workflow budget and is rejected for non-idempotent or unknown steps.
+Each step declares one transaction class:
 
-The runner retries only failures proven to occur before dispatch and only for a
-retry-safe class. A failure after dispatch is recorded and stops the workflow;
-Glass does not claim that an external effect was rolled back or replay it
-automatically.
+- `read_only`;
+- `idempotent`;
+- `conditionally_idempotent`;
+- `non_idempotent`; or
+- `unknown`.
 
-When dispatch was acknowledged but the step cannot be verified, the run status
-is `resume_required`. This is distinct from a pre-dispatch `failed` result and
-means the caller must reconcile the current page before deciding what to do.
-If the action itself returns an error after dispatch without an effect witness,
-the step state is `indeterminate`; a verified action whose declared
-postcondition fails remains `failed_after_dispatch`.
+A conditional step must declare a bounded `idempotencyKey`. It may also
+declare `beforeRetry` to identify an existing success marker.
 
-For bounded control flow, a step may set `repeat` from 1 through 8. Repeated
-steps count toward `maxSteps` and require a retry-safe transaction class, so
-`repeat` cannot be used to replay an unknown or non-idempotent effect.
+Glass retries only failures that occurred before dispatch and only when the
+transaction class is retry-safe. Glass does not retry a possible external
+effect. It does not claim that an external effect was rolled back.
 
-A step may also declare a `when` predicate. Glass evaluates it once before
-dispatch: a matched condition runs the action, while an unmet condition records
-the step as `skipped`. Predicate errors fail before dispatch. The decision and
-predicate are retained in the bounded trace; conditional steps cannot be
-repeated automatically.
+If dispatch was acknowledged but verification did not complete, the run status
+is `resume_required`. If Glass cannot determine whether the effect occurred,
+the step state is `indeterminate`. A failed postcondition after dispatch is
+`failed_after_dispatch`.
 
-Outputs use bounded sources such as `page_url`, `page_title`, or
-`visible_text`. Their declared type is checked before the value is returned;
-arbitrary JavaScript is not an output source. Marking an output `sensitive`
-still performs type validation and provenance recording, but returns `null`
-with `redacted: true` instead of the extracted value.
+## Outputs and evidence
 
-String, URL, integer, number, and boolean outputs use strict conversions. A
-run-wide `maxExtractedBytes` budget is enforced before serialization. Each
-returned output includes its source and the browser revision used as bounded
-provenance.
+Outputs may use these bounded sources:
 
-Every run result also includes a deterministic, schema-versioned trace of
-step-state transitions.
-The trace has contiguous sequence numbers and a fixed event budget, making it
-suitable for replay inspection without retaining page contents or input
-values. Each step result also records whether dispatch was acknowledged, an
-effect was observed, its postcondition was verified, whether retry is safe, and
-the bounded revision boundary. When the shared action executor returns an
-execution ID, it is retained in `executionIds`; retries retain each returned
-ID in order. Each result, trace, and exported checkpoint carries the same bounded
-`runId`; a resumed suffix receives a new run ID so separate invocations remain
-auditable.
+- `page_url`;
+- `page_title`; and
+- `visible_text`.
+
+Glass checks the declared type. It does not use arbitrary JavaScript as an
+output source.
+
+A sensitive output returns `null` with `redacted: true`. It does not return
+the value. Each output includes its source and browser revision.
+
+Each run includes a bounded, versioned trace. The trace records step states,
+dispatch evidence, effects, verification, retries, and the run ID. It does not
+retain page contents or input values.
 
 ## Checkpoints and resume
 
-`export_workflow_checkpoint` produces deterministic JSON capped at 8 KiB. It
-stores workflow identity, a definition hash, redacted step states and bounded
-execution evidence, plus target/frame/URL/title/revision metadata. It does not
-store input values, cookies, passwords, page content, or step error strings.
+`export_workflow_checkpoint` creates deterministic JSON capped at 8 KiB. The
+checkpoint contains workflow identity, a definition hash, redacted step state,
+bounded execution evidence, and route and revision metadata.
 
-`reconcile_workflow_checkpoint` checks that the definition and route still
-match and returns the next safe step without dispatching an action. It rejects
-changed routes and any checkpoint whose next state could represent an already
-dispatched effect. Callers remain responsible for executing the returned plan.
+The checkpoint does not contain input values, cookies, passwords, page content,
+or step error strings.
 
-`BrowserSession::resume_workflow` performs that reconciliation and then runs
-only the safe pending suffix. It refuses an already-complete checkpoint and
-never re-dispatches the committed prefix. The returned result restores the
-committed prefix as bounded checkpoint evidence, so it remains exportable and
-replayable against the original workflow definition.
+`reconcile_workflow_checkpoint` checks the workflow, route, and next step. It
+does not dispatch an action. It rejects route changes, definition changes, and
+a next state that could represent an already dispatched effect.
 
-`WorkflowTrace::replay` checks that a trace belongs to the declared workflow,
-follows legal state transitions, and preserves attempt boundaries without
-contacting Chrome or replaying an effect. This makes traces suitable for
-offline diagnostics and test fixtures.
+`BrowserSession::resume_workflow` reconciles the state and runs only the safe
+pending suffix. It does not replay the committed prefix. It refuses an
+already-complete checkpoint.
 
-Replay also requires the first event to belong to the first declared step; a
-trace cannot skip an earlier step and still be accepted as a valid prefix.
+`WorkflowTrace::replay` checks workflow identity, schema version, event order,
+and legal state transitions. It does not contact Chrome or replay an effect.
 
-Trace schema versioning is independent from the workflow definition and
-checkpoint schema versions. Older traces that omit the version field are read
-as trace schema version 1; unsupported explicit versions fail before replay.
+Glass enforces `maxSteps` and `maxDurationMs` during execution. When a
+budget ends, the run status is `budget_exhausted`. Remaining steps become
+`skipped`.
 
-The `maxSteps` and `maxDurationMs` budgets are enforced during execution, not
-only during definition validation. Budget exhaustion returns the explicit
-`budget_exhausted` run status, marks the remaining steps as skipped, and never
-dispatches the next step.
+## Authoring
 
-`WorkflowRecorder` is a local draft builder for reviewed authoring flows. Its
-click and text-input helpers retain semantic role/name targets, mark every
-draft for review, and store typed values as `${inputs.name}` placeholders. It
-can also capture bounded semantic resolution evidence, including ambiguity,
-revision, semantic region kind, route context, and digest-only target/frame
-fingerprints. Recorder drafts are not execution evidence and do not
-automatically attach to or observe a browser session. See
-[workflow authoring](workflow-authoring.md) for the current compiler,
-diagnostic, preview, and diff boundaries.
+`glass workflow compile`, `format`, `validate`, `lint`, `preview`, and
+`diff` are offline operations. They do not start Chrome.
 
-## Workflow scorecard
+Read [Workflow authoring](workflow-authoring.md) for source formats,
+diagnostics, semantic recording, preview, and diff behavior.
 
-The deterministic workflow corpus lives at
-`benchmarks/scenarios/workflow-v1.json` and uses the local
-`tests/fixtures/scorecard.html` page. Run it with
-`GLASS_WORKFLOW_SCORECARD_ITERATIONS=10 cargo run --release --example workflow_scorecard`.
-The hard gate checks the expected run status and every retained step state for
-linear completion, conditional skipping, budget exhaustion, marker
-reconciliation, and terminal-proof refusal. The command prints JSON and fails
-if any scenario diverges from the corpus.
+## Scorecard
 
-This is a local, unreleased 0.2.0 development surface. It is not a public
-registry or GitHub release; the remaining workflow roadmap is still being
-completed before publication.
+Run the local workflow scorecard:
+
+`console
+GLASS_WORKFLOW_SCORECARD_ITERATIONS=10 cargo run --release --example workflow_scorecard
+`
+
+The scorecard uses `benchmarks/scenarios/workflow-v1.json` and the local
+`tests/fixtures/scorecard.html` fixture. It checks linear completion,
+conditional skip, budget exhaustion, marker reconciliation, and terminal-proof
+refusal.
+
+The scorecard is local evidence. It is not a public release claim.

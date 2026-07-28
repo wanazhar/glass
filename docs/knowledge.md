@@ -1,49 +1,64 @@
 # Persistent browser knowledge
 
-Glass can keep a small local store of bounded observations about recurring
-browser pages. Knowledge is optional and advisory. A fresh observation is
-always collected before an assessed observation or knowledge-backed intent
-resolution; stored records never provide a current element reference and never
-authorize a browser mutation.
+Glass can store a small local set of bounded page observations. Knowledge is
+optional and advisory.
 
-## What is stored
+Glass always collects a fresh observation before it uses stored knowledge.
+Stored data never provides a current target reference. Stored data never
+authorizes a mutation.
 
-Records are versioned and scoped by:
+## Stored data
+
+A record is scoped by:
 
 - origin and path pattern;
 - anonymous, authenticated, or profile-bound session scope;
 - optional profile, locale, and tenant keys;
-- browser family and optional version range;
-- Glass schema version and policy preset.
+- browser family and version range;
+- Glass schema version; and
+- policy preset.
 
-Supported record kinds include page families, region models, target
-fingerprints, route transitions, workflow entry points, verified
-postconditions, extraction shapes, and invalidation rules. The current runtime
-constructs page-family records and hashed target-fingerprint records from fresh
-semantic evidence. Record payloads are bounded, reject sensitive field names,
-and do not retain CDP references, route handles, accessible names, raw DOM,
-screenshots, cookies, credentials, or form values.
+The runtime stores page-family records and hashed target-fingerprint records.
+The contract also supports region models, route transitions, workflow entry
+points, verified postconditions, extraction shapes, and invalidation rules.
 
-Records use `candidate`, `observed`, `verified`, `stale`, `contradicted`, or
-`quarantined` lifecycle states. Promotion to verified and recovery from
-contradiction or quarantine require fresh verification. Fresh verification also
-refreshes provenance timestamps and counts.
+Records do not contain CDP references, route handles, accessible names, raw DOM,
+screenshots, cookies, credentials, or form values. Glass bounds records and
+rejects sensitive field names.
+
+## Record lifecycle
+
+A record can be:
+
+- `candidate`;
+- `observed`;
+- `verified`;
+- `stale`;
+- `contradicted`; or
+- `quarantined`.
+
+Fresh verification is required before promotion to `verified` or recovery from
+`contradicted` and `quarantined`.
 
 ## Local store
 
-The default file is profile-scoped under the platform configuration directory:
+The default store is:
 
-```text
+`text
 <config>/glass/knowledge/<profile>.json
-```
+`
 
-Use `--knowledge-store PATH` to select another file. Writes use a sidecar lock,
-same-directory temporary files, flush-and-rename replacement, and bounded
-pruning. Corrupt JSON is reported as an error and is never silently replaced.
+Use `--knowledge-store PATH` to select another file.
 
-The CLI management commands do not start Chrome:
+Glass uses a sidecar lock, a temporary file, flush, and rename for writes.
+Glass prunes records within bounded limits. Corrupt JSON returns an error. Glass
+does not replace corrupt data silently.
 
-```console
+## CLI
+
+These commands do not start Chrome:
+
+`console
 glass knowledge list
 glass knowledge show RECORD_ID
 glass knowledge explain RECORD_ID
@@ -52,35 +67,35 @@ glass knowledge export [PATH]
 glass knowledge import SNAPSHOT.json
 glass knowledge invalidate RECORD_ID stale
 glass knowledge purge https://example.test
-```
+`
 
-`explain` reports scope, provenance, lifecycle history, invalidation rules, and
-the canonical content hash. It also makes clear that a fresh observation is
-still required.
+`explain` reports scope, provenance, lifecycle history, invalidation rules,
+and the content hash. It states that a fresh observation is required.
 
-## Knowledge-assisted observation and intent
+## Knowledge-assisted operations
 
-MCP exposes two explicit opt-in operations:
+MCP provides two explicit operations:
 
-- `observeKnowledge` always performs a fresh semantic observation. With
-  `freshOnly: true` it does not open or read the store. Otherwise it returns
-  eligible, stale, and out-of-scope assessments with bounded explanations.
-- `resolveIntentWithKnowledge` resolves against current semantic targets and
-  may add `historicalMatch` evidence when an eligible target fingerprint
-  matches. Historical data cannot create a candidate, increase its confidence,
-  or bypass the guarded execution boundary.
+- `observeKnowledge` collects a fresh semantic observation. With
+  `freshOnly: true` it does not read the store. Otherwise it returns bounded
+  scope and freshness assessments.
+- `resolveIntentWithKnowledge` resolves current targets and may add
+  `historicalMatch` evidence for an eligible target fingerprint.
 
-The ordinary `observe` and `resolveIntent` operations do not consult the
-knowledge store implicitly.
+Historical data cannot create a candidate. It cannot raise confidence. It
+cannot bypass the guarded execution boundary.
 
-## Contract and fixtures
+Ordinary `observe` and `resolveIntent` do not read the knowledge store.
 
-The machine-readable v1 snapshot contract is in
-[`schema/knowledge-v1.schema.json`](schema/knowledge-v1.schema.json). The
-offline assessment corpus is in
-[`../benchmarks/scenarios/knowledge-v1.json`](../benchmarks/scenarios/knowledge-v1.json)
-and can be checked with:
+## Contract and scorecard
 
-```console
+The snapshot contract is
+[knowledge-v1.schema.json](schema/knowledge-v1.schema.json).
+
+Run the local scorecard:
+
+`console
 cargo run --example knowledge_scorecard
-```
+`
+
+The scorecard is local evidence. It is not a public release claim.

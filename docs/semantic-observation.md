@@ -1,60 +1,77 @@
 # Semantic observations
 
-Semantic observations are a bounded, versioned view of the current page. They
-classify page and landmark regions from the browser's accessibility evidence;
-the classifications are advisory and do not authorize an action.
+A semantic observation is a bounded, versioned view of the current page. Glass
+builds it from browser accessibility data.
 
-Every observation includes a schema version, route identity, page revision,
-page classification, region summaries, and omission limits. Region expansion
-handles carry the same target, frame, URL, and revision so a handle cannot be
-silently reused after the page changes.
+A classification is evidence. It does not authorize an action.
 
-## Levels
+Each observation contains:
 
-Choose the smallest level that answers the question:
+- a schema version;
+- route identity;
+- a page revision;
+- a page classification;
+- region summaries; and
+- omission and truncation limits.
 
-| Level | Adds |
+A region handle contains the target, frame, URL, and revision. Glass rejects the
+handle when the page changes.
+
+## Observation levels
+
+Select the smallest level that answers the question:
+
+| Level | Data |
 |---|---|
-| `summary` | Page classification and bounded region summaries. |
+| `summary` | Page classification and region summaries. |
 | `interactive` | Revision-scoped action references grouped by region. |
 | `structured` | Bounded visible page text. |
-| `detailed` | The bounded compact accessibility projection. |
-| `raw` | The same bounded fields plus an explicitly named raw accessibility projection. |
+| `detailed` | A bounded compact accessibility projection. |
+| `raw` | The bounded fields and an explicit raw accessibility projection. |
 
-Form values, screenshots, and deep DOM are separate explicit capabilities;
-they are not smuggled into semantic levels. An omitted or truncated field is
-reported through `limits` rather than silently treated as complete.
+Form values, screenshots, and deep DOM are separate operations. Glass does not
+add them to a semantic level. Glass reports omitted and truncated fields in
+`limits`.
 
 ## CLI
 
-```console
+Run:
+
+`console
 glass observe --level summary
 glass observe --level interactive
 glass observe --level structured --region region_main_1
-```
+`
 
-Semantic options cannot be combined with `--deep-dom`, `--screenshot`, or
+Do not combine semantic options with `--deep-dom`, `--screenshot`, or
 `--form-values`. In the TUI, use `semantic LEVEL [REGION_ID]`.
 
 ## MCP
 
-Call the existing `observe` tool with `level` set to one of the five values.
-Add `region` for a revision-checked scoped expansion. Calls without `level`
-retain the compact `PageContext` response for compatibility.
+Call the `observe` tool with `level` set to one of the five levels. Add
+`region` for a revision-checked region expansion.
+
+If `level` is not present, Glass returns the compact `PageContext` response
+for compatibility.
 
 ## Revisions and diffs
 
-`SemanticObservation::diff_from` accepts observations only when their target,
-frame, URL, and level match and the revision does not move backward. It
-reports bounded region and target additions, removals, and updates. A
-continuity entry is emitted only for a unique role/name/input-type match; it is
-an advisory link between two references, not a replacement reference and not
-permission to perform an action.
+`SemanticObservation::diff_from` accepts observations with the same target,
+frame, URL, and level. The new revision must not be lower than the old revision.
+
+The diff reports bounded region and target additions, removals, and changes.
+
+A continuity entry requires one unique role, name, and input-type match. It is
+an advisory link. It is not a replacement reference. It does not authorize an
+action.
 
 ## Privacy and limits
 
-Semantic targets contain references, roles, names, and input types. They do
-not contain form values, cookies, credentials, evaluated source, or screenshot
-pixels. Labels, roles, visible text, regions, targets, evidence, and change
-vectors are bounded before serialization. The JSON schema is published at
-[`docs/schema/semantic-observation-v1.schema.json`](schema/semantic-observation-v1.schema.json).
+Semantic data may contain references, roles, names, input types, labels, visible
+text, regions, evidence, and change vectors.
+
+Glass does not include form values, cookies, credentials, evaluated source, or
+screenshot pixels in semantic data.
+
+Glass bounds all semantic data before serialization. The schema is
+[semantic-observation-v1.schema.json](schema/semantic-observation-v1.schema.json).

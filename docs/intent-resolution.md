@@ -1,16 +1,16 @@
 # Intent resolution
 
-Intent resolution maps one bounded, caller-supplied phrase to candidates in a
-fresh semantic observation. It reports the evidence and policy decision before
-an action can cross the guarded execution boundary. It is not a workflow
-planner and it does not invent a target when the observation is ambiguous.
+Intent resolution maps one caller-supplied phrase to candidates in a fresh
+semantic observation.
 
-## Resolve, then execute
+It returns evidence and a policy decision. It does not plan a workflow. It does
+not select a target when the evidence is ambiguous.
 
-The request is versioned and explicit about the action, scope, constraints, and
-certainty policy:
+## Resolve
 
-```json
+Create a versioned request:
+
+`json
 {
   "schemaVersion": 1,
   "intent": "open settings",
@@ -20,22 +20,24 @@ certainty policy:
   "resolutionPolicy": "requireExact",
   "expectedRevision": 42
 }
-```
+`
 
-Resolve it with the CLI or MCP:
+Resolve without dispatch:
 
-```console
+`console
 glass resolve-intent request.json
-```
+`
 
-The result includes the current route, revision, candidates, confidence,
-evidence, exclusions, and selected candidate. Candidate references remain
-scoped to the observed target, frame, and revision.
+The result contains the route, revision, candidates, confidence, evidence,
+exclusions, and selected candidate.
 
-Execution repeats the observation and resolution before dispatch. The caller
-must identify the candidate returned by resolution:
+A candidate is valid only for the observed target, frame, and revision.
 
-```json
+## Execute
+
+Provide the candidate ID from the resolution result:
+
+`json
 {
   "request": {
     "schemaVersion": 1,
@@ -48,84 +50,71 @@ must identify the candidate returned by resolution:
   },
   "candidateId": "candidate_1"
 }
-```
+`
 
-```console
+Run:
+
+`console
 glass execute-intent execution.json
-```
+`
 
-An execution response separates the resolution evidence from the optional
-action outcome. `status` is `executed` only after the guarded action returns;
-otherwise it is `not_executed` with the reason and fresh resolution.
+Glass observes and resolves again before dispatch. The response separates
+resolution evidence from the action result.
 
-## Resolution and policy outcomes
+`executed` means that the guarded action returned. `not_executed` means
+that Glass did not dispatch the action and returns the reason.
 
-The resolver reports one of these classifications:
+## Result classifications
 
-- `exact`: the declared role and accessible name identify one candidate;
-- `uniqueHighConfidence`: one candidate has high-confidence semantic evidence;
-- `uniqueLowConfidence`: one candidate has only medium or low evidence;
-- `ambiguous`: more than one candidate remains;
-- `notFound`: no candidate satisfies the request;
-- `staleRevision`: the caller supplied a revision that is no longer current;
-- `policyRejected`: a candidate exists but does not meet the selected policy;
-- `unsupportedIntent`: the phrase or request is outside the bounded contract.
+| Classification | Meaning |
+|---|---|
+| `exact` | One exact role and accessible-name match. |
+| `uniqueHighConfidence` | One candidate has high-confidence evidence. |
+| `uniqueLowConfidence` | One candidate has lower-confidence evidence. |
+| `ambiguous` | More than one candidate remains. |
+| `notFound` | No candidate satisfies the request. |
+| `staleRevision` | The supplied revision is not current. |
+| `policyRejected` | A candidate exists but policy rejects it. |
+| `unsupportedIntent` | The request is outside the supported contract. |
 
-Policies are caller-selected. `reportOnly` never dispatches. `requireExact`
-accepts only an exact result; `requireUniqueHighConfidence` also accepts a
-unique high-confidence result; `allowUniqueMediumConfidence` permits a unique
-medium-confidence candidate; and `interactiveConfirmation` requires the
-caller to name a candidate before execution. Ambiguous, stale, not-found, and
-unsupported results do not dispatch.
+## Resolution policies
 
-The guarded execution boundary currently supports click-like actions, typing,
-clearing, checking and unchecking, selecting, submitting, opening and closing,
-searching, filtering, sorting, pagination, expanding, and collapsing. Toggle,
-download, upload, inspect, and extract intent actions are reported as
-unsupported at this boundary until their action-specific contracts are ready.
+- `reportOnly` never dispatches.
+- `requireExact` accepts only `exact`.
+- `requireUniqueHighConfidence` accepts an exact or unique high-confidence
+  result.
+- `allowUniqueMediumConfidence` accepts one unique medium-confidence result.
+- `interactiveConfirmation` requires the caller to select a candidate.
 
-## Semantic workflow steps
+Ambiguous, stale, not-found, and unsupported results do not dispatch.
 
-Workflows can use the same contract instead of embedding a raw locator:
+## Supported actions
 
-```json
-{
-  "schemaVersion": 1,
-  "workflow": {
-    "id": "checkout",
-    "transaction": "idempotent",
-    "steps": [{
-      "id": "continue",
-      "intent": {
-        "action": "click",
-        "purpose": "continueCheckout",
-        "scope": {"regionKind": "checkoutSummary"},
-        "resolutionPolicy": "requireUniqueHighConfidence"
-      }
-    }]
-  }
-}
-```
+The guarded boundary supports click-like actions, typing, clearing, checking,
+unchecking, selecting, submitting, opening, closing, searching, filtering,
+sorting, pagination, expanding, and collapsing.
 
-Workflow traces and checkpoints retain the resolution ID, candidate ID,
-revision, policy decision, confidence, evidence, and target fingerprint. A
-resume operation re-observes the browser and resolves the pending suffix
-again; it does not replay an old target reference.
+Toggle, download, upload, inspect, and extract intent actions are reported as
+unsupported until their action contracts are ready.
+
+## Workflow use
+
+A workflow may use an intent step instead of a raw locator. The trace and
+checkpoint retain the resolution ID, candidate ID, revision, policy decision,
+confidence, evidence, and target fingerprint.
+
+On resume, Glass observes and resolves the pending step again. It does not use
+an old target reference.
 
 ## Interfaces and limits
 
-- Rust: `BrowserSession::resolve_intent` and
-  `BrowserSession::execute_intent` expose the typed contract.
-- CLI: `resolve-intent` reports candidates and `execute-intent` performs one
-  guarded action after explicit candidate selection.
-- MCP: `resolveIntent` and `executeIntent` expose the same fields with strict
-  schemas.
-- TUI: `resolve-intent FILE` shows candidates and evidence; Up/Down selects a
-  candidate and `intent execute [VALUE]` submits it.
+- Rust provides `BrowserSession::resolve_intent` and
+  `BrowserSession::execute_intent`.
+- CLI provides `resolve-intent` and `execute-intent`.
+- MCP provides `resolveIntent` and `executeIntent`.
+- TUI displays candidates and evidence and supports explicit selection.
 
-Requests, candidates, evidence, values, and suggestions are bounded. Intent
-payloads do not include cookies, profile data, screenshots, or raw DOM. Keep
-the revision and route with the result when presenting a candidate for review.
+Glass bounds requests, candidates, evidence, values, and suggestions. Intent
+payloads do not contain cookies, profile data, screenshots, or raw DOM.
 
-The machine-readable resolution schema is
-[`docs/schema/intent-resolution-v1.schema.json`](schema/intent-resolution-v1.schema.json).
+The schema is [intent-resolution-v1.schema.json](schema/intent-resolution-v1.schema.json).

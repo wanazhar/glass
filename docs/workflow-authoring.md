@@ -1,76 +1,96 @@
 # Workflow authoring
 
-Workflow authoring is a local, unreleased 0.2.0 development surface. It turns
-human-readable YAML or JSON into the validated workflow contract used by the
-runtime. The authoring tools do not start Chrome.
+Workflow authoring converts YAML or JSON into the validated workflow contract.
+The commands are offline. They do not start Chrome.
 
-## CLI
+The authoring feature is local-only in the 0.2.0 checkout.
 
-Use the following commands against a workflow source file:
+## Commands
 
-- `glass workflow compile FILE` writes canonical workflow JSON.
-- `glass workflow format FILE` renders deterministic YAML.
-- `glass workflow validate FILE` prints the compiled document and diagnostics.
-- `glass workflow lint FILE` prints diagnostics and returns failure for error
-  findings; add `--warnings-as-errors` for stricter CI.
-- `glass workflow preview FILE` prints a value-free execution shape.
-- `glass workflow diff BEFORE AFTER` compares two validated definitions and
-  prints stable hashes, risk levels, and migration guidance.
-- `glass workflow record [--input EVENTS_JSON] [--output DRAFT_JSON]` imports
-  an explicit semantic-event envelope and emits a reviewable draft. Without
-  `--input`, the event envelope is read from stdin.
+Use these commands with a source file:
 
-The existing `glass workflow FILE` form remains the browser execution command.
-Authoring subcommands are selected before browser startup, so a malformed
-source cannot cause a browser action.
+| Command | Result |
+|---|---|
+| `glass workflow compile FILE` | Write canonical workflow JSON. |
+| `glass workflow format FILE` | Write deterministic YAML. |
+| `glass workflow validate FILE` | Print the compiled document and diagnostics. |
+| `glass workflow lint FILE` | Print diagnostics and fail on error findings. |
+| `glass workflow preview FILE` | Print a value-free execution shape. |
+| `glass workflow diff BEFORE AFTER` | Compare validated definitions. |
+| `glass workflow record` | Import semantic events and write a reviewable draft. |
 
-## Source and safety checks
+Add `--warnings-as-errors` to `lint` when warnings must fail the command.
+The `record` command reads the event envelope from stdin when `--input` is
+not present.
 
-YAML is an authoring format; canonical JSON is the runtime interchange format.
-Both use the same strict schema and validation rules. Parse failures report a
-bounded diagnostic with a source line and column when the parser provides one.
+The existing `glass workflow FILE` command remains the browser execution
+command. Authoring commands run before browser startup.
 
-The compiler currently reports stable diagnostics for:
+## Source and validation
 
-- missing postconditions and unknown transaction classes;
-- unsafe retries and non-idempotent steps without an effect marker;
-- undefined or malformed `${inputs.name}` references;
-- literal values in type/select actions and value-bearing semantic intents;
-- fragile CSS, ordinal, coordinate, and revision-reference targets; and
+YAML is an authoring format. Canonical JSON is the runtime format. Both use the
+same strict schema and validation rules.
+
+The compiler reports diagnostics for:
+
+- missing postconditions;
+- unknown transaction classes;
+- unsafe retries;
+- non-idempotent steps without an effect marker;
+- invalid `${inputs.name}` references;
+- literal values in type and select actions;
+- fragile CSS, ordinal, coordinate, and revision targets; and
 - sensitive-looking input names.
 
-Names containing terms such as `password`, `secret`, `token`, `api_key`, or
-`cookie` are inferred as sensitive when no declaration is present. Explicitly
-setting `sensitive: false` for such an input is an error. Input values are
-never part of authoring source or preview output; callers provide them at
+Glass marks an input as sensitive when its name contains terms such as
+`password`, `secret`, `token`, `api_key`, or `cookie` and no
+declaration exists. Setting `sensitive: false` for such an input is an error.
+
+Input values do not enter source or preview output. Callers provide them at
 execution time.
 
-## Semantic recording boundary
+## Semantic recording
 
-`WorkflowRecorder` is a local draft builder for semantic resolution results. A
-draft can retain the intent phrase, resolution state, revision, semantic
-region kind, route URL without query or fragment, digest-only target/frame
-evidence, target fingerprint digest, transaction class, and postcondition.
-Current target references are not replay selectors. Ambiguous or unselected
-results remain review-required and do not become executable targets.
+`WorkflowRecorder` creates a local draft from semantic resolution evidence.
+A draft may contain:
 
-Typed values are represented only by `${inputs.name}` placeholders. The
-`inferred_inputs()` helper creates value-free string declarations and marks
-sensitive names. Callers must review the draft and provide budgets, terminal
-conditions, outputs, and any required postconditions before execution.
+- the intent phrase;
+- the resolution state;
+- the revision;
+- the semantic region kind;
+- the route without query or fragment;
+- digest-only target and frame evidence;
+- a target fingerprint digest;
+- the transaction class; and
+- the postcondition.
 
-The record command is an offline evidence importer, not browser event
-interception. Integrations must supply semantic resolution evidence explicitly
-or use the library recorder API; the command does not attach to Chrome or
-silently observe user input.
+A current target reference is not a replay selector. An ambiguous or unselected
+result remains review-required. It does not become executable.
+
+Typed values use `${inputs.name}` placeholders. `inferred_inputs()` creates
+value-free string declarations and marks sensitive names.
+
+The record command imports an explicit event envelope. It does not attach to
+Chrome. It does not intercept user input. It does not observe a session without
+an explicit evidence input.
+
+Before execution, review the draft. Add budgets, a terminal condition, outputs,
+and required postconditions.
 
 ## Preview and diff
 
-Preview output describes action names, semantic-vs-batch shape, transaction
-classes, retry/repeat bounds, postcondition presence, and referenced input
-names. It omits URLs, selectors, expressions, and values.
+Preview reports:
 
-Diff output is keyed by stable step IDs and reports additions, removals,
-reordering, changed effect/retry/postcondition declarations, input declaration
-changes, and terminal-condition changes. Breaking changes are marked for
-review; the diff does not authorize or migrate a workflow automatically.
+- action names;
+- semantic or batch shape;
+- transaction class;
+- retry and repeat limits;
+- postcondition presence; and
+- input names.
+
+Preview omits URLs, selectors, expressions, and values.
+
+Diff reports additions, removals, order changes, transaction changes, retry
+changes, postcondition changes, input changes, and terminal-condition changes.
+It marks breaking changes for review. It does not authorize or migrate a
+workflow.

@@ -20,6 +20,11 @@ bounded, versioned semantics. A request must use protocol version `1`, a
 non-empty bounded operation name, and a bounded request identifier. Responses
 carry exactly one result or structured error.
 
+The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
+covers read, leased mutation, workflow, success, and typed-error envelopes.
+Rust protocol tests round-trip it, while the MCP adapter separately verifies
+that JSON-RPC tool calls map to the same canonical request shape.
+
 Unknown envelope fields are rejected. Additive contract fields must be
 optional, and changes to required fields or validation meaning require a new
 schema version and a migration note. Protocol deadlines are bounded to fifteen

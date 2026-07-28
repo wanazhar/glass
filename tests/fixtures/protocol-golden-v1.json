@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "requests": [
+    {
+      "protocolVersion": 1,
+      "requestId": "observe-1",
+      "operation": "browser.observe",
+      "payload": {
+        "level": "interactive"
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "click-1",
+      "correlationId": "run-1",
+      "sessionId": "session-1",
+      "mutationLease": {
+        "sessionId": "session-1",
+        "token": "lease-1"
+      },
+      "operation": "browser.click",
+      "payload": {
+        "target": "ref=r7:b42",
+        "expectedRevision": 7
+      },
+      "deadlineMs": 5000
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "workflow-1",
+      "operation": "browser.workflow",
+      "payload": {
+        "schemaVersion": 1,
+        "workflow": "fixture-workflow"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "protocolVersion": 1,
+      "requestId": "observe-1",
+      "ok": true,
+      "result": {
+        "revision": 7
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "click-1",
+      "correlationId": "run-1",
+      "ok": false,
+      "error": {
+        "code": "staleRevision",
+        "message": "the observation revision is no longer current",
+        "retryable": true
+      }
+    }
+  ]
+}

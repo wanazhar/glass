@@ -46,6 +46,8 @@ This phase covers the first platform boundary for issue #27:
   fails closed when its platform boundary is unavailable.
 - guarded extension action results require a positive observation revision and
   dispatch only through the core revision-guarded browser methods.
+- checked-in protocol golden scenarios cover read, leased mutation, workflow,
+  success, and typed-error envelopes.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension

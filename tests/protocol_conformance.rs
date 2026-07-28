@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
+use glass::protocol::{GlassRequest, GlassResponse};
 use serde_json::Value;
 
 fn glass_binary() -> std::path::PathBuf {
@@ -48,6 +49,35 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
     assert_eq!(mcp_response["result"]["glass"], cli_manifest);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/protocol-golden-v1.json"))
+        .expect("protocol golden fixture should be valid JSON");
+    assert_eq!(fixture["schemaVersion"], 1);
+
+    for value in fixture["requests"].as_array().unwrap() {
+        let request: GlassRequest = serde_json::from_value(value.clone()).unwrap();
+        request.validate().unwrap();
+        assert_eq!(
+            serde_json::from_value::<GlassRequest>(serde_json::to_value(&request).unwrap())
+                .unwrap(),
+            request
+        );
+    }
+    for value in fixture["responses"].as_array().unwrap() {
+        let response: GlassResponse = serde_json::from_value(value.clone()).unwrap();
+        response.validate().unwrap();
+        if let Some(error) = &response.error {
+            error.validate().unwrap();
+        }
+        assert_eq!(
+            serde_json::from_value::<GlassResponse>(serde_json::to_value(&response).unwrap())
+                .unwrap(),
+            response
+        );
+    }
 }
 
 #[cfg(unix)]

@@ -211,19 +211,19 @@ fn policy_label(policy: PolicyPreset) -> &'static str {
 fn platform_label() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        return "linux-x86_64";
+        "linux-x86_64"
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        return "linux-arm64";
+        "linux-arm64"
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        return "macos-x86_64";
+        "macos-x86_64"
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        return "macos-aarch64";
+        "macos-aarch64"
     }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),

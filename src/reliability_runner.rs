@@ -340,19 +340,19 @@ async fn browser_version(session: &BrowserSession) -> BrowserResult<String> {
 fn current_platform() -> BrowserResult<ReliabilityPlatform> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        return Ok(ReliabilityPlatform::LinuxX86_64);
+        Ok(ReliabilityPlatform::LinuxX86_64)
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        return Ok(ReliabilityPlatform::LinuxArm64);
+        Ok(ReliabilityPlatform::LinuxArm64)
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        return Ok(ReliabilityPlatform::MacosX86_64);
+        Ok(ReliabilityPlatform::MacosX86_64)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        return Ok(ReliabilityPlatform::MacosArm64);
+        Ok(ReliabilityPlatform::MacosArm64)
     }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),

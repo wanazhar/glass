@@ -71,7 +71,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 base64-simd = "0.8"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "thin"
 codegen-units = 1
 panic = "abort"

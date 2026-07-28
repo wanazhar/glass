@@ -4,11 +4,14 @@
 //! isolated MCP child session, so a daemon restart or client disconnect cannot
 //! silently transfer a browser session or workflow lease to another client.
 
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::cli::args::Cli;
 
 /// Version of the local daemon status and lifecycle contract.
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
@@ -298,55 +301,89 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        use tokio::net::UnixListener;
-
-        remove_socket_if_safe(socket)?;
-        std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
-        std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
-        let listener = UnixListener::bind(socket)?;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-        let status = DaemonStatus {
-            protocol_version: DAEMON_PROTOCOL_VERSION,
-            state: "running".into(),
-            pid: std::process::id(),
-            socket: socket.to_path_buf(),
-            status_path: status_path.to_path_buf(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-            transport: "unix-mcp-stdio-bridge".into(),
-            client_sessions: 0,
-        };
-        std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
-        let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        loop {
-            let (stream, _) = listener.accept().await?;
-            if let Err(error) = authorize_local_peer(&stream) {
-                tracing::warn!(%error, "daemon rejected unauthorized local peer");
-                drop(stream);
-                continue;
-            }
-            let client_sessions = Arc::clone(&client_sessions);
-            if client_sessions.load(std::sync::atomic::Ordering::Relaxed)
-                >= MAX_DAEMON_CLIENT_SESSIONS
-            {
-                tracing::warn!("daemon client session limit reached");
-                drop(stream);
-                continue;
-            }
-            let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            update_client_sessions(status_path, active)?;
-            let status_path = status_path.to_path_buf();
-            tokio::spawn(async move {
-                if let Err(error) = bridge_client(stream).await {
-                    tracing::warn!(%error, "daemon client bridge stopped");
-                }
-                let active = client_sessions
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                    .saturating_sub(1);
-                let _ = update_client_sessions(&status_path, active);
-            });
-        }
+        let local = tokio::task::LocalSet::new();
+        local.run_until(serve_local(socket, status_path)).await
     }
+}
+
+#[cfg(unix)]
+async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::net::UnixListener;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    remove_socket_if_safe(socket)?;
+    std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
+    std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
+    let listener = UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    let status = DaemonStatus {
+        protocol_version: DAEMON_PROTOCOL_VERSION,
+        state: "running".into(),
+        pid: std::process::id(),
+        socket: socket.to_path_buf(),
+        status_path: status_path.to_path_buf(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        transport: "unix-mcp-stdio-bridge".into(),
+        client_sessions: 0,
+    };
+    std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
+    let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let shared_session = Arc::new(tokio::sync::Mutex::new(None));
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut clients = Vec::new();
+    loop {
+        let (stream, _) = tokio::select! {
+            result = listener.accept() => result?,
+            _ = terminate.recv() => break,
+        };
+        if let Err(error) = authorize_local_peer(&stream) {
+            tracing::warn!(%error, "daemon rejected unauthorized local peer");
+            drop(stream);
+            continue;
+        }
+        let client_sessions = Arc::clone(&client_sessions);
+        if client_sessions.load(std::sync::atomic::Ordering::Relaxed) >= MAX_DAEMON_CLIENT_SESSIONS
+        {
+            tracing::warn!("daemon client session limit reached");
+            drop(stream);
+            continue;
+        }
+        let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        update_client_sessions(status_path, active)?;
+        let status_path = status_path.to_path_buf();
+        let shared_session = Arc::clone(&shared_session);
+        let cli = Cli::parse_from(["glass", "--mcp"]);
+        clients.push(tokio::task::spawn_local(async move {
+            let (socket_read, socket_write) = stream.into_split();
+            let result = crate::mcp::server::run_mcp_stream(
+                tokio::io::BufReader::new(socket_read),
+                socket_write,
+                &cli,
+                shared_session,
+                false,
+                true,
+            )
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error, "daemon client bridge stopped");
+            }
+            let active = client_sessions
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                .saturating_sub(1);
+            let _ = update_client_sessions(&status_path, active);
+        }));
+    }
+    for client in clients {
+        client.abort();
+    }
+    let mut session = shared_session.lock().await;
+    if let Some(session) = session.take() {
+        let _ = session.close().await;
+    }
+    let _ = std::fs::remove_file(status_path);
+    let _ = remove_socket_if_safe(socket);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -389,40 +426,6 @@ fn authorize_local_peer(stream: &tokio::net::UnixStream) -> Result<(), Box<dyn s
     #[cfg(not(target_os = "linux"))]
     {
         let _ = stream;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-async fn bridge_client(
-    stream: tokio::net::UnixStream,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let executable = std::env::current_exe()?;
-    let mut child = tokio::process::Command::new(executable)
-        .arg("--mcp")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    let mut child_stdin = child.stdin.take().ok_or("MCP child stdin unavailable")?;
-    let mut child_stdout = child.stdout.take().ok_or("MCP child stdout unavailable")?;
-    let (mut socket_read, mut socket_write) = stream.into_split();
-    let client_closed = {
-        let to_child = tokio::io::copy(&mut socket_read, &mut child_stdin);
-        let to_client = tokio::io::copy(&mut child_stdout, &mut socket_write);
-        tokio::pin!(to_child);
-        tokio::pin!(to_client);
-        tokio::select! {
-            _ = &mut to_child => true,
-            _ = &mut to_client => false,
-        }
-    };
-    drop(child_stdin);
-    if client_closed {
-        let _ = child.wait().await;
-    } else {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
     }
     Ok(())
 }

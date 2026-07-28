@@ -391,6 +391,36 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
 }
 
 async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    run_mcp_stream(
+        BufReader::new(stdin),
+        stdout,
+        cli,
+        Arc::new(Mutex::new(None)),
+        true,
+        false,
+    )
+    .await
+}
+
+/// Serve one MCP connection against a caller-provided session store.
+///
+/// A daemon uses one shared session store for multiple connections. Stdio
+/// callers pass an empty store and request cleanup on EOF, preserving the
+/// one-process behavior of the standalone server.
+pub async fn run_mcp_stream<R, W>(
+    reader: R,
+    writer: W,
+    cli: &Cli,
+    session: Arc<Mutex<Option<BrowserSession>>>,
+    close_session_on_eof: bool,
+    local_daemon: bool,
+) -> BrowserResult<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + 'static,
+{
     info!("MCP server starting on stdio");
     ProfileManager::validate_name(&cli.profile)?;
     let options = SessionOptions {
@@ -407,17 +437,14 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         policy: None,
     };
     let policy = crate::cli::runner::policy_from_cli(cli)?;
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
-    let stdout = tokio::io::stdout();
-    let session = Arc::new(Mutex::new(None));
+    let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(MAX_QUEUED_RESPONSES);
-    let writer = tokio::spawn(async move {
-        let mut stdout = stdout;
+    let writer = tokio::task::spawn_local(async move {
+        let mut writer = writer;
         while let Some(outbound) = outbound_rx.recv().await {
-            write_response(&mut stdout, &outbound.response, outbound.format).await?;
+            write_response(&mut writer, &outbound.response, outbound.format).await?;
         }
         Ok::<(), io::Error>(())
     });
@@ -485,7 +512,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
                 .await?;
                 continue;
             }
-            let response = initialize_response(&request, &policy);
+            let response = initialize_response_in_mode(&request, &policy, local_daemon);
             if response.error.is_none() {
                 lifecycle = Lifecycle::Negotiated;
             }
@@ -604,9 +631,11 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
     // finish and flush their responses before closing the owned browser.
     drop(outbound_tx);
     writer.await??;
-    let mut session = session.lock().await;
-    if let Some(session) = session.take() {
-        session.close().await?;
+    if close_session_on_eof {
+        let mut session = session.lock().await;
+        if let Some(session) = session.take() {
+            session.close().await?;
+        }
     }
     Ok(())
 }
@@ -656,6 +685,14 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
 }
 
 fn initialize_response(request: &JsonRpcRequest, policy: &BrowserPolicy) -> JsonRpcResponse {
+    initialize_response_in_mode(request, policy, false)
+}
+
+fn initialize_response_in_mode(
+    request: &JsonRpcRequest,
+    policy: &BrowserPolicy,
+    local_daemon: bool,
+) -> JsonRpcResponse {
     if request.jsonrpc != "2.0" {
         return error_response(request.id.response_value(), -32600, "jsonrpc must be 2.0");
     }
@@ -677,7 +714,7 @@ fn initialize_response(request: &JsonRpcRequest, policy: &BrowserPolicy) -> Json
             "unsupported MCP protocol version",
         );
     }
-    let manifest = GlassCapabilityManifest::for_policy(policy);
+    let manifest = GlassCapabilityManifest::for_policy_in_mode(policy, local_daemon);
     let Some(glass_request) = request.params.get("glass") else {
         return success_response(
             request.id.response_value(),

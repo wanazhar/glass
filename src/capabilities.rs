@@ -71,6 +71,11 @@ impl std::error::Error for CapabilityNegotiationError {}
 impl GlassCapabilityManifest {
     /// Build the manifest for the current binary and policy.
     pub fn for_policy(policy: &BrowserPolicy) -> Self {
+        Self::for_policy_in_mode(policy, false)
+    }
+
+    /// Build a manifest for an explicit runtime mode.
+    pub fn for_policy_in_mode(policy: &BrowserPolicy, local_daemon: bool) -> Self {
         let raw_cdp = matches!(
             policy.decide(PolicyCapability::RawCdp),
             PolicyDecision::Allow
@@ -90,7 +95,7 @@ impl GlassCapabilityManifest {
             ("workflowAuthoring", true),
             ("reliabilityCertification", true),
             ("rawCdp", raw_cdp),
-            ("localDaemon", false),
+            ("localDaemon", local_daemon),
             ("extensions", false),
         ])
         .into_iter()

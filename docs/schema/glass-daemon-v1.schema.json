@@ -13,7 +13,7 @@
     "statusPath": {"type": "string", "minLength": 1, "maxLength": 4096},
     "logPath": {"type": "string", "minLength": 1, "maxLength": 4096},
     "startedAt": {"type": "string", "minLength": 1, "maxLength": 64},
-    "transport": {"const": "unix-mcp-stdio-bridge"},
+    "transport": {"const": "unix-mcp-shared-session"},
     "clientSessions": {"type": "integer", "minimum": 0, "maximum": 64}
   }
 }

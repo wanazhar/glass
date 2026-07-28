@@ -395,7 +395,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         status_path: status_path.to_path_buf(),
         log_path: Some(log_path_for(status_path)),
         started_at: chrono::Utc::now().to_rfc3339(),
-        transport: "unix-mcp-stdio-bridge".into(),
+        transport: "unix-mcp-shared-session".into(),
         client_sessions: 0,
     };
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
@@ -582,13 +582,13 @@ mod tests {
             status_path: PathBuf::from("/tmp/glass.json"),
             log_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
-            transport: "unix-mcp-stdio-bridge".into(),
+            transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
         };
         let value = serde_json::to_value(&status).unwrap();
 
         assert_eq!(value["protocolVersion"], 1);
-        assert_eq!(value["transport"], "unix-mcp-stdio-bridge");
+        assert_eq!(value["transport"], "unix-mcp-shared-session");
         assert!(value["socket"].as_str().unwrap().starts_with('/'));
     }
 
@@ -664,7 +664,7 @@ mod tests {
             status_path: status_path.clone(),
             log_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
-            transport: "unix-mcp-stdio-bridge".into(),
+            transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
         };
         std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();

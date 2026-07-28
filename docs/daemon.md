@@ -22,6 +22,7 @@ accepts only clients running as the same operating-system user. On macOS,
 socket ownership and mode are the local authentication boundary. The status JSON follows
 [glass-daemon-v1.schema.json](schema/glass-daemon-v1.schema.json) and includes
 the daemon PID, protocol version, transport, and active client-session count.
+The transport identifier is `unix-mcp-shared-session`.
 `glass daemon logs` returns at most the last 64 KiB of the local log file.
 
 The daemon is intentionally limited in this release: it provides local

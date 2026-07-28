@@ -86,12 +86,28 @@ pub async fn run_reliability_scenario(
                     ReliabilityFaultKind::RendererDisconnect
                         | ReliabilityFaultKind::BrowserDisconnect
                 ) {
-                    unsupported = true;
+                    let dispatched = match session.raw_cdp() {
+                        Ok(cdp) => match injection.fault {
+                            ReliabilityFaultKind::RendererDisconnect => {
+                                cdp.send("Page.crash", None).await.is_ok()
+                            }
+                            ReliabilityFaultKind::BrowserDisconnect => {
+                                cdp.send_browser("Browser.close", None).await.is_ok()
+                            }
+                            _ => unreachable!("transport fault branch is exhaustive"),
+                        },
+                        Err(_) => false,
+                    };
                     events.push(event(
                         events.len() as u32,
                         "injectFault",
-                        "unsupported_transport_fault",
+                        if dispatched {
+                            "dispatched"
+                        } else {
+                            "dispatch_failed"
+                        },
                     ));
+                    unsupported = true;
                     break;
                 }
                 let fault = serde_json::to_string(injection.fault.fixture_name())?;
@@ -310,10 +326,10 @@ fn load_workflow(path: &Path) -> BrowserResult<WorkflowDefinition> {
 }
 
 async fn browser_version(session: &BrowserSession) -> BrowserResult<String> {
-    let value = session
-        .raw_cdp()?
-        .send_browser("Browser.getVersion", None)
-        .await?;
+    let Ok(cdp) = session.raw_cdp() else {
+        return Ok("unknown".into());
+    };
+    let value = cdp.send_browser("Browser.getVersion", None).await?;
     Ok(value
         .get("product")
         .and_then(Value::as_str)

@@ -24,7 +24,9 @@ not part of the supported platform set.
 The checked-in examples are
 `tests/fixtures/reliability-scenario-v1.json`,
 `tests/fixtures/reliability-fixture-v1.json`, and
-`tests/fixtures/reliability-lab.html`.
+`tests/fixtures/reliability-lab.html`. The small
+`tests/fixtures/reliability-submit.json` workflow is used by the live runner
+smoke test.
 
 The fixture exposes target replacement, renaming, duplication, reordering,
 movement, overlays, frame detachment, delayed effects, and a counted submit
@@ -33,6 +35,34 @@ It contains no Glass runtime logic. The browser smoke test is opt-in:
 
 ```console
 GLASS_E2E=1 cargo test --test browser_smoke reliability_lab_controls
+```
+
+## Browser execution
+
+Run one validated scenario against a local fixture and write its redacted
+evidence bundle:
+
+```console
+glass certify run \
+  --scenario scenario.json \
+  --fixture tests/fixtures/reliability-fixture-v1.json \
+  --url http://127.0.0.1:8000/fixture.html \
+  --workflow-root tests/fixtures \
+  --output evidence.json
+```
+
+The runner navigates first, expands the manifest-bound plan, executes only
+allowlisted fixture controls, and rejects workflow sources outside
+`--workflow-root`. Renderer and browser disconnect probes dispatch the
+corresponding CDP fault (`Page.crash` or `Browser.close`) and are always
+reported as unsupported for release certification because the browser cannot
+provide a complete post-fault oracle. A denied or unavailable raw-CDP path is
+also recorded as a non-certifying probe result.
+
+The checked-in browser smoke test is the executable example:
+
+```console
+GLASS_E2E=1 cargo test --test browser_smoke reliability_runner_generates_live_fixture_evidence
 ```
 
 ## Offline validation
@@ -83,9 +113,8 @@ observation input.
 
 ## Boundaries
 
-The current checkout validates contracts and exercises the local fixture; it
-does not yet provide a browser-run scenario orchestrator, a real-site
-certification workflow, or a public scorecard publisher. Those remain release
-work for the 0.2.0 milestone. Do not place credentials, cookies, page values,
-or unredacted traces in replay bundles. The safe operator boundary for any
-future live check is documented in [read-only real-site certification](reliability-real-site.md).
+The runner is for deterministic local fixtures. It does not discover approved
+real sites or publish a public scorecard. Real-site evidence remains a manual,
+read-only operator procedure described in [read-only real-site
+certification](reliability-real-site.md). Do not place credentials, cookies,
+page values, or unredacted traces in replay bundles.

@@ -74,6 +74,7 @@ workflow [JSON_FILE]
 workflow compile|format|validate|lint|preview SOURCE
 workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
+certify run --scenario SCENARIO_JSON --fixture FIXTURE_JSON --url URL [--workflow-root DIRECTORY] [--inputs INPUTS_JSON] [--output EVIDENCE_JSON]
 certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
 certify replay-diff --scenario SCENARIO_JSON --before REPLAY_JSON --after REPLAY_JSON
@@ -134,11 +135,13 @@ the same workflow validation as the runtime, and do not start Chrome. See
 boundaries.
 
 `certify replay` validates one redacted reliability replay bundle against its
-versioned scenario. `certify release` evaluates the complete scenario and
-observation set and exits unsuccessfully when required evidence is missing or
-unsafe outcomes are present. These commands do not start Chrome. See the
-[reliability laboratory](reliability.md) guide for the supported contracts and
-current boundaries.
+versioned scenario. `certify run` navigates a fixture URL, executes one
+manifest-bound scenario in Chrome, and emits the observation and redacted
+replay bundle; `--output` writes the same JSON to disk. `certify release`
+evaluates the complete scenario and observation set and exits unsuccessfully
+when required evidence is missing or unsafe outcomes are present. Only
+`certify run` starts Chrome. See the [reliability laboratory](reliability.md)
+guide for the supported contracts and boundaries.
 
 `workflow-resume` reconciles the definition and checkpoint against the current
 browser state, then executes only the safe pending suffix. It refuses

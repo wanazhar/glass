@@ -2,12 +2,12 @@
 
 ## Active post-0.1.18 roadmap
 
-Issue #21 was delivered as a serial, local-only workflow-runtime sprint. Issue
-#25 is also implemented locally. Issue #26 is now being delivered in phases;
-the reliability task records are [scenario contract](tasks/reliability-026-001.md),
+Issue #21 was delivered as a serial, local-only workflow-runtime sprint. Issues
+#25 and #26 are implemented locally; #26 remains unpublished until 0.2.0. The
+reliability task records are [scenario contract](tasks/reliability-026-001.md),
 [adversarial fixture](tasks/reliability-026-002.md), [certification gate](tasks/reliability-026-003.md),
 and [capability/replay work](tasks/reliability-026-004.md). Issue #27 remains
-queued until the reliability phases are complete and verified.
+queued for a later pass.
 
 ## Active plan: best-in-class agent browser
 

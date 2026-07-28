@@ -11,7 +11,8 @@ This phase covers the first platform boundary for issue #27:
   are published;
 - local Unix daemon lifecycle is available through `glass daemon start`,
   `status`, `doctor`, `logs`, and `stop`;
-- daemon sessions are local-only, share one runtime session namespace, are
+- daemon sessions are local-only and receive independent browser-session
+  namespaces, are
   bounded to four concurrent clients, and are protected by a mode-0600 socket
   plus same-user peer credentials on Linux;
 - daemon clients negotiate `localDaemon`, use owner-bound acquire/renew/release

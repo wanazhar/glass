@@ -6,7 +6,7 @@ Glass requires:
 
 - stable Rust for a source build;
 - Chrome, Chromium, or Chrome for Testing; and
-- Linux x86-64, macOS x86-64, or macOS arm64.
+- Linux x86-64, Linux arm64, macOS x86-64, or macOS arm64.
 
 Windows is not a supported target. Glass does not install Playwright or another
 browser runtime.
@@ -55,6 +55,11 @@ Install the Glass-pinned Chrome for Testing build:
 glass install-chromium
 glass install-chromium --update
 `
+
+Chrome for Testing does not currently provide a Linux ARM64 archive. On Linux
+ARM64, install a system Chromium build or provide an explicit executable with
+`--chrome-path`. `glass install-chromium` reports this limitation and does not
+create a partial installation.
 
 The installer checks the archive size and digest. It extracts the archive in
 the Glass process. It publishes the browser only after validation. It does not

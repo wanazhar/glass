@@ -10,6 +10,7 @@
   "release_checks": ["fmt", "test", "clippy", "docs", "build", "package", "deny", "audit", "fuzz-check"],
   "platform_targets": [
     "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin"
   ],

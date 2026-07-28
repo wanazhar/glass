@@ -25,7 +25,7 @@ Feature count and microbenchmark latency alone do not qualify.
 | Idle Glass RSS | <=8 MiB | Excludes Chrome and allocator warm-up variance. |
 | Peak default-workflow Glass RSS | <=16 MiB | Navigate/observe/act loop, no image/deep DOM. |
 | Compact context p95 | <=24 KiB | Serialized agent-facing payload. |
-| Release binary | <=8 MiB | Stripped default release profile across the supported Linux x86-64 and macOS x86-64/arm64 targets. |
+| Release binary | <=8 MiB | Stripped default release profile across the supported Linux x86-64/arm64 and macOS x86-64/arm64 targets. |
 | MCP malformed-input survival | 100% | Fuzz corpus plus size/time-limit cases. |
 
 These are product budgets, not promises about Chrome memory or network/page

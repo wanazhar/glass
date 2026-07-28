@@ -74,6 +74,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: glass-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: glass-linux-arm64
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: glass-macos-x86_64
@@ -99,7 +102,18 @@ jobs:
         run: cargo test --all-targets --locked --target ${{ matrix.target }}
 
       - name: Install managed Chrome for browser smoke
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo run --release --locked -- install-chromium
+
+      - name: Install system Chromium for Linux ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes chromium
+          chrome_path="$(command -v chromium || command -v chromium-browser)"
+          test -n "$chrome_path"
+          echo "CHROME_PATH=$chrome_path" >> "$GITHUB_ENV"
 
       - name: Run browser smoke
         shell: bash
@@ -117,7 +131,7 @@ jobs:
       - name: Write platform evidence
         env:
           GLASS_PLATFORM_TARGET: ${{ matrix.target }}
-          GLASS_PLATFORM_CHROME: managed-chromium-${{ matrix.target }}
+          GLASS_PLATFORM_CHROME: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'system-chromium' || format('managed-chromium-{0}', matrix.target) }}
           GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-browser-smoke.log
         run: python3 scripts/write-platform-evidence.py "dist/platform-${{ matrix.artifact }}.json"
 
@@ -262,6 +276,7 @@ jobs:
         run: |
           sha256sum \
             dist/glass-linux-x86_64 \
+            dist/glass-linux-arm64 \
             dist/glass-macos-x86_64 \
             dist/glass-macos-aarch64 \
             > dist/SHA256SUMS

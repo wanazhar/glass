@@ -11,6 +11,7 @@ const version = process.env.GLASS_VERSION ?? "v0.2.0";
 const platform = `${process.platform}-${process.arch}`;
 const names = {
   "linux-x64": "glass-linux-x86_64",
+  "linux-arm64": "glass-linux-arm64",
   "darwin-x64": "glass-macos-x86_64",
   "darwin-arm64": "glass-macos-aarch64",
 };

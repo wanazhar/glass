@@ -30,13 +30,27 @@ The current local checkout has:
 - bounded extension host and native-sandbox fail-closed tests; and
 - documentation that labels local-only features and unsupported Windows use.
 
+Linux ARM64 evidence is now available on the current host:
+
+- host target: `aarch64-unknown-linux-gnu`;
+- browser: system Chromium `150.0.7871.46`;
+- target check: `cargo check --target aarch64-unknown-linux-gnu --locked`;
+- browser smoke: `GLASS_E2E=1 GLASS_DISABLE_CHROME_SANDBOX=1 cargo test
+  --locked --test browser_smoke -- --nocapture --test-threads=1`;
+- result: 10 browser smoke tests passed on commit `b6a88cb`.
+
+This is local Linux ARM64 evidence. It does not replace the Linux x86-64 or
+macOS release runners, and it does not prove a clean published artifact.
+
 These results prove local behavior. They do not prove a published release.
 
 ## Release blockers
 
 The 0.2.0 release checklist remains open for these items:
 
-1. Run the real-browser matrix on Linux x86-64 and macOS x86-64/arm64.
+1. Run the real-browser matrix on Linux x86-64/arm64 and macOS x86-64/arm64.
+   Linux ARM64 uses a system Chromium binary because Chrome for Testing does
+   not publish a Linux ARM64 archive.
 2. Run the release binary contract smoke on all release targets. The workflow
    now checks CLI help, the capability manifest, MCP initialization, and the
    complete tool inventory. Browser, screenshot, and TUI startup evidence is

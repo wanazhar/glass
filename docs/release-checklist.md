@@ -5,8 +5,8 @@ Use this checklist for each public release.
 ## Candidate status
 
 The current local candidate is `glass-browser` version `0.2.0`. The target
-platforms are Linux x86-64, macOS x86-64, and macOS arm64. Windows is
-unsupported.
+platforms are Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
+Windows is unsupported.
 
 This checkout is local-only. Do not describe a GitHub release, tag, crates.io
 package, npm package, or binary artifact as published until the corresponding
@@ -42,7 +42,8 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 
 Then complete these release checks:
 
-- [ ] Run the real-browser matrix on Linux x86-64 and macOS x86-64/arm64.
+- [ ] Run the real-browser matrix on Linux x86-64/arm64 and macOS
+      x86-64/arm64. Linux ARM64 uses an installed system Chromium binary.
 - [ ] Run `--help`, navigation, observation, screenshot, TUI startup, and
       MCP initialization with the release binary.
 - [ ] Inspect `cargo package --list` and the unpacked package.

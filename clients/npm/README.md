@@ -4,6 +4,7 @@ This package downloads the matching stripped Glass binary during `npm install`.
 It verifies the SHA-256 checksum. It installs the `glass` command for:
 
 - Linux x64;
+- Linux arm64;
 - macOS x64; and
 - macOS arm64.
 

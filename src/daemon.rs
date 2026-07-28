@@ -525,6 +525,29 @@ pub fn recovery(
     }
 }
 
+/// Clear the recovery requirement after the caller reconciles every listed run.
+pub fn acknowledge_recovery(
+    status_path: Option<&Path>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let (_, default_status) = default_paths();
+    let status_path = status_path.unwrap_or(&default_status);
+    let path = recovery_path_for(status_path);
+    let Some(report) = read_recovery(status_path)? else {
+        return Ok(serde_json::json!({
+            "status": "clear",
+            "path": path,
+            "acknowledged": false,
+        }));
+    };
+    std::fs::remove_file(&path)?;
+    Ok(serde_json::json!({
+        "status": "acknowledged",
+        "path": path,
+        "runs": report.runs.len(),
+        "acknowledged": true,
+    }))
+}
+
 /// Read a bounded tail of the daemon log without exposing an unbounded file.
 pub fn logs(status_path: Option<&Path>) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     const MAX_LOG_BYTES: usize = 64 * 1024;

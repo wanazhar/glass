@@ -613,6 +613,11 @@ pub enum DaemonCommand {
         #[arg(long)]
         status: Option<PathBuf>,
     },
+    /// Acknowledge that interrupted workflows were reconciled from checkpoints.
+    AcknowledgeRecovery {
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
     /// Internal foreground server used by `daemon start`.
     #[command(hide = true)]
     Serve {

@@ -12,6 +12,7 @@ glass daemon start
 glass daemon status
 glass daemon doctor
 glass daemon logs
+glass daemon acknowledge-recovery
 glass daemon stop
 ```
 
@@ -30,6 +31,9 @@ reported as interrupted and must be reconciled from a checkpoint before a
 caller resumes work.
 The status points to a versioned recovery record when one exists; `glass
 daemon doctor` reports it as `reconciliation_required`.
+After reconciling each listed run from a checkpoint, an operator may explicitly
+run `glass daemon acknowledge-recovery`. This only clears the recovery marker;
+it never resumes a workflow or grants a mutation lease.
 
 The daemon is intentionally limited in this release: it provides local
 lifecycle supervision and a shared browser session namespace. Clients must

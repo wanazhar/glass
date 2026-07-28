@@ -148,6 +148,9 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
                 status.as_deref(),
             )?)?;
         }
+        DaemonCommand::Logs { status } => {
+            print_json(&crate::daemon::logs(status.as_deref())?)?;
+        }
         DaemonCommand::Serve { socket, status } => {
             crate::daemon::serve(socket, status).await?;
         }

@@ -188,6 +188,8 @@ pub struct DaemonStatus {
     pub pid: u32,
     pub socket: PathBuf,
     pub status_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<PathBuf>,
     pub started_at: String,
     pub transport: String,
     pub client_sessions: u32,
@@ -199,6 +201,10 @@ pub fn default_paths() -> (PathBuf, PathBuf) {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("glass");
     (root.join("glass.sock"), root.join("daemon.json"))
+}
+
+fn log_path_for(status_path: &Path) -> PathBuf {
+    status_path.with_extension("log")
 }
 
 /// Start one background daemon and return its status contract.
@@ -226,6 +232,12 @@ pub async fn start(
         remove_socket_if_safe(socket)?;
         std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
+        let log_path = log_path_for(status_path);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let log_stderr = log.try_clone()?;
         let executable = std::env::current_exe()?;
         std::process::Command::new(executable)
             .args(["daemon", "serve"])
@@ -234,8 +246,8 @@ pub async fn start(
             .arg("--status")
             .arg(status_path)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log))
+            .stderr(std::process::Stdio::from(log_stderr))
             .spawn()?;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
@@ -325,6 +337,31 @@ pub fn doctor(
     }
 }
 
+/// Read a bounded tail of the daemon log without exposing an unbounded file.
+pub fn logs(status_path: Option<&Path>) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    const MAX_LOG_BYTES: usize = 64 * 1024;
+    let (_, default_status) = default_paths();
+    let status_path = status_path.unwrap_or(&default_status);
+    let path = log_path_for(status_path);
+    if !path.is_file() {
+        return Ok(serde_json::json!({
+            "status": "unavailable",
+            "path": path,
+            "content": "",
+            "truncated": false,
+        }));
+    }
+    let bytes = std::fs::read(&path)?;
+    let truncated = bytes.len() > MAX_LOG_BYTES;
+    let start = bytes.len().saturating_sub(MAX_LOG_BYTES);
+    Ok(serde_json::json!({
+        "status": "available",
+        "path": path,
+        "content": String::from_utf8_lossy(&bytes[start..]),
+        "truncated": truncated,
+    }))
+}
+
 /// Run the foreground Unix-socket server used by `daemon start`.
 pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
@@ -356,6 +393,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         pid: std::process::id(),
         socket: socket.to_path_buf(),
         status_path: status_path.to_path_buf(),
+        log_path: Some(log_path_for(status_path)),
         started_at: chrono::Utc::now().to_rfc3339(),
         transport: "unix-mcp-stdio-bridge".into(),
         client_sessions: 0,
@@ -542,6 +580,7 @@ mod tests {
             pid: 42,
             socket: PathBuf::from("/tmp/glass.sock"),
             status_path: PathBuf::from("/tmp/glass.json"),
+            log_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-stdio-bridge".into(),
             client_sessions: 0,
@@ -623,6 +662,7 @@ mod tests {
             pid: std::process::id().saturating_add(1_000_000),
             socket: socket.clone(),
             status_path: status_path.clone(),
+            log_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-stdio-bridge".into(),
             client_sessions: 0,
@@ -635,6 +675,23 @@ mod tests {
         assert!(socket.is_file());
         assert!(!status_path.exists());
         std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_logs_return_only_a_bounded_tail() {
+        let root = std::env::temp_dir().join(format!("glass-daemon-logs-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("daemon.json");
+        let log_path = log_path_for(&status_path);
+        std::fs::write(&log_path, vec![b'x'; 70_000]).unwrap();
+
+        let value = logs(Some(&status_path)).unwrap();
+
+        assert_eq!(value["status"], "available");
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["content"].as_str().unwrap().len(), 64 * 1024);
+        std::fs::remove_file(log_path).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 }

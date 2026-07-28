@@ -608,6 +608,11 @@ pub enum DaemonCommand {
         #[arg(long)]
         status: Option<PathBuf>,
     },
+    /// Read the bounded local daemon log tail.
+    Logs {
+        #[arg(long)]
+        status: Option<PathBuf>,
+    },
     /// Internal foreground server used by `daemon start`.
     #[command(hide = true)]
     Serve {

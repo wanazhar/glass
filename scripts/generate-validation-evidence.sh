@@ -11,6 +11,9 @@ revision="$(git rev-parse HEAD)"
 version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="glass-browser"))')"
 host_target="$(rustc -vV | awk '/^host:/ {print $2}')"
 installed_targets="$(rustup target list --installed 2>/dev/null || true)"
+platform_target="${GLASS_PLATFORM_TARGET:-}"
+platform_smoke_passed="${GLASS_PLATFORM_SMOKE_PASSED:-0}"
+platform_raw_report="${GLASS_PLATFORM_RAW_REPORT:-}"
 
 test_status=passed
 if ! cargo test --all-targets --locked >/dev/null; then test_status=failed; fi
@@ -34,15 +37,16 @@ if ! cargo fetch --manifest-path fuzz/Cargo.toml --locked >/dev/null || \
     fuzz_status=failed
 fi
 
-python3 - "$output_dir" "$revision" "$version" "$host_target" "$installed_targets" "$test_status" "$fmt_status" "$clippy_status" "$docs_status" "$build_status" "$package_status" "$deny_status" "$audit_status" "$fuzz_status" <<'PY'
+python3 - "$output_dir" "$revision" "$version" "$host_target" "$installed_targets" "$platform_target" "$platform_smoke_passed" "$platform_raw_report" "$test_status" "$fmt_status" "$clippy_status" "$docs_status" "$build_status" "$package_status" "$deny_status" "$audit_status" "$fuzz_status" <<'PY'
 import json
 import os
 import pathlib
 import sys
 
 (
-    out, revision, version, host, targets, tests, fmt, clippy, docs, build,
-    package, deny, audit, fuzz,
+    out, revision, version, host, targets, platform_target, platform_smoke,
+    platform_report, tests, fmt, clippy, docs, build, package, deny, audit,
+    fuzz,
 ) = sys.argv[1:]
 target_list = targets.splitlines() if targets else []
 required = [
@@ -111,12 +115,16 @@ observed_platforms = [
         "target": target,
         "os": "linux" if "linux" in target else "macos",
         "architecture": target.split("-")[0],
-        "chrome": "not-recorded",
+        "chrome": os.environ.get("GLASS_PLATFORM_CHROME", "not-recorded"),
         "status": "passed",
-        "raw_report": "platform-build-and-smoke",
+        "raw_report": platform_report,
     }
     for target in required
-    if target in target_list and target == host
+    if target in target_list
+    and target == host
+    and target == platform_target
+    and platform_smoke == "1"
+    and platform_report
 ]
 reports = {
     "ratified-gates.json": {

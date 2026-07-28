@@ -1,5 +1,9 @@
 # Glass documentation
 
+The guides use [the project documentation style](documentation-style.md).
+They describe the current local checkout. A feature marked `Local only` is
+not available from a published package.
+
 ## User guides
 
 - [Installation and operations](installation.md) — build, browser discovery,

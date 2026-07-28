@@ -43,3 +43,15 @@ supported version in common before entering the ready state. Omitting the
 Glass request preserves MCP compatibility and still returns the manifest.
 Unsupported capabilities are never inferred from the binary version; clients
 must inspect the negotiated manifest and the policy-sensitive booleans.
+
+The current machine-readable contract set is:
+
+- [action v1](schema/glass-action-v1.schema.json)
+- [session checkpoint v1](schema/glass-checkpoint-v1.schema.json)
+- [workflow checkpoint v1](schema/glass-workflow-checkpoint-v1.schema.json)
+- [workflow trace v1](schema/glass-workflow-trace-v1.schema.json)
+- [semantic observation v1](schema/semantic-observation-v1.schema.json)
+- [intent v1](schema/intent-resolution-v1.schema.json)
+- [knowledge v1](schema/knowledge-v1.schema.json)
+- [workflow v1](schema/workflow-v1.schema.json)
+- [reliability scenario, fixture, and replay v1](reliability.md)

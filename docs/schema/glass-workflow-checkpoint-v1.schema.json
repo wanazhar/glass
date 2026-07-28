@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/glass-workflow-checkpoint-v1.schema.json",
+  "title": "Glass workflow checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "workflowName", "workflowVersion", "definitionHash", "status", "nextStepIndex", "steps", "page"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runId": {"type": "string", "maxLength": 128},
+    "workflowName": {"type": "string", "minLength": 1, "maxLength": 128},
+    "workflowVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "definitionHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"enum": ["completed", "failed", "budget_exhausted", "resume_required"]},
+    "nextStepIndex": {"type": "integer", "minimum": 0, "maximum": 64},
+    "steps": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/step"}},
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetId", "frameId", "url", "title", "revision"],
+      "properties": {
+        "targetId": {"type": "string", "maxLength": 256},
+        "frameId": {"type": "string", "maxLength": 256},
+        "url": {"type": "string", "maxLength": 4096},
+        "title": {"type": "string", "maxLength": 1024},
+        "revision": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "attempts", "dispatchAcknowledged", "effectObserved", "postconditionVerified", "retrySafe"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "state": {"type": "string", "minLength": 1, "maxLength": 64},
+        "attempts": {"type": "integer", "minimum": 0},
+        "history": {"type": "array", "maxItems": 128, "items": {"type": "string"}},
+        "executionIds": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 128}},
+        "dispatchAcknowledged": {"type": "boolean"},
+        "effectObserved": {"type": "boolean"},
+        "postconditionVerified": {"type": "boolean"},
+        "retrySafe": {"type": "boolean"},
+        "previousRevision": {"type": "integer", "minimum": 0},
+        "currentRevision": {"type": "integer", "minimum": 0},
+        "branchDecision": {},
+        "intentEvidence": {}
+      }
+    }
+  }
+}

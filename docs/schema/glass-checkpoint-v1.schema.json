@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/glass-checkpoint-v1.schema.json",
+  "title": "Glass session checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "glassVersion", "exportedAt", "profile", "attachMode", "topology", "observation", "policy"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "glassVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "exportedAt": {"type": "string", "minLength": 1, "maxLength": 64},
+    "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+    "attachMode": {"type": "boolean"},
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "title"],
+      "properties": {
+        "targetId": {"type": "string", "maxLength": 256},
+        "frameId": {"type": "string", "maxLength": 256},
+        "url": {"type": "string", "maxLength": 4096},
+        "title": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "lastRefs"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 0},
+        "lastRefs": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 256}}
+      }
+    },
+    "policy": {"type": "string", "minLength": 1, "maxLength": 32}
+  }
+}

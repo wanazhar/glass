@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/glass-action-v1.schema.json",
+  "title": "Glass action result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "action", "executionId", "revision", "previousRevision", "currentRevision", "targetId", "frameId", "verification"],
+  "properties": {
+    "status": {"enum": ["succeeded", "completed_with_verification_failure"]},
+    "action": {"type": "string", "minLength": 1, "maxLength": 64},
+    "executionId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "target": {"$ref": "#/$defs/target"},
+    "revision": {"type": "integer", "minimum": 0},
+    "previousRevision": {"type": "integer", "minimum": 0},
+    "currentRevision": {"type": "integer", "minimum": 0},
+    "targetId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "frameId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "verification": {"$ref": "#/$defs/verification"},
+    "evidence": {}
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "reference": {"type": "string", "maxLength": 256}
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revisionDelta", "urlChanged", "titleChanged", "targetChanged", "frameChanged"],
+      "properties": {
+        "revisionDelta": {"type": "integer", "minimum": 0},
+        "urlChanged": {"type": "boolean"},
+        "titleChanged": {"type": "boolean"},
+        "targetChanged": {"type": "boolean"},
+        "frameChanged": {"type": "boolean"},
+        "popupOpened": {"type": "boolean"},
+        "dialogOpen": {"type": "boolean"},
+        "downloadStarted": {"type": "boolean"},
+        "accessibilityDiff": {"type": "object"}
+      }
+    }
+  }
+}

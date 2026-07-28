@@ -165,6 +165,7 @@ fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
         ),
         ("workflow".into(), vec![WORKFLOW_SCHEMA_VERSION]),
         ("checkpoint".into(), vec![1]),
+        ("workflowCheckpoint".into(), vec![1]),
         ("trace".into(), vec![1]),
         ("intent".into(), vec![INTENT_RESOLUTION_SCHEMA_VERSION]),
         ("knowledge".into(), vec![KNOWLEDGE_SCHEMA_VERSION]),

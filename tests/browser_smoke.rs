@@ -2008,6 +2008,7 @@ async fn reliability_runner_generates_live_fixture_evidence() {
         return;
     }
     if !(cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        || cfg!(all(target_os = "linux", target_arch = "aarch64"))
         || cfg!(all(target_os = "macos", target_arch = "x86_64"))
         || cfg!(all(target_os = "macos", target_arch = "aarch64")))
     {
@@ -2042,7 +2043,7 @@ async fn reliability_runner_generates_live_fixture_evidence() {
           "id": "live-submit-runner",
           "category": "transactional-workflow",
           "fixture": "checkout-submit",
-          "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+          "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
           "capabilities": ["workflow", "idempotency"],
           "setup": {"browser": "chromium", "policy": "development"},
           "steps": [

@@ -3,7 +3,7 @@
   "id": "duplicate-submit-after-timeout",
   "category": "transactional-workflow",
   "fixture": "checkout-submit",
-  "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+  "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
   "capabilities": ["workflow", "idempotency", "resume"],
   "setup": {"browser": "chromium", "policy": "hardened"},
   "steps": [

@@ -4,7 +4,7 @@
     "id": "targets-reordered-before-action",
     "category": "targeting",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["targeting", "reorder"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [
@@ -20,7 +20,7 @@
     "id": "target-replaced-before-action",
     "category": "targeting",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["revision-guards", "targeting"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [
@@ -36,7 +36,7 @@
     "id": "duplicate-target-is-not-selected",
     "category": "ambiguity",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["targeting", "ambiguity"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [
@@ -52,7 +52,7 @@
     "id": "target-moved-across-region",
     "category": "semantic-continuity",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["semantic-observation", "targeting"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [
@@ -68,7 +68,7 @@
     "id": "overlay-blocks-submit",
     "category": "interaction-safety",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["visibility", "policy"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [
@@ -84,7 +84,7 @@
     "id": "effect-marker-arrives-late",
     "category": "timing",
     "fixture": "checkout-submit",
-    "platforms": ["linux-x86-64", "macos-x86-64", "macos-arm64"],
+    "platforms": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"],
     "capabilities": ["bounded-wait", "verification"],
     "setup": {"browser": "chromium", "policy": "hardened"},
     "steps": [

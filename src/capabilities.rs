@@ -213,6 +213,10 @@ fn platform_label() -> &'static str {
     {
         return "linux-x86_64";
     }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return "linux-arm64";
+    }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         return "macos-x86_64";
@@ -221,7 +225,15 @@ fn platform_label() -> &'static str {
     {
         return "macos-aarch64";
     }
-    "unsupported"
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
+    {
+        "unsupported"
+    }
 }
 
 #[cfg(test)]

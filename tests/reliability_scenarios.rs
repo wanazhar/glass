@@ -61,6 +61,7 @@ fn capability_suite_covers_the_supported_release_platform_matrix() {
         .unwrap();
     let expected = std::collections::BTreeSet::from([
         ReliabilityPlatform::LinuxX86_64,
+        ReliabilityPlatform::LinuxArm64,
         ReliabilityPlatform::MacosX86_64,
         ReliabilityPlatform::MacosArm64,
     ]);

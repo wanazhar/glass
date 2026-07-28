@@ -29,6 +29,7 @@ const MAX_REPLAY_EVENTS: usize = 1_024;
 #[serde(rename_all = "kebab-case")]
 pub enum ReliabilityPlatform {
     LinuxX86_64,
+    LinuxArm64,
     MacosX86_64,
     MacosArm64,
 }
@@ -1019,6 +1020,7 @@ fn gate_failure(scenario_id: &str, code: &str, detail: &str) -> ReliabilityGateF
 fn default_platforms() -> Vec<ReliabilityPlatform> {
     vec![
         ReliabilityPlatform::LinuxX86_64,
+        ReliabilityPlatform::LinuxArm64,
         ReliabilityPlatform::MacosX86_64,
         ReliabilityPlatform::MacosArm64,
     ]

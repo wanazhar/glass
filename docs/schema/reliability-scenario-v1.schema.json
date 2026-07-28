@@ -14,7 +14,7 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"enum": ["linux-x86-64", "macos-x86-64", "macos-arm64"]}
+      "items": {"enum": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"]}
     },
     "capabilities": {
       "type": "array",

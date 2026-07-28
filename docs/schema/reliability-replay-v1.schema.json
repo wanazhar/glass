@@ -35,7 +35,7 @@
       "additionalProperties": false,
       "required": ["platform", "browser", "browserVersion", "durationMs", "browserActions"],
       "properties": {
-        "platform": {"enum": ["linux-x86-64", "macos-x86-64", "macos-arm64"]},
+        "platform": {"enum": ["linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"]},
         "browser": {"type": "string", "minLength": 1, "maxLength": 128},
         "browserVersion": {"type": "string", "minLength": 1, "maxLength": 128},
         "durationMs": {"type": "integer", "minimum": 1},

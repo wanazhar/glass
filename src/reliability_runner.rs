@@ -342,6 +342,10 @@ fn current_platform() -> BrowserResult<ReliabilityPlatform> {
     {
         return Ok(ReliabilityPlatform::LinuxX86_64);
     }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return Ok(ReliabilityPlatform::LinuxArm64);
+    }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         return Ok(ReliabilityPlatform::MacosX86_64);
@@ -350,7 +354,15 @@ fn current_platform() -> BrowserResult<ReliabilityPlatform> {
     {
         return Ok(ReliabilityPlatform::MacosArm64);
     }
-    Err("reliability runner supports Linux x86-64 and macOS x86-64/arm64 only".into())
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
+    {
+        Err("reliability runner supports Linux x86-64/arm64 and macOS x86-64/arm64 only".into())
+    }
 }
 
 #[cfg(test)]

@@ -512,6 +512,39 @@ mod tests {
         std::fs::remove_dir(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_party_reference_extensions_load_and_run_through_the_host() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let registry = ExtensionRegistry::load_dir(&root).unwrap();
+        assert_eq!(registry.manifests().count(), 2);
+        let host = ExtensionHost::new(&root, registry).unwrap();
+
+        let title = host
+            .invoke(
+                "glass.first-party.title-extractor",
+                ExtensionCapability::ExtractionTransform,
+                "example.com",
+                "extract",
+                serde_json::json!({"title": "Example Domain"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(title["extension"], "title-extractor");
+
+        let evidence = host
+            .invoke(
+                "glass.first-party.intent-evidence",
+                ExtensionCapability::IntentEvidencePack,
+                "example.com",
+                "verify",
+                serde_json::json!({"role": "button"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(evidence["extension"], "intent-evidence");
+    }
+
     #[test]
     fn host_rejects_entrypoints_that_escape_root() {
         let root = std::env::current_dir().unwrap();

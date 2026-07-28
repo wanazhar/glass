@@ -30,13 +30,15 @@ This phase covers the first platform boundary for issue #27:
   checkpoint reconciliation.
 - the transport-neutral protocol envelope is published as schema v1 and MCP
   tool calls validate against the same canonical operation mapping.
+- two first-party reference extensions exercise the manifest, permission, and
+  bounded host protocol without enabling the unfinished extension capability.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
 The remaining platform work includes native sandboxing and guarded executor
-integration for extensions, first-party extensions, checkpoint-acknowledgement
-handling for active runs, broader cross-transport golden scenarios, and the
-complete client/TUI operation inventory. This task must not be marked complete
-until those paths have executable conformance coverage.
+integration for extensions, checkpoint-acknowledgement handling for active
+runs, broader cross-transport golden scenarios, and the complete client/TUI
+operation inventory. This task must not be marked complete until those paths
+have executable conformance coverage.

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "glass.first-party.intent-evidence",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "capabilities": ["intentEvidencePack"],
+  "permissions": {
+    "hosts": ["example.com"],
+    "actions": ["observe", "verify"]
+  },
+  "entrypoint": "intent-evidence.sh"
+}

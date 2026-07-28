@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "glass.first-party.title-extractor",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "capabilities": ["extractionTransform"],
+  "permissions": {
+    "hosts": ["example.com"],
+    "actions": ["observe", "extract"]
+  },
+  "entrypoint": "title-extractor.sh"
+}

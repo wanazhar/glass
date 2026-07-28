@@ -879,6 +879,41 @@ mod tests {
         assert_eq!(evidence["extension"], "intent-evidence");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_party_extensions_pass_cold_start_exit_and_restart_lifecycle() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let registry = ExtensionRegistry::load_dir(&root).unwrap();
+        let host = ExtensionHost::new(&root, registry).unwrap();
+
+        for manifest in host.registry.manifests() {
+            let capability = manifest.capabilities[0];
+            let host_name = &manifest.permissions.hosts[0];
+            let action = &manifest.permissions.actions[0];
+            let first = host
+                .invoke(
+                    &manifest.id,
+                    capability,
+                    host_name,
+                    action,
+                    serde_json::json!({"lifecycle": "cold-start"}),
+                )
+                .await
+                .unwrap();
+            let second = host
+                .invoke(
+                    &manifest.id,
+                    capability,
+                    host_name,
+                    action,
+                    serde_json::json!({"lifecycle": "restart"}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(first["extension"], second["extension"]);
+        }
+    }
+
     #[test]
     fn sandbox_detection_is_explicit_and_never_falls_back_silently() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");

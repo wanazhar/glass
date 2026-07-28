@@ -44,8 +44,9 @@ This phase covers the first platform boundary for issue #27:
   tool calls validate against the same canonical operation mapping.
 - each daemon client receives an independent browser-session namespace; the
   daemon shares only bounded process resources and lease authority;
-- two first-party reference extensions exercise the manifest, permission, and
-  bounded host protocol without enabling the unfinished extension capability.
+- two first-party reference extensions exercise the manifest, permission,
+  bounded host protocol, and cold-start/exit/restart lifecycle without
+  enabling the unfinished extension capability.
 - the extension host exposes an explicit Linux/macOS native-sandbox path that
   fails closed when its platform boundary is unavailable.
 - guarded extension action results require a positive observation revision and
@@ -57,11 +58,13 @@ This phase covers the first platform boundary for issue #27:
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension
-  code is not loaded.
+  code is not loaded by the runtime capability path.
 
-The remaining platform work includes extension lifecycle certification and
-executable cross-transport/client conformance coverage. The TUI
+The remaining platform work includes enabling the extension capability after
+the native sandbox gate passes. Executable cross-transport/client conformance
+coverage is now present. The TUI
 command inventory is documented, including the deliberate delegation of
 structured target, frame, storage, diagnostics, certification, and extension
 administration operations to CLI/MCP/library surfaces. This task must not be
-marked complete until the remaining paths have executable conformance coverage.
+marked complete until the native sandbox gate permits the extension
+capability to be enabled.

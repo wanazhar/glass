@@ -67,10 +67,13 @@ Two reference extensions are in `extensions/first-party/`. They test:
 
 - manifest validation;
 - exact host and action permissions; and
-- the bounded host protocol.
+- the bounded host protocol; and
+- cold start, clean process exit, and restart for each reference extension.
 
 They are fixtures. Glass does not load or enable them automatically.
 
 Read [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
-Extension lifecycle certification, redaction certification, and
-cross-transport conformance must pass before Glass enables the capability.
+The lifecycle test starts each reference extension twice. The host waits for
+each process to exit before it returns. This does not make an extension
+trusted. Redaction, native sandbox, and cross-transport checks must also pass
+before Glass enables the capability.

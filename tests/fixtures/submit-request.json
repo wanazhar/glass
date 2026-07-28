@@ -12,8 +12,13 @@
   "steps": [
     {
       "id": "submit",
-      "action": "click",
-      "target": "css=#target",
+      "intent": {
+        "action": "submit",
+        "purpose": "submit request",
+        "scope": {"regionKind": "main"},
+        "constraints": {"role": "button", "name": "Submit request", "maxCandidates": 8},
+        "resolutionPolicy": "requireUniqueHighConfidence"
+      },
       "transaction": "non_idempotent",
       "idempotencyKey": "reliability-submit-once",
       "maxRetries": 0,

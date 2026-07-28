@@ -2082,6 +2082,75 @@ async fn reliability_runner_generates_live_fixture_evidence() {
     fixture_server.close().await;
 }
 
+#[tokio::test]
+async fn reliability_capability_suite_generates_live_evidence() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping reliability capability suite; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "reliability-capability-suite-e2e".to_string(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+
+    let scenario_values: Vec<Value> = serde_json::from_str(include_str!(
+        "fixtures/reliability-capability-suite-v1.json"
+    ))
+    .unwrap();
+    let scenarios: Vec<ReliabilityScenario> = scenario_values
+        .into_iter()
+        .map(ReliabilityScenario::from_value)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let fixture =
+        ReliabilityFixtureManifest::from_json(include_str!("fixtures/reliability-fixture-v1.json"))
+            .unwrap();
+    let options = ReliabilityRunOptions {
+        workflow_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+        inputs: BTreeMap::new(),
+    };
+
+    for scenario in scenarios {
+        session
+            .evaluate("window.reliabilityLab.reset(); true")
+            .await
+            .unwrap();
+        let evidence = run_reliability_scenario(&session, &scenario, &fixture, &options)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                evidence.observation.classification,
+                ReliabilityRunClassification::Passed | ReliabilityRunClassification::SafeRefusal
+            ),
+            "scenario {} did not certify: {:?}",
+            scenario.id,
+            evidence.observation
+        );
+        evidence.replay.validate(&scenario).unwrap();
+    }
+
+    session.close().await.unwrap();
+    fixture_server.close().await;
+}
+
 fn process_rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let kib = status

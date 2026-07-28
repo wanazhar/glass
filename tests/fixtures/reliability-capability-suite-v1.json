@@ -92,7 +92,7 @@
       {"inject": {"afterDispatch": "effect", "fault": "delayedEffect"}},
       {"runWorkflow": "observe-effect.json"}
     ],
-    "expect": {"terminalState": "completed", "sideEffectCount": {}},
+    "expect": {"terminalState": "effect-visible", "sideEffectCount": {}},
     "forbid": ["falseWorkflowCompletion", "unboundedLoopEscapedBudget"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   }

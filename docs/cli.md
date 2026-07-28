@@ -76,7 +76,7 @@ workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
 certify replay-diff --scenario SCENARIO_JSON --before REPLAY_JSON --after REPLAY_JSON
-certify release --version VERSION --scenarios SCENARIOS_JSON --observations OBSERVATIONS_JSON
+certify release --version VERSION --scenarios SCENARIOS_JSON --observations OBSERVATIONS_JSON [--replays REPLAYS_JSON]
 verify PREDICATE_JSON [--timeout-ms MILLISECONDS]
 resolve-intent [JSON_FILE]
 execute-intent [JSON_FILE]

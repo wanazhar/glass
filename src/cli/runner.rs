@@ -180,6 +180,7 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             version,
             scenarios,
             observations,
+            replays,
         } => {
             let scenario_value = read_json_input(Some(scenarios))?;
             let scenarios: Vec<ReliabilityScenario> = if scenario_value.is_array() {
@@ -189,12 +190,62 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             };
             let observations: Vec<ReliabilityScenarioObservation> =
                 serde_json::from_value(read_json_input(Some(observations))?)?;
+            let replays_validated = if let Some(replays) = replays {
+                let replay_value = read_json_input(Some(replays))?;
+                let replay_values: Vec<Value> = if replay_value.is_array() {
+                    serde_json::from_value(replay_value)?
+                } else {
+                    vec![replay_value]
+                };
+                let mut replay_by_id = BTreeMap::new();
+                for replay_value in replay_values {
+                    let scenario_id = replay_value
+                        .get("scenarioId")
+                        .and_then(Value::as_str)
+                        .ok_or("replay bundle is missing scenarioId")?
+                        .to_string();
+                    let scenario = scenarios
+                        .iter()
+                        .find(|scenario| scenario.id == scenario_id)
+                        .ok_or_else(|| {
+                            format!("replay references unknown scenario {scenario_id}")
+                        })?;
+                    let bundle = ReliabilityReplayBundle::from_value(replay_value, scenario)?;
+                    if replay_by_id.insert(scenario_id.clone(), bundle).is_some() {
+                        return Err(format!("duplicate replay for scenario {scenario_id}").into());
+                    }
+                }
+                if replay_by_id.len() != scenarios.len() {
+                    return Err("replay evidence must cover every scenario".into());
+                }
+                let observations_by_id: BTreeMap<_, _> = observations
+                    .iter()
+                    .map(|observation| (observation.scenario_id.as_str(), observation))
+                    .collect();
+                for (scenario_id, replay) in &replay_by_id {
+                    let observation =
+                        observations_by_id
+                            .get(scenario_id.as_str())
+                            .ok_or_else(|| {
+                                format!("replay has no matching observation for {scenario_id}")
+                            })?;
+                    if serde_json::to_value(&replay.observation)?
+                        != serde_json::to_value(observation)?
+                    {
+                        return Err(format!("replay observation differs for {scenario_id}").into());
+                    }
+                }
+                true
+            } else {
+                false
+            };
             let scorecard = build_reliability_scorecard(&scenarios, &observations)?;
             let certified = scorecard.certified;
             print_json(&serde_json::json!({
                 "status": if certified { "certified" } else { "blocked" },
                 "version": version,
                 "tool": {"name": "glass", "version": env!("CARGO_PKG_VERSION")},
+                "replaysValidated": replays_validated,
                 "gate": &scorecard.gate,
                 "scorecard": &scorecard,
             }))?;

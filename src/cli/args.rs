@@ -578,6 +578,9 @@ pub enum CertifyCommand {
         /// JSON array of scenario observations and oracle evidence.
         #[arg(long)]
         observations: PathBuf,
+        /// Optional JSON array of redacted replay bundles to cross-check.
+        #[arg(long)]
+        replays: Option<PathBuf>,
     },
     /// Validate one redacted replay bundle against its versioned scenario.
     Replay {
@@ -869,7 +872,12 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Certify {
-                action: CertifyCommand::Release { version, scenarios, observations },
+                action: CertifyCommand::Release {
+                    version,
+                    scenarios,
+                    observations,
+                    replays: None,
+                },
             }) if version == "0.2.0"
                 && scenarios.as_os_str() == "scenarios.json"
                 && observations.as_os_str() == "observations.json"

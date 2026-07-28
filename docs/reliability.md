@@ -58,7 +58,8 @@ Evaluate a complete release evidence set:
 glass certify release \
   --version 0.2.0 \
   --scenarios scenarios.json \
-  --observations observations.json
+  --observations observations.json \
+  --replays replays.json
 ```
 
 The release gate fails closed when a scenario is missing, hashes do not match,
@@ -67,7 +68,9 @@ outcome is present, or the run is failed, indeterminate, or unsupported. A
 safe refusal can certify only when its declared terminal state and independent
 oracle agree with the scenario. The JSON result includes the detailed gate and
 a category-level scorecard; the scorecard is derived from the same gate and is
-not a separate source of truth.
+not a separate source of truth. When `--replays` is supplied, every scenario
+must have one valid replay and its embedded observation must exactly match the
+observation input.
 
 ## Boundaries
 

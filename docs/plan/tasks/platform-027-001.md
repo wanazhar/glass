@@ -30,8 +30,8 @@ This phase covers the first platform boundary for issue #27:
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
-The remaining platform work includes active-run classification beyond stale
-socket recovery, a real extension host and first-party extensions, broader
-cross-transport golden scenarios, and the complete client/TUI operation
-inventory. This task must not be marked complete until those paths have
-executable conformance coverage.
+The remaining platform work includes native sandboxing and guarded executor
+integration for extensions, first-party extensions, active-run classification
+beyond stale socket recovery, broader cross-transport golden scenarios, and
+the complete client/TUI operation inventory. This task must not be marked
+complete until those paths have executable conformance coverage.

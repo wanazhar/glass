@@ -1,8 +1,9 @@
 //! Validated extension metadata and least-privilege permissions.
 //!
-//! This module intentionally does not load native code or execute extension
-//! entrypoints. It provides the versioned manifest and permission boundary
-//! that a future extension host must enforce before adding execution.
+//! The host executes one declared entrypoint request in a bounded subprocess.
+//! Native-code sandboxing and integration with guarded browser operations remain
+//! separate release gates; the `extensions` capability stays disabled until
+//! those guarantees are present.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

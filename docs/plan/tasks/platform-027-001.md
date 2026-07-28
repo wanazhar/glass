@@ -32,6 +32,8 @@ This phase covers the first platform boundary for issue #27:
   are surfaced by `glass daemon doctor`.
 - recovery state can be cleared only through an explicit acknowledgement
   command; acknowledgement does not resume work or grant a lease.
+- daemon request governance enforces both a global in-flight limit and a
+  per-client limit.
 - the transport-neutral protocol envelope is published as schema v1 and MCP
   tool calls validate against the same canonical operation mapping.
 - two first-party reference extensions exercise the manifest, permission, and

@@ -49,4 +49,6 @@ The returned token is owner-bound to the local socket connection. At most one
 client can hold the mutation lease for `daemon-default`; observation tools may
 run without it. Mutation `tools/call` requests must carry the token as
 `arguments.leaseToken`. A disconnected client releases its lease after its
-in-flight requests finish. Remote network access is not supported.
+in-flight requests finish. Each client has at most four in-flight requests,
+within a daemon-wide limit of sixteen, so one client cannot consume the entire
+request budget. Remote network access is not supported.

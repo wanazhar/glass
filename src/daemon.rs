@@ -22,6 +22,8 @@ pub const DAEMON_RECOVERY_SCHEMA_VERSION: u32 = 1;
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
 /// Maximum number of in-flight MCP operations across all daemon clients.
 pub const MAX_DAEMON_CONCURRENT_REQUESTS: usize = 16;
+/// Maximum number of in-flight MCP operations from one daemon client.
+pub const MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS: usize = 4;
 /// Maximum number of workflow requests retained in the daemon status record.
 pub const MAX_DAEMON_ACTIVE_RUNS: usize = 16;
 /// Stable session namespace used by the first shared daemon runtime.
@@ -76,6 +78,7 @@ pub struct DaemonLeaseContext {
     pub manager: Arc<tokio::sync::Mutex<MutationLeaseManager>>,
     pub owner_id: String,
     pub request_permits: Arc<tokio::sync::Semaphore>,
+    pub client_request_permits: Arc<tokio::sync::Semaphore>,
     pub status: Arc<DaemonStatusState>,
 }
 
@@ -650,6 +653,9 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
             manager: Arc::clone(&lease_manager),
             owner_id,
             request_permits: Arc::clone(&request_permits),
+            client_request_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS,
+            )),
             status: Arc::clone(&status_state),
         });
         clients.push(tokio::task::spawn_local(async move {
@@ -842,6 +848,20 @@ mod tests {
             manager.validate("session-1", "owner-a", &lease.token, 2_500),
             Err(LeaseError::NotFound)
         );
+    }
+
+    #[tokio::test]
+    async fn per_client_request_budget_is_bounded() {
+        let permits = Arc::new(tokio::sync::Semaphore::new(
+            MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS,
+        ));
+        let mut held = Vec::new();
+        for _ in 0..MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS {
+            held.push(Arc::clone(&permits).try_acquire_owned().unwrap());
+        }
+        assert!(Arc::clone(&permits).try_acquire_owned().is_err());
+        drop(held.pop());
+        assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
     }
 
     #[cfg(unix)]

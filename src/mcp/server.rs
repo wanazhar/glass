@@ -449,6 +449,9 @@ where
         .as_ref()
         .map(|context| Arc::clone(&context.request_permits))
         .unwrap_or_else(|| Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)));
+    let client_permits = lease_context
+        .as_ref()
+        .map(|context| Arc::clone(&context.client_request_permits));
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(MAX_QUEUED_RESPONSES);
     let writer = tokio::task::spawn_local(async move {
         let mut writer = writer;
@@ -607,6 +610,28 @@ where
                 continue;
             }
         };
+        let client_permit = match client_permits
+            .as_ref()
+            .map(|permits| Arc::clone(permits).try_acquire_owned())
+        {
+            Some(Ok(permit)) => Some(permit),
+            Some(Err(_)) => {
+                if !request.id.is_notification() {
+                    send_response(
+                        &outbound_tx,
+                        error_response(
+                            request.id.response_value(),
+                            -32000,
+                            "too many concurrent requests from this daemon client",
+                        ),
+                        format,
+                    )
+                    .await?;
+                }
+                continue;
+            }
+            None => None,
+        };
         let cancellation_key = request.id.cancellation_key();
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let mut cancel_guard = Some(cancel_tx);
@@ -671,6 +696,7 @@ where
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
             let _permit = permit;
+            let _client_permit = client_permit;
             let _cancel_guard = cancel_guard;
             let is_notification = request.id.is_notification();
             let id = request.id.response_value();

@@ -25,13 +25,17 @@ This phase covers the first platform boundary for issue #27:
 - policy failures expose a versioned rule/phase/remediation contract;
 - the TUI displays the negotiated schema count and daemon capability state;
 - daemon operations share a bounded global in-flight request budget.
+- daemon status records bounded owner-scoped active workflow requests, and stale
+  startup recovery logs each interrupted request as requiring checkpoint
+  reconciliation.
 - `glass doctor` reports browser, daemon, profile, policy, store, and
   extension-loader state;
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
 The remaining platform work includes native sandboxing and guarded executor
-integration for extensions, first-party extensions, active-run classification
-beyond stale socket recovery, broader cross-transport golden scenarios, and
-the complete client/TUI operation inventory. This task must not be marked
-complete until those paths have executable conformance coverage.
+integration for extensions, first-party extensions, graceful-stop and
+checkpoint-acknowledgement handling for active runs, broader cross-transport
+golden scenarios, and the complete client/TUI operation inventory. This task
+must not be marked complete until those paths have executable conformance
+coverage.

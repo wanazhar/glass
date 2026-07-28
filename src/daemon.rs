@@ -20,6 +20,8 @@ pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_DAEMON_CLIENT_SESSIONS: u32 = 4;
 /// Maximum number of in-flight MCP operations across all daemon clients.
 pub const MAX_DAEMON_CONCURRENT_REQUESTS: usize = 16;
+/// Maximum number of workflow requests retained in the daemon status record.
+pub const MAX_DAEMON_ACTIVE_RUNS: usize = 16;
 /// Stable session namespace used by the first shared daemon runtime.
 pub const DAEMON_DEFAULT_SESSION_ID: &str = "daemon-default";
 const MIN_LEASE_TTL_MS: u64 = 100;
@@ -72,6 +74,7 @@ pub struct DaemonLeaseContext {
     pub manager: Arc<tokio::sync::Mutex<MutationLeaseManager>>,
     pub owner_id: String,
     pub request_permits: Arc<tokio::sync::Semaphore>,
+    pub status: Arc<DaemonStatusState>,
 }
 
 impl MutationLeaseManager {
@@ -182,6 +185,15 @@ fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
     Ok(())
 }
 
+/// One workflow request active in the daemon's shared session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DaemonActiveRun {
+    pub request_id: String,
+    pub owner_id: String,
+    pub started_at: String,
+}
+
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -196,6 +208,65 @@ pub struct DaemonStatus {
     pub started_at: String,
     pub transport: String,
     pub client_sessions: u32,
+    #[serde(default)]
+    pub active_runs: Vec<DaemonActiveRun>,
+}
+
+/// Serialized status coordinator shared by daemon clients.
+#[derive(Debug)]
+pub struct DaemonStatusState {
+    path: PathBuf,
+    status: tokio::sync::Mutex<DaemonStatus>,
+}
+
+impl DaemonStatusState {
+    pub fn new(path: &Path, status: DaemonStatus) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            status: tokio::sync::Mutex::new(status),
+        }
+    }
+
+    pub async fn update_client_sessions(
+        &self,
+        client_sessions: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut status = self.status.lock().await;
+        status.client_sessions = client_sessions;
+        write_status(&self.path, &status)
+    }
+
+    pub async fn begin_workflow(
+        &self,
+        request_id: &str,
+        owner_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err("workflow request id exceeds the daemon status bound".into());
+        }
+        let mut status = self.status.lock().await;
+        if status.active_runs.len() >= MAX_DAEMON_ACTIVE_RUNS {
+            return Err("daemon active workflow limit reached".into());
+        }
+        status.active_runs.push(DaemonActiveRun {
+            request_id: request_id.into(),
+            owner_id: owner_id.into(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        });
+        write_status(&self.path, &status)
+    }
+
+    pub async fn finish_workflow(
+        &self,
+        request_id: &str,
+        owner_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut status = self.status.lock().await;
+        status
+            .active_runs
+            .retain(|run| run.request_id != request_id || run.owner_id != owner_id);
+        write_status(&self.path, &status)
+    }
 }
 
 /// Return the default local daemon paths.
@@ -247,6 +318,15 @@ pub async fn start(
                     existing.pid
                 ),
             )?;
+            for run in &existing.active_runs {
+                append_daemon_log(
+                    status_path,
+                    &format!(
+                        "recovered interrupted workflow request {} owned by {}; checkpoint reconciliation is required",
+                        run.request_id, run.owner_id
+                    ),
+                )?;
+            }
             let _ = std::fs::remove_file(status_path);
             let _ = remove_socket_if_safe(&existing.socket);
         }
@@ -418,8 +498,10 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         started_at: chrono::Utc::now().to_rfc3339(),
         transport: "unix-mcp-shared-session".into(),
         client_sessions: 0,
+        active_runs: Vec::new(),
     };
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
+    let status_state = Arc::new(DaemonStatusState::new(status_path, status));
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let shared_session = Arc::new(tokio::sync::Mutex::new(None));
     let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
@@ -445,8 +527,8 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
             continue;
         }
         let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        update_client_sessions(status_path, active)?;
-        let status_path = status_path.to_path_buf();
+        status_state.update_client_sessions(active).await?;
+        let status_state = Arc::clone(&status_state);
         let shared_session = Arc::clone(&shared_session);
         let cli = Cli::parse_from(["glass", "--mcp"]);
         let owner_id = format!(
@@ -457,6 +539,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
             manager: Arc::clone(&lease_manager),
             owner_id,
             request_permits: Arc::clone(&request_permits),
+            status: Arc::clone(&status_state),
         });
         clients.push(tokio::task::spawn_local(async move {
             let (socket_read, socket_write) = stream.into_split();
@@ -479,7 +562,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
             let active = client_sessions
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
                 .saturating_sub(1);
-            let _ = update_client_sessions(&status_path, active);
+            let _ = status_state.update_client_sessions(active).await;
         }));
     }
     for client in clients {
@@ -569,15 +652,8 @@ fn remove_socket_if_safe(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-fn update_client_sessions(
-    path: &Path,
-    client_sessions: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut status) = read_status(path)? else {
-        return Ok(());
-    };
-    status.client_sessions = client_sessions;
-    std::fs::write(path, serde_json::to_vec_pretty(&status)?)?;
+fn write_status(path: &Path, status: &DaemonStatus) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(path, serde_json::to_vec_pretty(status)?)?;
     Ok(())
 }
 
@@ -607,6 +683,7 @@ mod tests {
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
+            active_runs: Vec::new(),
         };
         let value = serde_json::to_value(&status).unwrap();
 
@@ -671,6 +748,50 @@ mod tests {
         authorize_local_peer(&stream).unwrap();
     }
 
+    #[tokio::test]
+    async fn active_workflow_status_is_added_and_removed_atomically() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-daemon-active-run-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("daemon.json");
+        let status = DaemonStatus {
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            state: "running".into(),
+            pid: 42,
+            socket: root.join("glass.sock"),
+            status_path: status_path.clone(),
+            log_path: None,
+            started_at: "2026-07-28T00:00:00Z".into(),
+            transport: "unix-mcp-shared-session".into(),
+            client_sessions: 0,
+            active_runs: Vec::new(),
+        };
+        write_status(&status_path, &status).unwrap();
+        let state = DaemonStatusState::new(&status_path, status);
+
+        state
+            .begin_workflow("workflow-1", "daemon-client-1")
+            .await
+            .unwrap();
+        let active: DaemonStatus =
+            serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
+        assert_eq!(active.active_runs[0].request_id, "workflow-1");
+
+        state
+            .finish_workflow("workflow-1", "daemon-client-1")
+            .await
+            .unwrap();
+        let finished: DaemonStatus =
+            serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
+        assert!(finished.active_runs.is_empty());
+
+        std::fs::remove_file(status_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn stale_status_cleanup_refuses_a_regular_recorded_socket() {
@@ -689,6 +810,7 @@ mod tests {
             started_at: "2026-07-28T00:00:00Z".into(),
             transport: "unix-mcp-shared-session".into(),
             client_sessions: 0,
+            active_runs: Vec::new(),
         };
         std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
 
@@ -698,6 +820,7 @@ mod tests {
         assert!(socket.is_file());
         assert!(!status_path.exists());
         std::fs::remove_file(socket).unwrap();
+        std::fs::remove_file(log_path_for(&status_path)).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 

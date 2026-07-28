@@ -36,6 +36,11 @@ fn daemon_recovers_dead_status_and_stale_socket() {
         "startedAt": "2026-07-28T00:00:00Z",
         "transport": "unix-mcp-shared-session",
         "clientSessions": 0,
+        "activeRuns": [{
+            "requestId": "workflow-recovery-1",
+            "ownerId": "daemon-client-1",
+            "startedAt": "2026-07-28T00:00:01Z"
+        }],
         "logPath": log,
     });
     drop(listener);
@@ -70,6 +75,7 @@ fn daemon_recovers_dead_status_and_stale_socket() {
     let content = logs["content"].as_str().unwrap();
     assert!(content.contains("active workflows are indeterminate"));
     assert!(content.contains("checkpoint reconciliation"));
+    assert!(content.contains("workflow-recovery-1"));
 
     let stop = Command::new(glass_binary())
         .args([

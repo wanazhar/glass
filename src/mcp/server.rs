@@ -619,6 +619,35 @@ where
                 continue;
             }
         }
+        let active_workflow_request = if local_daemon {
+            workflow_request_id(&request)
+        } else {
+            None
+        };
+        let active_workflow_status = lease_context
+            .as_ref()
+            .map(|context| Arc::clone(&context.status));
+        let active_workflow_owner = lease_context
+            .as_ref()
+            .map(|context| context.owner_id.clone());
+        if let (Some(request_id), Some(status)) = (
+            active_workflow_request.as_deref(),
+            active_workflow_status.as_ref(),
+        ) && let Err(error) = status
+            .begin_workflow(
+                request_id,
+                &lease_context
+                    .as_ref()
+                    .expect("daemon lease context available")
+                    .owner_id,
+            )
+            .await
+        {
+            if let Some(key) = cancellation_key.as_ref() {
+                task_cancellations_remove(&cancellations, key);
+            }
+            return Err(error);
+        }
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
         let task_policy = policy.clone();
@@ -654,6 +683,14 @@ where
                     .expect("cancellation map poisoned")
                     .remove(&key);
             }
+            if let (Some(request_id), Some(owner_id), Some(status)) = (
+                active_workflow_request.as_deref(),
+                active_workflow_owner.as_deref(),
+                active_workflow_status.as_ref(),
+            ) && let Err(error) = status.finish_workflow(request_id, owner_id).await
+            {
+                tracing::warn!(%error, request_id, "failed to clear completed workflow status");
+            }
             if let Some(response) = response {
                 let _ = send_response(&task_outbound, response, format).await;
             }
@@ -685,6 +722,28 @@ fn is_lease_method(method: &str) -> bool {
         method,
         "glass/lease/acquire" | "glass/lease/renew" | "glass/lease/release"
     )
+}
+
+fn workflow_request_id(request: &JsonRpcRequest) -> Option<String> {
+    if request.method != "tools/call"
+        || request.params.get("name").and_then(Value::as_str) != Some("workflow")
+    {
+        return None;
+    }
+    match &request.id {
+        RequestId::Present(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+            Some(value.clone())
+        }
+        RequestId::Present(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn task_cancellations_remove(cancellations: &CancellationMap, key: &str) {
+    cancellations
+        .lock()
+        .expect("cancellation map poisoned")
+        .remove(key);
 }
 
 async fn handle_lease_request(

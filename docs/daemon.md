@@ -24,6 +24,10 @@ socket ownership and mode are the local authentication boundary. The status JSON
 the daemon PID, protocol version, transport, and active client-session count.
 The transport identifier is `unix-mcp-shared-session`.
 `glass daemon logs` returns at most the last 64 KiB of the local log file.
+While a workflow request is running, the status also records its bounded
+request ID and owner. If the daemon is restarted after a crash, those entries
+are reported as interrupted and must be reconciled from a checkpoint before a
+caller resumes work.
 
 The daemon is intentionally limited in this release: it provides local
 lifecycle supervision and a shared browser session namespace. Clients must

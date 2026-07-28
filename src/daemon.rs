@@ -267,6 +267,20 @@ impl DaemonStatusState {
             .retain(|run| run.request_id != request_id || run.owner_id != owner_id);
         write_status(&self.path, &status)
     }
+
+    pub async fn record_interrupted_workflows(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let status = self.status.lock().await;
+        for run in &status.active_runs {
+            append_daemon_log(
+                &self.path,
+                &format!(
+                    "interrupted workflow request {} owned by {}; checkpoint reconciliation is required",
+                    run.request_id, run.owner_id
+                ),
+            )?;
+        }
+        Ok(status.active_runs.len())
+    }
 }
 
 /// Return the default local daemon paths.
@@ -565,6 +579,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
             let _ = status_state.update_client_sessions(active).await;
         }));
     }
+    let _ = status_state.record_interrupted_workflows().await;
     for client in clients {
         client.abort();
     }
@@ -779,6 +794,9 @@ mod tests {
         let active: DaemonStatus =
             serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
         assert_eq!(active.active_runs[0].request_id, "workflow-1");
+        assert_eq!(state.record_interrupted_workflows().await.unwrap(), 1);
+        let recovery_log = std::fs::read_to_string(log_path_for(&status_path)).unwrap();
+        assert!(recovery_log.contains("workflow-1"));
 
         state
             .finish_workflow("workflow-1", "daemon-client-1")
@@ -789,6 +807,7 @@ mod tests {
         assert!(finished.active_runs.is_empty());
 
         std::fs::remove_file(status_path).unwrap();
+        std::fs::remove_file(log_path_for(&root.join("daemon.json"))).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 

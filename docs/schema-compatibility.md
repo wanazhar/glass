@@ -41,7 +41,7 @@ MCP `initialize` returns a `glass` manifest that follows
 
 A client may request protocol and schema versions:
 
-`json
+```json
 {
   "protocolVersion": 1,
   "schemas": {
@@ -49,7 +49,7 @@ A client may request protocol and schema versions:
     "workflow": [1]
   }
 }
-`
+```
 
 Glass rejects unknown schemas, empty version lists, and requests without a
 common supported version before it marks the MCP session ready.

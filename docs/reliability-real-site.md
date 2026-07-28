@@ -23,7 +23,7 @@ These classifications cannot certify a release.
 
 ## Example
 
-`console
+```console
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
   navigate https://example.com/approved-read-only-route
@@ -35,7 +35,7 @@ glass --incognito --policy hardened \
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
   verify '{"textContains":"Expected marker"}'
-`
+```
 
 This example does not certify `example.com`. The current checkout does not
 discover approved sites or publish real-site evidence.

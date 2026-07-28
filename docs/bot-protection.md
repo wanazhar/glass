@@ -22,11 +22,11 @@ contract and does not depend on page layout.
 A site may allow an authenticated session where it blocks an unauthenticated
 browser. Use a persistent profile only when your deployment policy permits it:
 
-`console
+```console
 glass profiles create work
 glass --headed --profile work navigate https://example.com/login
 glass --profile work navigate https://example.com/dashboard
-`
+```
 
 Profiles contain cookies and storage. Protect them.
 
@@ -51,9 +51,9 @@ A consent helper is a page interaction. It is not a bot-protection bypass.
 
 Use the optional `polite` policy for public pages:
 
-`console
+```console
 glass --policy polite navigate https://example.com/public-page
-`
+```
 
 The policy checks `robots.txt`, applies a bounded delay, and identifies
 requests with the Glass user agent. A robots error or disallowed path fails

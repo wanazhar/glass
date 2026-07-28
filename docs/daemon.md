@@ -13,13 +13,13 @@ each client lease is bound to that client's session namespace and owner.
 
 Run:
 
-`console
+```console
 glass daemon start
 glass daemon status
 glass daemon doctor
 glass daemon logs
 glass daemon stop
-`
+```
 
 Use `--socket PATH` and `--status PATH` to set explicit paths. The default
 paths are in the platform local-data directory.
@@ -60,9 +60,9 @@ reports this state as `reconciliation_required`.
 
 After reconciliation, acknowledge every request:
 
-`console
+```console
 glass daemon acknowledge-recovery --request-id REQUEST_ID [...]
-`
+```
 
 Glass rejects partial, unknown, and duplicate acknowledgements. Acknowledgement
 does not resume a workflow. It does not grant a lease.
@@ -74,11 +74,11 @@ operations.
 
 Use these MCP methods:
 
-`text
+```text
 glass/lease/acquire  {"ttlMs": 1000..900000}
 glass/lease/renew    {"token": "...", "ttlMs": 1000..900000}
 glass/lease/release  {"token": "..."}
-`
+```
 
 One client may hold the mutation lease for `daemon-default`. Observation
 operations do not require the lease. Mutation requests must send the token as

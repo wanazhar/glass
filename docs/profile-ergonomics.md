@@ -7,28 +7,28 @@ when you need an existing login without copying a password into a command.
 
 Run:
 
-`console
+```console
 glass profiles create work
 glass --headed --profile work navigate https://app.example.com/login
-`
+```
 
 Complete the login in the headed browser. Close the session normally.
 
 Use the profile later:
 
-`console
+```console
 glass --profile work navigate https://app.example.com/dashboard
 glass --profile work observe
-`
+```
 
 ## Export and import cookies
 
 Use a bounded JSON file for an explicit cookie transfer:
 
-`console
+```console
 glass --profile work export-cookies ./work-cookies.json
 glass --profile work import-cookies ./work-cookies.json
-`
+```
 
 Cookie export and import require the persistent-profile capability. Imports are
 limited to 256 cookies and 512 KiB.
@@ -53,15 +53,15 @@ Keep the profile directory as carefully as an API key.
 
 List profiles:
 
-`console
+```console
 glass profiles
-`
+```
 
 Delete a profile:
 
-`console
+```console
 glass delete-profile work
-`
+```
 
 Deletion removes all stored state. The action cannot be undone.
 
@@ -71,9 +71,9 @@ Use `--incognito` when the session must not persist state.
 
 Attach to an existing Chrome process:
 
-`console
+```console
 glass --attach --port 9222 navigate https://example.com
-`
+```
 
 Glass does not silently adopt a running browser. Attach mode does not create or
 manage profiles. It uses the profile of the existing Chrome process.

@@ -13,11 +13,11 @@ page may change between observation and execution.
 
 Example:
 
-`console
+```console
 glass navigate https://example.com
 glass observe
 glass click r7:b42 --expected-revision 7
-`
+```
 
 The guard is available for navigation, click, popup click, double-click, type,
 clear, check, uncheck, select, scroll, fill-form, drag, keyboard, and upload
@@ -27,7 +27,7 @@ operations.
 
 A successful action returns bounded evidence:
 
-`json
+```json
 {
   "status": "succeeded",
   "action": "click",
@@ -44,7 +44,7 @@ A successful action returns bounded evidence:
     "frameChanged": false
   }
 }
-`
+```
 
 The result may include URL and title changes, target and frame changes, a
 revision delta, count-only accessibility changes, popup evidence, dialog

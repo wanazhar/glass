@@ -15,20 +15,20 @@ Glass applies one named policy to each session. A policy marks a capability as
 
 Start a session with a preset:
 
-`console
+```console
 glass --policy dev
 glass --policy ci
 glass --policy polite navigate https://example.com/public-page
 glass --mcp --policy untrusted-mcp --policy-allow-host example.com
-`
+```
 
 ## Hardened policy
 
 Hardened mode requires at least one exact `--policy-allow-host` value:
 
-`console
+```console
 glass --policy hardened --policy-allow-host example.com
-`
+```
 
 Glass rejects wildcard hosts, overlapping allow and deny rules, private
 addresses, reserved addresses, and a missing host rule.
@@ -63,9 +63,9 @@ confirmation token cannot grant raw CDP.
 A capability with `RequireConfirmation` needs a one-use token. Request a
 confirmation from the CLI:
 
-`console
+```console
 glass --policy-confirm evaluate navigate https://example.com
-`
+```
 
 An MCP client uses the `confirm` tool with the capability name. Glass scopes
 the token to that capability and consumes it when the operation runs.
@@ -79,11 +79,11 @@ untrusted page data or request data.
 
 In `hardened` and `untrusted-mcp` modes, provide at least one host rule:
 
-`console
+```console
 glass --policy hardened \
   --policy-allow-host example.com \
   --policy-allow-host api.example.org
-`
+```
 
 Host rules must use exact DNS names or public IPv4 literals. Glass rejects
 private, link-local, shared, and reserved networks. Attach mode accepts only

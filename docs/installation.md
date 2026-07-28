@@ -15,23 +15,23 @@ browser runtime.
 
 Build the release executable:
 
-`console
+```console
 cargo build --release --locked
-`
+```
 
 The executable is `target/release/glass`.
 
 Install the local checkout:
 
-`console
+```console
 cargo install --path . --locked
-`
+```
 
 Install the published crate after a release:
 
-`console
+```console
 cargo install glass-browser --locked
-`
+```
 
 ## Select a browser
 
@@ -43,16 +43,16 @@ Glass checks these locations in this order:
 
 Use an explicit path when the browser is in a non-standard location:
 
-`console
+```console
 glass --chrome-path /opt/chrome/chrome navigate https://example.com
-`
+```
 
 Install the Glass-pinned Chrome for Testing build:
 
-`console
+```console
 glass install-chromium
 glass install-chromium --update
-`
+```
 
 Chrome for Testing does not currently provide a Linux ARM64 archive. On Linux
 ARM64, install a system Chromium build or provide an explicit executable with
@@ -81,11 +81,11 @@ Profile names may contain ASCII letters, digits, `_`, and `-`.
 
 List and manage profiles:
 
-`console
+```console
 glass profiles
 glass profiles create work
 glass profiles delete work
-`
+```
 
 Profile deletion removes the browser data. Do not store other files in a
 Glass-managed profile directory.
@@ -96,15 +96,15 @@ Glass does not take over an occupied CDP port without an explicit option.
 
 Start Chrome with remote debugging. Then attach:
 
-`console
+```console
 glass --attach --port 9222 observe
-`
+```
 
 If the endpoint has more than one page target, select one:
 
-`console
+```console
 glass --attach --port 9222 --target-id TARGET_ID observe
-`
+```
 
 Attach mode uses the settings of the existing Chrome process. It rejects
 `--incognito`, `--headed`, `--chrome-path`, and a non-default named profile.
@@ -113,10 +113,10 @@ Attach mode uses the settings of the existing Chrome process. It rejects
 
 Glass writes diagnostics with `tracing`. Set `RUST_LOG` to change the level:
 
-`console
+```console
 RUST_LOG=glass=info glass observe
 RUST_LOG=glass=debug glass --headed navigate https://example.com
-`
+```
 
 CLI results use stdout. Diagnostics use stderr. MCP clients must keep stdout
 reserved for protocol messages.
@@ -126,11 +126,11 @@ reserved for protocol messages.
 The default `development` policy supports local work. For untrusted input, use
 a disposable session and an exact host allowlist:
 
-`console
+```console
 glass --policy hardened --incognito \
   --policy-allow-host example.com \
   navigate https://example.com
-`
+```
 
 Repeat `--policy-allow-host` or `--policy-deny-host` for exact host names or
 public IPv4 literals. Glass rejects wildcards, overlapping rules, private
@@ -151,12 +151,12 @@ These capabilities require policy decisions:
 
 Request one confirmed screenshot:
 
-`console
+```console
 glass --policy hardened --incognito \
   --policy-allow-host example.com \
   --policy-confirm screenshot --policy-confirm-once screenshot \
   screenshot --output evidence.png
-`
+```
 
 Policy flags have the same meaning in CLI, MCP, and TUI sessions. Glass
 rejects invalid combinations before it starts Chrome. `raw-cdp` supports an

@@ -12,18 +12,18 @@ user guide. Keep commands, field names, and status statements exact.
 
 Run:
 
-`console
+```console
 cargo build --locked
 cargo test --all-targets --locked
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
-`
+```
 
 Run the browser test only when a supported browser is available:
 
-`console
+```console
 GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture
-`
+```
 
 The test uses a local fixture. It does not use a public site.
 
@@ -48,19 +48,19 @@ make claims that the current tests do not support.
 
 Check documentation changes with:
 
-`console
+```console
 git diff --check
-`
+```
 
 ## Commit and review
 
 Use a short conventional commit subject. Examples:
 
-`text
+```text
 docs(cli): clarify target selection
 fix(browser): reject stale target references
 test(daemon): cover lease expiry
-`
+```
 
 A change request must include:
 

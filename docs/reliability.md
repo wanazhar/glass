@@ -34,14 +34,14 @@ effects. The fixture does not use Glass decision logic.
 
 Set up a local fixture server. Then run:
 
-`console
+```console
 glass certify run \
   --scenario scenario.json \
   --fixture tests/fixtures/reliability-fixture-v1.json \
   --url http://127.0.0.1:8000/fixture.html \
   --workflow-root tests/fixtures \
   --output evidence.json
-`
+```
 
 The runner:
 
@@ -59,46 +59,46 @@ A denied raw-CDP path is also non-certifying.
 
 Run the browser smoke tests:
 
-`console
+```console
 GLASS_E2E=1 cargo test --test browser_smoke reliability_lab_controls
 GLASS_E2E=1 cargo test --test browser_smoke reliability_runner_generates_live_fixture_evidence
-`
+```
 
 ## Offline commands
 
 Inspect a plan without Chrome:
 
-`console
+```console
 glass certify plan \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --fixture tests/fixtures/reliability-fixture-v1.json
-`
+```
 
 Validate a replay:
 
-`console
+```console
 glass certify replay \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --input replay.json
-`
+```
 
 Compare two replays:
 
-`console
+```console
 glass certify replay-diff \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --before baseline.json --after candidate.json
-`
+```
 
 Evaluate release evidence:
 
-`console
+```console
 glass certify release \
   --version 0.2.0 \
   --scenarios scenarios.json \
   --observations observations.json \
   --replays replays.json
-`
+```
 
 The release command fails closed when:
 

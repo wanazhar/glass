@@ -37,11 +37,11 @@ add them to a semantic level. Glass reports omitted and truncated fields in
 
 Run:
 
-`console
+```console
 glass observe --level summary
 glass observe --level interactive
 glass observe --level structured --region region_main_1
-`
+```
 
 Do not combine semantic options with `--deep-dom`, `--screenshot`, or
 `--form-values`. In the TUI, use `semantic LEVEL [REGION_ID]`.

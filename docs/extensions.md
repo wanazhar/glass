@@ -18,9 +18,9 @@ undeclared browser commands, and undeclared mutations.
 
 Load manifests without executing extension code:
 
-`rust
+```rust
 ExtensionRegistry::load_dir
-`
+```
 
 The host confines entrypoints to its configured root. It checks declared
 capabilities, hosts, and actions. It limits each request and response to
@@ -36,9 +36,9 @@ Registering a manifest does not execute code.
 
 An extension does not receive a browser handle.
 
-`rust
+```rust
 ExtensionHost::invoke_guarded
-`
+```
 
 accepts a bounded revision-pinned action result. Glass then performs supported
 click, type, clear, check, uncheck, and select actions through the core
@@ -51,9 +51,9 @@ effect recording in the core runtime.
 
 Use the explicit sandbox entry point:
 
-`rust
+```rust
 ExtensionHost::invoke_sandboxed
-`
+```
 
 On Linux, the host requires `bubblewrap`. On macOS, it uses the system
 sandbox profile. If the sandbox is not available, the call fails. Glass does

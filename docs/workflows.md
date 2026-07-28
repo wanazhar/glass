@@ -21,7 +21,7 @@ Glass validates the definition before it starts Chrome or dispatches an action.
 
 Example:
 
-`json
+```json
 {
   "schemaVersion": 1,
   "name": "open-example",
@@ -53,7 +53,7 @@ Example:
     }
   }
 }
-`
+```
 
 Use [workflow-v1.schema.json](schema/workflow-v1.schema.json) for the external
 JSON contract.
@@ -164,9 +164,9 @@ diagnostics, semantic recording, preview, and diff behavior.
 
 Run the local workflow scorecard:
 
-`console
+```console
 GLASS_WORKFLOW_SCORECARD_ITERATIONS=10 cargo run --release --example workflow_scorecard
-`
+```
 
 The scorecard uses `benchmarks/scenarios/workflow-v1.json` and the local
 `tests/fixtures/scorecard.html` fixture. It checks linear completion,

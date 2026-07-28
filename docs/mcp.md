@@ -16,7 +16,7 @@ and platform and browser constraints.
 Build or install Glass. Configure the client to start the binary with
 `--mcp`:
 
-`json
+```json
 {
   "mcpServers": {
     "glass": {
@@ -25,20 +25,20 @@ Build or install Glass. Configure the client to start the binary with
     }
   }
 }
-`
+```
 
 You may add session options:
 
-`json
+```json
 {
   "command": "/absolute/path/to/glass",
   "args": ["--incognito", "--interaction", "fast", "--mcp"]
 }
-`
+```
 
 For untrusted input, set the policy in fixed configuration:
 
-`json
+```json
 {
   "command": "/absolute/path/to/glass",
   "args": [
@@ -48,7 +48,7 @@ For untrusted input, set the policy in fixed configuration:
     "--mcp"
   ]
 }
-`
+```
 
 Use an absolute binary path in a graphical client. Keep stdout reserved for MCP
 messages. Glass writes diagnostics to stderr.
@@ -57,7 +57,7 @@ messages. Glass writes diagnostics to stderr.
 
 A client may request Glass versions in `initialize.params.glass`:
 
-`json
+```json
 {
   "protocolVersion": 1,
   "schemas": {
@@ -65,7 +65,7 @@ A client may request Glass versions in `initialize.params.glass`:
     "workflow": [1]
   }
 }
-`
+```
 
 Glass rejects unknown schemas, empty version lists, and requests with no common
 supported version before the session becomes ready.

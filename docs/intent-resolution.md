@@ -10,7 +10,7 @@ not select a target when the evidence is ambiguous.
 
 Create a versioned request:
 
-`json
+```json
 {
   "schemaVersion": 1,
   "intent": "open settings",
@@ -20,13 +20,13 @@ Create a versioned request:
   "resolutionPolicy": "requireExact",
   "expectedRevision": 42
 }
-`
+```
 
 Resolve without dispatch:
 
-`console
+```console
 glass resolve-intent request.json
-`
+```
 
 The result contains the route, revision, candidates, confidence, evidence,
 exclusions, and selected candidate.
@@ -37,7 +37,7 @@ A candidate is valid only for the observed target, frame, and revision.
 
 Provide the candidate ID from the resolution result:
 
-`json
+```json
 {
   "request": {
     "schemaVersion": 1,
@@ -50,13 +50,13 @@ Provide the candidate ID from the resolution result:
   },
   "candidateId": "candidate_1"
 }
-`
+```
 
 Run:
 
-`console
+```console
 glass execute-intent execution.json
-`
+```
 
 Glass observes and resolves again before dispatch. The response separates
 resolution evidence from the action result.

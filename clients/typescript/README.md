@@ -11,15 +11,15 @@ The client does not include Chrome, Chromium, or another browser runtime.
 
 Run:
 
-`console
+```console
 npm run build
-`
+```
 
 The package exports JavaScript and TypeScript declaration files.
 
 ## Start a client
 
-`typescript
+```typescript
 import { GlassClient } from "@glass-browser/client";
 
 const glass = new GlassClient({ command: "/absolute/path/to/glass" });
@@ -27,7 +27,7 @@ await glass.navigate("https://example.com");
 const page = await glass.observeSemantic("structured");
 console.log(page);
 glass.close();
-`
+```
 
 Use `daemonSocket: "/path/to/glass.sock"` to connect to a running Linux or
 macOS daemon.

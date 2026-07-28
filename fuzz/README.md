@@ -12,11 +12,11 @@ Keep fuzz corpora small. Do not add sensitive data.
 
 Install `cargo-fuzz`. Run a bounded local sweep:
 
-`console
+```console
 for target in mcp_frame cdp_message ax_dom locator url_policy; do
   cargo fuzz run "$target" -- -runs=512
 done
-`
+```
 
 Pull requests run the same deterministic smoke budget. The scheduled workflow
 runs each target for two minutes.

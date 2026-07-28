@@ -14,7 +14,7 @@ installed version.
 | `--frame-id ID` | main frame | Select a frame. |
 | `--port PORT` | `9222` | Set the local CDP port. |
 | `--headed` | off | Show the Chrome window. |
-| `--interaction human|fast` | `human` | Select pointer event mode. |
+| `--interaction human\|fast` | `human` | Select pointer event mode. |
 | `--trace-on-error` | off | Write one bounded failure trace to stderr. |
 | `--chrome-path PATH` | discovered | Select the browser executable. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
@@ -33,7 +33,7 @@ environment.
 
 The main commands are:
 
-`text
+```text
 navigate URL
 click TARGET
 click-expect-popup TARGET
@@ -77,7 +77,7 @@ knowledge SUBCOMMAND
 capabilities
 doctor
 tui
-`
+```
 
 Use `glass --help` for options and defaults for each command.
 
@@ -96,11 +96,11 @@ observation. Request those operations explicitly.
 
 Use a semantic level when you need structured page state:
 
-`console
+```console
 glass observe --level summary
 glass observe --level interactive
 glass observe --level structured --region REGION_ID
-`
+```
 
 Do not combine a semantic level with `--deep-dom`, `--screenshot`, or
 `--form-values`. Read [semantic observations](semantic-observation.md) for
@@ -123,10 +123,10 @@ candidate data.
 Prefer a revisioned reference for automation. Pass the revision from
 `observe`:
 
-`console
+```console
 glass click r7:b42 --expected-revision 7
 glass type 'hello' --target r7:b43 --expected-revision 7
-`
+```
 
 Glass rejects a stale revision before it sends the browser action. The result
 contains typed status, previous and current revisions, an execution ID, and
@@ -142,7 +142,7 @@ remain compatible.
 
 These commands are offline. They do not start Chrome:
 
-`console
+```console
 glass workflow compile FILE
 glass workflow format FILE
 glass workflow validate FILE
@@ -150,7 +150,7 @@ glass workflow lint FILE
 glass workflow preview FILE
 glass workflow diff BEFORE AFTER
 glass workflow record
-`
+```
 
 `glass workflow-resume` reconciles a checkpoint and runs only the safe
 pending suffix. It refuses post-dispatch ambiguity, route changes, definition
@@ -162,16 +162,16 @@ Read [workflows](workflows.md) and [workflow authoring](workflow-authoring.md).
 
 Resolve an intent without dispatch:
 
-`console
+```console
 glass resolve-intent request.json
 glass execute-intent execution.json
-`
+```
 
 The execute command observes and resolves again before it acts.
 
 Knowledge commands do not start Chrome:
 
-`console
+```console
 glass knowledge list
 glass knowledge show RECORD_ID
 glass knowledge explain RECORD_ID
@@ -180,7 +180,7 @@ glass knowledge export [PATH]
 glass knowledge import SNAPSHOT.json
 glass knowledge invalidate RECORD_ID stale
 glass knowledge purge ORIGIN
-`
+```
 
 Read [intent resolution](intent-resolution.md) and [persistent knowledge](knowledge.md).
 
@@ -188,7 +188,7 @@ Read [intent resolution](intent-resolution.md) and [persistent knowledge](knowle
 
 Run:
 
-`console
+```console
 glass capabilities
 glass daemon start
 glass daemon status
@@ -196,7 +196,7 @@ glass daemon doctor
 glass daemon logs
 glass daemon stop
 glass doctor
-`
+```
 
 `capabilities` prints the negotiated capability manifest without starting
 Chrome. `doctor` prints bounded browser, daemon, profile, policy, store, and
@@ -208,14 +208,14 @@ The daemon is local-only. Read [Local daemon](daemon.md).
 
 Run:
 
-`console
+```console
 glass install-chromium
 glass profiles
 glass profiles create NAME
 glass profiles delete NAME
 glass delete-profile NAME
 glass tui
-`
+```
 
 `delete-profile` remains an alias for profile deletion.
 
@@ -225,19 +225,19 @@ limited to 512 KiB and 256 cookies.
 
 Quote selectors and values that contain spaces or shell metacharacters:
 
-`console
+```console
 glass click 'css=button[type="submit"]'
 glass type 'hello world' --target 'css=#message'
-`
+```
 
 ## Convenience prompts
 
 Glass accepts a limited set of prompts:
 
-`console
+```console
 glass "navigate to https://example.com"
 glass "click Sign in"
-`
+```
 
 This feature parses known command forms. It is not a general language
 interpreter. Use explicit subcommands in scripts.

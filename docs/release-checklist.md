@@ -26,7 +26,7 @@ binary artifact as published until the corresponding operation succeeds.
 
 Run:
 
-`console
+```console
 cargo fmt --all -- --check
 python3 scripts/check-version-sync.py
 cargo test --all --locked
@@ -38,7 +38,7 @@ cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
 GLASS_PREVIOUS_VERSION=0.1.18 scripts/smoke-clean-install.sh
-`
+```
 
 Then complete these release checks:
 

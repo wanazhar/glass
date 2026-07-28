@@ -8,7 +8,7 @@ upload, download, or change browser emulation.
 
 Set the URL and run:
 
-`console
+```console
 export CANARY_URL=https://approved.example/health
 
 cargo run --release --locked -- \
@@ -20,7 +20,7 @@ cargo run --release --locked -- \
   --policy hardened \
   --policy-allow-host approved.example \
   observe
-`
+```
 
 Record the commit, Glass version, Chrome version, host operating system and
 architecture, URL host, policy, result, elapsed time, and typed failure.

@@ -44,9 +44,9 @@ Fresh verification is required before promotion to `verified` or recovery from
 
 The default store is:
 
-`text
+```text
 <config>/glass/knowledge/<profile>.json
-`
+```
 
 Use `--knowledge-store PATH` to select another file.
 
@@ -58,7 +58,7 @@ does not replace corrupt data silently.
 
 These commands do not start Chrome:
 
-`console
+```console
 glass knowledge list
 glass knowledge show RECORD_ID
 glass knowledge explain RECORD_ID
@@ -67,7 +67,7 @@ glass knowledge export [PATH]
 glass knowledge import SNAPSHOT.json
 glass knowledge invalidate RECORD_ID stale
 glass knowledge purge https://example.test
-`
+```
 
 `explain` reports scope, provenance, lifecycle history, invalidation rules,
 and the content hash. It states that a fresh observation is required.
@@ -94,8 +94,8 @@ The snapshot contract is
 
 Run the local scorecard:
 
-`console
+```console
 cargo run --example knowledge_scorecard
-`
+```
 
 The scorecard is local evidence. It is not a public release claim.

@@ -9,15 +9,15 @@ and browser controls.
 
 From this directory, run:
 
-`console
+```console
 python -m pip install .
-`
+```
 
 The client does not install Chrome or Chromium.
 
 ## Start a client
 
-`python
+```python
 from glass_client import GlassClient
 
 glass = GlassClient(command="/absolute/path/to/glass")
@@ -26,7 +26,7 @@ try:
     print(glass.observe_semantic("structured"))
 finally:
     glass.close()
-`
+```
 
 Use `daemon_socket="/path/to/glass.sock"` to connect to a running Linux or
 macOS daemon.

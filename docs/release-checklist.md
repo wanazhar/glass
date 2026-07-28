@@ -2,28 +2,32 @@
 
 Use this checklist for each public release.
 
-## Current candidate
+## Candidate status
 
-The local candidate is `glass-browser` `0.2.0`, prepared on 2026-07-28. The
-supported release targets are Linux x86-64 and macOS x86-64/arm64. Windows is
-outside the release contract. This checkout is prepared locally only; a GitHub
-release, crates.io publication, npm publication, and release tag are separate
-steps and must not be described as complete until they have succeeded.
+The current local candidate is `glass-browser` version `0.2.0`. The target
+platforms are Linux x86-64, macOS x86-64, and macOS arm64. Windows is
+unsupported.
+
+This checkout is local-only. Do not describe a GitHub release, tag, crates.io
+package, npm package, or binary artifact as published until the corresponding
+operation succeeds.
 
 ## Prepare
 
-- [ ] Confirm the intended version and release date.
-- [ ] Ensure `Cargo.toml` contains the correct version, description, license,
-      README, and finalized repository metadata.
-- [x] Keep the local `0.2.0` changelog entry explicitly marked unreleased.
-- [x] Verify README installation steps and `glass --help` output.
+- [ ] Confirm the version and release date.
+- [ ] Check the package name, description, license, README, and repository
+  metadata in `Cargo.toml`.
+- [x] Mark the local 0.2.0 changelog entry as unreleased.
+- [x] Check the README installation commands against `glass --help`.
 - [ ] Review dependency and browser-facing security changes.
-- [ ] Confirm the working tree contains no profiles, screenshots, logs, or
-      other generated data.
+- [ ] Check that the working tree has no profiles, screenshots, logs, or other
+  generated data.
 
-## Validate
+## Validate the checkout
 
-```console
+Run:
+
+`console
 cargo fmt --all -- --check
 python3 scripts/check-version-sync.py
 cargo test --all --locked
@@ -34,23 +38,29 @@ cargo package --locked --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
-```
+`
 
-- [ ] Confirm the tagged release matrix ran the real-browser smoke on Linux
-      x86-64 and macOS x86-64/arm64.
-- [ ] Smoke-test `--help`, `navigate`, `observe`, `screenshot`, TUI startup,
-      and MCP initialization using the release binary.
-- [ ] Inspect `cargo package --list` and unpacked package contents.
-- [ ] Download every artifact, verify `SHA256SUMS` with `sha256sum -c`, and
-      verify the Sigstore bundle with `cosign verify-blob`.
-- [ ] Review the attached dependency, license, and vulnerability JSON reports.
+Then complete these release checks:
+
+- [ ] Run the real-browser matrix on Linux x86-64 and macOS x86-64/arm64.
+- [ ] Run `--help`, navigation, observation, screenshot, TUI startup, and
+      MCP initialization with the release binary.
+- [ ] Inspect `cargo package --list` and the unpacked package.
+- [ ] Download each artifact and verify `SHA256SUMS` with
+      `sha256sum -c`.
+- [ ] Verify the Sigstore bundle with `cosign verify-blob`.
+- [ ] Review dependency, license, and vulnerability JSON reports.
+- [ ] Run a clean-machine install and upgrade test.
 
 ## Publish
 
 - [ ] Commit the version and changelog update.
-- [ ] Create a signed, annotated version tag such as `v0.2.0`.
-- [ ] Publish or upload artifacts only from the tagged commit.
-- [ ] Include supported platforms, checksums, changelog notes, and known
+- [ ] Create a signed annotated tag such as `v0.2.0`.
+- [ ] Publish artifacts only from the tagged commit.
+- [ ] Include supported platforms, checksums, changelog entries, and known
       limitations in the release entry.
-- [ ] Verify installation from the published artifact in a clean environment.
-- [ ] Restore an empty `Unreleased` changelog section for ongoing work.
+- [ ] Verify installation from each published artifact in a clean environment.
+- [ ] Publish the crate and client packages only after artifact checks pass.
+- [ ] Restore an empty `Unreleased` changelog section.
+
+A release is not complete while any required checkbox is open.

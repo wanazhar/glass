@@ -1,38 +1,41 @@
 # Read-only real-site certification
 
-Real-site checks are release evidence, not a substitute for the deterministic
-fixture suite. They must be run only against an approved site and a bounded,
-non-destructive route.
+A real-site check is supplementary release evidence. It does not replace the
+deterministic fixture suite.
 
-## Required conditions
+Run a check only on an approved, read-only route.
 
-- Use a disposable `--incognito` session and hardened policy.
-- Allowlist only the exact approved host with `--policy-allow-host`.
+## Conditions
+
+- Use `--incognito` and the `hardened` policy.
+- Allow only the exact host with `--policy-allow-host`.
 - Do not provide credentials, cookies, API keys, or personal data.
-- Use only navigation, observation, text, bounded waits, and verification.
-- Do not click submit, purchase, delete, upload, download, or consent controls.
-- Keep the duration and action budgets explicit in the scenario evidence.
-- Capture only redacted replay events and independent read-only oracle results.
+- Use navigation, observation, text, bounded waits, and verification only.
+- Do not submit, purchase, delete, upload, download, or dismiss consent.
+- Set explicit duration and action limits.
+- Store only redacted replay events and read-only oracle results.
 
-The operator must stop and classify the run as unsupported or indeterminate if
-the site requires authentication, presents an unexpected destructive control,
-redirects outside the allowlist, or cannot produce complete oracle evidence.
-Those classifications cannot certify a release.
+Stop and classify the run as `unsupported` or `indeterminate` when the site
+requires authentication, shows an unexpected destructive control, redirects
+outside the allowlist, or does not provide complete oracle evidence.
 
-## Example probe
+These classifications cannot certify a release.
 
-```console
+## Example
+
+`console
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
   navigate https://example.com/approved-read-only-route
+
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
   observe --level summary
+
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
   verify '{"textContains":"Expected marker"}'
-```
+`
 
-This is an operator procedure, not an assertion that the example site is
-certified. The current checkout does not automatically discover approved
-sites or publish real-site evidence.
+This example does not certify `example.com`. The current checkout does not
+discover approved sites or publish real-site evidence.

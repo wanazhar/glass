@@ -1,120 +1,122 @@
 # Reliability laboratory
 
-The reliability laboratory is a local development and release-checking
-surface for Glass. It keeps scenario definitions, adversarial fixture
-controls, independent side-effect oracles, and replay evidence versioned
-alongside the code.
+The reliability laboratory is a local release-checking tool. It stores scenario
+definitions, fixture controls, independent side-effect oracles, and replay
+evidence with the source code.
 
-The current contracts support Linux x86-64 and macOS x86-64/arm64. Windows is
-not part of the supported platform set.
+Supported release targets are Linux x86-64, macOS x86-64, and macOS arm64.
+Windows is unsupported.
 
-## Current contracts
+## Contracts
 
-- [Scenario v1](schema/reliability-scenario-v1.schema.json) declares the
-  fixture, setup, ordered operations, expected terminal state, side-effect
-  counters, forbidden outcomes, and execution budgets.
-- [Fixture v1](schema/reliability-fixture-v1.schema.json) names the checked-in
-  deterministic controls, fault kinds, and independent oracles.
-- [Replay v1](schema/reliability-replay-v1.schema.json) binds redacted ordered
-  events and an observation to the exact scenario and records platform and
-  browser budget metadata.
-- [Capability suite v1](schema/reliability-capability-suite-v1.schema.json)
-  packages multiple scenarios for deterministic matrix validation.
+| Contract | Purpose |
+|---|---|
+| Scenario v1 | Define fixtures, operations, expected state, counters, forbidden outcomes, and budgets. |
+| Fixture v1 | Define deterministic controls, faults, and independent oracles. |
+| Replay v1 | Bind redacted events and observations to one scenario and environment. |
+| Capability suite v1 | Group scenarios for matrix validation. |
 
-The checked-in examples are
-`tests/fixtures/reliability-scenario-v1.json`,
-`tests/fixtures/reliability-fixture-v1.json`, and
-`tests/fixtures/reliability-lab.html`. The small
-`tests/fixtures/reliability-submit.json` workflow is used by the live runner
-smoke test.
+The schemas are in [docs/schema](schema/reliability-scenario-v1.schema.json).
 
-The fixture exposes target replacement, renaming, duplication, reordering,
-movement, overlays, frame detachment, delayed effects, and a counted submit
-side effect.
-It contains no Glass runtime logic. The browser smoke test is opt-in:
+The checked-in fixtures are:
 
-```console
-GLASS_E2E=1 cargo test --test browser_smoke reliability_lab_controls
-```
+- `tests/fixtures/reliability-scenario-v1.json`;
+- `tests/fixtures/reliability-fixture-v1.json`;
+- `tests/fixtures/reliability-lab.html`; and
+- `tests/fixtures/reliability-submit.json`.
 
-## Browser execution
+The fixture tests target replacement, renaming, duplication, reordering,
+movement, overlays, frame detachment, delayed effects, and counted submit
+effects. The fixture does not use Glass decision logic.
 
-Run one validated scenario against a local fixture and write its redacted
-evidence bundle:
+## Run a scenario
 
-```console
+Set up a local fixture server. Then run:
+
+`console
 glass certify run \
   --scenario scenario.json \
   --fixture tests/fixtures/reliability-fixture-v1.json \
   --url http://127.0.0.1:8000/fixture.html \
   --workflow-root tests/fixtures \
   --output evidence.json
-```
+`
 
-The runner navigates first, expands the manifest-bound plan, executes only
-allowlisted fixture controls, and rejects workflow sources outside
-`--workflow-root`. Renderer and browser disconnect probes dispatch the
-corresponding CDP fault (`Page.crash` or `Browser.close`) and are always
-reported as unsupported for release certification because the browser cannot
-provide a complete post-fault oracle. A denied or unavailable raw-CDP path is
-also recorded as a non-certifying probe result.
+The runner:
 
-The checked-in browser smoke test is the executable example:
+1. validates the manifest;
+2. navigates to the local fixture;
+3. runs only allowlisted fixture controls;
+4. writes redacted evidence; and
+5. reports the independent oracle result.
 
-```console
+The runner rejects workflow sources outside `--workflow-root`.
+
+Renderer and browser disconnect probes are unsupported for release
+certification when the browser cannot provide a complete post-fault oracle.
+A denied raw-CDP path is also non-certifying.
+
+Run the browser smoke tests:
+
+`console
+GLASS_E2E=1 cargo test --test browser_smoke reliability_lab_controls
 GLASS_E2E=1 cargo test --test browser_smoke reliability_runner_generates_live_fixture_evidence
-```
+`
 
-## Offline validation
+## Offline commands
 
-Inspect a manifest-bound execution plan without starting Chrome:
+Inspect a plan without Chrome:
 
-```console
+`console
 glass certify plan \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --fixture tests/fixtures/reliability-fixture-v1.json
-```
+`
 
-Validate one replay bundle without starting Chrome:
+Validate a replay:
 
-```console
+`console
 glass certify replay \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --input replay.json
-```
+`
 
-Compare a baseline and candidate replay without exposing page values:
+Compare two replays:
 
-```console
+`console
 glass certify replay-diff \
   --scenario tests/fixtures/reliability-scenario-v1.json \
   --before baseline.json --after candidate.json
-```
+`
 
-Evaluate a complete release evidence set:
+Evaluate release evidence:
 
-```console
+`console
 glass certify release \
   --version 0.2.0 \
   --scenarios scenarios.json \
   --observations observations.json \
   --replays replays.json
-```
+`
 
-The release gate fails closed when a scenario is missing, hashes do not match,
-oracle or artifact evidence is incomplete, budgets are invalid, a forbidden
-outcome is present, or the run is failed, indeterminate, or unsupported. A
-safe refusal can certify only when its declared terminal state and independent
-oracle agree with the scenario. The JSON result includes the detailed gate and
-a category-level scorecard; the scorecard is derived from the same gate and is
-not a separate source of truth. When `--replays` is supplied, every scenario
-must have one valid replay and its embedded observation must exactly match the
-observation input.
+The release command fails closed when:
 
-## Boundaries
+- a scenario is missing;
+- a hash does not match;
+- oracle or artifact evidence is incomplete;
+- a budget is invalid;
+- a forbidden outcome is present;
+- a run fails, is indeterminate, or is unsupported; or
+- a replay does not match its observation.
 
-The runner is for deterministic local fixtures. It does not discover approved
-real sites or publish a public scorecard. Real-site evidence remains a manual,
-read-only operator procedure described in [read-only real-site
-certification](reliability-real-site.md). Do not place credentials, cookies,
-page values, or unredacted traces in replay bundles.
+A safe refusal passes only when the declared terminal state and independent
+oracle agree.
+
+## Limits
+
+The laboratory uses local deterministic fixtures. It does not discover public
+sites. It does not publish a scorecard.
+
+Use the [read-only real-site procedure](reliability-real-site.md) for manual
+read-only evidence. Do not put credentials, cookies, page values, or
+unredacted traces in evidence bundles.

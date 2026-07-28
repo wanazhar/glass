@@ -1,50 +1,47 @@
 # Schema compatibility
 
-The transport-neutral operation mapping is documented in
-[protocol.md](protocol.md).
+The transport-neutral operation mapping is in [Protocol](protocol.md).
 
-Glass 0.2.x treats the versioned protocol and schema inventory as a stable
-compatibility boundary. Existing action names and legacy result fields remain
-available; new fields use camelCase at the CLI JSON and MCP boundaries while
-Rust field names remain idiomatic.
+Glass 0.2.x treats the versioned protocol and schema inventory as a compatibility
+boundary. Existing action names and legacy result fields remain available.
 
-Compatibility rules:
+## Rules
 
-- `expectedRevision` is optional on every supported mutation. Omitting it keeps
-  the unguarded compatibility path.
-- `executionId` is present on successful action outcomes and bounded traces.
-- `verify` accepts only documented finite predicate forms and bounded
-  deadlines.
-- Batch `mode` defaults to `unguarded`; `fixed` and `chain` require an
-  explicit initial `expectedRevision`.
-- Unknown fields are ignored where the existing parser is permissive; unknown
-  action names, invalid types, and unbounded values are rejected.
+- Use camelCase at CLI JSON and MCP boundaries.
+- Keep idiomatic Rust field names in the Rust API.
+- Treat `expectedRevision` as optional. Its absence keeps the unguarded path.
+- Include `executionId` in successful action results and bounded traces.
+- Accept only documented finite verification predicates.
+- Keep batch `mode` at `unguarded` by default. Require an initial revision
+  for `fixed` and `chain`.
+- Reject unknown action names, invalid types, and unbounded values.
+- Reject incompatible persisted checkpoints, traces, knowledge snapshots, and
+  replay bundles.
 
-## Release policy
+## Version policy
 
-- Patch releases may fix implementation defects, add optional fields, and add
-  capabilities that are discoverable through negotiation.
-- New required fields, changed enum meaning, or changed validation semantics
-  require a new schema version and a migration note.
-- Removed fields require a deprecation period and a compatibility test.
-- Capability availability is negotiated independently from the binary version;
-  a client must not infer support from `glassVersion` alone.
-- Persisted checkpoints, traces, knowledge snapshots, and replay bundles must
-  retain their schema version and reject incompatible future data safely.
+A patch release may fix defects, add optional fields, or add a capability that
+clients can discover through negotiation.
+
+A new required field, changed enum meaning, or changed validation meaning needs a
+new schema version and a migration note.
+
+Remove a field only after a documented deprecation period and compatibility
+test.
+
+Negotiate capability availability. Do not infer it from `glassVersion`.
 
 The Rust library, CLI, MCP server, TypeScript client, and Python client use the
-same argument names and result vocabulary. Removing or renaming a published
-field requires a major contract decision rather than a patch release.
+same argument names and result vocabulary.
 
-## Glass capability negotiation
+## Capability negotiation
 
-MCP `initialize` returns a `glass` manifest conforming to
+MCP `initialize` returns a `glass` manifest that follows
 [glass-capabilities-v1.schema.json](schema/glass-capabilities-v1.schema.json).
-The manifest is the authoritative inventory of schema versions, optional
-capabilities, platform/browser constraints, and the active policy. A client
-may request a Glass protocol and schema set in `initialize.params.glass`:
 
-```json
+A client may request protocol and schema versions:
+
+`json
 {
   "protocolVersion": 1,
   "schemas": {
@@ -52,25 +49,25 @@ may request a Glass protocol and schema set in `initialize.params.glass`:
     "workflow": [1]
   }
 }
-```
+`
 
-The server rejects unknown schemas, empty version lists, and requests with no
-supported version in common before entering the ready state. Omitting the
-Glass request preserves MCP compatibility and still returns the manifest.
-Unsupported capabilities are never inferred from the binary version; clients
-must inspect the negotiated manifest and the policy-sensitive booleans.
+Glass rejects unknown schemas, empty version lists, and requests without a
+common supported version before it marks the MCP session ready.
 
-The current machine-readable contract set is:
+If the client omits the Glass request, Glass still returns the manifest. The
+client must inspect the manifest and policy-sensitive capability flags.
 
-- [transport-neutral protocol v1](schema/glass-protocol-v1.schema.json)
-- [daemon recovery v1](schema/glass-daemon-recovery-v1.schema.json)
-- [action v1](schema/glass-action-v1.schema.json)
-- [policy error v1](schema/glass-policy-error-v1.schema.json)
-- [session checkpoint v1](schema/glass-checkpoint-v1.schema.json)
-- [workflow checkpoint v1](schema/glass-workflow-checkpoint-v1.schema.json)
-- [workflow trace v1](schema/glass-workflow-trace-v1.schema.json)
-- [semantic observation v1](schema/semantic-observation-v1.schema.json)
-- [intent v1](schema/intent-resolution-v1.schema.json)
-- [knowledge v1](schema/knowledge-v1.schema.json)
-- [workflow v1](schema/workflow-v1.schema.json)
-- [reliability scenario, fixture, and replay v1](reliability.md)
+## Current contracts
+
+- [protocol v1](schema/glass-protocol-v1.schema.json);
+- [daemon recovery v1](schema/glass-daemon-recovery-v1.schema.json);
+- [action v1](schema/glass-action-v1.schema.json);
+- [policy error v1](schema/glass-policy-error-v1.schema.json);
+- [session checkpoint v1](schema/glass-checkpoint-v1.schema.json);
+- [workflow checkpoint v1](schema/glass-workflow-checkpoint-v1.schema.json);
+- [workflow trace v1](schema/glass-workflow-trace-v1.schema.json);
+- [semantic observation v1](schema/semantic-observation-v1.schema.json);
+- [intent v1](schema/intent-resolution-v1.schema.json);
+- [knowledge v1](schema/knowledge-v1.schema.json);
+- [workflow v1](schema/workflow-v1.schema.json); and
+- reliability scenario, fixture, and replay v1.

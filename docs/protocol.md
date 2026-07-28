@@ -1,31 +1,37 @@
 # Glass protocol
 
-Glass keeps MCP JSON-RPC framing at the transport boundary and uses the
-versioned Glass envelope for operation semantics. The envelope is defined by
-[`glass-protocol-v1.schema.json`](schema/glass-protocol-v1.schema.json) and by
-the Rust `glass::protocol` module.
+Glass uses MCP JSON-RPC for transport. It uses a versioned Glass envelope for
+operation semantics.
 
-For an MCP tool call, the canonical mapping is:
+The envelope is defined by
+[glass-protocol-v1.schema.json](schema/glass-protocol-v1.schema.json) and the
+Rust `glass::protocol` module.
+
+## MCP mapping
 
 | MCP field | Glass field |
-| --- | --- |
+|---|---|
 | JSON-RPC `id` | `requestId` |
 | `params.name` | `operation` with the `browser.` prefix |
 | `params.arguments` | `payload` |
-| daemon session/lease context | canonical `sessionId` / `mutationLease` fields are available to daemon-aware adapters; the current MCP bridge enforces the lease token in tool arguments |
+| Daemon session and lease context | `sessionId` and `mutationLease` |
 
-The CLI and SDKs expose the same operation names and payload fields. MCP keeps
-its JSON-RPC success/error framing, while the operation payloads use the same
-bounded, versioned semantics. A request must use protocol version `1`, a
-non-empty bounded operation name, and a bounded request identifier. Responses
-carry exactly one result or structured error.
+The CLI and SDKs use the same operation names and payload fields. MCP keeps
+JSON-RPC success and error framing. The operation payload remains bounded and
+versioned.
+
+A request must contain protocol version `1`, a non-empty operation name, and a
+bounded request ID. A response contains one result or one structured error.
 
 The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
 covers read, leased mutation, workflow, success, and typed-error envelopes.
-Rust protocol tests round-trip it, while the MCP adapter separately verifies
-that JSON-RPC tool calls map to the same canonical request shape.
+Rust tests round-trip the fixture. MCP tests check the canonical mapping.
 
-Unknown envelope fields are rejected. Additive contract fields must be
-optional, and changes to required fields or validation meaning require a new
-schema version and a migration note. Protocol deadlines are bounded to fifteen
-minutes; transport-specific frame limits remain enforced by each transport.
+## Compatibility
+
+Glass rejects unknown envelope fields. Additive fields must be optional. A
+change to a required field or validation meaning requires a new schema version
+and a migration note.
+
+Protocol deadlines are limited to fifteen minutes. Each transport keeps its
+own frame limits.

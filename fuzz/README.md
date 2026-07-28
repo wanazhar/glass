@@ -1,17 +1,22 @@
 # Parser fuzzing
 
-The five targets drive Glass's production parsing entry points for MCP framing,
-CDP envelopes, accessibility/DOM projection, locators/waits, and normalized URL
-policy. Keep corpora small and non-sensitive.
+The fuzz targets call Glass parser entry points for:
 
-Install `cargo-fuzz`, then run a bounded local sweep:
+- MCP framing;
+- CDP envelopes;
+- accessibility and DOM projection;
+- locators and waits; and
+- normalized URL policy.
 
-```sh
+Keep fuzz corpora small. Do not add sensitive data.
+
+Install `cargo-fuzz`. Run a bounded local sweep:
+
+`console
 for target in mcp_frame cdp_message ax_dom locator url_policy; do
   cargo fuzz run "$target" -- -runs=512
 done
-```
+`
 
 Pull requests run the same deterministic smoke budget. The scheduled workflow
-runs each target for two minutes so corpus discoveries accumulate without
-making normal CI latency unbounded.
+runs each target for two minutes.

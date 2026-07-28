@@ -1,22 +1,34 @@
 # Reliability metrics
 
-Issue #20 uses versioned evidence rather than unqualified performance claims.
-Every report records the Glass commit, crate version, host OS/architecture,
-Chrome version, fixture revision, policy preset, interaction mode, warm-up
-count, iteration count, and whether the run was cold or warm.
+A reliability report is evidence. It is not a product guarantee.
 
-The reliability report should include:
+Record these fields for every report:
 
-- action success rate, split by action kind;
-- verification satisfaction rate and bounded timeout rate;
-- wrong-action count and stale-revision rejection count;
-- recovery attempts, with automatic retries counted separately from explicit
-  caller retries;
-- p50/p95/p99 action latency and the bounded trace size;
-- RSS and serialized response size.
+- Glass commit;
+- crate version;
+- host operating system and architecture;
+- Chrome version;
+- fixture revision;
+- policy preset;
+- interaction mode;
+- warm-up count;
+- iteration count; and
+- cold or warm browser state.
 
-These are measurement categories, not product guarantees. A release report is
-valid only when its deterministic fixture matrix completes, its forbidden
-outcomes are zero, and its metadata identifies the exact build and browser.
-Missing or partial measurements fail the acceptance gate instead of being
-treated as zero.
+Record these measurements:
+
+- action success rate by action kind;
+- verification success rate;
+- bounded timeout rate;
+- wrong-action count;
+- stale-revision rejection count;
+- recovery attempts;
+- automatic retries and caller retries;
+- p50, p95, and p99 action latency;
+- trace size;
+- resident set size (RSS); and
+- serialized response size.
+
+A report is valid only when the deterministic fixture matrix passes and all
+forbidden outcomes are zero. Missing measurements fail the acceptance gate.
+Do not treat a missing measurement as zero.

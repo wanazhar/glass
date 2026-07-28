@@ -1,13 +1,14 @@
 # Production canary runbook
 
-Production canaries are optional, monitored, and non-destructive. They must
-run against an approved read-only URL with a host allowlist and the hardened
-policy. Do not use a logged-in profile, evaluate JavaScript, click controls,
-type, upload, download, or change browser emulation during a canary.
+A production canary is optional. It must be read-only, bounded, and monitored.
 
-Set an approved URL and run a bounded navigation/observation probe:
+Use an approved URL. Use the `hardened` policy and an exact host allowlist.
+Do not use a logged-in profile. Do not evaluate JavaScript. Do not click, type,
+upload, download, or change browser emulation.
 
-```console
+Set the URL and run:
+
+`console
 export CANARY_URL=https://approved.example/health
 
 cargo run --release --locked -- \
@@ -19,13 +20,13 @@ cargo run --release --locked -- \
   --policy hardened \
   --policy-allow-host approved.example \
   observe
-```
+`
 
-Record the commit, Glass version, Chrome version, host OS/architecture, URL
-host, policy preset, result status, elapsed time, and any typed failure. Stop
-the canary on redirects outside the allowlist, unexpected dialogs, transport
-errors, or stale topology. Never treat a canary failure as permission to relax
-the policy or retry a mutation.
+Record the commit, Glass version, Chrome version, host operating system and
+architecture, URL host, policy, result, elapsed time, and typed failure.
 
-The deterministic fixture and scorecard remain the release gate; canary data
-is supplementary evidence and must not be presented as a product guarantee.
+Stop on an outside redirect, unexpected dialog, transport error, or stale
+topology. Do not relax policy. Do not retry a mutation.
+
+The deterministic fixture and scorecard remain the release gate. Canary data is
+supplementary evidence.

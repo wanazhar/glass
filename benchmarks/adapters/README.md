@@ -1,84 +1,30 @@
 # Scorecard adapter contract
 
-Competitor adapters live outside the Glass dependency graph. An adapter runs
-the versioned fixture scenarios and writes one JSON report matching
-`benchmarks/report-schema.json`. It must use the same Chrome executable,
-viewport, corpus version, iteration count, and warm profile metadata. A future
-cold corpus version must define equivalent browser lifecycle semantics before
-any adapter emits it.
+An adapter runs the versioned fixture scenarios and writes one JSON report that
+matches `benchmarks/report-schema.json`.
 
-The adapter reports generic `resources.runner` data and states whether that
-scope covers one runner process or its complete non-browser process tree,
-separately from Chrome's process tree. A scenario is successful only when its exact expected state is
-observed. Selecting a different actionable element is `wrong_action`, never a
-timeout or a partial success. Adapter dependencies must be installed in a
-temporary directory and must not be added to `Cargo.toml` or this repository.
+Each adapter must use the same:
 
-`playwright-scorecard.mjs` is the reference external adapter. Its optional
-Playwright installation is described in `benchmarks/README.md`. Metrics that
-cannot be collected through Playwright's public API are explicitly `null`, not
-estimated or silently omitted.
+- Chrome executable;
+- viewport;
+- corpus version;
+- iteration count; and
+- warm-profile metadata.
 
-`playwright-mcp-scorecard.mjs` is the released Playwright MCP adapter. It is a
-dependency-free MCP client that invokes a separately installed, exactly pinned
-`@playwright/mcp` executable. Complex topology and diagnostic scenarios use
-public tools only and reports popup, frame, recovery, and download scenarios as
-`unsupported` where version `0.0.78` exposes no typed public primitive or
-completed artifact. It therefore does not claim safety equivalence with Glass's
-default policy. The adapter validates its required tool surface before running.
-Its runner RSS covers the MCP server process only; unavailable client and
-Chrome process-tree metrics remain `null` with an explicit scope description.
+A scenario passes only when the exact expected state is observed. A different
+actionable element is `wrong_action`. It is not a timeout or partial success.
 
-The acceptance runner gives this released MCP adapter a bounded process ceiling
-of two minutes plus 30 seconds per controlled iteration (52 minutes for the
-ratified 100-iteration run), while retaining the common per-request deadline
-and all controlled-run inputs. The runner supplies
-`GLASS_SCORECARD_GIT_REVISION` and `GLASS_SCORECARD_CHECKPOINT_PATH`; after each
-iteration the adapter atomically
-publishes revision-bound partial evidence there. A timeout retains a valid
-checkpoint for diagnosis, but it remains explicitly partial and cannot pass an
-acceptance gate. A complete run removes the superseded checkpoint and emits the
-unchanged final report on stdout.
-Before spawning an adapter, the runner removes any prior checkpoint and binds
-the new one to a fresh cryptographic run ID and invocation start time so a
-same-revision retry cannot inherit stale progress.
+Install adapter dependencies in a temporary directory. Do not add them to
+`Cargo.toml` or this repository.
 
-`agent-browser-scorecard.mjs` is the agent-browser comparator adapter. It is a
-dependency-free MCP client that invokes a separately installed, exactly pinned
-`agent-browser` executable (from npm) in MCP server mode. The adapter uses
-`agent-browser mcp --tools all` with automatic dialog dismissal disabled via
-environment, and validates the required prefixed tool surface (`agent_browser_open`,
-`agent_browser_click`, `agent_browser_fill`, `agent_browser_snapshot`,
-`agent_browser_eval`) before
-running. Popup and download scenarios are reported as `unsupported` because
-agent-browser's MCP surface has no published typed primitives for causal popup
-verification or download-integrity assertions; the matrix fails closed.
+Report resource scope for the runner process separately from Chrome. Set a
+metric to `null` when the adapter cannot collect it. Do not estimate a
+missing value.
 
-The adapter resolves snap's `/snap/bin/chromium` launcher to the underlying
-Chromium executable because agent-browser passes Chrome flags directly to the
-browser process.
+The acceptance runner supplies bounded deadlines, fixture revision, run ID, and
+checkpoint paths. A partial checkpoint cannot pass the acceptance gate.
 
-**Installation (outside the Glass crate):**
-
-```sh
-npm install -g agent-browser@0.33.0
-agent-browser install  # download managed Chromium
-```
-
-Set `AGENT_BROWSER_COMMAND` and `AGENT_BROWSER_VERSION` in the acceptance
-environment. The runner supplies these if the adapter is listed in
-`acceptance-v1.json`.
-
-**Running standalone:**
-
-```sh
-AGENT_BROWSER_COMMAND=$(which agent-browser) \
-AGENT_BROWSER_VERSION=0.33.0 \
-CHROME_PATH=/path/to/chromium \
-GLASS_SCORECARD_GIT_REVISION=$(git rev-parse HEAD) \
-GLASS_SCORECARD_CHECKPOINT_PATH=/tmp/agent-browser-checkpoint.json \
-GLASS_SCORECARD_RUN_ID=$(uuidgen) \
-GLASS_SCORECARD_STARTED_AT=$(date -Iseconds) \
-GLASS_SCORECARD_ITERATIONS=10 \
-node benchmarks/adapters/agent-browser-scorecard.mjs
-```
+The reference adapters and their exact versions are documented in
+[benchmarks/README.md](../README.md). The current comparison includes Glass,
+Playwright, and other external adapters when their commands and evidence are
+available. Unsupported adapter operations remain visible in the report.

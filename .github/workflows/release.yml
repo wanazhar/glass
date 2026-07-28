@@ -23,6 +23,13 @@ jobs:
       - name: Install release audit tools
         run: cargo install cargo-deny cargo-audit --locked
 
+      - name: Generate dependency, license, and vulnerability reports
+        shell: bash
+        run: |
+          mkdir -p dist/validation
+          cargo deny --format json check --audit-compatible-output > dist/validation/cargo-deny.jsonl
+          cargo audit --json > dist/validation/cargo-audit.json
+
       - name: Install managed Chrome for benchmark evidence
         shell: bash
         run: |
@@ -97,6 +104,8 @@ jobs:
             dist/validation/ratified-metrics.json
             dist/validation/ratified-gates.json
             dist/validation/release-validation.json
+            dist/validation/cargo-deny.jsonl
+            dist/validation/cargo-audit.json
           if-no-files-found: error
 
   build:
@@ -298,6 +307,8 @@ jobs:
           cp evidence/validation/benchmark.json dist/benchmark.json
           cp evidence/validation/scorecard.json dist/scorecard.json
           cp evidence/validation/ratified-metrics.json dist/ratified-metrics.json
+          cp evidence/validation/cargo-deny.jsonl dist/cargo-deny.jsonl
+          cp evidence/validation/cargo-audit.json dist/cargo-audit.json
           cp evidence/acceptance/acceptance.json dist/acceptance.json
           cp evidence/acceptance/environment.json dist/acceptance-environment.json
           cp -R evidence/acceptance/raw dist/acceptance-raw

@@ -10,13 +10,19 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 
 const MAX_EXTENSION_MANIFESTS: usize = 128;
 const MAX_EXTENSION_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_EXTENSION_CONCURRENT_INVOCATIONS: usize = 4;
 const EXTENSION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_EXTENSION_VALUE_DEPTH: usize = 8;
+const MAX_EXTENSION_VALUE_NODES: usize = 256;
+const MAX_EXTENSION_STRING_BYTES: usize = 4_096;
 
 /// Version of the extension manifest contract.
 pub const EXTENSION_SCHEMA_VERSION: u32 = 1;
@@ -178,6 +184,7 @@ struct ExtensionResponse {
 pub struct ExtensionHost {
     root: PathBuf,
     registry: ExtensionRegistry,
+    invocations: Arc<Semaphore>,
 }
 
 /// Extension validation or registry failure.
@@ -335,7 +342,11 @@ impl ExtensionHost {
         if !root.is_dir() {
             return Err(ExtensionError("extension root must be a directory".into()));
         }
-        Ok(Self { root, registry })
+        Ok(Self {
+            root,
+            registry,
+            invocations: Arc::new(Semaphore::new(MAX_EXTENSION_CONCURRENT_INVOCATIONS)),
+        })
     }
 
     /// Report the sandbox that an explicit guarded invocation would use.
@@ -474,6 +485,13 @@ impl ExtensionHost {
         payload: Value,
         sandbox: Option<ExtensionSandbox>,
     ) -> Result<Value, ExtensionError> {
+        let _permit = tokio::time::timeout(
+            EXTENSION_TIMEOUT,
+            Arc::clone(&self.invocations).acquire_owned(),
+        )
+        .await
+        .map_err(|_| ExtensionError("extension invocation queue timed out".into()))?
+        .map_err(|_| ExtensionError("extension invocation queue is closed".into()))?;
         let manifest = self
             .registry
             .get(extension_id)
@@ -618,7 +636,10 @@ impl ExtensionHost {
                 ));
             }
             match (response.ok, response.result, response.error) {
-                (true, Some(result), None) => Ok(result),
+                (true, Some(result), None) => {
+                    validate_extension_value(&result)?;
+                    Ok(result)
+                }
                 (false, None, Some(error)) if error.len() <= 512 => Err(ExtensionError(error)),
                 _ => Err(ExtensionError(
                     "extension response outcome is invalid".into(),
@@ -648,6 +669,57 @@ impl ExtensionHost {
 
 fn extension_browser_error(error: impl fmt::Display) -> ExtensionError {
     ExtensionError(format!("guarded extension action failed: {error}"))
+}
+
+fn validate_extension_value(value: &Value) -> Result<(), ExtensionError> {
+    fn visit(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), ExtensionError> {
+        *nodes = nodes.saturating_add(1);
+        if *nodes > MAX_EXTENSION_VALUE_NODES {
+            return Err(ExtensionError(
+                "extension response contains too many values".into(),
+            ));
+        }
+        if depth > MAX_EXTENSION_VALUE_DEPTH {
+            return Err(ExtensionError(
+                "extension response nesting exceeds the limit".into(),
+            ));
+        }
+        match value {
+            Value::String(value) if value.len() > MAX_EXTENSION_STRING_BYTES => Err(
+                ExtensionError("extension response string is oversized".into()),
+            ),
+            Value::Array(values) => {
+                if values.len() > MAX_EXTENSION_VALUE_NODES {
+                    return Err(ExtensionError(
+                        "extension response array is oversized".into(),
+                    ));
+                }
+                for value in values {
+                    visit(value, depth + 1, nodes)?;
+                }
+                Ok(())
+            }
+            Value::Object(values) => {
+                for (key, value) in values {
+                    let normalized = key.to_ascii_lowercase();
+                    if ["authorization", "cookie", "password", "secret", "token"]
+                        .iter()
+                        .any(|blocked| normalized.contains(blocked))
+                    {
+                        return Err(ExtensionError(format!(
+                            "extension response contains a sensitive field: {key}"
+                        )));
+                    }
+                    visit(value, depth + 1, nodes)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    let mut nodes = 0;
+    visit(value, 0, &mut nodes)
 }
 
 fn confined_entrypoint(root: &Path, entrypoint: &str) -> Result<PathBuf, ExtensionError> {
@@ -841,6 +913,22 @@ mod tests {
                 "target": "ref=r7:b42",
                 "expectedRevision": 7,
                 "dispatchDirectly": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn extension_outputs_fail_closed_on_sensitive_fields_and_unbounded_shapes() {
+        assert!(
+            validate_extension_value(&serde_json::json!({
+                "evidence": {"authorization": "redacted"}
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_extension_value(&serde_json::json!({
+                "text": "x".repeat(MAX_EXTENSION_STRING_BYTES + 1)
             }))
             .is_err()
         );

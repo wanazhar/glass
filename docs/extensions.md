@@ -10,8 +10,11 @@ bounded action list. Wildcard hosts, `evaluate`, raw CDP, arbitrary browser
 commands, and undeclared mutations are rejected by the manifest validator.
 The host confines entrypoints below its configured root, allows only declared
 capabilities, exact hosts, and actions, caps each request/response at 256 KiB,
-and terminates calls after five seconds. A host response must use the versioned
-one-result/one-error protocol. Registering metadata alone never executes code.
+limits concurrent invocations to four, and terminates calls after five seconds.
+A host response must use the versioned one-result/one-error protocol. Response
+values are bounded and reject sensitive field names such as cookies, tokens,
+passwords, secrets, and authorization data. Registering metadata alone never
+executes code.
 
 The host does not receive browser handles. `ExtensionHost::invoke_guarded`
 accepts only a bounded revision-pinned action result and routes supported
@@ -33,5 +36,5 @@ bounded subprocess host. The sandboxed path still does not grant browser
 handles or bypass policy.
 
 See [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
-Native sandboxing, lifecycle supervision, redaction, certification, and
-extension conformance remain required before the capability can be enabled.
+Native sandboxing, lifecycle certification, and cross-transport extension
+conformance remain required before the capability can be enabled.

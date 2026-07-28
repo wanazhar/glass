@@ -53,8 +53,8 @@ This phase covers the first platform boundary for issue #27:
 - extension manifests validate exact host/action permissions, but extension
   code is not loaded.
 
-The remaining platform work includes extension lifecycle/redaction/certification
-coverage and executable cross-transport/client conformance coverage. The TUI
+The remaining platform work includes extension lifecycle certification and
+executable cross-transport/client conformance coverage. The TUI
 command inventory is documented, including the deliberate delegation of
 structured target, frame, storage, diagnostics, certification, and extension
 administration operations to CLI/MCP/library surfaces. This task must not be

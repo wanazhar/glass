@@ -13,10 +13,13 @@ capabilities, exact hosts, and actions, caps each request/response at 256 KiB,
 and terminates calls after five seconds. A host response must use the versioned
 one-result/one-error protocol. Registering metadata alone never executes code.
 
-The current host is not a native-code sandbox. It does not receive browser
-handles and cannot yet participate in the guarded executor, policy decisions,
-revision checks, redaction, or certification flow. Therefore the negotiated
-`extensions` capability remains disabled.
+The host does not receive browser handles. `ExtensionHost::invoke_guarded`
+accepts only a bounded revision-pinned action result and routes supported
+click, type, clear, check, uncheck, and select operations through the core
+`BrowserSession` guarded methods. Policy checks, target resolution, revision
+checks, verification, and effect recording remain in Glass. Therefore the
+negotiated `extensions` capability remains disabled until lifecycle,
+redaction, certification, and cross-transport conformance are complete.
 
 Two reference extensions live under `extensions/first-party/`. They exercise
 the manifest, exact-host/action permissions, and bounded host protocol for an
@@ -27,8 +30,8 @@ extension design, not automatically loaded or enabled by the runtime.
 requires `bubblewrap`; on macOS it uses the system sandbox profile. If neither
 boundary is available, the call fails instead of falling back to the ordinary
 bounded subprocess host. The sandboxed path still does not grant browser
-handles or bypass policy; guarded-executor integration remains a separate gate.
+handles or bypass policy.
 
 See [glass-extension-v1.schema.json](schema/glass-extension-v1.schema.json).
-Native sandboxing, lifecycle supervision, guarded executor adapters, and
+Native sandboxing, lifecycle supervision, redaction, certification, and
 extension conformance remain required before the capability can be enabled.

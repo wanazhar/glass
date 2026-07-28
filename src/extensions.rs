@@ -116,6 +116,51 @@ pub struct ExtensionInvocation {
     pub payload: Value,
 }
 
+/// A bounded action request returned by an extension for core dispatch.
+///
+/// Extensions do not receive browser handles and cannot call CDP. The only
+/// way for an extension result to cause a browser mutation is to return this
+/// shape to [`ExtensionHost::invoke_guarded`], which requires a current
+/// observation revision and routes the operation through `BrowserSession`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionGuardedAction {
+    pub action: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    pub expected_revision: u64,
+}
+
+impl ExtensionGuardedAction {
+    fn validate(&self) -> Result<(), ExtensionError> {
+        if self.action.is_empty() || self.action.len() > 32 {
+            return Err(ExtensionError(
+                "extension guarded action name is out of bounds".into(),
+            ));
+        }
+        if self.expected_revision == 0 {
+            return Err(ExtensionError(
+                "extension guarded action requires a positive expectedRevision".into(),
+            ));
+        }
+        for (name, value, max) in [
+            ("target", self.target.as_deref(), 512),
+            ("value", self.value.as_deref(), 4_096),
+        ] {
+            if let Some(value) = value
+                && (value.is_empty() || value.len() > max)
+            {
+                return Err(ExtensionError(format!(
+                    "extension guarded action {name} is out of bounds"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One extension process response.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -337,6 +382,89 @@ impl ExtensionHost {
         .await
     }
 
+    /// Invoke an extension and dispatch its returned action through the core
+    /// revision-guarded browser methods.
+    ///
+    /// The extension may suggest only `click`, `type`, `clear`, `check`,
+    /// `uncheck`, or `select`. The returned request must include the current
+    /// observation revision. Policy checks, target resolution, verification,
+    /// and effect recording remain owned by `BrowserSession`.
+    pub async fn invoke_guarded(
+        &self,
+        session: &crate::browser::BrowserSession,
+        extension_id: &str,
+        capability: ExtensionCapability,
+        host: &str,
+        action: &str,
+        payload: Value,
+    ) -> Result<crate::browser::ActionOutcome, ExtensionError> {
+        let result = self
+            .invoke_sandboxed(extension_id, capability, host, action, payload)
+            .await?;
+        let guarded: ExtensionGuardedAction = serde_json::from_value(result).map_err(|error| {
+            ExtensionError(format!("invalid guarded extension action: {error}"))
+        })?;
+        guarded.validate()?;
+        let manifest = self
+            .registry
+            .get(extension_id)
+            .ok_or_else(|| ExtensionError("extension is not registered".into()))?;
+        if !manifest
+            .permissions
+            .actions
+            .iter()
+            .any(|allowed| allowed == &guarded.action)
+        {
+            return Err(ExtensionError(
+                "extension returned an action outside its declared permissions".into(),
+            ));
+        }
+        let target = || {
+            guarded
+                .target
+                .as_deref()
+                .ok_or_else(|| ExtensionError("guarded extension action requires a target".into()))
+        };
+        let revision = guarded.expected_revision;
+        match guarded.action.as_str() {
+            "click" => session
+                .click_with_revision(target()?, revision)
+                .await
+                .map_err(extension_browser_error),
+            "type" => session
+                .type_text_with_expected_revision(
+                    guarded.value.as_deref().unwrap_or_default(),
+                    Some(target()?),
+                    Some(revision),
+                )
+                .await
+                .map_err(extension_browser_error),
+            "clear" => session
+                .clear_with_revision(target()?, Some(revision))
+                .await
+                .map_err(extension_browser_error),
+            "check" => session
+                .check_with_revision(target()?, Some(revision))
+                .await
+                .map_err(extension_browser_error),
+            "uncheck" => session
+                .uncheck_with_revision(target()?, Some(revision))
+                .await
+                .map_err(extension_browser_error),
+            "select" => session
+                .select_option_with_revision(
+                    target()?,
+                    guarded.value.as_deref().unwrap_or_default(),
+                    Some(revision),
+                )
+                .await
+                .map_err(extension_browser_error),
+            other => Err(ExtensionError(format!(
+                "guarded extension action is not supported: {other}"
+            ))),
+        }
+    }
+
     async fn invoke_internal(
         &self,
         extension_id: &str,
@@ -518,6 +646,10 @@ impl ExtensionHost {
     }
 }
 
+fn extension_browser_error(error: impl fmt::Display) -> ExtensionError {
+    ExtensionError(format!("guarded extension action failed: {error}"))
+}
+
 fn confined_entrypoint(root: &Path, entrypoint: &str) -> Result<PathBuf, ExtensionError> {
     let path = Path::new(entrypoint);
     if path.is_absolute()
@@ -680,6 +812,38 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
         let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
         assert!(!host.sandbox().label().is_empty());
+    }
+
+    #[test]
+    fn guarded_extension_actions_require_revision_and_bounded_fields() {
+        let action: ExtensionGuardedAction = serde_json::from_value(serde_json::json!({
+            "action": "click",
+            "target": "ref=r7:b42",
+            "expectedRevision": 7
+        }))
+        .unwrap();
+        action.validate().unwrap();
+
+        let mut missing_revision = action.clone();
+        missing_revision.expected_revision = 0;
+        assert!(missing_revision.validate().is_err());
+
+        let mut oversized = action;
+        oversized.target = Some("x".repeat(513));
+        assert!(oversized.validate().is_err());
+    }
+
+    #[test]
+    fn guarded_extension_actions_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<ExtensionGuardedAction>(serde_json::json!({
+                "action": "click",
+                "target": "ref=r7:b42",
+                "expectedRevision": 7,
+                "dispatchDirectly": true
+            }))
+            .is_err()
+        );
     }
 
     #[test]

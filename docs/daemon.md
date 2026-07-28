@@ -16,8 +16,9 @@ glass daemon stop
 
 Use `--socket PATH` and `--status PATH` to select explicit locations. The
 default paths are under the platform local-data directory. The socket is
-created with mode `0600`; filesystem permissions are the local authentication
-boundary. The status JSON follows
+created with mode `0600`. On Linux, the daemon also checks `SO_PEERCRED` and
+accepts only clients running as the same operating-system user. On macOS,
+socket ownership and mode are the local authentication boundary. The status JSON follows
 [glass-daemon-v1.schema.json](schema/glass-daemon-v1.schema.json) and includes
 the daemon PID, protocol version, transport, and child-session count.
 

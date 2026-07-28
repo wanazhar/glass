@@ -320,6 +320,11 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
         let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
         loop {
             let (stream, _) = listener.accept().await?;
+            if let Err(error) = authorize_local_peer(&stream) {
+                tracing::warn!(%error, "daemon rejected unauthorized local peer");
+                drop(stream);
+                continue;
+            }
             let client_sessions = Arc::clone(&client_sessions);
             if client_sessions.load(std::sync::atomic::Ordering::Relaxed)
                 >= MAX_DAEMON_CLIENT_SESSIONS
@@ -342,6 +347,50 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
             });
         }
     }
+}
+
+#[cfg(unix)]
+fn authorize_local_peer(stream: &tokio::net::UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::mem::size_of;
+        use std::os::fd::AsRawFd;
+
+        let mut credentials = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut length = size_of::<libc::ucred>() as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut credentials as *mut libc::ucred).cast(),
+                &mut length,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if length as usize != size_of::<libc::ucred>() {
+            return Err("unexpected Unix peer credential size".into());
+        }
+        let current_uid = unsafe { libc::geteuid() };
+        if credentials.uid != current_uid {
+            return Err(format!(
+                "peer uid {} does not match daemon uid {}",
+                credentials.uid, current_uid
+            )
+            .into());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = stream;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -489,6 +538,13 @@ mod tests {
         std::fs::write(&path, b"not a socket").unwrap();
         assert!(remove_socket_if_safe(&path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_peer_authorization_accepts_same_user_socket() {
+        let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
+        authorize_local_peer(&stream).unwrap();
     }
 
     #[cfg(unix)]

@@ -128,9 +128,6 @@ jobs:
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Smoke release binary contract
-        run: scripts/smoke-release-binary.sh target/${{ matrix.target }}/release/glass
-
       - name: Run tests
         run: cargo test --all-targets --locked --target ${{ matrix.target }}
 
@@ -160,6 +157,13 @@ jobs:
           set -o pipefail
           cargo test --test browser_smoke --locked -- --nocapture --test-threads=1 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
+
+      - name: Smoke release binary contract and browser operations
+        shell: bash
+        env:
+          GLASS_RELEASE_BROWSER_SMOKE: "1"
+          GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
+        run: scripts/smoke-release-binary.sh target/${{ matrix.target }}/release/glass
 
       - name: Write platform evidence
         env:

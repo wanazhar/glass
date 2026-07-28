@@ -69,3 +69,39 @@ finally:
 
 print(f"release binary smoke passed: {binary} ({len(tools)} MCP tools)")
 PY
+
+if [[ "${GLASS_RELEASE_BROWSER_SMOKE:-0}" != "1" ]]; then
+    exit 0
+fi
+
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/glass-release-browser-smoke.XXXXXX")"
+server_pid=""
+cleanup() {
+    if [[ -n "$server_pid" ]]; then
+        kill "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$smoke_root"
+}
+trap cleanup EXIT
+
+python3 -m http.server 18765 --directory tests/fixtures >"$smoke_root/server.log" 2>&1 &
+server_pid=$!
+sleep 1
+
+chrome_args=()
+if [[ -n "${CHROME_PATH:-}" ]]; then
+    chrome_args+=(--chrome-path "$CHROME_PATH")
+fi
+
+"$binary" "${chrome_args[@]}" --incognito --port 9222 navigate \
+    http://127.0.0.1:18765/basic.html >"$smoke_root/navigate.json"
+grep -F 'basic.html' "$smoke_root/navigate.json" >/dev/null
+
+"$binary" "${chrome_args[@]}" --incognito --port 9223 observe >"$smoke_root/observe.json"
+grep -F 'accessibility' "$smoke_root/observe.json" >/dev/null
+
+"$binary" "${chrome_args[@]}" --incognito --port 9224 screenshot \
+    --output "$smoke_root/screenshot.png" >/dev/null
+test -s "$smoke_root/screenshot.png"
+
+echo "release browser smoke passed: navigate, observe, screenshot"

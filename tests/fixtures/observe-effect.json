@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "observe-effect",
+  "workflowVersion": "1.0.0",
+  "inputs": {},
+  "budgets": {
+    "maxSteps": 1,
+    "maxDurationMs": 30000,
+    "maxRetries": 0,
+    "maxExtractedBytes": 4096
+  },
+  "steps": [
+    {
+      "id": "wait-for-effect",
+      "action": "wait",
+      "condition": "text=effect-visible",
+      "timeoutMs": 5000,
+      "transaction": "read_only"
+    }
+  ],
+  "terminalCondition": {"textContains": "effect-visible"},
+  "outputs": {}
+}

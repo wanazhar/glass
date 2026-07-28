@@ -1,3 +1,4 @@
+use glass::WorkflowDefinition;
 use glass::reliability::{
     RELIABILITY_SCENARIO_SCHEMA_VERSION, ReliabilityFixtureManifest, ReliabilityForbiddenOutcome,
     ReliabilityPlatform, ReliabilityScenario,
@@ -46,6 +47,33 @@ fn checked_in_capability_suite_has_unique_valid_scenarios() {
     }));
     let plan = scenarios[0].execution_plan(&manifest).unwrap();
     assert_eq!(plan.operations.len(), 2);
+}
+
+#[test]
+fn capability_suite_workflow_sources_exist_and_validate() {
+    let values: Vec<Value> = serde_json::from_str(include_str!(
+        "fixtures/reliability-capability-suite-v1.json"
+    ))
+    .unwrap();
+    let scenarios: Vec<ReliabilityScenario> = values
+        .into_iter()
+        .map(ReliabilityScenario::from_value)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+
+    for scenario in scenarios {
+        for step in scenario.steps {
+            let Some(source) = step.run_workflow else {
+                continue;
+            };
+            let path = root.join(source);
+            let definition = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            WorkflowDefinition::from_json(&definition)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        }
+    }
 }
 
 #[test]

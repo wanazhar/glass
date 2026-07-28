@@ -77,3 +77,6 @@ CLI/MCP capability rather than an unbounded right-panel payload.
 ## Tests
 
 Unit tests cover reducer state transitions and command parsing. A worker integration test delays a browser command and proves the UI can still process key events, render busy state, and request cancellation.
+The TUI also provides read-only local daemon inspection commands: `daemon status`,
+`daemon doctor`, `daemon logs`, and `daemon recovery`. These commands
+render bounded JSON in the inspector pane without starting a browser operation.

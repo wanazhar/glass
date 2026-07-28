@@ -572,6 +572,15 @@ enum LocalCommand {
     Help,
     Profiles,
     Knowledge(Option<String>),
+    Daemon(DaemonView),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonView {
+    Status,
+    Doctor,
+    Logs,
+    Recovery,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -644,6 +653,24 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     if let Some(record_id) = strip_ascii_prefix(command, "knowledge show ") {
         return required_command_argument(record_id, "knowledge record ID")
             .map(|record_id| ParsedCommand::Local(LocalCommand::Knowledge(Some(record_id))));
+    }
+    if command.eq_ignore_ascii_case("daemon") || command.eq_ignore_ascii_case("daemon doctor") {
+        return Ok(ParsedCommand::Local(LocalCommand::Daemon(
+            DaemonView::Doctor,
+        )));
+    }
+    if command.eq_ignore_ascii_case("daemon status") {
+        return Ok(ParsedCommand::Local(LocalCommand::Daemon(
+            DaemonView::Status,
+        )));
+    }
+    if command.eq_ignore_ascii_case("daemon logs") {
+        return Ok(ParsedCommand::Local(LocalCommand::Daemon(DaemonView::Logs)));
+    }
+    if command.eq_ignore_ascii_case("daemon recovery") {
+        return Ok(ParsedCommand::Local(LocalCommand::Daemon(
+            DaemonView::Recovery,
+        )));
     }
     for prefix in ["navigate ", "go to ", "go "] {
         if let Some(url) = strip_ascii_prefix(command, prefix) {
@@ -1433,7 +1460,7 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | type TEXT | workflow FILE",
             );
             app.add_activity(
-                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | JavaScript",
+                "resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | scroll [DX [DY]] | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -1497,6 +1524,30 @@ fn handle_submission(
                         }
                         Err(error) => app.report_error(error.to_string()),
                     }
+                }
+                Err(error) => app.report_error(error.to_string()),
+            }
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Daemon(view))) => {
+            let (socket, status) = crate::daemon::default_paths();
+            let result: BrowserResult<serde_json::Value> = match view {
+                DaemonView::Status => crate::daemon::status(Some(&socket), Some(&status))
+                    .and_then(|value| serde_json::to_value(value).map_err(Into::into)),
+                DaemonView::Doctor => crate::daemon::doctor(Some(&socket), Some(&status)),
+                DaemonView::Logs => crate::daemon::logs(Some(&status)),
+                DaemonView::Recovery => crate::daemon::recovery(Some(&status)),
+            };
+            match result {
+                Ok(value) => {
+                    app.title = "Glass — Daemon inspector".into();
+                    match serde_json::to_string_pretty(&value) {
+                        Ok(content) => app.set_page_content(content),
+                        Err(error) => app.report_error(error.to_string()),
+                    }
+                    app.set_status("Daemon inspector");
+                    app.add_activity(
+                        "Daemon state inspected without starting a browser operation.",
+                    );
                 }
                 Err(error) => app.report_error(error.to_string()),
             }
@@ -1894,6 +1945,18 @@ mod tests {
             parse_command("knowledge show record-1"),
             Ok(ParsedCommand::Local(LocalCommand::Knowledge(Some(record))))
                 if record == "record-1"
+        ));
+        assert!(matches!(
+            parse_command("daemon status"),
+            Ok(ParsedCommand::Local(LocalCommand::Daemon(
+                DaemonView::Status
+            )))
+        ));
+        assert!(matches!(
+            parse_command("daemon recovery"),
+            Ok(ParsedCommand::Local(LocalCommand::Daemon(
+                DaemonView::Recovery
+            )))
         ));
     }
 

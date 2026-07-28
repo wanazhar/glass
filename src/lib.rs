@@ -49,6 +49,8 @@ pub mod cli;
 pub mod mcp;
 /// Versioned browser-free reliability scenario contracts.
 pub mod reliability;
+/// Bounded browser execution for reliability scenarios and replay evidence.
+pub mod reliability_runner;
 /// Ratatui terminal interface.
 pub mod tui;
 

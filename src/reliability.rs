@@ -62,6 +62,19 @@ pub enum ReliabilityFaultKind {
     DropEvent,
 }
 
+impl ReliabilityFaultKind {
+    /// Return the stable fixture argument used by a runner.
+    pub const fn fixture_name(self) -> &'static str {
+        match self {
+            Self::LoseResponse => "loseResponse",
+            Self::RendererDisconnect => "rendererDisconnect",
+            Self::BrowserDisconnect => "browserDisconnect",
+            Self::DelayedEffect => "delayedEffect",
+            Self::DropEvent => "dropEvent",
+        }
+    }
+}
+
 /// Deterministic controls exposed by the checked-in adversarial fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +90,25 @@ pub enum ReliabilityFixtureControl {
     DetachFrame,
     ScheduleEffectMarker,
     CommitSubmit,
+}
+
+impl ReliabilityFixtureControl {
+    /// Return the allowlisted fixture method for this control.
+    pub const fn javascript_method(self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::ReplaceTarget => "replaceTarget",
+            Self::RenameTarget => "renameTarget",
+            Self::DuplicateTarget => "duplicateTarget",
+            Self::ReorderTargets => "reorderTargets",
+            Self::MoveTargetToOtherRegion => "moveTargetToOtherRegion",
+            Self::ShowOverlay => "showOverlay",
+            Self::MoveTarget => "moveTarget",
+            Self::DetachFrame => "detachFrame",
+            Self::ScheduleEffectMarker => "scheduleEffectMarker",
+            Self::CommitSubmit => "commitSubmit",
+        }
+    }
 }
 
 /// Independent oracle exposed by a reliability fixture.

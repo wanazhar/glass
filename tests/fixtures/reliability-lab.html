@@ -82,6 +82,19 @@
           state.value = "effect-pending";
           setTimeout(() => { state.value = "effect-visible"; }, delayMs);
         },
+        injectFault(fault) {
+          if (fault === "delayedEffect") {
+            this.scheduleEffectMarker(100);
+          } else if (fault === "loseResponse") {
+            state.value = "response-lost";
+          } else if (fault === "dropEvent") {
+            state.value = "event-dropped";
+          } else {
+            state.value = "disconnect-requested";
+            return false;
+          }
+          return true;
+        },
         commitSubmit() {
           const count = Number(submitCount.value) + 1;
           submitCount.value = String(count);

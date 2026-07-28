@@ -12,6 +12,7 @@ fn reliability_fixture_exposes_independent_fault_controls_and_oracles() {
         "showOverlay",
         "detachFrame",
         "scheduleEffectMarker",
+        "injectFault",
         "data-side-effect-count",
         "snapshot",
         "target, #replacement",

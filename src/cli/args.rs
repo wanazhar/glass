@@ -123,6 +123,9 @@ pub enum Commands {
         action: CertifyCommand,
     },
 
+    /// Print the versioned Glass capability manifest without starting Chrome.
+    Capabilities,
+
     /// List or manage saved profiles.
     Profiles {
         #[command(subcommand)]
@@ -1061,6 +1064,12 @@ mod tests {
                 && inputs.as_os_str() == "inputs.json"
                 && output.as_os_str() == "evidence.json"
         ));
+    }
+
+    #[test]
+    fn capabilities_command_is_explicitly_offline() {
+        let cli = Cli::try_parse_from(["glass", "capabilities"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Capabilities)));
     }
 
     #[test]

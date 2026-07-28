@@ -18,6 +18,7 @@ use crate::browser::session::{
     WorkflowRecordingSession, compile_workflow, default_knowledge_store_path, diff_workflows,
     format_workflow_yaml, preview_workflow, record_semantic_events,
 };
+use crate::capabilities::GlassCapabilityManifest;
 use crate::reliability::{
     ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
     ReliabilityScenarioObservation, build_reliability_scorecard,
@@ -42,6 +43,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::InstallChromium { update }) => {
             let path = crate::browser::chrome::download_chromium(*update).await?;
             println!("Chrome for Testing installed at {}", path.display());
+            return Ok(());
+        }
+        Some(Commands::Capabilities) => {
+            print_json(&GlassCapabilityManifest::for_policy(&policy))?;
             return Ok(());
         }
         Some(Commands::Certify { action }) if !matches!(action, CertifyCommand::Run { .. }) => {
@@ -538,7 +543,7 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             )
             .await?;
         }
-        Commands::Certify { .. } | Commands::Knowledge { .. } => {
+        Commands::Capabilities | Commands::Certify { .. } | Commands::Knowledge { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
         Commands::Navigate {

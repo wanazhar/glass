@@ -74,6 +74,7 @@ workflow [JSON_FILE]
 workflow compile|format|validate|lint|preview SOURCE
 workflow diff BEFORE AFTER
 workflow-resume WORKFLOW_JSON CHECKPOINT_JSON [--inputs INPUTS_JSON]
+capabilities
 certify run --scenario SCENARIO_JSON --fixture FIXTURE_JSON --url URL [--workflow-root DIRECTORY] [--inputs INPUTS_JSON] [--output EVIDENCE_JSON]
 certify plan --scenario SCENARIO_JSON --fixture FIXTURE_JSON
 certify replay --scenario SCENARIO_JSON --input REPLAY_JSON
@@ -133,6 +134,10 @@ subcommands are offline authoring operations. They parse YAML or JSON, apply
 the same workflow validation as the runtime, and do not start Chrome. See
 [workflow authoring](workflow-authoring.md) for diagnostics and redaction
 boundaries.
+
+`capabilities` prints the versioned Glass capability manifest without starting
+Chrome. It is the CLI equivalent of the `glass` manifest returned by MCP
+initialization and reflects the active policy and supported platform.
 
 `certify replay` validates one redacted reliability replay bundle against its
 versioned scenario. `certify run` navigates a fixture URL, executes one

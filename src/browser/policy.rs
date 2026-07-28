@@ -12,6 +12,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use url::Url;
 
+/// Version of the structured policy decision/error contract.
+pub const POLICY_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyCapability {
@@ -86,6 +89,66 @@ pub enum PolicyError {
     Denied { operation: String, reason: String },
     ConfirmationRequired { operation: String, reason: String },
     InvalidConfiguration { reason: String },
+}
+
+/// Stable, actionable policy failure metadata for protocol consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyErrorContract {
+    pub schema_version: u32,
+    pub policy_version: u32,
+    pub kind: String,
+    pub operation: Option<String>,
+    pub rule_id: String,
+    pub phase: String,
+    pub reason: String,
+    pub remediation: Option<String>,
+    pub override_possible: bool,
+}
+
+impl PolicyError {
+    /// Convert the internal error into the versioned public contract.
+    pub fn contract(&self) -> PolicyErrorContract {
+        match self {
+            Self::Denied { operation, reason } => PolicyErrorContract {
+                schema_version: POLICY_SCHEMA_VERSION,
+                policy_version: POLICY_SCHEMA_VERSION,
+                kind: "denied".into(),
+                operation: Some(operation.clone()),
+                rule_id: format!("policy.{operation}.denied"),
+                phase: "preflight".into(),
+                reason: reason.clone(),
+                remediation: Some(
+                    "change the policy or use an explicitly allowed capability".into(),
+                ),
+                override_possible: true,
+            },
+            Self::ConfirmationRequired { operation, reason } => PolicyErrorContract {
+                schema_version: POLICY_SCHEMA_VERSION,
+                policy_version: POLICY_SCHEMA_VERSION,
+                kind: "confirmation_required".into(),
+                operation: Some(operation.clone()),
+                rule_id: format!("policy.{operation}.confirmation"),
+                phase: "preflight".into(),
+                reason: reason.clone(),
+                remediation: Some("provide one explicit confirmation token".into()),
+                override_possible: true,
+            },
+            Self::InvalidConfiguration { reason } => PolicyErrorContract {
+                schema_version: POLICY_SCHEMA_VERSION,
+                policy_version: POLICY_SCHEMA_VERSION,
+                kind: "invalid_configuration".into(),
+                operation: None,
+                rule_id: "policy.configuration.invalid".into(),
+                phase: "configuration".into(),
+                reason: reason.clone(),
+                remediation: Some(
+                    "correct the policy configuration before starting a session".into(),
+                ),
+                override_possible: false,
+            },
+        }
+    }
 }
 
 impl fmt::Display for PolicyError {
@@ -753,5 +816,20 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn policy_errors_expose_versioned_remediation_contract() {
+        let error = PolicyError::ConfirmationRequired {
+            operation: "evaluate".into(),
+            reason: "requires explicit approval".into(),
+        };
+        let value = serde_json::to_value(error.contract()).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["policyVersion"], 1);
+        assert_eq!(value["ruleId"], "policy.evaluate.confirmation");
+        assert_eq!(value["phase"], "preflight");
+        assert_eq!(value["overridePossible"], true);
+        assert!(value["remediation"].as_str().is_some());
     }
 }

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/glass-policy-error-v1.schema.json",
+  "title": "Glass policy error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policyVersion", "kind", "ruleId", "phase", "reason", "overridePossible"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "policyVersion": {"const": 1},
+    "kind": {"enum": ["denied", "confirmation_required", "invalid_configuration"]},
+    "operation": {"type": ["string", "null"], "maxLength": 128},
+    "ruleId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "phase": {"enum": ["preflight", "configuration"]},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+    "remediation": {"type": ["string", "null"], "maxLength": 512},
+    "overridePossible": {"type": "boolean"}
+  }
+}

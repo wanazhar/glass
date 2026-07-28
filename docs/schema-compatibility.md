@@ -60,6 +60,7 @@ must inspect the negotiated manifest and the policy-sensitive booleans.
 The current machine-readable contract set is:
 
 - [action v1](schema/glass-action-v1.schema.json)
+- [policy error v1](schema/glass-policy-error-v1.schema.json)
 - [session checkpoint v1](schema/glass-checkpoint-v1.schema.json)
 - [workflow checkpoint v1](schema/glass-workflow-checkpoint-v1.schema.json)
 - [workflow trace v1](schema/glass-workflow-trace-v1.schema.json)

@@ -5,7 +5,9 @@
 //! backward compatibility; newer clients can request exact schema versions
 //! and receive a typed negotiation error before using optional features.
 
-use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyDecision, PolicyPreset};
+use crate::browser::policy::{
+    BrowserPolicy, POLICY_SCHEMA_VERSION, PolicyCapability, PolicyDecision, PolicyPreset,
+};
 use crate::browser::session::{
     INTENT_RESOLUTION_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION,
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, WORKFLOW_AUTHORING_SCHEMA_VERSION,
@@ -170,6 +172,7 @@ fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
         ),
         ("workflow".into(), vec![WORKFLOW_SCHEMA_VERSION]),
         ("checkpoint".into(), vec![1]),
+        ("policy".into(), vec![POLICY_SCHEMA_VERSION]),
         ("workflowCheckpoint".into(), vec![1]),
         ("trace".into(), vec![1]),
         ("intent".into(), vec![INTENT_RESOLUTION_SCHEMA_VERSION]),

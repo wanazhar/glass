@@ -1125,7 +1125,7 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         .or_else(|| {
             error
                 .downcast_ref::<PolicyError>()
-                .and_then(|error| serde_json::to_string(error).ok())
+                .and_then(|error| serde_json::to_string(&error.contract()).ok())
         })
         .or_else(|| {
             error

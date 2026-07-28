@@ -337,6 +337,16 @@ export class GlassClient {
 
   get capabilities(): GlassCapabilityManifest | undefined { return this.manifest; }
 
+  supportsCapability(capability: string): boolean {
+    return this.manifest?.capabilities[capability] === true;
+  }
+  supportsSchema(schema: string, version: number): boolean {
+    return this.manifest?.schemas[schema]?.includes(version) === true;
+  }
+  requireCapability(capability: string): void {
+    if (!this.supportsCapability(capability)) throw new Error(`Glass capability is unavailable: ${capability}`);
+  }
+
   async call<T = ToolCallResult>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     await this.initialize();
     const callArgs = { ...args, ...(this.leaseToken === undefined ? {} : { leaseToken: this.leaseToken }) };

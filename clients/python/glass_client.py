@@ -261,6 +261,22 @@ class GlassClient:
         self._initialized = True
         return manifest
 
+    def supports_capability(self, capability: str) -> bool:
+        """Return whether the negotiated runtime enables a capability."""
+        manifest = self.initialize() or self.capabilities
+        return bool(isinstance(manifest, dict) and manifest.get("capabilities", {}).get(capability))
+
+    def supports_schema(self, schema: str, version: int) -> bool:
+        """Return whether the negotiated runtime supports a schema version."""
+        manifest = self.initialize() or self.capabilities
+        versions = manifest.get("schemas", {}).get(schema, []) if isinstance(manifest, dict) else []
+        return version in versions
+
+    def require_capability(self, capability: str) -> None:
+        """Raise before dispatch when an optional capability is unavailable."""
+        if not self.supports_capability(capability):
+            raise GlassError(f"Glass capability is unavailable: {capability}")
+
     def call(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         self.initialize()
         call_arguments = dict(arguments or {})

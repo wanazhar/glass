@@ -41,4 +41,5 @@ individual frames at 4 MiB.
 `glass.initialize()` negotiates Glass schema versions and returns the
 `GlassCapabilityManifest`. The same manifest is stored at
 `glass.capabilities`; callers should inspect its capability flags before using
-optional operations.
+optional operations. `supports_capability`, `supports_schema`, and
+`require_capability` provide bounded checks for those decisions.

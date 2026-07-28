@@ -36,6 +36,8 @@ This phase covers the first platform boundary for issue #27:
   per-client limit.
 - the TUI exposes read-only daemon status, doctor, logs, and recovery views
   without starting a browser operation.
+- Python and TypeScript SDKs expose bounded capability and schema support
+  checks before optional operation dispatch.
 - the transport-neutral protocol envelope is published as schema v1 and MCP
   tool calls validate against the same canonical operation mapping.
 - two first-party reference extensions exercise the manifest, permission, and

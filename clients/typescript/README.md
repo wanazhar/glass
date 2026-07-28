@@ -41,4 +41,5 @@ frames, and enforces a 4 MiB frame budget by default.
 `await glass.initialize()` negotiates Glass schema versions and returns the
 `GlassCapabilityManifest`. The same manifest is available at
 `glass.capabilities`; callers should check its capability flags before using
-optional operations.
+optional operations. `supportsCapability`, `supportsSchema`, and
+`requireCapability` provide helpers for those checks.

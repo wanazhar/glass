@@ -43,6 +43,7 @@ use crate::browser::session::{
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
     WorkflowDefinition, default_knowledge_store_path,
 };
+use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 
 const INPUT_CHANNEL_CAPACITY: usize = 64;
@@ -68,6 +69,7 @@ pub struct App {
     should_quit: bool,
     error_msg: Option<String>,
     status: String,
+    capability_summary: String,
     intent_request: Option<SemanticIntentRequest>,
     intent_result: Option<SemanticIntentResult>,
     intent_selection: usize,
@@ -117,6 +119,7 @@ impl App {
             should_quit: false,
             error_msg: None,
             status: "Connecting to Chrome…".to_string(),
+            capability_summary: "Capabilities: loading".to_string(),
             intent_request: None,
             intent_result: None,
             intent_selection: 0,
@@ -1602,8 +1605,9 @@ fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            " {}   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
+            " {}   {}   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
             app.status,
+            app.capability_summary,
             app.input.chars().count()
         ))
         .style(Style::default().fg(Color::DarkGray)),
@@ -1705,6 +1709,16 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     ));
     let mut input_worker = InputWorker::spawn(input_tx);
     let mut app = App::new();
+    let manifest = GlassCapabilityManifest::for_policy(&policy);
+    app.capability_summary = format!(
+        "Capabilities: {} schemas, daemon {}",
+        manifest.schemas.len(),
+        if manifest.capabilities.get("localDaemon") == Some(&true) {
+            "on"
+        } else {
+            "off"
+        }
+    );
     app.knowledge_path = cli
         .knowledge_store
         .clone()

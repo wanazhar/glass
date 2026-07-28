@@ -82,7 +82,7 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
 
 #[cfg(unix)]
 #[test]
-fn daemon_handshake_advertises_shared_session_mode() {
+fn daemon_handshake_advertises_isolated_session_mode() {
     use std::os::unix::net::UnixStream;
 
     let root = std::env::temp_dir().join(format!(
@@ -159,6 +159,7 @@ fn daemon_handshake_advertises_shared_session_mode() {
     reader.read_line(&mut response).unwrap();
     let lease_response: Value = serde_json::from_str(&response).unwrap();
     assert_eq!(lease_response["result"]["ownerId"], "daemon-client-1");
+    assert_eq!(lease_response["result"]["sessionId"], "daemon-session-1");
     let status_value: Value = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
     assert_eq!(status_value["mutationLeaseOwner"], "daemon-client-1");
     assert!(status_value.get("mutationLease").is_none());

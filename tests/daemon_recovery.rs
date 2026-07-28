@@ -34,7 +34,7 @@ fn daemon_recovers_dead_status_and_stale_socket() {
         "socket": socket,
         "statusPath": status,
         "startedAt": "2026-07-28T00:00:00Z",
-        "transport": "unix-mcp-shared-session",
+        "transport": "unix-mcp-isolated-sessions",
         "clientSessions": 0,
         "activeRuns": [{
             "requestId": "workflow-recovery-1",

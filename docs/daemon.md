@@ -4,8 +4,10 @@ The Glass daemon accepts local MCP clients through a Unix-domain socket. It
 runs on Linux and macOS. It does not open a TCP port. It does not provide a
 remote service.
 
-The current daemon uses one shared browser-session namespace. It does not
-provide independent browser sessions for each client.
+The daemon gives each connected client an independent browser-session
+namespace. Clients can use the same Unix socket without sharing browser state.
+The daemon still shares the process-wide request budget and lease authority;
+each client lease is bound to that client's session namespace and owner.
 
 ## Start and stop
 

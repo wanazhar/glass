@@ -26,8 +26,8 @@ pub const MAX_DAEMON_CONCURRENT_REQUESTS: usize = 16;
 pub const MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS: usize = 4;
 /// Maximum number of workflow requests retained in the daemon status record.
 pub const MAX_DAEMON_ACTIVE_RUNS: usize = 16;
-/// Stable session namespace used by the first shared daemon runtime.
-pub const DAEMON_DEFAULT_SESSION_ID: &str = "daemon-default";
+/// Prefix for the per-client session namespaces owned by the daemon.
+pub const DAEMON_SESSION_ID_PREFIX: &str = "daemon-session-";
 const MIN_LEASE_TTL_MS: u64 = 100;
 const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
 
@@ -76,6 +76,7 @@ pub struct MutationLeaseManager {
 #[derive(Debug, Clone)]
 pub struct DaemonLeaseContext {
     pub manager: Arc<tokio::sync::Mutex<MutationLeaseManager>>,
+    pub session_id: String,
     pub owner_id: String,
     pub request_permits: Arc<tokio::sync::Semaphore>,
     pub client_request_permits: Arc<tokio::sync::Semaphore>,
@@ -198,7 +199,7 @@ fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
     Ok(())
 }
 
-/// One workflow request active in the daemon's shared session.
+/// One workflow request active in one daemon client session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonActiveRun {
@@ -661,7 +662,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         log_path: Some(log_path_for(status_path)),
         recovery_path: Some(recovery_path_for(status_path)),
         started_at: chrono::Utc::now().to_rfc3339(),
-        transport: "unix-mcp-shared-session".into(),
+        transport: "unix-mcp-isolated-sessions".into(),
         client_sessions: 0,
         mutation_lease_owner: None,
         active_runs: Vec::new(),
@@ -669,7 +670,6 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
     let status_state = Arc::new(DaemonStatusState::new(status_path, status));
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let shared_session = Arc::new(tokio::sync::Mutex::new(None));
     let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
     let request_permits = Arc::new(tokio::sync::Semaphore::new(MAX_DAEMON_CONCURRENT_REQUESTS));
     let next_owner_id = std::sync::atomic::AtomicU64::new(0);
@@ -695,14 +695,13 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         status_state.update_client_sessions(active).await?;
         let status_state = Arc::clone(&status_state);
-        let shared_session = Arc::clone(&shared_session);
         let cli = Cli::parse_from(["glass", "--mcp"]);
-        let owner_id = format!(
-            "daemon-client-{}",
-            next_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
-        );
+        let client_number = next_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let owner_id = format!("daemon-client-{client_number}");
+        let session_id = format!("{DAEMON_SESSION_ID_PREFIX}{client_number}");
         let lease_context = Arc::new(DaemonLeaseContext {
             manager: Arc::clone(&lease_manager),
+            session_id,
             owner_id,
             request_permits: Arc::clone(&request_permits),
             client_request_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -716,7 +715,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
                 tokio::io::BufReader::new(socket_read),
                 socket_write,
                 &cli,
-                shared_session,
+                Arc::new(tokio::sync::Mutex::new(None)),
                 false,
                 true,
                 Some(lease_context),
@@ -737,10 +736,6 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     let _ = status_state.record_interrupted_workflows().await;
     for client in clients {
         client.abort();
-    }
-    let mut session = shared_session.lock().await;
-    if let Some(session) = session.take() {
-        let _ = session.close().await;
     }
     let _ = std::fs::remove_file(status_path);
     let _ = remove_socket_if_safe(socket);
@@ -852,7 +847,7 @@ mod tests {
             log_path: None,
             recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
-            transport: "unix-mcp-shared-session".into(),
+            transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
             active_runs: Vec::new(),
@@ -860,7 +855,7 @@ mod tests {
         let value = serde_json::to_value(&status).unwrap();
 
         assert_eq!(value["protocolVersion"], 1);
-        assert_eq!(value["transport"], "unix-mcp-shared-session");
+        assert_eq!(value["transport"], "unix-mcp-isolated-sessions");
         assert!(value["socket"].as_str().unwrap().starts_with('/'));
     }
 
@@ -900,6 +895,27 @@ mod tests {
         assert_eq!(
             manager.validate("session-1", "owner-a", &lease.token, 2_500),
             Err(LeaseError::NotFound)
+        );
+    }
+
+    #[test]
+    fn independent_client_sessions_have_independent_mutation_leases() {
+        let mut manager = MutationLeaseManager::default();
+        let first = manager
+            .acquire("daemon-session-1", "daemon-client-1", 1_000, 1_000)
+            .unwrap();
+        let second = manager
+            .acquire("daemon-session-2", "daemon-client-2", 1_000, 1_000)
+            .unwrap();
+
+        assert_ne!(first.session_id, second.session_id);
+        assert_eq!(
+            manager.current_owner("daemon-session-1", 1_100).as_deref(),
+            Some("daemon-client-1")
+        );
+        assert_eq!(
+            manager.current_owner("daemon-session-2", 1_100).as_deref(),
+            Some("daemon-client-2")
         );
     }
 
@@ -952,7 +968,7 @@ mod tests {
             log_path: None,
             recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
-            transport: "unix-mcp-shared-session".into(),
+            transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
             active_runs: Vec::new(),
@@ -1002,7 +1018,7 @@ mod tests {
             log_path: None,
             recovery_path: None,
             started_at: "2026-07-28T00:00:00Z".into(),
-            transport: "unix-mcp-shared-session".into(),
+            transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
             active_runs: Vec::new(),

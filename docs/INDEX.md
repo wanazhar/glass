@@ -21,7 +21,7 @@ not available from a published package.
   field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
-- [Local daemon](daemon.md) — Unix-socket lifecycle, status, shared-session
+- [Local daemon](daemon.md) — Unix-socket lifecycle, status, isolated client
   boundaries, and mutation leases.
 - [Extensions](extensions.md) — versioned manifests, bounded hosts, native
   sandboxing, and guarded action boundaries.

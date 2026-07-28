@@ -14,7 +14,7 @@
     "logPath": {"type": "string", "minLength": 1, "maxLength": 4096},
     "recoveryPath": {"type": "string", "minLength": 1, "maxLength": 4096},
     "startedAt": {"type": "string", "minLength": 1, "maxLength": 64},
-    "transport": {"const": "unix-mcp-shared-session"},
+    "transport": {"const": "unix-mcp-isolated-sessions"},
     "clientSessions": {"type": "integer", "minimum": 0, "maximum": 64},
     "mutationLeaseOwner": {"type": "string", "minLength": 1, "maxLength": 128},
     "activeRuns": {

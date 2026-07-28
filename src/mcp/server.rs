@@ -35,9 +35,7 @@ use crate::browser::session::{
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
-use crate::daemon::{
-    DAEMON_DEFAULT_SESSION_ID, DaemonLeaseContext, LeaseError, MutationLeaseManager,
-};
+use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
 use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
@@ -574,6 +572,7 @@ where
             let response = handle_lease_request(
                 &request,
                 &lease_context.manager,
+                &lease_context.session_id,
                 &lease_context.owner_id,
                 Some(&lease_context.status),
             )
@@ -586,9 +585,13 @@ where
         if local_daemon
             && request.method == "tools/call"
             && let Some(lease_context) = lease_context.as_ref()
-            && let Some(error) =
-                mutation_lease_error(&request, &lease_context.manager, &lease_context.owner_id)
-                    .await
+            && let Some(error) = mutation_lease_error(
+                &request,
+                &lease_context.manager,
+                &lease_context.session_id,
+                &lease_context.owner_id,
+            )
+            .await
         {
             if !request.id.is_notification() {
                 send_response(&outbound_tx, error, format).await?;
@@ -755,7 +758,7 @@ where
     if let Some(lease_context) = lease_context {
         let mut manager = lease_context.manager.lock().await;
         manager.release_owner(&lease_context.owner_id);
-        let owner = manager.current_owner(DAEMON_DEFAULT_SESSION_ID, current_time_ms());
+        let owner = manager.current_owner(&lease_context.session_id, current_time_ms());
         drop(manager);
         let _ = lease_context
             .status
@@ -833,6 +836,7 @@ fn task_cancellations_remove(cancellations: &CancellationMap, key: &str) {
 async fn handle_lease_request(
     request: &JsonRpcRequest,
     lease_manager: &Arc<Mutex<MutationLeaseManager>>,
+    session_id: &str,
     owner_id: &str,
     status: Option<&Arc<crate::daemon::DaemonStatusState>>,
 ) -> JsonRpcResponse {
@@ -848,7 +852,7 @@ async fn handle_lease_request(
                     "glass/lease/acquire requires numeric ttlMs",
                 );
             };
-            manager.acquire(DAEMON_DEFAULT_SESSION_ID, owner_id, now_ms, ttl_ms)
+            manager.acquire(session_id, owner_id, now_ms, ttl_ms)
         }
         "glass/lease/renew" => {
             let Some(token) = params.get("token").and_then(Value::as_str) else {
@@ -865,7 +869,7 @@ async fn handle_lease_request(
                     "glass/lease/renew requires numeric ttlMs",
                 );
             };
-            manager.renew(DAEMON_DEFAULT_SESSION_ID, owner_id, token, now_ms, ttl_ms)
+            manager.renew(session_id, owner_id, token, now_ms, ttl_ms)
         }
         "glass/lease/release" => {
             let Some(token) = params.get("token").and_then(Value::as_str) else {
@@ -875,7 +879,7 @@ async fn handle_lease_request(
                     "glass/lease/release requires string token",
                 );
             };
-            return match manager.release(DAEMON_DEFAULT_SESSION_ID, owner_id, token) {
+            return match manager.release(session_id, owner_id, token) {
                 Ok(()) => {
                     if let Some(status) = status
                         && let Err(error) = status.update_mutation_lease_owner(None).await
@@ -884,7 +888,7 @@ async fn handle_lease_request(
                     }
                     success_response(
                         request.id.response_value(),
-                        json!({"sessionId": DAEMON_DEFAULT_SESSION_ID, "released": true}),
+                        json!({"sessionId": session_id, "released": true}),
                     )
                 }
                 Err(error) => lease_error_response(request, error),
@@ -916,6 +920,7 @@ async fn handle_lease_request(
 async fn mutation_lease_error(
     request: &JsonRpcRequest,
     lease_manager: &Arc<Mutex<MutationLeaseManager>>,
+    session_id: &str,
     owner_id: &str,
 ) -> Option<JsonRpcResponse> {
     let tool_name = request.params.get("name").and_then(Value::as_str)?;
@@ -936,12 +941,7 @@ async fn mutation_lease_error(
     };
     let manager = lease_manager.lock().await;
     manager
-        .validate(
-            DAEMON_DEFAULT_SESSION_ID,
-            owner_id,
-            token,
-            current_time_ms(),
-        )
+        .validate(session_id, owner_id, token, current_time_ms())
         .err()
         .map(|error| lease_error_response(request, error))
 }

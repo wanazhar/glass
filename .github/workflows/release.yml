@@ -273,6 +273,9 @@ jobs:
           python3 scripts/merge-contract-evidence.py \
             evidence/contract-matrix.json \
             evidence/contract/contract-*.json
+          python3 scripts/verify-artifact-evidence.py \
+            evidence/platform-matrix.json \
+            evidence/contract-matrix.json
 
       - name: Run bounded competitive acceptance
         shell: bash
@@ -337,6 +340,9 @@ jobs:
           python3 scripts/merge-contract-evidence.py \
             dist/contract-matrix.json \
             evidence/contract/contract-*.json
+          python3 scripts/verify-artifact-evidence.py \
+            dist/platform-matrix.json \
+            dist/contract-matrix.json
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
           cp evidence/validation/benchmark.json dist/benchmark.json

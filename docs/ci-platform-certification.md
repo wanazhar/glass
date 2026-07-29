@@ -38,6 +38,8 @@ strips the artifact, and then records:
 The acceptance job fails closed when a target is missing, duplicated, bound to
 another source revision, missing artifact or runner metadata, or differs in
 CLI, capability, or MCP contract from the other supported targets.
+It also verifies that the browser-smoke and contract reports name the same
+artifact hash, size, and filename for every target.
 
 ## Local reproduction
 

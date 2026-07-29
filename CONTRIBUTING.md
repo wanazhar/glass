@@ -16,6 +16,7 @@ Run:
 cargo build --locked
 cargo test --all-targets --locked
 cargo fmt --all -- --check
+python3 scripts/check-feature-parity.py
 cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 

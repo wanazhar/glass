@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/feature-parity-v1.schema.json",
+  "title": "Glass cross-platform feature parity matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "release_baseline", "targets", "capabilities"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "type": {"const": "glass_feature_parity"},
+    "release_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "tag", "source_commit"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "tag": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "next_release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "targets": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rust_target", "os", "architecture"],
+        "properties": {
+          "id": {"type": "string", "enum": ["linux-x86_64", "linux-arm64", "macos-x86_64", "macos-arm64"]},
+          "rust_target": {"type": "string", "minLength": 1},
+          "os": {"type": "string", "enum": ["linux", "macos"]},
+          "architecture": {"type": "string", "enum": ["x86_64", "aarch64"]}
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "implementation", "platform_dependency", "target_status"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+          "name": {"type": "string", "minLength": 1},
+          "implementation": {"const": "implemented"},
+          "platform_dependency": {"type": "string", "enum": ["none", "browser", "security"]},
+          "target_status": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["linux-x86_64", "linux-arm64", "macos-x86_64", "macos-arm64"],
+            "properties": {
+              "linux-x86_64": {"$ref": "#/$defs/status"},
+              "linux-arm64": {"$ref": "#/$defs/status"},
+              "macos-x86_64": {"$ref": "#/$defs/status"},
+              "macos-arm64": {"$ref": "#/$defs/status"}
+            }
+          },
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "certified",
+        "shippedUncertified",
+        "experimental",
+        "disabledByPolicy",
+        "blockedBySecurityGate",
+        "unsupported"
+      ]
+    }
+  }
+}

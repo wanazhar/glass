@@ -25,6 +25,10 @@ The next small release is `0.2.1`. Its work remains local until the
 corresponding release validation, publication, and artifact certification
 steps are complete.
 
+The machine-readable [feature parity inventory](../../feature-parity.json)
+records the current implementation and target status for this release
+baseline. Its contract is [feature-parity-v1.schema.json](../../schema/feature-parity-v1.schema.json).
+
 This audit compares the seven open remote epics with the current checkout. An
 open remote issue is not treated as completed only because local code exists.
 

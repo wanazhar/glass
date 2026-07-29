@@ -48,6 +48,8 @@ unreleased development build.
   recovery, latency, and resource evidence.
 - [Reliability laboratory](reliability.md) — versioned scenarios, adversarial
   fixtures, replay validation, and the release gate.
+- [Cross-platform feature parity](feature-parity.md) — machine-readable
+  target inventory and certification status definitions.
 - [Read-only real-site certification](reliability-real-site.md) — safe
   operator boundaries for live evidence without credentials or destructive
   actions.

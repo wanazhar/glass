@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "type": "glass_feature_parity",
+  "release_baseline": {
+    "version": "0.2.0",
+    "tag": "v0.2.0",
+    "source_commit": "f8874cab93b05d5ce5e7e965d29e5485e26156f6"
+  },
+  "next_release": "0.2.1",
+  "targets": [
+    {
+      "id": "linux-x86_64",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "architecture": "x86_64"
+    },
+    {
+      "id": "linux-arm64",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "architecture": "aarch64"
+    },
+    {
+      "id": "macos-x86_64",
+      "rust_target": "x86_64-apple-darwin",
+      "os": "macos",
+      "architecture": "x86_64"
+    },
+    {
+      "id": "macos-arm64",
+      "rust_target": "aarch64-apple-darwin",
+      "os": "macos",
+      "architecture": "aarch64"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "actions-and-verification",
+      "name": "Actions and verification",
+      "implementation": "implemented",
+      "platform_dependency": "browser",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared browser-backed implementation; exact artifact and browser certification remains incomplete."
+    },
+    {
+      "id": "semantic-observations-and-diffs",
+      "name": "Semantic observations and diffs",
+      "implementation": "implemented",
+      "platform_dependency": "browser",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared contract and implementation; cross-target artifact evidence remains incomplete."
+    },
+    {
+      "id": "intent-resolution",
+      "name": "Intent resolution",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent implementation; release artifact and scorecard evidence remains incomplete."
+    },
+    {
+      "id": "workflow-runtime-and-resume",
+      "name": "Workflow runtime and resume",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent implementation; complete deterministic and artifact evidence remains incomplete."
+    },
+    {
+      "id": "persistent-knowledge",
+      "name": "Persistent knowledge",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent implementation; persistence migration and artifact evidence remains incomplete."
+    },
+    {
+      "id": "workflow-authoring",
+      "name": "Workflow authoring",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent implementation; complete compiler, recorder, and client evidence remains incomplete."
+    },
+    {
+      "id": "reliability-laboratory",
+      "name": "Reliability laboratory",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent suite and fixtures are shipped; complete cross-target scorecard evidence remains incomplete."
+    },
+    {
+      "id": "local-daemon",
+      "name": "Local daemon",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared Unix-socket implementation; native lifecycle and artifact certification remains incomplete."
+    },
+    {
+      "id": "rust-library",
+      "name": "Rust library",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Platform-independent public library; exact artifact and compatibility evidence remains incomplete."
+    },
+    {
+      "id": "mcp-stdio",
+      "name": "MCP stdio",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared protocol implementation; complete cross-artifact inventory and compatibility evidence remains incomplete."
+    },
+    {
+      "id": "typescript-client",
+      "name": "TypeScript client",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared client implementation; package and released-artifact matrix remains incomplete."
+    },
+    {
+      "id": "python-client",
+      "name": "Python client",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared client implementation; package and released-artifact matrix remains incomplete."
+    },
+    {
+      "id": "tui",
+      "name": "TUI",
+      "implementation": "implemented",
+      "platform_dependency": "none",
+      "target_status": {
+        "linux-x86_64": "shippedUncertified",
+        "linux-arm64": "shippedUncertified",
+        "macos-x86_64": "shippedUncertified",
+        "macos-arm64": "shippedUncertified"
+      },
+      "reason": "Shared terminal implementation; startup and terminal evidence remains incomplete on each release target."
+    },
+    {
+      "id": "native-extensions",
+      "name": "Native extensions",
+      "implementation": "implemented",
+      "platform_dependency": "security",
+      "target_status": {
+        "linux-x86_64": "blockedBySecurityGate",
+        "linux-arm64": "blockedBySecurityGate",
+        "macos-x86_64": "blockedBySecurityGate",
+        "macos-arm64": "blockedBySecurityGate"
+      },
+      "reason": "The extension host is shipped, but the native sandbox gate is not certified for the applicable release artifact."
+    }
+  ]
+}

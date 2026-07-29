@@ -3,6 +3,13 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 0.2.1
+
+### Documentation
+
+- Correct the published 0.2.0 release state and record the initial 0.2.1
+  certification baseline.
+
 ## [0.2.0] - 2026-07-28
 
 ### Added

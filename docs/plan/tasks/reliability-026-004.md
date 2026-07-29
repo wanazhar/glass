@@ -1,6 +1,7 @@
 # Capability corpus and replay evidence
 
-Status: complete locally; not published until 0.2.0.
+Status: included in published 0.2.0; complete artifact and cross-platform
+certification remains tracked by issue #28.
 
 The checked-in capability corpus covers replacement, duplicate-target
 ambiguity, cross-region movement, overlays, and delayed effects. Replay v1

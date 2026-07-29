@@ -2,9 +2,10 @@
 
 ## Active post-0.1.18 roadmap
 
-Issue #21 was delivered as a serial, local-only workflow-runtime sprint. Issues
-#25 and #26 are implemented locally; #26 remains unpublished until 0.2.0. The
-reliability task records are [scenario contract](tasks/reliability-026-001.md),
+Issue #21 was delivered as a serial workflow-runtime sprint. Issues #25 and
+#26 were included in the published 0.2.0 release; their remaining artifact and
+cross-platform evidence is tracked by issue #28. The reliability task records
+are [scenario contract](tasks/reliability-026-001.md),
 [adversarial fixture](tasks/reliability-026-002.md), [certification gate](tasks/reliability-026-003.md),
 and [capability/replay work](tasks/reliability-026-004.md). Issue #27 is now
 active; its first foundation phase is [stable runtime platform](tasks/platform-027-001.md).

@@ -45,9 +45,11 @@ historical records. They are not user-facing prose.
 
 ## Release wording
 
-The documentation must describe 0.2.0 as a local development candidate until
-the tagged release, artifact checks, registry publication, and clean-install
-checks pass. It must not describe Windows as a supported target.
+The documentation must describe 0.2.0 as published and must distinguish that
+fact from incomplete post-release artifact certification. Documentation for
+0.2.1 must use local-development wording until its tagged release, artifact
+checks, registry publication, and clean-install checks pass. It must not
+describe Windows as a supported target.
 
 ASD-STE100 is a controlled technical language with writing rules and a
 controlled dictionary. This project applies its clarity principles. It does

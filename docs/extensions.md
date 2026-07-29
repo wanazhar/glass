@@ -1,7 +1,8 @@
 # Extensions
 
 Glass defines a versioned extension manifest and a bounded process host. The
-extension capability is not enabled in the current 0.2.0 candidate.
+extension capability is shipped in 0.2.0 but remains disabled by policy until
+the native security gate passes on the applicable release environment.
 
 ## Manifest
 

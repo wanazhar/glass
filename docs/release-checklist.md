@@ -2,14 +2,17 @@
 
 Use this checklist for each public release.
 
-## Candidate status
+## Release status
 
-The current release is `glass-browser` version `0.2.0`. The target
-platforms are Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
+The current published release is `glass-browser` version `0.2.0`. This
+checklist is being used for the next release, `0.2.1`. The target platforms
+are Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
 Windows is unsupported.
 
-Do not describe a GitHub release, tag, crates.io package, npm package, or
-binary artifact as published until the corresponding operation succeeds.
+The `0.2.0` GitHub release, tag, crates.io package, and binary artifacts are
+published. Do not describe a `0.2.1` GitHub release, tag, crates.io package,
+npm package, or binary artifact as published until the corresponding operation
+succeeds.
 
 ## Prepare
 
@@ -17,6 +20,7 @@ binary artifact as published until the corresponding operation succeeds.
 - [ ] Check the package name, description, license, README, and repository
   metadata in `Cargo.toml`.
 - [x] Record the 0.2.0 release date in the changelog.
+- [ ] Record the 0.2.1 release date in the changelog.
 - [x] Check the README installation commands against `glass --help`.
 - [ ] Review dependency and browser-facing security changes.
 - [ ] Check that the working tree has no profiles, screenshots, logs, or other
@@ -59,7 +63,7 @@ Repeat it on each release runner before checking this release gate.
 ## Publish
 
 - [ ] Commit the version and changelog update.
-- [ ] Create a signed annotated tag such as `v0.2.0`.
+- [ ] Create a signed annotated tag such as `v0.2.1`.
 - [ ] Publish artifacts only from the tagged commit.
 - [ ] From the tagged commit, publish the crate manually in a terminal with
       `cargo publish --locked` after the package checks pass.

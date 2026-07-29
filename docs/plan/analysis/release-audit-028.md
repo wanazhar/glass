@@ -1,6 +1,29 @@
-# 0.2.0 release audit
+# 0.2.0 release audit and 0.2.1 evidence baseline
 
-Status: local audit, 2026-07-28.
+Status: published-release audit, 2026-07-29.
+
+## Release truth
+
+Glass `0.2.0` is published. The public release is tagged as `v0.2.0` and
+points to source commit `f8874cab93b05d5ce5e7e965d29e5485e26156f6`. The
+package is available as [`glass-browser 0.2.0`](https://crates.io/crates/glass-browser/0.2.0),
+and the GitHub release is [v0.2.0](https://github.com/wanazhar/glass/releases/tag/v0.2.0),
+published on 2026-07-28.
+
+The release contains these platform artifacts. These hashes identify the
+published files and are a release baseline; they do not mean that every
+artifact has completed the post-release certification matrix.
+
+| Target | Artifact | SHA-256 |
+|---|---|---|
+| Linux x86-64 | `glass-linux-x86_64` | `7d6c86cce2f7b05e8c63aa752219540d79ea106c9701b38246e5be38622b4fe8` |
+| Linux arm64 | `glass-linux-arm64` | `3e35b89918aa425f1ce332181a793f1692aee974575ddbd4782464e584495ced` |
+| macOS x86-64 | `glass-macos-x86_64` | `679abb57021ad58611d6726df3c99a6e932dbda407d9a41887281a1e86b8ca4b` |
+| macOS arm64 | `glass-macos-aarch64` | `d7140a047ee535b9fdc4917e5ce157417ff7587dbe1c7fe348a8ee213a80b223` |
+
+The next small release is `0.2.1`. Its work remains local until the
+corresponding release validation, publication, and artifact certification
+steps are complete.
 
 This audit compares the seven open remote epics with the current checkout. An
 open remote issue is not treated as completed only because local code exists.
@@ -42,7 +65,8 @@ Linux ARM64 evidence is now available on the current host:
 This is local Linux ARM64 evidence. It does not replace the Linux x86-64 or
 macOS release runners, and it does not prove a clean published artifact.
 
-These results prove local behavior. They do not prove a published release.
+These results prove local behavior. They do not complete the post-release
+certification matrix for the published artifacts.
 
 Additional Linux ARM64 release-candidate evidence is now available:
 
@@ -62,7 +86,7 @@ run with OIDC signing enabled.
 
 ## Release blockers
 
-The 0.2.0 release checklist remains open for these items:
+The 0.2.1 evidence plan carries these remaining items:
 
 1. Run the real-browser matrix on Linux x86-64/arm64 and macOS x86-64/arm64.
    Linux ARM64 uses a system Chromium binary because Chrome for Testing does
@@ -86,8 +110,9 @@ The 0.2.0 release checklist remains open for these items:
 
 ## Publication boundary
 
-Do not create the public tag, publish crates.io or client packages, upload
-binaries, or close the remote epics while a release blocker is open.
+The `0.2.0` publication boundary has been crossed. Do not publish `0.2.1`,
+upload new binaries, or close issue #28 while a required certification or
+evidence gate is open.
 
-The correct current label is: `0.2.0 local release candidate; not ready for
-public release`.
+The correct current labels are: `0.2.0 published; post-release certification
+incomplete` and `0.2.1 local development; not ready for public release`.

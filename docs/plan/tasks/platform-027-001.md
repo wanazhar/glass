@@ -1,6 +1,7 @@
 # Stable runtime platform foundation
 
-Status: in progress locally; not published until 0.2.0.
+Status: included in published 0.2.0; native extension certification and
+cross-platform evidence remain tracked by issue #28.
 
 This phase covers the first platform boundary for issue #27:
 

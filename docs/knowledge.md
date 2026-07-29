@@ -99,3 +99,17 @@ cargo run --example knowledge_scorecard
 ```
 
 The scorecard is local evidence. It is not a public release claim.
+
+## Migration certification
+
+The 0.2.x knowledge snapshot remains schema v1, so 0.2.1 uses an explicit
+no-op migration boundary. Certify that boundary with:
+
+```console
+python3 scripts/check-knowledge-migration.py \
+  --binary target/release/glass \
+  --output knowledge-migration.json
+```
+
+The check round-trips the checked-in six-record corpus, rejects schema v2, and
+verifies that rejected input leaves the existing store unchanged.

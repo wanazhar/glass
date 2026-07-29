@@ -63,6 +63,7 @@ jobs:
         run: |
           scripts/generate-validation-evidence.sh dist/validation
           python3 scripts/check-reliability-matrix.py dist/validation/reliability-matrix.json
+          python3 scripts/check-knowledge-migration.py +            --binary target/release/glass +            --output dist/validation/knowledge-migration.json
 
       - name: Verify clean install and upgrade
         env:
@@ -107,6 +108,7 @@ jobs:
             dist/validation/ratified-gates.json
             dist/validation/release-validation.json
             dist/validation/reliability-matrix.json
+            dist/validation/knowledge-migration.json
             dist/validation/cargo-deny.jsonl
             dist/validation/cargo-audit.json
           if-no-files-found: error
@@ -480,6 +482,7 @@ jobs:
             dist
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
+          cp evidence/validation/knowledge-migration.json dist/knowledge-migration.json
           cp evidence/validation/benchmark.json dist/benchmark.json
           cp evidence/validation/scorecard.json dist/scorecard.json
           cp evidence/validation/ratified-metrics.json dist/ratified-metrics.json

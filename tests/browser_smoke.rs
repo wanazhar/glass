@@ -2150,11 +2150,35 @@ async fn reliability_capability_suite_generates_live_evidence() {
             scenario.id,
             evidence.observation
         );
+        assert_eq!(
+            evidence.observation.terminal_state.as_deref(),
+            Some(scenario.expect.terminal_state.as_str()),
+            "scenario {} reported an unexpected fixture terminal state",
+            scenario.id
+        );
         evidence.replay.validate(&scenario).unwrap();
+        write_reliability_evidence(&scenario.id, &evidence);
     }
 
     session.close().await.unwrap();
     fixture_server.close().await;
+}
+
+fn write_reliability_evidence(
+    scenario_id: &str,
+    evidence: &glass::reliability_runner::ReliabilityRunEvidence,
+) {
+    let Some(directory) = std::env::var_os("GLASS_RELIABILITY_EVIDENCE_DIR") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{scenario_id}.json"));
+    let value = json!({
+        "observation": evidence.observation,
+        "replay": evidence.replay,
+    });
+    std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
 }
 
 fn process_rss_bytes() -> Option<u64> {

@@ -11,7 +11,7 @@
       {"applyControl": "reorderTargets"},
       {"runWorkflow": "submit-request.json"}
     ],
-    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "expect": {"terminalState": "targets-reordered", "sideEffectCount": {"submit": 0}},
     "forbid": ["wrongTargetExecuted", "staleRevisionExecuted"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   },
@@ -27,7 +27,7 @@
       {"applyControl": "replaceTarget"},
       {"runWorkflow": "submit-request.json"}
     ],
-    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "expect": {"terminalState": "target-replaced", "sideEffectCount": {"submit": 0}},
     "forbid": ["wrongTargetExecuted", "staleRevisionExecuted", "falseWorkflowCompletion"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   },
@@ -43,7 +43,7 @@
       {"applyControl": "duplicateTarget"},
       {"runWorkflow": "submit-request.json"}
     ],
-    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "expect": {"terminalState": "duplicate-inserted", "sideEffectCount": {"submit": 0}},
     "forbid": ["ambiguousTargetSilentlyExecuted", "falseWorkflowCompletion"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   },
@@ -59,7 +59,7 @@
       {"applyControl": "moveTargetToOtherRegion"},
       {"runWorkflow": "submit-request.json"}
     ],
-    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "expect": {"terminalState": "region-moved", "sideEffectCount": {"submit": 0}},
     "forbid": ["wrongTargetExecuted", "staleRevisionExecuted"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   },
@@ -75,7 +75,7 @@
       {"applyControl": "showOverlay"},
       {"runWorkflow": "submit-request.json"}
     ],
-    "expect": {"terminalState": "refused", "sideEffectCount": {"submit": 0}},
+    "expect": {"terminalState": "overlay-visible", "sideEffectCount": {"submit": 0}},
     "forbid": ["policyBypassed", "wrongTargetExecuted"],
     "budgets": {"maxDurationMs": 30000, "maxBrowserActions": 20}
   },

@@ -223,7 +223,7 @@ pub async fn run_reliability_scenario(
     } else if !had_failure && actual_terminal == Some(expected_terminal) {
         ReliabilityRunClassification::Passed
     } else if had_failure
-        && expected_terminal == "refused"
+        && actual_terminal == Some(expected_terminal)
         && side_effect_count == scenario.expect.side_effect_count
     {
         ReliabilityRunClassification::SafeRefusal

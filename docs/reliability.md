@@ -64,6 +64,26 @@ The runner:
 
 The runner rejects workflow sources outside `--workflow-root`.
 
+The capability-suite smoke test can persist its redacted evidence by setting
+`GLASS_RELIABILITY_EVIDENCE_DIR`. Native CI stores one six-file directory per
+release target. Merge those directories and run the existing release gate once
+per target:
+
+```console
+python3 scripts/merge-reliability-evidence.py \
+  evidence/reliability-matrix.json evidence/reliability
+python3 scripts/certify-reliability-matrix.py \
+  evidence/reliability-matrix.json \
+  --scenarios tests/fixtures/reliability-capability-suite-v1.json \
+  --binary target/release/glass \
+  --version 0.2.1 \
+  --output evidence/reliability-scorecards.json
+```
+
+The merger requires all six scenarios, both redacted replay and independent
+oracle evidence, and a complete clean run on each of the four native targets.
+Only the second command may report `runtime_certification: certified`.
+
 Renderer and browser disconnect probes are unsupported for release
 certification when the browser cannot provide a complete post-fault oracle.
 A denied raw-CDP path is also non-certifying.

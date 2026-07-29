@@ -161,6 +161,7 @@ jobs:
         shell: bash
         env:
           GLASS_E2E: "1"
+          GLASS_RELIABILITY_EVIDENCE_DIR: ${{ github.workspace }}/dist/reliability
           # GitHub's hosted Linux runner does not expose Chrome's sandbox.
           # Keep the production default secure and scope this exception here.
           GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
@@ -169,6 +170,12 @@ jobs:
           set -o pipefail
           cargo test --test browser_smoke --locked -- --nocapture --test-threads=1 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliability-${{ matrix.artifact }}
+          path: dist/reliability
+          if-no-files-found: error
 
       - name: Package artifact
         shell: bash
@@ -272,6 +279,11 @@ jobs:
           path: evidence/contract
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reliability-*
+          path: evidence/reliability
+
       - name: Merge revision-bound prerequisites
         run: |
           python3 scripts/merge-platform-evidence.py \
@@ -283,6 +295,18 @@ jobs:
           python3 scripts/verify-artifact-evidence.py \
             evidence/platform-matrix.json \
             evidence/contract-matrix.json
+          python3 scripts/merge-reliability-evidence.py \
+            evidence/reliability-matrix.json \
+            evidence/reliability
+
+      - name: Certify native reliability matrix
+        run: |
+          python3 scripts/certify-reliability-matrix.py \
+            evidence/reliability-matrix.json \
+            --scenarios tests/fixtures/reliability-capability-suite-v1.json \
+            --binary target/release/glass \
+            --version "${GITHUB_REF_NAME#v}" \
+            --output evidence/reliability-scorecards.json
 
       - name: Run bounded competitive acceptance
         shell: bash
@@ -299,7 +323,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: acceptance-evidence
-          path: dist/acceptance
+          path: |
+            dist/acceptance
+            evidence/reliability-matrix.json
+            evidence/reliability-scorecards.json
           if-no-files-found: error
 
   client-compatibility:
@@ -460,6 +487,8 @@ jobs:
           cp evidence/validation/cargo-audit.json dist/cargo-audit.json
           cp evidence/acceptance/acceptance.json dist/acceptance.json
           cp evidence/acceptance/environment.json dist/acceptance-environment.json
+          cp evidence/acceptance/reliability-matrix.json dist/reliability-matrix.json
+          cp evidence/acceptance/reliability-scorecards.json dist/reliability-scorecards.json
           cp -R evidence/acceptance/raw dist/acceptance-raw
 
       - name: Verify artifact checksums

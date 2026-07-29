@@ -70,4 +70,5 @@ client must inspect the manifest and policy-sensitive capability flags.
 - [intent v1](schema/intent-resolution-v1.schema.json);
 - [knowledge v1](schema/knowledge-v1.schema.json);
 - [workflow v1](schema/workflow-v1.schema.json); and
-- reliability scenario, fixture, and replay v1.
+- reliability scenario, fixture, and replay v1; and
+- public read-only adapter inventory v1.

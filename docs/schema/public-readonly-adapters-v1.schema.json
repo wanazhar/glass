@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glass-browser.dev/schema/public-readonly-adapters-v1.schema.json",
+  "title": "Glass public read-only adapter inventory v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "purpose", "runtimeCertification", "adapters"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"const": "public-readonly-adapter-suite-v1"},
+    "purpose": {"type": "string", "minLength": 1},
+    "runtimeCertification": {"const": "not_run"},
+    "adapters": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/adapter"}
+    }
+  },
+  "$defs": {
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "approvedHosts", "url", "allowedActionKinds", "forbiddenActionKinds", "forbiddenTargetPatterns", "limits", "expected", "drift", "cleanup", "credentials", "mutations"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "approvedHosts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "allowedActionKinds": {"const": ["navigate", "observe", "text", "verify", "wait"]},
+        "forbiddenActionKinds": {"type": "array", "minItems": 7, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "forbiddenTargetPatterns": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxRequests", "maxBrowserActions", "maxDurationMs"],
+          "properties": {
+            "maxRequests": {"type": "integer", "minimum": 1, "maximum": 32},
+            "maxBrowserActions": {"type": "integer", "minimum": 1, "maximum": 32},
+            "maxDurationMs": {"type": "integer", "minimum": 1, "maximum": 120000}
+          }
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pageType", "regionTypes", "terminalCondition"],
+          "properties": {
+            "pageType": {"type": "string", "minLength": 1},
+            "regionTypes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+            "terminalCondition": {"type": "string", "minLength": 1}
+          }
+        },
+        "drift": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["signature", "classifications"],
+          "properties": {
+            "signature": {"type": "string", "minLength": 1},
+            "classifications": {"const": ["externalInstability", "siteDrift", "glassRegression"]}
+          }
+        },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "description"],
+          "properties": {
+            "required": {"const": false},
+            "description": {"type": "string", "minLength": 1}
+          }
+        },
+        "credentials": {"const": "forbidden"},
+        "mutations": {"const": "forbidden"}
+      }
+    }
+  }
+}

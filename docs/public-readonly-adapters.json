@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "public-readonly-adapter-suite-v1",
+  "purpose": "supplementary external-site evidence; never a deterministic release gate",
+  "runtimeCertification": "not_run",
+  "adapters": [
+    {
+      "id": "documentation-site",
+      "approvedHosts": ["docs.rs"],
+      "url": "https://docs.rs/",
+      "allowedActionKinds": ["navigate", "observe", "text", "verify", "wait"],
+      "forbiddenActionKinds": ["click", "type", "submit", "purchase", "delete", "upload", "download", "dismissConsent", "externalNavigation"],
+      "forbiddenTargetPatterns": ["form", "button", "input", "textarea", "a[href*='delete']", "a[href*='logout']"],
+      "limits": {"maxRequests": 8, "maxBrowserActions": 8, "maxDurationMs": 30000},
+      "expected": {"pageType": "documentation", "regionTypes": ["main", "navigation", "search"], "terminalCondition": "documentation content observed"},
+      "drift": {"signature": "page-title-and-main-heading", "classifications": ["externalInstability", "siteDrift", "glassRegression"]},
+      "cleanup": {"required": false, "description": "incognito session closes without site mutation"},
+      "credentials": "forbidden",
+      "mutations": "forbidden"
+    },
+    {
+      "id": "public-git-hosting",
+      "approvedHosts": ["github.com"],
+      "url": "https://github.com/rust-lang/rust",
+      "allowedActionKinds": ["navigate", "observe", "text", "verify", "wait"],
+      "forbiddenActionKinds": ["click", "type", "submit", "purchase", "delete", "upload", "download", "dismissConsent", "externalNavigation"],
+      "forbiddenTargetPatterns": ["form", "button", "input", "textarea", "a[href*='settings']", "a[href*='delete']"],
+      "limits": {"maxRequests": 8, "maxBrowserActions": 8, "maxDurationMs": 30000},
+      "expected": {"pageType": "repository", "regionTypes": ["main", "navigation", "repository-header"], "terminalCondition": "public repository identity observed"},
+      "drift": {"signature": "repository-title-and-owner", "classifications": ["externalInstability", "siteDrift", "glassRegression"]},
+      "cleanup": {"required": false, "description": "anonymous incognito session closes without repository mutation"},
+      "credentials": "forbidden",
+      "mutations": "forbidden"
+    },
+    {
+      "id": "accessibility-reference",
+      "approvedHosts": ["www.w3.org"],
+      "url": "https://www.w3.org/WAI/fundamentals/accessibility-intro/",
+      "allowedActionKinds": ["navigate", "observe", "text", "verify", "wait"],
+      "forbiddenActionKinds": ["click", "type", "submit", "purchase", "delete", "upload", "download", "dismissConsent", "externalNavigation"],
+      "forbiddenTargetPatterns": ["form", "button", "input", "textarea", "a[href*='edit']"],
+      "limits": {"maxRequests": 8, "maxBrowserActions": 8, "maxDurationMs": 30000},
+      "expected": {"pageType": "accessibility-reference", "regionTypes": ["main", "navigation", "contentinfo"], "terminalCondition": "accessibility guidance heading observed"},
+      "drift": {"signature": "page-title-and-content-heading", "classifications": ["externalInstability", "siteDrift", "glassRegression"]},
+      "cleanup": {"required": false, "description": "anonymous incognito session closes without site mutation"},
+      "credentials": "forbidden",
+      "mutations": "forbidden"
+    },
+    {
+      "id": "modern-spa",
+      "approvedHosts": ["react.dev"],
+      "url": "https://react.dev/learn",
+      "allowedActionKinds": ["navigate", "observe", "text", "verify", "wait"],
+      "forbiddenActionKinds": ["click", "type", "submit", "purchase", "delete", "upload", "download", "dismissConsent", "externalNavigation"],
+      "forbiddenTargetPatterns": ["form", "button", "input", "textarea", "[contenteditable='true']"],
+      "limits": {"maxRequests": 8, "maxBrowserActions": 8, "maxDurationMs": 30000},
+      "expected": {"pageType": "spa", "regionTypes": ["main", "navigation", "article"], "terminalCondition": "learn content heading observed"},
+      "drift": {"signature": "route-and-main-heading", "classifications": ["externalInstability", "siteDrift", "glassRegression"]},
+      "cleanup": {"required": false, "description": "anonymous incognito session closes without client-side mutation"},
+      "credentials": "forbidden",
+      "mutations": "forbidden"
+    },
+    {
+      "id": "server-rendered-site",
+      "approvedHosts": ["example.com"],
+      "url": "https://example.com/",
+      "allowedActionKinds": ["navigate", "observe", "text", "verify", "wait"],
+      "forbiddenActionKinds": ["click", "type", "submit", "purchase", "delete", "upload", "download", "dismissConsent", "externalNavigation"],
+      "forbiddenTargetPatterns": ["form", "button", "input", "textarea", "a[href*='mailto:']"],
+      "limits": {"maxRequests": 4, "maxBrowserActions": 4, "maxDurationMs": 15000},
+      "expected": {"pageType": "server-rendered", "regionTypes": ["main"], "terminalCondition": "example domain heading observed"},
+      "drift": {"signature": "page-title-and-main-heading", "classifications": ["externalInstability", "siteDrift", "glassRegression"]},
+      "cleanup": {"required": false, "description": "anonymous incognito session closes without site mutation"},
+      "credentials": "forbidden",
+      "mutations": "forbidden"
+    }
+  ]
+}

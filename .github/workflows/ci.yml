@@ -33,6 +33,9 @@ jobs:
       - name: Validate deterministic reliability matrix
         run: python3 scripts/check-reliability-matrix.py
 
+      - name: Validate public read-only adapter inventory
+        run: python3 scripts/check-public-readonly-adapters.py
+
       - name: Build documentation
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 

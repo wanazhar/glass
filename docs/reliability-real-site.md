@@ -3,6 +3,21 @@
 A real-site check is supplementary release evidence. It does not replace the
 deterministic fixture suite.
 
+The initial adapter inventory is
+[`public-readonly-adapters.json`](public-readonly-adapters.json), with a
+versioned contract at
+[`public-readonly-adapters-v1.schema.json`](schema/public-readonly-adapters-v1.schema.json).
+Validate its host allowlists, action denials, budgets, drift classifications,
+and credential/mutation policy with:
+
+```console
+python3 scripts/check-public-readonly-adapters.py
+```
+
+This is static contract evidence only and reports `runtime_certification:
+not_run`. An external-site run requires an approved route and must remain
+supplementary to the deterministic suite.
+
 Run a check only on an approved, read-only route.
 
 ## Conditions

@@ -8,10 +8,10 @@ import sys
 
 
 REQUIRED_TARGETS = {
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu": ("linux", "x86_64"),
+    "aarch64-unknown-linux-gnu": ("linux", "aarch64"),
+    "x86_64-apple-darwin": ("macos", "x86_64"),
+    "aarch64-apple-darwin": ("macos", "aarch64"),
 }
 
 
@@ -36,10 +36,36 @@ def main() -> None:
             producer = report.get("producer")
         if report.get("producer") != producer:
             raise SystemExit("platform evidence has inconsistent producers")
-        rows.extend(report.get("platforms", []))
+        platform_rows = report.get("platforms", [])
+        if len(platform_rows) != 1:
+            raise SystemExit("each platform evidence file must contain exactly one row")
+        row = platform_rows[0]
+        target = row.get("target")
+        if target not in REQUIRED_TARGETS:
+            raise SystemExit(f"platform evidence has an unsupported target: {target!r}")
+        expected_os, expected_architecture = REQUIRED_TARGETS[target]
+        if row.get("os") != expected_os or row.get("architecture") != expected_architecture:
+            raise SystemExit(f"platform evidence has inconsistent target metadata: {target}")
+        if row.get("status") != "passed":
+            raise SystemExit(f"platform evidence did not pass: {target}")
+        if not row.get("browser_version"):
+            raise SystemExit(f"platform evidence is missing a browser version: {target}")
+        artifact = row.get("artifact", {})
+        artifact_hash = artifact.get("sha256", "")
+        if len(artifact_hash) != 64 or any(character not in "0123456789abcdef" for character in artifact_hash):
+            raise SystemExit(f"platform evidence has an invalid artifact SHA-256: {target}")
+        if artifact.get("size_bytes", 0) <= 0 or not artifact.get("name"):
+            raise SystemExit(f"platform evidence has incomplete artifact metadata: {target}")
+        runner = row.get("runner", {})
+        for field in ("os", "architecture", "image", "image_version"):
+            if not runner.get(field):
+                raise SystemExit(f"platform evidence is missing runner.{field}: {target}")
+        if not row.get("smoke_command") or not row.get("raw_report"):
+            raise SystemExit(f"platform evidence is missing command or raw report: {target}")
+        rows.append(row)
 
     targets = [row.get("target") for row in rows]
-    if set(targets) != REQUIRED_TARGETS or len(targets) != len(REQUIRED_TARGETS):
+    if set(targets) != set(REQUIRED_TARGETS) or len(targets) != len(REQUIRED_TARGETS):
         raise SystemExit(f"platform evidence is incomplete or duplicated: {targets!r}")
 
     merged = {

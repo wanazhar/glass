@@ -174,13 +174,6 @@ jobs:
           GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
         run: scripts/smoke-release-binary.sh target/${{ matrix.target }}/release/glass
 
-      - name: Write platform evidence
-        env:
-          GLASS_PLATFORM_TARGET: ${{ matrix.target }}
-          GLASS_PLATFORM_CHROME: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'system-chromium' || format('managed-chromium-{0}', matrix.target) }}
-          GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-browser-smoke.log
-        run: python3 scripts/write-platform-evidence.py "dist/platform-${{ matrix.artifact }}.json"
-
       - name: Package artifact
         shell: bash
         run: |
@@ -200,6 +193,16 @@ jobs:
         run: python3 scripts/collect-contract-evidence.py \
           "dist/${{ matrix.artifact }}" \
           "dist/contract-${{ matrix.artifact }}.json"
+
+      - name: Write packaged browser platform evidence
+        env:
+          GLASS_PLATFORM_ARTIFACT: dist/${{ matrix.artifact }}
+          GLASS_PLATFORM_TARGET: ${{ matrix.target }}
+          GLASS_ARTIFACT_NAME: ${{ matrix.artifact }}
+          GLASS_PLATFORM_CHROME: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'system-chromium' || format('managed-chromium-{0}', matrix.target) }}
+          GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-browser-smoke.log
+          GLASS_PLATFORM_SMOKE_COMMAND: cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
+        run: python3 scripts/write-platform-evidence.py "dist/platform-${{ matrix.artifact }}.json"
 
       - uses: actions/upload-artifact@v4
         with:

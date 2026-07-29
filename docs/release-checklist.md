@@ -59,6 +59,8 @@ Then complete these release checks:
 - [ ] Inspect `cargo package --list` and the unpacked package.
 - [ ] Download each artifact and verify `SHA256SUMS` with
       `sha256sum -c`.
+- [ ] Verify downloaded artifact bytes against the machine-readable contract
+      evidence before signing the checksum manifest.
 - [ ] Verify the Sigstore bundle with `cosign verify-blob`.
 - [ ] Review dependency, license, and vulnerability JSON reports.
 - [ ] Run a clean-machine install and upgrade test.

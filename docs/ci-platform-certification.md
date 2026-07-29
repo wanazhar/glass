@@ -40,6 +40,8 @@ another source revision, missing artifact or runner metadata, or differs in
 CLI, capability, or MCP contract from the other supported targets.
 It also verifies that the browser-smoke and contract reports name the same
 artifact hash, size, and filename for every target.
+The final release job verifies those hashes and sizes again against the
+downloaded artifact bytes before it creates the checksum manifest.
 
 The release workflow runs TypeScript, Python, and npm launcher compatibility
 against the downloaded target artifact on each native runner. It also runs the

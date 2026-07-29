@@ -445,6 +445,9 @@ jobs:
           python3 scripts/verify-artifact-evidence.py \
             dist/platform-matrix.json \
             dist/contract-matrix.json
+          python3 scripts/verify-downloaded-artifacts.py \
+            dist/contract-matrix.json \
+            dist
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
           cp evidence/validation/benchmark.json dist/benchmark.json

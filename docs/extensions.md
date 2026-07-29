@@ -78,3 +78,15 @@ The lifecycle test starts each reference extension twice. The host waits for
 each process to exit before it returns. This does not make an extension
 trusted. Redaction, native sandbox, and cross-transport checks must also pass
 before Glass enables the capability.
+
+The release matrix runs the opt-in
+`sandboxed_reference_extensions_pass_native_gate` test on each supported target,
+records the detected native sandbox, and merges four target rows with:
+
+```console
+python3 scripts/merge-extension-sandbox-evidence.py \
+  evidence/sandbox-matrix.json evidence/sandbox
+```
+
+The merged evidence still reports the capability as `blockedBySecurityGate`
+until every target passes.

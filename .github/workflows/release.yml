@@ -159,6 +159,12 @@ jobs:
           test -n "$chrome_path"
           echo "CHROME_PATH=$chrome_path" >> "$GITHUB_ENV"
 
+      - name: Install bubblewrap for Linux sandbox gate
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+
       - name: Run browser smoke
         shell: bash
         env:
@@ -177,6 +183,24 @@ jobs:
         with:
           name: reliability-${{ matrix.artifact }}
           path: dist/reliability
+          if-no-files-found: error
+
+      - name: Run native extension sandbox gate
+        shell: bash
+        env:
+          GLASS_EXTENSION_SANDBOX_E2E: "1"
+          GLASS_EXTENSION_SANDBOX_KIND: ${{ startsWith(matrix.os, 'ubuntu') && 'linux-bubblewrap' || 'macos-sandbox-exec' }}
+        run: |
+          set -o pipefail
+          cargo test --lib --locked sandboxed_reference_extensions_pass_native_gate -- --nocapture 2>&1 +            | tee "dist/${{ matrix.artifact }}-extension-sandbox.log"
+          python3 scripts/write-extension-sandbox-evidence.py +            --target "${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'linux-x86-64' || matrix.target == 'aarch64-unknown-linux-gnu' && 'linux-arm64' || matrix.target == 'x86_64-apple-darwin' && 'macos-x86-64' || 'macos-arm64' }}" +            --sandbox "$GLASS_EXTENSION_SANDBOX_KIND" +            --raw-report "dist/${{ matrix.artifact }}-extension-sandbox.log" +            --output "dist/sandbox-${{ matrix.artifact }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-${{ matrix.artifact }}
+          path: |
+            dist/sandbox-${{ matrix.artifact }}.json
+            dist/${{ matrix.artifact }}-extension-sandbox.log
           if-no-files-found: error
 
       - name: Package artifact
@@ -286,6 +310,11 @@ jobs:
           pattern: reliability-*
           path: evidence/reliability
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sandbox-*
+          path: evidence/sandbox
+
       - name: Merge revision-bound prerequisites
         run: |
           python3 scripts/merge-platform-evidence.py \
@@ -300,6 +329,9 @@ jobs:
           python3 scripts/merge-reliability-evidence.py \
             evidence/reliability-matrix.json \
             evidence/reliability
+          python3 scripts/merge-extension-sandbox-evidence.py \
+            evidence/sandbox-matrix.json \
+            evidence/sandbox
 
       - name: Certify native reliability matrix
         run: |
@@ -329,6 +361,7 @@ jobs:
             dist/acceptance
             evidence/reliability-matrix.json
             evidence/reliability-scorecards.json
+            evidence/sandbox-matrix.json
           if-no-files-found: error
 
   client-compatibility:
@@ -492,6 +525,7 @@ jobs:
           cp evidence/acceptance/environment.json dist/acceptance-environment.json
           cp evidence/acceptance/reliability-matrix.json dist/reliability-matrix.json
           cp evidence/acceptance/reliability-scorecards.json dist/reliability-scorecards.json
+          cp evidence/acceptance/sandbox-matrix.json dist/sandbox-matrix.json
           cp -R evidence/acceptance/raw dist/acceptance-raw
 
       - name: Verify artifact checksums

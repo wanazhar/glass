@@ -914,6 +914,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_reference_extensions_pass_native_gate() {
+        if std::env::var("GLASS_EXTENSION_SANDBOX_E2E").as_deref() != Ok("1") {
+            eprintln!("skipping native extension sandbox gate; set GLASS_EXTENSION_SANDBOX_E2E=1");
+            return;
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
+        assert_ne!(host.sandbox(), ExtensionSandbox::Unavailable);
+        let result = host
+            .invoke_sandboxed(
+                "glass.first-party.title-extractor",
+                ExtensionCapability::ExtractionTransform,
+                "example.com",
+                "extract",
+                serde_json::json!({"title": "Example Domain"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["extension"], "title-extractor");
+    }
+
     #[test]
     fn sandbox_detection_is_explicit_and_never_falls_back_silently() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");

@@ -33,3 +33,8 @@ The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The
 matrix is evidence inventory, not a claim that every 0.2.0 artifact has passed
 the complete post-release certification suite.
+
+The release workflow also emits `contract-matrix.json`. It compares the exact
+packaged artifact from every native runner for CLI help, the capability
+manifest, and the complete MCP tool/schema inventory. A missing target, changed
+contract, revision mismatch, or duplicate artifact fails the merge step.

@@ -50,6 +50,8 @@ Then complete these release checks:
       x86-64/arm64. Linux ARM64 uses an installed system Chromium binary.
 - [ ] Run `--help`, navigation, observation, screenshot, TUI startup, and
       MCP initialization with the release binary.
+- [ ] Compare packaged-artifact CLI, capability, and MCP contract evidence
+      across all four release targets.
 - [ ] Inspect `cargo package --list` and the unpacked package.
 - [ ] Download each artifact and verify `SHA256SUMS` with
       `sha256sum -c`.

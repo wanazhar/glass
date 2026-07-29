@@ -193,6 +193,14 @@ jobs:
             shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
           fi
 
+      - name: Collect packaged artifact contract evidence
+        env:
+          GLASS_ARTIFACT_NAME: ${{ matrix.artifact }}
+          GLASS_PLATFORM_TARGET: ${{ matrix.target }}
+        run: python3 scripts/collect-contract-evidence.py \
+          "dist/${{ matrix.artifact }}" \
+          "dist/contract-${{ matrix.artifact }}.json"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -211,6 +219,12 @@ jobs:
           path: |
             dist/platform-${{ matrix.artifact }}.json
             dist/${{ matrix.artifact }}-browser-smoke.log
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contract-${{ matrix.artifact }}
+          path: dist/contract-${{ matrix.artifact }}.json
           if-no-files-found: error
 
   acceptance:
@@ -242,11 +256,20 @@ jobs:
           path: evidence/platform
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: contract-*
+          path: evidence/contract
+          merge-multiple: true
+
       - name: Merge revision-bound prerequisites
         run: |
           python3 scripts/merge-platform-evidence.py \
             evidence/platform-matrix.json \
             evidence/platform/platform-*.json
+          python3 scripts/merge-contract-evidence.py \
+            evidence/contract-matrix.json \
+            evidence/contract/contract-*.json
 
       - name: Run bounded competitive acceptance
         shell: bash
@@ -289,6 +312,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: contract-*
+          path: evidence/contract
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
           name: release-validation-evidence
           path: evidence/validation
 
@@ -302,6 +331,9 @@ jobs:
           python3 scripts/merge-platform-evidence.py \
             dist/platform-matrix.json \
             evidence/platform/platform-*.json
+          python3 scripts/merge-contract-evidence.py \
+            dist/contract-matrix.json \
+            evidence/contract/contract-*.json
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
           cp evidence/validation/benchmark.json dist/benchmark.json

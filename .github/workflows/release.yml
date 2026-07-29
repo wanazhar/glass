@@ -167,13 +167,6 @@ jobs:
           cargo test --test browser_smoke --locked -- --nocapture --test-threads=1 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
 
-      - name: Smoke release binary contract and browser operations
-        shell: bash
-        env:
-          GLASS_RELEASE_BROWSER_SMOKE: "1"
-          GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
-        run: scripts/smoke-release-binary.sh target/${{ matrix.target }}/release/glass
-
       - name: Package artifact
         shell: bash
         run: |
@@ -185,6 +178,17 @@ jobs:
           else
             shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
           fi
+
+      - name: Smoke packaged browser and TUI
+        shell: bash
+        env:
+          GLASS_RELEASE_BROWSER_SMOKE: "1"
+          GLASS_DISABLE_CHROME_SANDBOX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '0' }}
+        run: |
+          set -o pipefail
+          scripts/smoke-release-binary.sh "dist/${{ matrix.artifact }}" 2>&1 \
+            | tee "dist/${{ matrix.artifact }}-packaged-browser-smoke.log"
+          python3 scripts/smoke-packaged-tui.py "dist/${{ matrix.artifact }}"
 
       - name: Collect packaged artifact contract evidence
         env:
@@ -200,7 +204,7 @@ jobs:
           GLASS_PLATFORM_TARGET: ${{ matrix.target }}
           GLASS_ARTIFACT_NAME: ${{ matrix.artifact }}
           GLASS_PLATFORM_CHROME: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'system-chromium' || format('managed-chromium-{0}', matrix.target) }}
-          GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-browser-smoke.log
+          GLASS_PLATFORM_RAW_REPORT: ${{ matrix.artifact }}-packaged-browser-smoke.log
           GLASS_PLATFORM_SMOKE_COMMAND: cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
         run: python3 scripts/write-platform-evidence.py "dist/platform-${{ matrix.artifact }}.json"
 
@@ -221,7 +225,7 @@ jobs:
           name: platform-${{ matrix.artifact }}
           path: |
             dist/platform-${{ matrix.artifact }}.json
-            dist/${{ matrix.artifact }}-browser-smoke.log
+            dist/${{ matrix.artifact }}-packaged-browser-smoke.log
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4

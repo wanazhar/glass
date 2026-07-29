@@ -23,8 +23,8 @@ and it must record the installed Chromium package and version.
 
 ## Evidence produced by each runner
 
-Each matrix job builds and tests the target, runs browser smoke, packages and
-strips the artifact, and then records:
+Each matrix job builds and tests the target, packages and strips the artifact,
+runs browser and TUI smoke against that exact artifact, and then records:
 
 - source commit and workflow run URL;
 - target, runner OS, runner architecture, image, and image version;

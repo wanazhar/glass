@@ -49,7 +49,7 @@ Then complete these release checks:
 - [ ] Run the real-browser matrix on Linux x86-64/arm64 and macOS
       x86-64/arm64. Linux ARM64 uses an installed system Chromium binary.
 - [ ] Run `--help`, navigation, observation, screenshot, TUI startup, and
-      MCP initialization with the release binary.
+      MCP initialization with each exact packaged release binary.
 - [ ] Compare packaged-artifact CLI, capability, and MCP contract evidence
       across all four release targets.
 - [ ] Record native runner, browser, source revision, artifact hash, and raw

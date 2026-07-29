@@ -299,8 +299,106 @@ jobs:
           path: dist/acceptance
           if-no-files-found: error
 
+  client-compatibility:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: glass-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: glass-linux-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: glass-macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: glass-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: Prepare exact target artifact
+        shell: bash
+        run: |
+          chmod +x "dist/${{ matrix.artifact }}"
+          echo "GLASS_BINARY=${{ github.workspace }}/dist/${{ matrix.artifact }}" >> "$GITHUB_ENV"
+          "dist/${{ matrix.artifact }}" --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate TypeScript client against exact artifact
+        working-directory: clients/typescript
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm run typecheck
+          node smoke.mjs
+          npm pack --dry-run
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate Python client against exact artifact
+        working-directory: clients/python
+        run: |
+          python3 -m pip wheel --no-deps . -w "$RUNNER_TEMP/glass-python-wheel"
+          python3 smoke.py
+
+      - name: Validate npm launcher against exact artifact
+        shell: bash
+        run: |
+          npm_root="$RUNNER_TEMP/glass-npm-${{ matrix.target }}"
+          mkdir -p "$npm_root/package" "$npm_root/install"
+          npm pack --ignore-scripts --pack-destination "$npm_root/package" ./clients/npm >/dev/null
+          npm_tar="$(find "$npm_root/package" -maxdepth 1 -name '*.tgz' -print -quit)"
+          test -n "$npm_tar"
+          GLASS_SKIP_DOWNLOAD=1 npm install --prefix "$npm_root/install" \
+            --ignore-scripts --no-audit --no-fund "$npm_tar"
+          native_binary="$npm_root/install/node_modules/@glass-browser/cli/bin/glass-native"
+          cp "$GLASS_BINARY" "$native_binary"
+          chmod +x "$native_binary"
+          "$npm_root/install/node_modules/.bin/glass" --version
+          "$npm_root/install/node_modules/.bin/glass" capabilities >/dev/null
+
+  install-compatibility:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify isolated install and upgrade
+        env:
+          GLASS_PREVIOUS_VERSION: "0.1.18"
+        run: scripts/smoke-clean-install.sh
+
   release:
-    needs: [build, validate, acceptance]
+    needs: [build, validate, acceptance, client-compatibility, install-compatibility]
     runs-on: ubuntu-latest
     permissions:
       contents: write

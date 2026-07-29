@@ -41,6 +41,10 @@ CLI, capability, or MCP contract from the other supported targets.
 It also verifies that the browser-smoke and contract reports name the same
 artifact hash, size, and filename for every target.
 
+The release workflow runs TypeScript, Python, and npm launcher compatibility
+against the downloaded target artifact on each native runner. It also runs the
+isolated Cargo install and upgrade check on each target.
+
 ## Local reproduction
 
 Run the platform-independent checks locally:

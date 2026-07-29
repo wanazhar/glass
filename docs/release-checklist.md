@@ -54,6 +54,8 @@ Then complete these release checks:
       across all four release targets.
 - [ ] Record native runner, browser, source revision, artifact hash, and raw
       smoke evidence for every target.
+- [ ] Run TypeScript, Python, npm launcher, and isolated Cargo install/upgrade
+      checks against every target artifact.
 - [ ] Inspect `cargo package --list` and the unpacked package.
 - [ ] Download each artifact and verify `SHA256SUMS` with
       `sha256sum -c`.

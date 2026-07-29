@@ -30,6 +30,17 @@ The fixture tests target replacement, renaming, duplication, reordering,
 movement, overlays, frame detachment, delayed effects, and counted submit
 effects. The fixture does not use Glass decision logic.
 
+Validate the checked-in deterministic matrix and write its inventory report:
+
+```console
+python3 scripts/check-reliability-matrix.py reliability-matrix.json
+```
+
+This validates scenario coverage, target rows, workflow sources, forbidden
+outcomes, and independent fixture oracles. The inventory explicitly reports
+`runtime_certification: not_run`; it does not turn static contract validation
+into runtime certification.
+
 ## Run a scenario
 
 Set up a local fixture server. Then run:

@@ -60,7 +60,9 @@ jobs:
           echo "GLASS_RATIFIED_PASSED=$(jq -r .passed dist/validation/ratified-metrics.json)" >> "$GITHUB_ENV"
 
       - name: Generate release validation evidence
-        run: scripts/generate-validation-evidence.sh dist/validation
+        run: |
+          scripts/generate-validation-evidence.sh dist/validation
+          python3 scripts/check-reliability-matrix.py dist/validation/reliability-matrix.json
 
       - name: Verify clean install and upgrade
         env:
@@ -104,6 +106,7 @@ jobs:
             dist/validation/ratified-metrics.json
             dist/validation/ratified-gates.json
             dist/validation/release-validation.json
+            dist/validation/reliability-matrix.json
             dist/validation/cargo-deny.jsonl
             dist/validation/cargo-audit.json
           if-no-files-found: error

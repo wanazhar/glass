@@ -82,6 +82,7 @@ class GlassCapabilityManifest(TypedDict):
     glassVersion: str
     schemas: dict[str, list[int]]
     capabilities: dict[str, bool]
+    capabilityStatuses: dict[str, str]
     constraints: GlassCapabilityConstraints
 
 SemanticObservationLevel = Literal["summary", "interactive", "structured", "detailed", "raw"]
@@ -265,6 +266,13 @@ class GlassClient:
         """Return whether the negotiated runtime enables a capability."""
         manifest = self.initialize() or self.capabilities
         return bool(isinstance(manifest, dict) and manifest.get("capabilities", {}).get(capability))
+
+    def capability_status(self, capability: str) -> Optional[str]:
+        """Return the explicit availability status when the server provides one."""
+        manifest = self.initialize() or self.capabilities
+        statuses = manifest.get("capabilityStatuses", {}) if isinstance(manifest, dict) else {}
+        status = statuses.get(capability)
+        return status if isinstance(status, str) else None
 
     def supports_schema(self, schema: str, version: int) -> bool:
         """Return whether the negotiated runtime supports a schema version."""

@@ -271,11 +271,16 @@ export interface GlassCapabilityConstraints {
   maxSessions: number;
 }
 
+export type GlassCapabilityStatus =
+  | "available" | "availableUncertified" | "experimental" | "disabledByPolicy"
+  | "unavailableOnPlatform" | "missingRuntimeDependency" | "blockedBySecurityGate";
+
 export interface GlassCapabilityManifest {
   protocolVersion: 1;
   glassVersion: string;
   schemas: Record<string, number[]>;
   capabilities: Record<string, boolean>;
+  capabilityStatuses?: Record<string, GlassCapabilityStatus>;
   constraints: GlassCapabilityConstraints;
 }
 
@@ -339,6 +344,9 @@ export class GlassClient {
 
   supportsCapability(capability: string): boolean {
     return this.manifest?.capabilities[capability] === true;
+  }
+  capabilityStatus(capability: string): GlassCapabilityStatus | undefined {
+    return this.manifest?.capabilityStatuses?.[capability];
   }
   supportsSchema(schema: string, version: number): boolean {
     return this.manifest?.schemas[schema]?.includes(version) === true;

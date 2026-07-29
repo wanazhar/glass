@@ -33,7 +33,22 @@ pub struct GlassCapabilityManifest {
     pub glass_version: String,
     pub schemas: BTreeMap<String, Vec<u32>>,
     pub capabilities: BTreeMap<String, bool>,
+    #[serde(default)]
+    pub capability_statuses: BTreeMap<String, GlassCapabilityStatus>,
     pub constraints: GlassCapabilityConstraints,
+}
+
+/// Why a capability is or is not available in the current runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GlassCapabilityStatus {
+    Available,
+    AvailableUncertified,
+    Experimental,
+    DisabledByPolicy,
+    UnavailableOnPlatform,
+    MissingRuntimeDependency,
+    BlockedBySecurityGate,
 }
 
 /// Runtime and policy constraints that affect optional operations.
@@ -104,11 +119,26 @@ impl GlassCapabilityManifest {
         .map(|(name, enabled)| (name.to_string(), enabled))
         .collect::<BTreeMap<_, _>>();
         capabilities.insert("mcpStdio".into(), true);
+        let capability_statuses = capabilities
+            .iter()
+            .map(|(name, enabled)| {
+                let status = match name.as_str() {
+                    "extensions" => GlassCapabilityStatus::BlockedBySecurityGate,
+                    "rawCdp" | "persistentKnowledge" if !enabled => {
+                        GlassCapabilityStatus::DisabledByPolicy
+                    }
+                    _ if *enabled => GlassCapabilityStatus::Available,
+                    _ => GlassCapabilityStatus::AvailableUncertified,
+                };
+                (name.clone(), status)
+            })
+            .collect();
         Self {
             protocol_version: GLASS_PROTOCOL_VERSION,
             glass_version: env!("CARGO_PKG_VERSION").into(),
             schemas: supported_schemas(),
             capabilities,
+            capability_statuses,
             constraints: GlassCapabilityConstraints {
                 platform: platform_label().into(),
                 browser_family: "chromium".into(),
@@ -255,6 +285,14 @@ mod tests {
         assert_eq!(manifest.constraints.max_sessions, 4);
         assert!(manifest.capabilities["workflowResume"]);
         assert!(!manifest.capabilities["localDaemon"]);
+        assert_eq!(
+            manifest.capability_statuses["extensions"],
+            GlassCapabilityStatus::BlockedBySecurityGate
+        );
+        assert_eq!(
+            manifest.capability_statuses["rawCdp"],
+            GlassCapabilityStatus::Available
+        );
     }
 
     #[test]

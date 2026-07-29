@@ -34,6 +34,11 @@ Negotiate capability availability. Do not infer it from `glassVersion`.
 The Rust library, CLI, MCP server, TypeScript client, and Python client use the
 same argument names and result vocabulary.
 
+Capability manifests retain the legacy boolean `capabilities` map and may add
+the optional `capabilityStatuses` map. Statuses distinguish
+`disabledByPolicy`, `availableUncertified`, and `blockedBySecurityGate`
+without making the additive field required for older clients.
+
 ## Capability negotiation
 
 MCP `initialize` returns a `glass` manifest that follows

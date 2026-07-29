@@ -9,7 +9,9 @@ requests before that notification. A second `initialize` request is invalid.
 
 The initialization result contains a Glass capability manifest. The manifest
 reports the protocol version, schema versions, policy-sensitive capabilities,
-and platform and browser constraints.
+explicit capability statuses, and platform and browser constraints. Clients
+should use `capabilityStatuses` when present; the legacy boolean map remains
+for compatibility.
 
 ## Configure a client
 

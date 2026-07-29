@@ -67,6 +67,8 @@ unreleased development build.
 
 - [Contributing](../CONTRIBUTING.md) — development workflow and checks.
 - [Release checklist](release-checklist.md) — repeatable `0.x` release process.
+- [CI-native platform certification](ci-platform-certification.md) — native
+  target runners, evidence fields, and reproduction commands.
 - [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.
 
 ## Design

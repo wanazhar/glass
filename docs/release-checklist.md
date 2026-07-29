@@ -52,6 +52,8 @@ Then complete these release checks:
       MCP initialization with the release binary.
 - [ ] Compare packaged-artifact CLI, capability, and MCP contract evidence
       across all four release targets.
+- [ ] Record native runner, browser, source revision, artifact hash, and raw
+      smoke evidence for every target.
 - [ ] Inspect `cargo package --list` and the unpacked package.
 - [ ] Download each artifact and verify `SHA256SUMS` with
       `sha256sum -c`.

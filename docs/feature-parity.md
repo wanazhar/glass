@@ -38,3 +38,6 @@ The release workflow also emits `contract-matrix.json`. It compares the exact
 packaged artifact from every native runner for CLI help, the capability
 manifest, and the complete MCP tool/schema inventory. A missing target, changed
 contract, revision mismatch, or duplicate artifact fails the merge step.
+
+See [CI-native platform certification](ci-platform-certification.md) for the
+runner matrix and reproduction boundary.

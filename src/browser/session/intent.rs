@@ -203,7 +203,7 @@ pub enum SemanticIntentPurpose {
 
 /// Normalized intent used by deterministic candidate generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct NormalizedSemanticIntent {
     pub canonical: String,
     pub purpose: SemanticIntentPurpose,
@@ -980,7 +980,7 @@ pub enum IntentEvidenceCategory {
 
 /// One bounded explanation for including or excluding a candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct IntentEvidence {
     pub category: IntentEvidenceCategory,
     pub detail: String,
@@ -1067,7 +1067,7 @@ pub struct SemanticIntentRequest {
 
 /// A current, revision-scoped target candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticIntentCandidate {
     pub id: String,
     pub reference: String,
@@ -1104,7 +1104,7 @@ pub enum FingerprintInvalidation {
 
 /// Fresh evidence used to rank a later resolution attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticTargetFingerprint {
     pub revision: u64,
     pub route: SemanticRouteIdentity,
@@ -1144,7 +1144,7 @@ pub fn target_fingerprint_digest(
 
 /// Candidate excluded from consideration for an inspectable reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ExcludedIntentCandidate {
     pub id: String,
     pub reason: IntentEvidence,
@@ -1152,7 +1152,7 @@ pub struct ExcludedIntentCandidate {
 
 /// A bounded suggestion that a caller can add to disambiguate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct IntentConstraintSuggestion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_kind: Option<SemanticRegionKind>,
@@ -1174,7 +1174,7 @@ pub enum IntentPolicyDecision {
 
 /// Resolution result returned before any optional guarded action dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticIntentResult {
     pub schema_version: u32,
     pub intent: String,
@@ -1979,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn result_rejects_duplicate_evidence_and_unknown_fields() {
+    fn result_accepts_additive_fields_and_rejects_duplicate_evidence() {
         let result = SemanticIntentResult {
             schema_version: INTENT_RESOLUTION_SCHEMA_VERSION,
             intent: "open settings".into(),
@@ -2013,12 +2013,8 @@ mod tests {
         let canonical = result.to_canonical_json().unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&canonical).unwrap();
         value["futureField"] = true.into();
-        assert_eq!(
-            SemanticIntentResult::from_json(&value.to_string())
-                .unwrap_err()
-                .path,
-            "$"
-        );
+        let decoded = SemanticIntentResult::from_json(&value.to_string()).unwrap();
+        decoded.validate().unwrap();
 
         let mut duplicate = result;
         duplicate.candidates[0].evidence.push(IntentEvidence {

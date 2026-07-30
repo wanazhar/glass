@@ -8,6 +8,9 @@ one owning layer:
 | CDP transport and Chrome lifecycle | `src/browser/cdp.rs`, `chrome.rs` | typed transport errors and bounded deadlines |
 | Browser state and guarded actions | `src/browser/session/` | revision-scoped references and policy gates |
 | Agent operations | `src/browser/session/agent.rs` | inspect, target, act-and-verify, extraction, recovery |
+| Workflow contract and execution | `src/browser/session/workflow.rs` | validated steps, bounded execution, output proofs |
+| Workflow recording | `src/browser/session/workflow/recorder.rs` | redacted semantic drafts and review-required evidence |
+| Workflow checkpoints | `src/browser/session/workflow/checkpoint.rs` | bounded resume state and reconciliation |
 | Redacted state artifacts | `src/browser/session/snapshot.rs` | versioned, bounded, secret-safe snapshots |
 | MCP envelope and tool registry | `src/mcp/` | JSON-RPC framing and stable tool schemas |
 | CLI dispatch | `src/cli/` | deterministic command parsing and output projections |

@@ -119,7 +119,7 @@ pub enum SemanticRegionKind {
 
 /// Route identity required to keep semantic handles scoped to one page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticRouteIdentity {
     pub target_id: String,
     pub frame_id: String,
@@ -128,7 +128,7 @@ pub struct SemanticRouteIdentity {
 
 /// Page-level semantic summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticPage {
     pub kind: SemanticPageKind,
     pub title: String,
@@ -142,7 +142,7 @@ pub struct SemanticPage {
 
 /// Revision-scoped handle for requesting one region's details.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticExpansionHandle {
     pub region_id: String,
     pub revision: u64,
@@ -151,7 +151,7 @@ pub struct SemanticExpansionHandle {
 
 /// A bounded, revision-scoped action reference in an interactive observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticTarget {
     pub reference: String,
     pub role: String,
@@ -163,7 +163,7 @@ pub struct SemanticTarget {
 
 /// A bounded accessibility node included only by detailed semantic levels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticAccessibilityNode {
     pub role: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -185,7 +185,7 @@ pub enum SemanticChangeKind {
 
 /// Region-level change identified by stable semantic IDs where possible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticRegionChange {
     pub id: String,
     pub kind: SemanticChangeKind,
@@ -195,7 +195,7 @@ pub struct SemanticRegionChange {
 
 /// Target-level change scoped to a semantic region.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticTargetChange {
     pub region_id: String,
     pub target_id: String,
@@ -206,7 +206,7 @@ pub struct SemanticTargetChange {
 
 /// Conservative advisory mapping between revision-scoped target references.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticContinuity {
     pub previous_reference: String,
     pub current_reference: String,
@@ -216,7 +216,7 @@ pub struct SemanticContinuity {
 
 /// Bounded changes between two observations on the same route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticChangeSet {
     pub from_revision: u64,
     pub to_revision: u64,
@@ -231,7 +231,7 @@ pub struct SemanticChangeSet {
 
 /// A bounded semantic region summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticRegion {
     pub id: String,
     pub kind: SemanticRegionKind,
@@ -250,7 +250,7 @@ pub struct SemanticRegion {
 
 /// Explicit bounds and omission metadata for one semantic observation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticObservationLimits {
     pub truncated: bool,
     pub omitted_regions: usize,
@@ -262,7 +262,7 @@ pub struct SemanticObservationLimits {
 
 /// Versioned semantic page model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SemanticObservation {
     pub schema_version: u32,
     pub revision: u64,
@@ -1335,11 +1335,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_before_accepting_future_contracts() {
+    fn accepts_additive_unknown_response_fields() {
         let mut value: Value = serde_json::to_value(observation()).unwrap();
         value["futureField"] = Value::Bool(true);
-        let error = SemanticObservation::from_json(&value.to_string()).unwrap_err();
-        assert_eq!(error.path, "$");
+        let decoded = SemanticObservation::from_json(&value.to_string()).unwrap();
+        decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn additive_response_fixture_remains_compatible() {
+        let observation = SemanticObservation::from_json(include_str!(
+            "../../../tests/fixtures/semantic-additive-v1.json"
+        ))
+        .unwrap();
+        observation.validate().unwrap();
+        assert_eq!(observation.revision, 7);
     }
 
     #[test]

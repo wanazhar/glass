@@ -14,6 +14,28 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Capability discovery responses tolerate additive fields and unknown future
   status values without accepting them for execution.
 
+### Changed
+
+- CLI and MCP agent-facing responses support `minimal`, `normal`, and
+  `diagnostic` projections with bounded local result artifacts and explicit
+  detail availability.
+- MCP failures now carry stable recovery fields for phase, mutation possibility,
+  retry classification, and recommended operation across protocol errors.
+- Additive fields in semantic, intent, knowledge, and snapshot responses are
+  tolerated while authored requests and policy/configuration contracts remain
+  strict.
+
+### Added
+
+- Installation diagnostics report browser version, writable runtime paths, and
+  MCP initialization health with actionable finding codes.
+- Bounded `inspectPage`, `findTarget`, `actAndVerify`, `extractStructured`, and
+  `recoverRun` operations are available through CLI and MCP.
+- Five compile-tested workflow starter templates and five Rust quick-start
+  examples.
+- TypeScript and Python clients expose structured Glass errors while remaining
+  experimental repository clients.
+
 ## [0.2.1] - 2026-07-30
 
 ### Added

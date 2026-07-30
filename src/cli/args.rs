@@ -475,7 +475,7 @@ pub enum Commands {
         expected_revision: Option<u64>,
     },
 
-    /// Execute a validated workflow document from JSON or stdin.
+    #[command(subcommand_precedence_over_arg = true)]
     Workflow {
         /// Offline authoring operation. Omit to execute the workflow.
         #[command(subcommand)]
@@ -665,6 +665,14 @@ pub enum WorkflowAuthoringCommand {
     Templates {
         /// Optional template name; omit to list available templates.
         name: Option<String>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Initialize one of the five reviewable issue 29 starter templates.
+    Init {
+        /// Template name: search, form-submit, paginated-extraction,
+        /// authenticated-session, or dialog-and-download.
+        name: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },

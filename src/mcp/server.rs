@@ -39,6 +39,7 @@ use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
 use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
+use crate::results::{ResponseMode, default_result_store_path, project_and_store};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -1336,6 +1337,7 @@ async fn call_tool(
     policy: &BrowserPolicy,
     knowledge_store_path: Option<&Path>,
 ) -> BrowserResult<Value> {
+    let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
     if matches!(
         &invocation,
@@ -1586,20 +1588,25 @@ async fn call_tool(
                 }}
             }))
         }
-        ToolInvocation::InspectPage => serialized_result(&session.inspect_page().await?),
+        ToolInvocation::InspectPage => {
+            serialized_result_mode(&session.inspect_page().await?, response_mode)
+        }
         ToolInvocation::FindTarget { request } => {
-            serialized_result(&session.find_target(&request).await?)
+            serialized_result_mode(&session.find_target(&request).await?, response_mode)
         }
         ToolInvocation::ActAndVerify {
             request,
             predicate,
             timeout,
-        } => serialized_result(&session.act_and_verify(&request, predicate, timeout).await?),
+        } => serialized_result_mode(
+            &session.act_and_verify(&request, predicate, timeout).await?,
+            response_mode,
+        ),
         ToolInvocation::ExtractStructured { request } => {
-            serialized_result(&session.extract_structured(&request).await?)
+            serialized_result_mode(&session.extract_structured(&request).await?, response_mode)
         }
         ToolInvocation::RecoverRun { execution_id } => {
-            serialized_result(&session.recover_run(execution_id)?)
+            serialized_result_mode(&session.recover_run(execution_id)?, response_mode)
         }
         ToolInvocation::SessionSnapshot {
             operation,
@@ -2005,6 +2012,20 @@ fn call_knowledge_tool(
         _ => unreachable!("non-knowledge tool passed to knowledge dispatcher"),
     }
 }
+fn response_mode_from_params(params: &Value) -> BrowserResult<ResponseMode> {
+    let mode = params
+        .get("arguments")
+        .and_then(Value::as_object)
+        .and_then(|arguments| arguments.get("responseMode"))
+        .and_then(Value::as_str)
+        .unwrap_or("minimal");
+    match mode {
+        "minimal" => Ok(ResponseMode::Minimal),
+        "normal" => Ok(ResponseMode::Normal),
+        "diagnostic" => Ok(ResponseMode::Diagnostic),
+        _ => Err("responseMode must be minimal, normal, or diagnostic".into()),
+    }
+}
 
 fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     let tool_name = required_string(params, "name")?;
@@ -2115,14 +2136,22 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             region: optional_string(arguments, "region")?,
         }),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
-        "findTarget" => Ok(ToolInvocation::FindTarget {
-            request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
-        }),
+        "findTarget" => {
+            let mut value = arguments.clone();
+            value
+                .as_object_mut()
+                .ok_or("findTarget arguments must be an object")?
+                .remove("responseMode");
+            Ok(ToolInvocation::FindTarget {
+                request: SemanticIntentRequest::from_json(&serde_json::to_string(&value)?)?,
+            })
+        }
         "actAndVerify" => {
             let mut value = arguments.clone();
             let object = value
                 .as_object_mut()
                 .ok_or("actAndVerify arguments must be an object")?;
+            object.remove("responseMode");
             let timeout_ms = object
                 .remove("timeoutMs")
                 .and_then(|value| value.as_u64())
@@ -2495,7 +2524,11 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "inspectPage",
             description: "Return one bounded semantic page inspection with revision and route provenance.",
-            input_schema: json!({"type":"object","additionalProperties":false}),
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{"responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}}
+            }),
         },
         Tool {
             name: "findTarget",
@@ -2511,7 +2544,8 @@ fn tools() -> Vec<Tool> {
                     "scope":{"type":"object"},
                     "constraints":{"type":"object"},
                     "resolutionPolicy":{"type":"string"},
-                    "expectedRevision":{"type":"integer","minimum":0}
+                    "expectedRevision":{"type":"integer","minimum":0},
+                    "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),
         },
@@ -2532,7 +2566,8 @@ fn tools() -> Vec<Tool> {
                     "candidateId":{"type":"string"},
                     "expectedRevision":{"type":"integer","minimum":0},
                     "predicate":{"type":"object"},
-                    "timeoutMs":{"type":"integer","minimum":1,"maximum":300000,"default":10000}
+                    "timeoutMs":{"type":"integer","minimum":1,"maximum":300000,"default":10000},
+                    "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),
         },
@@ -2547,7 +2582,8 @@ fn tools() -> Vec<Tool> {
                     "fields":{"type":"array","minItems":1,"maxItems":32},
                     "regionId":{"type":"string"},
                     "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":256},
-                    "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144}
+                    "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144},
+                    "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),
         },
@@ -2558,7 +2594,10 @@ fn tools() -> Vec<Tool> {
                 "type":"object",
                 "additionalProperties":false,
                 "required":["executionId"],
-                "properties":{"executionId":{"type":"string","minLength":1,"maxLength":128}}
+                "properties":{
+                    "executionId":{"type":"string","minLength":1,"maxLength":128},
+                    "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
+                }
             }),
         },
         Tool {
@@ -2570,7 +2609,8 @@ fn tools() -> Vec<Tool> {
                 "properties":{
                     "operation":{"type":"string","enum":["create","list","inspect","diff","purge"],"default":"list"},
                     "from":{"type":"string"},
-                    "to":{"type":"string"}
+                    "to":{"type":"string"},
+                    "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),
         },
@@ -3254,6 +3294,15 @@ fn serialized_result<T: Serialize + ?Sized>(value: &T) -> BrowserResult<Value> {
     Ok(text_result(serde_json::to_string(value)?))
 }
 
+fn serialized_result_mode<T: Serialize + ?Sized>(
+    value: &T,
+    mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let value = serde_json::to_value(value)?;
+    let projected = project_and_store(value, mode, "mcp", default_result_store_path())?;
+    Ok(text_result(serde_json::to_string(&projected)?))
+}
+
 fn success_response(id: Option<Value>, result: Value) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0",
@@ -3271,15 +3320,38 @@ fn error_response_with_data(
     id: Option<Value>,
     code: i32,
     message: impl Into<String>,
-    data: Value,
+    details: Value,
 ) -> JsonRpcResponse {
+    let message = message.into();
+    let canonical_code = match code {
+        -32600 => "protocol.invalidRequest",
+        -32601 => "protocol.methodNotFound",
+        -32602 => "protocol.invalidParams",
+        -32603 => "protocol.internal",
+        -32800 => "protocol.cancelled",
+        -32003 => "policy.mutationLease",
+        -32002 => "protocol.notInitialized",
+        -32000 => "resource.busy",
+        _ => "protocol.error",
+    };
+    let data = serde_json::json!({
+        "code": canonical_code,
+        "phase": "preflight",
+        "message": message.clone(),
+        "mutationPossible": false,
+        "retry": {
+            "classification": "safeAfterReobserve",
+            "recommendedOperation": "inspect_page"
+        },
+        "details": (!details.is_null()).then_some(details),
+    });
     JsonRpcResponse {
         jsonrpc: "2.0",
         result: None,
         error: Some(JsonRpcError {
             code,
-            message: message.into(),
-            data: (!data.is_null()).then_some(data),
+            message,
+            data: Some(data),
         }),
         id,
     }
@@ -3463,6 +3535,23 @@ mod tests {
         let rendered = format!("{metadata:?}");
         assert!(!rendered.contains("private-request-id"));
         assert!(!rendered.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn mcp_errors_include_canonical_recovery_fields() {
+        let response = error_response(Some(json!("request-1")), -32602, "invalid tool arguments");
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32602);
+        assert_eq!(
+            error.data.as_ref().unwrap()["code"],
+            "protocol.invalidParams"
+        );
+        assert_eq!(error.data.as_ref().unwrap()["phase"], "preflight");
+        assert_eq!(
+            error.data.as_ref().unwrap()["retry"]["recommendedOperation"],
+            "inspect_page"
+        );
+        assert_eq!(error.data.as_ref().unwrap()["mutationPossible"], false);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Bounded, redacted result contracts and local diagnostic artifacts.
 //!
-//! Agent-facing responses default to [`ResponseMode::Minimal`]. Detailed
+//! Agent-facing responses default to [`crate::results::ResponseMode::Minimal`]. Detailed
 //! evidence stays in a local result artifact and is referenced by ID.
 
 use crate::protocol::{ErrorPhase, RetryGuidance};
@@ -99,6 +99,50 @@ impl OperationResult {
         }
         Value::Object(output)
     }
+}
+
+/// Project one serialized result into the bounded agent-facing response modes.
+///
+/// The complete value is retained by [`ResultStore`]; minimal and normal
+/// projections omit only diagnostic-heavy fields and advertise the artifact
+/// through `detailAvailability`.
+pub fn project_value(mut value: Value, mode: ResponseMode) -> Value {
+    if mode != ResponseMode::Diagnostic
+        && let Value::Object(object) = &mut value
+    {
+        object.remove("details");
+        if mode == ResponseMode::Minimal {
+            for key in ["trace", "diagnostics", "screenshot", "dom", "formValues"] {
+                object.remove(key);
+            }
+        }
+    }
+    value
+}
+
+/// Persist complete details and return the selected bounded projection.
+pub fn project_and_store(
+    value: Value,
+    mode: ResponseMode,
+    prefix: &str,
+    root: impl Into<PathBuf>,
+) -> Result<Value, ResultStoreError> {
+    let store = ResultStore::new(root);
+    let result_id = ResultStore::next_id(prefix)?;
+    let availability = store.save(&result_id, &value)?;
+    let mut projected = project_value(value, mode);
+    if let Value::Object(object) = &mut projected {
+        object.insert(
+            "detailAvailability".into(),
+            serde_json::to_value(availability)?,
+        );
+    } else {
+        projected = serde_json::json!({
+            "result": projected,
+            "detailAvailability": availability,
+        });
+    }
+    Ok(projected)
 }
 
 /// Stored diagnostic result with a versioned, redacted payload.
@@ -220,6 +264,14 @@ impl ResultStore {
     fn path_for(&self, result_id: &str) -> PathBuf {
         self.root.join(format!("{result_id}.json"))
     }
+}
+
+/// Default local diagnostic artifact directory.
+pub fn default_result_store_path() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("glass")
+        .join("results")
 }
 
 #[derive(Debug)]

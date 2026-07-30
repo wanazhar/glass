@@ -10,8 +10,46 @@ from typing import Any, BinaryIO, Literal, Optional, TypedDict
 
 
 class GlassError(RuntimeError):
-    """A bounded MCP or process failure."""
+    """A stable Glass failure with machine-readable recovery guidance."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "client.error",
+        phase: str = "transport",
+        mutation_possible: bool = False,
+        retry_classification: str = "unknown",
+        recommended_operation: str = "inspect_page",
+        details: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.phase = phase
+        self.mutation_possible = mutation_possible
+        self.retry_classification = retry_classification
+        self.recommended_operation = recommended_operation
+        self.details = details
+
+    @classmethod
+    def from_error(cls, error: dict[str, Any]) -> "GlassError":
+        data = error.get("data")
+        if not isinstance(data, dict):
+            return cls(f"{error.get('code')}: {error.get('message')}")
+        retry = data.get("retry")
+        if not isinstance(retry, dict):
+            retry = {}
+        return cls(
+            str(data.get("message", error.get("message", "Glass request failed"))),
+            code=str(data.get("code", error.get("code", "protocol.error"))),
+            phase=str(data.get("phase", "transport")),
+            mutation_possible=bool(data.get("mutationPossible", False)),
+            retry_classification=str(retry.get("classification", "unknown")),
+            recommended_operation=str(
+                retry.get("recommendedOperation", "inspect_page")
+            ),
+            details=data.get("details"),
+        )
 
 VerificationPredicate = dict[str, Any]
 BatchMode = str
@@ -656,6 +694,7 @@ class GlassClient:
     def print_to_pdf(self, options: Optional[dict[str, Any]] = None) -> Any:
         return self.call("printToPdf", options or {})
 
+
     def clipboard_read(self) -> Any:
         return self.call("clipboardRead")
 
@@ -692,7 +731,7 @@ class GlassClient:
                 continue
             if "error" in message:
                 error = message["error"]
-                raise GlassError(f"{error.get('code')}: {error.get('message')}")
+                raise GlassError.from_error(error)
             return message.get("result")
 
     def _send(self, message: dict[str, Any]) -> None:

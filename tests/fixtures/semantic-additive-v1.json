@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "revision": 7,
+  "level": "summary",
+  "route": {
+    "targetId": "target-1",
+    "frameId": "frame-1",
+    "url": "https://example.test/account"
+  },
+  "page": {
+    "kind": "settings",
+    "title": "Account",
+    "url": "https://example.test/account",
+    "targetId": "target-1",
+    "frameId": "frame-1",
+    "confidence": "exact",
+    "evidence": ["fixture"]
+  },
+  "regions": [],
+  "limits": {
+    "truncated": false,
+    "omittedRegions": 0,
+    "omittedTargets": 0
+  },
+  "futureField": {
+    "introducedBy": "0.3.0"
+  }
+}

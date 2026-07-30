@@ -33,7 +33,7 @@ const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
 
 /// A single mutation lease held by one local client owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MutationLease {
     pub session_id: String,
     pub owner_id: String,
@@ -201,7 +201,7 @@ fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
 
 /// One workflow request active in one daemon client session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonActiveRun {
     pub request_id: String,
     pub owner_id: String,
@@ -210,7 +210,7 @@ pub struct DaemonActiveRun {
 
 /// Persisted evidence that workflow requests need checkpoint reconciliation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonRecovery {
     pub schema_version: u32,
     pub state: String,
@@ -220,7 +220,7 @@ pub struct DaemonRecovery {
 
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonStatus {
     pub protocol_version: u32,
     pub state: String,

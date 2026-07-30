@@ -20,7 +20,7 @@ pub fn default_session_snapshot_path(profile: &str) -> PathBuf {
 const MAX_SNAPSHOTS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
     pub schema_version: u32,
     pub snapshot_id: String,

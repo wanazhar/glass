@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-07-30",
+  "binary": "glass 0.2.2",
+  "environment": {
+    "platform": "linux-arm64",
+    "browser": "Chromium 150.0.7871.128 snap",
+    "profile": "incognito"
+  },
+  "method": {
+    "samples": 5,
+    "operation": "MCP initialize, notifications/initialized, inspectPage",
+    "framing": "newline-delimited JSON-RPC stdout bytes",
+    "fixture": "about:blank"
+  },
+  "measurements": {
+    "minimal": {
+      "medianPayloadBytes": 3404,
+      "p95PayloadBytes": 3404,
+      "estimatedTokens": 851
+    },
+    "normal": {
+      "medianPayloadBytes": 3404,
+      "p95PayloadBytes": 3404,
+      "estimatedTokens": 851
+    },
+    "diagnostic": {
+      "medianPayloadBytes": 3404,
+      "p95PayloadBytes": 3404,
+      "estimatedTokens": 851
+    }
+  },
+  "notes": [
+    "The initialize and tools registry responses dominate this small about:blank exchange.",
+    "Diagnostic details are stored locally and exposed through detailAvailability; this fixture has no large page evidence."
+  ]
+}

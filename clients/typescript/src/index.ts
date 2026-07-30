@@ -4,6 +4,47 @@ import type { Readable, Writable } from "node:stream";
 
 export interface JsonRpcResult<T> { result: T; }
 export interface McpErrorShape { code: number; message: string; data?: unknown; }
+
+export class GlassStructuredError extends Error {
+  readonly code: string;
+  readonly phase: string;
+  readonly mutationPossible: boolean;
+  readonly retryClassification: string;
+  readonly recommendedOperation: string;
+  readonly details: unknown;
+
+  constructor(message: string, fields: Partial<Pick<GlassStructuredError,
+    "code" | "phase" | "mutationPossible" | "retryClassification" | "recommendedOperation" | "details">> = {}) {
+    super(message);
+    this.name = "GlassStructuredError";
+    this.code = fields.code ?? "client.error";
+    this.phase = fields.phase ?? "transport";
+    this.mutationPossible = fields.mutationPossible ?? false;
+    this.retryClassification = fields.retryClassification ?? "unknown";
+    this.recommendedOperation = fields.recommendedOperation ?? "inspect_page";
+    this.details = fields.details;
+  }
+
+  static fromMcp(error: McpErrorShape): GlassStructuredError {
+    const data = error.data && typeof error.data === "object"
+      ? error.data as Record<string, unknown>
+      : {};
+    const retry = data.retry && typeof data.retry === "object"
+      ? data.retry as Record<string, unknown>
+      : {};
+    return new GlassStructuredError(
+      String(data.message ?? error.message),
+      {
+        code: String(data.code ?? error.code),
+        phase: String(data.phase ?? "transport"),
+        mutationPossible: Boolean(data.mutationPossible ?? false),
+        retryClassification: String(retry.classification ?? "unknown"),
+        recommendedOperation: String(retry.recommendedOperation ?? "inspect_page"),
+        details: data.details,
+      },
+    );
+  }
+}
 export interface ToolCallResult<T = unknown> {
   content?: Array<{ type: string; text?: string; [key: string]: unknown }>;
   isError?: boolean;
@@ -677,8 +718,9 @@ export class GlassClient {
         const pending = this.pending.get(message.id);
         if (!pending) continue;
         this.pending.delete(message.id);
-        if (message.error) pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
-        else pending.resolve(message.result);
+        if (message.error) {
+          pending.reject(GlassStructuredError.fromMcp(message.error as McpErrorShape));
+        } else pending.resolve(message.result);
       } catch (error) { this.rejectAll(error instanceof Error ? error : new Error(String(error))); }
     }
   }

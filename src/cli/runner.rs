@@ -26,13 +26,16 @@ use crate::reliability::{
     ReliabilityScenarioObservation, build_reliability_scorecard,
 };
 use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
-use crate::results::ResultStore;
+use crate::results::{ResponseMode, ResultStore, project_and_store};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Top-level command-line entry point: parses CLI arguments and dispatches
 /// to the appropriate runner (one-shot, TUI, or MCP server).
@@ -131,9 +134,9 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     };
     let session = BrowserSession::start_with_policy(&options, policy).await?;
     let result = if let Some(prompt) = &cli.prompt {
-        run_prompt(&session, prompt).await
+        run_prompt(&session, prompt, cli.response_mode).await
     } else if let Some(command) = &cli.command {
-        run_command(&session, command).await
+        run_command(&session, command, cli.response_mode).await
     } else {
         Ok(())
     };
@@ -199,6 +202,20 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         .map(|path| path.display().to_string());
     let chrome_path =
         crate::browser::chrome::resolve_chrome_path(None).map(|path| path.display().to_string());
+    let profile_path = ProfileManager::new().profile_dir(&cli.profile);
+    let runtime_path = default_result_store_path();
+    let profile_writable = path_is_writable(profile_path.parent());
+    let runtime_writable = path_is_writable(runtime_path.parent());
+    let browser_version = chrome_path.as_deref().and_then(|path| {
+        std::process::Command::new(path)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|version| version.trim().to_string())
+    });
+    let mcp_initialized = probe_mcp_initialization(executable.as_deref()).await;
     let (daemon_socket, daemon_status) = crate::daemon::default_paths();
     let daemon = crate::daemon::doctor(Some(&daemon_socket), Some(&daemon_status))?;
     let profiles = ProfileManager::new().list_profiles().unwrap_or_default();
@@ -213,11 +230,15 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
     );
     let platform_supported = manifest.constraints.platform != "unsupported";
     let config_root = dirs::config_dir();
-    let config_writable = config_root
-        .as_ref()
-        .is_some_and(|path| std::fs::create_dir_all(path).is_ok());
+    let config_writable = path_is_writable(config_root.as_deref());
     let browser_available = chrome_path.is_some();
-    let status = if platform_supported && browser_available {
+    let status = if platform_supported
+        && browser_available
+        && config_writable
+        && profile_writable
+        && runtime_writable
+        && mcp_initialized
+    {
         "ready"
     } else {
         "degraded"
@@ -236,6 +257,24 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
             "remediation": if browser_available { Value::Null } else { Value::String("install Chromium or pass --chrome-path".into()) }
         },
         {
+            "severity": if browser_version.is_some() { "info" } else { "warning" },
+            "code": if browser_version.is_some() { "browser.version" } else { "browser.versionUnavailable" },
+            "message": browser_version.as_deref().unwrap_or("browser version could not be queried"),
+            "remediation": if browser_version.is_some() { Value::Null } else { Value::String("verify the browser executable is runnable".into()) }
+        },
+        {
+            "severity": if profile_writable { "info" } else { "warning" },
+            "code": if profile_writable { "runtime.profileWritable" } else { "runtime.profileNotWritable" },
+            "message": profile_path.display().to_string(),
+            "remediation": if profile_writable { Value::Null } else { Value::String("choose a writable profile parent directory".into()) }
+        },
+        {
+            "severity": if runtime_writable { "info" } else { "warning" },
+            "code": if runtime_writable { "runtime.artifactStoreWritable" } else { "runtime.artifactStoreNotWritable" },
+            "message": runtime_path.display().to_string(),
+            "remediation": if runtime_writable { Value::Null } else { Value::String("choose a writable cache directory".into()) }
+        },
+        {
             "severity": if config_writable { "info" } else { "warning" },
             "code": if config_writable { "runtime.configWritable" } else { "runtime.configNotWritable" },
             "message": if config_writable { "Glass configuration directory is writable" } else { "Glass configuration directory is unavailable or not writable" },
@@ -246,6 +285,12 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
             "code": "mcp.stdoutClean",
             "message": "MCP uses stdout for protocol frames and diagnostics use stderr",
             "remediation": null
+        },
+        {
+            "severity": if mcp_initialized { "info" } else { "warning" },
+            "code": if mcp_initialized { "mcp.initialized" } else { "mcp.initializationFailed" },
+            "message": if mcp_initialized { "MCP initialize completed with clean stdout" } else { "MCP initialize did not return a valid response" },
+            "remediation": if mcp_initialized { Value::Null } else { Value::String("run the installed executable with --mcp and inspect stderr".into()) }
         },
         {
             "severity": "info",
@@ -261,11 +306,14 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         "executable": executable,
         "browser": {
             "family": manifest.constraints.browser_family,
+            "version": browser_version,
             "chromeAvailable": browser_available,
             "chromePath": chrome_path,
             "cdpPort": cli.port,
             "cdpReachable": crate::browser::chrome::check_chrome_health(cli.port).await,
         },
+        "profile": {"path": profile_path, "writable": profile_writable},
+        "runtime": {"artifactStore": runtime_path, "writable": runtime_writable},
         "daemon": daemon,
         "profiles": {"count": profiles.len(), "names": profiles},
         "policy": {
@@ -295,6 +343,63 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         }
     }
     Ok(())
+}
+
+fn path_is_writable(path: Option<&Path>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    let candidate = if path.exists() {
+        path.to_path_buf()
+    } else {
+        path.ancestors()
+            .find(|ancestor| ancestor.exists())
+            .unwrap_or(path)
+            .to_path_buf()
+    };
+    candidate.is_dir()
+        && std::fs::metadata(&candidate)
+            .map(|metadata| !metadata.permissions().readonly())
+            .unwrap_or(false)
+}
+
+async fn probe_mcp_initialization(executable: Option<&str>) -> bool {
+    let Some(executable) = executable else {
+        return false;
+    };
+    let mut child = match tokio::process::Command::new(executable)
+        .arg("--mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let request = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"glass-doctor","version":"0.2.2"}}}"#;
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill().await;
+        return false;
+    };
+    if stdin.write_all(request).await.is_err() || stdin.write_all(b"\n").await.is_err() {
+        let _ = child.kill().await;
+        return false;
+    }
+    drop(stdin);
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return false;
+    };
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let success = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|bytes| bytes > 0 && line.contains("\"result\""));
+    let _ = child.kill().await;
+    success
 }
 
 fn dispatch_mcp_config(client: McpClient, _print: bool) -> BrowserResult<()> {
@@ -718,6 +823,31 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
                 print!("{source}");
             }
         }
+        WorkflowAuthoringCommand::Init { name, output } => {
+            let template = match name.as_str() {
+                "search" => "account-search",
+                "form-submit" => "checkout-submit",
+                "paginated-extraction" => "report-download",
+                "authenticated-session" => "profile-update",
+                "dialog-and-download" => "support-ticket",
+                _ => return Err(format!("unknown workflow starter: {name}").into()),
+            };
+            let source = workflow_template(template)
+                .ok_or_else(|| format!("missing workflow starter: {template}"))?;
+            let document = compile_workflow(source, WorkflowAuthoringFormat::Yaml)?;
+            if document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == WorkflowDiagnosticSeverity::Error)
+            {
+                return Err(format!("workflow starter {name} failed compilation").into());
+            }
+            if let Some(output) = output {
+                std::fs::write(output, source)?;
+            } else {
+                print!("{source}");
+            }
+        }
         WorkflowAuthoringCommand::Compile { input, output } => {
             let source = std::fs::read_to_string(input)?;
             let document = compile_workflow(&source, authoring_format(input))?;
@@ -826,7 +956,11 @@ fn workflow_template(name: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
+async fn run_command(
+    session: &BrowserSession,
+    command: &Commands,
+    response_mode: ResponseMode,
+) -> BrowserResult<()> {
     match command {
         Commands::Certify {
             action:
@@ -1107,14 +1241,14 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 (false, false, true) => session.observe_with_form_values().await?,
                 _ => return Err("form values can only be combined with compact observe".into()),
             };
-            print_json(&context)?;
+            print_json_mode(&context, response_mode)?;
         }
-        Commands::InspectPage => print_json(&session.inspect_page().await?)?,
+        Commands::InspectPage => print_json_mode(&session.inspect_page().await?, response_mode)?,
         Commands::FindTarget { input } => {
             let request = SemanticIntentRequest::from_json(&serde_json::to_string(
                 &read_json_input(Some(input))?,
             )?)?;
-            print_json(&session.find_target(&request).await?)?;
+            print_json_mode(&session.find_target(&request).await?, response_mode)?;
         }
         Commands::ActAndVerify {
             input,
@@ -1128,19 +1262,20 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 .as_deref()
                 .map(serde_json::from_str::<VerificationPredicate>)
                 .transpose()?;
-            print_json(
+            print_json_mode(
                 &session
                     .act_and_verify(&request, predicate, Duration::from_millis(*timeout_ms))
                     .await?,
+                response_mode,
             )?;
         }
         Commands::ExtractStructured { input } => {
             let request: StructuredExtractionRequest =
                 serde_json::from_value(read_json_input(Some(input))?)?;
-            print_json(&session.extract_structured(&request).await?)?;
+            print_json_mode(&session.extract_structured(&request).await?, response_mode)?;
         }
         Commands::RecoverRun { execution_id } => {
-            print_json(&session.recover_run(execution_id)?)?;
+            print_json_mode(&session.recover_run(execution_id)?, response_mode)?;
         }
         Commands::Scroll {
             dx,
@@ -1423,30 +1558,43 @@ pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
     .with_confirmation_tokens(cli.policy_confirm_once.iter().copied())?)
 }
 
-async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()> {
+async fn run_prompt(
+    session: &BrowserSession,
+    prompt: &str,
+    response_mode: ResponseMode,
+) -> BrowserResult<()> {
     let trimmed = prompt.trim();
     let lower = trimmed.to_lowercase();
 
     for prefix in ["navigate to ", "go to ", "open "] {
         if lower.starts_with(prefix) {
             let page = session.navigate(trimmed[prefix.len()..].trim()).await?;
-            print_json(&page)?;
+            print_json_mode(&page, response_mode)?;
             return Ok(());
         }
     }
     if let Some(rest) = lower.strip_prefix("click ") {
         let target = &trimmed[trimmed.len() - rest.len()..];
-        print_json(&session.click(target.trim_matches('"')).await?)?;
+        print_json_mode(
+            &session.click(target.trim_matches('"')).await?,
+            response_mode,
+        )?;
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("double click ") {
         let target = &trimmed[trimmed.len() - rest.len()..];
-        print_json(&session.double_click(target.trim_matches('"')).await?)?;
+        print_json_mode(
+            &session.double_click(target.trim_matches('"')).await?,
+            response_mode,
+        )?;
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("type ") {
         let text = &trimmed[trimmed.len() - rest.len()..];
-        print_json(&session.type_text(text.trim_matches('"'), None).await?)?;
+        print_json_mode(
+            &session.type_text(text.trim_matches('"'), None).await?,
+            response_mode,
+        )?;
         return Ok(());
     }
     if lower.starts_with("screenshot") {
@@ -1470,15 +1618,22 @@ async fn run_prompt(session: &BrowserSession, prompt: &str) -> BrowserResult<()>
         return Ok(());
     }
     if matches!(lower.as_str(), "dom" | "snapshot" | "get dom") {
-        print_json(&session.deep_dom().await?)?;
+        print_json_mode(&session.deep_dom().await?, response_mode)?;
         return Ok(());
     }
     if matches!(lower.as_str(), "observe" | "context") {
-        print_json(&session.observe().await?)?;
+        print_json_mode(&session.observe().await?, response_mode)?;
         return Ok(());
     }
 
-    print_json(&session.evaluate(trimmed).await?)?;
+    print_json_mode(&session.evaluate(trimmed).await?, response_mode)?;
+    Ok(())
+}
+
+fn print_json_mode<T: Serialize + ?Sized>(value: &T, mode: ResponseMode) -> BrowserResult<()> {
+    let value = serde_json::to_value(value)?;
+    let projected = project_and_store(value, mode, "cli", default_result_store_path())?;
+    println!("{}", compact_json(&projected)?);
     Ok(())
 }
 
@@ -1521,6 +1676,22 @@ mod tests {
         assert_eq!(parsed["items"], json!([1, 2]));
         assert!(parsed["contextCost"]["payloadBytes"].as_u64().unwrap() > 0);
         assert!(parsed["contextCost"]["estimatedTokens"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn path_writability_accepts_missing_child_under_writable_parent() {
+        let root = std::env::temp_dir().join(format!("glass-doctor-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let missing_child = root.join("future").join("artifact");
+
+        assert!(path_is_writable(Some(&missing_child)));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_writability_rejects_missing_path_without_parent() {
+        assert!(!path_is_writable(None));
     }
 
     #[test]

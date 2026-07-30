@@ -17,12 +17,11 @@ not certify a future published crate without repeating the checks.
 
 ## Checks passed
 
-The following checks passed on this host with the checked-out `0.2.1` source:
+The following checks passed on this host with the checked-out `0.2.2` source:
 
-- `cargo test --all-targets --locked` — 360 passed, 1 ignored;
-- `GLASS_E2E=1 GLASS_DISABLE_CHROME_SANDBOX=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1` — 11 passed;
-- `GLASS_EXTENSION_SANDBOX_E2E=1 GLASS_EXTENSION_SANDBOX_KIND=linux-bubblewrap cargo test --lib extensions::tests::sandboxed_reference_extensions_pass_native_gate --locked` — passed;
-- `cargo package --locked --no-verify` — package contents validated; and
+- `cargo test --all-targets --locked` — 408 passed, 1 ignored;
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1` — 11 passed;
+- `cargo package --locked --no-verify` — 187 package files validated; and
 - `cargo publish --locked --dry-run --no-verify` — crates.io publication dry-run passed without uploading.
 - `cargo run -- --experimental-extensions capabilities` — reported the
   `extensions` capability as `experimental` on this host.

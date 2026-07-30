@@ -133,7 +133,7 @@ pub enum KnowledgeSignalKind {
 
 /// One bounded positive or negative assessment explanation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeAssessmentSignal {
     pub kind: KnowledgeSignalKind,
     pub detail: String,
@@ -153,7 +153,7 @@ pub enum KnowledgeAssessmentStatus {
 /// Fresh-state assessment of one stored record. This result contains no target
 /// reference and cannot authorize a browser mutation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeAssessment {
     pub record_id: String,
     pub status: KnowledgeAssessmentStatus,
@@ -178,7 +178,7 @@ pub enum KnowledgeObservationMode {
 /// Fresh semantic observation plus explicit, non-authorizing knowledge
 /// assessment evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeObservationReport {
     pub observation: SemanticObservation,
     pub mode: KnowledgeObservationMode,
@@ -220,7 +220,7 @@ pub enum KnowledgeConfidence {
 
 /// Scope dimensions that prevent knowledge from crossing incompatible sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeScope {
     pub origin: String,
     pub path_pattern: String,
@@ -250,7 +250,7 @@ pub enum KnowledgeProfileScope {
 
 /// Provenance and verification counters for a knowledge record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeSource {
     pub first_seen_at: String,
     pub last_verified_at: String,
@@ -260,7 +260,7 @@ pub struct KnowledgeSource {
 
 /// Conditions that make remembered knowledge stale or unusable.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeInvalidation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_age_seconds: Option<u64>,
@@ -270,7 +270,7 @@ pub struct KnowledgeInvalidation {
 
 /// One bounded, auditable lifecycle transition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeLifecycleEvent {
     pub from: KnowledgeConfidence,
     pub to: KnowledgeConfidence,
@@ -281,7 +281,7 @@ pub struct KnowledgeLifecycleEvent {
 /// A versioned knowledge record. `data` is deliberately opaque to this layer,
 /// but its shape, size, and sensitive field names are strictly bounded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeRecord {
     pub schema_version: u32,
     pub record_id: String,
@@ -853,7 +853,7 @@ fn path_matches(pattern: &str, path: &str) -> bool {
 
 /// The persisted top-level store document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeStoreSnapshot {
     pub schema_version: u32,
     pub records: Vec<KnowledgeRecord>,

@@ -80,6 +80,8 @@ Additional Linux ARM64 release-candidate evidence is now available:
   tool inventory;
 - TypeScript, Python, and npm package checks pass against the release binary,
   with machine-readable evidence bound to each target artifact;
+- the local `glass-browser` `0.2.1` crate packages successfully with 168
+  entries and the declared exclusion set;
 - a temporary Cargo home installed published `0.1.18`, installed the packaged
   `0.2.0` crate, and upgraded the same installation root successfully; and
 - Linux bubblewrap extension sandbox, redaction, permission, and lifecycle

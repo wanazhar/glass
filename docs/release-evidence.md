@@ -32,6 +32,8 @@ python3 scripts/check-feature-parity.py
 python3 scripts/check-reliability-matrix.py
 python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-version-sync.py
+cargo package --locked --no-verify
+cargo package --locked --list
 ```
 
 Packaged-artifact reports are produced by the release matrix. Do not replace

@@ -1,0 +1,41 @@
+schemaVersion: 1
+name: checkout-submit
+workflowVersion: 1.0.0
+description: Review and submit a checkout with explicit confirmation input.
+inputs:
+  order_id:
+    type: string
+    required: true
+    maxLength: 128
+  confirmation_token:
+    type: string
+    required: true
+budgets:
+  maxSteps: 4
+  maxDurationMs: 45000
+  maxRetries: 0
+  maxExtractedBytes: 4096
+steps:
+  - id: open-checkout
+    action: navigate
+    url: https://example.test/checkout/${inputs.order_id}
+    timeoutMs: 20000
+    transaction: read_only
+    expect:
+      visible: role=heading;name=Checkout
+  - id: review-total
+    action: observe
+    transaction: read_only
+  - id: submit-checkout
+    action: click
+    target: role=button;name=Submit order
+    transaction: non_idempotent
+    idempotencyKey: checkout-submit-${inputs.order_id}
+    expect:
+      textContains: Order submitted
+  - id: verify-submit
+    action: observe
+    transaction: read_only
+terminalCondition:
+  textContains: Order submitted
+outputs: {}

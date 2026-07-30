@@ -1,6 +1,6 @@
 id: release-029-006
 scope: 0.2.2 release gates
-status: pending
+status: done
 depends-on: [release-029-001, release-029-002, release-029-003, release-029-004, release-029-005]
 
 # Objective

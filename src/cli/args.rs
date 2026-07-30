@@ -353,6 +353,27 @@ pub enum Commands {
         region: Option<String>,
     },
 
+    /// Capture the bounded task-oriented page inspection contract.
+    InspectPage,
+
+    /// Resolve target candidates without acting.
+    FindTarget { input: PathBuf },
+
+    /// Run one guarded semantic action and verify an optional postcondition.
+    ActAndVerify {
+        input: PathBuf,
+        #[arg(long)]
+        predicate: Option<String>,
+        #[arg(long, default_value_t = 10_000)]
+        timeout_ms: u64,
+    },
+
+    /// Extract typed records from a fresh semantic region.
+    ExtractStructured { input: PathBuf },
+
+    /// Recover a potentially indeterminate execution conservatively.
+    RecoverRun { execution_id: String },
+
     /// Scroll the page by CSS pixels.
     Scroll {
         #[arg(long, default_value_t = 0.0)]
@@ -517,6 +538,12 @@ pub enum Commands {
         action: CheckpointCommand,
     },
 
+    /// Create, inspect, diff, or purge redacted local session snapshots.
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotCommand,
+    },
+
     /// Read text from the system clipboard.
     ClipboardRead,
 
@@ -562,11 +589,21 @@ pub enum KnowledgeCommand {
         state: KnowledgeInvalidationState,
         #[arg(long)]
         reason: Option<String>,
+
         #[arg(long)]
         observed_at: Option<String>,
     },
     /// Remove every record for one exact origin.
     Purge { origin: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SnapshotCommand {
+    Create,
+    List,
+    Inspect { snapshot_id: String },
+    Diff { from: String, to: String },
+    Purge,
 }
 
 #[derive(Debug, Subcommand)]
@@ -623,6 +660,13 @@ pub enum WorkflowAuthoringCommand {
         input: PathBuf,
         #[arg(long)]
         warnings_as_errors: bool,
+    },
+    /// List or initialize one of the reviewable workflow starter templates.
+    Templates {
+        /// Optional template name; omit to list available templates.
+        name: Option<String>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 

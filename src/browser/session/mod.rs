@@ -61,6 +61,10 @@ use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
 mod types;
+pub use agent::{
+    ActAndVerifyResult, ExtractionField, ExtractionKind, FindTargetResult, InspectPageResult,
+    RecoverRunResult, StructuredExtractionRequest, StructuredExtractionResult,
+};
 pub use authoring::{
     WORKFLOW_AUTHORING_SCHEMA_VERSION, WorkflowAuthoringDocument, WorkflowAuthoringFormat,
     WorkflowCompileError, WorkflowDiagnostic, WorkflowDiagnosticSeverity, WorkflowDiff,
@@ -107,9 +111,14 @@ pub use semantic::{
     SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity, SemanticTarget,
     SemanticTargetChange,
 };
+pub use snapshot::{
+    SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,
+    default_session_snapshot_path,
+};
 pub use types::*;
 pub use webauthn::{WebAuthnGuard, WebAuthnOptions};
 mod action;
+mod agent;
 mod authoring;
 mod batch;
 mod checkpoint;
@@ -136,6 +145,7 @@ mod polite;
 mod popup;
 mod retry;
 mod semantic;
+mod snapshot;
 pub mod storage;
 pub use storage::{Cookie, StorageEntry, StorageItems};
 mod target;

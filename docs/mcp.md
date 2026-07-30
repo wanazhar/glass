@@ -148,6 +148,11 @@ A tool may request one bounded failure-trace content item with
 | `listFrames`, `selectFrame` | Manage frames. |
 | `resolveIntent`, `executeIntent` | Resolve and execute an explicit intent. |
 | `observeKnowledge`, `resolveIntentWithKnowledge` | Use the optional local knowledge store. |
+| `inspectPage`, `findTarget` | Return bounded semantic page state and candidates without acting. |
+| `actAndVerify` | Execute one explicit intent with optional postcondition evidence. |
+| `extractStructured` | Return bounded typed fields with revision provenance. |
+| `recoverRun` | Return conservative recovery guidance after indeterminate execution. |
+| `sessionSnapshot` | Create, list, inspect, diff, or purge redacted local snapshots. |
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |

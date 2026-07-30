@@ -1,6 +1,6 @@
 id: release-029-005
 scope: 0.2.2 maintainability and distribution
-status: pending
+status: done
 depends-on: [release-029-003, release-029-004]
 
 # Objective

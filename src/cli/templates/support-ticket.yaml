@@ -1,0 +1,49 @@
+schemaVersion: 1
+name: support-ticket
+workflowVersion: 1.0.0
+description: Draft and submit a support ticket with explicit bounded inputs.
+inputs:
+  subject:
+    type: string
+    required: true
+    maxLength: 160
+  message:
+    type: string
+    required: true
+    maxLength: 4096
+  session_token:
+    type: string
+    required: true
+budgets:
+  maxSteps: 4
+  maxDurationMs: 45000
+  maxRetries: 0
+  maxExtractedBytes: 4096
+steps:
+  - id: open-support
+    action: navigate
+    url: https://example.test/support
+    timeoutMs: 20000
+    transaction: read_only
+    expect:
+      urlEquals: https://example.test/support
+  - id: enter-subject
+    action: type
+    text: ${inputs.subject}
+    target: role=textbox;name=Subject
+    transaction: idempotent
+  - id: enter-message
+    action: type
+    text: ${inputs.message}
+    target: role=textbox;name=Message
+    transaction: idempotent
+  - id: submit-ticket
+    action: click
+    target: role=button;name=Submit ticket
+    transaction: non_idempotent
+    idempotencyKey: support-ticket-${inputs.subject}
+    expect:
+      textContains: Ticket created
+terminalCondition:
+  textContains: Ticket created
+outputs: {}

@@ -174,3 +174,42 @@ conditional skip, budget exhaustion, marker reconciliation, and terminal-proof
 refusal.
 
 The scorecard is local evidence. It is not a public release claim.
+
+## Starter templates
+
+The CLI ships five reviewable templates. List them with:
+
+```console
+glass workflow templates
+```
+
+Initialize one without starting Chrome:
+
+```console
+glass workflow templates account-search --output account-search.yaml
+```
+
+Templates use bounded semantic targets, explicit transaction classes, verification
+predicates, budgets, and `${inputs.*}` placeholders. Secret-looking inputs are
+declared as runtime values and are never embedded in the source.
+
+## Redacted session snapshots
+
+Create a bounded, read-only snapshot from a live session:
+
+```console
+glass snapshot create
+```
+
+Inspect, compare, list, or purge local snapshots without starting Chrome:
+
+```console
+glass snapshot list
+glass snapshot inspect SNAPSHOT_ID
+glass snapshot diff FROM_ID TO_ID
+glass snapshot purge
+```
+
+Snapshots omit DOM, raw accessibility, visible text, query strings, and
+secret-looking labels. They are versioned, capped at 128 KiB each, and stored
+under the Glass configuration directory.

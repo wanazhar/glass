@@ -135,6 +135,16 @@ pub use session::WebAuthnGuard;
 pub use session::WebAuthnOptions;
 /// Computes a structured diff between two accessibility snapshots.
 pub use session::diff_accessibility;
+/// Bounded task-oriented inspection, targeting, verification, extraction, and recovery results.
+pub use session::{
+    ActAndVerifyResult, ExtractionField, ExtractionKind, FindTargetResult, InspectPageResult,
+    RecoverRunResult, StructuredExtractionRequest, StructuredExtractionResult,
+};
+/// Versioned, redacted local session snapshots and deterministic diffs.
+pub use session::{
+    SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,
+    default_session_snapshot_path,
+};
 /// Versioned declarative workflow definition and validation types.
 pub use session::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,

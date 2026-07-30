@@ -1,6 +1,6 @@
 id: release-029-004
 scope: 0.2.2 bounded state and templates
-status: pending
+status: done
 depends-on: [release-029-001, release-029-003]
 
 # Objective

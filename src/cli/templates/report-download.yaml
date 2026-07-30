@@ -1,0 +1,38 @@
+schemaVersion: 1
+name: report-download
+workflowVersion: 1.0.0
+description: Request a bounded report download and verify completion.
+inputs:
+  report_id:
+    type: string
+    required: true
+    maxLength: 128
+  session_token:
+    type: string
+    required: true
+budgets:
+  maxSteps: 3
+  maxDurationMs: 60000
+  maxRetries: 1
+  maxExtractedBytes: 4096
+steps:
+  - id: open-report
+    action: navigate
+    url: https://example.test/reports/${inputs.report_id}
+    timeoutMs: 20000
+    transaction: read_only
+    expect:
+      visible: role=heading;name=Report
+  - id: download-report
+    action: click
+    target: role=button;name=Download report
+    transaction: non_idempotent
+    idempotencyKey: report-download-${inputs.report_id}
+    expect:
+      downloadStarted: true
+  - id: verify-report
+    action: observe
+    transaction: read_only
+terminalCondition:
+  textContains: Report ready
+outputs: {}

@@ -1,0 +1,42 @@
+schemaVersion: 1
+name: profile-update
+workflowVersion: 1.0.0
+description: Update one profile field with a caller-provided secret placeholder.
+inputs:
+  display_name:
+    type: string
+    required: true
+    maxLength: 128
+  session_token:
+    type: string
+    required: true
+budgets:
+  maxSteps: 3
+  maxDurationMs: 30000
+  maxRetries: 0
+  maxExtractedBytes: 4096
+steps:
+  - id: open-profile
+    action: navigate
+    url: https://example.test/profile
+    timeoutMs: 20000
+    transaction: read_only
+    expect:
+      urlEquals: https://example.test/profile
+  - id: update-display-name
+    action: type
+    text: ${inputs.display_name}
+    target: role=textbox;name=Display name
+    transaction: idempotent
+    expect:
+      visible: role=textbox;name=Display name
+  - id: save-profile
+    action: click
+    target: role=button;name=Save profile
+    transaction: non_idempotent
+    idempotencyKey: profile-update-${inputs.display_name}
+    expect:
+      textContains: Profile saved
+terminalCondition:
+  textContains: Profile saved
+outputs: {}

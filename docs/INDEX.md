@@ -21,6 +21,8 @@ unreleased development build.
   field and versioning rules.
 - [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
   and security.
+- [Ownership and compatibility](ownership.md) — module ownership, artifact
+  redaction, and cross-interface change rules.
 - [Local daemon](daemon.md) — Unix-socket lifecycle, status, isolated client
   boundaries, and mutation leases.
 - [Extensions](extensions.md) — versioned manifests, bounded hosts, native

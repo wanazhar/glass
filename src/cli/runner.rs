@@ -5,7 +5,8 @@
 
 use super::args::{
     CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, KnowledgeCommand,
-    KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, WorkflowAuthoringCommand,
+    KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, SnapshotCommand,
+    WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -13,10 +14,11 @@ use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie,
     KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
-    SessionOptions, VerificationPredicate, VisualCaptureOptions, WaitCondition,
-    WorkflowAuthoringFormat, WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity,
-    WorkflowRecordingSession, compile_workflow, default_knowledge_store_path, diff_workflows,
-    format_workflow_yaml, preview_workflow, record_semantic_events,
+    SessionOptions, SessionSnapshotStore, StructuredExtractionRequest, VerificationPredicate,
+    VisualCaptureOptions, WaitCondition, WorkflowAuthoringFormat, WorkflowCheckpoint,
+    WorkflowDefinition, WorkflowDiagnosticSeverity, WorkflowRecordingSession, compile_workflow,
+    default_knowledge_store_path, diff_workflows, format_workflow_yaml, preview_workflow,
+    record_semantic_events,
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::reliability::{
@@ -91,6 +93,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::Knowledge { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_knowledge(action, cli.knowledge_store.as_deref(), &cli.profile)?;
+            return Ok(());
+        }
+        Some(Commands::Snapshot { action }) if !matches!(action, SnapshotCommand::Create) => {
+            dispatch_snapshot(action, &cli.profile)?;
             return Ok(());
         }
         Some(Commands::Result { action }) => {
@@ -667,8 +673,51 @@ fn dispatch_knowledge(
     Ok(())
 }
 
+fn dispatch_snapshot(action: &SnapshotCommand, profile: &str) -> BrowserResult<()> {
+    ProfileManager::validate_name(profile)?;
+    let store = SessionSnapshotStore::new(crate::browser::session::default_session_snapshot_path(
+        profile,
+    ));
+    match action {
+        SnapshotCommand::Create => unreachable!("snapshot creation requires a browser session"),
+        SnapshotCommand::List => print_json(&store.list()?)?,
+        SnapshotCommand::Inspect { snapshot_id } => print_json(&store.load(snapshot_id)?)?,
+        SnapshotCommand::Diff { from, to } => print_json(&store.diff(from, to)?)?,
+        SnapshotCommand::Purge => print_json(&serde_json::json!({"removed": store.purge()?}))?,
+    }
+    Ok(())
+}
+
 fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResult<()> {
     match action {
+        WorkflowAuthoringCommand::Templates { name, output } => {
+            let names = [
+                "account-search",
+                "checkout-submit",
+                "profile-update",
+                "report-download",
+                "support-ticket",
+            ];
+            let Some(name) = name else {
+                print_json(&names)?;
+                return Ok(());
+            };
+            let source = workflow_template(name)
+                .ok_or_else(|| format!("unknown workflow template: {name}"))?;
+            let document = compile_workflow(source, WorkflowAuthoringFormat::Yaml)?;
+            if document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == WorkflowDiagnosticSeverity::Error)
+            {
+                return Err(format!("workflow template {name} failed compilation").into());
+            }
+            if let Some(output) = output {
+                std::fs::write(output, source)?;
+            } else {
+                print!("{source}");
+            }
+        }
         WorkflowAuthoringCommand::Compile { input, output } => {
             let source = std::fs::read_to_string(input)?;
             let document = compile_workflow(&source, authoring_format(input))?;
@@ -767,6 +816,16 @@ fn authoring_format(path: &std::path::Path) -> WorkflowAuthoringFormat {
     }
 }
 
+fn workflow_template(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "account-search" => include_str!("templates/account-search.yaml"),
+        "checkout-submit" => include_str!("templates/checkout-submit.yaml"),
+        "profile-update" => include_str!("templates/profile-update.yaml"),
+        "report-download" => include_str!("templates/report-download.yaml"),
+        "support-ticket" => include_str!("templates/support-ticket.yaml"),
+        _ => return None,
+    })
+}
 async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserResult<()> {
     match command {
         Commands::Certify {
@@ -791,13 +850,30 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
             )
             .await?;
         }
+        Commands::Snapshot {
+            action: SnapshotCommand::Create,
+        } => {
+            let observation = session
+                .semantic_observe(SemanticObservationLevel::Structured)
+                .await?;
+            let snapshot = crate::browser::session::SessionSnapshot::from_observation(
+                session.profile.clone(),
+                observation,
+            );
+            let store = SessionSnapshotStore::new(
+                crate::browser::session::default_session_snapshot_path(&session.profile),
+            );
+            store.save(&snapshot)?;
+            print_json(&snapshot)?;
+        }
         Commands::Capabilities
         | Commands::Daemon { .. }
         | Commands::Doctor { .. }
         | Commands::McpConfig { .. }
         | Commands::Result { .. }
         | Commands::Certify { .. }
-        | Commands::Knowledge { .. } => {
+        | Commands::Knowledge { .. }
+        | Commands::Snapshot { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
         Commands::Navigate {
@@ -1032,6 +1108,39 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
                 _ => return Err("form values can only be combined with compact observe".into()),
             };
             print_json(&context)?;
+        }
+        Commands::InspectPage => print_json(&session.inspect_page().await?)?,
+        Commands::FindTarget { input } => {
+            let request = SemanticIntentRequest::from_json(&serde_json::to_string(
+                &read_json_input(Some(input))?,
+            )?)?;
+            print_json(&session.find_target(&request).await?)?;
+        }
+        Commands::ActAndVerify {
+            input,
+            predicate,
+            timeout_ms,
+        } => {
+            let request = SemanticIntentExecutionRequest::from_json(&serde_json::to_string(
+                &read_json_input(Some(input))?,
+            )?)?;
+            let predicate = predicate
+                .as_deref()
+                .map(serde_json::from_str::<VerificationPredicate>)
+                .transpose()?;
+            print_json(
+                &session
+                    .act_and_verify(&request, predicate, Duration::from_millis(*timeout_ms))
+                    .await?,
+            )?;
+        }
+        Commands::ExtractStructured { input } => {
+            let request: StructuredExtractionRequest =
+                serde_json::from_value(read_json_input(Some(input))?)?;
+            print_json(&session.extract_structured(&request).await?)?;
+        }
+        Commands::RecoverRun { execution_id } => {
+            print_json(&session.recover_run(execution_id)?)?;
         }
         Commands::Scroll {
             dx,
@@ -1412,5 +1521,28 @@ mod tests {
         assert_eq!(parsed["items"], json!([1, 2]));
         assert!(parsed["contextCost"]["payloadBytes"].as_u64().unwrap() > 0);
         assert!(parsed["contextCost"]["estimatedTokens"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn workflow_starter_templates_compile_without_coordinate_actions() {
+        for name in [
+            "account-search",
+            "checkout-submit",
+            "profile-update",
+            "report-download",
+            "support-ticket",
+        ] {
+            let source = workflow_template(name).unwrap();
+            let document = compile_workflow(source, WorkflowAuthoringFormat::Yaml).unwrap();
+            assert!(
+                !document
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == WorkflowDiagnosticSeverity::Error),
+                "{name} diagnostics: {:?}",
+                document.diagnostics
+            );
+            assert!(!source.contains("clickAt"));
+        }
     }
 }

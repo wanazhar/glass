@@ -2,7 +2,7 @@
 
 Glass defines a versioned extension manifest and a bounded process host. The
 extension capability is shipped in 0.2.0 but remains disabled by policy until
-the native security gate passes on the applicable release environment.
+the native security gate passes on the applicable environment.
 
 ## Manifest
 
@@ -79,18 +79,14 @@ each process to exit before it returns. This does not make an extension
 trusted. Redaction, native sandbox, and cross-transport checks must also pass
 before Glass enables the capability.
 
-The release matrix runs the opt-in
-`sandboxed_reference_extensions_pass_native_gate` test on each supported target,
-records the detected native sandbox, and merges four target rows with:
+The local verification command for the current host is:
 
 ```console
-python3 scripts/merge-extension-sandbox-evidence.py \
-  evidence/sandbox-matrix.json evidence/sandbox
+GLASS_EXTENSION_SANDBOX_E2E=1 \
+GLASS_EXTENSION_SANDBOX_KIND=linux-bubblewrap \
+cargo test --lib extensions::tests::sandboxed_reference_extensions_pass_native_gate --locked
 ```
 
-Each row is written after packaging and includes the exact artifact filename,
-target, size, and SHA-256. The merge gate rejects sandbox results that are not
-bound to the expected target artifact.
-
-The merged evidence still reports the capability as `blockedBySecurityGate`
-until every target passes.
+This verifies the native sandbox on Linux ARM64 only. The capability remains
+`blockedBySecurityGate` for any target whose native sandbox has not been
+verified separately.

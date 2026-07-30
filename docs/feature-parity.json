@@ -136,7 +136,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared Unix-socket implementation; native lifecycle and artifact certification remains incomplete."
+      "reason": "Shared Unix-socket implementation; native lifecycle verification remains incomplete outside the local host."
     },
     {
       "id": "rust-library",
@@ -149,7 +149,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent public library; exact artifact and compatibility evidence remains incomplete."
+      "reason": "Platform-independent public library; compatibility evidence remains incomplete outside the local host."
     },
     {
       "id": "mcp-stdio",
@@ -162,7 +162,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared protocol implementation; complete cross-artifact inventory and compatibility evidence remains incomplete."
+      "reason": "Shared protocol implementation; complete cross-target compatibility evidence remains incomplete."
     },
     {
       "id": "typescript-client",
@@ -175,7 +175,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared client implementation; package and released-artifact matrix remains incomplete."
+      "reason": "Shared client implementation; package and cross-target compatibility evidence remains incomplete."
     },
     {
       "id": "python-client",
@@ -188,7 +188,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared client implementation; package and released-artifact matrix remains incomplete."
+      "reason": "Shared client implementation; package and cross-target compatibility evidence remains incomplete."
     },
     {
       "id": "tui",

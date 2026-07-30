@@ -16,7 +16,7 @@ Each target status uses one of these values:
 
 | Status | Meaning |
 |---|---|
-| `certified` | The exact target artifact passed the required evidence. |
+| `certified` | The target environment passed the required native evidence. |
 | `shippedUncertified` | The capability is shipped, but required target evidence is incomplete. |
 | `experimental` | The capability is available only as an explicitly experimental surface. |
 | `disabledByPolicy` | Policy disables the capability even though the implementation is present. |
@@ -31,8 +31,8 @@ outside this matrix and remains unsupported.
 
 The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The
-matrix is evidence inventory, not a claim that every 0.2.0 artifact has passed
-the complete post-release certification suite.
+matrix is evidence inventory, not a claim that every declared target has passed
+the complete native verification suite.
 
 See [platform support and local certification](ci-platform-certification.md)
 for the local verification boundary.

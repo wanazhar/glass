@@ -65,9 +65,8 @@ The runner:
 The runner rejects workflow sources outside `--workflow-root`.
 
 The capability-suite smoke test can persist its redacted evidence by setting
-`GLASS_RELIABILITY_EVIDENCE_DIR`. Native CI stores one six-file directory per
-release target. Merge those directories and run the existing release gate once
-per target:
+`GLASS_RELIABILITY_EVIDENCE_DIR`. A local checkout can merge those files and
+run the scorecard against the local binary:
 
 ```console
 python3 scripts/merge-reliability-evidence.py \
@@ -75,21 +74,14 @@ python3 scripts/merge-reliability-evidence.py \
 python3 scripts/certify-reliability-matrix.py \
   evidence/reliability-matrix.json \
   --scenarios tests/fixtures/reliability-capability-suite-v1.json \
-  --binary target/release/glass \
+  --binary target/debug/glass \
   --version 0.2.1 \
   --output evidence/reliability-scorecards.json
 ```
 
-The release workflow packages the target before uploading these rows and runs
-`scripts/bind-artifact-evidence.py` over each directory. Every scenario row
-therefore carries the packaged filename, target, byte size, and SHA-256. The
-merger rejects rows without one exact artifact binding per target, so a
-runtime report from an unstripped build cannot silently become release
-evidence.
-
-The merger requires all six scenarios, both redacted replay and independent
-oracle evidence, and a complete clean run on each of the four native targets.
-Only the second command may report `runtime_certification: certified`.
+The local scorecard requires all six scenarios, both redacted replay and
+independent oracle evidence, and a complete clean run for the evidence it is
+given. A local scorecard is not a cross-platform or published-release claim.
 
 Renderer and browser disconnect probes are unsupported for release
 certification when the browser cannot provide a complete post-fault oracle.

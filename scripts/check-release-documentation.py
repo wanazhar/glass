@@ -11,8 +11,8 @@ REQUIRED_MARKERS = {
     "CHANGELOG.md": ["## [Unreleased] — 0.2.1"],
     "docs/release-checklist.md": [
         "current published release is `glass-browser` version `0.2.0`",
-        "next release, `0.2.1`",
-        "Do not describe a `0.2.1` GitHub release",
+        "next crates.io release, `0.2.1`",
+        "GitHub release binaries, checksum manifests, Sigstore bundles",
     ],
     "docs/feature-parity.md": [
         "published 0.2.0 baseline",
@@ -20,9 +20,9 @@ REQUIRED_MARKERS = {
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [
-        "`contract-matrix.json`",
-        "verify-runtime-artifact-evidence.py",
-        "publication, and the\nGitHub release remain pending",
+        "`feature-parity.json`",
+        "cargo publish --locked --dry-run",
+        "No GitHub binary release is expected",
     ],
     "docs/plan/analysis/release-audit-028.md": [
         "`0.2.0` publication boundary has been crossed",

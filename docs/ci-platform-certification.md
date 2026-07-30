@@ -1,13 +1,14 @@
-# CI-native platform certification
+# Platform support and local certification
 
-Glass uses native CI runners for release-target evidence. Cross-compilation
-proves that a target builds; it does not prove browser launch, terminal startup,
-Unix-socket behavior, filesystem permissions, or native sandbox behavior.
+The release path is crates-only. It does not build or publish native release
+binaries. Cross-compilation or source-level CI proves that code can build; it
+does not prove browser launch, terminal startup, Unix-socket behavior,
+filesystem permissions, or native sandbox behavior on another OS.
 
-## Release matrix
+## Declared target inventory
 
-The release workflow in `.github/workflows/release.yml` is the executable
-source for this matrix:
+The feature parity file is a declared implementation inventory, not a claim
+that these targets have been verified on the current machine:
 
 | Target | Native runner | Rust target | Browser source |
 |---|---|---|---|
@@ -21,43 +22,15 @@ environment when the hosted ARM64 runner is unavailable. That evidence is a
 separate Linux ARM64 row. It must not replace the Linux x86-64 or macOS rows,
 and it must record the installed Chromium package and version.
 
-## Evidence produced by each runner
+## Current local evidence
 
-Each matrix job builds and tests the target, packages and strips the artifact,
-runs browser and TUI smoke against that exact artifact, and then records:
+The current development machine is Linux ARM64. Its local support claim is
+limited to the checked-out source, its Rust target, and the installed Chromium
+runtime. The other rows above remain unverified here.
 
-- source commit and workflow run URL;
-- target, runner OS, runner architecture, image, and image version;
-- browser family and exact browser version;
-- artifact name, byte size, and SHA-256;
-- browser smoke command and bounded raw report;
-- CLI help output;
-- capability manifest; and
-- complete MCP tool names and input schemas.
-
-Contract collection normalizes the packaged executable basename in CLI help
-(`Usage: ...`) to `glass`; target-specific artifact names remain recorded in
-the surrounding artifact metadata.
-
-The acceptance job fails closed when a target is missing, duplicated, bound to
-another source revision, missing artifact or runner metadata, or differs in
-CLI, capability, or MCP contract from the other supported targets.
-It also verifies that the browser-smoke and contract reports name the same
-artifact hash, size, and filename for every target.
-The acceptance gate additionally joins the certified reliability, sandbox, and
-knowledge-migration matrices to those exact contract artifact hashes before
-the final release job assembles its evidence. Client compatibility results are
-joined by the same gate when present.
-The final release job verifies those hashes and sizes again against the
-downloaded artifact bytes before it creates the checksum manifest.
-
-The release workflow runs TypeScript, Python, and npm launcher compatibility
-against the downloaded target artifact on each native runner. It also runs the
-isolated Cargo install and upgrade check on each target.
-
-See [Release evidence](release-evidence.md) for the complete report inventory,
-artifact-binding rules, and the distinction between static local checks and
-native release certification.
+Record the host, Rust target, browser version, and commands when refreshing
+the local evidence. See [Release evidence](release-evidence.md) for the
+crates-only publication boundary.
 
 ## Local reproduction
 
@@ -76,6 +49,6 @@ supported Chrome or Chromium installation:
 GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
 ```
 
-Do not mark a target `certified` from a cross-compiled binary or emulated
-browser run alone. Use the machine-readable platform and artifact contract
-reports produced by the release workflow.
+Do not mark another target `certified` from a cross-compiled binary or
+emulated browser run alone. The current local result is a Linux ARM64 result,
+not a cross-platform release claim.

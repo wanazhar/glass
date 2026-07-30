@@ -1,7 +1,7 @@
 # Cross-platform feature parity
 
 The machine-readable [feature parity matrix](feature-parity.json) is the
-authoritative inventory for the four supported release targets:
+authoritative implementation inventory for four declared targets:
 
 - Linux x86-64;
 - Linux arm64;
@@ -10,8 +10,7 @@ authoritative inventory for the four supported release targets:
 
 The matrix records the published 0.2.0 baseline and the 0.2.1 work stream. It
 separates implementation from target status. A capability can be implemented
-and shipped while its exact artifact, browser, package, or security evidence
-is still incomplete.
+while runtime verification on a particular OS remains incomplete.
 
 Each target status uses one of these values:
 
@@ -25,19 +24,15 @@ Each target status uses one of these values:
 | `unsupported` | The target does not support the capability. |
 
 The current matrix intentionally marks ordinary cross-platform capabilities as
-`shippedUncertified`, not unsupported. Native extensions are
-`blockedBySecurityGate` until the native sandbox suites pass for the release
-environment. Windows is outside this matrix and remains unsupported.
+`shippedUncertified`, not unsupported. This is an inventory status, not a local
+support claim. Native extensions are `blockedBySecurityGate` until the native
+sandbox boundary is verified for the applicable environment. Windows is
+outside this matrix and remains unsupported.
 
 The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The
 matrix is evidence inventory, not a claim that every 0.2.0 artifact has passed
 the complete post-release certification suite.
 
-The release workflow also emits `contract-matrix.json`. It compares the exact
-packaged artifact from every native runner for CLI help, the capability
-manifest, and the complete MCP tool/schema inventory. A missing target, changed
-contract, revision mismatch, or duplicate artifact fails the merge step.
-
-See [CI-native platform certification](ci-platform-certification.md) for the
-runner matrix and reproduction boundary.
+See [platform support and local certification](ci-platform-certification.md)
+for the local verification boundary.

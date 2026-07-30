@@ -141,7 +141,7 @@ def main() -> None:
     required_text = {
         "README.md": "| 0.2.0 | Current release |",
         "CHANGELOG.md": "## [Unreleased] — 0.2.1",
-        "docs/release-checklist.md": "next release, `0.2.1`",
+        "docs/release-checklist.md": "next crates.io release, `0.2.1`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.0 published; post-release certification",
     }
     for relative_path, expected in required_text.items():

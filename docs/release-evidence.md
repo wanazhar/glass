@@ -1,26 +1,20 @@
 # Release evidence
 
-The 0.2.1 release workflow produces evidence in layers. A report is not a
-release claim unless its runtime status is certified and its artifact identity
-joins to the contract matrix.
+The 0.2.1 release path publishes one thing: the `glass-browser` crate on
+crates.io. Versioning and `vX.Y.Z` tags remain required, but the project no
+longer builds, uploads, signs, or publishes native GitHub release binaries.
 
 ## Evidence layers
 
 | Report | Producer | Binding | Certification meaning |
 |---|---|---|---|
-| `feature-parity.json` | `check-feature-parity.py` | source checkout | Static four-target inventory; runtime not claimed |
-| `platform-matrix.json` | `merge-platform-evidence.py` | packaged artifact SHA-256 | Browser/platform smoke passed on each native runner |
-| `contract-matrix.json` | `merge-contract-evidence.py` | packaged artifact SHA-256 | CLI help, capability manifest, and MCP tools agree |
-| `reliability-scorecards.json` | `certify-reliability-matrix.py` | packaged artifact SHA-256 | Six deterministic scenarios certified per target |
-| `sandbox-matrix.json` | `merge-extension-sandbox-evidence.py` | packaged artifact SHA-256 | Native sandbox gate passed per target |
-| `knowledge-migration-matrix.json` | `merge-knowledge-migration-evidence.py` | packaged artifact SHA-256 | v1 round-trip and v2 rejection passed per target |
-| `client-compatibility-matrix.json` | `merge-client-compatibility-evidence.py` | packaged artifact SHA-256 | TypeScript, Python, and npm launcher checks passed |
+| `feature-parity.json` | `check-feature-parity.py` | source checkout | Declared implementation inventory; runtime not claimed |
+| local browser smoke | `cargo test --test browser_smoke` | current host | Browser behavior verified on the current machine only |
+| crate package | `cargo package` and `cargo publish --dry-run` | source checkout | Package contents and crates.io publication shape are valid |
+| source checks | Rust and Python validation scripts | source checkout | Tests, lint, docs, and release truth are consistent |
 
-The acceptance job first merges the per-target rows. It then runs
-`verify-runtime-artifact-evidence.py`, which compares every certified runtime
-and client row with the exact filename, size, and SHA-256 in
-`contract-matrix.json`. The final release job repeats this join after
-downloading the evidence and verifies the downloaded artifact bytes again.
+These checks intentionally do not create an artifact matrix. A successful
+Linux ARM64 check does not certify Linux x86-64, macOS, or Windows.
 
 ## Local checks
 
@@ -33,21 +27,22 @@ python3 scripts/check-reliability-matrix.py
 python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-version-sync.py
 cargo package --locked --no-verify
+cargo publish --locked --dry-run --no-verify
 cargo package --locked --list
 ```
 
-Packaged-artifact reports are produced by the release matrix. Do not replace
-them with source-build reports: the migration validator labels source-build
-evidence explicitly, and runtime certification requires the packaged binding.
+Run the native browser check on the current machine:
 
-The workflow supports a manual `workflow_dispatch` with a `release_version`
-input. That path runs native build, browser, packaging, reliability, sandbox,
-migration, client, and install/upgrade gates without entering the tag-only
-GitHub Release job. Tag pushes are reserved for the eventual publication run.
+```console
+GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
+```
+
+Record the host and browser details with the result. Do not convert source
+inventory or cross-compilation into a support claim for another OS.
 
 ## Publication boundary
 
-The checked-in 0.2.1 metadata and evidence contracts are local preparation.
-Native Linux/macOS matrix execution, checksum signing, publication, and the
-GitHub release remain pending until the tagged workflow completes. No report
-in this checkout authorizes a push, crate publication, or release creation.
+The checked-in 0.2.1 metadata and evidence are local preparation. A tag keeps
+the versioned release boundary, and the tagged workflow validates and can
+publish the crate only. No GitHub binary release is expected, and no report in
+this checkout authorizes a push or crate publication by itself.

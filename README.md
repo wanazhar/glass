@@ -10,10 +10,10 @@ change a target without an explicit request.
 
 | Item | Status |
 |---|---|
-| Linux x86-64 | Supported target |
-| Linux arm64 | Supported target; use system Chromium or `--chrome-path` |
-| macOS x86-64 | Supported target |
-| macOS arm64 | Supported target |
+| Linux x86-64 | Declared target; not verified on this machine |
+| Linux arm64 | Locally verified target; use system Chromium or `--chrome-path` |
+| macOS x86-64 | Declared target; not verified on this machine |
+| macOS arm64 | Declared target; not verified on this machine |
 | Windows | Unsupported |
 | 0.2.0 | Current release |
 | Chrome and Chromium | Supported browser families |
@@ -21,9 +21,11 @@ change a target without an explicit request.
 
 The command-line interface (CLI), terminal user interface (TUI), Model
 Context Protocol (MCP) server, and Rust library use the same session runtime.
-See the [cross-platform feature parity matrix](docs/feature-parity.md) for
-target certification status and the [release evidence guide](docs/release-evidence.md)
-for artifact-bound certification reports and publication boundaries.
+The support table distinguishes declared targets from the Linux ARM64 machine
+that has been verified locally. See the [cross-platform feature parity
+matrix](docs/feature-parity.md) for implementation inventory and the [release
+evidence guide](docs/release-evidence.md) for the crates-only publication
+boundary.
 
 ## Install the local checkout
 

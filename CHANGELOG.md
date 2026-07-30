@@ -9,13 +9,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 - Explicit capability status reporting distinguishes available, policy-disabled,
   uncertified, and security-gated surfaces across CLI and MCP manifests.
-- Deterministic cross-platform reliability, knowledge migration, native sandbox,
-  client compatibility, and packaged-artifact evidence matrices.
+- Deterministic reliability, knowledge migration, native sandbox, and client
+  compatibility checks for the source checkout.
 
 ### Changed
 
-- Release certification now binds runtime and client evidence to exact artifact
-  hashes and fails closed when reports disagree with contract artifacts.
+- Release validation now checks the crates.io package shape and keeps native
+  platform support claims separate from the locally verified host.
 
 ### Documentation
 

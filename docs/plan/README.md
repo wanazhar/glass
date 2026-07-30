@@ -68,11 +68,12 @@ Completed:
 
 - [ir-030-001](tasks/ir-030-001.md) — versioned fixture corpus and static
   baseline inventory.
+- [ir-030-002](tasks/ir-030-002.md) — bounded extraction contracts, scopes, and
+  resource budgets.
 
 In progress:
 
-- [ir-030-002](tasks/ir-030-002.md) — bounded extraction contracts, scopes, and
-  resource budgets.
+- [ir-030-003](tasks/ir-030-003.md) — evidence quality and coverage metadata.
 
 ## Completed plan: performance overhaul
 

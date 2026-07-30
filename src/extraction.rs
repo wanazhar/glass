@@ -168,6 +168,30 @@ impl ExtractionRequest {
     }
 }
 
+/// Explainable quality class attached to an evidence fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EvidenceQuality {
+    Confirmed,
+    Strong,
+    Partial,
+    Inferred,
+    Conflicted,
+    Opaque,
+}
+
+/// Coverage summary for one bounded extraction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceCoverage {
+    pub structural: EvidenceQuality,
+    pub semantic: EvidenceQuality,
+    pub interactive_entities_observed: u32,
+    pub opaque_regions: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+}
+
 /// Bounded evidence produced from an existing page observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +202,7 @@ pub struct ExtractionEvidence {
     pub sources: Vec<EvidenceSource>,
     pub facts: Vec<EvidenceFact>,
     pub limits: ExtractionEvidenceLimits,
+    pub coverage: EvidenceCoverage,
 }
 
 /// One redacted, source-labelled fact from browser evidence.
@@ -186,6 +211,7 @@ pub struct ExtractionEvidence {
 pub struct EvidenceFact {
     pub source: EvidenceSource,
     pub kind: String,
+    pub quality: EvidenceQuality,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,6 +294,7 @@ pub fn extract_page_context(
                         collector.push(EvidenceFact {
                             source: *source,
                             kind: "control".into(),
+                            quality: EvidenceQuality::Strong,
                             role: Some(control.role.clone()),
                             name: Some(control.name.clone()),
                             input_type: control.input_type.clone(),
@@ -291,8 +318,14 @@ pub fn extract_page_context(
             }
         }
     }
-
     collector.truncated |= context.accessibility.truncated || context.boundaries.truncated;
+    let missing_source_values: Vec<_> = missing_sources.iter().copied().collect();
+    let coverage = evidence_coverage(
+        context,
+        &request.sources,
+        &missing_sources,
+        collector.truncated,
+    );
     let mut evidence = ExtractionEvidence {
         schema_version: EXTRACTION_CONTRACT_SCHEMA_VERSION,
         revision: context.accessibility.revision,
@@ -303,8 +336,9 @@ pub fn extract_page_context(
             truncated: collector.truncated,
             omitted_facts: collector.omitted_facts,
             text_bytes: collector.text_bytes,
-            missing_sources: missing_sources.into_iter().collect(),
+            missing_sources: missing_source_values,
         },
+        coverage,
     };
     trim_to_output_budget(&mut evidence, request.budgets.max_output_bytes)?;
     Ok(evidence)
@@ -359,11 +393,62 @@ impl EvidenceCollector {
             return None;
         }
         let bounded = truncate_utf8(&value, remaining);
+
         self.text_bytes = self.text_bytes.saturating_add(bounded.len() as u32);
         if bounded.len() < value.len() {
             self.truncated = true;
         }
         Some(bounded)
+    }
+}
+fn evidence_coverage(
+    context: &PageContext,
+    sources: &[EvidenceSource],
+    missing_sources: &BTreeSet<EvidenceSource>,
+    truncated: bool,
+) -> EvidenceCoverage {
+    let requested = |source| sources.contains(&source);
+    let available = |source| requested(source) && !missing_sources.contains(&source);
+    let structural = if available(EvidenceSource::Dom) && !truncated {
+        EvidenceQuality::Strong
+    } else if available(EvidenceSource::Dom) || available(EvidenceSource::Accessibility) {
+        EvidenceQuality::Partial
+    } else {
+        EvidenceQuality::Opaque
+    };
+    let semantic = if available(EvidenceSource::Accessibility) && !truncated {
+        EvidenceQuality::Strong
+    } else if requested(EvidenceSource::Accessibility) {
+        EvidenceQuality::Partial
+    } else {
+        EvidenceQuality::Opaque
+    };
+    let opaque_regions = (context.boundaries.child_frames
+        + context.boundaries.shadow_roots
+        + context.boundaries.canvases) as u32;
+    let mut reasons = missing_sources
+        .iter()
+        .map(|source| format!("missingSource:{source:?}"))
+        .collect::<Vec<_>>();
+    if truncated {
+        reasons.push("budgetTruncated".into());
+    }
+    if context.boundaries.child_frames > 0 {
+        reasons.push("frameBoundary".into());
+    }
+    if context.boundaries.shadow_roots > 0 {
+        reasons.push("shadowBoundary".into());
+    }
+    if context.boundaries.canvases > 0 {
+        reasons.push("canvasBoundary".into());
+    }
+    reasons.truncate(16);
+    EvidenceCoverage {
+        structural,
+        semantic,
+        interactive_entities_observed: context.accessibility.interactive.len() as u32,
+        opaque_regions,
+        reasons,
     }
 }
 
@@ -374,6 +459,7 @@ fn collect_accessibility(node: &CompactAxNode, collector: &mut EvidenceCollector
     collector.push(EvidenceFact {
         source: EvidenceSource::Accessibility,
         kind: "node".into(),
+        quality: EvidenceQuality::Confirmed,
         role: Some(node.role.clone()),
         name: Some(node.name.clone()),
         input_type: None,
@@ -394,6 +480,7 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
     collector.push(EvidenceFact {
         source: EvidenceSource::Dom,
         kind: "element".into(),
+        quality: EvidenceQuality::Confirmed,
         role: None,
         name: Some(node.node_name.clone()),
         input_type: None,
@@ -419,6 +506,7 @@ fn collect_layout(
     collector.push(EvidenceFact {
         source,
         kind: "geometry".into(),
+        quality: EvidenceQuality::Strong,
         role: None,
         name: Some(node.node_name.clone()),
         input_type: None,
@@ -671,6 +759,19 @@ mod tests {
         let evidence = extract_page_context(&page_context(), &request).unwrap();
         assert_eq!(evidence.revision, 7);
         assert!(!evidence.facts.is_empty());
+        assert_eq!(evidence.coverage.structural, EvidenceQuality::Strong);
+        assert_eq!(evidence.coverage.semantic, EvidenceQuality::Strong);
+        assert_eq!(
+            evidence.facts.first().map(|fact| fact.quality),
+            Some(EvidenceQuality::Confirmed)
+        );
+        assert!(
+            evidence
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "missingSource:Navigation")
+        );
         assert_eq!(
             evidence.limits.missing_sources,
             vec![EvidenceSource::Navigation]
@@ -702,5 +803,20 @@ mod tests {
         };
         let error = extract_page_context(&page_context(), &request).unwrap_err();
         assert_eq!(error.path, "scope");
+    }
+    #[test]
+    fn extraction_reports_opaque_boundaries_without_claiming_completeness() {
+        let mut context = page_context();
+        context.boundaries.child_frames = 1;
+        let evidence = extract_page_context(&context, &request()).unwrap();
+        assert_eq!(evidence.coverage.opaque_regions, 1);
+        assert!(
+            evidence
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "frameBoundary")
+        );
+        assert_ne!(evidence.coverage.semantic, EvidenceQuality::Opaque);
     }
 }

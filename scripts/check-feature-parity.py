@@ -120,8 +120,12 @@ def main() -> None:
             fail(f"{capability.get('id')} has an unexplained cross-platform status difference")
 
     extensions = next(capability for capability in capabilities if capability["id"] == "native-extensions")
-    if set(extensions["target_status"].values()) != {"blockedBySecurityGate"}:
-        fail("native extensions must remain blocked until native sandbox certification")
+    extension_status = extensions["target_status"]
+    if extension_status.get("linux-arm64") != "experimental" or any(
+        extension_status.get(target) != "blockedBySecurityGate"
+        for target in ("linux-x86_64", "macos-x86_64", "macos-arm64")
+    ):
+        fail("native extensions must be experimental only on verified Linux ARM64")
 
     metadata = json.loads(
         subprocess.check_output(

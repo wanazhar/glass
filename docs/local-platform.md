@@ -24,6 +24,8 @@ The following checks passed on this host with the checked-out `0.2.1` source:
 - `GLASS_EXTENSION_SANDBOX_E2E=1 GLASS_EXTENSION_SANDBOX_KIND=linux-bubblewrap cargo test --lib extensions::tests::sandboxed_reference_extensions_pass_native_gate --locked` — passed;
 - `cargo package --locked --no-verify` — package contents validated; and
 - `cargo publish --locked --dry-run --no-verify` — crates.io publication dry-run passed without uploading.
+- `cargo run -- --experimental-extensions capabilities` — reported the
+  `extensions` capability as `experimental` on this host.
 
 The support status in the README intentionally calls only this Linux ARM64
 environment locally verified. Other declared targets remain unverified here.

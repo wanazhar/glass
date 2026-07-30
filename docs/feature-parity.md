@@ -25,9 +25,10 @@ Each target status uses one of these values:
 
 The current matrix intentionally marks ordinary cross-platform capabilities as
 `shippedUncertified`, not unsupported. This is an inventory status, not a local
-support claim. Native extensions are `blockedBySecurityGate` until the native
-sandbox boundary is verified for the applicable environment. Windows is
-outside this matrix and remains unsupported.
+support claim. Native extensions are `experimental` only for explicit opt-in on
+the locally verified Linux ARM64 sandbox and remain `blockedBySecurityGate` on
+the other declared targets. Windows is outside this matrix and remains
+unsupported.
 
 The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The

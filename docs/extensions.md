@@ -1,8 +1,8 @@
 # Extensions
 
 Glass defines a versioned extension manifest and a bounded process host. The
-extension capability is shipped in 0.2.0 but remains disabled by policy until
-the native security gate passes on the applicable environment.
+extension capability is disabled by default. It is currently available only as
+an explicit experimental opt-in on the locally verified Linux ARM64 sandbox.
 
 ## Manifest
 
@@ -49,6 +49,17 @@ Glass keeps policy checks, target resolution, revision checks, verification, and
 effect recording in the core runtime.
 
 ## Sandbox
+
+Enable the experimental capability explicitly:
+
+```console
+glass --experimental-extensions capabilities
+```
+
+This prints `experimental` only when the native sandbox is detected. Glass
+prints a warning because extension code is untrusted and the interface may
+break. A missing sandbox remains `blockedBySecurityGate`; the opt-in never
+falls back to an ordinary unsandboxed subprocess.
 
 Use the explicit sandbox entry point:
 

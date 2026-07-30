@@ -9,6 +9,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 - Explicit capability status reporting distinguishes available, policy-disabled,
   uncertified, and security-gated surfaces across CLI and MCP manifests.
+- Experimental extension opt-in is explicit, sandbox-required, and limited to
+  the locally verified Linux ARM64 environment.
 - Deterministic reliability, knowledge migration, native sandbox, and client
   compatibility checks for the source checkout.
 

@@ -210,11 +210,11 @@
       "platform_dependency": "security",
       "target_status": {
         "linux-x86_64": "blockedBySecurityGate",
-        "linux-arm64": "blockedBySecurityGate",
+        "linux-arm64": "experimental",
         "macos-x86_64": "blockedBySecurityGate",
         "macos-arm64": "blockedBySecurityGate"
       },
-      "reason": "The extension host is shipped, but the native sandbox gate is not certified for every declared target."
+      "reason": "Experimental opt-in is available only on the locally verified Linux ARM64 sandbox; all other targets remain blocked."
     }
   ]
 }

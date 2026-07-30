@@ -26,6 +26,8 @@ pub enum DraftEntityKind {
     Field,
     Action,
     Link,
+    NavigationItem,
+    Tab,
     Table,
     Row,
     Cell,
@@ -51,6 +53,12 @@ pub enum DraftRelationshipKind {
     Confirms,
     Cancels,
     Continues,
+    Submits,
+    HeaderFor,
+    CellOf,
+    Selects,
+    RepeatsAs,
+    ScopedTo,
 }
 
 /// One canonical entity reconciled from one or more evidence sources.
@@ -88,6 +96,65 @@ pub struct GlassWebIrDraft {
     pub limits: ExtractionEvidenceLimits,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
+}
+
+/// Minimum graph shape expected from one representative fixture.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DraftFixtureExpectation {
+    pub required_entity_counts: BTreeMap<DraftEntityKind, u32>,
+    pub required_relationship_counts: BTreeMap<DraftRelationshipKind, u32>,
+    pub opaque_regions: u32,
+}
+
+impl DraftEntityKind {
+    /// Parse the stable fixture vocabulary into a draft entity kind.
+    pub fn from_contract_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "page" => Self::Page,
+            "region" => Self::Region,
+            "form" => Self::Form,
+            "field" => Self::Field,
+            "action" => Self::Action,
+            "link" => Self::Link,
+            "navigationItem" => Self::NavigationItem,
+            "tab" => Self::Tab,
+            "table" => Self::Table,
+            "row" => Self::Row,
+            "cell" => Self::Cell,
+            "collection" => Self::Collection,
+            "collectionItem" => Self::CollectionItem,
+            "dialog" => Self::Dialog,
+            "paginationControl" => Self::PaginationControl,
+            "text" => Self::Text,
+            "unknownInteractive" => Self::UnknownInteractive,
+            "opaqueRegion" => Self::OpaqueRegion,
+            _ => return None,
+        })
+    }
+}
+
+impl DraftRelationshipKind {
+    /// Parse the stable fixture vocabulary into a draft relationship kind.
+    pub fn from_contract_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "contains" => Self::Contains,
+            "labels" => Self::Labels,
+            "owns" => Self::Owns,
+            "controls" => Self::Controls,
+            "navigatesTo" => Self::NavigatesTo,
+            "opens" => Self::Opens,
+            "confirms" => Self::Confirms,
+            "cancels" => Self::Cancels,
+            "continues" => Self::Continues,
+            "submits" => Self::Submits,
+            "headerFor" => Self::HeaderFor,
+            "cellOf" => Self::CellOf,
+            "selects" => Self::Selects,
+            "repeatsAs" => Self::RepeatsAs,
+            "scopedTo" => Self::ScopedTo,
+            _ => return None,
+        })
+    }
 }
 
 impl GlassWebIrDraft {
@@ -148,6 +215,55 @@ impl GlassWebIrDraft {
                 return Err(WebIrValidationError::new(
                     "relationships",
                     "relationships must reference two distinct known entities",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate that the draft satisfies a representative fixture minimum.
+    pub fn validate_against(
+        &self,
+        expectation: &DraftFixtureExpectation,
+    ) -> Result<(), WebIrValidationError> {
+        self.validate()?;
+        for (kind, minimum) in &expectation.required_entity_counts {
+            let actual = self
+                .entities
+                .iter()
+                .filter(|entity| entity.kind == *kind)
+                .count() as u32;
+            if actual < *minimum {
+                return Err(WebIrValidationError::new(
+                    format!("expectation.entities.{}", kind_name(*kind)),
+                    format!("expected at least {minimum}, observed {actual}"),
+                ));
+            }
+        }
+        let opaque_regions = self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .count() as u32;
+        if opaque_regions != expectation.opaque_regions {
+            return Err(WebIrValidationError::new(
+                "expectation.opaqueRegions",
+                format!(
+                    "expected {expected}, observed {opaque_regions}",
+                    expected = expectation.opaque_regions
+                ),
+            ));
+        }
+        for (kind, minimum) in &expectation.required_relationship_counts {
+            let actual = self
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.kind == *kind)
+                .count() as u32;
+            if actual < *minimum {
+                return Err(WebIrValidationError::new(
+                    format!("expectation.relationships.{}", relationship_name(*kind)),
+                    format!("expected at least {minimum}, observed {actual}"),
                 ));
             }
         }
@@ -390,6 +506,8 @@ fn kind_name(kind: DraftEntityKind) -> &'static str {
         DraftEntityKind::Field => "field",
         DraftEntityKind::Action => "action",
         DraftEntityKind::Link => "link",
+        DraftEntityKind::NavigationItem => "navigationItem",
+        DraftEntityKind::Tab => "tab",
         DraftEntityKind::Table => "table",
         DraftEntityKind::Row => "row",
         DraftEntityKind::Cell => "cell",
@@ -400,6 +518,26 @@ fn kind_name(kind: DraftEntityKind) -> &'static str {
         DraftEntityKind::Text => "text",
         DraftEntityKind::UnknownInteractive => "unknownInteractive",
         DraftEntityKind::OpaqueRegion => "opaqueRegion",
+    }
+}
+
+fn relationship_name(kind: DraftRelationshipKind) -> &'static str {
+    match kind {
+        DraftRelationshipKind::Contains => "contains",
+        DraftRelationshipKind::Labels => "labels",
+        DraftRelationshipKind::Owns => "owns",
+        DraftRelationshipKind::Controls => "controls",
+        DraftRelationshipKind::NavigatesTo => "navigatesTo",
+        DraftRelationshipKind::Opens => "opens",
+        DraftRelationshipKind::Confirms => "confirms",
+        DraftRelationshipKind::Cancels => "cancels",
+        DraftRelationshipKind::Continues => "continues",
+        DraftRelationshipKind::Submits => "submits",
+        DraftRelationshipKind::HeaderFor => "headerFor",
+        DraftRelationshipKind::CellOf => "cellOf",
+        DraftRelationshipKind::Selects => "selects",
+        DraftRelationshipKind::RepeatsAs => "repeatsAs",
+        DraftRelationshipKind::ScopedTo => "scopedTo",
     }
 }
 
@@ -568,6 +706,59 @@ mod tests {
         }));
         assert_eq!(draft.relationships.len(), 4);
         draft.validate().unwrap();
+    }
+
+    #[test]
+    fn fixture_expectation_validates_minimum_graph_shape() {
+        let draft = reconcile_evidence(&evidence()).unwrap();
+        let mut expectation = DraftFixtureExpectation::default();
+        expectation
+            .required_entity_counts
+            .insert(DraftEntityKind::Page, 1);
+        expectation
+            .required_entity_counts
+            .insert(DraftEntityKind::Field, 2);
+        expectation
+            .required_relationship_counts
+            .insert(DraftRelationshipKind::Contains, 2);
+        draft.validate_against(&expectation).unwrap();
+
+        expectation
+            .required_entity_counts
+            .insert(DraftEntityKind::Dialog, 1);
+        let error = draft.validate_against(&expectation).unwrap_err();
+        assert_eq!(error.path, "expectation.entities.dialog");
+    }
+
+    #[test]
+    fn fixture_corpus_vocabulary_matches_draft_contract() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/web-ir/corpus-v1.json")).unwrap();
+        let fixtures = corpus["fixtures"].as_array().unwrap();
+        assert_eq!(fixtures.len(), 8);
+        for fixture in fixtures {
+            let entities = fixture["expectedEntities"].as_array().unwrap();
+            let relationships = fixture["expectedRelationships"].as_array().unwrap();
+            assert_eq!(
+                entities.first().and_then(serde_json::Value::as_str),
+                Some("page")
+            );
+            assert!(relationships.iter().any(|value| value == "contains"));
+            for entity in entities {
+                assert!(DraftEntityKind::from_contract_name(entity.as_str().unwrap()).is_some());
+            }
+            for relationship in relationships {
+                assert!(
+                    DraftRelationshipKind::from_contract_name(relationship.as_str().unwrap())
+                        .is_some()
+                );
+            }
+            let opaque_count = entities
+                .iter()
+                .filter(|entity| entity.as_str() == Some("opaqueRegion"))
+                .count() as u64;
+            assert_eq!(opaque_count, fixture["opaqueRegions"].as_u64().unwrap());
+        }
     }
 
     #[test]

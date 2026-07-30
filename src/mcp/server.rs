@@ -29,9 +29,9 @@ use crate::browser::session::{
     KnowledgeLookupOptions, KnowledgeObservationMode, KnowledgeObservationReport,
     KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError, PreflightAction,
     ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
-    SemanticObservationLevel, SessionOptions, TargetError, VerificationPredicate,
-    VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition, WaitTimeout,
-    default_knowledge_store_path,
+    SemanticObservationLevel, SessionOptions, SessionSnapshotStore, StructuredExtractionRequest,
+    TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat,
+    WaitCondition, WaitTimeout, default_knowledge_store_path, default_session_snapshot_path,
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
@@ -233,6 +233,26 @@ enum ToolInvocation<'a> {
         include_form_values: bool,
         level: Option<SemanticObservationLevel>,
         region: Option<&'a str>,
+    },
+    InspectPage,
+    FindTarget {
+        request: SemanticIntentRequest,
+    },
+    ActAndVerify {
+        request: SemanticIntentExecutionRequest,
+        predicate: Option<VerificationPredicate>,
+        timeout: Duration,
+    },
+    ExtractStructured {
+        request: StructuredExtractionRequest,
+    },
+    RecoverRun {
+        execution_id: &'a str,
+    },
+    SessionSnapshot {
+        operation: Cow<'a, str>,
+        from: Option<Cow<'a, str>>,
+        to: Option<Cow<'a, str>>,
     },
     ObserveKnowledge {
         level: SemanticObservationLevel,
@@ -957,6 +977,11 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
         "screenshot"
             | "observe"
             | "observeKnowledge"
+            | "inspectPage"
+            | "findTarget"
+            | "extractStructured"
+            | "recoverRun"
+            | "sessionSnapshot"
             | "resolveIntent"
             | "resolveIntentWithKnowledge"
             | "knowledgeList"
@@ -1561,6 +1586,60 @@ async fn call_tool(
                 }}
             }))
         }
+        ToolInvocation::InspectPage => serialized_result(&session.inspect_page().await?),
+        ToolInvocation::FindTarget { request } => {
+            serialized_result(&session.find_target(&request).await?)
+        }
+        ToolInvocation::ActAndVerify {
+            request,
+            predicate,
+            timeout,
+        } => serialized_result(&session.act_and_verify(&request, predicate, timeout).await?),
+        ToolInvocation::ExtractStructured { request } => {
+            serialized_result(&session.extract_structured(&request).await?)
+        }
+        ToolInvocation::RecoverRun { execution_id } => {
+            serialized_result(&session.recover_run(execution_id)?)
+        }
+        ToolInvocation::SessionSnapshot {
+            operation,
+            from,
+            to,
+        } => {
+            let store = SessionSnapshotStore::new(default_session_snapshot_path(&options.profile));
+            match operation.as_ref() {
+                "create" => {
+                    let observation = session
+                        .semantic_observe(SemanticObservationLevel::Structured)
+                        .await?;
+                    let snapshot = crate::browser::session::SessionSnapshot::from_observation(
+                        options.profile.clone(),
+                        observation,
+                    );
+                    store.save(&snapshot)?;
+                    serialized_result(&snapshot)
+                }
+                "list" => serialized_result(&store.list()?),
+                "inspect" => {
+                    let id = from
+                        .as_deref()
+                        .ok_or("sessionSnapshot inspect requires from")?;
+                    serialized_result(&store.load(id)?)
+                }
+                "diff" => {
+                    let left = from
+                        .as_deref()
+                        .ok_or("sessionSnapshot diff requires from")?;
+                    let right = to.as_deref().ok_or("sessionSnapshot diff requires to")?;
+                    serialized_result(&store.diff(left, right)?)
+                }
+                "purge" => serialized_result(&json!({"removed": store.purge()?})),
+                _ => Err(
+                    "sessionSnapshot operation must be create, list, inspect, diff, or purge"
+                        .into(),
+                ),
+            }
+        }
         ToolInvocation::ObserveKnowledge {
             level,
             fresh_only,
@@ -2035,6 +2114,40 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             level: optional_semantic_level(arguments)?,
             region: optional_string(arguments, "region")?,
         }),
+        "inspectPage" => Ok(ToolInvocation::InspectPage),
+        "findTarget" => Ok(ToolInvocation::FindTarget {
+            request: SemanticIntentRequest::from_json(&serde_json::to_string(arguments)?)?,
+        }),
+        "actAndVerify" => {
+            let mut value = arguments.clone();
+            let object = value
+                .as_object_mut()
+                .ok_or("actAndVerify arguments must be an object")?;
+            let timeout_ms = object
+                .remove("timeoutMs")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(10_000);
+            let predicate = object
+                .remove("predicate")
+                .map(serde_json::from_value)
+                .transpose()?;
+            Ok(ToolInvocation::ActAndVerify {
+                request: serde_json::from_value(value)?,
+                predicate,
+                timeout: Duration::from_millis(timeout_ms),
+            })
+        }
+        "extractStructured" => Ok(ToolInvocation::ExtractStructured {
+            request: serde_json::from_value(arguments.clone())?,
+        }),
+        "recoverRun" => Ok(ToolInvocation::RecoverRun {
+            execution_id: required_string(arguments, "executionId")?,
+        }),
+        "sessionSnapshot" => Ok(ToolInvocation::SessionSnapshot {
+            operation: Cow::Borrowed(optional_string(arguments, "operation")?.unwrap_or("list")),
+            from: optional_string(arguments, "from")?.map(Cow::Borrowed),
+            to: optional_string(arguments, "to")?.map(Cow::Borrowed),
+        }),
         "observeKnowledge" => Ok(ToolInvocation::ObserveKnowledge {
             level: optional_semantic_level(arguments)?.unwrap_or(SemanticObservationLevel::Summary),
             fresh_only: optional_bool(arguments, "freshOnly")?,
@@ -2376,6 +2489,88 @@ fn tools() -> Vec<Tool> {
                     "includeFormValues": {"type": "boolean", "default": false},
                     "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"]},
                     "region": {"type": "string", "minLength": 1, "maxLength": 128}
+                }
+            }),
+        },
+        Tool {
+            name: "inspectPage",
+            description: "Return one bounded semantic page inspection with revision and route provenance.",
+            input_schema: json!({"type":"object","additionalProperties":false}),
+        },
+        Tool {
+            name: "findTarget",
+            description: "Resolve one declared intent into bounded candidates without dispatching an action.",
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["schemaVersion","intent","action","resolutionPolicy"],
+                "properties":{
+                    "schemaVersion":{"const":1},
+                    "intent":{"type":"string","minLength":1,"maxLength":512},
+                    "action":{"type":"string"},
+                    "scope":{"type":"object"},
+                    "constraints":{"type":"object"},
+                    "resolutionPolicy":{"type":"string"},
+                    "expectedRevision":{"type":"integer","minimum":0}
+                }
+            }),
+        },
+        Tool {
+            name: "actAndVerify",
+            description: "Execute one explicit semantic intent and return bounded verification evidence.",
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["schemaVersion","intent","action","resolutionPolicy","candidateId"],
+                "properties":{
+                    "schemaVersion":{"const":1},
+                    "intent":{"type":"string","minLength":1,"maxLength":512},
+                    "action":{"type":"string"},
+                    "scope":{"type":"object"},
+                    "constraints":{"type":"object"},
+                    "resolutionPolicy":{"type":"string"},
+                    "candidateId":{"type":"string"},
+                    "expectedRevision":{"type":"integer","minimum":0},
+                    "predicate":{"type":"object"},
+                    "timeoutMs":{"type":"integer","minimum":1,"maximum":300000,"default":10000}
+                }
+            }),
+        },
+        Tool {
+            name: "extractStructured",
+            description: "Extract bounded typed fields from a fresh semantic page or region.",
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["fields"],
+                "properties":{
+                    "fields":{"type":"array","minItems":1,"maxItems":32},
+                    "regionId":{"type":"string"},
+                    "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":256},
+                    "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144}
+                }
+            }),
+        },
+        Tool {
+            name: "recoverRun",
+            description: "Return conservative recovery guidance for an indeterminate execution.",
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["executionId"],
+                "properties":{"executionId":{"type":"string","minLength":1,"maxLength":128}}
+            }),
+        },
+        Tool {
+            name: "sessionSnapshot",
+            description: "Create, list, inspect, diff, or purge redacted bounded session snapshots.",
+            input_schema: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                    "operation":{"type":"string","enum":["create","list","inspect","diff","purge"],"default":"list"},
+                    "from":{"type":"string"},
+                    "to":{"type":"string"}
                 }
             }),
         },
@@ -3343,11 +3538,48 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 70);
+        assert_eq!(tools.len(), 76);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
             false
+        );
+        for tool_name in [
+            "inspectPage",
+            "findTarget",
+            "actAndVerify",
+            "extractStructured",
+            "recoverRun",
+            "sessionSnapshot",
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == tool_name));
+        }
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "actAndVerify")
+                .unwrap()["inputSchema"]["properties"]["timeoutMs"]["default"],
+            10_000
+        );
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "findTarget")
+                .unwrap()["inputSchema"]["required"][0],
+            "schemaVersion"
+        );
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "inspectPage")
+                .unwrap()["inputSchema"]["additionalProperties"],
+            false
+        );
+        assert!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "sessionSnapshot")
+                .is_some()
         );
         for tool_name in ["navigate", "click", "type", "fillForm"] {
             let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();

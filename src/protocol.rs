@@ -82,7 +82,7 @@ impl GlassRequest {
 
 /// Canonical operation response shared by supported transports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GlassResponse {
     pub protocol_version: u32,
     pub request_id: String,
@@ -114,13 +114,64 @@ impl GlassResponse {
     }
 }
 
+/// Phase in which a public operation stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorPhase {
+    #[default]
+    Preflight,
+    Dispatch,
+    PostDispatch,
+    Verification,
+    Reconciliation,
+}
+
+/// Stable retry classification for agent recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RetryClassification {
+    SafeImmediate,
+    #[default]
+    SafeAfterReobserve,
+    SafeAfterReconcile,
+    UnsafeUntilReconciled,
+    RequiresUserDecision,
+    NotRetryable,
+    Unknown,
+}
+
+/// Bounded recovery guidance attached to every canonical failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryGuidance {
+    pub classification: RetryClassification,
+    pub recommended_operation: String,
+}
+
+impl Default for RetryGuidance {
+    fn default() -> Self {
+        Self {
+            classification: RetryClassification::SafeAfterReobserve,
+            recommended_operation: "inspect_page".into(),
+        }
+    }
+}
+
 /// Structured failure that can be carried across transports without parsing text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GlassError {
     pub code: String,
+    #[serde(default)]
+    pub phase: ErrorPhase,
     pub message: String,
-    pub retryable: bool,
+    #[serde(default)]
+    pub mutation_possible: bool,
+    #[serde(default)]
+    pub retry: RetryGuidance,
+    /// Kept as a tolerated compatibility field for pre-0.2.2 clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
 }
@@ -138,6 +189,10 @@ impl GlassError {
                 "error message must be a bounded non-empty string".into(),
             ));
         }
+        validate_identifier(
+            &self.retry.recommended_operation,
+            "retry.recommendedOperation",
+        )?;
         Ok(())
     }
 }
@@ -211,9 +266,15 @@ mod tests {
             ok: false,
             result: None,
             error: Some(GlassError {
-                code: "leaseRequired".into(),
+                code: "target.stale".into(),
+                phase: ErrorPhase::Preflight,
                 message: "a mutation lease is required".into(),
-                retryable: true,
+                mutation_possible: false,
+                retry: RetryGuidance {
+                    classification: RetryClassification::SafeAfterReobserve,
+                    recommended_operation: "inspect_page".into(),
+                },
+                retryable: Some(true),
                 details: None,
             }),
         };
@@ -236,5 +297,26 @@ mod tests {
             "future": true
         });
         assert!(serde_json::from_value::<GlassRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn additive_response_fields_are_tolerated() {
+        let response: GlassResponse = serde_json::from_value(serde_json::json!({
+            "protocolVersion": 1,
+            "requestId": "request-1",
+            "ok": false,
+            "error": {
+                "code": "target.stale",
+                "message": "stale",
+                "retryable": true,
+                "future": "ignored"
+            },
+            "future": true
+        }))
+        .unwrap();
+        assert_eq!(
+            response.error.unwrap().retry.classification,
+            RetryClassification::SafeAfterReobserve
+        );
     }
 }

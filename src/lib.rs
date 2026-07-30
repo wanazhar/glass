@@ -59,6 +59,8 @@ pub mod protocol;
 pub mod reliability;
 /// Bounded browser execution for reliability scenarios and replay evidence.
 pub mod reliability_runner;
+/// Bounded agent-facing response projections and local result artifacts.
+pub mod results;
 /// Ratatui terminal interface.
 pub mod tui;
 

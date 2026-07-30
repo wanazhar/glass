@@ -349,6 +349,11 @@ jobs:
           pattern: migration-*
           path: evidence/migration
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: client-*
+          path: evidence/client
+
       - name: Merge revision-bound prerequisites
         run: |
           python3 scripts/merge-platform-evidence.py \
@@ -369,6 +374,9 @@ jobs:
           python3 scripts/merge-knowledge-migration-evidence.py \
             evidence/knowledge-migration-matrix.json \
             evidence/migration
+          python3 scripts/merge-client-compatibility-evidence.py \
+            evidence/client-compatibility-matrix.json \
+            evidence/client
 
       - name: Certify native reliability matrix
         run: |
@@ -385,7 +393,8 @@ jobs:
             evidence/contract-matrix.json \
             evidence/reliability-scorecards.json \
             evidence/sandbox-matrix.json \
-            evidence/knowledge-migration-matrix.json
+            evidence/knowledge-migration-matrix.json \
+            evidence/client-compatibility-matrix.json
 
       - name: Run bounded competitive acceptance
         shell: bash
@@ -408,6 +417,7 @@ jobs:
             evidence/reliability-scorecards.json
             evidence/sandbox-matrix.json
             evidence/knowledge-migration-matrix.json
+            evidence/client-compatibility-matrix.json
           if-no-files-found: error
 
   client-compatibility:
@@ -482,6 +492,19 @@ jobs:
           chmod +x "$native_binary"
           "$npm_root/install/node_modules/.bin/glass" --version
           "$npm_root/install/node_modules/.bin/glass" capabilities >/dev/null
+
+      - name: Record client compatibility evidence
+        run: |
+          python3 scripts/write-client-compatibility-evidence.py \
+            --target "${{ matrix.target }}" \
+            --artifact "$GLASS_BINARY" \
+            --output "dist/client-compatibility-${{ matrix.artifact }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.artifact }}
+          path: dist/client-compatibility-${{ matrix.artifact }}.json
+          if-no-files-found: error
 
   install-compatibility:
     needs: build
@@ -563,7 +586,8 @@ jobs:
             dist/contract-matrix.json \
             evidence/acceptance/reliability-scorecards.json \
             evidence/acceptance/sandbox-matrix.json \
-            evidence/acceptance/knowledge-migration-matrix.json
+            evidence/acceptance/knowledge-migration-matrix.json \
+            evidence/acceptance/client-compatibility-matrix.json
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
           cp evidence/validation/knowledge-migration.json dist/knowledge-migration.json
@@ -578,6 +602,7 @@ jobs:
           cp evidence/acceptance/reliability-scorecards.json dist/reliability-scorecards.json
           cp evidence/acceptance/sandbox-matrix.json dist/sandbox-matrix.json
           cp evidence/acceptance/knowledge-migration-matrix.json dist/knowledge-migration-matrix.json
+          cp evidence/acceptance/client-compatibility-matrix.json dist/client-compatibility-matrix.json
           cp -R evidence/acceptance/raw dist/acceptance-raw
 
       - name: Verify artifact checksums

@@ -41,13 +41,13 @@ def artifact_from(row: dict, report_type: str, path: pathlib.Path) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 6):
         raise SystemExit(
             "usage: verify-runtime-artifact-evidence.py "
-            "CONTRACT.json RELIABILITY.json SANDBOX.json MIGRATION.json"
+            "CONTRACT.json RELIABILITY.json SANDBOX.json MIGRATION.json [CLIENT.json]"
         )
     contract_path, reliability_path, sandbox_path, migration_path = map(
-        pathlib.Path, sys.argv[1:]
+        pathlib.Path, sys.argv[1:5]
     )
     contract = load(contract_path)
     if contract.get("type") != "cross_artifact_contract_matrix":
@@ -65,6 +65,10 @@ def main() -> None:
         (sandbox_path, "native_extension_sandbox_matrix"),
         (migration_path, "knowledge_migration_matrix"),
     ]
+    if len(sys.argv) == 6:
+        runtime_reports.append(
+            (pathlib.Path(sys.argv[5]), "client_compatibility_matrix")
+        )
     source_revision = contract.get("git_revision")
     for path, expected_type in runtime_reports:
         report = load(path)

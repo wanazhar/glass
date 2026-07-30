@@ -60,6 +60,8 @@ Then complete these release checks:
       merge the four-target migration matrix.
 - [ ] Run TypeScript, Python, npm launcher, and isolated Cargo install/upgrade
       checks against every target artifact.
+- [ ] Merge machine-readable client compatibility evidence for all four exact
+      target artifacts.
 - [ ] Inspect `cargo package --list` and the unpacked package.
 - [ ] Download each artifact and verify `SHA256SUMS` with
       `sha256sum -c`.

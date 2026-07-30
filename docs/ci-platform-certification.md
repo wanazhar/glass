@@ -46,7 +46,8 @@ It also verifies that the browser-smoke and contract reports name the same
 artifact hash, size, and filename for every target.
 The acceptance gate additionally joins the certified reliability, sandbox, and
 knowledge-migration matrices to those exact contract artifact hashes before
-the final release job assembles its evidence.
+the final release job assembles its evidence. Client compatibility results are
+joined by the same gate when present.
 The final release job verifies those hashes and sizes again against the
 downloaded artifact bytes before it creates the checksum manifest.
 

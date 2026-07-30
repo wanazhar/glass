@@ -13,7 +13,7 @@ use crate::browser::session::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, WORKFLOW_AUTHORING_SCHEMA_VERSION,
     WORKFLOW_SCHEMA_VERSION,
 };
-use crate::extensions::ExtensionSandbox;
+use crate::extensions::{ExtensionSandbox, experimental_extension_target_supported};
 use crate::reliability::{
     RELIABILITY_FIXTURE_SCHEMA_VERSION, RELIABILITY_REPLAY_SCHEMA_VERSION,
     RELIABILITY_SCENARIO_SCHEMA_VERSION,
@@ -116,6 +116,7 @@ impl GlassCapabilityManifest {
         experimental_extensions: bool,
     ) -> Self {
         let extensions_enabled = experimental_extensions
+            && experimental_extension_target_supported()
             && !matches!(ExtensionSandbox::detect(), ExtensionSandbox::Unavailable);
         let raw_cdp = matches!(
             policy.decide(PolicyCapability::RawCdp),
@@ -331,7 +332,9 @@ mod tests {
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
         let manifest =
             GlassCapabilityManifest::for_policy_with_experimental_extensions(&policy, true);
-        if matches!(ExtensionSandbox::detect(), ExtensionSandbox::Unavailable) {
+        if !experimental_extension_target_supported()
+            || matches!(ExtensionSandbox::detect(), ExtensionSandbox::Unavailable)
+        {
             assert!(!manifest.capabilities["extensions"]);
             assert_eq!(
                 manifest.capability_statuses["extensions"],

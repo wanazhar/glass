@@ -68,6 +68,11 @@ impl ExtensionSandbox {
     }
 }
 
+/// The only target currently approved for the experimental extension gate.
+pub(crate) fn experimental_extension_target_supported() -> bool {
+    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+}
+
 /// Extension points that can be negotiated without granting raw browser access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -391,6 +396,11 @@ impl ExtensionHost {
         if !self.experimental_enabled {
             return Err(ExtensionError(
                 "experimental extensions are disabled; opt in explicitly".into(),
+            ));
+        }
+        if !experimental_extension_target_supported() {
+            return Err(ExtensionError(
+                "experimental extensions are unavailable on this target".into(),
             ));
         }
         let sandbox = self.sandbox();

@@ -216,6 +216,9 @@ pub struct EvidenceFact {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Bounded observed accessibility region role for relationship reconciliation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,7 +275,7 @@ pub fn extract_page_context(
                     missing_sources.insert(*source);
                 } else {
                     for root in &context.accessibility.roots {
-                        collect_accessibility(root, &mut collector, 0);
+                        collect_accessibility(root, &mut collector, 0, None);
                     }
                 }
             }
@@ -302,6 +305,12 @@ pub fn extract_page_context(
                             read_only: Some(control.read_only),
                             empty: Some(control.empty),
                             geometry_present: None,
+                            parent_role: control
+                                .ancestor_path
+                                .last()
+                                .and_then(|value| value.split(':').next())
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_owned),
                         });
                     }
                 }
@@ -452,7 +461,19 @@ fn evidence_coverage(
     }
 }
 
-fn collect_accessibility(node: &CompactAxNode, collector: &mut EvidenceCollector, depth: u16) {
+fn is_region_role(role: &str) -> bool {
+    matches!(
+        role,
+        "article" | "complementary" | "main" | "navigation" | "region" | "search" | "toolbar"
+    )
+}
+
+fn collect_accessibility(
+    node: &CompactAxNode,
+    collector: &mut EvidenceCollector,
+    depth: u16,
+    parent_role: Option<&str>,
+) {
     if !collector.allow_depth(depth) {
         return;
     }
@@ -467,9 +488,15 @@ fn collect_accessibility(node: &CompactAxNode, collector: &mut EvidenceCollector
         read_only: None,
         empty: None,
         geometry_present: None,
+        parent_role: parent_role.map(str::to_owned),
     });
+    let next_parent_role = if is_region_role(&node.role) {
+        Some(node.role.as_str())
+    } else {
+        parent_role
+    };
     for child in &node.children {
-        collect_accessibility(child, collector, depth.saturating_add(1));
+        collect_accessibility(child, collector, depth.saturating_add(1), next_parent_role);
     }
 }
 
@@ -488,6 +515,7 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
         read_only: None,
         empty: None,
         geometry_present: None,
+        parent_role: None,
     });
     for child in &node.children {
         collect_dom(child, collector, depth.saturating_add(1));
@@ -514,6 +542,7 @@ fn collect_layout(
         read_only: None,
         empty: None,
         geometry_present: Some(node.bounding_box.is_some()),
+        parent_role: None,
     });
     for child in &node.children {
         collect_layout(child, collector, source, depth.saturating_add(1));

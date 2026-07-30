@@ -73,10 +73,11 @@ Completed:
 - [ir-030-003](tasks/ir-030-003.md) — evidence quality and coverage metadata.
 - [ir-030-004](tasks/ir-030-004.md) — deterministic draft Web IR
   reconciliation.
+- [ir-030-005](tasks/ir-030-005.md) — explicit opaque boundary graph entities.
 
 In progress:
 
-- [ir-030-005](tasks/ir-030-005.md) — explicit opaque boundary graph entities.
+- [ir-030-006](tasks/ir-030-006.md) — bounded region relationship evidence.
 
 ## Completed plan: performance overhaul
 

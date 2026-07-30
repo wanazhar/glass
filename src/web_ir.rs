@@ -181,6 +181,7 @@ pub fn reconcile_evidence(
     let mut suffixes: BTreeMap<String, usize> = BTreeMap::new();
     let mut diagnostics = BTreeSet::new();
 
+    let mut parent_links = BTreeSet::new();
     for fact in facts {
         let Some(kind) = canonical_kind(&fact) else {
             diagnostics.insert(format!("unsupportedFact:{}", fact.kind));
@@ -193,33 +194,37 @@ pub fn reconcile_evidence(
                 .copied()
                 .find(|index| !entities[*index].evidence_sources.contains(&fact.source))
         });
-        if let Some(index) = existing {
+        let entity_id = if let Some(index) = existing {
             let entity = &mut entities[index];
             entity.quality = stronger_quality(entity.quality, fact.quality);
             entity.evidence_sources.push(fact.source);
             entity.evidence_sources.sort();
             entity.evidence_sources.dedup();
-            continue;
-        }
-
-        let base_id = format!("entity_{}_{}", kind_name(kind), slug(fact.name.as_deref()));
-        let suffix = suffixes.entry(base_id.clone()).or_insert(0);
-        let id = if *suffix == 0 {
-            base_id.clone()
+            entity.id.clone()
         } else {
-            format!("{base_id}_{}", *suffix)
+            let base_id = format!("entity_{}_{}", kind_name(kind), slug(fact.name.as_deref()));
+            let suffix = suffixes.entry(base_id.clone()).or_insert(0);
+            let id = if *suffix == 0 {
+                base_id.clone()
+            } else {
+                format!("{base_id}_{}", *suffix)
+            };
+            *suffix = suffix.saturating_add(1);
+            let index = entities.len();
+            entities.push(DraftEntity {
+                id: id.clone(),
+                kind,
+                role: fact.role,
+                name: fact.name,
+                quality: fact.quality,
+                evidence_sources: vec![fact.source],
+            });
+            indexes.entry(key).or_default().push(index);
+            id
         };
-        *suffix = suffix.saturating_add(1);
-        let index = entities.len();
-        entities.push(DraftEntity {
-            id,
-            kind,
-            role: fact.role,
-            name: fact.name,
-            quality: fact.quality,
-            evidence_sources: vec![fact.source],
-        });
-        indexes.entry(key).or_default().push(index);
+        if let Some(parent_role) = fact.parent_role {
+            parent_links.insert((parent_role.to_ascii_lowercase(), entity_id));
+        }
     }
 
     for index in 0..evidence.coverage.opaque_regions {
@@ -233,7 +238,7 @@ pub fn reconcile_evidence(
         });
     }
 
-    let relationships = entities
+    let mut relationships = entities
         .iter()
         .filter(|entity| entity.kind != DraftEntityKind::Page)
         .map(|entity| DraftRelationship {
@@ -241,7 +246,37 @@ pub fn reconcile_evidence(
             to: entity.id.clone(),
             kind: DraftRelationshipKind::Contains,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    for (parent_role, child_id) in parent_links {
+        let Some(parent_id) = entities
+            .iter()
+            .find(|entity| {
+                entity.kind == DraftEntityKind::Region
+                    && entity
+                        .role
+                        .as_deref()
+                        .is_some_and(|role| role.eq_ignore_ascii_case(&parent_role))
+            })
+            .map(|entity| entity.id.clone())
+        else {
+            continue;
+        };
+        if parent_id != child_id {
+            relationships.push(DraftRelationship {
+                from: parent_id,
+                to: child_id,
+                kind: DraftRelationshipKind::Contains,
+            });
+        }
+    }
+    relationships.sort_by_key(|relationship| {
+        (
+            relationship.from.clone(),
+            relationship.to.clone(),
+            relationship.kind,
+        )
+    });
+    relationships.dedup();
     let draft = GlassWebIrDraft {
         schema_version: WEB_IR_DRAFT_SCHEMA_VERSION,
         revision: evidence.revision,
@@ -430,6 +465,7 @@ mod tests {
                     read_only: None,
                     empty: None,
                     geometry_present: None,
+                    parent_role: None,
                 },
                 EvidenceFact {
                     source: EvidenceSource::Accessibility,
@@ -442,6 +478,7 @@ mod tests {
                     read_only: None,
                     empty: None,
                     geometry_present: None,
+                    parent_role: None,
                 },
                 EvidenceFact {
                     source: EvidenceSource::Forms,
@@ -454,6 +491,7 @@ mod tests {
                     read_only: Some(false),
                     empty: Some(true),
                     geometry_present: None,
+                    parent_role: None,
                 },
             ],
             coverage: EvidenceCoverage {
@@ -483,6 +521,35 @@ mod tests {
             vec![EvidenceSource::Accessibility, EvidenceSource::Forms]
         );
         assert_eq!(draft.entities[1].quality, EvidenceQuality::Confirmed);
+    }
+
+    #[test]
+    fn reconciliation_links_children_to_observed_regions_only() {
+        let mut evidence = evidence();
+        evidence.facts.push(EvidenceFact {
+            source: EvidenceSource::Accessibility,
+            kind: "node".into(),
+            quality: EvidenceQuality::Confirmed,
+            role: Some("search".into()),
+            name: Some("Site search".into()),
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: None,
+            parent_role: None,
+        });
+        evidence.facts[0].parent_role = Some("search".into());
+        let draft = reconcile_evidence(&evidence).unwrap();
+        let region_id = draft
+            .entities
+            .iter()
+            .find(|entity| entity.kind == DraftEntityKind::Region)
+            .map(|entity| entity.id.clone())
+            .unwrap();
+        assert!(draft.relationships.iter().any(|relationship| {
+            relationship.from == region_id && relationship.kind == DraftRelationshipKind::Contains
+        }));
     }
 
     #[test]

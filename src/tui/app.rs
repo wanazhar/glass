@@ -1925,7 +1925,10 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     ));
     let mut input_worker = InputWorker::spawn(input_tx);
     let mut app = App::new();
-    let manifest = GlassCapabilityManifest::for_policy(&policy);
+    let manifest = GlassCapabilityManifest::for_policy_with_experimental_extensions(
+        &policy,
+        cli.experimental_extensions,
+    );
     app.capability_summary = format!(
         "Capabilities: {} schemas, daemon {}",
         manifest.schemas.len(),

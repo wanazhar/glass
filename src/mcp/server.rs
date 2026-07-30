@@ -522,7 +522,12 @@ where
                 .await?;
                 continue;
             }
-            let response = initialize_response_in_mode(&request, &policy, local_daemon);
+            let response = initialize_response_in_mode(
+                &request,
+                &policy,
+                local_daemon,
+                cli.experimental_extensions,
+            );
             if response.error.is_none() {
                 lifecycle = Lifecycle::Negotiated;
             }
@@ -1039,13 +1044,14 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
 }
 
 fn initialize_response(request: &JsonRpcRequest, policy: &BrowserPolicy) -> JsonRpcResponse {
-    initialize_response_in_mode(request, policy, false)
+    initialize_response_in_mode(request, policy, false, false)
 }
 
 fn initialize_response_in_mode(
     request: &JsonRpcRequest,
     policy: &BrowserPolicy,
     local_daemon: bool,
+    experimental_extensions: bool,
 ) -> JsonRpcResponse {
     if request.jsonrpc != "2.0" {
         return error_response(request.id.response_value(), -32600, "jsonrpc must be 2.0");
@@ -1068,7 +1074,11 @@ fn initialize_response_in_mode(
             "unsupported MCP protocol version",
         );
     }
-    let manifest = GlassCapabilityManifest::for_policy_in_mode(policy, local_daemon);
+    let manifest = GlassCapabilityManifest::for_policy_in_mode_with_experimental_extensions(
+        policy,
+        local_daemon,
+        experimental_extensions,
+    );
     let Some(glass_request) = request.params.get("glass") else {
         return success_response(
             request.id.response_value(),

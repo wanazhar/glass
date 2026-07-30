@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long = "policy-confirm-once", global = true, value_enum)]
     pub policy_confirm_once: Vec<PolicyCapability>,
 
+    /// Opt into the experimental sandboxed extension capability.
+    #[arg(long, global = true)]
+    pub experimental_extensions: bool,
+
     /// Permit only these exact hosts in hardened mode (repeatable).
     #[arg(long = "policy-allow-host", global = true)]
     pub policy_allow_host: Vec<String>,
@@ -1132,6 +1136,13 @@ mod tests {
     fn capabilities_command_is_explicitly_offline() {
         let cli = Cli::try_parse_from(["glass", "capabilities"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Capabilities)));
+    }
+
+    #[test]
+    fn experimental_extensions_require_an_explicit_global_opt_in() {
+        let cli =
+            Cli::try_parse_from(["glass", "--experimental-extensions", "capabilities"]).unwrap();
+        assert!(cli.experimental_extensions);
     }
 
     #[test]

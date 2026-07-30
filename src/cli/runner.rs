@@ -35,6 +35,12 @@ use std::time::Duration;
 /// to the appropriate runner (one-shot, TUI, or MCP server).
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
     let policy = policy_from_cli(&cli)?;
+    if cli.experimental_extensions {
+        eprintln!(concat!(
+            "warning: experimental extensions are enabled; extension code is untrusted, ",
+            "sandbox support is required, and behavior may break"
+        ));
+    }
     if cli.mcp {
         return crate::mcp::server::run_mcp_server(&cli).await;
     }
@@ -46,7 +52,12 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             return Ok(());
         }
         Some(Commands::Capabilities) => {
-            print_json(&GlassCapabilityManifest::for_policy(&policy))?;
+            print_json(
+                &GlassCapabilityManifest::for_policy_with_experimental_extensions(
+                    &policy,
+                    cli.experimental_extensions,
+                ),
+            )?;
             return Ok(());
         }
         Some(Commands::Daemon { action }) => {
@@ -178,7 +189,10 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy) -> BrowserResult<()>
         .clone()
         .unwrap_or_else(|| default_knowledge_store_path(&cli.profile));
     let knowledge_exists = knowledge_path.is_file();
-    let manifest = GlassCapabilityManifest::for_policy(policy);
+    let manifest = GlassCapabilityManifest::for_policy_with_experimental_extensions(
+        policy,
+        cli.experimental_extensions,
+    );
     let platform_supported = manifest.constraints.platform != "unsupported";
     print_json(&serde_json::json!({
         "status": if chrome_path.is_some() && platform_supported { "ready" } else { "degraded" },

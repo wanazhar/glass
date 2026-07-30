@@ -185,6 +185,7 @@ pub struct ExtensionHost {
     root: PathBuf,
     registry: ExtensionRegistry,
     invocations: Arc<Semaphore>,
+    experimental_enabled: bool,
 }
 
 /// Extension validation or registry failure.
@@ -346,7 +347,17 @@ impl ExtensionHost {
             root,
             registry,
             invocations: Arc::new(Semaphore::new(MAX_EXTENSION_CONCURRENT_INVOCATIONS)),
+            experimental_enabled: false,
         })
+    }
+
+    /// Opt into the experimental extension capability for this host.
+    ///
+    /// Invocations still require a detected native sandbox. This opt-in does
+    /// not authorize the unsandboxed subprocess helper.
+    pub fn with_experimental_extensions(mut self) -> Self {
+        self.experimental_enabled = true;
+        self
     }
 
     /// Report the sandbox that an explicit guarded invocation would use.
@@ -355,7 +366,8 @@ impl ExtensionHost {
     }
 
     /// Invoke one declared extension capability through a bounded subprocess.
-    pub async fn invoke(
+    #[cfg(test)]
+    pub(crate) async fn invoke(
         &self,
         extension_id: &str,
         capability: ExtensionCapability,
@@ -376,6 +388,11 @@ impl ExtensionHost {
         action: &str,
         payload: Value,
     ) -> Result<Value, ExtensionError> {
+        if !self.experimental_enabled {
+            return Err(ExtensionError(
+                "experimental extensions are disabled; opt in explicitly".into(),
+            ));
+        }
         let sandbox = self.sandbox();
         if sandbox == ExtensionSandbox::Unavailable {
             return Err(ExtensionError(
@@ -922,7 +939,9 @@ mod tests {
             return;
         }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
-        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
+        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap())
+            .unwrap()
+            .with_experimental_extensions();
         assert_ne!(host.sandbox(), ExtensionSandbox::Unavailable);
         let result = host
             .invoke_sandboxed(
@@ -935,6 +954,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["extension"], "title-extractor");
+    }
+
+    #[tokio::test]
+    async fn sandboxed_extensions_require_explicit_experimental_opt_in() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/first-party");
+        let host = ExtensionHost::new(&root, ExtensionRegistry::load_dir(&root).unwrap()).unwrap();
+        let error = host
+            .invoke_sandboxed(
+                "glass.first-party.title-extractor",
+                ExtensionCapability::ExtractionTransform,
+                "example.com",
+                "extract",
+                serde_json::json!({"title": "Example Domain"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("experimental extensions are disabled"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::browser::session::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, WORKFLOW_AUTHORING_SCHEMA_VERSION,
     WORKFLOW_SCHEMA_VERSION,
 };
+use crate::extensions::ExtensionSandbox;
 use crate::reliability::{
     RELIABILITY_FIXTURE_SCHEMA_VERSION, RELIABILITY_REPLAY_SCHEMA_VERSION,
     RELIABILITY_SCENARIO_SCHEMA_VERSION,
@@ -93,6 +94,29 @@ impl GlassCapabilityManifest {
 
     /// Build a manifest for an explicit runtime mode.
     pub fn for_policy_in_mode(policy: &BrowserPolicy, local_daemon: bool) -> Self {
+        Self::for_policy_in_mode_with_experimental_extensions(policy, local_daemon, false)
+    }
+
+    /// Build a manifest with an explicit experimental extension opt-in.
+    pub fn for_policy_with_experimental_extensions(
+        policy: &BrowserPolicy,
+        experimental_extensions: bool,
+    ) -> Self {
+        Self::for_policy_in_mode_with_experimental_extensions(
+            policy,
+            false,
+            experimental_extensions,
+        )
+    }
+
+    /// Build a manifest for an explicit runtime mode and extension opt-in.
+    pub fn for_policy_in_mode_with_experimental_extensions(
+        policy: &BrowserPolicy,
+        local_daemon: bool,
+        experimental_extensions: bool,
+    ) -> Self {
+        let extensions_enabled = experimental_extensions
+            && !matches!(ExtensionSandbox::detect(), ExtensionSandbox::Unavailable);
         let raw_cdp = matches!(
             policy.decide(PolicyCapability::RawCdp),
             PolicyDecision::Allow
@@ -113,7 +137,7 @@ impl GlassCapabilityManifest {
             ("reliabilityCertification", true),
             ("rawCdp", raw_cdp),
             ("localDaemon", local_daemon),
-            ("extensions", false),
+            ("extensions", extensions_enabled),
         ])
         .into_iter()
         .map(|(name, enabled)| (name.to_string(), enabled))
@@ -123,7 +147,14 @@ impl GlassCapabilityManifest {
             .iter()
             .map(|(name, enabled)| {
                 let status = match name.as_str() {
-                    "extensions" => GlassCapabilityStatus::BlockedBySecurityGate,
+                    "extensions" if *enabled => GlassCapabilityStatus::Experimental,
+                    "extensions" => {
+                        if experimental_extensions {
+                            GlassCapabilityStatus::BlockedBySecurityGate
+                        } else {
+                            GlassCapabilityStatus::DisabledByPolicy
+                        }
+                    }
                     "rawCdp" | "persistentKnowledge" if !enabled => {
                         GlassCapabilityStatus::DisabledByPolicy
                     }
@@ -287,12 +318,32 @@ mod tests {
         assert!(!manifest.capabilities["localDaemon"]);
         assert_eq!(
             manifest.capability_statuses["extensions"],
-            GlassCapabilityStatus::BlockedBySecurityGate
+            GlassCapabilityStatus::DisabledByPolicy
         );
         assert_eq!(
             manifest.capability_statuses["rawCdp"],
             GlassCapabilityStatus::Available
         );
+    }
+
+    #[test]
+    fn experimental_extensions_require_opt_in_and_a_native_sandbox() {
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let manifest =
+            GlassCapabilityManifest::for_policy_with_experimental_extensions(&policy, true);
+        if matches!(ExtensionSandbox::detect(), ExtensionSandbox::Unavailable) {
+            assert!(!manifest.capabilities["extensions"]);
+            assert_eq!(
+                manifest.capability_statuses["extensions"],
+                GlassCapabilityStatus::BlockedBySecurityGate
+            );
+        } else {
+            assert!(manifest.capabilities["extensions"]);
+            assert_eq!(
+                manifest.capability_statuses["extensions"],
+                GlassCapabilityStatus::Experimental
+            );
+        }
     }
 
     #[test]

@@ -63,6 +63,7 @@ jobs:
         run: |
           scripts/generate-validation-evidence.sh dist/validation
           python3 scripts/check-reliability-matrix.py dist/validation/reliability-matrix.json
+          python3 scripts/check-release-documentation.py
           python3 scripts/check-knowledge-migration.py \
             --binary target/release/glass \
             --output dist/validation/knowledge-migration.json

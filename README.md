@@ -22,7 +22,8 @@ change a target without an explicit request.
 The command-line interface (CLI), terminal user interface (TUI), Model
 Context Protocol (MCP) server, and Rust library use the same session runtime.
 See the [cross-platform feature parity matrix](docs/feature-parity.md) for
-target certification status.
+target certification status and the [release evidence guide](docs/release-evidence.md)
+for artifact-bound certification reports and publication boundaries.
 
 ## Install the local checkout
 

@@ -5,6 +5,18 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.1
 
+### Added
+
+- Explicit capability status reporting distinguishes available, policy-disabled,
+  uncertified, and security-gated surfaces across CLI and MCP manifests.
+- Deterministic cross-platform reliability, knowledge migration, native sandbox,
+  client compatibility, and packaged-artifact evidence matrices.
+
+### Changed
+
+- Release certification now binds runtime and client evidence to exact artifact
+  hashes and fails closed when reports disagree with contract artifacts.
+
 ### Documentation
 
 - Correct the published 0.2.0 release state and record the initial 0.2.1

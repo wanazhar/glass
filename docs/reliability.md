@@ -132,7 +132,7 @@ Evaluate release evidence:
 
 ```console
 glass certify release \
-  --version 0.2.0 \
+  --version 0.2.1 \
   --scenarios scenarios.json \
   --observations observations.json \
   --replays replays.json

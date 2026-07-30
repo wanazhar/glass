@@ -1,6 +1,6 @@
 {
   "name": "@glass-browser/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Native Glass browser binary launcher",
   "bin": { "glass": "bin/glass.js" },
   "scripts": { "postinstall": "node scripts/install.mjs" },

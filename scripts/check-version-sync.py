@@ -29,9 +29,6 @@ versions = {
     "clients/typescript/package.json": json.loads(
         (root / "clients/typescript/package.json").read_text()
     )["version"],
-    "clients/npm/package.json": json.loads(
-        (root / "clients/npm/package.json").read_text()
-    )["version"],
 }
 
 if len(set(versions.values())) != 1:

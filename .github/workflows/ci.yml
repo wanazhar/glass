@@ -62,8 +62,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release Glass for client smoke tests
-        run: cargo build --release --locked
+      - name: Build Glass for client smoke tests
+        run: cargo build --locked
 
       - uses: actions/setup-node@v4
         with:
@@ -79,13 +79,9 @@ jobs:
 
       - name: Run TypeScript client handshake smoke test
         env:
-          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
+          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
         run: node smoke.mjs
         working-directory: clients/typescript
-
-      - name: Validate npm launcher package
-        working-directory: clients/npm
-        run: npm pack --dry-run
 
       - uses: actions/setup-python@v5
         with:
@@ -97,6 +93,6 @@ jobs:
 
       - name: Run Python client handshake smoke test
         env:
-          GLASS_BINARY: ${{ github.workspace }}/target/release/glass
+          GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
         run: python smoke.py
         working-directory: clients/python

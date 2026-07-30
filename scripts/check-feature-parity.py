@@ -135,8 +135,8 @@ def main() -> None:
         for package in metadata["packages"]
         if package["name"] == "glass-browser"
     )
-    if cargo_version != baseline["version"]:
-        fail("Cargo.toml version does not match the published release baseline")
+    if cargo_version not in {baseline["version"], matrix["next_release"]}:
+        fail("Cargo.toml version is neither the published baseline nor the next release")
 
     required_text = {
         "README.md": "| 0.2.0 | Current release |",

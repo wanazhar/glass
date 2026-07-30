@@ -39,8 +39,8 @@ open remote issue is not treated as completed only because local code exists.
 | #21 Transactional Workflow Runtime | Core workflow, retry, checkpoint, trace, resume, and authoring paths are implemented and tested locally. | Partial. The full public workflow fixture matrix and public adapters are not certified. |
 | #22 Semantic Observation Engine | Versioned levels, regions, revisions, diffs, schemas, and cross-interface tests exist locally. | Partial. Cross-platform and public evidence are not complete. |
 | #23 Intent Resolution Engine | Versioned requests, evidence, policies, stale checks, guarded execution, workflow use, and TUI review exist locally. | Partial. Full benchmark and public adapter evidence are not complete. |
-| #24 Persistent Browser Knowledge | Scoped records, lifecycle, redaction, CLI/MCP operations, schemas, and scorecard fixtures exist locally. | Partial. Persistence migration and release evidence remain incomplete. |
-| #25 Workflow Authoring System | YAML/JSON compilation, diagnostics, preview, diff, semantic recording, and client smoke paths exist locally. | Partial. Full recorder/compiler certification and packaged client evidence remain incomplete. |
+| #24 Persistent Browser Knowledge | Scoped records, lifecycle, redaction, CLI/MCP operations, schemas, scorecard fixtures, and a four-target packaged migration gate exist locally. | Partial. Native release-runner execution remains incomplete. |
+| #25 Workflow Authoring System | YAML/JSON compilation, diagnostics, preview, diff, semantic recording, client smoke paths, and exact-artifact client evidence exist locally. | Partial. Native release-runner execution remains incomplete. |
 | #26 Reliability Laboratory | Scenario, fixture, replay, forbidden-outcome, and fail-closed release gate foundations exist locally. | Blocked. The complete deterministic matrix, platform artifacts, and public scorecard are not certified. |
 | #27 Stable Runtime Platform | Protocol v1, capability negotiation, isolated daemon sessions, leases, recovery, SDK guards, TUI inventory, extension host foundations, lifecycle tests, and executable client/transport conformance exist locally. | Blocked. Extension capability is disabled until the native sandbox gate passes on the release environments. |
 
@@ -48,7 +48,7 @@ open remote issue is not treated as completed only because local code exists.
 
 The current local checkout has:
 
-- synchronized 0.2.0 package versions;
+- synchronized 0.2.1 package versions;
 - passing Rust tests, Clippy, rustdoc, audit, and dependency checks on Linux;
 - a successful verified package check with `cargo package --locked`;
 - Python and TypeScript client build and smoke checks against the local binary;
@@ -76,8 +76,10 @@ Additional Linux ARM64 release-candidate evidence is now available:
 
 - the six-scenario reliability capability suite passes with only `passed` or
   `safe_refusal` classifications and validates every replay bundle;
-- the release binary smoke reports the CLI/MCP contract and all 70 MCP tools;
-- TypeScript, Python, and npm package checks pass against the release binary;
+- the release binary smoke reports the CLI/MCP contract and the complete MCP
+  tool inventory;
+- TypeScript, Python, and npm package checks pass against the release binary,
+  with machine-readable evidence bound to each target artifact;
 - a temporary Cargo home installed published `0.1.18`, installed the packaged
   `0.2.0` crate, and upgraded the same installation root successfully; and
 - Linux bubblewrap extension sandbox, redaction, permission, and lifecycle
@@ -95,10 +97,9 @@ The 0.2.1 evidence plan carries these remaining items:
 1. Run the real-browser matrix on Linux x86-64/arm64 and macOS x86-64/arm64.
    Linux ARM64 uses a system Chromium binary because Chrome for Testing does
    not publish a Linux ARM64 archive.
-2. Run the release binary contract smoke on all release targets. The workflow
-   now checks CLI help, the capability manifest, MCP initialization, and the
-   complete tool inventory. Browser, screenshot, and TUI startup evidence is
-   still external release evidence.
+2. Run the release binary and packaged browser/screenshot/TUI smoke on all
+   release targets. The workflow contains these gates; their native GitHub
+   execution remains pending.
 3. Run full package inspection and repeat the clean verified package-install
    test on each release runner; Linux ARM64 now passes this locally.
 4. Generate and verify artifact checksums and Sigstore provenance.
@@ -107,8 +108,9 @@ The 0.2.1 evidence plan carries these remaining items:
    environments. Linux ARM64 passes locally.
 7. Complete the deterministic reliability certification matrix on every
    release platform and publish the scorecard evidence.
-8. Publish the client compatibility matrix and test clients against released
-   binaries. The Linux ARM64 release binary passes locally.
+8. Execute and publish the client compatibility matrix against the four
+   native release artifacts. The local workflow and evidence merge are ready;
+   Linux ARM64 client checks pass locally.
 9. Complete extension redaction and native-sandbox certification on the
    release environments. Linux ARM64 passes locally; macOS remains unverified.
 

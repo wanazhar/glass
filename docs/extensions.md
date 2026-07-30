@@ -4,6 +4,9 @@ Glass defines a versioned extension manifest and a bounded process host. The
 extension capability is disabled by default. It is currently available only as
 an explicit experimental opt-in on the locally verified Linux ARM64 sandbox.
 
+See [Experimental capabilities](experimental-capabilities.md) for the full
+opt-in, status, safety, and compatibility guidance.
+
 ## Manifest
 
 An extension manifest declares:

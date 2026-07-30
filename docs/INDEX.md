@@ -25,6 +25,8 @@ unreleased development build.
   boundaries, and mutation leases.
 - [Extensions](extensions.md) — versioned manifests, bounded hosts, native
   sandboxing, and guarded action boundaries.
+- [Experimental capabilities](experimental-capabilities.md) — opt-in commands,
+  status meanings, safety expectations, and future capability guidance.
 - [Semantic observations](semantic-observation.md) — bounded page and region
   state, levels, expansion, revisions, diffs, and privacy boundaries.
 - [Intent resolution](intent-resolution.md) — bounded candidate resolution,

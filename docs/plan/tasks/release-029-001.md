@@ -1,6 +1,6 @@
 id: release-029-001
 scope: 0.2.2 contract foundations
-status: in-progress
+status: done
 depends-on: []
 
 # Objective

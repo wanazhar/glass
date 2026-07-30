@@ -1,10 +1,13 @@
 # Glass
 
-Glass is a Rust browser control tool. It controls Chrome or Chromium through
-the Chrome DevTools Protocol (CDP). It does not include a browser runtime.
+Glass is a local, revision-safe Chrome automation runtime for agents. It
+combines semantic observation, verified workflows, MCP, CLI, TUI, and Rust
+APIs while keeping every browser action explicit and bounded.
 
-Glass runs declared browser actions. It does not create an action plan or
-change a target without an explicit request.
+Glass controls Chrome or Chromium through the Chrome DevTools Protocol (CDP);
+it does not include a browser runtime or create an autonomous action plan.
+Install the executable with Cargo, then use the safe observe → guarded action
+→ verify loop.
 
 ## Support status
 
@@ -15,6 +18,7 @@ change a target without an explicit request.
 | macOS x86-64 | Declared target; not verified on this machine |
 | macOS arm64 | Declared target; not verified on this machine |
 | Windows | Unsupported |
+| 0.2.2 | In development |
 | 0.2.1 | Current release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
@@ -176,9 +180,10 @@ The library provides `BrowserSession`, session options, policies, observations,
 revision-safe actions, target and frame management, storage, downloads,
 screenshots, PDFs, semantic observations, and the MCP server.
 
-The optional [TypeScript client](clients/typescript) and [Python
-client](clients/python) start a local Glass binary. They do not include a
-browser runtime.
+The repository-only [TypeScript client](clients/typescript) and [Python
+client](clients/python) are experimental clients for 0.2.2. They are not
+published as npm or PyPI packages, do not include a browser runtime, and do
+not change the primary Cargo installation path.
 
 ## Safety and scope
 

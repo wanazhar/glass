@@ -1079,28 +1079,19 @@ fn initialize_response_in_mode(
         local_daemon,
         experimental_extensions,
     );
-    let Some(glass_request) = request.params.get("glass") else {
-        return success_response(
-            request.id.response_value(),
-            json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": {"listChanged": false},
-                    "prompts": {"listChanged": false},
-                    "resources": {"subscribe": false, "listChanged": false}
-                },
-                "glass": manifest,
-                "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
-            }),
-        );
+    let agreement = manifest
+        .negotiate(request.params.get("glass"))
+        .map_err(|error| {
+            error_response(
+                request.id.response_value(),
+                -32602,
+                format!("Glass capability negotiation failed: {error}"),
+            )
+        });
+    let agreement = match agreement {
+        Ok(agreement) => agreement,
+        Err(response) => return response,
     };
-    if let Err(error) = manifest.negotiate(Some(glass_request)) {
-        return error_response(
-            request.id.response_value(),
-            -32602,
-            format!("Glass capability negotiation failed: {error}"),
-        );
-    }
     success_response(
         request.id.response_value(),
         json!({
@@ -1111,6 +1102,7 @@ fn initialize_response_in_mode(
                 "resources": {"subscribe": false, "listChanged": false}
             },
             "glass": manifest,
+            "glassAgreement": agreement,
             "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
         }),
     )

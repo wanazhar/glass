@@ -5,7 +5,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.2
 
-No changes yet.
+### Added
+
+- Effective capability negotiation now returns agreed protocol schemas and
+  explicitly requested capabilities as a separate connection contract.
+- Capability requests support required and optional capabilities, experimental
+  opt-in, protocol-version lists, and additive request fields.
+- Capability discovery responses tolerate additive fields and unknown future
+  status values without accepting them for execution.
 
 ## [0.2.1] - 2026-07-30
 

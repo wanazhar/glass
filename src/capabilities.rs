@@ -20,15 +20,19 @@ use crate::reliability::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Stable Glass protocol version negotiated independently from MCP.
 pub use crate::protocol::GLASS_PROTOCOL_VERSION;
 
 /// A bounded, machine-readable description of one Glass runtime.
+///
+/// This is discovery output. It intentionally describes the complete runtime
+/// inventory and is kept separate from [`NegotiatedCapabilities`], which is the
+/// contract a client may rely on after initialization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GlassCapabilityManifest {
     pub protocol_version: u32,
     pub glass_version: String,
@@ -37,6 +41,29 @@ pub struct GlassCapabilityManifest {
     #[serde(default)]
     pub capability_statuses: BTreeMap<String, GlassCapabilityStatus>,
     pub constraints: GlassCapabilityConstraints,
+}
+
+/// The immutable capability contract selected for one connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NegotiatedCapabilities {
+    pub protocol_version: u32,
+    pub agreed_schemas: BTreeMap<String, u32>,
+    pub capabilities: BTreeMap<String, NegotiatedCapability>,
+    pub constraints: GlassCapabilityConstraints,
+}
+
+/// Effective status for one capability in a negotiated agreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NegotiatedCapability {
+    pub status: GlassCapabilityStatus,
+}
+
+impl NegotiatedCapability {
+    fn from_status(status: GlassCapabilityStatus) -> Self {
+        Self { status }
+    }
 }
 
 /// Why a capability is or is not available in the current runtime.
@@ -50,11 +77,31 @@ pub enum GlassCapabilityStatus {
     UnavailableOnPlatform,
     MissingRuntimeDependency,
     BlockedBySecurityGate,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Client requirements used to form an effective Glass agreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityNegotiationRequest {
+    #[serde(default)]
+    pub protocol_versions: Vec<u32>,
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
+    #[serde(default)]
+    pub schemas: BTreeMap<String, Vec<u32>>,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub optional: Vec<String>,
+    #[serde(default)]
+    pub accepts_experimental: bool,
 }
 
 /// Runtime and policy constraints that affect optional operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GlassCapabilityConstraints {
     pub platform: String,
     pub browser_family: String,
@@ -62,13 +109,35 @@ pub struct GlassCapabilityConstraints {
     pub max_sessions: u32,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct GlassCapabilityRequest {
-    #[serde(default = "default_protocol_version")]
-    protocol_version: u32,
-    #[serde(default)]
-    schemas: BTreeMap<String, Vec<u32>>,
+impl GlassCapabilityManifest {
+    /// Reject impossible capability boolean/status combinations.
+    pub fn validate(&self) -> Result<(), CapabilityNegotiationError> {
+        for (name, enabled) in &self.capabilities {
+            let Some(status) = self.capability_statuses.get(name) else {
+                continue;
+            };
+            let blocking = matches!(
+                status,
+                GlassCapabilityStatus::DisabledByPolicy
+                    | GlassCapabilityStatus::UnavailableOnPlatform
+                    | GlassCapabilityStatus::MissingRuntimeDependency
+                    | GlassCapabilityStatus::BlockedBySecurityGate
+            );
+            if *enabled && blocking {
+                return Err(CapabilityNegotiationError {
+                    field: format!("glass.capabilityStatuses.{name}"),
+                    detail: format!("enabled capability cannot have blocking status {status:?}"),
+                });
+            }
+            if matches!(status, GlassCapabilityStatus::Unknown) {
+                return Err(CapabilityNegotiationError {
+                    field: format!("glass.capabilityStatuses.{name}"),
+                    detail: "unknown capability status is not negotiable".into(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A bounded failure returned before an unsupported contract is used.
@@ -85,6 +154,23 @@ impl fmt::Display for CapabilityNegotiationError {
 }
 
 impl std::error::Error for CapabilityNegotiationError {}
+
+fn normalize_request(
+    value: &Value,
+) -> Result<CapabilityNegotiationRequest, CapabilityNegotiationError> {
+    let mut request: CapabilityNegotiationRequest =
+        serde_json::from_value(value.clone()).map_err(|error| CapabilityNegotiationError {
+            field: "glass".into(),
+            detail: format!("invalid capability request: {error}"),
+        })?;
+    if request.protocol_versions.is_empty() {
+        request.protocol_versions = request.protocol_version.into_iter().collect();
+    }
+    if request.protocol_versions.is_empty() {
+        request.protocol_versions.push(default_protocol_version());
+    }
+    Ok(request)
+}
 
 impl GlassCapabilityManifest {
     /// Build the manifest for the current binary and policy.
@@ -180,27 +266,38 @@ impl GlassCapabilityManifest {
         }
     }
 
-    /// Negotiate an optional Glass request against this manifest.
-    pub fn negotiate(&self, request: Option<&Value>) -> Result<Self, CapabilityNegotiationError> {
-        let Some(request) = request else {
-            return Ok(self.clone());
+    /// Negotiate a bounded, immutable agreement against this manifest.
+    ///
+    /// `None` retains backwards-compatible discovery semantics by agreeing to
+    /// the server's complete inventory. A request selects exact schema
+    /// versions and may require or optionally accept named capabilities.
+    pub fn negotiate(
+        &self,
+        request: Option<&Value>,
+    ) -> Result<NegotiatedCapabilities, CapabilityNegotiationError> {
+        self.validate()?;
+        let request = match request {
+            Some(value) => normalize_request(value)?,
+            None => CapabilityNegotiationRequest {
+                protocol_versions: vec![self.protocol_version],
+                protocol_version: None,
+                schemas: BTreeMap::new(),
+                requires: Vec::new(),
+                optional: self.capabilities.keys().cloned().collect(),
+                accepts_experimental: true,
+            },
         };
-        let request: GlassCapabilityRequest =
-            serde_json::from_value(request.clone()).map_err(|error| {
-                CapabilityNegotiationError {
-                    field: "glass".into(),
-                    detail: format!("invalid capability request: {error}"),
-                }
-            })?;
-        if request.protocol_version != self.protocol_version {
+        if !request.protocol_versions.contains(&self.protocol_version) {
             return Err(CapabilityNegotiationError {
-                field: "glass.protocolVersion".into(),
+                field: "glass.protocolVersions".into(),
                 detail: format!(
-                    "unsupported protocol {}; expected {}",
-                    request.protocol_version, self.protocol_version
+                    "unsupported protocols {:?}; expected {}",
+                    request.protocol_versions, self.protocol_version
                 ),
             });
         }
+
+        let mut agreed_schemas = BTreeMap::new();
         for (name, requested_versions) in request.schemas {
             let Some(supported_versions) = self.schemas.get(&name) else {
                 return Err(CapabilityNegotiationError {
@@ -208,20 +305,88 @@ impl GlassCapabilityManifest {
                     detail: "unknown schema".into(),
                 });
             };
-            if requested_versions.is_empty()
-                || !requested_versions
-                    .iter()
-                    .any(|version| supported_versions.contains(version))
-            {
+            let Some(version) = requested_versions
+                .iter()
+                .filter(|version| supported_versions.contains(version))
+                .max()
+                .copied()
+            else {
                 return Err(CapabilityNegotiationError {
                     field: format!("glass.schemas.{name}"),
                     detail: format!(
                         "requested versions do not intersect supported versions {supported_versions:?}"
                     ),
                 });
-            }
+            };
+            agreed_schemas.insert(name, version);
         }
-        Ok(self.clone())
+        if agreed_schemas.is_empty() {
+            agreed_schemas = self
+                .schemas
+                .iter()
+                .filter_map(|(name, versions)| {
+                    versions
+                        .iter()
+                        .max()
+                        .map(|version| (name.clone(), *version))
+                })
+                .collect();
+        }
+
+        let required = request.requires.into_iter().collect::<BTreeSet<_>>();
+        let optional = request.optional.into_iter().collect::<BTreeSet<_>>();
+        let requested_capabilities: BTreeSet<String> = if required.is_empty() && optional.is_empty()
+        {
+            self.capabilities.keys().cloned().collect()
+        } else {
+            required.union(&optional).cloned().collect()
+        };
+        let mut capabilities = BTreeMap::new();
+        for name in requested_capabilities {
+            let Some(enabled) = self.capabilities.get(&name) else {
+                if required.contains(&name) {
+                    return Err(CapabilityNegotiationError {
+                        field: format!("glass.requires.{name}"),
+                        detail: "unknown capability".into(),
+                    });
+                }
+                continue;
+            };
+            let status = self
+                .capability_statuses
+                .get(&name)
+                .copied()
+                .unwrap_or(if *enabled {
+                    GlassCapabilityStatus::Available
+                } else {
+                    GlassCapabilityStatus::UnavailableOnPlatform
+                });
+            if required.contains(&name) {
+                if !*enabled {
+                    return Err(CapabilityNegotiationError {
+                        field: format!("glass.requires.{name}"),
+                        detail: format!("capability is not enabled ({status:?})"),
+                    });
+                }
+                if status == GlassCapabilityStatus::Experimental && !request.accepts_experimental {
+                    return Err(CapabilityNegotiationError {
+                        field: format!("glass.requires.{name}"),
+                        detail: "experimental capability requires acceptsExperimental=true".into(),
+                    });
+                }
+            } else if status == GlassCapabilityStatus::Experimental && !request.accepts_experimental
+            {
+                continue;
+            }
+            capabilities.insert(name, NegotiatedCapability::from_status(status));
+        }
+
+        Ok(NegotiatedCapabilities {
+            protocol_version: self.protocol_version,
+            agreed_schemas,
+            capabilities,
+            constraints: self.constraints.clone(),
+        })
     }
 }
 
@@ -350,29 +515,92 @@ mod tests {
     }
 
     #[test]
-    fn negotiation_accepts_compatible_schema_requests() {
+    fn negotiation_returns_effective_schema_and_capability_agreement() {
         let manifest = development_manifest();
         let request = serde_json::json!({
-            "protocolVersion": 1,
-            "schemas": {"action": [1], "workflow": [1]}
+            "protocolVersions": [99, 1],
+            "schemas": {"action": [99, 1], "workflow": [1]},
+            "requires": ["workflowResume"],
+            "optional": ["extensions"],
+            "acceptsExperimental": false,
+            "futureField": true
         });
 
-        assert_eq!(manifest.negotiate(Some(&request)).unwrap(), manifest);
+        let agreement = manifest.negotiate(Some(&request)).unwrap();
+        assert_eq!(agreement.protocol_version, 1);
+        assert_eq!(agreement.agreed_schemas["action"], 1);
+        assert_eq!(agreement.agreed_schemas["workflow"], 1);
+        assert_eq!(
+            agreement.capabilities["workflowResume"].status,
+            GlassCapabilityStatus::Available
+        );
+        assert_eq!(
+            agreement.capabilities["extensions"].status,
+            GlassCapabilityStatus::DisabledByPolicy
+        );
+        assert_eq!(manifest.schemas["workflow"], vec![1]);
     }
 
     #[test]
     fn negotiation_rejects_unknown_and_incompatible_requests() {
         let manifest = development_manifest();
-        let unknown = serde_json::json!({
+        let unknown_schema = serde_json::json!({
             "protocolVersion": 1,
             "schemas": {"future": [1]}
         });
-        let incompatible = serde_json::json!({
+        let incompatible_schema = serde_json::json!({
             "protocolVersion": 1,
             "schemas": {"workflow": [99]}
         });
+        let missing_required_capability = serde_json::json!({
+            "protocolVersions": [1],
+            "requires": ["extensions"]
+        });
 
-        assert!(manifest.negotiate(Some(&unknown)).is_err());
-        assert!(manifest.negotiate(Some(&incompatible)).is_err());
+        assert!(manifest.negotiate(Some(&unknown_schema)).is_err());
+        assert!(manifest.negotiate(Some(&incompatible_schema)).is_err());
+        assert!(
+            manifest
+                .negotiate(Some(&missing_required_capability))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn manifest_validation_rejects_enabled_blocked_capabilities() {
+        let mut manifest = development_manifest();
+        manifest.capabilities.insert("broken".into(), true);
+        manifest.capability_statuses.insert(
+            "broken".into(),
+            GlassCapabilityStatus::BlockedBySecurityGate,
+        );
+
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.field, "glass.capabilityStatuses.broken");
+    }
+
+    #[test]
+    fn unknown_manifest_fields_and_statuses_are_tolerated_on_decode() {
+        let value = serde_json::json!({
+            "protocolVersion": 1,
+            "glassVersion": "0.2.2",
+            "schemas": {},
+            "capabilities": {"future": false},
+            "capabilityStatuses": {"future": "addedLater"},
+            "constraints": {
+                "platform": "linux-arm64",
+                "browserFamily": "chromium",
+                "policy": "development",
+                "maxSessions": 4,
+                "futureConstraint": true
+            },
+            "futureManifestField": true
+        });
+        let manifest: GlassCapabilityManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            manifest.capability_statuses["future"],
+            GlassCapabilityStatus::Unknown
+        );
+        assert!(manifest.validate().is_err());
     }
 }

@@ -69,6 +69,8 @@ unreleased development build.
 - [Release checklist](release-checklist.md) — repeatable `0.x` release process.
 - [CI-native platform certification](ci-platform-certification.md) — native
   target runners, evidence fields, and reproduction commands.
+- [Release evidence](release-evidence.md) — machine-readable report layers,
+  artifact binding, certification joins, and publication boundaries.
 - [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.
 
 ## Design

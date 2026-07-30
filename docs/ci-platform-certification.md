@@ -55,6 +55,10 @@ The release workflow runs TypeScript, Python, and npm launcher compatibility
 against the downloaded target artifact on each native runner. It also runs the
 isolated Cargo install and upgrade check on each target.
 
+See [Release evidence](release-evidence.md) for the complete report inventory,
+artifact-binding rules, and the distinction between static local checks and
+native release certification.
+
 ## Local reproduction
 
 Run the platform-independent checks locally:

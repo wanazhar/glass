@@ -142,7 +142,7 @@ The release command fails closed when:
 
 - a scenario is missing;
 - a hash does not match;
-- oracle or artifact evidence is incomplete;
+- oracle or runtime evidence is incomplete;
 - a budget is invalid;
 - a forbidden outcome is present;
 - a run fails, is indeterminate, or is unsupported; or

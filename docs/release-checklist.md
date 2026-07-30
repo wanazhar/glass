@@ -45,9 +45,9 @@ GLASS_PREVIOUS_VERSION=0.1.18 scripts/smoke-clean-install.sh
 
 Then complete these release checks:
 
-- [ ] Run the real-browser smoke test on the current Linux ARM64 machine with
+- [x] Run the real-browser smoke test on the current Linux ARM64 machine with
       its installed Chromium binary.
-- [ ] Record the host OS, architecture, Rust target, browser version, and
+- [x] Record the host OS, architecture, Rust target, browser version, and
       commands used for the local platform check.
 - [ ] Keep other declared targets labeled unverified unless their own native
       environments are tested separately.

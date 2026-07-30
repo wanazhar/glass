@@ -45,7 +45,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared browser-backed implementation; exact artifact and browser certification remains incomplete."
+      "reason": "Shared browser-backed implementation; browser verification is recorded only for the current local host."
     },
     {
       "id": "semantic-observations-and-diffs",
@@ -58,7 +58,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared contract and implementation; cross-target artifact evidence remains incomplete."
+      "reason": "Shared contract and implementation; cross-target runtime verification remains incomplete."
     },
     {
       "id": "intent-resolution",
@@ -71,7 +71,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent implementation; release artifact and scorecard evidence remains incomplete."
+      "reason": "Platform-independent implementation; the source scorecard does not certify another operating system."
     },
     {
       "id": "workflow-runtime-and-resume",
@@ -84,7 +84,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent implementation; complete deterministic and artifact evidence remains incomplete."
+      "reason": "Platform-independent implementation; complete runtime verification remains incomplete outside the local host."
     },
     {
       "id": "persistent-knowledge",
@@ -97,7 +97,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent implementation; persistence migration and artifact evidence remains incomplete."
+      "reason": "Platform-independent implementation; persistence migration is not verified on other operating systems."
     },
     {
       "id": "workflow-authoring",
@@ -214,7 +214,7 @@
         "macos-x86_64": "blockedBySecurityGate",
         "macos-arm64": "blockedBySecurityGate"
       },
-      "reason": "The extension host is shipped, but the native sandbox gate is not certified for the applicable release artifact."
+      "reason": "The extension host is shipped, but the native sandbox gate is not certified for every declared target."
     }
   ]
 }

@@ -39,6 +39,7 @@ GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threa
 
 Record the host and browser details with the result. Do not convert source
 inventory or cross-compilation into a support claim for another OS.
+The current recorded result is in [Local platform evidence](local-platform.md).
 
 ## Publication boundary
 

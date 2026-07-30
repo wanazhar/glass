@@ -62,11 +62,17 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — local Pillar 0 evidence foundation
+Status: In progress — local evidence-foundation increments
 
-The first local increment establishes the versioned fixture corpus and static
-baseline contract in [semantic-execution-030](analysis/semantic-execution-030.md)
-and [ir-030-001](tasks/ir-030-001.md). No Web IR runtime contract is stable yet.
+Completed:
+
+- [ir-030-001](tasks/ir-030-001.md) — versioned fixture corpus and static
+  baseline inventory.
+
+In progress:
+
+- [ir-030-002](tasks/ir-030-002.md) — bounded extraction contracts, scopes, and
+  resource budgets.
 
 ## Completed plan: performance overhaul
 

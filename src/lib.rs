@@ -51,6 +51,8 @@ pub mod cli;
 pub mod daemon;
 /// Validated extension metadata and permission boundaries.
 pub mod extensions;
+/// Experimental bounded browser-evidence extraction contracts.
+pub mod extraction;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
 /// Transport-neutral versioned request and response envelopes.

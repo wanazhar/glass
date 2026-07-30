@@ -58,6 +58,8 @@ def main() -> None:
         replays = []
         hashes = {}
         fixture_hashes = set()
+        artifacts = set()
+        source_revisions = set()
         for path in evidence_paths:
             value = load_json(path)
             if not isinstance(value, dict):
@@ -91,6 +93,29 @@ def main() -> None:
                 fail(f"{path} replay observation differs from the run observation")
             if not replay.get("events"):
                 fail(f"{path} replay contains no redacted events")
+            artifact_metadata = value.get("artifact")
+            if not isinstance(artifact_metadata, dict):
+                fail(f"{path} is not bound to a packaged artifact")
+            if artifact_metadata.get("name") != artifact:
+                fail(f"{path} is bound to the wrong artifact")
+            if artifact_metadata.get("target") != platform:
+                fail(f"{path} is bound to the wrong target")
+            artifact_hash = artifact_metadata.get("sha256", "")
+            if len(artifact_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in artifact_hash
+            ):
+                fail(f"{path} has an invalid artifact SHA-256")
+            if artifact_metadata.get("size_bytes", 0) <= 0:
+                fail(f"{path} has an invalid artifact size")
+            artifacts.add(json.dumps(artifact_metadata, sort_keys=True))
+            source_revision = value.get("source_revision")
+            if (
+                not isinstance(source_revision, str)
+                or len(source_revision) != 40
+                or any(character not in "0123456789abcdef" for character in source_revision)
+            ):
+                fail(f"{path} is missing a valid source revision")
+            source_revisions.add(source_revision)
             hashes[scenario_id] = observation.get("scenarioHash")
             fixture_hashes.add(replay.get("fixtureHash"))
             observations.append(observation)
@@ -98,6 +123,10 @@ def main() -> None:
 
         if len(fixture_hashes) != 1:
             fail(f"{artifact} contains inconsistent fixture hashes")
+        if len(artifacts) != 1:
+            fail(f"{artifact} contains inconsistent artifact bindings")
+        if len(source_revisions) != 1:
+            fail(f"{artifact} contains inconsistent source revisions")
         observation_path = output.parent / f"reliability-observations-{artifact}.json"
         replay_path = output.parent / f"reliability-replays-{artifact}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +149,8 @@ def main() -> None:
                 ),
                 "scenario_hashes": hashes,
                 "fixture_hash": next(iter(fixture_hashes)),
+                "artifact": json.loads(next(iter(artifacts))),
+                "source_revision": next(iter(source_revisions)),
                 "observations_file": observation_path.name,
                 "replays_file": replay_path.name,
                 "runtime_certification": "pending_release_gate",

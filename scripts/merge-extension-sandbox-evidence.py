@@ -38,10 +38,32 @@ def main() -> None:
             fail(f"{path} has the wrong target or sandbox")
         if row.get("status") != "passed":
             fail(f"{path} is not passed")
-        source_revisions.add(row.get("source_revision"))
+        artifact_metadata = row.get("artifact")
+        if not isinstance(artifact_metadata, dict):
+            fail(f"{path} is not bound to a packaged artifact")
+        if artifact_metadata.get("name") != artifact or artifact_metadata.get("target") != target:
+            fail(f"{path} has the wrong artifact binding")
+        artifact_hash = artifact_metadata.get("sha256", "")
+        if len(artifact_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in artifact_hash
+        ):
+            fail(f"{path} has an invalid artifact SHA-256")
+        if artifact_metadata.get("size_bytes", 0) <= 0:
+            fail(f"{path} has an invalid artifact size")
+        source_revision = row.get("source_revision")
+        if (
+            not isinstance(source_revision, str)
+            or len(source_revision) != 40
+            or any(character not in "0123456789abcdef" for character in source_revision)
+        ):
+            fail(f"{path} is missing a valid source revision")
+        source_revisions.add(source_revision)
         rows.append(row)
     if len(source_revisions) != 1:
         fail("sandbox rows are not bound to one source revision")
+    artifact_bindings = {json.dumps(row["artifact"], sort_keys=True) for row in rows}
+    if len(artifact_bindings) != len(rows):
+        fail("sandbox rows unexpectedly share one artifact binding")
     report = {
         "schema_version": 1,
         "type": "native_extension_sandbox_matrix",

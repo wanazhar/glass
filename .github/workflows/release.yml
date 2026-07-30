@@ -181,6 +181,25 @@ jobs:
           cargo test --test browser_smoke --locked -- --nocapture --test-threads=1 2>&1 \
             | tee "dist/${{ matrix.artifact }}-browser-smoke.log"
 
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/glass dist/${{ matrix.artifact }}
+          strip dist/${{ matrix.artifact }}
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
+          else
+            shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
+          fi
+
+      - name: Bind reliability evidence to packaged artifact
+        run: |
+          python3 scripts/bind-artifact-evidence.py \
+            dist/reliability \
+            "dist/${{ matrix.artifact }}" \
+            --target "${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'linux-x86-64' || matrix.target == 'aarch64-unknown-linux-gnu' && 'linux-arm64' || matrix.target == 'x86_64-apple-darwin' && 'macos-x86-64' || 'macos-arm64' }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: reliability-${{ matrix.artifact }}
@@ -200,6 +219,7 @@ jobs:
             --target "${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'linux-x86-64' || matrix.target == 'aarch64-unknown-linux-gnu' && 'linux-arm64' || matrix.target == 'x86_64-apple-darwin' && 'macos-x86-64' || 'macos-arm64' }}" \
             --sandbox "$GLASS_EXTENSION_SANDBOX_KIND" \
             --raw-report "dist/${{ matrix.artifact }}-extension-sandbox.log" \
+            --artifact "dist/${{ matrix.artifact }}" \
             --output "dist/sandbox-${{ matrix.artifact }}.json"
 
       - uses: actions/upload-artifact@v4
@@ -209,18 +229,6 @@ jobs:
             dist/sandbox-${{ matrix.artifact }}.json
             dist/${{ matrix.artifact }}-extension-sandbox.log
           if-no-files-found: error
-
-      - name: Package artifact
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/glass dist/${{ matrix.artifact }}
-          strip dist/${{ matrix.artifact }}
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
-          else
-            shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
-          fi
 
       - name: Smoke packaged browser and TUI
         shell: bash

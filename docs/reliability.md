@@ -80,6 +80,13 @@ python3 scripts/certify-reliability-matrix.py \
   --output evidence/reliability-scorecards.json
 ```
 
+The release workflow packages the target before uploading these rows and runs
+`scripts/bind-artifact-evidence.py` over each directory. Every scenario row
+therefore carries the packaged filename, target, byte size, and SHA-256. The
+merger rejects rows without one exact artifact binding per target, so a
+runtime report from an unstripped build cannot silently become release
+evidence.
+
 The merger requires all six scenarios, both redacted replay and independent
 oracle evidence, and a complete clean run on each of the four native targets.
 Only the second command may report `runtime_certification: certified`.

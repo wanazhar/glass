@@ -88,5 +88,9 @@ python3 scripts/merge-extension-sandbox-evidence.py \
   evidence/sandbox-matrix.json evidence/sandbox
 ```
 
+Each row is written after packaging and includes the exact artifact filename,
+target, size, and SHA-256. The merge gate rejects sandbox results that are not
+bound to the expected target artifact.
+
 The merged evidence still reports the capability as `blockedBySecurityGate`
 until every target passes.

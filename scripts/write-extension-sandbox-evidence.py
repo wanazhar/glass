@@ -2,6 +2,7 @@
 """Write machine-readable evidence for one native extension sandbox gate."""
 
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -24,6 +25,7 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--sandbox", required=True)
     parser.add_argument("--raw-report", required=True)
+    parser.add_argument("--artifact", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args()
     if args.target not in EXPECTED:
@@ -33,6 +35,8 @@ def main() -> None:
     raw_report = pathlib.Path(args.raw_report)
     if not raw_report.is_file() or not raw_report.read_text(encoding="utf-8").strip():
         fail(f"sandbox test report is missing or empty: {raw_report}")
+    if not args.artifact.is_file() or not args.artifact.stat().st_size:
+        fail(f"packaged artifact is missing or empty: {args.artifact}")
     report = {
         "schema_version": 1,
         "type": "native_extension_sandbox_evidence",
@@ -40,6 +44,12 @@ def main() -> None:
             ["git", "rev-parse", "HEAD"], text=True
         ).strip(),
         "target": args.target,
+        "artifact": {
+            "name": args.artifact.name,
+            "target": args.target,
+            "sha256": hashlib.sha256(args.artifact.read_bytes()).hexdigest(),
+            "size_bytes": args.artifact.stat().st_size,
+        },
         "sandbox": args.sandbox,
         "status": "passed",
         "test_command": "GLASS_EXTENSION_SANDBOX_E2E=1 cargo test --lib extensions::tests::sandboxed_reference_extensions_pass_native_gate -- --nocapture",

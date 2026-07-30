@@ -2,6 +2,7 @@
 """Certify the 0.2.x knowledge-store migration boundary."""
 
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -86,6 +87,12 @@ def main() -> None:
             ["git", "rev-parse", "HEAD"], text=True
         ).strip(),
         "binary_version": binary_version,
+        "artifact_binding": {
+            "kind": "source_build",
+            "name": args.binary.name,
+            "sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
+            "size_bytes": args.binary.stat().st_size,
+        },
         "source_contract": str(args.corpus),
         "from_schema_version": 1,
         "to_schema_version": 1,

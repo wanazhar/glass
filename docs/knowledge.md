@@ -112,4 +112,7 @@ python3 scripts/check-knowledge-migration.py \
 ```
 
 The check round-trips the checked-in six-record corpus, rejects schema v2, and
-verifies that rejected input leaves the existing store unchanged.
+verifies that rejected input leaves the existing store unchanged. Its report
+records the binary SHA-256 as `artifact_binding.kind: source_build`; this is
+validation of the release build used by the validation job, not a claim that
+every packaged target artifact has independently passed migration yet.

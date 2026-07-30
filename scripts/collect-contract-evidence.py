@@ -45,7 +45,10 @@ def main() -> None:
         capture_output=True,
         text=True,
     )
-    help_text = help_result.stdout
+    # Clap derives the program name from argv[0], which differs for each
+    # target artifact. Normalize only that executable basename so the
+    # cross-target contract compares behavior rather than packaging names.
+    help_text = help_result.stdout.replace(binary.name, "glass")
     manifest = json.loads(command(str(binary), "capabilities"))
     manifest.pop("contextCost", None)
     if manifest.get("protocolVersion") != 1:

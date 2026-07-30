@@ -379,6 +379,14 @@ jobs:
             --version "${GITHUB_REF_NAME#v}" \
             --output evidence/reliability-scorecards.json
 
+      - name: Verify runtime evidence joins exact artifacts
+        run: |
+          python3 scripts/verify-runtime-artifact-evidence.py \
+            evidence/contract-matrix.json \
+            evidence/reliability-scorecards.json \
+            evidence/sandbox-matrix.json \
+            evidence/knowledge-migration-matrix.json
+
       - name: Run bounded competitive acceptance
         shell: bash
         env:
@@ -551,6 +559,11 @@ jobs:
           python3 scripts/verify-downloaded-artifacts.py \
             dist/contract-matrix.json \
             dist
+          python3 scripts/verify-runtime-artifact-evidence.py \
+            dist/contract-matrix.json \
+            evidence/acceptance/reliability-scorecards.json \
+            evidence/acceptance/sandbox-matrix.json \
+            evidence/acceptance/knowledge-migration-matrix.json
           cp evidence/validation/ratified-gates.json dist/ratified-gates.json
           cp evidence/validation/release-validation.json dist/release-validation.json
           cp evidence/validation/knowledge-migration.json dist/knowledge-migration.json

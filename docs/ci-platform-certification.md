@@ -35,11 +35,18 @@ runs browser and TUI smoke against that exact artifact, and then records:
 - capability manifest; and
 - complete MCP tool names and input schemas.
 
+Contract collection normalizes the packaged executable basename in CLI help
+(`Usage: ...`) to `glass`; target-specific artifact names remain recorded in
+the surrounding artifact metadata.
+
 The acceptance job fails closed when a target is missing, duplicated, bound to
 another source revision, missing artifact or runner metadata, or differs in
 CLI, capability, or MCP contract from the other supported targets.
 It also verifies that the browser-smoke and contract reports name the same
 artifact hash, size, and filename for every target.
+The acceptance gate additionally joins the certified reliability, sandbox, and
+knowledge-migration matrices to those exact contract artifact hashes before
+the final release job assembles its evidence.
 The final release job verifies those hashes and sizes again against the
 downloaded artifact bytes before it creates the checksum manifest.
 

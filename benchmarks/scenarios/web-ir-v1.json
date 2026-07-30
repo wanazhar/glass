@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "corpus": "glass-semantic-execution-v1",
+  "baselineType": "fixture-inventory",
+  "purpose": "Static baseline contract before native Web IR extraction",
+  "measurement": {
+    "command": "python3 scripts/check-web-ir-corpus.py --output benchmarks/results/web-ir-v1.json",
+    "metrics": ["fixtureBytes", "htmlElementCount", "declaredEntityCount", "declaredRelationshipCount", "opaqueRegionCount"],
+    "runtimeClaims": false
+  },
+  "scenarios": [
+    {
+      "id": "form-semantic-inspect",
+      "fixtureId": "form-semantic",
+      "operation": "observe",
+      "level": "interactive",
+      "expectedCategories": ["forms"],
+      "expectedEntities": ["form", "field", "action"]
+    },
+    {
+      "id": "form-custom-inspect",
+      "fixtureId": "form-custom",
+      "operation": "observe",
+      "level": "interactive",
+      "expectedCategories": ["forms", "custom-controls"],
+      "expectedEntities": ["form", "field", "action"]
+    },
+    {
+      "id": "table-extract",
+      "fixtureId": "table-results",
+      "operation": "extract",
+      "level": "structured",
+      "expectedCategories": ["tables"],
+      "expectedEntities": ["table", "row", "action"]
+    },
+    {
+      "id": "collection-page",
+      "fixtureId": "collection-pagination",
+      "operation": "extract",
+      "level": "structured",
+      "expectedCategories": ["collections", "pagination"],
+      "expectedEntities": ["collection", "collectionItem", "paginationControl"]
+    },
+    {
+      "id": "dialog-navigation",
+      "fixtureId": "navigation-dialog",
+      "operation": "resolve",
+      "level": "interactive",
+      "expectedCategories": ["navigation", "dialogs"],
+      "expectedEntities": ["navigationItem", "tab", "dialog", "action"]
+    },
+    {
+      "id": "dynamic-revision",
+      "fixtureId": "dynamic-state",
+      "operation": "observe",
+      "level": "summary",
+      "expectedCategories": ["dynamic-state"],
+      "expectedEntities": ["collection", "text", "action"]
+    },
+    {
+      "id": "scope-boundaries",
+      "fixtureId": "frame-shadow",
+      "operation": "observe",
+      "level": "summary",
+      "expectedCategories": ["frames", "shadow-dom"],
+      "expectedEntities": ["opaqueRegion"]
+    },
+    {
+      "id": "opaque-failure",
+      "fixtureId": "opaque-controls",
+      "operation": "observe",
+      "level": "summary",
+      "expectedCategories": ["opaque-controls"],
+      "expectedEntities": ["opaqueRegion"]
+    }
+  ]
+}

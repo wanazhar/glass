@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "corpus": "glass-semantic-execution-v1",
+  "purpose": "Pillar 0 fixture and baseline contract for issue 30",
+  "maxFixtureBytes": 16384,
+  "requiredCategories": [
+    "forms",
+    "custom-controls",
+    "tables",
+    "collections",
+    "navigation",
+    "dialogs",
+    "pagination",
+    "dynamic-state",
+    "frames",
+    "shadow-dom",
+    "opaque-controls"
+  ],
+  "fixtures": [
+    {
+      "id": "form-semantic",
+      "path": "tests/fixtures/web-ir/form-semantic.html",
+      "categories": ["forms"],
+      "sourceKinds": ["dom", "accessibility", "forms"],
+      "coverage": "strong",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "form", "field", "field", "action"],
+      "expectedRelationships": ["contains", "labels", "owns", "submits"],
+      "riskHints": ["remoteReversible"]
+    },
+    {
+      "id": "form-custom",
+      "path": "tests/fixtures/web-ir/form-custom.html",
+      "categories": ["forms", "custom-controls"],
+      "sourceKinds": ["dom", "accessibility", "forms"],
+      "coverage": "partial",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "form", "field", "field", "action"],
+      "expectedRelationships": ["contains", "labels", "owns", "controls"],
+      "riskHints": ["localMutation"]
+    },
+    {
+      "id": "table-results",
+      "path": "tests/fixtures/web-ir/table-results.html",
+      "categories": ["tables"],
+      "sourceKinds": ["dom", "accessibility", "tables"],
+      "coverage": "strong",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "table", "row", "row", "action", "action"],
+      "expectedRelationships": ["contains", "headerFor", "cellOf", "navigatesTo"],
+      "riskHints": ["readOnly"]
+    },
+    {
+      "id": "collection-pagination",
+      "path": "tests/fixtures/web-ir/collection-pagination.html",
+      "categories": ["collections", "navigation", "pagination"],
+      "sourceKinds": ["dom", "accessibility", "navigation", "collections"],
+      "coverage": "strong",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "navigationItem", "collection", "collectionItem", "collectionItem", "paginationControl"],
+      "expectedRelationships": ["contains", "navigatesTo", "repeatsAs", "continues"],
+      "riskHints": ["readOnly"]
+    },
+    {
+      "id": "navigation-dialog",
+      "path": "tests/fixtures/web-ir/navigation-dialog.html",
+      "categories": ["navigation", "dialogs"],
+      "sourceKinds": ["dom", "accessibility", "navigation", "dialogs"],
+      "coverage": "strong",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "navigationItem", "tab", "dialog", "action", "action"],
+      "expectedRelationships": ["contains", "selects", "opens", "confirms", "cancels"],
+      "riskHints": ["remoteIrreversible", "requiresConfirmation"]
+    },
+    {
+      "id": "dynamic-state",
+      "path": "tests/fixtures/web-ir/dynamic-state.html",
+      "categories": ["collections", "dynamic-state"],
+      "sourceKinds": ["dom", "accessibility", "layout"],
+      "coverage": "partial",
+      "opaqueRegions": 0,
+      "expectedEntities": ["page", "region", "collection", "collectionItem", "action", "text"],
+      "expectedRelationships": ["contains", "repeatsAs", "continues"],
+      "riskHints": ["readOnly", "staleState"]
+    },
+    {
+      "id": "frame-shadow",
+      "path": "tests/fixtures/web-ir/frame-shadow.html",
+      "categories": ["frames", "shadow-dom"],
+      "sourceKinds": ["dom", "accessibility", "frames", "shadow-dom"],
+      "coverage": "partial",
+      "opaqueRegions": 2,
+      "expectedEntities": ["page", "region", "opaqueRegion", "opaqueRegion"],
+      "expectedRelationships": ["contains", "scopedTo"],
+      "riskHints": ["dataDisclosure"]
+    },
+    {
+      "id": "opaque-controls",
+      "path": "tests/fixtures/web-ir/opaque-controls.html",
+      "categories": ["opaque-controls"],
+      "sourceKinds": ["dom", "accessibility", "layout"],
+      "coverage": "opaque",
+      "opaqueRegions": 1,
+      "expectedEntities": ["page", "region", "opaqueRegion"],
+      "expectedRelationships": ["contains"],
+      "riskHints": ["unknownRisk"]
+    }
+  ]
+}

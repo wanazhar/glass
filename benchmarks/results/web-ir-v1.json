@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "corpus": "glass-semantic-execution-v1",
+  "baselineType": "fixture-inventory",
+  "runtimeClaims": false,
+  "fixtureCount": 8,
+  "scenarioCount": 8,
+  "categoryCount": 11,
+  "categories": [
+    "collections",
+    "custom-controls",
+    "dialogs",
+    "dynamic-state",
+    "forms",
+    "frames",
+    "navigation",
+    "opaque-controls",
+    "pagination",
+    "shadow-dom",
+    "tables"
+  ],
+  "totals": {
+    "fixtureBytes": 4656,
+    "htmlElementCount": 131,
+    "declaredEntityCount": 46,
+    "declaredRelationshipCount": 27,
+    "opaqueRegionCount": 3
+  },
+  "fixtures": [
+    {
+      "id": "collection-pagination",
+      "path": "tests/fixtures/web-ir/collection-pagination.html",
+      "categories": [
+        "collections",
+        "navigation",
+        "pagination"
+      ],
+      "fixtureBytes": 711,
+      "htmlElementCount": 23,
+      "declaredEntityCount": 7,
+      "declaredRelationshipCount": 4,
+      "opaqueRegionCount": 0,
+      "coverage": "strong"
+    },
+    {
+      "id": "dynamic-state",
+      "path": "tests/fixtures/web-ir/dynamic-state.html",
+      "categories": [
+        "collections",
+        "dynamic-state"
+      ],
+      "fixtureBytes": 440,
+      "htmlElementCount": 13,
+      "declaredEntityCount": 6,
+      "declaredRelationshipCount": 3,
+      "opaqueRegionCount": 0,
+      "coverage": "partial"
+    },
+    {
+      "id": "form-custom",
+      "path": "tests/fixtures/web-ir/form-custom.html",
+      "categories": [
+        "forms",
+        "custom-controls"
+      ],
+      "fixtureBytes": 670,
+      "htmlElementCount": 13,
+      "declaredEntityCount": 6,
+      "declaredRelationshipCount": 4,
+      "opaqueRegionCount": 0,
+      "coverage": "partial"
+    },
+    {
+      "id": "form-semantic",
+      "path": "tests/fixtures/web-ir/form-semantic.html",
+      "categories": [
+        "forms"
+      ],
+      "fixtureBytes": 552,
+      "htmlElementCount": 13,
+      "declaredEntityCount": 6,
+      "declaredRelationshipCount": 4,
+      "opaqueRegionCount": 0,
+      "coverage": "strong"
+    },
+    {
+      "id": "frame-shadow",
+      "path": "tests/fixtures/web-ir/frame-shadow.html",
+      "categories": [
+        "frames",
+        "shadow-dom"
+      ],
+      "fixtureBytes": 379,
+      "htmlElementCount": 10,
+      "declaredEntityCount": 4,
+      "declaredRelationshipCount": 2,
+      "opaqueRegionCount": 2,
+      "coverage": "partial"
+    },
+    {
+      "id": "navigation-dialog",
+      "path": "tests/fixtures/web-ir/navigation-dialog.html",
+      "categories": [
+        "navigation",
+        "dialogs"
+      ],
+      "fixtureBytes": 796,
+      "htmlElementCount": 20,
+      "declaredEntityCount": 7,
+      "declaredRelationshipCount": 5,
+      "opaqueRegionCount": 0,
+      "coverage": "strong"
+    },
+    {
+      "id": "opaque-controls",
+      "path": "tests/fixtures/web-ir/opaque-controls.html",
+      "categories": [
+        "opaque-controls"
+      ],
+      "fixtureBytes": 371,
+      "htmlElementCount": 10,
+      "declaredEntityCount": 3,
+      "declaredRelationshipCount": 1,
+      "opaqueRegionCount": 1,
+      "coverage": "opaque"
+    },
+    {
+      "id": "table-results",
+      "path": "tests/fixtures/web-ir/table-results.html",
+      "categories": [
+        "tables"
+      ],
+      "fixtureBytes": 737,
+      "htmlElementCount": 29,
+      "declaredEntityCount": 7,
+      "declaredRelationshipCount": 4,
+      "opaqueRegionCount": 0,
+      "coverage": "strong"
+    }
+  ]
+}

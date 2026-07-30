@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Project settings</title></head>
+<body>
+  <header>
+    <nav aria-label="Project"><a href="/overview">Overview</a><a href="/settings" aria-current="page">Settings</a></nav>
+    <div role="tablist" aria-label="Settings sections"><button role="tab" aria-selected="true">General</button><button role="tab" aria-selected="false">Members</button></div>
+  </header>
+  <main><h1>General settings</h1><button aria-controls="confirm-dialog">Delete project</button></main>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" open>
+    <h2 id="confirm-title">Delete project?</h2>
+    <p>This action cannot be undone.</p>
+    <button value="cancel">Cancel</button><button value="confirm">Delete</button>
+  </dialog>
+</body>
+</html>

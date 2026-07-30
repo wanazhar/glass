@@ -60,6 +60,14 @@ commit boundaries are recorded in
 5. [release-029-005](tasks/release-029-005.md) — maintainability and distribution
 6. [release-029-006](tasks/release-029-006.md) — release verification
 
+### Active plan: Glass Semantic Execution Engine issue #30
+
+Status: In progress — local Pillar 0 evidence foundation
+
+The first local increment establishes the versioned fixture corpus and static
+baseline contract in [semantic-execution-030](analysis/semantic-execution-030.md)
+and [ir-030-001](tasks/ir-030-001.md). No Web IR runtime contract is stable yet.
+
 ## Completed plan: performance overhaul
 
 Status: Complete

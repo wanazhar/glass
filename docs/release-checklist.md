@@ -48,6 +48,8 @@ Then complete these release checks:
 
 - [ ] Run the real-browser matrix on Linux x86-64/arm64 and macOS
       x86-64/arm64. Linux ARM64 uses an installed system Chromium binary.
+- [ ] Run the tag-free manual certification workflow with `release_version`
+      set to `0.2.1` before considering the remote evidence complete.
 - [ ] Run `--help`, navigation, observation, screenshot, TUI startup, and
       MCP initialization with each exact packaged release binary.
 - [ ] Compare packaged-artifact CLI, capability, and MCP contract evidence

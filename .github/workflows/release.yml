@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Version used by certification gates"
+        required: true
+        default: "0.2.1"
+        type: string
 
 permissions:
   contents: read
@@ -381,11 +388,13 @@ jobs:
 
       - name: Certify native reliability matrix
         run: |
+          release_version="${{ github.event_name == 'workflow_dispatch' && inputs.release_version || github.ref_name }}"
+          release_version="${release_version#v}"
           python3 scripts/certify-reliability-matrix.py \
             evidence/reliability-matrix.json \
             --scenarios tests/fixtures/reliability-capability-suite-v1.json \
             --binary target/release/glass \
-            --version "${GITHUB_REF_NAME#v}" \
+            --version "$release_version" \
             --output evidence/reliability-scorecards.json
 
       - name: Verify runtime evidence joins exact artifacts
@@ -533,6 +542,7 @@ jobs:
         run: scripts/smoke-clean-install.sh
 
   release:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [build, validate, acceptance, client-compatibility, install-compatibility]
     runs-on: ubuntu-latest
     permissions:

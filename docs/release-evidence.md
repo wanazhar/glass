@@ -40,6 +40,11 @@ Packaged-artifact reports are produced by the release matrix. Do not replace
 them with source-build reports: the migration validator labels source-build
 evidence explicitly, and runtime certification requires the packaged binding.
 
+The workflow supports a manual `workflow_dispatch` with a `release_version`
+input. That path runs native build, browser, packaging, reliability, sandbox,
+migration, client, and install/upgrade gates without entering the tag-only
+GitHub Release job. Tag pushes are reserved for the eventual publication run.
+
 ## Publication boundary
 
 The checked-in 0.2.1 metadata and evidence contracts are local preparation.

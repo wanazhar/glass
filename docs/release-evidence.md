@@ -45,6 +45,6 @@ The current recorded result is in [Local platform evidence](local-platform.md).
 
 The `glass-browser` `0.2.1` crate is the current published release. Its
 annotated local tag keeps the versioned release boundary, and the tagged
-workflow validates and publishes the crate only. No GitHub binary release is
-No GitHub binary release is expected; this checkout still makes no
-cross-platform support claim beyond the recorded Linux ARM64 host.
+workflow validates and publishes the crate only. No GitHub binary release is expected;
+this checkout still makes no cross-platform support claim beyond the recorded Linux
+ARM64 host.

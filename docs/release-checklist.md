@@ -13,6 +13,13 @@ unsupported.
 Versioning and annotated `vX.Y.Z` tags remain part of the process. Starting
 with 0.2.1, crates.io is the only publication channel. GitHub release binaries, checksum manifests, Sigstore bundles, and the npm native launcher are not release deliverables.
 
+Pushing a `vX.Y.Z` tag runs `.github/workflows/crates-release.yml`. The action
+checks the tag and package version, runs the release validation suite, performs
+a crates.io dry run, and publishes only the crate. If that exact crate version
+is already on crates.io, the action records the existing publication and skips
+a duplicate upload. It does not create a GitHub release or upload native
+binary artifacts.
+
 ## Prepare
 
 - [ ] Confirm the version and release date.

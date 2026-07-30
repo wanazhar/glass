@@ -63,7 +63,9 @@ jobs:
         run: |
           scripts/generate-validation-evidence.sh dist/validation
           python3 scripts/check-reliability-matrix.py dist/validation/reliability-matrix.json
-          python3 scripts/check-knowledge-migration.py +            --binary target/release/glass +            --output dist/validation/knowledge-migration.json
+          python3 scripts/check-knowledge-migration.py \
+            --binary target/release/glass \
+            --output dist/validation/knowledge-migration.json
 
       - name: Verify clean install and upgrade
         env:
@@ -192,8 +194,13 @@ jobs:
           GLASS_EXTENSION_SANDBOX_KIND: ${{ startsWith(matrix.os, 'ubuntu') && 'linux-bubblewrap' || 'macos-sandbox-exec' }}
         run: |
           set -o pipefail
-          cargo test --lib --locked sandboxed_reference_extensions_pass_native_gate -- --nocapture 2>&1 +            | tee "dist/${{ matrix.artifact }}-extension-sandbox.log"
-          python3 scripts/write-extension-sandbox-evidence.py +            --target "${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'linux-x86-64' || matrix.target == 'aarch64-unknown-linux-gnu' && 'linux-arm64' || matrix.target == 'x86_64-apple-darwin' && 'macos-x86-64' || 'macos-arm64' }}" +            --sandbox "$GLASS_EXTENSION_SANDBOX_KIND" +            --raw-report "dist/${{ matrix.artifact }}-extension-sandbox.log" +            --output "dist/sandbox-${{ matrix.artifact }}.json"
+          cargo test --lib --locked sandboxed_reference_extensions_pass_native_gate -- --nocapture 2>&1 \
+            | tee "dist/${{ matrix.artifact }}-extension-sandbox.log"
+          python3 scripts/write-extension-sandbox-evidence.py \
+            --target "${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'linux-x86-64' || matrix.target == 'aarch64-unknown-linux-gnu' && 'linux-arm64' || matrix.target == 'x86_64-apple-darwin' && 'macos-x86-64' || 'macos-arm64' }}" \
+            --sandbox "$GLASS_EXTENSION_SANDBOX_KIND" \
+            --raw-report "dist/${{ matrix.artifact }}-extension-sandbox.log" \
+            --output "dist/sandbox-${{ matrix.artifact }}.json"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -15,7 +15,7 @@ change a target without an explicit request.
 | macOS x86-64 | Declared target; not verified on this machine |
 | macOS arm64 | Declared target; not verified on this machine |
 | Windows | Unsupported |
-| 0.2.0 | Current release |
+| 0.2.1 | Current release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
 

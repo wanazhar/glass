@@ -21,7 +21,7 @@ process.
 | macOS x86-64 | `glass-macos-x86_64` | `679abb57021ad58611d6726df3c99a6e932dbda407d9a41887281a1e86b8ca4b` |
 | macOS arm64 | `glass-macos-aarch64` | `d7140a047ee535b9fdc4917e5ce157417ff7587dbe1c7fe348a8ee213a80b223` |
 
-The next small release is `0.2.1`. From this release onward, versioning,
+The next small release was `0.2.1`. From this release onward, versioning,
 annotated tags, and crates.io publication remain in scope; native GitHub
 release binaries, checksum manifests, and Sigstore bundles do not.
 
@@ -102,10 +102,10 @@ The 0.2.1 release plan carries these remaining items:
 
 ## Publication boundary
 
-The `0.2.0` publication boundary has been crossed. Do not publish `0.2.1` or
-upload binaries. This local audit does not close issue #28; its remote
-definition still needs to reflect the crates-only release policy before its
-status can be reconsidered.
+The `0.2.0` publication boundary has been crossed, followed by the
+crates-only `0.2.1` publication. Do not upload binaries. This local audit does
+not close issue #28; its remote definition still needs to reflect the
+crates-only release policy before its status can be reconsidered.
 
-The correct current labels are: `0.2.0 published; post-release certification
-incomplete` and `0.2.1 local development; not ready for public release`.
+The correct current labels are: `0.2.1 published; crates-only local
+certification` and `0.2.2 local development; not ready for public release`.

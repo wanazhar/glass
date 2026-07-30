@@ -3,7 +3,11 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.1
+## [Unreleased] — 0.2.2
+
+No changes yet.
+
+## [0.2.1] - 2026-07-30
 
 ### Added
 

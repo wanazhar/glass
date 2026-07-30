@@ -116,3 +116,14 @@ verifies that rejected input leaves the existing store unchanged. Its report
 records the binary SHA-256 as `artifact_binding.kind: source_build`; this is
 validation of the release build used by the validation job, not a claim that
 every packaged target artifact has independently passed migration yet.
+
+Each native build job repeats the same check against its stripped packaged
+artifact with `--binding-kind packaged_artifact` and `--target`. Acceptance
+merges those four reports with:
+
+```console
+python3 scripts/merge-knowledge-migration-evidence.py \
+  evidence/knowledge-migration-matrix.json evidence/migration
+```
+
+Only that four-target matrix is the packaged-artifact migration certification.

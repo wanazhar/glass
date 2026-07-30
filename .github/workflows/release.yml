@@ -193,6 +193,20 @@ jobs:
             shasum -a 256 dist/${{ matrix.artifact }} > dist/${{ matrix.artifact }}.sha256
           fi
 
+      - name: Certify migration against packaged artifact
+        run: |
+          python3 scripts/check-knowledge-migration.py \
+            --binary "dist/${{ matrix.artifact }}" \
+            --binding-kind packaged_artifact \
+            --target "${{ matrix.target }}" \
+            --output "dist/knowledge-migration-${{ matrix.artifact }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migration-${{ matrix.artifact }}
+          path: dist/knowledge-migration-${{ matrix.artifact }}.json
+          if-no-files-found: error
+
       - name: Bind reliability evidence to packaged artifact
         run: |
           python3 scripts/bind-artifact-evidence.py \
@@ -330,6 +344,11 @@ jobs:
           pattern: sandbox-*
           path: evidence/sandbox
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: migration-*
+          path: evidence/migration
+
       - name: Merge revision-bound prerequisites
         run: |
           python3 scripts/merge-platform-evidence.py \
@@ -347,6 +366,9 @@ jobs:
           python3 scripts/merge-extension-sandbox-evidence.py \
             evidence/sandbox-matrix.json \
             evidence/sandbox
+          python3 scripts/merge-knowledge-migration-evidence.py \
+            evidence/knowledge-migration-matrix.json \
+            evidence/migration
 
       - name: Certify native reliability matrix
         run: |
@@ -377,6 +399,7 @@ jobs:
             evidence/reliability-matrix.json
             evidence/reliability-scorecards.json
             evidence/sandbox-matrix.json
+            evidence/knowledge-migration-matrix.json
           if-no-files-found: error
 
   client-compatibility:
@@ -541,6 +564,7 @@ jobs:
           cp evidence/acceptance/reliability-matrix.json dist/reliability-matrix.json
           cp evidence/acceptance/reliability-scorecards.json dist/reliability-scorecards.json
           cp evidence/acceptance/sandbox-matrix.json dist/sandbox-matrix.json
+          cp evidence/acceptance/knowledge-migration-matrix.json dist/knowledge-migration-matrix.json
           cp -R evidence/acceptance/raw dist/acceptance-raw
 
       - name: Verify artifact checksums

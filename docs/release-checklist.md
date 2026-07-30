@@ -56,6 +56,8 @@ Then complete these release checks:
       smoke evidence for every target.
 - [ ] Bind reliability-suite and native-sandbox evidence to the exact packaged
       artifact before merging their scorecards.
+- [ ] Certify the knowledge-store boundary against each packaged target and
+      merge the four-target migration matrix.
 - [ ] Run TypeScript, Python, npm launcher, and isolated Cargo install/upgrade
       checks against every target artifact.
 - [ ] Inspect `cargo package --list` and the unpacked package.

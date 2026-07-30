@@ -35,11 +35,19 @@ def main() -> None:
     parser.add_argument("--binary", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument(
+        "--binding-kind",
+        choices=("source_build", "packaged_artifact"),
+        default="source_build",
+    )
+    parser.add_argument("--target")
+    parser.add_argument(
         "--corpus",
         type=pathlib.Path,
         default=pathlib.Path("benchmarks/scenarios/knowledge-v1.json"),
     )
     args = parser.parse_args()
+    if args.binding_kind == "packaged_artifact" and not args.target:
+        fail("--target is required for packaged artifact evidence")
 
     corpus = json.loads(args.corpus.read_text(encoding="utf-8"))
     records = [fixture["record"] for fixture in corpus["fixtures"]]
@@ -88,8 +96,9 @@ def main() -> None:
         ).strip(),
         "binary_version": binary_version,
         "artifact_binding": {
-            "kind": "source_build",
+            "kind": args.binding_kind,
             "name": args.binary.name,
+            **({"target": args.target} if args.target else {}),
             "sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
             "size_bytes": args.binary.stat().st_size,
         },

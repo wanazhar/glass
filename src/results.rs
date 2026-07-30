@@ -18,18 +18,13 @@ const MAX_DETAIL_BYTES: usize = 256 * 1024;
 static RESULT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Agent-facing result detail level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ResponseMode {
+    #[default]
     Minimal,
     Normal,
     Diagnostic,
-}
-
-impl Default for ResponseMode {
-    fn default() -> Self {
-        Self::Minimal
-    }
 }
 
 /// Whether detailed evidence can be retrieved locally.
@@ -97,10 +92,10 @@ impl OperationResult {
                 }
             }
         }
-        if mode == ResponseMode::Diagnostic {
-            if let Some(details) = &self.details {
-                output.insert("details".into(), details.clone());
-            }
+        if mode == ResponseMode::Diagnostic
+            && let Some(details) = &self.details
+        {
+            output.insert("details".into(), details.clone());
         }
         Value::Object(output)
     }

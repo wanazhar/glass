@@ -71,11 +71,12 @@ Completed:
 - [ir-030-002](tasks/ir-030-002.md) — bounded extraction contracts, scopes, and
   resource budgets.
 - [ir-030-003](tasks/ir-030-003.md) — evidence quality and coverage metadata.
+- [ir-030-004](tasks/ir-030-004.md) — deterministic draft Web IR
+  reconciliation.
 
 In progress:
 
-- [ir-030-004](tasks/ir-030-004.md) — deterministic draft Web IR
-  reconciliation.
+- [ir-030-005](tasks/ir-030-005.md) — explicit opaque boundary graph entities.
 
 ## Completed plan: performance overhaul
 

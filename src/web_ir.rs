@@ -105,6 +105,17 @@ impl GlassWebIrDraft {
                 "entity count must be between 1 and the draft bound",
             ));
         }
+        let page_count = self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == DraftEntityKind::Page)
+            .count();
+        if page_count != 1 {
+            return Err(WebIrValidationError::new(
+                "entities",
+                "drafts must contain exactly one page entity",
+            ));
+        }
         let mut ids = BTreeSet::new();
         for entity in &self.entities {
             if entity.id.is_empty() || entity.id.len() > 128 || !ids.insert(entity.id.as_str()) {
@@ -113,10 +124,13 @@ impl GlassWebIrDraft {
                     "entity IDs must be unique and bounded",
                 ));
             }
-            if entity.evidence_sources.is_empty() && entity.kind != DraftEntityKind::Page {
+            if entity.evidence_sources.is_empty()
+                && entity.kind != DraftEntityKind::Page
+                && entity.kind != DraftEntityKind::OpaqueRegion
+            {
                 return Err(WebIrValidationError::new(
                     "entities.evidenceSources",
-                    "non-page entities require source provenance",
+                    "non-page, non-opaque entities require source provenance",
                 ));
             }
         }
@@ -206,6 +220,17 @@ pub fn reconcile_evidence(
             evidence_sources: vec![fact.source],
         });
         indexes.entry(key).or_default().push(index);
+    }
+
+    for index in 0..evidence.coverage.opaque_regions {
+        entities.push(DraftEntity {
+            id: format!("opaque_region_{index}"),
+            kind: DraftEntityKind::OpaqueRegion,
+            role: None,
+            name: None,
+            quality: EvidenceQuality::Opaque,
+            evidence_sources: Vec::new(),
+        });
     }
 
     let relationships = entities
@@ -458,6 +483,24 @@ mod tests {
             vec![EvidenceSource::Accessibility, EvidenceSource::Forms]
         );
         assert_eq!(draft.entities[1].quality, EvidenceQuality::Confirmed);
+    }
+
+    #[test]
+    fn reconciliation_materializes_opaque_coverage_without_provenance_claims() {
+        let mut evidence = evidence();
+        evidence.coverage.opaque_regions = 2;
+        let draft = reconcile_evidence(&evidence).unwrap();
+        let opaque = draft
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .collect::<Vec<_>>();
+        assert_eq!(opaque.len(), 2);
+        assert!(opaque.iter().all(|entity| {
+            entity.quality == EvidenceQuality::Opaque && entity.evidence_sources.is_empty()
+        }));
+        assert_eq!(draft.relationships.len(), 4);
+        draft.validate().unwrap();
     }
 
     #[test]

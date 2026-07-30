@@ -9,6 +9,7 @@ one owning layer:
 | Browser state and guarded actions | `src/browser/session/` | revision-scoped references and policy gates |
 | Agent operations | `src/browser/session/agent.rs` | inspect, target, act-and-verify, extraction, recovery |
 | Extraction contracts | `src/extraction.rs` | strict request scope, evidence sources, and resource budgets |
+| Draft Web IR | `src/web_ir.rs` | deterministic evidence reconciliation and graph invariants |
 | Workflow contract and execution | `src/browser/session/workflow.rs` | validated steps, bounded execution, output proofs |
 | Workflow recording | `src/browser/session/workflow/recorder.rs` | redacted semantic drafts and review-required evidence |
 | Workflow checkpoints | `src/browser/session/workflow/checkpoint.rs` | bounded resume state and reconciliation |

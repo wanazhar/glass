@@ -70,10 +70,12 @@ Completed:
   baseline inventory.
 - [ir-030-002](tasks/ir-030-002.md) — bounded extraction contracts, scopes, and
   resource budgets.
+- [ir-030-003](tasks/ir-030-003.md) — evidence quality and coverage metadata.
 
 In progress:
 
-- [ir-030-003](tasks/ir-030-003.md) — evidence quality and coverage metadata.
+- [ir-030-004](tasks/ir-030-004.md) — deterministic draft Web IR
+  reconciliation.
 
 ## Completed plan: performance overhaul
 

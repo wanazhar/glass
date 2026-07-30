@@ -65,6 +65,8 @@ pub mod reliability_runner;
 pub mod results;
 /// Ratatui terminal interface.
 pub mod tui;
+/// Experimental draft Web IR reconciliation and validation.
+pub mod web_ir;
 
 // Keep the most common embedding types on the crate root. Lower-level and
 // capability-specific APIs remain organized under `glass::browser`.

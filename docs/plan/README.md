@@ -12,6 +12,7 @@ active; its first foundation phase is [stable runtime platform](tasks/platform-0
 
 ## Active plan: best-in-class agent browser
 
+
 Status: Draft — requires owner approval before implementation
 
 The active goal is to make Glass a deterministic, memory-efficient browser
@@ -43,6 +44,21 @@ Analysis and scorecard:
 
 Tasks are developed and independently reviewed in dependency order. A phase
 does not advance while correctness or safety gates from an earlier task fail.
+
+### Active plan: Glass 0.2.2 issue #29
+
+Status: In progress — direct, phase-gated local development
+
+The complete issue outline, dependency map, integration points, and atomic
+commit boundaries are recorded in
+[analysis/release-029.md](analysis/release-029.md). Phase tasks:
+
+1. [release-029-001](tasks/release-029-001.md) — contract foundations
+2. [release-029-002](tasks/release-029-002.md) — installation diagnostics
+3. [release-029-003](tasks/release-029-003.md) — bounded agent operations
+4. [release-029-004](tasks/release-029-004.md) — state and templates
+5. [release-029-005](tasks/release-029-005.md) — maintainability and distribution
+6. [release-029-006](tasks/release-029-006.md) — release verification
 
 ## Completed plan: performance overhaul
 

@@ -4,8 +4,9 @@ The reliability laboratory is a local release-checking tool. It stores scenario
 definitions, fixture controls, independent side-effect oracles, and replay
 evidence with the source code.
 
-Supported release targets are Linux x86-64, Linux arm64, macOS x86-64, and
-macOS arm64.
+The source declares Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
+The current local reliability evidence is Linux ARM64 only; it is not a claim
+that the other targets have passed native verification.
 Windows is unsupported.
 
 ## Contracts

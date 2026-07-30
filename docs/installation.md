@@ -6,7 +6,8 @@ Glass requires:
 
 - stable Rust for a source build;
 - Chrome, Chromium, or Chrome for Testing; and
-- Linux x86-64, Linux arm64, macOS x86-64, or macOS arm64.
+- the locally verified Linux ARM64 environment; other declared Linux and
+  macOS targets require verification on their own native machines.
 
 Windows is not a supported target. Glass does not install Playwright or another
 browser runtime.

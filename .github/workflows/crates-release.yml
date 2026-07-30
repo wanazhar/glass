@@ -1,0 +1,85 @@
+name: Crates release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the checked crate to crates.io
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
+          test "$tag_version" = "$crate_version"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets --locked
+
+      - name: Check package version synchronization
+        run: python3 scripts/check-version-sync.py
+
+      - name: Validate release documentation
+        run: python3 scripts/check-release-documentation.py
+
+      - name: Validate feature parity
+        run: python3 scripts/check-feature-parity.py
+
+      - name: Validate deterministic reliability matrix
+        run: python3 scripts/check-reliability-matrix.py
+
+      - name: Validate public read-only adapter inventory
+        run: python3 scripts/check-public-readonly-adapters.py
+
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
+
+      - name: Validate the crate package
+        run: cargo package --locked --no-verify
+
+      - name: Dry-run crates.io publication
+        run: cargo publish --locked --dry-run --no-verify
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish crate to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked

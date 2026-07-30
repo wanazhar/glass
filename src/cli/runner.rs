@@ -5,7 +5,7 @@
 
 use super::args::{
     CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, KnowledgeCommand,
-    KnowledgeInvalidationState, ProfileCommand, WorkflowAuthoringCommand,
+    KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -24,6 +24,7 @@ use crate::reliability::{
     ReliabilityScenarioObservation, build_reliability_scorecard,
 };
 use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
+use crate::results::ResultStore;
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
@@ -64,8 +65,12 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             dispatch_daemon(action).await?;
             return Ok(());
         }
-        Some(Commands::Doctor) => {
-            dispatch_doctor(&cli, &policy).await?;
+        Some(Commands::Doctor { json }) => {
+            dispatch_doctor(&cli, &policy, *json).await?;
+            return Ok(());
+        }
+        Some(Commands::McpConfig { client, print }) => {
+            dispatch_mcp_config(*client, *print)?;
             return Ok(());
         }
         Some(Commands::Certify { action }) if !matches!(action, CertifyCommand::Run { .. }) => {
@@ -86,6 +91,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::Knowledge { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_knowledge(action, cli.knowledge_store.as_deref(), &cli.profile)?;
+            return Ok(());
+        }
+        Some(Commands::Result { action }) => {
+            dispatch_result(action)?;
             return Ok(());
         }
         Some(Commands::Workflow {
@@ -178,7 +187,10 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
     Ok(())
 }
 
-async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy) -> BrowserResult<()> {
+async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> BrowserResult<()> {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string());
     let chrome_path =
         crate::browser::chrome::resolve_chrome_path(None).map(|path| path.display().to_string());
     let (daemon_socket, daemon_status) = crate::daemon::default_paths();
@@ -194,36 +206,165 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy) -> BrowserResult<()>
         cli.experimental_extensions,
     );
     let platform_supported = manifest.constraints.platform != "unsupported";
-    print_json(&serde_json::json!({
-        "status": if chrome_path.is_some() && platform_supported { "ready" } else { "degraded" },
+    let config_root = dirs::config_dir();
+    let config_writable = config_root
+        .as_ref()
+        .is_some_and(|path| std::fs::create_dir_all(path).is_ok());
+    let browser_available = chrome_path.is_some();
+    let status = if platform_supported && browser_available {
+        "ready"
+    } else {
+        "degraded"
+    };
+    let findings = serde_json::json!([
+        {
+            "severity": "info",
+            "code": "runtime.executable",
+            "message": executable.as_deref().unwrap_or("unable to resolve executable path"),
+            "remediation": null
+        },
+        {
+            "severity": if browser_available { "info" } else { "warning" },
+            "code": if browser_available { "browser.found" } else { "browser.missing" },
+            "message": if browser_available { "Chrome or Chromium was discovered" } else { "Chrome or Chromium was not discovered" },
+            "remediation": if browser_available { Value::Null } else { Value::String("install Chromium or pass --chrome-path".into()) }
+        },
+        {
+            "severity": if config_writable { "info" } else { "warning" },
+            "code": if config_writable { "runtime.configWritable" } else { "runtime.configNotWritable" },
+            "message": if config_writable { "Glass configuration directory is writable" } else { "Glass configuration directory is unavailable or not writable" },
+            "remediation": if config_writable { Value::Null } else { Value::String("choose a writable HOME/XDG config directory".into()) }
+        },
+        {
+            "severity": "info",
+            "code": "mcp.stdoutClean",
+            "message": "MCP uses stdout for protocol frames and diagnostics use stderr",
+            "remediation": null
+        },
+        {
+            "severity": "info",
+            "code": "capability.manifest",
+            "message": "capability statuses are included in the report",
+            "remediation": null
+        }
+    ]);
+    let report = serde_json::json!({
+        "status": status,
         "version": env!("CARGO_PKG_VERSION"),
         "platform": manifest.constraints.platform,
+        "executable": executable,
         "browser": {
             "family": manifest.constraints.browser_family,
-            "chromeAvailable": chrome_path.is_some(),
+            "chromeAvailable": browser_available,
             "chromePath": chrome_path,
             "cdpPort": cli.port,
             "cdpReachable": crate::browser::chrome::check_chrome_health(cli.port).await,
         },
         "daemon": daemon,
-        "profiles": {
-            "count": profiles.len(),
-            "names": profiles,
-        },
+        "profiles": {"count": profiles.len(), "names": profiles},
         "policy": {
             "preset": manifest.constraints.policy,
             "capabilities": manifest.capabilities,
+            "capabilityStatuses": manifest.capability_statuses,
         },
-        "knowledgeStore": {
-            "path": knowledge_path,
-            "exists": knowledge_exists,
-        },
+        "knowledgeStore": {"path": knowledge_path, "exists": knowledge_exists},
         "extensions": {
             "enabled": manifest.capabilities.get("extensions").copied().unwrap_or(false),
+            "status": manifest.capability_statuses.get("extensions"),
             "loader": "disabled",
         },
-    }))?;
+        "findings": findings,
+    });
+    if json {
+        print_json(&report)?;
+    } else {
+        println!("Glass doctor: {status}");
+        for finding in report["findings"].as_array().into_iter().flatten() {
+            println!(
+                "{} {}: {}",
+                finding["severity"].as_str().unwrap_or("info"),
+                finding["code"].as_str().unwrap_or("runtime.unknown"),
+                finding["message"].as_str().unwrap_or("unknown")
+            );
+        }
+    }
     Ok(())
+}
+
+fn dispatch_mcp_config(client: McpClient, _print: bool) -> BrowserResult<()> {
+    let executable = std::env::current_exe()?;
+    let command = executable.display().to_string();
+    let value = match client {
+        McpClient::Generic => serde_json::json!({
+            "command": command,
+            "args": ["--mcp"]
+        }),
+        McpClient::ClaudeCode => serde_json::json!({
+            "mcpServers": {"glass": {"command": command, "args": ["--mcp"]}}
+        }),
+        McpClient::Codex => serde_json::json!({
+            "mcp_servers": {"glass": {"command": command, "args": ["--mcp"]}}
+        }),
+    };
+    print_json(&value)?;
+    Ok(())
+}
+
+fn dispatch_result(action: &ResultCommand) -> BrowserResult<()> {
+    let root = default_result_store_path();
+    let store = ResultStore::new(root);
+    match action {
+        ResultCommand::Show { result_id, section } => {
+            let artifact = store.load(result_id)?;
+            let value = if let Some(section) = section {
+                artifact
+                    .details
+                    .get(section)
+                    .cloned()
+                    .ok_or_else(|| format!("result section not found: {section}"))?
+            } else {
+                serde_json::to_value(artifact)?
+            };
+            print_json(&value)?;
+        }
+        ResultCommand::Purge { older_than } => {
+            let age = parse_result_age(older_than)?;
+            print_json(&serde_json::json!({
+                "removed": store.purge_older_than(age)?,
+                "olderThan": older_than,
+            }))?;
+        }
+    }
+    Ok(())
+}
+
+fn default_result_store_path() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("glass")
+        .join("results")
+}
+
+fn parse_result_age(value: &str) -> BrowserResult<Duration> {
+    let (number, suffix) = value.split_at(
+        value
+            .find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(value.len()),
+    );
+    let amount: u64 = number
+        .parse()
+        .map_err(|_| "older-than must be a positive duration such as 7d or 24h")?;
+    if amount == 0 {
+        return Err("older-than must be positive".into());
+    }
+    let seconds = match suffix {
+        "s" => amount,
+        "m" => amount.saturating_mul(60),
+        "h" => amount.saturating_mul(60 * 60),
+        "d" => amount.saturating_mul(24 * 60 * 60),
+        _ => return Err("older-than must end in s, m, h, or d".into()),
+    };
+    Ok(Duration::from_secs(seconds))
 }
 
 fn cli_trace_action(command: Option<&Commands>, prompt: Option<&str>) -> ActionKind {
@@ -652,7 +793,9 @@ async fn run_command(session: &BrowserSession, command: &Commands) -> BrowserRes
         }
         Commands::Capabilities
         | Commands::Daemon { .. }
-        | Commands::Doctor
+        | Commands::Doctor { .. }
+        | Commands::McpConfig { .. }
+        | Commands::Result { .. }
         | Commands::Certify { .. }
         | Commands::Knowledge { .. } => {
             unreachable!("offline commands are handled before browser startup")

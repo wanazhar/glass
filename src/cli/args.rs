@@ -10,7 +10,7 @@ use crate::browser::policy::{PolicyCapability, PolicyPreset};
 use crate::browser::session::{
     BatchMode, InteractionMode, PreflightAction, VisualClip, VisualFormat,
 };
-
+use crate::results::ResponseMode;
 /// Top-level CLI configuration parsed from command-line arguments.
 ///
 /// Wraps clap-derived flags for policy, browser selection, session options,
@@ -104,12 +104,23 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub knowledge_store: Option<PathBuf>,
 
+    /// Select the bounded agent-facing response projection.
+    #[arg(long, global = true, value_enum, default_value_t = ResponseMode::Minimal)]
+    pub response_mode: ResponseMode,
+
     /// One-shot prompt, for example: `navigate to https://example.com`.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum McpClient {
+    Generic,
+    ClaudeCode,
+    Codex,
 }
 
 #[derive(Debug, Subcommand)]
@@ -137,7 +148,20 @@ pub enum Commands {
     },
 
     /// Inspect local browser, daemon, profile, policy, and store health.
-    Doctor,
+    Doctor {
+        /// Emit the stable machine-readable diagnostic contract.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print deterministic MCP configuration for a supported client.
+    McpConfig {
+        #[arg(long, value_enum, default_value_t = McpClient::Generic)]
+        client: McpClient,
+        /// Explicitly print the generated JSON configuration.
+        #[arg(long)]
+        print: bool,
+    },
 
     /// List or manage saved profiles.
     Profiles {
@@ -149,6 +173,12 @@ pub enum Commands {
     Knowledge {
         #[command(subcommand)]
         action: KnowledgeCommand,
+    },
+
+    /// Inspect and purge bounded local diagnostic result artifacts.
+    Result {
+        #[command(subcommand)]
+        action: ResultCommand,
     },
 
     /// Delete a saved profile.
@@ -539,6 +569,20 @@ pub enum KnowledgeCommand {
     Purge { origin: String },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ResultCommand {
+    /// Show a stored diagnostic artifact, optionally selecting one section.
+    Show {
+        result_id: String,
+        #[arg(long)]
+        section: Option<String>,
+    },
+    /// Purge artifacts older than a bounded duration such as 7d or 24h.
+    Purge {
+        #[arg(long = "older-than")]
+        older_than: String,
+    },
+}
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum KnowledgeInvalidationState {
     Stale,
@@ -1169,7 +1213,10 @@ mod tests {
     #[test]
     fn doctor_command_is_available_without_starting_a_browser() {
         let cli = Cli::try_parse_from(["glass", "doctor"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Doctor)));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor { json: false })
+        ));
     }
 
     #[test]

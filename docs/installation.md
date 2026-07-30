@@ -34,6 +34,37 @@ Install the published crate after a release:
 cargo install glass-browser --locked
 ```
 
+## Diagnose an installation
+
+Run the browser-free diagnostic before starting an agent session:
+
+```console
+glass doctor
+glass doctor --json
+```
+
+The JSON report includes stable finding codes, executable and browser paths,
+platform, policy and capability status, profile/store visibility, daemon
+health, and actionable remediation. It does not mutate a real browser profile
+or launch a browser smoke test.
+
+Generate deterministic MCP configuration using the installed executable path:
+
+```console
+glass mcp-config --client generic
+glass mcp-config --client claude-code
+glass mcp-config --client codex
+glass mcp-config --print
+```
+
+Large diagnostic evidence is stored locally and referenced by result ID:
+
+```console
+glass result show RESULT_ID
+glass result show RESULT_ID --section trace
+glass result purge --older-than 7d
+```
+
 ## Select a browser
 
 Glass checks these locations in this order:

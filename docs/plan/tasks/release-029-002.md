@@ -1,6 +1,6 @@
 id: release-029-002
 scope: 0.2.2 installation diagnostics
-status: pending
+status: done
 depends-on: [release-029-001]
 
 # Objective

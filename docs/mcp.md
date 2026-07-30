@@ -7,27 +7,27 @@ Glass negotiates MCP protocol version `2024-11-05`. The client must send
 `notifications/initialized` after `initialize`. Glass rejects normal
 requests before that notification. A second `initialize` request is invalid.
 
-The initialization result contains a Glass capability manifest. The manifest
-reports the protocol version, schema versions, policy-sensitive capabilities,
-explicit capability statuses, and platform and browser constraints. Clients
-should use `capabilityStatuses` when present; the legacy boolean map remains
-for compatibility.
+The initialization result contains a discovery manifest in `glass` and an
+immutable effective agreement in `glassAgreement`. The manifest reports the
+complete protocol version, schema inventory, policy-sensitive capabilities,
+explicit capability statuses, and platform and browser constraints. The
+agreement reports the exact selected schema version and negotiated capability
+status for this connection. Clients should use `capabilityStatuses` when
+present; the legacy boolean map remains for compatibility.
 
 ## Configure a client
 
-Build or install Glass. Configure the client to start the binary with
-`--mcp`:
+Build or install Glass. The deterministic command below uses the actual
+installed executable path:
 
-```json
-{
-  "mcpServers": {
-    "glass": {
-      "command": "/absolute/path/to/glass",
-      "args": ["--mcp"]
-    }
-  }
-}
+```console
+glass mcp-config --client generic
+glass mcp-config --client claude-code
+glass mcp-config --client codex
 ```
+
+The generated configuration starts the binary with `--mcp`. Keep stdout
+reserved for protocol messages; Glass writes diagnostics to stderr.
 
 You may add session options:
 
@@ -61,16 +61,22 @@ A client may request Glass versions in `initialize.params.glass`:
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersions": [1],
   "schemas": {
     "action": [1],
     "workflow": [1]
-  }
+  },
+  "requires": ["workflowResume"],
+  "optional": ["extensions"],
+  "acceptsExperimental": false
 }
 ```
 
-Glass rejects unknown schemas, empty version lists, and requests with no common
-supported version before the session becomes ready.
+Glass returns the selected versions and effective capability statuses in
+`glassAgreement`. Required capabilities fail before the session becomes ready;
+unknown optional capabilities are omitted. Experimental capabilities require
+explicit acceptance. Glass rejects unknown schemas, empty version lists, and
+requests with no common supported version.
 
 Read [schema compatibility](schema-compatibility.md) for version rules.
 

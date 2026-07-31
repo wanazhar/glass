@@ -712,6 +712,8 @@ pub enum TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum IrCommand {
+    /// Validate one Web IR draft without starting Chrome.
+    Validate { input: PathBuf },
     /// Print a bounded summary of one validated Web IR draft.
     Inspect { input: PathBuf },
     /// Compute a deterministic diff between two validated Web IR drafts.
@@ -1429,6 +1431,14 @@ mod tests {
             }) if before.as_os_str() == "before.json"
                 && after.as_os_str() == "after.json"
                 && entity_id == "field-1"
+        ));
+
+        let cli = Cli::try_parse_from(["glass", "ir", "validate", "draft.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Validate { input }
+            }) if input.as_os_str() == "draft.json"
         ));
 
         let cli = Cli::try_parse_from(["glass", "ir", "canonical", "draft.json"]).unwrap();

@@ -836,6 +836,14 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
 
 fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
     match action {
+        IrCommand::Validate { input } => {
+            let draft = read_web_ir_draft(input)?;
+            print_json(&serde_json::json!({
+                "valid": true,
+                "schemaVersion": draft.schema_version,
+                "revision": draft.revision,
+            }))?;
+        }
         IrCommand::Inspect { input } => {
             let draft = read_web_ir_draft(input)?;
             print_json(&serde_json::json!({

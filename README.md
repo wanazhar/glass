@@ -99,6 +99,7 @@ redacted compilation metadata to stderr.
 Inspect or diff validated browser-free Web IR drafts:
 
 ```console
+glass ir validate draft.json
 glass ir inspect draft.json
 glass ir diff before.json after.json
 glass ir continuity before.json after.json field-1

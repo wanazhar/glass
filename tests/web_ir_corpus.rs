@@ -71,6 +71,23 @@ fn web_ir_corpus_paths_and_bounds_are_deterministic() {
 }
 
 #[test]
+fn web_ir_corpus_declares_bounded_hint_diagnostic_expectations() {
+    let corpus = manifest("tests/fixtures/web-ir/corpus-v1.json");
+    let fixture = corpus["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fixture| fixture["id"] == "form-custom")
+        .expect("form-custom fixture should exist");
+    let diagnostics = fixture["expectedHintDiagnostics"]
+        .as_array()
+        .expect("hint diagnostics should be an array");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["status"], "emitted");
+    assert_eq!(diagnostics[0]["count"], 1);
+}
+
+#[test]
 fn web_ir_scenario_manifest_references_known_fixtures() {
     let corpus = manifest("tests/fixtures/web-ir/corpus-v1.json");
     let scenarios = manifest("benchmarks/scenarios/web-ir-v1.json");

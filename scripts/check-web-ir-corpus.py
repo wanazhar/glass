@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS_PATH = ROOT / "tests/fixtures/web-ir/corpus-v1.json"
 SCENARIO_PATH = ROOT / "benchmarks/scenarios/web-ir-v1.json"
 ALLOWED_COVERAGE = {"strong", "partial", "opaque"}
+ALLOWED_HINT_DIAGNOSTIC_STATUSES = {"validated", "emitted", "unmatchedParent"}
 ALLOWED_RISKS = {
     "readOnly",
     "localMutation",
@@ -130,6 +131,31 @@ def main() -> None:
         if len(expected_relationships) > 512:
             fail(f"{path}.expectedRelationships exceeds the 512-relationship baseline bound")
 
+        expected_hint_diagnostics = fixture.get("expectedHintDiagnostics", [])
+        if not isinstance(expected_hint_diagnostics, list):
+            fail(f"{path}.expectedHintDiagnostics must be an array")
+        hint_statuses = []
+        hint_diagnostic_count = 0
+        for hint_index, diagnostic in enumerate(expected_hint_diagnostics):
+            diagnostic_path = f"{path}.expectedHintDiagnostics[{hint_index}]"
+            if not isinstance(diagnostic, dict):
+                fail(f"{diagnostic_path} must be an object")
+            status = require_string(diagnostic.get("status"), f"{diagnostic_path}.status")
+            if status not in ALLOWED_HINT_DIAGNOSTIC_STATUSES:
+                fail(
+                    f"{diagnostic_path}.status must be one of "
+                    f"{sorted(ALLOWED_HINT_DIAGNOSTIC_STATUSES)}"
+                )
+            if status in hint_statuses:
+                fail(f"{path}.expectedHintDiagnostics must not duplicate statuses")
+            hint_statuses.append(status)
+            count = diagnostic.get("count")
+            if not isinstance(count, int) or not 0 <= count <= 512:
+                fail(f"{diagnostic_path}.count must be between 0 and 512")
+            hint_diagnostic_count += count
+        if hint_diagnostic_count > 512:
+            fail(f"{path}.expectedHintDiagnostics exceeds the 512-diagnostic baseline bound")
+
         risk_hints = fixture.get("riskHints")
         if not isinstance(risk_hints, list) or not risk_hints:
             fail(f"{path}.riskHints must be a non-empty array")
@@ -162,6 +188,7 @@ def main() -> None:
                 "htmlElementCount": len(HTML_OPENING_TAG.findall(content)),
                 "declaredEntityCount": len(expected_entities),
                 "declaredRelationshipCount": len(expected_relationships),
+                "declaredHintDiagnosticCount": hint_diagnostic_count,
                 "opaqueRegionCount": opaque_regions,
                 "coverage": coverage,
             }
@@ -206,6 +233,9 @@ def main() -> None:
         "htmlElementCount": sum(report["htmlElementCount"] for report in reports),
         "declaredEntityCount": sum(report["declaredEntityCount"] for report in reports),
         "declaredRelationshipCount": sum(report["declaredRelationshipCount"] for report in reports),
+        "declaredHintDiagnosticCount": sum(
+            report["declaredHintDiagnosticCount"] for report in reports
+        ),
         "opaqueRegionCount": sum(report["opaqueRegionCount"] for report in reports),
     }
     baseline = {

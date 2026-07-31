@@ -83,11 +83,12 @@ Completed:
 - [ir-030-011](tasks/ir-030-011.md) — validated relationship-hint
   diagnostics.
 - [ir-030-012](tasks/ir-030-012.md) — unmatched relationship-hint statuses.
+- [ir-030-013](tasks/ir-030-013.md) — emitted and unmatched diagnostic
+  expectations.
 
 In progress:
 
-- [ir-030-013](tasks/ir-030-013.md) — emitted and unmatched diagnostic
-  expectations.
+- [ir-030-014](tasks/ir-030-014.md) — corpus hint-diagnostic expectations.
 
 ## Completed plan: performance overhaul
 

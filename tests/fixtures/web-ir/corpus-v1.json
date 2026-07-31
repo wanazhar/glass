@@ -37,6 +37,7 @@
       "opaqueRegions": 0,
       "expectedEntities": ["page", "region", "form", "field", "field", "action"],
       "expectedRelationships": ["contains", "labels", "owns", "controls"],
+      "expectedHintDiagnostics": [{ "status": "emitted", "count": 1 }],
       "riskHints": ["localMutation"]
     },
     {

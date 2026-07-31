@@ -16,6 +16,25 @@ const MAX_ERROR_CODE_BYTES: usize = 64;
 const MAX_MESSAGE_BYTES: usize = 512;
 const MAX_DEADLINE_MS: u64 = 15 * 60 * 1_000;
 
+/// Canonical transport operation for browser-free Task Protocol compilation.
+pub const TASK_COMPILE_OPERATION: &str = "task.compile";
+
+/// Typed payload carried by a `task.compile` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskCompilePayload {
+    pub task: crate::task_protocol::GlassTask,
+}
+
+impl TaskCompilePayload {
+    /// Validate the authored task before compiler dispatch.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.task
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    }
+}
+
 /// A request-independent mutation lease reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -78,6 +97,31 @@ impl GlassRequest {
         }
         Ok(())
     }
+
+    /// Decode and validate a typed `task.compile` payload.
+    pub fn decode_task_compile(&self) -> Result<TaskCompilePayload, ProtocolError> {
+        self.validate()?;
+        if self.operation != TASK_COMPILE_OPERATION {
+            return Err(ProtocolError::InvalidField(format!(
+                "expected operation {TASK_COMPILE_OPERATION}"
+            )));
+        }
+        let payload: TaskCompilePayload =
+            serde_json::from_value(self.payload.clone()).map_err(|error| {
+                ProtocolError::InvalidField(format!("task.compile payload: {error}"))
+            })?;
+        payload.validate()?;
+        Ok(payload)
+    }
+}
+
+/// Decode and compile a `task.compile` request without browser access.
+pub fn compile_task_request(
+    request: &GlassRequest,
+) -> Result<crate::task_compiler::TaskExecutionPlan, ProtocolError> {
+    let payload = request.decode_task_compile()?;
+    crate::task_compiler::compile_task(&payload.task)
+        .map_err(|error| ProtocolError::InvalidField(error.to_string()))
 }
 
 /// Canonical operation response shared by supported transports.
@@ -297,6 +341,41 @@ mod tests {
             "future": true
         });
         assert!(serde_json::from_value::<GlassRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn task_compile_boundary_decodes_and_compiles_without_browser_state() {
+        let task = serde_json::json!({
+            "schemaVersion": 1,
+            "task": "region.extract",
+            "scope": {"regionName": "Checkout"},
+            "limits": {"maxActions": 8, "timeoutMs": 5000, "maxItems": 32},
+            "risk": "readOnly"
+        });
+        let request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "compile-1".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: TASK_COMPILE_OPERATION.into(),
+            payload: serde_json::json!({"task": task}),
+            deadline_ms: None,
+        };
+        let plan = compile_task_request(&request).unwrap();
+        assert_eq!(plan.task, crate::task_protocol::TaskKind::RegionExtract);
+
+        let mut wrong_operation = request.clone();
+        wrong_operation.operation = "browser.observe".into();
+        assert!(wrong_operation.decode_task_compile().is_err());
+
+        let mut unknown = request.clone();
+        unknown.payload["futureField"] = true.into();
+        assert!(unknown.decode_task_compile().is_err());
+
+        let mut invalid = request;
+        invalid.payload["task"]["task"] = "form.fill".into();
+        assert!(compile_task_request(&invalid).is_err());
     }
 
     #[test]

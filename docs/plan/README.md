@@ -92,6 +92,7 @@ Completed:
 - [ir-030-018](tasks/ir-030-018.md) — revision identity continuity.
 - [ir-030-019](tasks/ir-030-019.md) — strict Task Protocol v1 contract.
 - [ir-030-020](tasks/ir-030-020.md) — deterministic Task Protocol execution plans.
+- [ir-030-021](tasks/ir-030-021.md) — typed task.compile protocol boundary.
 
 ## Completed plan: performance overhaul
 Status: Complete

@@ -102,3 +102,5 @@ pub use task_compiler::{
     TASK_PLAN_SCHEMA_VERSION, TaskCompilationError, TaskExecutionPlan, TaskPlanOperation,
     TaskPlanStep, compile_task,
 };
+
+pub use protocol::{TASK_COMPILE_OPERATION, TaskCompilePayload, compile_task_request};

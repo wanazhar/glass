@@ -283,6 +283,9 @@ impl GlassWebIrDraft {
 pub fn reconcile_evidence(
     evidence: &ExtractionEvidence,
 ) -> Result<GlassWebIrDraft, WebIrValidationError> {
+    evidence
+        .validate_relationship_hints()
+        .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
     let mut facts = evidence.facts.clone();
     facts.sort_by_key(fact_sort_key);
 
@@ -809,6 +812,21 @@ mod tests {
                 .iter()
                 .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
         );
+    }
+
+    #[test]
+    fn reconciliation_rejects_unbounded_or_unsupported_hints() {
+        let mut missing_parent = evidence();
+        missing_parent.facts[0].relationship_hint = Some(EvidenceRelationshipHint::Controls);
+        let error = reconcile_evidence(&missing_parent).unwrap_err();
+        assert_eq!(error.path, "facts[0].relationshipHint");
+
+        let mut wrong_source = evidence();
+        wrong_source.facts[0].parent_role = Some("search".into());
+        wrong_source.facts[0].relationship_hint = Some(EvidenceRelationshipHint::Controls);
+        wrong_source.facts[0].source = EvidenceSource::Layout;
+        let error = reconcile_evidence(&wrong_source).unwrap_err();
+        assert_eq!(error.path, "facts[0].relationshipHint");
     }
 
     #[test]

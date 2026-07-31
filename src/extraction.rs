@@ -255,6 +255,97 @@ pub struct EvidenceFact {
     pub geometry_present: Option<bool>,
 }
 
+impl ExtractionEvidence {
+    /// Validate every explicit relationship hint against its source contract.
+    pub fn validate_relationship_hints(&self) -> Result<(), ExtractionContractError> {
+        for (index, fact) in self.facts.iter().enumerate() {
+            let path = format!("facts[{index}].relationshipHint");
+            fact.validate_relationship_hint(&path)?;
+        }
+        Ok(())
+    }
+}
+
+impl EvidenceFact {
+    /// Validate one explicit relationship hint and its required parent role.
+    pub fn validate_relationship_hint(&self, path: &str) -> Result<(), ExtractionContractError> {
+        let Some(hint) = self.relationship_hint else {
+            return Ok(());
+        };
+        if self.parent_role.as_deref().is_none_or(str::is_empty) {
+            return Err(ExtractionContractError::new(
+                path,
+                "relationship hints require a bounded parent role",
+            ));
+        }
+        if !relationship_hint_allowed(self.source, hint) {
+            return Err(ExtractionContractError::new(
+                path,
+                format!(
+                    "relationship hint {hint:?} is not supported by source {:?}",
+                    self.source
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn relationship_hint_allowed(source: EvidenceSource, hint: EvidenceRelationshipHint) -> bool {
+    match source {
+        EvidenceSource::Accessibility => matches!(
+            hint,
+            EvidenceRelationshipHint::Contains
+                | EvidenceRelationshipHint::Labels
+                | EvidenceRelationshipHint::Owns
+                | EvidenceRelationshipHint::Controls
+                | EvidenceRelationshipHint::Opens
+                | EvidenceRelationshipHint::Confirms
+                | EvidenceRelationshipHint::Cancels
+                | EvidenceRelationshipHint::Continues
+                | EvidenceRelationshipHint::Selects
+                | EvidenceRelationshipHint::ScopedTo
+        ),
+        EvidenceSource::Dom => matches!(
+            hint,
+            EvidenceRelationshipHint::Contains
+                | EvidenceRelationshipHint::Labels
+                | EvidenceRelationshipHint::Owns
+                | EvidenceRelationshipHint::Controls
+                | EvidenceRelationshipHint::NavigatesTo
+                | EvidenceRelationshipHint::Opens
+                | EvidenceRelationshipHint::Confirms
+                | EvidenceRelationshipHint::Cancels
+                | EvidenceRelationshipHint::Continues
+                | EvidenceRelationshipHint::Submits
+                | EvidenceRelationshipHint::HeaderFor
+                | EvidenceRelationshipHint::CellOf
+                | EvidenceRelationshipHint::Selects
+                | EvidenceRelationshipHint::RepeatsAs
+                | EvidenceRelationshipHint::ScopedTo
+        ),
+        EvidenceSource::Forms => matches!(
+            hint,
+            EvidenceRelationshipHint::Contains
+                | EvidenceRelationshipHint::Labels
+                | EvidenceRelationshipHint::Owns
+                | EvidenceRelationshipHint::Controls
+                | EvidenceRelationshipHint::Submits
+        ),
+        EvidenceSource::Layout => matches!(
+            hint,
+            EvidenceRelationshipHint::Contains | EvidenceRelationshipHint::ScopedTo
+        ),
+        EvidenceSource::Navigation
+        | EvidenceSource::Tables
+        | EvidenceSource::Collections
+        | EvidenceSource::Dialogs
+        | EvidenceSource::Frames
+        | EvidenceSource::ShadowDom
+        | EvidenceSource::BoundedProbe => false,
+    }
+}
+
 /// Explicit omissions and truncation from one evidence extraction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

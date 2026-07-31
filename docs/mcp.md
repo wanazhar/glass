@@ -138,7 +138,7 @@ A tool may request one bounded failure-trace content item with
 | `evaluate` | Run JavaScript when policy permits. |
 | `scroll` | Scroll by CSS pixels. |
 | `batch` | Run a bounded fixed, chain, or unguarded batch. |
-| `workflow` | Validate and run a bounded workflow. |
+| `compileTask` | Validate a semantic Task Protocol v1 task and return a browser-free execution plan. |
 | `wait` | Wait for one typed condition. |
 | `diagnostics` | Return bounded redacted console and network data. |
 | `acceptDialog`, `dismissDialog` | Resolve the open JavaScript dialog. |
@@ -156,6 +156,78 @@ A tool may request one bounded failure-trace content item with
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |
+
+### Compile a task without starting Chrome
+
+`compileTask` validates authored intent and returns a typed plan. It does not
+start Chrome, acquire a mutation lease, resolve targets, or execute browser
+actions. Input values are consumed only during validation and are not included
+in the returned plan.
+
+Example request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "compile-1",
+  "method": "tools/call",
+  "params": {
+    "name": "compileTask",
+    "arguments": {
+      "task": {
+        "schemaVersion": 1,
+        "task": "form.fill",
+        "scope": {
+          "regionName": "Shipping address",
+          "entityKind": "form"
+        },
+        "inputs": {
+          "city": "Kuching"
+        },
+        "limits": {
+          "maxActions": 16,
+          "timeoutMs": 15000,
+          "maxItems": 128
+        },
+        "risk": "localMutation",
+        "ambiguity": "fail",
+        "revision": "exact",
+        "postconditions": [
+          {"kind": "validationClear"}
+        ]
+      }
+    }
+  }
+}
+```
+
+The successful MCP content item contains JSON shaped like:
+
+```json
+{
+  "plan": {
+    "schemaVersion": 1,
+    "taskSchemaVersion": 1,
+    "task": "form.fill",
+    "risk": "localMutation",
+    "confirmationRequired": false,
+    "steps": [
+      {"ordinal": 1, "operation": "observeScope"},
+      {"ordinal": 2, "operation": "fillInputs", "inputNames": ["city"]}
+    ],
+    "postconditions": [{"kind": "validationClear"}]
+  }
+}
+```
+
+The plan is not an action result. A later execution layer must reconcile the
+plan against a current Web IR revision and apply its policy and confirmation
+gates.
+
+Keep sensitive input values in the local client boundary and send them only
+when the task requires them. Glass does not serialize those values into the
+compiled plan or its canonical response; clients should still avoid retaining
+raw request bodies longer than necessary.
 
 All arguments use JSON. Targets use the same locator forms as the CLI.
 `includeDom` and `includeScreenshot` default to false. A semantic

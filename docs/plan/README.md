@@ -94,6 +94,7 @@ Completed:
 - [ir-030-020](tasks/ir-030-020.md) — deterministic Task Protocol execution plans.
 - [ir-030-021](tasks/ir-030-021.md) — typed task.compile protocol boundary.
 - [ir-030-022](tasks/ir-030-022.md) — typed compiled-plan response.
+- [ir-030-023](tasks/ir-030-023.md) — browser-free MCP compileTask integration.
 
 ## Completed plan: performance overhaul
 Status: Complete

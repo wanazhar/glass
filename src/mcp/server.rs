@@ -236,6 +236,9 @@ enum ToolInvocation<'a> {
         region: Option<&'a str>,
     },
     InspectPage,
+    CompileTask {
+        task: crate::task_protocol::GlassTask,
+    },
     FindTarget {
         request: SemanticIntentRequest,
     },
@@ -979,6 +982,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "observe"
             | "observeKnowledge"
             | "inspectPage"
+            | "compileTask"
             | "findTarget"
             | "extractStructured"
             | "recoverRun"
@@ -1339,6 +1343,10 @@ async fn call_tool(
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
+    if let ToolInvocation::CompileTask { task } = &invocation {
+        let plan = crate::task_compiler::compile_task(task)?;
+        return serialized_result(&crate::protocol::TaskCompileResult { plan });
+    }
     if matches!(
         &invocation,
         ToolInvocation::KnowledgeList
@@ -1962,6 +1970,9 @@ async fn call_tool(
             session.set_timezone(Some(&timezone_id)).await?;
             serialized_result(&serde_json::json!({"ok": true}))
         }
+        ToolInvocation::CompileTask { .. } => {
+            unreachable!("compileTask is handled before browser session startup")
+        }
     }
 }
 
@@ -2136,6 +2147,15 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             region: optional_string(arguments, "region")?,
         }),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
+        "compileTask" => {
+            let task = arguments
+                .get("task")
+                .cloned()
+                .ok_or("compileTask requires a task object")?;
+            Ok(ToolInvocation::CompileTask {
+                task: serde_json::from_value(task)?,
+            })
+        }
         "findTarget" => {
             let mut value = arguments.clone();
             value
@@ -2395,6 +2415,21 @@ async fn ensure_session<'a>(
 
 fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "compileTask",
+            description: "Compile a validated semantic Task Protocol task into a browser-free execution plan.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "object",
+                        "description": "Strict Task Protocol v1 authored task."
+                    }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }),
+        },
         Tool {
             name: "navigate",
             description: "Navigate the browser to a URL.",
@@ -3627,7 +3662,8 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 76);
+        assert_eq!(tools.len(), 77);
+        assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -3767,6 +3803,47 @@ mod tests {
                     .as_str()
                     .is_some_and(|description| description.contains("explicit"))
         }));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn compile_task_tool_returns_a_plan_without_starting_chrome() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "compile",
+            "method": "tools/call",
+            "params": {
+                "name": "compileTask",
+                "arguments": {
+                    "task": {
+                        "schemaVersion": 1,
+                        "task": "region.extract",
+                        "scope": {"regionName": "Checkout"},
+                        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                        "risk": "readOnly"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result_value = response.result.unwrap();
+        let text = result_value["content"][0]["text"].as_str().unwrap();
+        let result: crate::protocol::TaskCompileResult = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            result.plan.task,
+            crate::task_protocol::TaskKind::RegionExtract
+        );
         assert!(session.is_none());
     }
 

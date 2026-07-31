@@ -35,6 +35,22 @@ impl TaskCompilePayload {
     }
 }
 
+/// Typed successful result for a `task.compile` operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskCompileResult {
+    pub plan: crate::task_compiler::TaskExecutionPlan,
+}
+
+impl TaskCompileResult {
+    /// Validate the embedded deterministic execution plan.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.plan
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    }
+}
+
 /// A request-independent mutation lease reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -124,6 +140,13 @@ pub fn compile_task_request(
         .map_err(|error| ProtocolError::InvalidField(error.to_string()))
 }
 
+/// Decode and compile a `task.compile` request into a typed response payload.
+pub fn compile_task_result(request: &GlassRequest) -> Result<TaskCompileResult, ProtocolError> {
+    Ok(TaskCompileResult {
+        plan: compile_task_request(request)?,
+    })
+}
+
 /// Canonical operation response shared by supported transports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +178,25 @@ impl GlassResponse {
                 "ok responses require result and error responses require error".into(),
             )),
         }
+    }
+
+    /// Decode and validate a successful typed `task.compile` result.
+    pub fn decode_task_compile_result(&self) -> Result<TaskCompileResult, ProtocolError> {
+        self.validate()?;
+        if !self.ok {
+            return Err(ProtocolError::InvalidField(
+                "task.compile result requires a successful response".into(),
+            ));
+        }
+        let value = self
+            .result
+            .clone()
+            .ok_or_else(|| ProtocolError::InvalidField("task.compile result is missing".into()))?;
+        let result: TaskCompileResult = serde_json::from_value(value).map_err(|error| {
+            ProtocolError::InvalidField(format!("task.compile result: {error}"))
+        })?;
+        result.validate()?;
+        Ok(result)
     }
 }
 
@@ -376,6 +418,56 @@ mod tests {
         let mut invalid = request;
         invalid.payload["task"]["task"] = "form.fill".into();
         assert!(compile_task_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn task_compile_result_round_trips_through_success_response() {
+        let request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "compile-2".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: TASK_COMPILE_OPERATION.into(),
+            payload: serde_json::json!({
+                "task": {
+                    "schemaVersion": 1,
+                    "task": "field.read",
+                    "scope": {"entityKind": "field", "entityName": "Email"},
+                    "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 1},
+                    "risk": "readOnly"
+                }
+            }),
+            deadline_ms: None,
+        };
+        let result = compile_task_result(&request).unwrap();
+        let response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            correlation_id: None,
+            ok: true,
+            result: Some(serde_json::to_value(&result).unwrap()),
+            error: None,
+        };
+        assert_eq!(response.decode_task_compile_result().unwrap(), result);
+
+        let mut unknown = response.clone();
+        unknown.result.as_mut().unwrap()["futureField"] = true.into();
+        assert!(unknown.decode_task_compile_result().is_err());
+
+        let mut failure = response;
+        failure.ok = false;
+        failure.result = None;
+        failure.error = Some(GlassError {
+            code: "task.invalid".into(),
+            phase: ErrorPhase::Preflight,
+            message: "invalid task".into(),
+            mutation_possible: false,
+            retry: RetryGuidance::default(),
+            retryable: None,
+            details: None,
+        });
+        assert!(failure.decode_task_compile_result().is_err());
     }
 
     #[test]

@@ -103,4 +103,7 @@ pub use task_compiler::{
     TaskPlanStep, compile_task,
 };
 
-pub use protocol::{TASK_COMPILE_OPERATION, TaskCompilePayload, compile_task_request};
+pub use protocol::{
+    TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult, compile_task_request,
+    compile_task_result,
+};

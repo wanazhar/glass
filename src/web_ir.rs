@@ -85,6 +85,24 @@ pub struct DraftRelationship {
     pub kind: DraftRelationshipKind,
 }
 
+/// Outcome of source-level relationship-hint validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationshipHintDiagnosticStatus {
+    Validated,
+}
+
+/// A redacted diagnostic for one validated relationship hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRelationshipHintDiagnostic {
+    pub fact_index: usize,
+    pub source: EvidenceSource,
+    pub hint: EvidenceRelationshipHint,
+    pub parent_role: String,
+    pub status: RelationshipHintDiagnosticStatus,
+}
+
 /// A bounded, experimental Web IR draft.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +115,8 @@ pub struct GlassWebIrDraft {
     pub limits: ExtractionEvidenceLimits,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relationship_hint_diagnostics: Vec<DraftRelationshipHintDiagnostic>,
 }
 
 /// Minimum graph shape expected from one representative fixture.
@@ -286,6 +306,20 @@ pub fn reconcile_evidence(
     evidence
         .validate_relationship_hints()
         .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
+    let relationship_hint_diagnostics = evidence
+        .facts
+        .iter()
+        .enumerate()
+        .filter_map(|(fact_index, fact)| {
+            Some(DraftRelationshipHintDiagnostic {
+                fact_index,
+                source: fact.source,
+                hint: fact.relationship_hint?,
+                parent_role: fact.parent_role.clone()?,
+                status: RelationshipHintDiagnosticStatus::Validated,
+            })
+        })
+        .collect::<Vec<_>>();
     let mut facts = evidence.facts.clone();
     facts.sort_by_key(fact_sort_key);
 
@@ -413,6 +447,7 @@ pub fn reconcile_evidence(
         coverage: evidence.coverage.clone(),
         limits: evidence.limits.clone(),
         diagnostics: diagnostics.into_iter().collect(),
+        relationship_hint_diagnostics,
     };
     draft.validate()?;
     Ok(draft)
@@ -811,6 +846,16 @@ mod tests {
                 .relationships
                 .iter()
                 .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+        );
+        assert_eq!(draft.relationship_hint_diagnostics.len(), 1);
+        let diagnostic = &draft.relationship_hint_diagnostics[0];
+        assert_eq!(diagnostic.fact_index, 0);
+        assert_eq!(diagnostic.source, EvidenceSource::Accessibility);
+        assert_eq!(diagnostic.hint, EvidenceRelationshipHint::Controls);
+        assert_eq!(diagnostic.parent_role, "form");
+        assert_eq!(
+            diagnostic.status,
+            RelationshipHintDiagnosticStatus::Validated
         );
     }
 

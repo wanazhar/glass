@@ -78,11 +78,13 @@ Completed:
 - [ir-030-007](tasks/ir-030-007.md) — fixture-derived draft graph expectations.
 - [ir-030-008](tasks/ir-030-008.md) — evidence-backed form ownership edges.
 - [ir-030-009](tasks/ir-030-009.md) — explicit relationship hints.
+- [ir-030-010](tasks/ir-030-010.md) — source-level relationship hint
+  validation.
 
 In progress:
 
-- [ir-030-010](tasks/ir-030-010.md) — source-level relationship hint
-  validation.
+- [ir-030-011](tasks/ir-030-011.md) — validated relationship-hint
+  diagnostics.
 
 ## Completed plan: performance overhaul
 

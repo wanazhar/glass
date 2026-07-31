@@ -7,8 +7,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
-    "README.md": ["| 0.2.1 | Current release |", "docs/feature-parity.md", "docs/release-evidence.md"],
-    "CHANGELOG.md": ["## [0.2.1] - 2026-07-30", "## [Unreleased] — 0.2.2"],
+    "README.md": ["| 0.2.1 | Current published release |", "docs/feature-parity.md", "docs/release-evidence.md"],
+    "CHANGELOG.md": ["## [0.2.1] - 2026-07-30", "## [Unreleased] — 0.2.3"],
     "docs/release-checklist.md": [
         "current published release is `glass-browser` version `0.2.1`",
         "next crates.io release, `0.2.2`",

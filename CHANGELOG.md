@@ -3,7 +3,14 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.2
+## [Unreleased] — 0.2.3
+
+### Added
+
+- Browser-free Web IR draft inspection and deterministic revision diff commands
+  are available through the CLI.
+
+## [0.2.2] - 2026-07-30
 
 ### Added
 

@@ -18,8 +18,9 @@ Install the executable with Cargo, then use the safe observe → guarded action
 | macOS x86-64 | Declared target; not verified on this machine |
 | macOS arm64 | Declared target; not verified on this machine |
 | Windows | Unsupported |
-| 0.2.2 | In development |
-| 0.2.1 | Current release |
+| 0.2.3 | In development |
+| 0.2.2 | Local release boundary; not published |
+| 0.2.1 | Current published release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
 

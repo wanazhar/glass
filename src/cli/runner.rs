@@ -6,7 +6,7 @@
 use super::args::{
     CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, KnowledgeCommand,
     KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, SnapshotCommand,
-    WorkflowAuthoringCommand,
+    TaskCommand, WorkflowAuthoringCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -111,6 +111,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             input: None,
         }) => {
             dispatch_workflow_authoring(action)?;
+            return Ok(());
+        }
+        Some(Commands::Task { action }) => {
+            dispatch_task(action)?;
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
@@ -793,6 +797,23 @@ fn dispatch_snapshot(action: &SnapshotCommand, profile: &str) -> BrowserResult<(
     Ok(())
 }
 
+fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
+    match action {
+        TaskCommand::Compile { input, output } => {
+            let source = std::fs::read_to_string(input)?;
+            let task = crate::task_protocol::GlassTask::from_json(&source)?;
+            let plan = crate::task_compiler::compile_task(&task)?;
+            if let Some(output) = output {
+                std::fs::write(output, serde_json::to_vec_pretty(&plan)?)?;
+                println!("compiled task to {}", output.display());
+            } else {
+                print_json(&plan)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResult<()> {
     match action {
         WorkflowAuthoringCommand::Templates { name, output } => {
@@ -1007,7 +1028,8 @@ async fn run_command(
         | Commands::Result { .. }
         | Commands::Certify { .. }
         | Commands::Knowledge { .. }
-        | Commands::Snapshot { .. } => {
+        | Commands::Snapshot { .. }
+        | Commands::Task { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
         Commands::Navigate {

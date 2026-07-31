@@ -484,6 +484,12 @@ pub enum Commands {
         input: Option<PathBuf>,
     },
 
+    /// Validate and compile a browser-free Task Protocol task.
+    Task {
+        #[command(subcommand)]
+        action: TaskCommand,
+    },
+
     /// Reconcile a workflow checkpoint and execute only its safe pending suffix.
     WorkflowResume {
         /// JSON file containing the workflow definition.
@@ -673,6 +679,18 @@ pub enum WorkflowAuthoringCommand {
         /// Template name: search, form-submit, paginated-extraction,
         /// authenticated-session, or dialog-and-download.
         name: String,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCommand {
+    /// Compile strict Task Protocol JSON into a deterministic execution plan.
+    Compile {
+        /// JSON file containing the authored task.
+        input: PathBuf,
+        /// Optional output file for the canonical execution plan.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -1302,6 +1320,27 @@ mod tests {
             Some(Commands::Knowledge {
                 action: KnowledgeCommand::Invalidate { .. }
             })
+        ));
+    }
+    #[test]
+    fn task_compile_command_is_explicitly_offline() {
+        use clap::CommandFactory;
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "task",
+            "compile",
+            "task.json",
+            "--output",
+            "plan.json",
+        ])
+        .unwrap();
+        assert!(Cli::command().find_subcommand("task").is_some());
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Task {
+                action: TaskCommand::Compile { input, output: Some(output) }
+            }) if input.as_os_str() == "task.json" && output.as_os_str() == "plan.json"
         ));
     }
 }

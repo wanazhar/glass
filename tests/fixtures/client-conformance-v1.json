@@ -25,6 +25,7 @@
     "clipboardRead",
     "clipboardWrite",
     "closeTarget",
+    "compileTask",
     "cookies",
     "createTarget",
     "diagnostics",

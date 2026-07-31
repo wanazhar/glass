@@ -96,6 +96,7 @@ Completed:
 - [ir-030-022](tasks/ir-030-022.md) — typed compiled-plan response.
 - [ir-030-023](tasks/ir-030-023.md) — browser-free MCP compileTask integration.
 - [ir-030-024](tasks/ir-030-024.md) — MCP compileTask client documentation.
+- [ir-030-025](tasks/ir-030-025.md) — browser-free CLI task compile.
 
 ## Completed plan: performance overhaul
 Status: Complete

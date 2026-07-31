@@ -864,6 +864,10 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             let after = read_web_ir_draft(after)?;
             print_json(&before.classify_entity_continuity(&after, entity_id)?)?;
         }
+        IrCommand::Canonical { input } => {
+            let draft = read_web_ir_draft(input)?;
+            println!("{}", draft.to_canonical_json()?);
+        }
     }
     Ok(())
 }

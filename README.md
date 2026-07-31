@@ -102,6 +102,7 @@ Inspect or diff validated browser-free Web IR drafts:
 glass ir inspect draft.json
 glass ir diff before.json after.json
 glass ir continuity before.json after.json field-1
+glass ir canonical draft.json
 ```
 
 Use `--profile NAME` for persistent cookies and storage. Use `--incognito`

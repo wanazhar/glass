@@ -722,6 +722,8 @@ pub enum IrCommand {
         after: PathBuf,
         entity_id: String,
     },
+    /// Print one validated Web IR draft in canonical JSON form.
+    Canonical { input: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1427,6 +1429,14 @@ mod tests {
             }) if before.as_os_str() == "before.json"
                 && after.as_os_str() == "after.json"
                 && entity_id == "field-1"
+        ));
+
+        let cli = Cli::try_parse_from(["glass", "ir", "canonical", "draft.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Canonical { input }
+            }) if input.as_os_str() == "draft.json"
         ));
     }
 }

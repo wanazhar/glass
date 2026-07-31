@@ -209,6 +209,10 @@ The successful MCP content item contains JSON shaped like:
     "schemaVersion": 1,
     "taskSchemaVersion": 1,
     "task": "form.fill",
+    "scope": {"regionName": "Shipping address", "entityKind": "form"},
+    "limits": {"maxActions": 16, "timeoutMs": 15000, "maxItems": 128},
+    "ambiguity": "fail",
+    "revision": "exact",
     "risk": "localMutation",
     "confirmationRequired": false,
     "steps": [

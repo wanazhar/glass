@@ -406,6 +406,12 @@ mod tests {
         };
         let plan = compile_task_request(&request).unwrap();
         assert_eq!(plan.task, crate::task_protocol::TaskKind::RegionExtract);
+        assert_eq!(plan.scope.region_name.as_deref(), Some("Checkout"));
+        assert_eq!(plan.limits.max_actions, 8);
+        assert_eq!(
+            plan.revision,
+            crate::task_protocol::TaskRevisionPolicy::Exact
+        );
 
         let mut wrong_operation = request.clone();
         wrong_operation.operation = "browser.observe".into();

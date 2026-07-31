@@ -4,8 +4,8 @@
 //! those operations against a validated Web IR revision and apply policy gates.
 
 use crate::task_protocol::{
-    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskKind, TaskPostcondition, TaskProtocolError,
-    TaskRiskClass,
+    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
+    TaskPostcondition, TaskProtocolError, TaskRevisionPolicy, TaskRiskClass, TaskScope,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -55,7 +55,11 @@ pub struct TaskExecutionPlan {
     pub schema_version: u32,
     pub task_schema_version: u32,
     pub task: TaskKind,
+    pub scope: TaskScope,
+    pub limits: TaskLimits,
     pub risk: TaskRiskClass,
+    pub ambiguity: TaskAmbiguityPolicy,
+    pub revision: TaskRevisionPolicy,
     pub confirmation_required: bool,
     pub steps: Vec<TaskPlanStep>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -161,7 +165,11 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
         schema_version: TASK_PLAN_SCHEMA_VERSION,
         task_schema_version: task.schema_version,
         task: task.task,
+        scope: task.scope.clone(),
+        limits: task.limits,
         risk: task.risk,
+        ambiguity: task.ambiguity,
+        revision: task.revision,
         confirmation_required,
         steps,
         postconditions: task.postconditions.clone(),
@@ -243,6 +251,10 @@ mod tests {
             ]
         );
         assert_eq!(plan.steps[1].input_names, vec!["email"]);
+        assert_eq!(plan.scope.region_name.as_deref(), Some("Checkout"));
+        assert_eq!(plan.limits, TaskLimits::default());
+        assert_eq!(plan.ambiguity, TaskAmbiguityPolicy::Fail);
+        assert_eq!(plan.revision, TaskRevisionPolicy::Exact);
         assert!(!plan.to_canonical_json().unwrap().contains("a@example.test"));
         let first = plan.to_canonical_json().unwrap();
         let second = compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation))
@@ -250,6 +262,26 @@ mod tests {
             .to_canonical_json()
             .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn compiler_preserves_non_default_execution_guards() {
+        let mut authored = task(TaskKind::NavigationFollow, TaskRiskClass::RemoteReversible);
+        authored.scope.region_name = Some("Shipping".into());
+        authored.limits = TaskLimits {
+            max_actions: 7,
+            timeout_ms: 2_500,
+            max_items: 9,
+        };
+        authored.ambiguity = TaskAmbiguityPolicy::RequireConfirmation;
+        authored.revision = TaskRevisionPolicy::Compatible;
+
+        let plan = compile_task(&authored).unwrap();
+
+        assert_eq!(plan.scope.region_name.as_deref(), Some("Shipping"));
+        assert_eq!(plan.limits, authored.limits);
+        assert_eq!(plan.ambiguity, authored.ambiguity);
+        assert_eq!(plan.revision, authored.revision);
     }
 
     #[test]

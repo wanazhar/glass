@@ -98,10 +98,8 @@ Completed:
 - [ir-030-024](tasks/ir-030-024.md) — MCP compileTask client documentation.
 - [ir-030-025](tasks/ir-030-025.md) — browser-free CLI task compile.
 - [ir-030-026](tasks/ir-030-026.md) — typed MCP compileTask errors.
-
-In progress:
-
 - [ir-030-027](tasks/ir-030-027.md) — compiler explanation mode.
+- [ir-030-028](tasks/ir-030-028.md) — compiled-plan guard metadata.
 
 ## Completed plan: performance overhaul
 Status: Complete

@@ -84,7 +84,7 @@ fn web_ir_corpus_declares_bounded_hint_diagnostic_expectations() {
         .expect("hint diagnostics should be an array");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0]["status"], "emitted");
-    assert_eq!(diagnostics[0]["count"], 1);
+    assert_eq!(diagnostics[0]["count"], 2);
 }
 
 #[test]

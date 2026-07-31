@@ -426,7 +426,13 @@ pub fn extract_page_context(
                                 .and_then(|value| value.split(':').next())
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_owned),
-                            relationship_hint: None,
+                            relationship_hint: custom_form_control_hint(
+                                &control.role,
+                                control
+                                    .ancestor_path
+                                    .last()
+                                    .and_then(|value| value.split(':').next()),
+                            ),
                         });
                     }
                 }
@@ -577,6 +583,18 @@ fn evidence_coverage(
     }
 }
 
+fn custom_form_control_hint(
+    control_role: &str,
+    parent_role: Option<&str>,
+) -> Option<EvidenceRelationshipHint> {
+    if parent_role.is_some_and(|role| role.eq_ignore_ascii_case("form"))
+        && matches!(control_role, "checkbox" | "combobox" | "radio")
+    {
+        Some(EvidenceRelationshipHint::Controls)
+    } else {
+        None
+    }
+}
 fn is_region_role(role: &str) -> bool {
     matches!(
         role,
@@ -929,6 +947,52 @@ mod tests {
                 .unwrap()
                 .contains("secret-value")
         );
+    }
+    #[test]
+    fn extraction_emits_controls_hint_for_custom_form_roles() {
+        let mut plain_request = request();
+        plain_request.sources = vec![EvidenceSource::Forms];
+        let plain_evidence = extract_page_context(&page_context(), &plain_request).unwrap();
+        assert!(
+            plain_evidence
+                .facts
+                .iter()
+                .all(|fact| fact.relationship_hint.is_none())
+        );
+
+        let mut context = page_context();
+        context.accessibility.interactive[0].role = "combobox".into();
+        context.accessibility.interactive[0].ancestor_path = vec!["form:Example form".into()];
+        let mut request = request();
+        request.sources = vec![EvidenceSource::Forms];
+        let evidence = extract_page_context(&context, &request).unwrap();
+        let fact = evidence
+            .facts
+            .iter()
+            .find(|fact| fact.source == EvidenceSource::Forms)
+            .expect("custom form control should produce a form fact");
+        assert_eq!(fact.parent_role.as_deref(), Some("form"));
+        assert_eq!(
+            fact.relationship_hint,
+            Some(EvidenceRelationshipHint::Controls)
+        );
+    }
+
+    #[test]
+    fn extracted_custom_control_hint_reconciles_to_controls_edge() {
+        let mut context = page_context();
+        context.accessibility.interactive[0].role = "combobox".into();
+        context.accessibility.interactive[0].ancestor_path = vec!["form:Example form".into()];
+        let evidence = extract_page_context(&context, &request()).unwrap();
+        let draft = crate::web_ir::reconcile_evidence(&evidence).unwrap();
+        assert_eq!(draft.relationship_hint_diagnostics.len(), 1);
+        assert_eq!(
+            draft.relationship_hint_diagnostics[0].status,
+            crate::web_ir::RelationshipHintDiagnosticStatus::Emitted
+        );
+        assert!(draft.relationships.iter().any(
+            |relationship| relationship.kind == crate::web_ir::DraftRelationshipKind::Controls
+        ));
     }
 
     #[test]

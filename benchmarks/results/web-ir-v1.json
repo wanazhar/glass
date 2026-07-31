@@ -24,7 +24,7 @@
     "htmlElementCount": 131,
     "declaredEntityCount": 46,
     "declaredRelationshipCount": 27,
-    "declaredHintDiagnosticCount": 1,
+    "declaredHintDiagnosticCount": 2,
     "opaqueRegionCount": 3
   },
   "fixtures": [
@@ -70,7 +70,7 @@
       "htmlElementCount": 13,
       "declaredEntityCount": 6,
       "declaredRelationshipCount": 4,
-      "declaredHintDiagnosticCount": 1,
+      "declaredHintDiagnosticCount": 2,
       "opaqueRegionCount": 0,
       "coverage": "partial"
     },

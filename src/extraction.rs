@@ -403,12 +403,7 @@ pub fn extract_page_context(
             }
             EvidenceSource::Forms => {
                 for control in &context.accessibility.interactive {
-                    if control.input_type.is_some()
-                        || matches!(
-                            control.role.as_str(),
-                            "checkbox" | "combobox" | "radio" | "textbox"
-                        )
-                    {
+                    if control.input_type.is_some() || is_form_control_role(&control.role) {
                         collector.push(EvidenceFact {
                             source: *source,
                             kind: "control".into(),
@@ -583,12 +578,29 @@ fn evidence_coverage(
     }
 }
 
+fn is_form_control_role(role: &str) -> bool {
+    matches!(
+        role,
+        "checkbox"
+            | "combobox"
+            | "listbox"
+            | "radio"
+            | "slider"
+            | "spinbutton"
+            | "switch"
+            | "textbox"
+    )
+}
+
 fn custom_form_control_hint(
     control_role: &str,
     parent_role: Option<&str>,
 ) -> Option<EvidenceRelationshipHint> {
     if parent_role.is_some_and(|role| role.eq_ignore_ascii_case("form"))
-        && matches!(control_role, "checkbox" | "combobox" | "radio")
+        && matches!(
+            control_role,
+            "checkbox" | "combobox" | "listbox" | "radio" | "slider" | "spinbutton" | "switch"
+        )
     {
         Some(EvidenceRelationshipHint::Controls)
     } else {
@@ -976,6 +988,27 @@ mod tests {
             fact.relationship_hint,
             Some(EvidenceRelationshipHint::Controls)
         );
+    }
+
+    #[test]
+    fn extraction_emits_controls_hints_for_extended_custom_form_roles() {
+        for role in ["listbox", "slider", "spinbutton", "switch"] {
+            let mut context = page_context();
+            context.accessibility.interactive[0].role = role.into();
+            context.accessibility.interactive[0].ancestor_path = vec!["form:Example form".into()];
+            let mut request = request();
+            request.sources = vec![EvidenceSource::Forms];
+            let evidence = extract_page_context(&context, &request).unwrap();
+            let fact = evidence
+                .facts
+                .iter()
+                .find(|fact| fact.source == EvidenceSource::Forms)
+                .expect("extended custom form control should produce a form fact");
+            assert_eq!(
+                fact.relationship_hint,
+                Some(EvidenceRelationshipHint::Controls)
+            );
+        }
     }
 
     #[test]

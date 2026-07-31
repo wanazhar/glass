@@ -90,6 +90,8 @@ pub struct DraftRelationship {
 #[serde(rename_all = "camelCase")]
 pub enum RelationshipHintDiagnosticStatus {
     Validated,
+    Emitted,
+    UnmatchedParent,
 }
 
 /// A redacted diagnostic for one validated relationship hint.
@@ -306,7 +308,7 @@ pub fn reconcile_evidence(
     evidence
         .validate_relationship_hints()
         .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
-    let relationship_hint_diagnostics = evidence
+    let mut relationship_hint_diagnostics = evidence
         .facts
         .iter()
         .enumerate()
@@ -320,8 +322,13 @@ pub fn reconcile_evidence(
             })
         })
         .collect::<Vec<_>>();
-    let mut facts = evidence.facts.clone();
-    facts.sort_by_key(fact_sort_key);
+    let mut facts = evidence
+        .facts
+        .iter()
+        .cloned()
+        .enumerate()
+        .collect::<Vec<_>>();
+    facts.sort_by_key(|(_, fact)| fact_sort_key(fact));
 
     let mut entities = vec![DraftEntity {
         id: "page".into(),
@@ -336,8 +343,15 @@ pub fn reconcile_evidence(
     let mut diagnostics = BTreeSet::new();
 
     let mut parent_links = BTreeSet::new();
-    for fact in facts {
+    for (fact_index, fact) in facts {
         let Some(kind) = canonical_kind(&fact) else {
+            if fact.relationship_hint.is_some()
+                && let Some(diagnostic) = relationship_hint_diagnostics
+                    .iter_mut()
+                    .find(|diagnostic| diagnostic.fact_index == fact_index)
+            {
+                diagnostic.status = RelationshipHintDiagnosticStatus::UnmatchedParent;
+            }
             diagnostics.insert(format!("unsupportedFact:{}", fact.kind));
             continue;
         };
@@ -378,6 +392,7 @@ pub fn reconcile_evidence(
         };
         if let Some(parent_role) = fact.parent_role {
             parent_links.insert((
+                fact_index,
                 parent_role.to_ascii_lowercase(),
                 entity_id,
                 kind,
@@ -406,8 +421,15 @@ pub fn reconcile_evidence(
             kind: DraftRelationshipKind::Contains,
         })
         .collect::<Vec<_>>();
-    for (parent_role, child_id, child_kind, relationship_hint) in parent_links {
+    for (fact_index, parent_role, child_id, child_kind, relationship_hint) in parent_links {
         let Some(parent_kind) = parent_entity_kind(&parent_role) else {
+            if relationship_hint.is_some() {
+                set_hint_status(
+                    &mut relationship_hint_diagnostics,
+                    fact_index,
+                    RelationshipHintDiagnosticStatus::UnmatchedParent,
+                );
+            }
             continue;
         };
         let Some(parent_id) = entities
@@ -421,14 +443,36 @@ pub fn reconcile_evidence(
             })
             .map(|entity| entity.id.clone())
         else {
+            if relationship_hint.is_some() {
+                set_hint_status(
+                    &mut relationship_hint_diagnostics,
+                    fact_index,
+                    RelationshipHintDiagnosticStatus::UnmatchedParent,
+                );
+            }
             continue;
         };
-        if parent_id != child_id {
-            relationships.push(DraftRelationship {
-                from: parent_id,
-                to: child_id,
-                kind: relationship_kind(parent_kind, child_kind, relationship_hint),
-            });
+        if parent_id == child_id {
+            if relationship_hint.is_some() {
+                set_hint_status(
+                    &mut relationship_hint_diagnostics,
+                    fact_index,
+                    RelationshipHintDiagnosticStatus::UnmatchedParent,
+                );
+            }
+            continue;
+        }
+        relationships.push(DraftRelationship {
+            from: parent_id,
+            to: child_id,
+            kind: relationship_kind(parent_kind, child_kind, relationship_hint),
+        });
+        if relationship_hint.is_some() {
+            set_hint_status(
+                &mut relationship_hint_diagnostics,
+                fact_index,
+                RelationshipHintDiagnosticStatus::Emitted,
+            );
         }
     }
     relationships.sort_by_key(|relationship| {
@@ -585,6 +629,19 @@ fn relationship_name(kind: DraftRelationshipKind) -> &'static str {
         DraftRelationshipKind::Selects => "selects",
         DraftRelationshipKind::RepeatsAs => "repeatsAs",
         DraftRelationshipKind::ScopedTo => "scopedTo",
+    }
+}
+
+fn set_hint_status(
+    diagnostics: &mut [DraftRelationshipHintDiagnostic],
+    fact_index: usize,
+    status: RelationshipHintDiagnosticStatus,
+) {
+    if let Some(diagnostic) = diagnostics
+        .iter_mut()
+        .find(|diagnostic| diagnostic.fact_index == fact_index)
+    {
+        diagnostic.status = status;
     }
 }
 
@@ -853,10 +910,7 @@ mod tests {
         assert_eq!(diagnostic.source, EvidenceSource::Accessibility);
         assert_eq!(diagnostic.hint, EvidenceRelationshipHint::Controls);
         assert_eq!(diagnostic.parent_role, "form");
-        assert_eq!(
-            diagnostic.status,
-            RelationshipHintDiagnosticStatus::Validated
-        );
+        assert_eq!(diagnostic.status, RelationshipHintDiagnosticStatus::Emitted);
     }
 
     #[test]
@@ -872,6 +926,24 @@ mod tests {
         wrong_source.facts[0].source = EvidenceSource::Layout;
         let error = reconcile_evidence(&wrong_source).unwrap_err();
         assert_eq!(error.path, "facts[0].relationshipHint");
+    }
+
+    #[test]
+    fn reconciliation_marks_valid_unmatched_hints_without_emitting_edges() {
+        let mut evidence = evidence();
+        evidence.facts[0].parent_role = Some("dialog".into());
+        evidence.facts[0].relationship_hint = Some(EvidenceRelationshipHint::Controls);
+        let draft = reconcile_evidence(&evidence).unwrap();
+        assert_eq!(
+            draft.relationship_hint_diagnostics[0].status,
+            RelationshipHintDiagnosticStatus::UnmatchedParent
+        );
+        assert!(
+            !draft
+                .relationships
+                .iter()
+                .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+        );
     }
 
     #[test]

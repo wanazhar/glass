@@ -80,11 +80,12 @@ Completed:
 - [ir-030-009](tasks/ir-030-009.md) — explicit relationship hints.
 - [ir-030-010](tasks/ir-030-010.md) — source-level relationship hint
   validation.
+- [ir-030-011](tasks/ir-030-011.md) — validated relationship-hint
+  diagnostics.
 
 In progress:
 
-- [ir-030-011](tasks/ir-030-011.md) — validated relationship-hint
-  diagnostics.
+- [ir-030-012](tasks/ir-030-012.md) — unmatched relationship-hint statuses.
 
 ## Completed plan: performance overhaul
 

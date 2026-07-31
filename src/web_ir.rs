@@ -339,7 +339,7 @@ pub fn reconcile_evidence(
             id
         };
         if let Some(parent_role) = fact.parent_role {
-            parent_links.insert((parent_role.to_ascii_lowercase(), entity_id));
+            parent_links.insert((parent_role.to_ascii_lowercase(), entity_id, kind));
         }
     }
 
@@ -363,11 +363,14 @@ pub fn reconcile_evidence(
             kind: DraftRelationshipKind::Contains,
         })
         .collect::<Vec<_>>();
-    for (parent_role, child_id) in parent_links {
+    for (parent_role, child_id, child_kind) in parent_links {
+        let Some(parent_kind) = parent_entity_kind(&parent_role) else {
+            continue;
+        };
         let Some(parent_id) = entities
             .iter()
             .find(|entity| {
-                entity.kind == DraftEntityKind::Region
+                entity.kind == parent_kind
                     && entity
                         .role
                         .as_deref()
@@ -381,7 +384,7 @@ pub fn reconcile_evidence(
             relationships.push(DraftRelationship {
                 from: parent_id,
                 to: child_id,
-                kind: DraftRelationshipKind::Contains,
+                kind: relationship_kind(parent_kind, child_kind),
             });
         }
     }
@@ -541,6 +544,28 @@ fn relationship_name(kind: DraftRelationshipKind) -> &'static str {
     }
 }
 
+fn parent_entity_kind(role: &str) -> Option<DraftEntityKind> {
+    match role {
+        "form" => Some(DraftEntityKind::Form),
+        "dialog" | "alertdialog" => Some(DraftEntityKind::Dialog),
+        "article" | "complementary" | "main" | "navigation" | "region" | "search" | "toolbar" => {
+            Some(DraftEntityKind::Region)
+        }
+        _ => None,
+    }
+}
+
+fn relationship_kind(
+    parent_kind: DraftEntityKind,
+    child_kind: DraftEntityKind,
+) -> DraftRelationshipKind {
+    if parent_kind == DraftEntityKind::Form && child_kind == DraftEntityKind::Field {
+        DraftRelationshipKind::Owns
+    } else {
+        DraftRelationshipKind::Contains
+    }
+}
+
 fn slug(value: Option<&str>) -> String {
     let mut output = String::new();
     for character in value.unwrap_or("entity").chars() {
@@ -687,6 +712,43 @@ mod tests {
             .unwrap();
         assert!(draft.relationships.iter().any(|relationship| {
             relationship.from == region_id && relationship.kind == DraftRelationshipKind::Contains
+        }));
+    }
+
+    #[test]
+    fn reconciliation_emits_form_ownership_for_observed_form_ancestry() {
+        let mut evidence = evidence();
+        evidence.facts.push(EvidenceFact {
+            source: EvidenceSource::Accessibility,
+            kind: "node".into(),
+            quality: EvidenceQuality::Confirmed,
+            role: Some("form".into()),
+            name: Some("Account".into()),
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: None,
+            parent_role: None,
+        });
+        evidence.facts[0].parent_role = Some("form".into());
+        let draft = reconcile_evidence(&evidence).unwrap();
+        let form_id = draft
+            .entities
+            .iter()
+            .find(|entity| entity.kind == DraftEntityKind::Form)
+            .map(|entity| entity.id.clone())
+            .unwrap();
+        let field_ids = draft
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == DraftEntityKind::Field)
+            .map(|entity| entity.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(draft.relationships.iter().any(|relationship| {
+            relationship.from == form_id
+                && field_ids.contains(relationship.to.as_str())
+                && relationship.kind == DraftRelationshipKind::Owns
         }));
     }
 

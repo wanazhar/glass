@@ -4,7 +4,7 @@
 //! commands, interactive TUI, or the MCP stdio server.
 
 use super::args::{
-    CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, KnowledgeCommand,
+    CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand, KnowledgeCommand,
     KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, SnapshotCommand,
     TaskCommand, WorkflowAuthoringCommand,
 };
@@ -115,6 +115,10 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         }
         Some(Commands::Task { action }) => {
             dispatch_task(action)?;
+            return Ok(());
+        }
+        Some(Commands::Ir { action }) => {
+            dispatch_ir(action)?;
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
@@ -828,6 +832,38 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
         }
     }
     Ok(())
+}
+
+fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
+    match action {
+        IrCommand::Inspect { input } => {
+            let draft = read_web_ir_draft(input)?;
+            print_json(&serde_json::json!({
+                "schemaVersion": draft.schema_version,
+                "revision": draft.revision,
+                "entityCount": draft.entities.len(),
+                "relationshipCount": draft.relationships.len(),
+                "coverage": draft.coverage,
+                "truncated": draft.limits.truncated,
+                "opaqueRegions": draft.coverage.opaque_regions,
+                "diagnosticCount": draft.diagnostics.len(),
+                "relationshipHintDiagnosticCount": draft.relationship_hint_diagnostics.len(),
+            }))?;
+        }
+        IrCommand::Diff { before, after } => {
+            let before = read_web_ir_draft(before)?;
+            let after = read_web_ir_draft(after)?;
+            print_json(&before.diff(&after)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_web_ir_draft(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrDraft> {
+    let source = std::fs::read_to_string(path)?;
+    let draft: crate::web_ir::GlassWebIrDraft = serde_json::from_str(&source)?;
+    draft.validate()?;
+    Ok(draft)
 }
 
 fn explain_task(
@@ -1595,6 +1631,7 @@ async fn run_command(
             println!("Text written to clipboard");
         }
         Commands::Tui
+        | Commands::Ir { .. }
         | Commands::InstallChromium { .. }
         | Commands::Profiles { .. }
         | Commands::DeleteProfile { .. } => {

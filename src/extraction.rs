@@ -169,7 +169,7 @@ impl ExtractionRequest {
 }
 
 /// Explainable quality class attached to an evidence fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EvidenceQuality {
     Confirmed,
@@ -181,7 +181,7 @@ pub enum EvidenceQuality {
 }
 
 /// Explicit semantic relationship hint carried by bounded evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EvidenceRelationshipHint {
     Contains,
@@ -202,19 +202,19 @@ pub enum EvidenceRelationshipHint {
 }
 
 /// Coverage summary for one bounded extraction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceCoverage {
     pub structural: EvidenceQuality,
     pub semantic: EvidenceQuality,
     pub interactive_entities_observed: u32,
     pub opaque_regions: u32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasons: Vec<String>,
 }
 
 /// Bounded evidence produced from an existing page observation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtractionEvidence {
     pub schema_version: u32,
@@ -227,7 +227,7 @@ pub struct ExtractionEvidence {
 }
 
 /// One redacted, source-labelled fact from browser evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceFact {
     pub source: EvidenceSource,
@@ -347,7 +347,7 @@ fn relationship_hint_allowed(source: EvidenceSource, hint: EvidenceRelationshipH
 }
 
 /// Explicit omissions and truncation from one evidence extraction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtractionEvidenceLimits {
     pub truncated: bool,

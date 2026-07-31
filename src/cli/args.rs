@@ -490,6 +490,12 @@ pub enum Commands {
         action: TaskCommand,
     },
 
+    /// Inspect or diff browser-free Web IR draft JSON.
+    Ir {
+        #[command(subcommand)]
+        action: IrCommand,
+    },
+
     /// Reconcile a workflow checkpoint and execute only its safe pending suffix.
     WorkflowResume {
         /// JSON file containing the workflow definition.
@@ -702,6 +708,14 @@ pub enum TaskCommand {
         #[arg(long)]
         explain: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IrCommand {
+    /// Print a bounded summary of one validated Web IR draft.
+    Inspect { input: PathBuf },
+    /// Compute a deterministic diff between two validated Web IR drafts.
+    Diff { before: PathBuf, after: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1366,6 +1380,25 @@ mod tests {
             Some(Commands::Task {
                 action: TaskCommand::Validate { input }
             }) if input.as_os_str() == "task.json"
+        ));
+    }
+    #[test]
+    fn ir_commands_are_explicitly_offline() {
+        let cli = Cli::try_parse_from(["glass", "ir", "inspect", "draft.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Inspect { input }
+            }) if input.as_os_str() == "draft.json"
+        ));
+
+        let cli =
+            Cli::try_parse_from(["glass", "ir", "diff", "before.json", "after.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Diff { before, after }
+            }) if before.as_os_str() == "before.json" && after.as_os_str() == "after.json"
         ));
     }
 }

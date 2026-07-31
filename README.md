@@ -95,6 +95,13 @@ glass task validate task.json
 The canonical plan remains on stdout; `--explain` writes deterministic,
 redacted compilation metadata to stderr.
 
+Inspect or diff validated browser-free Web IR drafts:
+
+```console
+glass ir inspect draft.json
+glass ir diff before.json after.json
+```
+
 Use `--profile NAME` for persistent cookies and storage. Use `--incognito`
 for a disposable browser profile.
 

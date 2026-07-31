@@ -42,7 +42,7 @@ pub enum DraftEntityKind {
 }
 
 /// Canonical relationship kinds used by the draft graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftRelationshipKind {
     Contains,
@@ -63,7 +63,7 @@ pub enum DraftRelationshipKind {
 }
 
 /// One canonical entity reconciled from one or more evidence sources.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftEntity {
     pub id: String,
@@ -77,7 +77,7 @@ pub struct DraftEntity {
 }
 
 /// One relationship between canonical draft entities.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftRelationship {
     pub from: String,
@@ -86,7 +86,7 @@ pub struct DraftRelationship {
 }
 
 /// Kind of change represented by a draft Web IR diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftChangeKind {
     Added,
@@ -95,7 +95,7 @@ pub enum DraftChangeKind {
 }
 
 /// One entity change between two validated draft revisions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftEntityChange {
     pub id: String,
@@ -107,7 +107,7 @@ pub struct DraftEntityChange {
 }
 
 /// One relationship addition or removal between two validated draft revisions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftRelationshipChange {
     pub relationship: DraftRelationship,
@@ -115,7 +115,7 @@ pub struct DraftRelationshipChange {
 }
 
 /// Deterministic changes between two validated draft Web IR revisions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlassWebIrDiff {
     pub schema_version: u32,
@@ -132,7 +132,7 @@ pub struct GlassWebIrDiff {
 }
 
 /// Continuity classification for one entity across draft revisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftEntityContinuityStatus {
     Unchanged,
@@ -143,7 +143,7 @@ pub enum DraftEntityContinuityStatus {
 }
 
 /// Explain whether a revision-local entity remains safe to use.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftEntityContinuity {
     pub requested_id: String,
@@ -175,7 +175,7 @@ impl DraftEntity {
 }
 
 /// Outcome of source-level relationship-hint validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RelationshipHintDiagnosticStatus {
     Validated,
     Emitted,
@@ -183,7 +183,7 @@ pub enum RelationshipHintDiagnosticStatus {
 }
 
 /// A redacted diagnostic for one validated relationship hint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftRelationshipHintDiagnostic {
     pub fact_index: usize,
@@ -194,7 +194,7 @@ pub struct DraftRelationshipHintDiagnostic {
 }
 
 /// A bounded, experimental Web IR draft.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlassWebIrDraft {
     pub schema_version: u32,
@@ -203,9 +203,9 @@ pub struct GlassWebIrDraft {
     pub relationships: Vec<DraftRelationship>,
     pub coverage: crate::extraction::EvidenceCoverage,
     pub limits: ExtractionEvidenceLimits,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relationship_hint_diagnostics: Vec<DraftRelationshipHintDiagnostic>,
 }
 

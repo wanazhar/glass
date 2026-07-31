@@ -79,6 +79,16 @@ glass navigate https://example.com
 glass --incognito --headed navigate https://example.com
 ```
 
+Compile a bounded Task Protocol plan without starting Chrome:
+
+```console
+glass task compile task.json
+glass task compile task.json --explain
+```
+
+The canonical plan remains on stdout; `--explain` writes deterministic,
+redacted compilation metadata to stderr.
+
 Use `--profile NAME` for persistent cookies and storage. Use `--incognito`
 for a disposable browser profile.
 

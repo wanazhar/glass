@@ -693,6 +693,9 @@ pub enum TaskCommand {
         /// Optional output file for the canonical execution plan.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Print a deterministic compilation explanation to stderr.
+        #[arg(long)]
+        explain: bool,
     },
 }
 
@@ -1333,14 +1336,21 @@ mod tests {
             "task.json",
             "--output",
             "plan.json",
+            "--explain",
         ])
         .unwrap();
         assert!(Cli::command().find_subcommand("task").is_some());
         assert!(matches!(
             cli.command,
             Some(Commands::Task {
-                action: TaskCommand::Compile { input, output: Some(output) }
-            }) if input.as_os_str() == "task.json" && output.as_os_str() == "plan.json"
+                action: TaskCommand::Compile {
+                    input,
+                    output: Some(output),
+                    explain
+                }
+            }) if input.as_os_str() == "task.json"
+                && output.as_os_str() == "plan.json"
+                && explain
         ));
     }
 }

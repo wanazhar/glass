@@ -799,7 +799,11 @@ fn dispatch_snapshot(action: &SnapshotCommand, profile: &str) -> BrowserResult<(
 
 fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
     match action {
-        TaskCommand::Compile { input, output } => {
+        TaskCommand::Compile {
+            input,
+            output,
+            explain,
+        } => {
             let source = std::fs::read_to_string(input)?;
             let task = crate::task_protocol::GlassTask::from_json(&source)?;
             let plan = crate::task_compiler::compile_task(&task)?;
@@ -809,9 +813,54 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
             } else {
                 print_json(&plan)?;
             }
+            if *explain {
+                eprintln!("{}", explain_task(&task, &plan)?);
+            }
         }
     }
     Ok(())
+}
+
+fn explain_task(
+    task: &crate::task_protocol::GlassTask,
+    plan: &crate::task_compiler::TaskExecutionPlan,
+) -> BrowserResult<String> {
+    let task_name = serde_json::to_string(&task.task)?
+        .trim_matches('"')
+        .to_owned();
+    let risk = serde_json::to_string(&task.risk)?
+        .trim_matches('"')
+        .to_owned();
+    let steps = plan
+        .steps
+        .iter()
+        .map(|step| {
+            let operation = serde_json::to_string(&step.operation)
+                .expect("task plan operations are always serializable")
+                .trim_matches('"')
+                .to_owned();
+            let inputs = if step.input_names.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " inputNames={}",
+                    serde_json::to_string(&step.input_names)
+                        .expect("task input names are always serializable")
+                )
+            };
+            format!(
+                "  {}. {}{} confirmationRequired={}",
+                step.ordinal, operation, inputs, step.requires_confirmation
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(format!(
+        "task: {task_name}\nscope: {}\nrisk: {risk}\nconfirmationRequired: {}\nsteps:\n{steps}\npostconditions: {}\n",
+        serde_json::to_string(&task.scope)?,
+        plan.confirmation_required,
+        serde_json::to_string(&plan.postconditions)?
+    ))
 }
 
 fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResult<()> {
@@ -1737,5 +1786,27 @@ mod tests {
             );
             assert!(!source.contains("clickAt"));
         }
+    }
+    #[test]
+    fn task_explanation_contains_metadata_without_input_values() {
+        let task = crate::task_protocol::GlassTask::from_json(
+            r#"{
+                "schemaVersion": 1,
+                "task": "form.fill",
+                "scope": {"regionName": "Shipping address"},
+                "inputs": {"city": "Kuching-secret"},
+                "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                "risk": "localMutation"
+            }"#,
+        )
+        .unwrap();
+        let plan = crate::task_compiler::compile_task(&task).unwrap();
+
+        let explanation = explain_task(&task, &plan).unwrap();
+
+        assert!(explanation.contains("task: form.fill"));
+        assert!(explanation.contains("scope: {\"regionName\":\"Shipping address\"}"));
+        assert!(explanation.contains("inputNames=[\"city\"]"));
+        assert!(!explanation.contains("Kuching-secret"));
     }
 }

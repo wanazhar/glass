@@ -7,16 +7,16 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
-    "README.md": ["| 0.2.1 | Current published release |", "docs/feature-parity.md", "docs/release-evidence.md"],
+    "README.md": ["| 0.2.2 | Current published release |", "docs/feature-parity.md", "docs/release-evidence.md"],
     "CHANGELOG.md": ["## [0.2.1] - 2026-07-30", "## [Unreleased] — 0.2.3"],
     "docs/release-checklist.md": [
-        "current published release is `glass-browser` version `0.2.1`",
-        "next crates.io release, `0.2.2`",
+        "current published release is `glass-browser` version `0.2.2`",
+        "next crates.io release, `0.2.3`",
         "GitHub release binaries, checksum manifests, Sigstore bundles",
     ],
     "docs/feature-parity.md": [
-        "published 0.2.1 baseline",
-        "0.2.2 work stream",
+        "published 0.2.2 baseline",
+        "0.2.3 work stream",
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [
@@ -26,8 +26,8 @@ REQUIRED_MARKERS = {
     ],
     "docs/plan/analysis/release-audit-028.md": [
         "`0.2.0` publication boundary has been crossed",
-        "`0.2.1 published; crates-only local",
-        "`0.2.2 local development; not ready for public release",
+        "`0.2.2 published; crates-only local",
+        "`0.2.3 local development; not ready for public release",
     ],
 }
 FORBIDDEN_MARKERS = (

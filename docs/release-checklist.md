@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current published release is `glass-browser` version `0.2.1`. This
-checklist is being used for the next crates.io release, `0.2.2`. Linux
+The current published release is `glass-browser` version `0.2.2`. This
+checklist is being used for the next crates.io release, `0.2.3`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
 only Linux arm64 has been verified on the current machine. Windows is
 unsupported.

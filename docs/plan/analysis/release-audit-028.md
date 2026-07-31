@@ -107,5 +107,5 @@ crates-only `0.2.1` publication. Do not upload binaries. This local audit does
 not close issue #28; its remote definition still needs to reflect the
 crates-only release policy before its status can be reconsidered.
 
-The correct current labels are: `0.2.1 published; crates-only local
-certification` and `0.2.2 local development; not ready for public release`.
+The correct current labels are: `0.2.2 published; crates-only local
+certification` and `0.2.3 local development; not ready for public release`.

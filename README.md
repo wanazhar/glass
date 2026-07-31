@@ -19,8 +19,8 @@ Install the executable with Cargo, then use the safe observe → guarded action
 | macOS arm64 | Declared target; not verified on this machine |
 | Windows | Unsupported |
 | 0.2.3 | In development |
-| 0.2.2 | Local release boundary; not published |
-| 0.2.1 | Current published release |
+| 0.2.2 | Current published release |
+| 0.2.1 | Previous published release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
 
@@ -210,9 +210,10 @@ revision-safe actions, target and frame management, storage, downloads,
 screenshots, PDFs, semantic observations, and the MCP server.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) are experimental clients for 0.2.2. They are not
-published as npm or PyPI packages, do not include a browser runtime, and do
-not change the primary Cargo installation path.
+client](clients/python) remain experimental repository clients for the 0.2.3
+development line. They are not published as npm or PyPI packages, do not
+include a browser runtime, and do not change the primary Cargo installation
+path.
 
 ## Safety and scope
 

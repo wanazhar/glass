@@ -45,9 +45,9 @@ Analysis and scorecard:
 Tasks are developed and independently reviewed in dependency order. A phase
 does not advance while correctness or safety gates from an earlier task fail.
 
-### Active plan: Glass 0.2.2 issue #29
+### Completed plan: Glass 0.2.2 issue #29
 
-Status: In progress — direct, phase-gated local development
+Status: Complete — published on crates.io; follow-up work continues in the 0.2.3 development line
 
 The complete issue outline, dependency map, integration points, and atomic
 commit boundaries are recorded in

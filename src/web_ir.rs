@@ -86,8 +86,7 @@ pub struct DraftRelationship {
 }
 
 /// Outcome of source-level relationship-hint validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RelationshipHintDiagnosticStatus {
     Validated,
     Emitted,
@@ -286,6 +285,31 @@ impl GlassWebIrDraft {
             if actual < *minimum {
                 return Err(WebIrValidationError::new(
                     format!("expectation.relationships.{}", relationship_name(*kind)),
+                    format!("expected at least {minimum}, observed {actual}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate minimum counts for relationship-hint diagnostic outcomes.
+    pub fn validate_hint_diagnostics_against(
+        &self,
+        expected_status_counts: &BTreeMap<RelationshipHintDiagnosticStatus, u32>,
+    ) -> Result<(), WebIrValidationError> {
+        self.validate()?;
+        for (status, minimum) in expected_status_counts {
+            let actual = self
+                .relationship_hint_diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.status == *status)
+                .count() as u32;
+            if actual < *minimum {
+                return Err(WebIrValidationError::new(
+                    format!(
+                        "expectation.relationshipHintDiagnostics.{}",
+                        hint_status_name(*status)
+                    ),
                     format!("expected at least {minimum}, observed {actual}"),
                 ));
             }
@@ -632,6 +656,14 @@ fn relationship_name(kind: DraftRelationshipKind) -> &'static str {
     }
 }
 
+fn hint_status_name(status: RelationshipHintDiagnosticStatus) -> &'static str {
+    match status {
+        RelationshipHintDiagnosticStatus::Validated => "validated",
+        RelationshipHintDiagnosticStatus::Emitted => "emitted",
+        RelationshipHintDiagnosticStatus::UnmatchedParent => "unmatchedParent",
+    }
+}
+
 fn set_hint_status(
     diagnostics: &mut [DraftRelationshipHintDiagnostic],
     fact_index: usize,
@@ -911,6 +943,8 @@ mod tests {
         assert_eq!(diagnostic.hint, EvidenceRelationshipHint::Controls);
         assert_eq!(diagnostic.parent_role, "form");
         assert_eq!(diagnostic.status, RelationshipHintDiagnosticStatus::Emitted);
+        let expected = BTreeMap::from([(RelationshipHintDiagnosticStatus::Emitted, 1)]);
+        draft.validate_hint_diagnostics_against(&expected).unwrap();
     }
 
     #[test]
@@ -943,6 +977,16 @@ mod tests {
                 .relationships
                 .iter()
                 .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+        );
+        let expected = BTreeMap::from([(RelationshipHintDiagnosticStatus::UnmatchedParent, 1)]);
+        draft.validate_hint_diagnostics_against(&expected).unwrap();
+        let missing = BTreeMap::from([(RelationshipHintDiagnosticStatus::Emitted, 1)]);
+        let error = draft
+            .validate_hint_diagnostics_against(&missing)
+            .unwrap_err();
+        assert_eq!(
+            error.path,
+            "expectation.relationshipHintDiagnostics.emitted"
         );
     }
 

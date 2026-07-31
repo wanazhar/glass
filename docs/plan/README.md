@@ -102,6 +102,7 @@ Completed:
 - [ir-030-028](tasks/ir-030-028.md) — compiled-plan guard metadata.
 - [ir-030-029](tasks/ir-030-029.md) — browser-free task validation.
 - [ir-030-030](tasks/ir-030-030.md) — browser-free MCP task validation.
+- [ir-030-031](tasks/ir-030-031.md) — Rust crate-root extraction and Web IR APIs.
 
 ## Completed plan: performance overhaul
 Status: Complete

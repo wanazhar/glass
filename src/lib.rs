@@ -107,3 +107,21 @@ pub use protocol::{
     TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult, TaskValidationResult,
     compile_task_request, compile_task_result,
 };
+
+/// Re-export the experimental bounded extraction contract for embedding callers.
+pub use extraction::{
+    EXTRACTION_CONTRACT_SCHEMA_VERSION, EvidenceCoverage, EvidenceFact, EvidenceQuality,
+    EvidenceRelationshipHint, EvidenceSource, ExtractionBudgets, ExtractionContractError,
+    ExtractionEvidence, ExtractionEvidenceLimits, ExtractionRequest, ExtractionScope,
+    MAX_EXTRACTION_DEPTH, MAX_EXTRACTION_DURATION_MS, MAX_EXTRACTION_NODES,
+    MAX_EXTRACTION_OUTPUT_BYTES, MAX_EXTRACTION_TEXT_BYTES, extract_page_context,
+};
+
+/// Re-export the experimental Web IR draft types for embedding callers.
+pub use web_ir::{
+    DraftChangeKind, DraftEntity, DraftEntityChange, DraftEntityContinuity,
+    DraftEntityContinuityStatus, DraftEntityKind, DraftFixtureExpectation, DraftRelationship,
+    DraftRelationshipChange, DraftRelationshipHintDiagnostic, DraftRelationshipKind,
+    GlassWebIrDiff, GlassWebIrDraft, RelationshipHintDiagnosticStatus, WEB_IR_DRAFT_SCHEMA_VERSION,
+    WebIrValidationError, reconcile_evidence,
+};

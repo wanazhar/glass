@@ -107,6 +107,11 @@ for a disposable browser profile.
 | MCP | A long-lived stdio connection | `glass --mcp` |
 | Rust library | An embedded session runtime | crate `glass-browser`, import `glass` |
 
+Experimental extraction and Web IR contracts are available from the Rust crate
+root (`ExtractionRequest`, `ExtractionEvidence`, and `GlassWebIrDraft`). They
+are browser-free contract and reconciliation APIs; the native browser
+extraction runtime is not yet a stable public surface.
+
 Example MCP configuration:
 
 ```json

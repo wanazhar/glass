@@ -63,6 +63,8 @@ pub mod reliability;
 pub mod reliability_runner;
 /// Bounded agent-facing response projections and local result artifacts.
 pub mod results;
+/// Strict, bounded authored Task Protocol v1 inputs.
+pub mod task_protocol;
 /// Ratatui terminal interface.
 pub mod tui;
 /// Experimental draft Web IR reconciliation and validation.
@@ -86,4 +88,10 @@ pub use browser::{
     WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
     WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
     WorkflowValidationError, WorkflowValueType,
+};
+
+pub use task_protocol::{
+    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
+    TaskPostcondition, TaskPostconditionKind, TaskProtocolError, TaskRevisionPolicy, TaskRiskClass,
+    TaskScope,
 };

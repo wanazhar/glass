@@ -8,7 +8,7 @@ use crate::extraction::{
     EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
     ExtractionEvidenceLimits,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
@@ -18,7 +18,7 @@ const MAX_DRAFT_ENTITIES: usize = 4_096;
 const MAX_DRAFT_RELATIONSHIPS: usize = 8_192;
 
 /// Canonical entity kinds used by the draft graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftEntityKind {
     Page,

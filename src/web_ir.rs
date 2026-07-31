@@ -131,6 +131,49 @@ pub struct GlassWebIrDiff {
     pub relationship_hint_diagnostics_changed: bool,
 }
 
+/// Continuity classification for one entity across draft revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DraftEntityContinuityStatus {
+    Unchanged,
+    Changed,
+    Rebound,
+    Removed,
+    Ambiguous,
+}
+
+/// Explain whether a revision-local entity remains safe to use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftEntityContinuity {
+    pub requested_id: String,
+    pub status: DraftEntityContinuityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_id: Option<String>,
+    pub reason: String,
+}
+
+impl DraftEntity {
+    /// Return a bounded semantic key suitable only for revision comparison.
+    pub fn semantic_identity_key(&self) -> Option<String> {
+        if self.role.is_none() && self.name.is_none() {
+            return None;
+        }
+        Some(format!(
+            "{}|{}|{}",
+            kind_name(self.kind),
+            self.role
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        ))
+    }
+}
+
 /// Outcome of source-level relationship-hint validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RelationshipHintDiagnosticStatus {
@@ -459,6 +502,81 @@ impl GlassWebIrDraft {
             relationship_hint_diagnostics_changed: self.relationship_hint_diagnostics
                 != next.relationship_hint_diagnostics,
         })
+    }
+
+    /// Classify one source entity against a later validated revision.
+    pub fn classify_entity_continuity(
+        &self,
+        next: &Self,
+        entity_id: &str,
+    ) -> Result<DraftEntityContinuity, WebIrValidationError> {
+        self.validate()?;
+        next.validate()?;
+        let requested_id = entity_id.to_owned();
+        let Some(source) = self.entities.iter().find(|entity| entity.id == entity_id) else {
+            return Ok(DraftEntityContinuity {
+                requested_id,
+                status: DraftEntityContinuityStatus::Removed,
+                current_id: None,
+                reason: "entity was not present in the source revision".into(),
+            });
+        };
+
+        if let Some(current) = next.entities.iter().find(|entity| entity.id == entity_id) {
+            let status = if source.semantic_identity_key() == current.semantic_identity_key() {
+                DraftEntityContinuityStatus::Unchanged
+            } else {
+                DraftEntityContinuityStatus::Changed
+            };
+            return Ok(DraftEntityContinuity {
+                requested_id,
+                status,
+                current_id: Some(current.id.clone()),
+                reason: match status {
+                    DraftEntityContinuityStatus::Unchanged => {
+                        "semantic identity remains compatible".into()
+                    }
+                    DraftEntityContinuityStatus::Changed => {
+                        "same revision-local ID has changed semantic identity".into()
+                    }
+                    _ => unreachable!("status is selected above"),
+                },
+            });
+        }
+
+        let Some(identity_key) = source.semantic_identity_key() else {
+            return Ok(DraftEntityContinuity {
+                requested_id,
+                status: DraftEntityContinuityStatus::Removed,
+                current_id: None,
+                reason: "entity has no semantic identity for bounded rebinding".into(),
+            });
+        };
+        let candidates = next
+            .entities
+            .iter()
+            .filter(|entity| entity.semantic_identity_key().as_deref() == Some(&identity_key))
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => Ok(DraftEntityContinuity {
+                requested_id,
+                status: DraftEntityContinuityStatus::Removed,
+                current_id: None,
+                reason: "no compatible semantic identity was observed".into(),
+            }),
+            [candidate] => Ok(DraftEntityContinuity {
+                requested_id,
+                status: DraftEntityContinuityStatus::Rebound,
+                current_id: Some(candidate.id.clone()),
+                reason: "revision-local ID changed but semantic identity remained unique".into(),
+            }),
+            _ => Ok(DraftEntityContinuity {
+                requested_id,
+                status: DraftEntityContinuityStatus::Ambiguous,
+                current_id: None,
+                reason: "multiple compatible semantic identities were observed".into(),
+            }),
+        }
     }
 
     /// Serialize a validated draft deterministically.
@@ -1285,6 +1403,92 @@ mod tests {
             serde_json::to_string(&diff).unwrap(),
             serde_json::to_string(&before.diff(&after).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn continuity_classification_fails_closed_for_stale_and_ambiguous_targets() {
+        let source = reconcile_evidence(&evidence()).unwrap();
+        let target_id = source
+            .entities
+            .iter()
+            .find(|entity| entity.kind == DraftEntityKind::Field)
+            .map(|entity| entity.id.clone())
+            .unwrap();
+
+        let unchanged = source
+            .classify_entity_continuity(&source, &target_id)
+            .unwrap();
+        assert_eq!(unchanged.status, DraftEntityContinuityStatus::Unchanged);
+
+        let mut changed_draft = source.clone();
+        changed_draft
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == target_id)
+            .unwrap()
+            .name = Some("Different field".into());
+        let changed = source
+            .classify_entity_continuity(&changed_draft, &target_id)
+            .unwrap();
+        assert_eq!(changed.status, DraftEntityContinuityStatus::Changed);
+
+        let target_key = source
+            .entities
+            .iter()
+            .find(|entity| entity.id == target_id)
+            .and_then(DraftEntity::semantic_identity_key)
+            .unwrap();
+        let removed_ids = source
+            .entities
+            .iter()
+            .filter(|entity| entity.semantic_identity_key().as_deref() == Some(target_key.as_str()))
+            .map(|entity| entity.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut rebound_draft = source.clone();
+        rebound_draft
+            .entities
+            .retain(|entity| !removed_ids.contains(&entity.id));
+        rebound_draft.relationships.retain(|relationship| {
+            !removed_ids.contains(&relationship.from) && !removed_ids.contains(&relationship.to)
+        });
+        let mut rebound_entity = source
+            .entities
+            .iter()
+            .find(|entity| entity.semantic_identity_key().as_deref() == Some(target_key.as_str()))
+            .unwrap()
+            .clone();
+        let rebound_id = "replacement-field".to_owned();
+        rebound_entity.id = rebound_id.clone();
+        rebound_draft.entities.push(rebound_entity.clone());
+        let rebound = source
+            .classify_entity_continuity(&rebound_draft, &target_id)
+            .unwrap();
+        assert_eq!(rebound.status, DraftEntityContinuityStatus::Rebound);
+        assert_eq!(rebound.current_id.as_deref(), Some(rebound_id.as_str()));
+
+        let mut removed_draft = source.clone();
+        removed_draft
+            .entities
+            .retain(|entity| !removed_ids.contains(&entity.id));
+        removed_draft.relationships.retain(|relationship| {
+            !removed_ids.contains(&relationship.from) && !removed_ids.contains(&relationship.to)
+        });
+        let removed = source
+            .classify_entity_continuity(&removed_draft, &target_id)
+            .unwrap();
+        assert_eq!(removed.status, DraftEntityContinuityStatus::Removed);
+
+        let mut ambiguous_draft = removed_draft;
+        let mut first = rebound_entity;
+        first.id = "replacement-a".into();
+        let mut second = first.clone();
+        second.id = "replacement-b".into();
+        ambiguous_draft.entities.extend([first, second]);
+        let ambiguous = source
+            .classify_entity_continuity(&ambiguous_draft, &target_id)
+            .unwrap();
+        assert_eq!(ambiguous.status, DraftEntityContinuityStatus::Ambiguous);
+        assert!(ambiguous.current_id.is_none());
     }
 
     #[test]

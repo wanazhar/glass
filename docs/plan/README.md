@@ -89,6 +89,7 @@ Completed:
 - [ir-030-015](tasks/ir-030-015.md) — runtime custom-control hints.
 - [ir-030-016](tasks/ir-030-016.md) — expanded custom-control hints.
 - [ir-030-017](tasks/ir-030-017.md) — deterministic Web IR revision diffs.
+- [ir-030-018](tasks/ir-030-018.md) — revision identity continuity.
 
 ## Completed plan: performance overhaul
 Status: Complete

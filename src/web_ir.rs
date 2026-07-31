@@ -85,6 +85,52 @@ pub struct DraftRelationship {
     pub kind: DraftRelationshipKind,
 }
 
+/// Kind of change represented by a draft Web IR diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DraftChangeKind {
+    Added,
+    Removed,
+    Changed,
+}
+
+/// One entity change between two validated draft revisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftEntityChange {
+    pub id: String,
+    pub kind: DraftChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<DraftEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<DraftEntity>,
+}
+
+/// One relationship addition or removal between two validated draft revisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRelationshipChange {
+    pub relationship: DraftRelationship,
+    pub kind: DraftChangeKind,
+}
+
+/// Deterministic changes between two validated draft Web IR revisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlassWebIrDiff {
+    pub schema_version: u32,
+    pub from_revision: u64,
+    pub to_revision: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entity_changes: Vec<DraftEntityChange>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relationship_changes: Vec<DraftRelationshipChange>,
+    pub coverage_changed: bool,
+    pub limits_changed: bool,
+    pub diagnostics_changed: bool,
+    pub relationship_hint_diagnostics_changed: bool,
+}
+
 /// Outcome of source-level relationship-hint validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RelationshipHintDiagnosticStatus {
@@ -315,6 +361,104 @@ impl GlassWebIrDraft {
             }
         }
         Ok(())
+    }
+
+    /// Compute deterministic changes between two validated draft revisions.
+    pub fn diff(&self, next: &Self) -> Result<GlassWebIrDiff, WebIrValidationError> {
+        self.validate()?;
+        next.validate()?;
+
+        let before_entities = self
+            .entities
+            .iter()
+            .map(|entity| (entity.id.clone(), entity))
+            .collect::<BTreeMap<_, _>>();
+        let after_entities = next
+            .entities
+            .iter()
+            .map(|entity| (entity.id.clone(), entity))
+            .collect::<BTreeMap<_, _>>();
+        let entity_ids = before_entities
+            .keys()
+            .chain(after_entities.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut entity_changes = Vec::new();
+        for id in entity_ids {
+            match (before_entities.get(&id), after_entities.get(&id)) {
+                (None, Some(after)) => entity_changes.push(DraftEntityChange {
+                    id,
+                    kind: DraftChangeKind::Added,
+                    before: None,
+                    after: Some((*after).clone()),
+                }),
+                (Some(before), None) => entity_changes.push(DraftEntityChange {
+                    id,
+                    kind: DraftChangeKind::Removed,
+                    before: Some((*before).clone()),
+                    after: None,
+                }),
+                (Some(before), Some(after)) if before != after => {
+                    entity_changes.push(DraftEntityChange {
+                        id,
+                        kind: DraftChangeKind::Changed,
+                        before: Some((*before).clone()),
+                        after: Some((*after).clone()),
+                    });
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+            }
+        }
+
+        let before_relationships = self
+            .relationships
+            .iter()
+            .map(|relationship| (relationship_key(relationship), relationship))
+            .collect::<BTreeMap<_, _>>();
+        let after_relationships = next
+            .relationships
+            .iter()
+            .map(|relationship| (relationship_key(relationship), relationship))
+            .collect::<BTreeMap<_, _>>();
+        let relationship_keys = before_relationships
+            .keys()
+            .chain(after_relationships.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut relationship_changes = Vec::new();
+        for key in relationship_keys {
+            match (
+                before_relationships.get(&key),
+                after_relationships.get(&key),
+            ) {
+                (None, Some(relationship)) => {
+                    relationship_changes.push(DraftRelationshipChange {
+                        relationship: (*relationship).clone(),
+                        kind: DraftChangeKind::Added,
+                    });
+                }
+                (Some(relationship), None) => {
+                    relationship_changes.push(DraftRelationshipChange {
+                        relationship: (*relationship).clone(),
+                        kind: DraftChangeKind::Removed,
+                    });
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+            }
+        }
+
+        Ok(GlassWebIrDiff {
+            schema_version: WEB_IR_DRAFT_SCHEMA_VERSION,
+            from_revision: self.revision,
+            to_revision: next.revision,
+            entity_changes,
+            relationship_changes,
+            coverage_changed: self.coverage != next.coverage,
+            limits_changed: self.limits != next.limits,
+            diagnostics_changed: self.diagnostics != next.diagnostics,
+            relationship_hint_diagnostics_changed: self.relationship_hint_diagnostics
+                != next.relationship_hint_diagnostics,
+        })
     }
 
     /// Serialize a validated draft deterministically.
@@ -601,6 +745,14 @@ fn canonical_key(kind: DraftEntityKind, role: Option<&str>, name: Option<&str>) 
         kind_name(kind),
         role.unwrap_or_default().to_ascii_lowercase(),
         name.unwrap_or_default().to_ascii_lowercase()
+    )
+}
+
+fn relationship_key(relationship: &DraftRelationship) -> (String, String, DraftRelationshipKind) {
+    (
+        relationship.from.clone(),
+        relationship.to.clone(),
+        relationship.kind,
     )
 }
 
@@ -1071,6 +1223,68 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert!(!first.contains("secret"));
+    }
+
+    #[test]
+    fn revision_diff_reports_deterministic_entity_relationship_and_metadata_changes() {
+        let before = reconcile_evidence(&evidence()).unwrap();
+        let mut after_evidence = evidence();
+        after_evidence.revision = 10;
+        after_evidence.coverage.structural = EvidenceQuality::Strong;
+        after_evidence.facts[0].parent_role = Some("form".into());
+
+        let mut form_fact = after_evidence.facts[0].clone();
+        form_fact.role = Some("form".into());
+        form_fact.name = Some("Account".into());
+        form_fact.parent_role = None;
+        after_evidence.facts.push(form_fact);
+
+        let mut layout_fact = after_evidence.facts[0].clone();
+        layout_fact.source = EvidenceSource::Layout;
+        layout_fact.quality = EvidenceQuality::Strong;
+        layout_fact.geometry_present = Some(true);
+        after_evidence.facts.push(layout_fact);
+
+        let after = reconcile_evidence(&after_evidence).unwrap();
+        let diff = before.diff(&after).unwrap();
+        assert_eq!(diff.from_revision, 9);
+        assert_eq!(diff.to_revision, 10);
+        assert!(
+            diff.entity_changes
+                .iter()
+                .any(|change| change.kind == DraftChangeKind::Added)
+        );
+        assert!(
+            diff.entity_changes
+                .iter()
+                .any(|change| change.kind == DraftChangeKind::Changed)
+        );
+        assert!(diff.relationship_changes.iter().any(|change| {
+            change.kind == DraftChangeKind::Added
+                && change.relationship.kind == DraftRelationshipKind::Owns
+        }));
+        assert!(diff.coverage_changed);
+        assert!(!diff.limits_changed);
+        assert!(!diff.diagnostics_changed);
+        assert!(!diff.relationship_hint_diagnostics_changed);
+
+        let reverse = after.diff(&before).unwrap();
+        assert!(
+            reverse
+                .entity_changes
+                .iter()
+                .any(|change| change.kind == DraftChangeKind::Removed)
+        );
+        assert!(
+            reverse
+                .relationship_changes
+                .iter()
+                .any(|change| change.kind == DraftChangeKind::Removed)
+        );
+        assert_eq!(
+            serde_json::to_string(&diff).unwrap(),
+            serde_json::to_string(&before.diff(&after).unwrap()).unwrap()
+        );
     }
 
     #[test]

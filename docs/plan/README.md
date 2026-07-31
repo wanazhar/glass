@@ -87,10 +87,8 @@ Completed:
   expectations.
 - [ir-030-014](tasks/ir-030-014.md) — corpus hint-diagnostic expectations.
 - [ir-030-015](tasks/ir-030-015.md) — runtime custom-control hints.
-
-In progress:
-
 - [ir-030-016](tasks/ir-030-016.md) — expanded custom-control hints.
+- [ir-030-017](tasks/ir-030-017.md) — deterministic Web IR revision diffs.
 
 ## Completed plan: performance overhaul
 Status: Complete

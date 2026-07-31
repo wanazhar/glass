@@ -229,6 +229,21 @@ when the task requires them. Glass does not serialize those values into the
 compiled plan or its canonical response; clients should still avoid retaining
 raw request bodies longer than necessary.
 
+For a valid JSON task that fails Task Protocol validation, the tool returns
+`isError: true` without starting Chrome. The first text content item is a
+bounded JSON error:
+
+```json
+{
+  "kind": "taskCompilation",
+  "path": "inputs",
+  "reason": "form.fill requires at least one bounded input"
+```
+
+The `path` identifies the authored field that must be corrected; `reason` is
+safe to display to the caller. Structural argument errors, such as a missing
+`task` object, remain ordinary MCP tool errors.
+
 All arguments use JSON. Targets use the same locator forms as the CLI.
 `includeDom` and `includeScreenshot` default to false. A semantic
 `level` is one of `summary`, `interactive`, `structured`,

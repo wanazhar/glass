@@ -40,6 +40,7 @@ use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
 use crate::results::{ResponseMode, default_result_store_path, project_and_store};
+use crate::task_compiler::TaskCompilationError;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -1288,6 +1289,15 @@ fn mcp_trace_action(tool: Option<&str>) -> ActionKind {
 }
 
 fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if let Some(error) = error.downcast_ref::<TaskCompilationError>() {
+        return serde_json::to_string(&json!({
+            "kind": "taskCompilation",
+            "path": error.path,
+            "reason": error.reason,
+        }))
+        .ok();
+    }
+
     error
         .downcast_ref::<TargetError>()
         .and_then(|error| serde_json::to_string(error).ok())
@@ -3843,6 +3853,51 @@ mod tests {
         assert_eq!(
             result.plan.task,
             crate::task_protocol::TaskKind::RegionExtract
+        );
+        assert!(session.is_none());
+    }
+    #[tokio::test]
+    async fn compile_task_tool_returns_typed_invalid_task_without_starting_chrome() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "invalid-compile",
+            "method": "tools/call",
+            "params": {
+                "name": "compileTask",
+                "arguments": {
+                    "task": {
+                        "schemaVersion": 1,
+                        "task": "form.fill",
+                        "scope": {"regionName": "Checkout"},
+                        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                        "risk": "localMutation"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true);
+        let error: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            error,
+            json!({
+                "kind": "taskCompilation",
+                "path": "inputs",
+                "reason": "form.fill requires at least one bounded input"
+            })
         );
         assert!(session.is_none());
     }

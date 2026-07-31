@@ -716,6 +716,12 @@ pub enum IrCommand {
     Inspect { input: PathBuf },
     /// Compute a deterministic diff between two validated Web IR drafts.
     Diff { before: PathBuf, after: PathBuf },
+    /// Classify one entity's continuity across two validated Web IR drafts.
+    Continuity {
+        before: PathBuf,
+        after: PathBuf,
+        entity_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1399,6 +1405,28 @@ mod tests {
             Some(Commands::Ir {
                 action: IrCommand::Diff { before, after }
             }) if before.as_os_str() == "before.json" && after.as_os_str() == "after.json"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "ir",
+            "continuity",
+            "before.json",
+            "after.json",
+            "field-1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Continuity {
+                    before,
+                    after,
+                    entity_id
+                }
+            }) if before.as_os_str() == "before.json"
+                && after.as_os_str() == "after.json"
+                && entity_id == "field-1"
         ));
     }
 }

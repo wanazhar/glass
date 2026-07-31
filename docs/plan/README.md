@@ -104,6 +104,7 @@ Completed:
 - [ir-030-030](tasks/ir-030-030.md) — browser-free MCP task validation.
 - [ir-030-031](tasks/ir-030-031.md) — Rust crate-root extraction and Web IR APIs.
 - [ir-030-032](tasks/ir-030-032.md) — browser-free Web IR inspect and diff CLI.
+- [ir-030-033](tasks/ir-030-033.md) — offline Web IR entity continuity classification.
 
 ## Completed plan: performance overhaul
 Status: Complete

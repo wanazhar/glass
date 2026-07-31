@@ -101,6 +101,7 @@ Inspect or diff validated browser-free Web IR drafts:
 ```console
 glass ir inspect draft.json
 glass ir diff before.json after.json
+glass ir continuity before.json after.json field-1
 ```
 
 Use `--profile NAME` for persistent cookies and storage. Use `--incognito`

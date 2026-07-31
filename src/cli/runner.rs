@@ -855,6 +855,15 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             let after = read_web_ir_draft(after)?;
             print_json(&before.diff(&after)?)?;
         }
+        IrCommand::Continuity {
+            before,
+            after,
+            entity_id,
+        } => {
+            let before = read_web_ir_draft(before)?;
+            let after = read_web_ir_draft(after)?;
+            print_json(&before.classify_entity_continuity(&after, entity_id)?)?;
+        }
     }
     Ok(())
 }

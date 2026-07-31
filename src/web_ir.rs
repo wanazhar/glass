@@ -5,7 +5,8 @@
 //! entities without dispatching browser actions or inventing unsupported links.
 
 use crate::extraction::{
-    EvidenceFact, EvidenceQuality, EvidenceSource, ExtractionEvidence, ExtractionEvidenceLimits,
+    EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
+    ExtractionEvidenceLimits,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -339,7 +340,12 @@ pub fn reconcile_evidence(
             id
         };
         if let Some(parent_role) = fact.parent_role {
-            parent_links.insert((parent_role.to_ascii_lowercase(), entity_id, kind));
+            parent_links.insert((
+                parent_role.to_ascii_lowercase(),
+                entity_id,
+                kind,
+                fact.relationship_hint,
+            ));
         }
     }
 
@@ -363,7 +369,7 @@ pub fn reconcile_evidence(
             kind: DraftRelationshipKind::Contains,
         })
         .collect::<Vec<_>>();
-    for (parent_role, child_id, child_kind) in parent_links {
+    for (parent_role, child_id, child_kind, relationship_hint) in parent_links {
         let Some(parent_kind) = parent_entity_kind(&parent_role) else {
             continue;
         };
@@ -384,7 +390,7 @@ pub fn reconcile_evidence(
             relationships.push(DraftRelationship {
                 from: parent_id,
                 to: child_id,
-                kind: relationship_kind(parent_kind, child_kind),
+                kind: relationship_kind(parent_kind, child_kind, relationship_hint),
             });
         }
     }
@@ -558,7 +564,27 @@ fn parent_entity_kind(role: &str) -> Option<DraftEntityKind> {
 fn relationship_kind(
     parent_kind: DraftEntityKind,
     child_kind: DraftEntityKind,
+    explicit_hint: Option<EvidenceRelationshipHint>,
 ) -> DraftRelationshipKind {
+    if let Some(hint) = explicit_hint {
+        return match hint {
+            EvidenceRelationshipHint::Contains => DraftRelationshipKind::Contains,
+            EvidenceRelationshipHint::Labels => DraftRelationshipKind::Labels,
+            EvidenceRelationshipHint::Owns => DraftRelationshipKind::Owns,
+            EvidenceRelationshipHint::Controls => DraftRelationshipKind::Controls,
+            EvidenceRelationshipHint::NavigatesTo => DraftRelationshipKind::NavigatesTo,
+            EvidenceRelationshipHint::Opens => DraftRelationshipKind::Opens,
+            EvidenceRelationshipHint::Confirms => DraftRelationshipKind::Confirms,
+            EvidenceRelationshipHint::Cancels => DraftRelationshipKind::Cancels,
+            EvidenceRelationshipHint::Continues => DraftRelationshipKind::Continues,
+            EvidenceRelationshipHint::Submits => DraftRelationshipKind::Submits,
+            EvidenceRelationshipHint::HeaderFor => DraftRelationshipKind::HeaderFor,
+            EvidenceRelationshipHint::CellOf => DraftRelationshipKind::CellOf,
+            EvidenceRelationshipHint::Selects => DraftRelationshipKind::Selects,
+            EvidenceRelationshipHint::RepeatsAs => DraftRelationshipKind::RepeatsAs,
+            EvidenceRelationshipHint::ScopedTo => DraftRelationshipKind::ScopedTo,
+        };
+    }
     if parent_kind == DraftEntityKind::Form && child_kind == DraftEntityKind::Field {
         DraftRelationshipKind::Owns
     } else {
@@ -629,6 +655,7 @@ mod tests {
                     empty: None,
                     geometry_present: None,
                     parent_role: None,
+                    relationship_hint: None,
                 },
                 EvidenceFact {
                     source: EvidenceSource::Accessibility,
@@ -642,6 +669,7 @@ mod tests {
                     empty: None,
                     geometry_present: None,
                     parent_role: None,
+                    relationship_hint: None,
                 },
                 EvidenceFact {
                     source: EvidenceSource::Forms,
@@ -655,6 +683,7 @@ mod tests {
                     empty: Some(true),
                     geometry_present: None,
                     parent_role: None,
+                    relationship_hint: None,
                 },
             ],
             coverage: EvidenceCoverage {
@@ -701,6 +730,7 @@ mod tests {
             empty: None,
             geometry_present: None,
             parent_role: None,
+            relationship_hint: None,
         });
         evidence.facts[0].parent_role = Some("search".into());
         let draft = reconcile_evidence(&evidence).unwrap();
@@ -730,6 +760,7 @@ mod tests {
             empty: None,
             geometry_present: None,
             parent_role: None,
+            relationship_hint: None,
         });
         evidence.facts[0].parent_role = Some("form".into());
         let draft = reconcile_evidence(&evidence).unwrap();
@@ -750,6 +781,34 @@ mod tests {
                 && field_ids.contains(relationship.to.as_str())
                 && relationship.kind == DraftRelationshipKind::Owns
         }));
+    }
+
+    #[test]
+    fn reconciliation_honors_explicit_relationship_hints() {
+        let mut evidence = evidence();
+        evidence.facts.push(EvidenceFact {
+            source: EvidenceSource::Accessibility,
+            kind: "node".into(),
+            quality: EvidenceQuality::Confirmed,
+            role: Some("form".into()),
+            name: Some("Account".into()),
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: None,
+            parent_role: None,
+            relationship_hint: None,
+        });
+        evidence.facts[0].parent_role = Some("form".into());
+        evidence.facts[0].relationship_hint = Some(EvidenceRelationshipHint::Controls);
+        let draft = reconcile_evidence(&evidence).unwrap();
+        assert!(
+            draft
+                .relationships
+                .iter()
+                .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+        );
     }
 
     #[test]

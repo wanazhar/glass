@@ -76,10 +76,11 @@ Completed:
 - [ir-030-005](tasks/ir-030-005.md) — explicit opaque boundary graph entities.
 - [ir-030-006](tasks/ir-030-006.md) — bounded region relationship evidence.
 - [ir-030-007](tasks/ir-030-007.md) — fixture-derived draft graph expectations.
+- [ir-030-008](tasks/ir-030-008.md) — evidence-backed form ownership edges.
 
 In progress:
 
-- [ir-030-008](tasks/ir-030-008.md) — evidence-backed form ownership edges.
+- [ir-030-009](tasks/ir-030-009.md) — explicit relationship hints.
 
 ## Completed plan: performance overhaul
 

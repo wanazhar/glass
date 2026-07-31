@@ -180,6 +180,27 @@ pub enum EvidenceQuality {
     Opaque,
 }
 
+/// Explicit semantic relationship hint carried by bounded evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EvidenceRelationshipHint {
+    Contains,
+    Labels,
+    Owns,
+    Controls,
+    NavigatesTo,
+    Opens,
+    Confirms,
+    Cancels,
+    Continues,
+    Submits,
+    HeaderFor,
+    CellOf,
+    Selects,
+    RepeatsAs,
+    ScopedTo,
+}
+
 /// Coverage summary for one bounded extraction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +240,9 @@ pub struct EvidenceFact {
     /// Bounded observed accessibility region role for relationship reconciliation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_role: Option<String>,
+    /// Explicit semantic relationship, when a source can prove one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship_hint: Option<EvidenceRelationshipHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -311,6 +335,7 @@ pub fn extract_page_context(
                                 .and_then(|value| value.split(':').next())
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_owned),
+                            relationship_hint: None,
                         });
                     }
                 }
@@ -489,6 +514,7 @@ fn collect_accessibility(
         empty: None,
         geometry_present: None,
         parent_role: parent_role.map(str::to_owned),
+        relationship_hint: None,
     });
     let next_parent_role = if is_region_role(&node.role) {
         Some(node.role.as_str())
@@ -516,6 +542,7 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
         empty: None,
         geometry_present: None,
         parent_role: None,
+        relationship_hint: None,
     });
     for child in &node.children {
         collect_dom(child, collector, depth.saturating_add(1));
@@ -543,6 +570,7 @@ fn collect_layout(
         empty: None,
         geometry_present: Some(node.bounding_box.is_some()),
         parent_role: None,
+        relationship_hint: None,
     });
     for child in &node.children {
         collect_layout(child, collector, source, depth.saturating_add(1));

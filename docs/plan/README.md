@@ -100,6 +100,7 @@ Completed:
 - [ir-030-026](tasks/ir-030-026.md) — typed MCP compileTask errors.
 - [ir-030-027](tasks/ir-030-027.md) — compiler explanation mode.
 - [ir-030-028](tasks/ir-030-028.md) — compiled-plan guard metadata.
+- [ir-030-029](tasks/ir-030-029.md) — browser-free task validation.
 
 ## Completed plan: performance overhaul
 Status: Complete

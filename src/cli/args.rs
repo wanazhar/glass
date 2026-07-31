@@ -686,6 +686,11 @@ pub enum WorkflowAuthoringCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
+    /// Validate strict Task Protocol JSON without starting Chrome.
+    Validate {
+        /// JSON file containing the authored task.
+        input: PathBuf,
+    },
     /// Compile strict Task Protocol JSON into a deterministic execution plan.
     Compile {
         /// JSON file containing the authored task.
@@ -1351,6 +1356,16 @@ mod tests {
             }) if input.as_os_str() == "task.json"
                 && output.as_os_str() == "plan.json"
                 && explain
+        ));
+    }
+    #[test]
+    fn task_validate_command_is_explicitly_offline() {
+        let cli = Cli::try_parse_from(["glass", "task", "validate", "task.json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Task {
+                action: TaskCommand::Validate { input }
+            }) if input.as_os_str() == "task.json"
         ));
     }
 }

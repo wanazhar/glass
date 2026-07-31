@@ -799,6 +799,15 @@ fn dispatch_snapshot(action: &SnapshotCommand, profile: &str) -> BrowserResult<(
 
 fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
     match action {
+        TaskCommand::Validate { input } => {
+            let source = std::fs::read_to_string(input)?;
+            let task = crate::task_protocol::GlassTask::from_json(&source)?;
+            print_json(&serde_json::json!({
+                "valid": true,
+                "schemaVersion": task.schema_version,
+                "task": task.task,
+            }))?;
+        }
         TaskCommand::Compile {
             input,
             output,

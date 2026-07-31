@@ -86,6 +86,12 @@ glass task compile task.json
 glass task compile task.json --explain
 ```
 
+Validate authored Task Protocol JSON without compiling or starting Chrome:
+
+```console
+glass task validate task.json
+```
+
 The canonical plan remains on stdout; `--explain` writes deterministic,
 redacted compilation metadata to stderr.
 

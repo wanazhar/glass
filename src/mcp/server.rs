@@ -240,6 +240,9 @@ enum ToolInvocation<'a> {
     CompileTask {
         task: crate::task_protocol::GlassTask,
     },
+    ValidateTask {
+        task: Value,
+    },
     FindTarget {
         request: SemanticIntentRequest,
     },
@@ -984,6 +987,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "observeKnowledge"
             | "inspectPage"
             | "compileTask"
+            | "validateTask"
             | "findTarget"
             | "extractStructured"
             | "recoverRun"
@@ -1289,6 +1293,15 @@ fn mcp_trace_action(tool: Option<&str>) -> ActionKind {
 }
 
 fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if let Some(error) = error.downcast_ref::<crate::task_protocol::TaskProtocolError>() {
+        return serde_json::to_string(&json!({
+            "kind": "taskValidation",
+            "path": error.path,
+            "reason": error.reason,
+        }))
+        .ok();
+    }
+
     if let Some(error) = error.downcast_ref::<TaskCompilationError>() {
         return serde_json::to_string(&json!({
             "kind": "taskCompilation",
@@ -1353,6 +1366,14 @@ async fn call_tool(
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
+    if let ToolInvocation::ValidateTask { task } = &invocation {
+        let task = crate::task_protocol::GlassTask::from_json(&serde_json::to_string(task)?)?;
+        return serialized_result(&crate::protocol::TaskValidationResult {
+            valid: true,
+            schema_version: task.schema_version,
+            task: task.task,
+        });
+    }
     if let ToolInvocation::CompileTask { task } = &invocation {
         let plan = crate::task_compiler::compile_task(task)?;
         return serialized_result(&crate::protocol::TaskCompileResult { plan });
@@ -1983,6 +2004,9 @@ async fn call_tool(
         ToolInvocation::CompileTask { .. } => {
             unreachable!("compileTask is handled before browser session startup")
         }
+        ToolInvocation::ValidateTask { .. } => {
+            unreachable!("validateTask is handled before browser session startup")
+        }
     }
 }
 
@@ -2165,6 +2189,13 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             Ok(ToolInvocation::CompileTask {
                 task: serde_json::from_value(task)?,
             })
+        }
+        "validateTask" => {
+            let task = arguments
+                .get("task")
+                .cloned()
+                .ok_or("validateTask requires a task object")?;
+            Ok(ToolInvocation::ValidateTask { task })
         }
         "findTarget" => {
             let mut value = arguments.clone();
@@ -2425,6 +2456,21 @@ async fn ensure_session<'a>(
 
 fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "validateTask",
+            description: "Validate a semantic Task Protocol task without starting Chrome or compiling a plan.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "object",
+                        "description": "Strict Task Protocol v1 authored task."
+                    }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }),
+        },
         Tool {
             name: "compileTask",
             description: "Compile a validated semantic Task Protocol task into a browser-free execution plan.",
@@ -3672,8 +3718,9 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 77);
+        assert_eq!(tools.len(), 78);
         assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
+        assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -3853,6 +3900,94 @@ mod tests {
         assert_eq!(
             result.plan.task,
             crate::task_protocol::TaskKind::RegionExtract
+        );
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_task_tool_is_browser_free_and_redacts_inputs() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "validate",
+            "method": "tools/call",
+            "params": {
+                "name": "validateTask",
+                "arguments": {
+                    "task": {
+                        "schemaVersion": 1,
+                        "task": "form.fill",
+                        "scope": {"regionName": "Checkout"},
+                        "inputs": {"city": "sensitive-city"},
+                        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                        "risk": "localMutation"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = response.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let result: crate::protocol::TaskValidationResult = serde_json::from_str(&text).unwrap();
+        assert!(result.valid);
+        assert_eq!(result.schema_version, 1);
+        assert_eq!(result.task, crate::task_protocol::TaskKind::FormFill);
+        assert!(!text.contains("sensitive-city"));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_task_tool_returns_typed_invalid_task_without_starting_chrome() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "invalid-validate",
+            "method": "tools/call",
+            "params": {
+                "name": "validateTask",
+                "arguments": {
+                    "task": {
+                        "schemaVersion": 1,
+                        "task": "form.fill",
+                        "scope": {"regionName": "Checkout"},
+                        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                        "risk": "localMutation"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
+            json!({
+                "kind": "taskValidation",
+                "path": "inputs",
+                "reason": "form.fill requires at least one bounded input"
+            })
         );
         assert!(session.is_none());
     }

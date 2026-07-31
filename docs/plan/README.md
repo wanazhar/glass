@@ -101,6 +101,7 @@ Completed:
 - [ir-030-027](tasks/ir-030-027.md) — compiler explanation mode.
 - [ir-030-028](tasks/ir-030-028.md) — compiled-plan guard metadata.
 - [ir-030-029](tasks/ir-030-029.md) — browser-free task validation.
+- [ir-030-030](tasks/ir-030-030.md) — browser-free MCP task validation.
 
 ## Completed plan: performance overhaul
 Status: Complete

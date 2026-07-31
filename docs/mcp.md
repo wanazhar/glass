@@ -139,6 +139,7 @@ A tool may request one bounded failure-trace content item with
 | `scroll` | Scroll by CSS pixels. |
 | `batch` | Run a bounded fixed, chain, or unguarded batch. |
 | `compileTask` | Validate a semantic Task Protocol v1 task and return a browser-free execution plan. |
+| `validateTask` | Validate a semantic Task Protocol v1 task without compiling or starting Chrome. |
 | `wait` | Wait for one typed condition. |
 | `diagnostics` | Return bounded redacted console and network data. |
 | `acceptDialog`, `dismissDialog` | Resolve the open JavaScript dialog. |
@@ -156,6 +157,27 @@ A tool may request one bounded failure-trace content item with
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |
+
+### Validate a task without starting Chrome
+
+`validateTask` performs strict Task Protocol validation and returns only bounded
+task metadata. It does not compile a plan, start Chrome, acquire a mutation
+lease, resolve targets, or execute browser actions. Input values are consumed
+only during validation and are never included in the response.
+
+The successful MCP content item contains JSON shaped like:
+
+```json
+{
+  "valid": true,
+  "schemaVersion": 1,
+  "task": "form.fill"
+}
+```
+
+For a valid JSON task that fails Task Protocol validation, the tool returns
+`isError: true` with a bounded `taskValidation` error containing `path` and
+`reason`.
 
 ### Compile a task without starting Chrome
 

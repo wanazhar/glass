@@ -104,6 +104,6 @@ pub use task_compiler::{
 };
 
 pub use protocol::{
-    TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult, compile_task_request,
-    compile_task_result,
+    TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult, TaskValidationResult,
+    compile_task_request, compile_task_result,
 };

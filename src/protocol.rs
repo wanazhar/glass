@@ -42,6 +42,15 @@ pub struct TaskCompileResult {
     pub plan: crate::task_compiler::TaskExecutionPlan,
 }
 
+/// Typed successful result for browser-free Task Protocol validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskValidationResult {
+    pub valid: bool,
+    pub schema_version: u32,
+    pub task: crate::task_protocol::TaskKind,
+}
+
 impl TaskCompileResult {
     /// Validate the embedded deterministic execution plan.
     pub fn validate(&self) -> Result<(), ProtocolError> {

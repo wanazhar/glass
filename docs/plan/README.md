@@ -91,6 +91,7 @@ Completed:
 - [ir-030-017](tasks/ir-030-017.md) — deterministic Web IR revision diffs.
 - [ir-030-018](tasks/ir-030-018.md) — revision identity continuity.
 - [ir-030-019](tasks/ir-030-019.md) — strict Task Protocol v1 contract.
+- [ir-030-020](tasks/ir-030-020.md) — deterministic Task Protocol execution plans.
 
 ## Completed plan: performance overhaul
 Status: Complete

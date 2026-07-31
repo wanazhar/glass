@@ -63,6 +63,8 @@ pub mod reliability;
 pub mod reliability_runner;
 /// Bounded agent-facing response projections and local result artifacts.
 pub mod results;
+/// Browser-free deterministic Task Protocol execution-plan compiler.
+pub mod task_compiler;
 /// Strict, bounded authored Task Protocol v1 inputs.
 pub mod task_protocol;
 /// Ratatui terminal interface.
@@ -94,4 +96,9 @@ pub use task_protocol::{
     GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
     TaskPostcondition, TaskPostconditionKind, TaskProtocolError, TaskRevisionPolicy, TaskRiskClass,
     TaskScope,
+};
+
+pub use task_compiler::{
+    TASK_PLAN_SCHEMA_VERSION, TaskCompilationError, TaskExecutionPlan, TaskPlanOperation,
+    TaskPlanStep, compile_task,
 };

@@ -5,6 +5,7 @@ use super::{
     InspectPageResult, SemanticRegion, SemanticTarget, StructuredExtractionRequest,
     StructuredExtractionResult,
 };
+use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
 use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind};
 use serde::Serialize;
@@ -23,7 +24,7 @@ pub struct TaskExecutionResult {
     pub source_revision: u64,
     pub current_revision: u64,
     pub steps: Vec<TaskStepResult>,
-    pub retry: String,
+    pub retry: RetryGuidance,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form: Option<FillFormOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,7 +153,7 @@ impl BrowserSession {
                     source_revision: observation.revision,
                     current_revision: extraction.source_revision,
                     steps,
-                    retry: "not-needed".into(),
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
                     form: None,
                     extraction: Some(extraction),
                     alerts: alert_labels(scoped_regions.iter().copied()),
@@ -174,7 +175,7 @@ impl BrowserSession {
                     source_revision: observation.revision,
                     current_revision: observation.revision,
                     steps,
-                    retry: "not-needed".into(),
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
                     form: None,
                     extraction: None,
                     alerts,
@@ -207,11 +208,10 @@ impl BrowserSession {
                     current_revision: observation.revision,
                     steps,
                     retry: if valid {
-                        "not-needed"
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
                     } else {
-                        "fix-validation-errors"
-                    }
-                    .into(),
+                        retry_guidance(RetryClassification::RequiresUserDecision, "form.validate")
+                    },
                     form: None,
                     alerts,
                     extraction: None,
@@ -267,11 +267,10 @@ impl BrowserSession {
                     current_revision: after.revision,
                     steps,
                     retry: if succeeded {
-                        "not-needed"
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
                     } else {
-                        "reconcile-before-retry"
-                    }
-                    .into(),
+                        retry_guidance(RetryClassification::SafeAfterReconcile, "inspect_page")
+                    },
                     form: Some(form),
                     alerts: alert_labels(after.regions.iter()),
                     extraction: None,
@@ -331,11 +330,10 @@ impl BrowserSession {
                     current_revision: after.revision,
                     steps,
                     retry: if verified {
-                        "not-needed"
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
                     } else {
-                        "reconcile-before-retry"
-                    }
-                    .into(),
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+                    },
                     form: None,
                     alerts: alert_labels(after.regions.iter()),
                     extraction: None,
@@ -365,6 +363,13 @@ fn step(
     }
 }
 
+fn retry_guidance(classification: RetryClassification, operation: &str) -> RetryGuidance {
+    RetryGuidance {
+        classification,
+        recommended_operation: operation.into(),
+    }
+}
+
 fn preflight_result(
     task: &GlassTask,
     plan: &TaskExecutionPlan,
@@ -388,7 +393,7 @@ fn preflight_result(
                 detail: Some(detail.into()),
             })
             .collect(),
-        retry: "reobserve-and-correct-task".into(),
+        retry: retry_guidance(RetryClassification::SafeAfterReobserve, "inspect_page"),
         form: None,
         alerts: Vec::new(),
         extraction: None,
@@ -570,6 +575,17 @@ mod tests {
         );
         let error = resolved_fields(&[&form], &task().inputs).unwrap_err();
         assert!(error.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn task_retry_guidance_uses_canonical_recovery_shape() {
+        let value = serde_json::to_value(retry_guidance(
+            RetryClassification::UnsafeUntilReconciled,
+            "recover_run",
+        ))
+        .unwrap();
+        assert_eq!(value["classification"], "unsafeUntilReconciled");
+        assert_eq!(value["recommendedOperation"], "recover_run");
     }
 
     #[test]

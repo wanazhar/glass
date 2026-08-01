@@ -13,6 +13,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   postcondition observation.
 - Added bounded `region.extract` execution through the same revision-guarded
   Task Protocol, CLI, and MCP surfaces with source revision and provenance.
+- Standardized Task Protocol execution recovery as typed `retry` guidance with
+  explicit classifications and recommended operations across CLI, MCP, and Rust
+  results.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

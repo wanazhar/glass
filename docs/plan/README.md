@@ -153,6 +153,8 @@ Completed:
   through CLI and MCP.
 - [ir-030-057](tasks/ir-030-057.md) — execute bounded semantic region
   extraction through the guarded Task Protocol runtime.
+- [ir-030-058](tasks/ir-030-058.md) — standardize typed task retry guidance
+  across guarded execution outcomes.
 
 ## Completed plan: performance overhaul
 Status: Complete

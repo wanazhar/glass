@@ -9,6 +9,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - MCP exposes browser-free `inspectWebIr`, `validateWebIr`, `diffWebIr`, and
   `continuityWebIr` tools for bounded draft inspection and revision analysis
   without starting Chrome.
+- Browser-free MCP inspection and validation tools now map to canonical
+  `webIr.inspect` and `webIr.validate` operations with typed draft payloads and
+  bounded results.
 
 ## [0.2.3] - 2026-08-01
 

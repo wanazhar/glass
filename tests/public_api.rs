@@ -2,7 +2,8 @@ use glass::{
     DraftEntity, DraftEntityKind, EXTRACTION_CONTRACT_SCHEMA_VERSION, EvidenceSource,
     ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassWebIrDraft,
     WEB_IR_CONTINUITY_OPERATION, WEB_IR_DIFF_OPERATION, WEB_IR_DRAFT_SCHEMA_VERSION,
-    WebIrContinuityPayload, WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult,
+    WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION, WebIrContinuityPayload,
+    WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult, WebIrDraftPayload,
     WebIrInspectionResult, WebIrValidationResult,
 };
 
@@ -35,6 +36,9 @@ fn crate_root_exposes_experimental_extraction_and_web_ir_contracts() {
     let _diff_type: Option<WebIrDiffResult> = None;
     let _diff_payload_type: Option<WebIrDiffPayload> = None;
     let _continuity_payload_type: Option<WebIrContinuityPayload> = None;
+    let _draft_payload_type: Option<WebIrDraftPayload> = None;
+    assert_eq!(WEB_IR_INSPECT_OPERATION, "webIr.inspect");
+    assert_eq!(WEB_IR_VALIDATE_OPERATION, "webIr.validate");
     assert_eq!(WEB_IR_DIFF_OPERATION, "webIr.diff");
     assert_eq!(WEB_IR_CONTINUITY_OPERATION, "webIr.continuity");
     let _continuity_type: Option<WebIrContinuityResult> = None;

@@ -192,6 +192,72 @@
         },
         "entityId": "field-1"
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-validate-1",
+      "operation": "webIr.validate",
+      "payload": {
+        "draft": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            }
+          ],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-inspect-1",
+      "operation": "webIr.inspect",
+      "payload": {
+        "draft": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            }
+          ],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        }
+      }
     }
   ],
   "responses": [

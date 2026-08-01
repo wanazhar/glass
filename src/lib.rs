@@ -106,9 +106,10 @@ pub use task_compiler::{
 pub use protocol::{
     GLASS_PROTOCOL_VERSION, TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult,
     TaskValidationResult, WEB_IR_CONTINUITY_OPERATION, WEB_IR_DIFF_OPERATION,
-    WebIrContinuityPayload, WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult,
+    WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION, WebIrContinuityPayload,
+    WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult, WebIrDraftPayload,
     WebIrInspectionResult, WebIrValidationResult, compile_task_request, compile_task_result,
-    web_ir_continuity_result, web_ir_diff_result,
+    web_ir_continuity_result, web_ir_diff_result, web_ir_inspect_result, web_ir_validate_result,
 };
 
 /// Re-export the experimental bounded extraction contract for embedding callers.

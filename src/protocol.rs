@@ -16,6 +16,10 @@ const MAX_ERROR_CODE_BYTES: usize = 64;
 const MAX_MESSAGE_BYTES: usize = 512;
 const MAX_DEADLINE_MS: u64 = 15 * 60 * 1_000;
 
+/// Canonical transport operation for browser-free Web IR validation.
+pub const WEB_IR_VALIDATE_OPERATION: &str = "webIr.validate";
+/// Canonical transport operation for browser-free Web IR inspection.
+pub const WEB_IR_INSPECT_OPERATION: &str = "webIr.inspect";
 /// Canonical transport operation for browser-free Web IR revision diffs.
 pub const WEB_IR_DIFF_OPERATION: &str = "webIr.diff";
 /// Canonical transport operation for browser-free Web IR continuity checks.
@@ -37,6 +41,22 @@ impl TaskCompilePayload {
         self.task
             .validate()
             .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    }
+}
+
+/// Typed payload carried by a `webIr.validate` or `webIr.inspect` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrDraftPayload {
+    pub draft: crate::web_ir::GlassWebIrDraft,
+}
+
+impl WebIrDraftPayload {
+    /// Validate the draft graph before browser-free dispatch.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.draft
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(format!("draft: {error}")))
     }
 }
 
@@ -319,6 +339,31 @@ impl GlassRequest {
         Ok(payload)
     }
 
+    /// Decode and validate a typed `webIr.validate` payload.
+    pub fn decode_web_ir_validate(&self) -> Result<WebIrDraftPayload, ProtocolError> {
+        self.decode_web_ir_draft(WEB_IR_VALIDATE_OPERATION)
+    }
+
+    /// Decode and validate a typed `webIr.inspect` payload.
+    pub fn decode_web_ir_inspect(&self) -> Result<WebIrDraftPayload, ProtocolError> {
+        self.decode_web_ir_draft(WEB_IR_INSPECT_OPERATION)
+    }
+
+    fn decode_web_ir_draft(&self, operation: &str) -> Result<WebIrDraftPayload, ProtocolError> {
+        self.validate()?;
+        if self.operation != operation {
+            return Err(ProtocolError::InvalidField(format!(
+                "expected operation {operation}"
+            )));
+        }
+        let payload: WebIrDraftPayload =
+            serde_json::from_value(self.payload.clone()).map_err(|error| {
+                ProtocolError::InvalidField(format!("{operation} payload: {error}"))
+            })?;
+        payload.validate()?;
+        Ok(payload)
+    }
+
     /// Decode and validate a typed `webIr.diff` payload.
     pub fn decode_web_ir_diff(&self) -> Result<WebIrDiffPayload, ProtocolError> {
         self.validate()?;
@@ -364,6 +409,22 @@ pub fn compile_task_result(request: &GlassRequest) -> Result<TaskCompileResult, 
     Ok(TaskCompileResult {
         plan: compile_task_request(request)?,
     })
+}
+
+/// Validate a Web IR draft from a canonical request.
+pub fn web_ir_validate_result(
+    request: &GlassRequest,
+) -> Result<WebIrValidationResult, ProtocolError> {
+    let payload = request.decode_web_ir_validate()?;
+    Ok(WebIrValidationResult::from_draft(&payload.draft))
+}
+
+/// Inspect a Web IR draft from a canonical request.
+pub fn web_ir_inspect_result(
+    request: &GlassRequest,
+) -> Result<WebIrInspectionResult, ProtocolError> {
+    let payload = request.decode_web_ir_inspect()?;
+    Ok(WebIrInspectionResult::from_draft(&payload.draft))
 }
 
 /// Compute a bounded Web IR diff from a canonical request.
@@ -438,6 +499,34 @@ impl GlassResponse {
         })?;
         result.validate()?;
         Ok(result)
+    }
+
+    /// Decode and validate a successful bounded `webIr.validate` result.
+    pub fn decode_web_ir_validation_result(&self) -> Result<WebIrValidationResult, ProtocolError> {
+        self.decode_web_ir_result("webIr.validate")
+    }
+
+    /// Decode and validate a successful bounded `webIr.inspect` result.
+    pub fn decode_web_ir_inspection_result(&self) -> Result<WebIrInspectionResult, ProtocolError> {
+        self.decode_web_ir_result("webIr.inspect")
+    }
+
+    fn decode_web_ir_result<T>(&self, operation: &str) -> Result<T, ProtocolError>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        self.validate()?;
+        if !self.ok {
+            return Err(ProtocolError::InvalidField(format!(
+                "{operation} result requires a successful response"
+            )));
+        }
+        let value = self
+            .result
+            .clone()
+            .ok_or_else(|| ProtocolError::InvalidField(format!("{operation} result is missing")))?;
+        serde_json::from_value(value)
+            .map_err(|error| ProtocolError::InvalidField(format!("{operation} result: {error}")))
     }
 
     /// Decode and validate a successful bounded `webIr.diff` result.
@@ -738,6 +827,63 @@ mod tests {
         assert_eq!(
             response.decode_web_ir_continuity_result().unwrap(),
             continuity
+        );
+    }
+
+    #[test]
+    fn web_ir_inspect_and_validate_operations_round_trip() {
+        let draft = web_ir_draft(7, "Email");
+        let validate_request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "validate-1".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: WEB_IR_VALIDATE_OPERATION.into(),
+            payload: serde_json::json!({"draft": draft.clone()}),
+            deadline_ms: None,
+        };
+        let validation = web_ir_validate_result(&validate_request).unwrap();
+        assert!(validation.valid);
+        assert_eq!(
+            validate_request.decode_web_ir_validate().unwrap().draft,
+            draft
+        );
+        let validation_response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "validate-1".into(),
+            correlation_id: None,
+            ok: true,
+            result: Some(serde_json::to_value(&validation).unwrap()),
+            error: None,
+        };
+        assert_eq!(
+            validation_response
+                .decode_web_ir_validation_result()
+                .unwrap(),
+            validation
+        );
+
+        let inspect_request = GlassRequest {
+            operation: WEB_IR_INSPECT_OPERATION.into(),
+            request_id: "inspect-1".into(),
+            payload: serde_json::json!({"draft": draft}),
+            ..validate_request
+        };
+        let inspection = web_ir_inspect_result(&inspect_request).unwrap();
+        let inspection_response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "inspect-1".into(),
+            correlation_id: None,
+            ok: true,
+            result: Some(serde_json::to_value(&inspection).unwrap()),
+            error: None,
+        };
+        assert_eq!(
+            inspection_response
+                .decode_web_ir_inspection_result()
+                .unwrap(),
+            inspection
         );
     }
 

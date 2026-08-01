@@ -113,6 +113,8 @@ Completed:
   continuity classification.
 - [ir-030-038](tasks/ir-030-038.md) — canonical Glass protocol operations for
   Web IR revision analysis.
+- [ir-030-039](tasks/ir-030-039.md) — canonical Glass protocol operations for
+  Web IR inspection and validation.
 
 ## Completed plan: performance overhaul
 Status: Complete

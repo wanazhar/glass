@@ -133,6 +133,8 @@ Completed:
   errors.
 - [ir-030-048](tasks/ir-030-048.md) — typed canonical Task compilation
   preflight error coverage.
+- [ir-030-049](tasks/ir-030-049.md) — route CLI Task commands through canonical
+  protocol helpers.
 
 ## Completed plan: performance overhaul
 Status: Complete

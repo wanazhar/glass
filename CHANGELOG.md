@@ -32,6 +32,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   details for invalid browser-free requests.
 - Canonical protocol fixtures now cover typed `taskCompilation` preflight
   errors alongside Task validation and Web IR errors.
+- CLI Task validation and compilation now route through the same typed
+  canonical protocol helpers as MCP while preserving bounded output shapes.
 
 ## [0.2.3] - 2026-08-01
 

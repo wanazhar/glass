@@ -21,6 +21,9 @@ use crate::browser::session::{
     record_semantic_events,
 };
 use crate::capabilities::GlassCapabilityManifest;
+use crate::protocol::{
+    GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_VALIDATE_OPERATION,
+};
 use crate::reliability::{
     ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
     ReliabilityScenarioObservation, build_reliability_scorecard,
@@ -804,34 +807,47 @@ fn dispatch_snapshot(action: &SnapshotCommand, profile: &str) -> BrowserResult<(
 fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
     match action {
         TaskCommand::Validate { input } => {
-            let source = std::fs::read_to_string(input)?;
-            let task = crate::task_protocol::GlassTask::from_json(&source)?;
-            print_json(&serde_json::json!({
-                "valid": true,
-                "schemaVersion": task.schema_version,
-                "task": task.task,
-            }))?;
+            let request = read_task_request(input, TASK_VALIDATE_OPERATION)?;
+            let result = crate::protocol::validate_task_result(&request)?;
+            print_json(&result)?;
         }
         TaskCommand::Compile {
             input,
             output,
             explain,
         } => {
-            let source = std::fs::read_to_string(input)?;
-            let task = crate::task_protocol::GlassTask::from_json(&source)?;
-            let plan = crate::task_compiler::compile_task(&task)?;
+            let request = read_task_request(input, TASK_COMPILE_OPERATION)?;
+            let task = request.decode_task_compile()?.task;
+            let result = crate::protocol::compile_task_result(&request)?;
             if let Some(output) = output {
-                std::fs::write(output, serde_json::to_vec_pretty(&plan)?)?;
+                std::fs::write(output, serde_json::to_vec_pretty(&result.plan)?)?;
                 println!("compiled task to {}", output.display());
             } else {
-                print_json(&plan)?;
+                print_json(&result.plan)?;
             }
             if *explain {
-                eprintln!("{}", explain_task(&task, &plan)?);
+                eprintln!("{}", explain_task(&task, &result.plan)?);
             }
         }
     }
     Ok(())
+}
+
+fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest> {
+    let source = std::fs::read_to_string(path)?;
+    let task: Value = serde_json::from_str(&source)?;
+    let request = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id: format!("cli-{}", operation.replace('.', "-")),
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation: operation.into(),
+        payload: serde_json::json!({"task": task}),
+        deadline_ms: None,
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
@@ -1875,5 +1891,50 @@ mod tests {
         assert!(explanation.contains("scope: {\"regionName\":\"Shipping address\"}"));
         assert!(explanation.contains("inputNames=[\"city\"]"));
         assert!(!explanation.contains("Kuching-secret"));
+    }
+    #[test]
+    fn cli_task_requests_use_canonical_protocol_helpers() {
+        let path = std::env::temp_dir().join(format!(
+            "glass-cli-task-protocol-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "schemaVersion": 1,
+                "task": "region.extract",
+                "scope": {"regionName": "Checkout"},
+                "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                "risk": "readOnly"
+            }"#,
+        )
+        .unwrap();
+
+        let validate = read_task_request(&path, TASK_VALIDATE_OPERATION).unwrap();
+        assert_eq!(validate.operation, TASK_VALIDATE_OPERATION);
+        assert!(crate::protocol::validate_task_result(&validate).is_ok());
+
+        let compile = read_task_request(&path, TASK_COMPILE_OPERATION).unwrap();
+        assert_eq!(compile.operation, TASK_COMPILE_OPERATION);
+        assert!(crate::protocol::compile_task_result(&compile).is_ok());
+
+        std::fs::write(
+            &path,
+            r#"{
+                "schemaVersion": 1,
+                "task": "form.fill",
+                "scope": {"regionName": "Checkout"},
+                "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                "risk": "readOnly"
+            }"#,
+        )
+        .unwrap();
+        let invalid = read_task_request(&path, TASK_COMPILE_OPERATION).unwrap();
+        assert!(matches!(
+            crate::protocol::compile_task_result(&invalid),
+            Err(crate::protocol::ProtocolError::TaskCompilation(_))
+        ));
+
+        std::fs::remove_file(path).unwrap();
     }
 }

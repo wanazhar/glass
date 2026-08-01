@@ -56,6 +56,10 @@ The CLI and SDKs use the same operation names and payload fields. MCP keeps
 JSON-RPC success and error framing. The operation payload remains bounded and
 versioned.
 
+CLI `task validate` and `task compile` use these same typed helpers while
+preserving their existing bounded output projections; the CLI does not start
+Chrome for either operation.
+
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.
 

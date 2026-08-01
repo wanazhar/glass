@@ -223,11 +223,20 @@ impl GlassTask {
             ));
         }
 
-        if matches!(self.task, TaskKind::NavigationFollow) && !self.inputs.contains_key("url") {
-            return Err(TaskProtocolError::new(
-                "inputs.url",
-                "navigation.follow requires a bounded url input",
-            ));
+        match self.task {
+            TaskKind::NavigationFollow if !self.inputs.contains_key("url") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.url",
+                    "navigation.follow requires a bounded url input",
+                ));
+            }
+            TaskKind::NavigationSelectTab if !self.inputs.contains_key("tab") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.tab",
+                    "navigation.selectTab requires a bounded tab input",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -400,6 +409,11 @@ mod tests {
         assert_eq!(task.validate().unwrap_err().path, "inputs.url");
         task.inputs
             .insert("url".into(), "https://example.test/next".into());
+        task.validate().unwrap();
+        task.task = TaskKind::NavigationSelectTab;
+        task.inputs.clear();
+        assert_eq!(task.validate().unwrap_err().path, "inputs.tab");
+        task.inputs.insert("tab".into(), "Payment".into());
         task.validate().unwrap();
     }
 }

@@ -2537,6 +2537,29 @@ async fn browser_session_executes_scoped_form_tasks() {
         .semantic_observe(SemanticObservationLevel::Structured)
         .await
         .unwrap();
+    let select_tab_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::NavigationSelectTab,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("tab"), String::from("Payment"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let selected = session
+        .execute_form_task(&select_tab_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(selected.status, "succeeded");
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
     let extract_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::RegionExtract,

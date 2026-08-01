@@ -157,6 +157,8 @@ Completed:
   across guarded execution outcomes.
 - [ir-030-059](tasks/ir-030-059.md) — execute revision-guarded navigation
   tasks through CLI, MCP, and Rust.
+- [ir-030-060](tasks/ir-030-060.md) — execute revision-guarded semantic tab
+  selection within scoped regions.
 
 ## Completed plan: performance overhaul
 Status: Complete

@@ -64,6 +64,7 @@ impl BrowserSession {
                 | TaskKind::FormFill
                 | TaskKind::FormValidate
                 | TaskKind::FormSubmit
+                | TaskKind::NavigationSelectTab
                 | TaskKind::RegionExtract
         ) {
             return Ok(preflight_result(
@@ -122,6 +123,74 @@ impl BrowserSession {
         )];
 
         match task.task {
+            TaskKind::NavigationSelectTab => {
+                let Some(tab_name) = task.inputs.get("tab") else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "navigation.selectTab requires the semantic tab input",
+                    ));
+                };
+                let target = match unique_target(&scoped_regions, tab_name) {
+                    Ok(target) if target.role.eq_ignore_ascii_case("tab") => target,
+                    Ok(_) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            "navigation.selectTab target is not a semantic tab",
+                        ));
+                    }
+                    Err(error) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            &error.to_string(),
+                        ));
+                    }
+                };
+                let outcome = bounded(
+                    self.click_with_revision(&target.reference, observation.revision),
+                    task.limits.timeout_ms,
+                )
+                .await;
+                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let succeeded = outcome.is_ok();
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::SelectTab,
+                    if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    },
+                    (!succeeded).then(|| "tab selection outcome was not verified".into()),
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    }
+                    .into(),
+                    phase: "navigation-verification".into(),
+                    mutation_possible: true,
+                    source_revision: observation.revision,
+                    current_revision: after.revision,
+                    steps,
+                    retry: if succeeded {
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+                    } else {
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+                    },
+                    form: None,
+                    extraction: None,
+                    alerts: alert_labels(after.regions.iter()),
+                })
+            }
             TaskKind::RegionExtract => {
                 let region_id = scoped_regions
                     .first()

@@ -525,6 +525,134 @@ impl BrowserSession {
     }
 }
 
+impl BrowserSession {
+    /// Inspect or resolve one pending JavaScript dialog through the Task Protocol.
+    pub async fn execute_dialog_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if !matches!(
+            task.task,
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
+        ) {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "dialog execution only supports dialog.inspect, dialog.confirm, and dialog.cancel tasks",
+            ));
+        }
+        if plan.confirmation_required && !confirmed {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "confirmation is required before this dialog task can mutate the browser",
+            ));
+        }
+        let current_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_revision != expected_revision {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                current_revision,
+                "source revision is stale; no dialog action was dispatched",
+            ));
+        }
+        let pending = self.pending_dialog().await;
+        let mut steps = vec![step(
+            &plan,
+            TaskPlanOperation::ObserveScope,
+            "succeeded",
+            None,
+        )];
+        if task.task == TaskKind::DialogInspect {
+            steps.push(step(
+                &plan,
+                TaskPlanOperation::InspectDialog,
+                "succeeded",
+                None,
+            ));
+            return Ok(TaskExecutionResult {
+                task: task.task,
+                status: "succeeded".into(),
+                phase: "dialog-inspection".into(),
+                mutation_possible: false,
+                source_revision: expected_revision,
+                current_revision,
+                steps,
+                retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                form: None,
+                extraction: None,
+                alerts: if pending.is_some() {
+                    vec!["dialog-pending".into()]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+        if pending.is_none() {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                current_revision,
+                "no pending JavaScript dialog is available",
+            ));
+        }
+        let action = match task.task {
+            TaskKind::DialogConfirm => self.accept_dialog().await,
+            TaskKind::DialogCancel => self.dismiss_dialog().await,
+            _ => unreachable!(),
+        };
+        let still_pending = self.pending_dialog().await.is_some();
+        let succeeded = action.is_ok() && !still_pending;
+        let operation = if task.task == TaskKind::DialogConfirm {
+            TaskPlanOperation::ConfirmDialog
+        } else {
+            TaskPlanOperation::CancelDialog
+        };
+        steps.push(step(
+            &plan,
+            operation,
+            if succeeded {
+                "succeeded"
+            } else {
+                "indeterminate"
+            },
+            (!succeeded).then(|| "dialog outcome was not verified".into()),
+        ));
+        let current_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        Ok(TaskExecutionResult {
+            task: task.task,
+            status: if succeeded {
+                "succeeded"
+            } else {
+                "indeterminate"
+            }
+            .into(),
+            phase: "dialog-verification".into(),
+            mutation_possible: true,
+            source_revision: expected_revision,
+            current_revision,
+            steps,
+            retry: if succeeded {
+                retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+            } else {
+                retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+            },
+            form: None,
+            extraction: None,
+            alerts: Vec::new(),
+        })
+    }
+}
 fn step(
     plan: &TaskExecutionPlan,
     operation: TaskPlanOperation,

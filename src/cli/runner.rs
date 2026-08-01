@@ -1231,6 +1231,17 @@ async fn run_command(
                         payload.confirmed,
                     )
                     .await?
+            } else if matches!(
+                payload.task.task,
+                TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
+            ) {
+                session
+                    .execute_dialog_task(
+                        &payload.task,
+                        payload.expected_revision,
+                        payload.confirmed,
+                    )
+                    .await?
             } else {
                 session
                     .execute_form_task(&payload.task, payload.expected_revision, payload.confirmed)

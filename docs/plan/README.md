@@ -159,6 +159,8 @@ Completed:
   tasks through CLI, MCP, and Rust.
 - [ir-030-060](tasks/ir-030-060.md) — execute revision-guarded semantic tab
   selection within scoped regions.
+- [ir-030-061](tasks/ir-030-061.md) — execute guarded inspect, confirm, and
+  cancel dialog tasks through CLI, MCP, and Rust.
 
 ## Completed plan: performance overhaul
 Status: Complete

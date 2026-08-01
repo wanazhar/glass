@@ -5,6 +5,9 @@
     <form aria-label="Checkout" id="checkout">
       <label>Email <input aria-label="Email" name="email"></label>
       <button aria-label="Payment" role="tab" type="button">Payment</button>
+      <button aria-label="Confirm order" id="confirm-order" type="button">
+        Confirm order
+      </button>
       <button aria-label="Submit" type="submit">Submit</button>
       <output aria-label="Result" id="result"></output>
     </form>
@@ -12,6 +15,9 @@
       document.querySelector('#checkout').addEventListener('submit', event => {
         event.preventDefault();
         document.querySelector('#result').textContent = 'submitted';
+      });
+      document.querySelector('#confirm-order').addEventListener('click', () => {
+        setTimeout(() => window.confirm('Confirm order?'), 0);
       });
     </script>
   </body>

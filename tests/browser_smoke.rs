@@ -2560,6 +2560,39 @@ async fn browser_session_executes_scoped_form_tasks() {
         .semantic_observe(SemanticObservationLevel::Structured)
         .await
         .unwrap();
+    let confirmation_target = observation
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .find(|target| target.name == "Confirm order")
+        .expect("fixture confirmation target");
+    let dialog_opened = session.click(&confirmation_target.reference).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(session.pending_dialog().await.is_some());
+    let dialog_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::DialogConfirm,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::new(),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::RemoteIrreversible,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let confirmed_dialog = session
+        .execute_dialog_task(&dialog_task, dialog_opened.current_revision, true)
+        .await
+        .unwrap();
+    assert_eq!(confirmed_dialog.status, "succeeded");
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+
     let extract_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::RegionExtract,

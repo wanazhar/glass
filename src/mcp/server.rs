@@ -1539,6 +1539,15 @@ async fn call_tool(
             session
                 .execute_navigation_task(task, expected_revision, confirmed)
                 .await?
+        } else if matches!(
+            task.task,
+            crate::task_protocol::TaskKind::DialogInspect
+                | crate::task_protocol::TaskKind::DialogConfirm
+                | crate::task_protocol::TaskKind::DialogCancel
+        ) {
+            session
+                .execute_dialog_task(task, expected_revision, confirmed)
+                .await?
         } else {
             session
                 .execute_form_task(task, expected_revision, confirmed)

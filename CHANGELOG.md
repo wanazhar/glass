@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.4
+- MCP now exposes browser-free `inspectWebIr` and `validateWebIr` tools for
+  bounded draft inspection and graph validation without starting Chrome.
 
 ## [0.2.3] - 2026-08-01
 

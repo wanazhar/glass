@@ -51,6 +51,58 @@ pub struct TaskValidationResult {
     pub task: crate::task_protocol::TaskKind,
 }
 
+/// Bounded successful result for browser-free Web IR validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrValidationResult {
+    pub valid: bool,
+    pub schema_version: u32,
+    pub revision: u64,
+}
+
+impl WebIrValidationResult {
+    /// Build the validation result after a draft has passed graph validation.
+    pub fn from_draft(draft: &crate::web_ir::GlassWebIrDraft) -> Self {
+        Self {
+            valid: true,
+            schema_version: draft.schema_version,
+            revision: draft.revision,
+        }
+    }
+}
+
+/// Bounded summary result for browser-free Web IR inspection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrInspectionResult {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub entity_count: usize,
+    pub relationship_count: usize,
+    pub coverage: crate::extraction::EvidenceCoverage,
+    pub truncated: bool,
+    pub opaque_regions: u32,
+    pub diagnostic_count: usize,
+    pub relationship_hint_diagnostic_count: usize,
+}
+
+impl WebIrInspectionResult {
+    /// Build a bounded summary after a draft has passed graph validation.
+    pub fn from_draft(draft: &crate::web_ir::GlassWebIrDraft) -> Self {
+        Self {
+            schema_version: draft.schema_version,
+            revision: draft.revision,
+            entity_count: draft.entities.len(),
+            relationship_count: draft.relationships.len(),
+            coverage: draft.coverage.clone(),
+            truncated: draft.limits.truncated,
+            opaque_regions: draft.coverage.opaque_regions,
+            diagnostic_count: draft.diagnostics.len(),
+            relationship_hint_diagnostic_count: draft.relationship_hint_diagnostics.len(),
+        }
+    }
+}
+
 impl TaskCompileResult {
     /// Validate the embedded deterministic execution plan.
     pub fn validate(&self) -> Result<(), ProtocolError> {

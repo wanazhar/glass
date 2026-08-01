@@ -105,7 +105,7 @@ pub use task_compiler::{
 
 pub use protocol::{
     TASK_COMPILE_OPERATION, TaskCompilePayload, TaskCompileResult, TaskValidationResult,
-    compile_task_request, compile_task_result,
+    WebIrInspectionResult, WebIrValidationResult, compile_task_request, compile_task_result,
 };
 
 /// Re-export the experimental bounded extraction contract for embedding callers.

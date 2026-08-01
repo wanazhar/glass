@@ -107,6 +107,8 @@ Completed:
 - [ir-030-033](tasks/ir-030-033.md) — offline Web IR entity continuity classification.
 - [ir-030-034](tasks/ir-030-034.md) — deterministic Web IR canonical JSON CLI output.
 - [ir-030-035](tasks/ir-030-035.md) — offline Web IR validation command.
+- [ir-030-036](tasks/ir-030-036.md) — browser-free MCP Web IR inspection and
+  validation.
 
 ## Completed plan: performance overhaul
 Status: Complete

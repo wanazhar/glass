@@ -45,6 +45,7 @@
     "hover",
     "importCheckpoint",
     "inspectPage",
+    "inspectWebIr",
     "key",
     "keyDown",
     "keyUp",
@@ -84,6 +85,7 @@
     "uncheck",
     "upload",
     "validateTask",
+    "validateWebIr",
     "verify",
     "wait",
     "workflow"

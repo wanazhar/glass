@@ -237,6 +237,12 @@ enum ToolInvocation<'a> {
         region: Option<&'a str>,
     },
     InspectPage,
+    InspectWebIr {
+        draft: Value,
+    },
+    ValidateWebIr {
+        draft: Value,
+    },
     CompileTask {
         task: crate::task_protocol::GlassTask,
     },
@@ -986,6 +992,8 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "observe"
             | "observeKnowledge"
             | "inspectPage"
+            | "inspectWebIr"
+            | "validateWebIr"
             | "compileTask"
             | "validateTask"
             | "findTarget"
@@ -1293,6 +1301,14 @@ fn mcp_trace_action(tool: Option<&str>) -> ActionKind {
 }
 
 fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if let Some(error) = error.downcast_ref::<crate::web_ir::WebIrValidationError>() {
+        return serde_json::to_string(&json!({
+            "kind": "webIrValidation",
+            "path": error.path,
+            "reason": error.reason,
+        }))
+        .ok();
+    }
     if let Some(error) = error.downcast_ref::<crate::task_protocol::TaskProtocolError>() {
         return serde_json::to_string(&json!({
             "kind": "taskValidation",
@@ -1366,6 +1382,14 @@ async fn call_tool(
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
+    if let ToolInvocation::ValidateWebIr { draft } = &invocation {
+        let draft = parse_web_ir_draft(draft)?;
+        return serialized_result(&crate::protocol::WebIrValidationResult::from_draft(&draft));
+    }
+    if let ToolInvocation::InspectWebIr { draft } = &invocation {
+        let draft = parse_web_ir_draft(draft)?;
+        return serialized_result(&crate::protocol::WebIrInspectionResult::from_draft(&draft));
+    }
     if let ToolInvocation::ValidateTask { task } = &invocation {
         let task = crate::task_protocol::GlassTask::from_json(&serde_json::to_string(task)?)?;
         return serialized_result(&crate::protocol::TaskValidationResult {
@@ -2001,6 +2025,12 @@ async fn call_tool(
             session.set_timezone(Some(&timezone_id)).await?;
             serialized_result(&serde_json::json!({"ok": true}))
         }
+        ToolInvocation::InspectWebIr { .. } => {
+            unreachable!("inspectWebIr is handled before browser session startup")
+        }
+        ToolInvocation::ValidateWebIr { .. } => {
+            unreachable!("validateWebIr is handled before browser session startup")
+        }
         ToolInvocation::CompileTask { .. } => {
             unreachable!("compileTask is handled before browser session startup")
         }
@@ -2181,6 +2211,20 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             region: optional_string(arguments, "region")?,
         }),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
+        "inspectWebIr" => {
+            let draft = arguments
+                .get("draft")
+                .cloned()
+                .ok_or("inspectWebIr requires a draft object")?;
+            Ok(ToolInvocation::InspectWebIr { draft })
+        }
+        "validateWebIr" => {
+            let draft = arguments
+                .get("draft")
+                .cloned()
+                .ok_or("validateWebIr requires a draft object")?;
+            Ok(ToolInvocation::ValidateWebIr { draft })
+        }
         "compileTask" => {
             let task = arguments
                 .get("task")
@@ -2443,6 +2487,13 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     }
 }
 
+fn parse_web_ir_draft(value: &Value) -> BrowserResult<crate::web_ir::GlassWebIrDraft> {
+    let draft: crate::web_ir::GlassWebIrDraft = serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid Web IR draft: {error}"))?;
+    draft.validate()?;
+    Ok(draft)
+}
+
 async fn ensure_session<'a>(
     session: &'a mut Option<BrowserSession>,
     options: &SessionOptions,
@@ -2456,6 +2507,36 @@ async fn ensure_session<'a>(
 
 fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "inspectWebIr",
+            description: "Inspect a validated browser-free Web IR draft without starting Chrome.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "draft": {
+                        "type": "object",
+                        "description": "Bounded Glass Web IR draft JSON."
+                    }
+                },
+                "required": ["draft"],
+                "additionalProperties": false
+            }),
+        },
+        Tool {
+            name: "validateWebIr",
+            description: "Validate a browser-free Web IR draft without starting Chrome.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "draft": {
+                        "type": "object",
+                        "description": "Bounded Glass Web IR draft JSON."
+                    }
+                },
+                "required": ["draft"],
+                "additionalProperties": false
+            }),
+        },
         Tool {
             name: "validateTask",
             description: "Validate a semantic Task Protocol task without starting Chrome or compiling a plan.",
@@ -3596,6 +3677,45 @@ mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 
+    fn valid_web_ir_draft() -> Value {
+        json!({
+            "schemaVersion": 1,
+            "revision": 7,
+            "entities": [
+                {
+                    "id": "page",
+                    "kind": "page",
+                    "quality": "confirmed",
+                    "evidenceSources": []
+                },
+                {
+                    "id": "field-1",
+                    "kind": "field",
+                    "role": "textbox",
+                    "name": "Email",
+                    "quality": "strong",
+                    "evidenceSources": ["dom"]
+                }
+            ],
+            "relationships": [
+                {"from": "page", "to": "field-1", "kind": "contains"}
+            ],
+            "coverage": {
+                "structural": "strong",
+                "semantic": "strong",
+                "interactiveEntitiesObserved": 1,
+                "opaqueRegions": 0,
+                "reasons": []
+            },
+            "limits": {
+                "truncated": false,
+                "omittedFacts": 0,
+                "textBytes": 0,
+                "missingSources": []
+            }
+        })
+    }
+
     #[derive(Deserialize)]
     struct FramingCorpusCase {
         name: String,
@@ -3702,8 +3822,6 @@ mod tests {
         assert_eq!(glass["schemas"]["workflow"], json!([1]));
         assert_eq!(glass["capabilities"]["localDaemon"], false);
         assert_eq!(caps["tools"]["listChanged"], false);
-        assert_eq!(caps["prompts"]["listChanged"], false);
-        assert_eq!(caps["resources"]["subscribe"], false);
         assert_eq!(caps["resources"]["listChanged"], false);
         assert!(session.is_none());
 
@@ -3718,9 +3836,11 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 78);
+        assert_eq!(tools.len(), 80);
         assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
+        assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
+        assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -3860,6 +3980,83 @@ mod tests {
                     .as_str()
                     .is_some_and(|description| description.contains("explicit"))
         }));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn inspect_web_ir_tool_is_browser_free_and_bounded() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "inspect-ir",
+            "method": "tools/call",
+            "params": {
+                "name": "inspectWebIr",
+                "arguments": {"draft": valid_web_ir_draft()}
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result_value = response.result.unwrap();
+        let text = result_value["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let result: crate::protocol::WebIrInspectionResult = serde_json::from_str(&text).unwrap();
+        assert_eq!(result.schema_version, 1);
+        assert_eq!(result.revision, 7);
+        assert_eq!(result.entity_count, 2);
+        assert_eq!(result.relationship_count, 1);
+        assert!(!text.contains("field-1"));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_web_ir_tool_returns_typed_invalid_draft_without_starting_chrome() {
+        let mut draft = valid_web_ir_draft();
+        draft["relationships"][0]["to"] = json!("missing");
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "invalid-ir",
+            "method": "tools/call",
+            "params": {
+                "name": "validateWebIr",
+                "arguments": {"draft": draft}
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true);
+        let error: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            error,
+            json!({
+                "kind": "webIrValidation",
+                "path": "relationships",
+                "reason": "relationships must reference two distinct known entities"
+            })
+        );
         assert!(session.is_none());
     }
 

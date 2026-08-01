@@ -140,6 +140,8 @@ A tool may request one bounded failure-trace content item with
 | `batch` | Run a bounded fixed, chain, or unguarded batch. |
 | `compileTask` | Validate a semantic Task Protocol v1 task and return a browser-free execution plan. |
 | `validateTask` | Validate a semantic Task Protocol v1 task without compiling or starting Chrome. |
+| `inspectWebIr` | Return bounded summary metadata for a validated browser-free Web IR draft. |
+| `validateWebIr` | Validate a browser-free Web IR draft without starting Chrome. |
 | `wait` | Wait for one typed condition. |
 | `diagnostics` | Return bounded redacted console and network data. |
 | `acceptDialog`, `dismissDialog` | Resolve the open JavaScript dialog. |
@@ -178,6 +180,48 @@ The successful MCP content item contains JSON shaped like:
 For a valid JSON task that fails Task Protocol validation, the tool returns
 `isError: true` with a bounded `taskValidation` error containing `path` and
 `reason`.
+
+### Inspect and validate a Web IR draft without starting Chrome
+
+`inspectWebIr` and `validateWebIr` consume a bounded draft JSON object and never
+start Chrome, acquire a mutation lease, or dispatch browser actions. Both tools
+validate graph invariants first. `validateWebIr` returns only schema and revision
+metadata:
+
+```json
+{
+  "valid": true,
+  "schemaVersion": 1,
+  "revision": 7
+}
+```
+
+`inspectWebIr` returns bounded summary metadata without exposing entity IDs,
+relationships, or page content:
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 7,
+  "entityCount": 2,
+  "relationshipCount": 1,
+  "coverage": {
+    "structural": "strong",
+    "semantic": "strong",
+    "interactiveEntitiesObserved": 1,
+    "opaqueRegions": 0,
+    "reasons": []
+  },
+  "truncated": false,
+  "opaqueRegions": 0,
+  "diagnosticCount": 0,
+  "relationshipHintDiagnosticCount": 0
+}
+```
+
+Invalid drafts return `isError: true` with a bounded `webIrValidation` object
+containing `path` and `reason`. These tools are intended for offline inspection
+and protocol conformance; they do not turn a draft into browser authority.
 
 ### Compile a task without starting Chrome
 

@@ -146,7 +146,7 @@ def main() -> None:
         "README.md": "| 0.2.4 | Current published release |",
         "CHANGELOG.md": "## [Unreleased] — 0.2.5",
         "docs/release-checklist.md": "next crates.io release, `0.2.5`",
-        "docs/plan/analysis/release-audit-028.md": "`0.2.4 published; crates-only local",
+        "docs/plan/analysis/release-audit-028.md": "`0.2.4 published; source-only GitHub Release",
     }
     for relative_path, expected in required_text.items():
         text = (ROOT / relative_path).read_text(encoding="utf-8")

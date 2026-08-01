@@ -30,8 +30,8 @@ The support table describes declared targets and target-specific validation
 requirements. Native runtime certification is not implied by a source build.
 See the [cross-platform feature parity
 matrix](docs/feature-parity.md) for implementation inventory and the [release
-evidence guide](docs/release-evidence.md) for the crates-only publication
-boundary.
+evidence guide](docs/release-evidence.md) for the crates.io package and
+source-only GitHub Release boundary.
 
 ## Install the local checkout
 

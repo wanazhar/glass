@@ -12,7 +12,7 @@ REQUIRED_MARKERS = {
     "docs/release-checklist.md": [
         "current published release is `glass-browser` version `0.2.4`",
         "next crates.io release, `0.2.5`",
-        "GitHub release binaries, checksum manifests, Sigstore bundles",
+        "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
         "published 0.2.4 baseline",
@@ -22,12 +22,12 @@ REQUIRED_MARKERS = {
     "docs/release-evidence.md": [
         "`feature-parity.json`",
         "cargo publish --locked --dry-run",
-        "No GitHub binary release is expected",
+        "no native binary assets are expected",
     ],
     "docs/plan/analysis/release-audit-028.md": [
         "`0.2.0` publication boundary has been crossed",
-        "`0.2.4 published; crates-only local",
-        "`0.2.5 local development; not ready for public release",
+        "`0.2.4 published; source-only GitHub Release",
+        "`0.2.5 local development; not ready for",
     ],
 }
 FORBIDDEN_MARKERS = (

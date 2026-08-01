@@ -19,7 +19,8 @@ Observed in the source checkout before this plan:
 - Checkpoint export is a bounded browser-state artifact, but it is not the issue's redacted, versioned session snapshot contract or snapshot CLI family.
 - Workflow authoring exists, but the five requested starter templates and template commands are not exposed.
 - Large responsibility clusters remain in `src/browser/session/types.rs`, `action.rs`, `authoring.rs`, and `workflow.rs`, and public exports require an ownership audit.
-- The crates-only boundary is documented; TypeScript and Python clients are repository clients and are not published as part of the crate.
+- The crates.io package boundary is documented; TypeScript and Python clients are
+  repository clients and are not published as part of the crate.
 
 ## Phase plan
 
@@ -53,7 +54,8 @@ Observed in the source checkout before this plan:
 - Session snapshot -> redaction/bounds validator -> local snapshot store -> inspect/diff/purge commands.
 - Workflow templates -> authoring parser/compiler -> deterministic fixture compilation.
 - Rust public contracts -> TypeScript/Python protocol types and conformance fixtures.
-- Package metadata/docs/examples -> cargo package/docs.rs and crates-only release checks.
+- Package metadata/docs/examples -> cargo package/docs.rs and crates.io package
+  release checks.
 
 ## Non-goals
 

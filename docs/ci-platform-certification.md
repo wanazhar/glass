@@ -1,6 +1,7 @@
 # Platform support and target certification
 
-The release path is crates-only. It does not build or publish native release
+The release path publishes the crates.io package and a source-only GitHub
+Release containing generated notes. It does not build or publish native release
 binaries. Cross-compilation or source-level CI proves that code can build; it
 does not prove browser launch, terminal startup, Unix-socket behavior,
 filesystem permissions, or native sandbox behavior on another OS.
@@ -30,7 +31,7 @@ installed Chromium runtime. Other target rows require their own native checks.
 
 Record the target environment, Rust target, browser version, and commands when
 refreshing the evidence. See [Release evidence](release-evidence.md) for the
-crates-only publication boundary.
+crates.io package and GitHub Release boundaries.
 
 ## Local reproduction
 

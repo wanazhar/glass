@@ -75,8 +75,8 @@ unreleased development build.
   declared targets and target-specific validation boundaries.
 - [Recorded platform evidence](local-platform.md) — Linux ARM64 validation
   environment, browser, sandbox, and crates.io dry-run checks.
-- [Release evidence](release-evidence.md) — crates-only validation and
-  publication boundaries.
+- [Release evidence](release-evidence.md) — crates.io package and source-only
+  GitHub Release validation and publication boundaries.
 - [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.
 
 ## Design

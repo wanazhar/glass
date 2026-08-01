@@ -22,8 +22,9 @@ process.
 | macOS arm64 | `glass-macos-aarch64` | `d7140a047ee535b9fdc4917e5ce157417ff7587dbe1c7fe348a8ee213a80b223` |
 
 The next small release was `0.2.1`. From this release onward, versioning,
-annotated tags, and crates.io publication remain in scope; native GitHub
-release binaries, checksum manifests, and Sigstore bundles do not.
+annotated tags, crates.io publication, and source-only GitHub Release records
+remain in scope; native GitHub release binaries, checksum manifests, and
+Sigstore bundles do not.
 
 The machine-readable [feature parity inventory](../../feature-parity.json)
 records the current implementation and target status for this release
@@ -84,8 +85,9 @@ Additional Linux ARM64 source-checkout evidence is available:
 - Linux bubblewrap extension sandbox, redaction, permission, and lifecycle
   tests pass in the recorded Linux ARM64 validation environment.
 
-The crates-only workflow validates the source checkout and crates.io package
-shape. It does not create or upload native binaries.
+The release workflow validates the source checkout and crates.io package shape,
+then creates a source-only GitHub Release with generated notes. It does not
+create or upload native binaries.
 
 ## Release blockers
 
@@ -103,9 +105,10 @@ The 0.2.1 release plan carries these remaining items:
 ## Publication boundary
 
 The `0.2.0` publication boundary has been crossed, followed by the
-crates-only `0.2.1` publication. Do not upload binaries. This local audit does
-not close issue #28; its remote definition still needs to reflect the
-crates-only release policy before its status can be reconsidered.
+`0.2.1` crates.io package and source-only GitHub Release. Do not upload
+binaries. This historical audit does not close issue #28; its remote definition
+still needs to reflect the release policy before its status can be reconsidered.
 
-The correct current labels are: `0.2.4 published; crates-only local
-certification` and `0.2.5 local development; not ready for public release`.
+The correct current labels are: `0.2.4 published; source-only GitHub Release
+record and local certification` and `0.2.5 local development; not ready for
+public release`.

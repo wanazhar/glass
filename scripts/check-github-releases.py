@@ -6,9 +6,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 
 REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "wanazhar/glass")
+RELEASE_PROPAGATION_ATTEMPTS = 10
+RELEASE_PROPAGATION_DELAY_SECONDS = 3
 
 
 def gh_names(endpoint: str, query: str) -> set[str]:
@@ -37,17 +40,21 @@ def main() -> None:
         for name in gh_names("tags?per_page=100", ".[] | .name")
         if name.startswith("v")
     }
-    releases = gh_names(
-        "releases?per_page=100",
-        ".[] | select(.draft == false and .prerelease == false) | .tag_name",
-    )
-    missing = sorted(tags - releases)
-    if missing:
-        raise SystemExit(
-            "GitHub release check failed; missing published releases for: "
-            + ", ".join(missing)
+    for attempt in range(RELEASE_PROPAGATION_ATTEMPTS):
+        releases = gh_names(
+            "releases?per_page=100",
+            ".[] | select(.draft == false and .prerelease == false) | .tag_name",
         )
-    print(f"GitHub release records validated: {len(tags)} version tags")
+        missing = sorted(tags - releases)
+        if not missing:
+            print(f"GitHub release records validated: {len(tags)} version tags")
+            return
+        if attempt + 1 < RELEASE_PROPAGATION_ATTEMPTS:
+            time.sleep(RELEASE_PROPAGATION_DELAY_SECONDS)
+    raise SystemExit(
+        "GitHub release check failed; missing published releases for: "
+        + ", ".join(missing)
+    )
 
 
 if __name__ == "__main__":

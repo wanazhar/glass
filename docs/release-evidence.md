@@ -1,11 +1,11 @@
 # Release evidence
 
-The 0.2.5 development path publishes the `glass-browser` crate on crates.io
+The 0.2.6 development path publishes the `glass-browser` crate on crates.io
 and creates a source-only GitHub Release with generated notes. The project does
 not publish native GitHub release binaries, installers, or updater
 infrastructure.
 
-The published 0.2.4 release and 0.2.5 development work retain bounded MCP
+The published 0.2.5 release and 0.2.6 development work retain bounded MCP
 response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
@@ -51,8 +51,8 @@ OS. The current recorded result is in
 
 ## Publication boundary
 
-The `glass-browser` `0.2.4` crate is the current published release, and
-`v0.2.4` has a matching GitHub Release entry. The 0.2.5 changes are not
+The `glass-browser` `0.2.5` crate is the current published release, and
+`v0.2.5` has a matching GitHub Release entry. The 0.2.6 changes are not
 published until explicitly approved. Its eventual annotated tag must have both
 a crates.io package publication and a matching non-draft GitHub Release before
 the release is considered complete. No native binary assets are expected; this

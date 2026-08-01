@@ -7,8 +7,8 @@ Use this checklist for each public release.
 The current published release is `glass-browser` version `0.2.4`. This
 checklist is being used for the next crates.io release, `0.2.5`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
-only Linux arm64 has been verified on the current machine. Windows is
-unsupported.
+only Linux ARM64 evidence is currently recorded. Other declared targets
+require their own native validation. Windows is unsupported.
 
 Versioning and annotated `vX.Y.Z` tags remain part of the process. Starting
 with 0.2.1, crates.io is the only publication channel. GitHub release binaries, checksum manifests, Sigstore bundles, and the npm native launcher are not release deliverables.
@@ -55,17 +55,17 @@ GLASS_PREVIOUS_VERSION=0.2.4 scripts/smoke-clean-install.sh
 
 Then complete these release checks:
 
-- [x] Run the real-browser smoke test on the current Linux ARM64 machine with
-      its installed Chromium binary.
-- [x] Record the host OS, architecture, Rust target, browser version, and
-      commands used for the local platform check.
-- [x] Keep other declared targets labeled unverified unless their own native
+- [x] Run the real-browser smoke test in the recorded Linux ARM64 validation
+      environment.
+- [x] Record the target environment, architecture, Rust target, browser
+      version, and commands used for the platform check.
+- [x] Keep other declared targets labeled uncertified unless their own native
       environments are tested separately.
 - [x] Inspect `cargo package --list` and the unpacked package.
 - [x] Review dependency, license, and vulnerability JSON reports.
 - [ ] Run a clean-machine crates.io install and upgrade test after publication.
 
-The local browser and package checks are evidence for this machine only.
+The browser and package checks are evidence for the tested environment only.
 
 ## Publish
 
@@ -73,7 +73,7 @@ The local browser and package checks are evidence for this machine only.
 - [x] Create a signed annotated tag such as `v0.2.4`.
 - [x] Publish `glass-browser` from the tagged commit with `cargo publish
       --locked` after the package checks passed and publication was approved.
-- [x] Include the local Linux ARM64 verification boundary and known
+- [x] Include the Linux ARM64 validation boundary and known
       limitations in the 0.2.4 release notes or changelog.
 - [x] Verify installation and upgrade smoke checks for the published release.
 - [x] Restore an empty `Unreleased` changelog section after publication.

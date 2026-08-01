@@ -71,10 +71,10 @@ unreleased development build.
 
 - [Contributing](../CONTRIBUTING.md) — development workflow and checks.
 - [Release checklist](release-checklist.md) — repeatable `0.x` release process.
-- [Platform support and local certification](ci-platform-certification.md) —
-  declared targets and the local verification boundary.
-- [Local platform evidence](local-platform.md) — the current Linux ARM64 host,
-  browser, sandbox, and crates.io dry-run checks.
+- [Platform support and target certification](ci-platform-certification.md) —
+  declared targets and target-specific validation boundaries.
+- [Recorded platform evidence](local-platform.md) — Linux ARM64 validation
+  environment, browser, sandbox, and crates.io dry-run checks.
 - [Release evidence](release-evidence.md) — crates-only validation and
   publication boundaries.
 - [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.

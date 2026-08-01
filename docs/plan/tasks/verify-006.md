@@ -62,13 +62,14 @@ Demonstrate that the new contracts work together and record measurable latency, 
 - The benchmark guide describes comparable-run controls and the release-size
   artifact without treating a local sample as a market-wide result.
 
-## Local verification record (non-comparative)
+## Recorded benchmark environment (non-comparative)
 
-On 2026-07-11, the local fixture benchmark ran on Linux/aarch64 with ten normal
-iterations and five expensive-operation iterations. These values are a delivery
-sanity check, not a cross-machine claim or a release target.
+On 2026-07-11, the fixture benchmark ran in a Linux/aarch64 validation
+environment with ten normal iterations and five expensive-operation iterations.
+These values are a delivery sanity check, not a cross-environment claim or a
+release target.
 
-| Measurement | Local result |
+| Measurement | Recorded result |
 |---|---:|
 | Cold owned-session start | 757.22 ms |
 | Fresh compact observation, average | 2.35 ms |

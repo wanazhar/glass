@@ -1,8 +1,7 @@
 # Extensions
 
-Glass defines a versioned extension manifest and a bounded process host. The
-extension capability is disabled by default. It is currently available only as
-an explicit experimental opt-in on the locally verified Linux ARM64 sandbox.
+The extension capability is disabled by default. It is available only through
+an explicit experimental opt-in when the required native sandbox is available.
 
 See [Experimental capabilities](experimental-capabilities.md) for the full
 opt-in, status, safety, and compatibility guidance.
@@ -93,7 +92,7 @@ each process to exit before it returns. This does not make an extension
 trusted. Redaction, native sandbox, and cross-transport checks must also pass
 before Glass enables the capability.
 
-The local verification command for the current host is:
+To verify the native sandbox in a target environment, run:
 
 ```console
 GLASS_EXTENSION_SANDBOX_E2E=1 \
@@ -102,5 +101,5 @@ cargo test --lib extensions::tests::sandboxed_reference_extensions_pass_native_g
 ```
 
 This verifies the native sandbox on Linux ARM64 only. The capability remains
-`blockedBySecurityGate` for any target whose native sandbox has not been
-verified separately.
+`blockedBySecurityGate` for any target that has not passed its own native
+sandbox check.

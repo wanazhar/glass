@@ -1,4 +1,4 @@
-# Platform support and local certification
+# Platform support and target certification
 
 The release path is crates-only. It does not build or publish native release
 binaries. Cross-compilation or source-level CI proves that code can build; it
@@ -7,8 +7,8 @@ filesystem permissions, or native sandbox behavior on another OS.
 
 ## Declared target inventory
 
-The feature parity file is a declared implementation inventory, not a claim
-that these targets have been verified on the current machine:
+The feature parity file is a declared implementation inventory. It does not
+certify these targets by itself:
 
 | Target | Native runner | Rust target | Browser source |
 |---|---|---|---|
@@ -22,14 +22,14 @@ environment when the hosted ARM64 runner is unavailable. That evidence is a
 separate Linux ARM64 row. It must not replace the Linux x86-64 or macOS rows,
 and it must record the installed Chromium package and version.
 
-## Current local evidence
+## Recorded Linux ARM64 evidence
 
-The current development machine is Linux ARM64. Its local support claim is
-limited to the checked-out source, its Rust target, and the installed Chromium
-runtime. The other rows above remain unverified here.
+A native Linux ARM64 check has been recorded for one validation environment.
+Its scope is the checked-out source, the matching Rust target, and the
+installed Chromium runtime. Other target rows require their own native checks.
 
-Record the host, Rust target, browser version, and commands when refreshing
-the local evidence. See [Release evidence](release-evidence.md) for the
+Record the target environment, Rust target, browser version, and commands when
+refreshing the evidence. See [Release evidence](release-evidence.md) for the
 crates-only publication boundary.
 
 ## Local reproduction
@@ -50,5 +50,5 @@ GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threa
 ```
 
 Do not mark another target `certified` from a cross-compiled binary or
-emulated browser run alone. The current local result is a Linux ARM64 result,
-not a cross-platform release claim.
+emulated browser run alone. A Linux ARM64 check is not a cross-platform release
+claim.

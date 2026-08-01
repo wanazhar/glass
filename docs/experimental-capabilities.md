@@ -40,7 +40,7 @@ glass --experimental-extensions --mcp
 The flag is not persistent. Omitting it on the next process start disables the
 experimental capability again. Glass prints a warning when the flag is used.
 
-On the current development machine, the flag reports extensions as
+On Linux ARM64, the flag reports extensions as
 `experimental` only when all of these conditions hold:
 
 - the host is Linux ARM64;

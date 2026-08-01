@@ -24,16 +24,16 @@ Each target status uses one of these values:
 | `unsupported` | The target does not support the capability. |
 
 The current matrix intentionally marks ordinary cross-platform capabilities as
-`shippedUncertified`, not unsupported. This is an inventory status, not a local
-support claim. Native extensions are `experimental` only for explicit opt-in on
-the locally verified Linux ARM64 sandbox and remain `blockedBySecurityGate` on
-the other declared targets. Windows is outside this matrix and remains
-unsupported.
+`shippedUncertified`, not unsupported. This is an inventory status, not a
+product support claim. Native extensions are `experimental` only for explicit
+opt-in on Linux ARM64, where the required native sandbox policy is defined,
+and remain `blockedBySecurityGate` on the other declared targets. Windows is
+outside this matrix and remains unsupported.
 
 The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The
 matrix is evidence inventory, not a claim that every declared target has passed
 the complete native verification suite.
 
-See [platform support and local certification](ci-platform-certification.md)
-for the local verification boundary.
+See [platform support and target certification](ci-platform-certification.md)
+for target-specific validation requirements.

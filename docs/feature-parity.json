@@ -45,7 +45,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared browser-backed implementation; browser verification is recorded only for the current local host."
+      "reason": "Shared browser-backed implementation; native runtime certification is target-specific and is not implied by source inventory."
     },
     {
       "id": "semantic-observations-and-diffs",
@@ -84,7 +84,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent implementation; complete runtime verification remains incomplete outside the local host."
+      "reason": "Platform-independent implementation; this inventory does not claim complete runtime certification across targets."
     },
     {
       "id": "persistent-knowledge",
@@ -136,7 +136,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Shared Unix-socket implementation; native lifecycle verification remains incomplete outside the local host."
+      "reason": "Shared Unix-socket implementation; native lifecycle certification is target-specific and incomplete for some declared targets."
     },
     {
       "id": "rust-library",
@@ -149,7 +149,7 @@
         "macos-x86_64": "shippedUncertified",
         "macos-arm64": "shippedUncertified"
       },
-      "reason": "Platform-independent public library; compatibility evidence remains incomplete outside the local host."
+      "reason": "Platform-independent public library; cross-target compatibility evidence is incomplete."
     },
     {
       "id": "mcp-stdio",
@@ -214,7 +214,7 @@
         "macos-x86_64": "blockedBySecurityGate",
         "macos-arm64": "blockedBySecurityGate"
       },
-      "reason": "Experimental opt-in is available only on the locally verified Linux ARM64 sandbox; all other targets remain blocked."
+      "reason": "Experimental opt-in is limited to Linux ARM64 by the native sandbox policy; other targets remain blocked pending matching sandbox certification."
     }
   ]
 }

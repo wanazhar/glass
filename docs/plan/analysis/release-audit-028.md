@@ -34,19 +34,19 @@ open remote issue is not treated as completed only because local code exists.
 
 ## Summary
 
-| Issue | Local state | Release state |
+| Issue | Repository state | Release state |
 |---|---|---|
-| #21 Transactional Workflow Runtime | Core workflow, retry, checkpoint, trace, resume, and authoring paths are implemented and tested locally. | Partial. The full public workflow fixture matrix and public adapters are not certified. |
-| #22 Semantic Observation Engine | Versioned levels, regions, revisions, diffs, schemas, and cross-interface tests exist locally. | Partial. Cross-platform and public evidence are not complete. |
-| #23 Intent Resolution Engine | Versioned requests, evidence, policies, stale checks, guarded execution, workflow use, and TUI review exist locally. | Partial. Full benchmark and public adapter evidence are not complete. |
-| #24 Persistent Browser Knowledge | Scoped records, lifecycle, redaction, CLI/MCP operations, schemas, and scorecard fixtures exist locally. | Partial. Other-OS runtime execution remains unverified. |
-| #25 Workflow Authoring System | YAML/JSON compilation, diagnostics, preview, diff, semantic recording, and client smoke paths exist locally. | Partial. Other-OS runtime execution remains unverified. |
-| #26 Reliability Laboratory | Scenario, fixture, replay, forbidden-outcome, and fail-closed release gate foundations exist locally. | Partial. The public scorecard is not published. |
-| #27 Stable Runtime Platform | Protocol v1, capability negotiation, isolated daemon sessions, leases, recovery, SDK guards, TUI inventory, extension host foundations, lifecycle tests, and executable client/transport conformance exist locally. | Blocked. Extension capability is disabled until the native sandbox gate passes on the release environments. |
+| #21 Transactional Workflow Runtime | Core workflow, retry, checkpoint, trace, resume, and authoring paths are implemented and tested in the repository. | Partial. The full public workflow fixture matrix and public adapters are not certified. |
+| #22 Semantic Observation Engine | Versioned levels, regions, revisions, diffs, schemas, and cross-interface tests exist in the repository. | Partial. Cross-platform and public evidence are not complete. |
+| #23 Intent Resolution Engine | Versioned requests, evidence, policies, stale checks, guarded execution, workflow use, and TUI review exist in the repository. | Partial. Full benchmark and public adapter evidence are not complete. |
+| #24 Persistent Browser Knowledge | Scoped records, lifecycle, redaction, CLI/MCP operations, schemas, and scorecard fixtures exist in the repository. | Partial. Other-target runtime execution remains uncertified. |
+| #25 Workflow Authoring System | YAML/JSON compilation, diagnostics, preview, diff, semantic recording, and client smoke paths exist in the repository. | Partial. Other-target runtime execution remains uncertified. |
+| #26 Reliability Laboratory | Scenario, fixture, replay, forbidden-outcome, and fail-closed release gate foundations exist in the repository. | Partial. The public scorecard is not published. |
+| #27 Stable Runtime Platform | Protocol v1, capability negotiation, isolated daemon sessions, leases, recovery, SDK guards, TUI inventory, extension host foundations, lifecycle tests, and executable client/transport conformance exist in the repository. | Blocked. Extension capability is disabled until the native sandbox gate passes on the release environments. |
 
-## Evidence that passes locally
+## Recorded evidence
 
-The current local checkout has:
+The repository contains:
 
 - synchronized 0.2.1 package versions;
 - passing Rust tests, Clippy, rustdoc, audit, and dependency checks on Linux;
@@ -57,20 +57,20 @@ The current local checkout has:
 - bounded extension host and native-sandbox fail-closed tests; and
 - documentation that labels local-only features and unsupported Windows use.
 
-Linux ARM64 evidence is now available on the current host:
+Linux ARM64 evidence is available for one recorded validation environment:
 
-- host target: `aarch64-unknown-linux-gnu`;
+- target: `aarch64-unknown-linux-gnu`;
 - browser: system Chromium `150.0.7871.128`;
-- host: Linux `aarch64`, Rust `aarch64-unknown-linux-gnu`;
+- environment: Linux `aarch64`, Rust `aarch64-unknown-linux-gnu`;
 - browser smoke: `GLASS_E2E=1 GLASS_DISABLE_CHROME_SANDBOX=1 cargo test
   --test browser_smoke --locked -- --nocapture --test-threads=1`;
 - result: 11 browser smoke tests passed on 2026-07-30.
 
-This is local Linux ARM64 evidence. It does not replace the Linux x86-64 or
-macOS release runners, and it does not prove a clean published artifact.
+This evidence does not replace the Linux x86-64 or macOS release runners, and
+it does not prove a clean published artifact.
 
-These results prove local behavior only. They do not certify another operating
-system or a future published crate.
+These results describe the recorded Linux ARM64 environment only. They do not
+certify another operating system or a future published crate.
 
 Additional Linux ARM64 source-checkout evidence is available:
 
@@ -82,7 +82,7 @@ Additional Linux ARM64 source-checkout evidence is available:
 - a temporary Cargo home installed published `0.1.18`, installed the packaged
   `0.2.0` crate, and upgraded the same installation root successfully; and
 - Linux bubblewrap extension sandbox, redaction, permission, and lifecycle
-  tests pass on this host.
+  tests pass in the recorded Linux ARM64 validation environment.
 
 The crates-only workflow validates the source checkout and crates.io package
 shape. It does not create or upload native binaries.

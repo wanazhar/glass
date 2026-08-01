@@ -13,10 +13,10 @@ Install the executable with Cargo, then use the safe observe → guarded action
 
 | Item | Status |
 |---|---|
-| Linux x86-64 | Declared target; not verified on this machine |
-| Linux arm64 | Locally verified target; use system Chromium or `--chrome-path` |
-| macOS x86-64 | Declared target; not verified on this machine |
-| macOS arm64 | Declared target; not verified on this machine |
+| Linux x86-64 | Declared target; native runtime certification pending |
+| Linux arm64 | Declared target; native runtime certification pending |
+| macOS x86-64 | Declared target; native runtime certification pending |
+| macOS arm64 | Declared target; native runtime certification pending |
 | Windows | Unsupported |
 | 0.2.5 | In development |
 | 0.2.4 | Current published release |
@@ -26,8 +26,9 @@ Install the executable with Cargo, then use the safe observe → guarded action
 
 The command-line interface (CLI), terminal user interface (TUI), Model
 Context Protocol (MCP) server, and Rust library use the same session runtime.
-The support table distinguishes declared targets from the Linux ARM64 machine
-that has been verified locally. See the [cross-platform feature parity
+The support table describes declared targets and target-specific validation
+requirements. Native runtime certification is not implied by a source build.
+See the [cross-platform feature parity
 matrix](docs/feature-parity.md) for implementation inventory and the [release
 evidence guide](docs/release-evidence.md) for the crates-only publication
 boundary.

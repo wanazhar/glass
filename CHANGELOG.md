@@ -105,14 +105,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Explicit capability status reporting distinguishes available, policy-disabled,
   uncertified, and security-gated surfaces across CLI and MCP manifests.
 - Experimental extension opt-in is explicit, sandbox-required, and limited to
-  the locally verified Linux ARM64 environment.
+  the Linux ARM64 validation environment.
 - Deterministic reliability, knowledge migration, native sandbox, and client
   compatibility checks for the source checkout.
 
 ### Changed
 
 - Release validation now checks the crates.io package shape and keeps native
-  platform support claims separate from the locally verified host.
+  platform support claims separate from the recorded Linux ARM64 validation
+  environment.
 
 ### Documentation
 

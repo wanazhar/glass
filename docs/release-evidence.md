@@ -4,7 +4,7 @@ The 0.2.5 development path publishes one thing: the `glass-browser` crate on
 crates.io. Versioning and `vX.Y.Z` tags remain required, but the project does no
 native GitHub release binaries, installers, or updater infrastructure.
 
-The published 0.2.4 release and local 0.2.5 work retain bounded MCP
+The published 0.2.4 release and 0.2.5 development work retain bounded MCP
 response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
@@ -13,7 +13,7 @@ response-cost measurements in
 | Report | Producer | Binding | Certification meaning |
 |---|---|---|---|
 | `feature-parity.json` | `check-feature-parity.py` | source checkout | Declared implementation inventory; runtime not claimed |
-| local browser smoke | `cargo test --test browser_smoke` | current host | Browser behavior verified on the current machine only |
+| native browser smoke | `cargo test --test browser_smoke` | target environment | Native behavior observed for the tested environment only |
 | crate package | `cargo package` and `cargo publish --dry-run` | source checkout | Package contents and crates.io publication shape are valid |
 | source checks | Rust and Python validation scripts | source checkout | Tests, lint, docs, and release truth are consistent |
 
@@ -35,21 +35,22 @@ cargo publish --locked --dry-run --no-verify
 cargo package --locked --list
 ```
 
-Run the native browser check on the current machine:
+Run the native browser check in the target environment:
 
 ```console
 GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
 ```
 
-Record the host and browser details with the result. Do not convert source
-inventory or cross-compilation into a support claim for another OS.
-The current recorded result is in [Local platform evidence](local-platform.md).
+Record the target environment and browser details with the result. Do not
+convert source inventory or cross-compilation into a support claim for another
+OS. The current recorded result is in
+[Recorded platform evidence](local-platform.md).
 
 ## Publication boundary
 
 The `glass-browser` `0.2.4` crate is the current published release.
-The 0.2.5 changes are local and must not be published until explicitly
-approved. Its eventual annotated tag will remain the versioned release
-boundary; the tagged workflow validates and publishes the crate only. No GitHub binary release is expected;
+The 0.2.5 changes are not published until explicitly approved. Its eventual
+annotated tag will remain the versioned release boundary; the tagged workflow
+validates and publishes the crate only. No GitHub binary release is expected;
 this checkout makes no cross-platform support claim beyond the recorded Linux
-ARM64 host.
+ARM64 validation environment.

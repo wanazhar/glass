@@ -379,6 +379,28 @@
         "schemaVersion": 1,
         "task": "region.extract"
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "task-compile-1",
+      "ok": true,
+      "result": {
+        "plan": {
+          "schemaVersion": 1,
+          "taskSchemaVersion": 1,
+          "task": "region.extract",
+          "scope": {"regionName": "Checkout"},
+          "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+          "risk": "readOnly",
+          "ambiguity": "fail",
+          "revision": "exact",
+          "confirmationRequired": false,
+          "steps": [
+            {"ordinal": 1, "operation": "observeScope", "requiresConfirmation": false},
+            {"ordinal": 2, "operation": "extractRegion", "requiresConfirmation": false}
+          ]
+        }
+      }
     }
   ]
 }

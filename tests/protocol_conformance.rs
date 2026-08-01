@@ -136,6 +136,17 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
             .and_then(|request| request["operation"].as_str())
             .unwrap_or_else(|| panic!("response requestId must match a fixture request"));
         match operation {
+            "task.compile" => {
+                assert_eq!(
+                    response
+                        .decode_task_compile_result()
+                        .unwrap()
+                        .plan
+                        .steps
+                        .len(),
+                    2
+                );
+            }
             "task.validate" => {
                 assert!(response.decode_task_validation_result().unwrap().valid);
             }

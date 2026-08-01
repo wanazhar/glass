@@ -1,8 +1,9 @@
 //! Browser-backed execution for the bounded form Task Protocol families.
 
 use super::{
-    BrowserResult, BrowserSession, FillFormOutcome, InspectPageResult, SemanticRegion,
-    SemanticTarget,
+    BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
+    InspectPageResult, SemanticRegion, SemanticTarget, StructuredExtractionRequest,
+    StructuredExtractionResult,
 };
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
 use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind};
@@ -25,6 +26,8 @@ pub struct TaskExecutionResult {
     pub retry: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form: Option<FillFormOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<StructuredExtractionResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alerts: Vec<String>,
 }
@@ -60,12 +63,13 @@ impl BrowserSession {
                 | TaskKind::FormFill
                 | TaskKind::FormValidate
                 | TaskKind::FormSubmit
+                | TaskKind::RegionExtract
         ) {
             return Ok(preflight_result(
                 task,
                 &plan,
                 expected_revision,
-                "unsupported task family; only form tasks have a browser runtime",
+                "unsupported task family; browser execution currently supports form and region extraction tasks",
             ));
         }
         if plan.confirmation_required && !confirmed {
@@ -109,6 +113,43 @@ impl BrowserSession {
         )];
 
         match task.task {
+            TaskKind::RegionExtract => {
+                let region_id = scoped_regions
+                    .first()
+                    .map(|region| region.id.clone())
+                    .expect("scoped_regions contains exactly one region");
+                let request = StructuredExtractionRequest {
+                    fields: vec![ExtractionField {
+                        name: "region".into(),
+                        path: "$".into(),
+                        kind: ExtractionKind::Object,
+                    }],
+                    region_id: Some(region_id),
+                    max_items: task.limits.max_items as usize,
+                    max_bytes: 64 * 1024,
+                };
+                let extraction =
+                    bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::ExtractRegion,
+                    "succeeded",
+                    None,
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "extraction".into(),
+                    mutation_possible: false,
+                    source_revision: observation.revision,
+                    current_revision: extraction.source_revision,
+                    steps,
+                    retry: "not-needed".into(),
+                    form: None,
+                    extraction: Some(extraction),
+                    alerts: alert_labels(scoped_regions.iter().copied()),
+                })
+            }
             TaskKind::FormInspect => {
                 let alerts = alert_labels(scoped_regions.iter().copied());
                 steps.push(step(
@@ -127,6 +168,7 @@ impl BrowserSession {
                     steps,
                     retry: "not-needed".into(),
                     form: None,
+                    extraction: None,
                     alerts,
                 })
             }
@@ -164,6 +206,7 @@ impl BrowserSession {
                     .into(),
                     form: None,
                     alerts,
+                    extraction: None,
                 })
             }
             TaskKind::FormFill => {
@@ -223,6 +266,7 @@ impl BrowserSession {
                     .into(),
                     form: Some(form),
                     alerts: alert_labels(after.regions.iter()),
+                    extraction: None,
                 })
             }
             TaskKind::FormSubmit => {
@@ -286,6 +330,7 @@ impl BrowserSession {
                     .into(),
                     form: None,
                     alerts: alert_labels(after.regions.iter()),
+                    extraction: None,
                 })
             }
             _ => unreachable!(),
@@ -338,6 +383,7 @@ fn preflight_result(
         retry: "reobserve-and-correct-task".into(),
         form: None,
         alerts: Vec::new(),
+        extraction: None,
     }
 }
 

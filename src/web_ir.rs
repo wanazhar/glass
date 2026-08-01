@@ -1411,18 +1411,11 @@ mod tests {
         assert!(!diff.diagnostics_changed);
         assert!(!diff.relationship_hint_diagnostics_changed);
 
-        let reverse = after.diff(&before).unwrap();
-        assert!(
-            reverse
-                .entity_changes
-                .iter()
-                .any(|change| change.kind == DraftChangeKind::Removed)
-        );
-        assert!(
-            reverse
-                .relationship_changes
-                .iter()
-                .any(|change| change.kind == DraftChangeKind::Removed)
+        let reverse_error = after.diff(&before).unwrap_err();
+        assert_eq!(reverse_error.path, "revision");
+        assert_eq!(
+            reverse_error.reason,
+            "target revision is older than the source revision"
         );
         assert_eq!(
             serde_json::to_string(&diff).unwrap(),
@@ -1446,6 +1439,7 @@ mod tests {
         assert_eq!(unchanged.status, DraftEntityContinuityStatus::Unchanged);
 
         let mut changed_draft = source.clone();
+        changed_draft.revision = 10;
         changed_draft
             .entities
             .iter_mut()
@@ -1470,6 +1464,7 @@ mod tests {
             .map(|entity| entity.id.clone())
             .collect::<BTreeSet<_>>();
         let mut rebound_draft = source.clone();
+        rebound_draft.revision = 10;
         rebound_draft
             .entities
             .retain(|entity| !removed_ids.contains(&entity.id));
@@ -1492,6 +1487,7 @@ mod tests {
         assert_eq!(rebound.current_id.as_deref(), Some(rebound_id.as_str()));
 
         let mut removed_draft = source.clone();
+        removed_draft.revision = 10;
         removed_draft
             .entities
             .retain(|entity| !removed_ids.contains(&entity.id));
@@ -1514,6 +1510,25 @@ mod tests {
             .unwrap();
         assert_eq!(ambiguous.status, DraftEntityContinuityStatus::Ambiguous);
         assert!(ambiguous.current_id.is_none());
+    }
+
+    #[test]
+    fn same_revision_content_drift_is_rejected() {
+        let source = reconcile_evidence(&evidence()).unwrap();
+        let mut drifted = source.clone();
+        drifted
+            .entities
+            .iter_mut()
+            .find(|entity| entity.kind == DraftEntityKind::Field)
+            .unwrap()
+            .name = Some("Changed at the same revision".into());
+
+        let error = source.validate_revision_transition(&drifted).unwrap_err();
+        assert_eq!(error.path, "revision");
+        assert_eq!(
+            error.reason,
+            "same-revision drafts must have identical content"
+        );
     }
 
     #[test]

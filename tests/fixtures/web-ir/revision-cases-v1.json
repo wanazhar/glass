@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Issue 30 v0.2.5 compatible revision and continuity cases",
+  "cases": [
+    {
+      "id": "forward-revision",
+      "fromRevision": 7,
+      "toRevision": 8,
+      "expected": "compatible"
+    },
+    {
+      "id": "same-revision-self-comparison",
+      "fromRevision": 7,
+      "toRevision": 7,
+      "expected": "compatible"
+    },
+    {
+      "id": "stale-revision",
+      "fromRevision": 8,
+      "toRevision": 7,
+      "expected": "rejected",
+      "errorPath": "revision"
+    },
+    {
+      "id": "same-revision-content-drift",
+      "fromRevision": 7,
+      "toRevision": 7,
+      "expected": "rejected",
+      "errorPath": "revision"
+    },
+    {
+      "id": "ambiguous-continuity",
+      "fromRevision": 7,
+      "toRevision": 8,
+      "expected": "ambiguous",
+      "status": "ambiguous"
+    }
+  ]
+}

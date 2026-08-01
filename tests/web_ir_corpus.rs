@@ -123,3 +123,23 @@ fn web_ir_scenario_manifest_references_known_fixtures() {
     }
     assert_eq!(scenario_values.len(), fixture_ids.len());
 }
+
+#[test]
+fn web_ir_revision_fixture_covers_compatible_stale_and_ambiguous_cases() {
+    let fixture = manifest("tests/fixtures/web-ir/revision-cases-v1.json");
+    assert_eq!(fixture["schemaVersion"], 1);
+    let cases = fixture["cases"]
+        .as_array()
+        .expect("revision cases should be an array");
+    assert_eq!(cases.len(), 5);
+    assert!(cases.iter().any(|case| {
+        case["id"] == "stale-revision"
+            && case["expected"] == "rejected"
+            && case["errorPath"] == "revision"
+    }));
+    assert!(cases.iter().any(|case| {
+        case["id"] == "ambiguous-continuity"
+            && case["expected"] == "ambiguous"
+            && case["status"] == "ambiguous"
+    }));
+}

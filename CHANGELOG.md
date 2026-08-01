@@ -30,6 +30,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   `webIr` surfaces as `availableUncertified`.
 - MCP Task tools now expose typed `taskValidation` and `taskCompilation` error
   details for invalid browser-free requests.
+- Canonical protocol fixtures now cover typed `taskCompilation` preflight
+  errors alongside Task validation and Web IR errors.
 
 ## [0.2.3] - 2026-08-01
 

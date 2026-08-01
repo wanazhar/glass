@@ -145,6 +145,12 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
         );
 
         match request.operation.as_str() {
+            "task.compile" if request.request_id == "task-compile-invalid-1" => {
+                assert!(matches!(
+                    glass::protocol::compile_task_result(&request),
+                    Err(glass::protocol::ProtocolError::TaskCompilation(_))
+                ));
+            }
             "task.compile" => {
                 assert!(glass::protocol::compile_task_result(&request).is_ok());
             }
@@ -193,6 +199,11 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
         if !response.ok {
             let error = response.error.as_ref().unwrap();
             match response.request_id.as_str() {
+                "task-compile-invalid-1" => {
+                    assert_eq!(error.code, "task.invalid");
+                    assert_eq!(error.details.as_ref().unwrap()["kind"], "taskCompilation");
+                    assert_eq!(error.details.as_ref().unwrap()["path"], "inputs");
+                }
                 "task-validate-invalid-1" => {
                     assert_eq!(error.code, "task.invalid");
                     assert_eq!(error.details.as_ref().unwrap()["kind"], "taskValidation");

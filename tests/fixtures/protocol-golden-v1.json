@@ -303,6 +303,20 @@
     },
     {
       "protocolVersion": 1,
+      "requestId": "task-compile-invalid-1",
+      "operation": "task.compile",
+      "payload": {
+        "task": {
+          "schemaVersion": 1,
+          "task": "form.fill",
+          "scope": {"regionName": "Checkout"},
+          "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+          "risk": "readOnly"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
       "requestId": "web-ir-validate-invalid-1",
       "operation": "webIr.validate",
       "payload": {
@@ -457,6 +471,26 @@
         },
         "details": {
           "kind": "taskValidation",
+          "path": "inputs",
+          "reason": "form.fill requires at least one bounded input"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "task-compile-invalid-1",
+      "ok": false,
+      "error": {
+        "code": "task.invalid",
+        "phase": "preflight",
+        "message": "form.fill requires at least one bounded input",
+        "mutationPossible": false,
+        "retry": {
+          "classification": "safeAfterReobserve",
+          "recommendedOperation": "inspect_page"
+        },
+        "details": {
+          "kind": "taskCompilation",
           "path": "inputs",
           "reason": "form.fill requires at least one bounded input"
         }

@@ -131,6 +131,8 @@ Completed:
   capability statuses.
 - [ir-030-047](tasks/ir-030-047.md) — typed MCP Task validation and compilation
   errors.
+- [ir-030-048](tasks/ir-030-048.md) — typed canonical Task compilation
+  preflight error coverage.
 
 ## Completed plan: performance overhaul
 Status: Complete

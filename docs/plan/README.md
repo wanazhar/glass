@@ -123,6 +123,8 @@ Completed:
   canonical dispatch.
 - [ir-030-043](tasks/ir-030-043.md) — typed canonical protocol response fixture
   coverage.
+- [ir-030-044](tasks/ir-030-044.md) — typed canonical preflight error fixture
+  coverage.
 
 ## Completed plan: performance overhaul
 Status: Complete

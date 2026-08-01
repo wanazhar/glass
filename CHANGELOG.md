@@ -22,6 +22,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   errors.
 - Golden protocol fixtures now include typed successful Web IR and Task
   Protocol response envelopes with decoder round-trip coverage.
+- Golden protocol fixtures now cover bounded typed preflight errors for Task
+  Protocol and Web IR validation.
 
 ## [0.2.3] - 2026-08-01
 

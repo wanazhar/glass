@@ -286,6 +286,46 @@
           "risk": "readOnly"
         }
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "task-validate-invalid-1",
+      "operation": "task.validate",
+      "payload": {
+        "task": {
+          "schemaVersion": 1,
+          "task": "form.fill",
+          "scope": {},
+          "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+          "risk": "readOnly"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-validate-invalid-1",
+      "operation": "webIr.validate",
+      "payload": {
+        "draft": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        }
+      }
     }
   ],
   "responses": [
@@ -399,6 +439,46 @@
             {"ordinal": 1, "operation": "observeScope", "requiresConfirmation": false},
             {"ordinal": 2, "operation": "extractRegion", "requiresConfirmation": false}
           ]
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "task-validate-invalid-1",
+      "ok": false,
+      "error": {
+        "code": "task.invalid",
+        "phase": "preflight",
+        "message": "form.fill requires at least one bounded input",
+        "mutationPossible": false,
+        "retry": {
+          "classification": "safeAfterReobserve",
+          "recommendedOperation": "inspect_page"
+        },
+        "details": {
+          "kind": "taskValidation",
+          "path": "inputs",
+          "reason": "form.fill requires at least one bounded input"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-validate-invalid-1",
+      "ok": false,
+      "error": {
+        "code": "webIr.invalid",
+        "phase": "preflight",
+        "message": "Web IR validation failed",
+        "mutationPossible": false,
+        "retry": {
+          "classification": "safeAfterReobserve",
+          "recommendedOperation": "inspect_page"
+        },
+        "details": {
+          "kind": "webIrValidation",
+          "path": "entities",
+          "reason": "entity count must be between 1 and the draft bound"
         }
       }
     }

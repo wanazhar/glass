@@ -128,6 +128,24 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
             response
         );
 
+        if !response.ok {
+            let error = response.error.as_ref().unwrap();
+            match response.request_id.as_str() {
+                "task-validate-invalid-1" => {
+                    assert_eq!(error.code, "task.invalid");
+                    assert_eq!(error.details.as_ref().unwrap()["kind"], "taskValidation");
+                    assert_eq!(error.details.as_ref().unwrap()["path"], "inputs");
+                }
+                "web-ir-validate-invalid-1" => {
+                    assert_eq!(error.code, "webIr.invalid");
+                    assert_eq!(error.details.as_ref().unwrap()["kind"], "webIrValidation");
+                    assert_eq!(error.details.as_ref().unwrap()["path"], "entities");
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         let operation = fixture["requests"]
             .as_array()
             .unwrap()

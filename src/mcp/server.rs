@@ -870,6 +870,7 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
         "diffWebIr" => crate::protocol::WEB_IR_DIFF_OPERATION.to_string(),
         "continuityWebIr" => crate::protocol::WEB_IR_CONTINUITY_OPERATION.to_string(),
         "compileTask" => crate::protocol::TASK_COMPILE_OPERATION.to_string(),
+        "executeTask" => crate::protocol::TASK_EXECUTE_OPERATION.to_string(),
         "validateTask" => crate::protocol::TASK_VALIDATE_OPERATION.to_string(),
         _ => format!("browser.{name}"),
     };
@@ -1490,6 +1491,24 @@ async fn call_tool(
             canonical_payload_request(request, json!({"task": serde_json::to_value(task)?}))?;
         let result = crate::protocol::compile_task_result(&canonical)?;
         return serialized_result(&result);
+    }
+    if let ToolInvocation::ExecuteTask {
+        task,
+        expected_revision,
+        confirmed,
+    } = &invocation
+    {
+        let canonical = canonical_payload_request(
+            request,
+            json!({
+                "task": serde_json::to_value(task)?,
+                "expectedRevision": expected_revision,
+                "confirmed": confirmed,
+            }),
+        )?;
+        canonical
+            .decode_task_execute()
+            .map_err(|error| error.to_string())?;
     }
     if matches!(
         &invocation,
@@ -4059,15 +4078,21 @@ mod tests {
         });
         for (name, operation) in [
             ("compileTask", crate::protocol::TASK_COMPILE_OPERATION),
+            ("executeTask", crate::protocol::TASK_EXECUTE_OPERATION),
             ("validateTask", crate::protocol::TASK_VALIDATE_OPERATION),
         ] {
+            let mut arguments = json!({"task": task.clone()});
+            if operation == crate::protocol::TASK_EXECUTE_OPERATION {
+                arguments["expectedRevision"] = json!(7);
+                arguments["confirmed"] = json!(false);
+            }
             let request: JsonRpcRequest = serde_json::from_value(json!({
                 "jsonrpc": "2.0",
                 "id": name,
                 "method": "tools/call",
                 "params": {
                     "name": name,
-                    "arguments": {"task": task.clone()}
+                    "arguments": arguments
                 }
             }))
             .unwrap();
@@ -4077,8 +4102,10 @@ mod tests {
             canonical.validate().unwrap();
             if operation == crate::protocol::TASK_VALIDATE_OPERATION {
                 canonical.decode_task_validate().unwrap();
-            } else {
+            } else if operation == crate::protocol::TASK_COMPILE_OPERATION {
                 canonical.decode_task_compile().unwrap();
+            } else {
+                canonical.decode_task_execute().unwrap();
             }
         }
     }

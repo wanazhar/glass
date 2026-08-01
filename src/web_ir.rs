@@ -153,6 +153,7 @@ pub struct DraftEntityContinuity {
     pub reason: String,
 }
 
+
 impl DraftEntity {
     /// Return a bounded semantic key suitable only for revision comparison.
     pub fn semantic_identity_key(&self) -> Option<String> {
@@ -406,10 +407,35 @@ impl GlassWebIrDraft {
         Ok(())
     }
 
-    /// Compute deterministic changes between two validated draft revisions.
-    pub fn diff(&self, next: &Self) -> Result<GlassWebIrDiff, WebIrValidationError> {
+    /// Validate that `next` is a compatible revision for transition analysis.
+    ///
+    /// Forward revisions are accepted. An exact same-revision draft is also
+    /// accepted for deterministic self-comparisons; same-revision content
+    /// drift and revision regressions fail closed.
+    pub fn validate_revision_transition(
+        &self,
+        next: &Self,
+    ) -> Result<(), WebIrValidationError> {
         self.validate()?;
         next.validate()?;
+        if next.revision < self.revision {
+            return Err(WebIrValidationError::new(
+                "revision",
+                "target revision is older than the source revision",
+            ));
+        }
+        if next.revision == self.revision && self != next {
+            return Err(WebIrValidationError::new(
+                "revision",
+                "same-revision drafts must have identical content",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Compute deterministic changes between two validated draft revisions.
+    pub fn diff(&self, next: &Self) -> Result<GlassWebIrDiff, WebIrValidationError> {
+        self.validate_revision_transition(next)?;
 
         let before_entities = self
             .entities
@@ -510,8 +536,7 @@ impl GlassWebIrDraft {
         next: &Self,
         entity_id: &str,
     ) -> Result<DraftEntityContinuity, WebIrValidationError> {
-        self.validate()?;
-        next.validate()?;
+        self.validate_revision_transition(next)?;
         let requested_id = entity_id.to_owned();
         let Some(source) = self.entities.iter().find(|entity| entity.id == entity_id) else {
             return Ok(DraftEntityContinuity {

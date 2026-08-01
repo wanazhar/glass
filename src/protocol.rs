@@ -93,6 +93,9 @@ impl WebIrDiffPayload {
         self.after
             .validate()
             .map_err(ProtocolError::WebIrValidation)?;
+        self.before
+            .validate_revision_transition(&self.after)
+            .map_err(ProtocolError::WebIrValidation)?;
         Ok(())
     }
 }
@@ -114,6 +117,9 @@ impl WebIrContinuityPayload {
             .map_err(ProtocolError::WebIrValidation)?;
         self.after
             .validate()
+            .map_err(ProtocolError::WebIrValidation)?;
+        self.before
+            .validate_revision_transition(&self.after)
             .map_err(ProtocolError::WebIrValidation)?;
         validate_identifier(&self.entity_id, "entityId")
     }

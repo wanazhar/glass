@@ -255,6 +255,11 @@ enum ToolInvocation<'a> {
     CompileTask {
         task: crate::task_protocol::GlassTask,
     },
+    ExecuteTask {
+        task: crate::task_protocol::GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    },
     ValidateTask {
         task: Value,
     },
@@ -1505,6 +1510,18 @@ async fn call_tool(
     }
     let session = ensure_session(session, options, policy).await?;
 
+    if let ToolInvocation::ExecuteTask {
+        ref task,
+        expected_revision,
+        confirmed,
+    } = invocation
+    {
+        return serialized_result(
+            &session
+                .execute_form_task(task, expected_revision, confirmed)
+                .await?,
+        );
+    }
     match invocation {
         ToolInvocation::Navigate {
             url,
@@ -2124,6 +2141,9 @@ async fn call_tool(
         ToolInvocation::CompileTask { .. } => {
             unreachable!("compileTask is handled before browser session startup")
         }
+        ToolInvocation::ExecuteTask { .. } => {
+            unreachable!("executeTask is handled before browser operation dispatch")
+        }
         ToolInvocation::ValidateTask { .. } => {
             unreachable!("validateTask is handled before browser session startup")
         }
@@ -2349,6 +2369,21 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .ok_or("compileTask requires a task object")?;
             Ok(ToolInvocation::CompileTask {
                 task: serde_json::from_value(task)?,
+            })
+        }
+        "executeTask" => {
+            let task = arguments
+                .get("task")
+                .cloned()
+                .ok_or("executeTask requires a task object")?;
+            let expected_revision = required_u64(arguments, "expectedRevision")?;
+            Ok(ToolInvocation::ExecuteTask {
+                task: serde_json::from_value(task)?,
+                expected_revision,
+                confirmed: arguments
+                    .get("confirmed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             })
         }
         "validateTask" => {
@@ -2716,6 +2751,31 @@ fn tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["task"],
+                "additionalProperties": false
+            }),
+        },
+        Tool {
+            name: "executeTask",
+            description: "Execute a confirmed, revision-guarded form Task Protocol task in the current browser session.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "object",
+                        "description": "Strict form Task Protocol v1 authored task."
+                    },
+                    "expectedRevision": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Revision returned by the caller's preceding semantic observation."
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Explicit confirmation for risky or ambiguity-gated tasks."
+                    }
+                },
+                "required": ["task", "expectedRevision"],
                 "additionalProperties": false
             }),
         },
@@ -4137,10 +4197,11 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 82);
+        assert_eq!(tools.len(), 83);
         assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
+        assert!(tools.iter().any(|tool| tool["name"] == "executeTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
@@ -4739,6 +4800,34 @@ mod tests {
             assert!(receiver.try_recv().is_ok());
             assert!(cancellations.lock().unwrap().is_empty());
         }
+    }
+    #[test]
+    fn parses_revision_guarded_execute_task() {
+        let params = json!({
+            "name": "executeTask",
+            "arguments": {
+                "task": {
+                    "schemaVersion": 1,
+                    "task": "form.inspect",
+                    "scope": {"regionName": "Checkout"},
+                    "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                    "risk": "readOnly"
+                },
+                "expectedRevision": 17,
+                "confirmed": true
+            }
+        });
+        let ToolInvocation::ExecuteTask {
+            task,
+            expected_revision,
+            confirmed,
+        } = parse_tool_invocation(&params).unwrap()
+        else {
+            panic!("expected executeTask invocation");
+        };
+        assert_eq!(task.task, crate::task_protocol::TaskKind::FormInspect);
+        assert_eq!(expected_revision, 17);
+        assert!(confirmed);
     }
 
     #[test]

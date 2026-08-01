@@ -38,6 +38,7 @@
     "drag",
     "evaluate",
     "executeIntent",
+    "executeTask",
     "exportCheckpoint",
     "extractStructured",
     "fillForm",

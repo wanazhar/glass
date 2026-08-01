@@ -864,6 +864,8 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
         "validateWebIr" => crate::protocol::WEB_IR_VALIDATE_OPERATION.to_string(),
         "diffWebIr" => crate::protocol::WEB_IR_DIFF_OPERATION.to_string(),
         "continuityWebIr" => crate::protocol::WEB_IR_CONTINUITY_OPERATION.to_string(),
+        "compileTask" => crate::protocol::TASK_COMPILE_OPERATION.to_string(),
+        "validateTask" => crate::protocol::TASK_VALIDATE_OPERATION.to_string(),
         _ => format!("browser.{name}"),
     };
     let canonical = GlassRequest {
@@ -3942,6 +3944,41 @@ mod tests {
             assert_eq!(canonical.operation, operation);
             assert_eq!(canonical.payload["draft"]["schemaVersion"], 1);
             canonical.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn task_tools_map_to_canonical_operations() {
+        let task = json!({
+            "schemaVersion": 1,
+            "task": "region.extract",
+            "scope": {"regionName": "Checkout"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        });
+        for (name, operation) in [
+            ("compileTask", crate::protocol::TASK_COMPILE_OPERATION),
+            ("validateTask", crate::protocol::TASK_VALIDATE_OPERATION),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": name,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": {"task": task.clone()}
+                }
+            }))
+            .unwrap();
+            let canonical = canonical_tool_request(&request).unwrap();
+            assert_eq!(canonical.operation, operation);
+            assert_eq!(canonical.payload["task"]["schemaVersion"], 1);
+            canonical.validate().unwrap();
+            if operation == crate::protocol::TASK_VALIDATE_OPERATION {
+                canonical.decode_task_validate().unwrap();
+            } else {
+                canonical.decode_task_compile().unwrap();
+            }
         }
     }
 

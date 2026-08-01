@@ -12,6 +12,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Browser-free MCP inspection and validation tools now map to canonical
   `webIr.inspect` and `webIr.validate` operations with typed draft payloads and
   bounded results.
+- Browser-free MCP Task Protocol tools now map `compileTask` and `validateTask`
+  to canonical `task.compile` and `task.validate` operations with typed task
+  payloads and validation results.
 
 ## [0.2.3] - 2026-08-01
 

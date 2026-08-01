@@ -32,6 +32,19 @@ Revision tools carry two validated draft graphs and return bounded summaries or
 one continuity classification. Entity payloads and page content are not
 returned by the MCP projection.
 
+Browser-free Task Protocol tools also use canonical operation names:
+
+| MCP tool | Glass operation |
+|---|---|
+| `compileTask` | `task.compile` |
+| `validateTask` | `task.validate` |
+
+The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
+covers read, leased mutation, workflow, browser-free Web IR inspection and
+revision operations, Task Protocol validation and compilation, success, and
+typed-error envelopes. Rust tests round-trip the fixture. MCP tests check the
+canonical mapping.
+
 The CLI and SDKs use the same operation names and payload fields. MCP keeps
 JSON-RPC success and error framing. The operation payload remains bounded and
 versioned.

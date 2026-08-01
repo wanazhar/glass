@@ -1,10 +1,10 @@
 use glass::{
     DraftEntity, DraftEntityKind, EXTRACTION_CONTRACT_SCHEMA_VERSION, EvidenceSource,
-    ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassWebIrDraft,
-    WEB_IR_CONTINUITY_OPERATION, WEB_IR_DIFF_OPERATION, WEB_IR_DRAFT_SCHEMA_VERSION,
-    WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION, WebIrContinuityPayload,
-    WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult, WebIrDraftPayload,
-    WebIrInspectionResult, WebIrValidationResult,
+    ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassWebIrDraft, TASK_COMPILE_OPERATION,
+    TASK_VALIDATE_OPERATION, TaskValidationPayload, WEB_IR_CONTINUITY_OPERATION,
+    WEB_IR_DIFF_OPERATION, WEB_IR_DRAFT_SCHEMA_VERSION, WEB_IR_INSPECT_OPERATION,
+    WEB_IR_VALIDATE_OPERATION, WebIrContinuityPayload, WebIrContinuityResult, WebIrDiffPayload,
+    WebIrDiffResult, WebIrDraftPayload, WebIrInspectionResult, WebIrValidationResult,
 };
 
 #[test]
@@ -43,4 +43,7 @@ fn crate_root_exposes_experimental_extraction_and_web_ir_contracts() {
     assert_eq!(WEB_IR_CONTINUITY_OPERATION, "webIr.continuity");
     let _continuity_type: Option<WebIrContinuityResult> = None;
     assert_eq!(WEB_IR_DRAFT_SCHEMA_VERSION, 1);
+    let _task_validation_payload_type: Option<TaskValidationPayload> = None;
+    assert_eq!(TASK_COMPILE_OPERATION, "task.compile");
+    assert_eq!(TASK_VALIDATE_OPERATION, "task.validate");
 }

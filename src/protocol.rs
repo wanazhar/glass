@@ -27,6 +27,8 @@ pub const WEB_IR_CONTINUITY_OPERATION: &str = "webIr.continuity";
 
 /// Canonical transport operation for browser-free Task Protocol compilation.
 pub const TASK_COMPILE_OPERATION: &str = "task.compile";
+/// Canonical transport operation for browser-free Task Protocol validation.
+pub const TASK_VALIDATE_OPERATION: &str = "task.validate";
 
 /// Typed payload carried by a `task.compile` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +39,22 @@ pub struct TaskCompilePayload {
 
 impl TaskCompilePayload {
     /// Validate the authored task before compiler dispatch.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.task
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    }
+}
+
+/// Typed payload carried by a `task.validate` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskValidationPayload {
+    pub task: crate::task_protocol::GlassTask,
+}
+
+impl TaskValidationPayload {
+    /// Validate the authored task before validation dispatch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.task
             .validate()
@@ -339,6 +357,22 @@ impl GlassRequest {
         Ok(payload)
     }
 
+    /// Decode and validate a typed `task.validate` payload.
+    pub fn decode_task_validate(&self) -> Result<TaskValidationPayload, ProtocolError> {
+        self.validate()?;
+        if self.operation != TASK_VALIDATE_OPERATION {
+            return Err(ProtocolError::InvalidField(format!(
+                "expected operation {TASK_VALIDATE_OPERATION}"
+            )));
+        }
+        let payload: TaskValidationPayload =
+            serde_json::from_value(self.payload.clone()).map_err(|error| {
+                ProtocolError::InvalidField(format!("task.validate payload: {error}"))
+            })?;
+        payload.validate()?;
+        Ok(payload)
+    }
+
     /// Decode and validate a typed `webIr.validate` payload.
     pub fn decode_web_ir_validate(&self) -> Result<WebIrDraftPayload, ProtocolError> {
         self.decode_web_ir_draft(WEB_IR_VALIDATE_OPERATION)
@@ -408,6 +442,16 @@ pub fn compile_task_request(
 pub fn compile_task_result(request: &GlassRequest) -> Result<TaskCompileResult, ProtocolError> {
     Ok(TaskCompileResult {
         plan: compile_task_request(request)?,
+    })
+}
+
+/// Validate a `task.validate` request into a typed response payload.
+pub fn validate_task_result(request: &GlassRequest) -> Result<TaskValidationResult, ProtocolError> {
+    let payload = request.decode_task_validate()?;
+    Ok(TaskValidationResult {
+        valid: true,
+        schema_version: payload.task.schema_version,
+        task: payload.task.task,
     })
 }
 
@@ -499,6 +543,22 @@ impl GlassResponse {
         })?;
         result.validate()?;
         Ok(result)
+    }
+
+    /// Decode and validate a successful typed `task.validate` result.
+    pub fn decode_task_validation_result(&self) -> Result<TaskValidationResult, ProtocolError> {
+        self.validate()?;
+        if !self.ok {
+            return Err(ProtocolError::InvalidField(
+                "task.validate result requires a successful response".into(),
+            ));
+        }
+        let value = self
+            .result
+            .clone()
+            .ok_or_else(|| ProtocolError::InvalidField("task.validate result is missing".into()))?;
+        serde_json::from_value(value)
+            .map_err(|error| ProtocolError::InvalidField(format!("task.validate result: {error}")))
     }
 
     /// Decode and validate a successful bounded `webIr.validate` result.
@@ -900,6 +960,49 @@ mod tests {
             "future": true
         });
         assert!(serde_json::from_value::<GlassRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn task_validate_boundary_decodes_without_compiling() {
+        let task = serde_json::json!({
+            "schemaVersion": 1,
+            "task": "region.extract",
+            "scope": {"regionName": "Checkout"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        });
+        let request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "validate-task-1".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: TASK_VALIDATE_OPERATION.into(),
+            payload: serde_json::json!({"task": task}),
+            deadline_ms: None,
+        };
+        let result = validate_task_result(&request).unwrap();
+        assert_eq!(
+            result,
+            TaskValidationResult {
+                valid: true,
+                schema_version: 1,
+                task: crate::task_protocol::TaskKind::RegionExtract,
+            }
+        );
+        let response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            correlation_id: None,
+            ok: true,
+            result: Some(serde_json::to_value(&result).unwrap()),
+            error: None,
+        };
+        assert_eq!(response.decode_task_validation_result().unwrap(), result);
+        assert_eq!(
+            request.decode_task_validate().unwrap().task.task,
+            crate::task_protocol::TaskKind::RegionExtract
+        );
     }
 
     #[test]

@@ -169,6 +169,9 @@ task metadata. It does not compile a plan, start Chrome, acquire a mutation
 lease, resolve targets, or execute browser actions. Input values are consumed
 only during validation and are never included in the response.
 
+The canonical Glass operation is `task.validate`; MCP retains JSON-RPC framing
+and the `validateTask` tool name.
+
 The successful MCP content item contains JSON shaped like:
 
 ```json
@@ -257,6 +260,9 @@ payloads, relationships, and page content from successful responses.
 start Chrome, acquire a mutation lease, resolve targets, or execute browser
 actions. Input values are consumed only during validation and are not included
 in the returned plan.
+
+The canonical Glass operation is `task.compile`; MCP retains JSON-RPC framing
+and the `compileTask` tool name.
 
 Example request:
 

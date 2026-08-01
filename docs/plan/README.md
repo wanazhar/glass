@@ -115,6 +115,8 @@ Completed:
   Web IR revision analysis.
 - [ir-030-039](tasks/ir-030-039.md) — canonical Glass protocol operations for
   Web IR inspection and validation.
+- [ir-030-040](tasks/ir-030-040.md) — canonical Glass protocol operations for
+  Task Protocol validation and compilation.
 
 ## Completed plan: performance overhaul
 Status: Complete

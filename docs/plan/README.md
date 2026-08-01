@@ -62,7 +62,8 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — local evidence-foundation increments
+Status: In progress — the `0.2.7` verified-form execution increment is ready
+for implementation; no publication is authorized.
 
 Completed:
 
@@ -145,6 +146,8 @@ Completed:
   execution-plan safety checks.
 - [ir-030-054](tasks/ir-030-054.md) — enforce compatible Web IR revision
   transitions for diffs and continuity.
+- [ir-030-055](tasks/ir-030-055.md) — verified form task execution boundary
+  (ready for implementation in `0.2.7`).
 
 ## Completed plan: performance overhaul
 Status: Complete

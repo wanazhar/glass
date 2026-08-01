@@ -93,6 +93,14 @@ impl BrowserSession {
             ));
         }
         let observation = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+        if observation.revision != expected_revision {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                observation.revision,
+                "source revision changed during preflight observation; no browser mutation was dispatched",
+            ));
+        }
 
         let scoped_regions = match scoped_regions_for_observation(&observation, task) {
             Ok(regions) => regions,

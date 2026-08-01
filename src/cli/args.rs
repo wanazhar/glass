@@ -708,6 +708,17 @@ pub enum TaskCommand {
         #[arg(long)]
         explain: bool,
     },
+    /// Execute a validated form Task Protocol task against the current browser.
+    Execute {
+        /// JSON file containing the authored form task.
+        input: PathBuf,
+        /// Revision from the caller's preceding semantic observation.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Confirm a task whose risk or ambiguity policy requires confirmation.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

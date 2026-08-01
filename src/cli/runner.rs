@@ -117,10 +117,17 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             dispatch_workflow_authoring(action)?;
             return Ok(());
         }
-        Some(Commands::Task { action }) => {
-            dispatch_task(action)?;
+        Some(Commands::Task {
+            action: TaskCommand::Validate { .. } | TaskCommand::Compile { .. },
+        }) => {
+            if let Some(Commands::Task { action }) = &cli.command {
+                dispatch_task(action)?;
+            }
             return Ok(());
         }
+        Some(Commands::Task {
+            action: TaskCommand::Execute { .. },
+        }) => {}
         Some(Commands::Ir { action }) => {
             dispatch_ir(action)?;
             return Ok(());
@@ -830,6 +837,9 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
                 eprintln!("{}", explain_task(&task, &result.plan)?);
             }
         }
+        TaskCommand::Execute { .. } => {
+            unreachable!("browser task commands are handled after session startup")
+        }
     }
     Ok(())
 }
@@ -1192,6 +1202,22 @@ async fn run_command(
             store.save(&snapshot)?;
             print_json(&snapshot)?;
         }
+        Commands::Task {
+            action:
+                TaskCommand::Execute {
+                    input,
+                    expected_revision,
+                    confirm,
+                },
+        } => {
+            let request = read_task_request(input, TASK_COMPILE_OPERATION)?;
+            let task = request.decode_task_compile()?.task;
+            print_json(
+                &session
+                    .execute_form_task(&task, *expected_revision, *confirm)
+                    .await?,
+            )?;
+        }
         Commands::Capabilities
         | Commands::Daemon { .. }
         | Commands::Doctor { .. }
@@ -1199,10 +1225,12 @@ async fn run_command(
         | Commands::Result { .. }
         | Commands::Certify { .. }
         | Commands::Knowledge { .. }
-        | Commands::Snapshot { .. }
-        | Commands::Task { .. } => {
+        | Commands::Snapshot { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
+        Commands::Task {
+            action: TaskCommand::Validate { .. } | TaskCommand::Compile { .. },
+        } => unreachable!("offline task commands are handled before browser startup"),
         Commands::Navigate {
             url,
             timeout_ms,

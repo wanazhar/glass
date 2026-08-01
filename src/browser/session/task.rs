@@ -2,7 +2,7 @@
 
 use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
-    InspectPageResult, SemanticRegion, SemanticTarget, StructuredExtractionRequest,
+    InspectPageResult, PendingDialog, SemanticRegion, SemanticTarget, StructuredExtractionRequest,
     StructuredExtractionResult,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
@@ -29,6 +29,8 @@ pub struct TaskExecutionResult {
     pub form: Option<FillFormOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extraction: Option<StructuredExtractionResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<PendingDialog>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alerts: Vec<String>,
 }
@@ -189,6 +191,7 @@ impl BrowserSession {
                     },
                     form: None,
                     extraction: None,
+                    dialog: None,
                     alerts: alert_labels(after.regions.iter()),
                 })
             }
@@ -259,6 +262,7 @@ impl BrowserSession {
                     },
                     form: None,
                     extraction: None,
+                    dialog: None,
                     alerts: alert_labels(after.regions.iter()),
                 })
             }
@@ -297,6 +301,7 @@ impl BrowserSession {
                     form: None,
                     extraction: Some(extraction),
                     alerts: alert_labels(scoped_regions.iter().copied()),
+                    dialog: None,
                 })
             }
             TaskKind::FormInspect => {
@@ -319,6 +324,7 @@ impl BrowserSession {
                     form: None,
                     extraction: None,
                     alerts,
+                    dialog: None,
                 })
             }
             TaskKind::FormValidate => {
@@ -353,8 +359,9 @@ impl BrowserSession {
                         retry_guidance(RetryClassification::RequiresUserDecision, "form.validate")
                     },
                     form: None,
-                    alerts,
                     extraction: None,
+                    dialog: None,
+                    alerts,
                 })
             }
             TaskKind::FormFill => {
@@ -412,8 +419,9 @@ impl BrowserSession {
                         retry_guidance(RetryClassification::SafeAfterReconcile, "inspect_page")
                     },
                     form: Some(form),
-                    alerts: alert_labels(after.regions.iter()),
                     extraction: None,
+                    dialog: None,
+                    alerts: alert_labels(after.regions.iter()),
                 })
             }
             TaskKind::FormSubmit => {
@@ -475,8 +483,9 @@ impl BrowserSession {
                         retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
                     },
                     form: None,
-                    alerts: alert_labels(after.regions.iter()),
                     extraction: None,
+                    dialog: None,
+                    alerts: alert_labels(after.regions.iter()),
                 })
             }
             _ => unreachable!(),
@@ -563,6 +572,7 @@ impl BrowserSession {
                     form: None,
                     extraction: None,
                     alerts: Vec::new(),
+                    dialog: None,
                 })
             }
             Err(error) => {
@@ -590,6 +600,7 @@ impl BrowserSession {
                     form: None,
                     extraction: None,
                     alerts: Vec::new(),
+                    dialog: None,
                 })
             }
         }
@@ -660,6 +671,7 @@ impl BrowserSession {
                 retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
                 form: None,
                 extraction: None,
+                dialog: pending.clone(),
                 alerts: if pending.is_some() {
                     vec!["dialog-pending".into()]
                 } else {
@@ -720,6 +732,7 @@ impl BrowserSession {
             },
             form: None,
             extraction: None,
+            dialog: None,
             alerts: Vec::new(),
         })
     }
@@ -777,6 +790,7 @@ fn preflight_result(
         form: None,
         alerts: Vec::new(),
         extraction: None,
+        dialog: None,
     }
 }
 

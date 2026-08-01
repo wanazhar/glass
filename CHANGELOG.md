@@ -27,6 +27,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   policy, and typed indeterminate recovery.
 - Added bounded `pagination.next` execution with semantic control resolution,
   fresh post-action observation, and typed indeterminate recovery.
+- Added typed pending-dialog details to `dialog.inspect` task results without
+  changing action-result recovery semantics.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

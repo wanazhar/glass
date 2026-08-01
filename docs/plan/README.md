@@ -163,6 +163,8 @@ Completed:
   cancel dialog tasks through CLI, MCP, and Rust.
 - [ir-030-062](tasks/ir-030-062.md) — execute bounded revision-guarded
   pagination advances within semantic pagination regions.
+- [ir-030-063](tasks/ir-030-063.md) — expose typed pending-dialog details
+  through `dialog.inspect` task results.
 
 ## Completed plan: performance overhaul
 Status: Complete

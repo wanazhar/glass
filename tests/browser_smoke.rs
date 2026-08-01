@@ -2569,6 +2569,28 @@ async fn browser_session_executes_scoped_form_tasks() {
     let dialog_opened = session.click(&confirmation_target.reference).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(session.pending_dialog().await.is_some());
+    let inspect_dialog_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::DialogInspect,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::new(),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let inspected_dialog = session
+        .execute_dialog_task(&inspect_dialog_task, dialog_opened.current_revision, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        inspected_dialog.dialog.as_ref().unwrap().message,
+        "Confirm order?"
+    );
     let dialog_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::DialogConfirm,

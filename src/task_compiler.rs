@@ -4,8 +4,9 @@
 //! those operations against a validated Web IR revision and apply policy gates.
 
 use crate::task_protocol::{
-    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
-    TaskPostcondition, TaskProtocolError, TaskRevisionPolicy, TaskRiskClass, TaskScope,
+    GlassTask, MAX_INPUT_NAME_BYTES, MAX_INPUTS, MAX_POSTCONDITIONS, TASK_PROTOCOL_SCHEMA_VERSION,
+    TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition, TaskProtocolError,
+    TaskRevisionPolicy, TaskRiskClass, TaskScope,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -84,6 +85,17 @@ impl TaskExecutionPlan {
         }
         self.scope.validate().map_err(TaskCompilationError::from)?;
         self.limits.validate().map_err(TaskCompilationError::from)?;
+        if self.postconditions.len() > MAX_POSTCONDITIONS {
+            return Err(TaskCompilationError::new(
+                "postconditions",
+                "postcondition count exceeds the Task Protocol bound",
+            ));
+        }
+        for (index, postcondition) in self.postconditions.iter().enumerate() {
+            postcondition
+                .validate_at(index)
+                .map_err(TaskCompilationError::from)?;
+        }
         if self.steps.is_empty() {
             return Err(TaskCompilationError::new(
                 "steps",
@@ -177,9 +189,15 @@ impl TaskExecutionPlan {
                 ));
             }
             let mut input_names = BTreeSet::new();
+            if step.input_names.len() > MAX_INPUTS {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].inputNames"),
+                    "input name count exceeds the Task Protocol bound",
+                ));
+            }
             for input_name in &step.input_names {
                 if input_name.is_empty()
-                    || input_name.len() > 64
+                    || input_name.len() > MAX_INPUT_NAME_BYTES
                     || input_name.chars().any(char::is_control)
                     || !input_names.insert(input_name)
                 {
@@ -440,5 +458,28 @@ mod tests {
         plan.confirmation_required = false;
         plan.steps[1].requires_confirmation = false;
         assert_eq!(plan.validate().unwrap_err().path, "confirmationRequired");
+    }
+    #[test]
+    fn plan_validation_rejects_unbounded_postconditions() {
+        let mut plan =
+            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        plan.postconditions[0].expected = Some("\u{0007}".into());
+        assert_eq!(
+            plan.validate().unwrap_err().path,
+            "postconditions[0].expected"
+        );
+
+        plan.postconditions = vec![plan.postconditions[0].clone(); MAX_POSTCONDITIONS + 1];
+        assert_eq!(plan.validate().unwrap_err().path, "postconditions");
+    }
+
+    #[test]
+    fn plan_validation_rejects_too_many_fill_inputs() {
+        let mut plan =
+            compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation)).unwrap();
+        plan.steps[1].input_names = (0..=MAX_INPUTS)
+            .map(|index| format!("field-{index}"))
+            .collect();
+        assert_eq!(plan.validate().unwrap_err().path, "steps[1].inputNames");
     }
 }

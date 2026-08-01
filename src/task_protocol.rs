@@ -11,11 +11,11 @@ use std::fmt::{Display, Formatter};
 
 /// Version of the authored Task Protocol contract.
 pub const TASK_PROTOCOL_SCHEMA_VERSION: u32 = 1;
-const MAX_INPUTS: usize = 64;
-const MAX_INPUT_NAME_BYTES: usize = 64;
+pub(crate) const MAX_INPUTS: usize = 64;
+pub(crate) const MAX_INPUT_NAME_BYTES: usize = 64;
 const MAX_INPUT_VALUE_BYTES: usize = 4_096;
-const MAX_POSTCONDITIONS: usize = 32;
-const MAX_EXPECTATION_BYTES: usize = 256;
+pub(crate) const MAX_POSTCONDITIONS: usize = 32;
+pub(crate) const MAX_EXPECTATION_BYTES: usize = 256;
 const MAX_ACTIONS: u32 = 256;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_ITEMS: u32 = 4_096;
@@ -140,6 +140,20 @@ pub struct TaskPostcondition {
     pub expected: Option<String>,
 }
 
+impl TaskPostcondition {
+    pub(crate) fn validate_at(&self, index: usize) -> Result<(), TaskProtocolError> {
+        if let Some(expected) = &self.expected
+            && (expected.len() > MAX_EXPECTATION_BYTES || expected.chars().any(char::is_control))
+        {
+            return Err(TaskProtocolError::new(
+                format!("postconditions[{index}].expected"),
+                "expected value exceeds its bound or contains a control character",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Versioned declarative task input accepted by Glass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -200,15 +214,7 @@ impl GlassTask {
             ));
         }
         for (index, postcondition) in self.postconditions.iter().enumerate() {
-            if let Some(expected) = &postcondition.expected
-                && (expected.len() > MAX_EXPECTATION_BYTES
-                    || expected.chars().any(char::is_control))
-            {
-                return Err(TaskProtocolError::new(
-                    format!("postconditions[{index}].expected"),
-                    "expected value exceeds its bound or contains a control character",
-                ));
-            }
+            postcondition.validate_at(index)?;
         }
         if matches!(self.task, TaskKind::FormFill) && self.inputs.is_empty() {
             return Err(TaskProtocolError::new(

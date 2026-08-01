@@ -151,6 +151,8 @@ Completed:
   (implemented and covered in `0.2.7`).
 - [ir-030-056](tasks/ir-030-056.md) — expose verified form task execution
   through CLI and MCP.
+- [ir-030-057](tasks/ir-030-057.md) — execute bounded semantic region
+  extraction through the guarded Task Protocol runtime.
 
 ## Completed plan: performance overhaul
 Status: Complete

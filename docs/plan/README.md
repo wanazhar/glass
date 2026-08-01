@@ -111,6 +111,8 @@ Completed:
   validation.
 - [ir-030-037](tasks/ir-030-037.md) — browser-free MCP Web IR diff and
   continuity classification.
+- [ir-030-038](tasks/ir-030-038.md) — canonical Glass protocol operations for
+  Web IR revision analysis.
 
 ## Completed plan: performance overhaul
 Status: Complete

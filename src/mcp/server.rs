@@ -859,7 +859,11 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
         RequestId::Present(Value::Null) => "null-request".into(),
         RequestId::Present(_) => return Err("tools/call request id is not canonical".into()),
     };
-    let operation = format!("browser.{name}");
+    let operation = match name {
+        "diffWebIr" => crate::protocol::WEB_IR_DIFF_OPERATION.to_string(),
+        "continuityWebIr" => crate::protocol::WEB_IR_CONTINUITY_OPERATION.to_string(),
+        _ => format!("browser.{name}"),
+    };
     let canonical = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
         request_id,
@@ -3887,6 +3891,36 @@ mod tests {
         assert_eq!(canonical.request_id, "request-1");
         assert_eq!(canonical.payload["level"], "interactive");
         canonical.validate().unwrap();
+    }
+
+    #[test]
+    fn web_ir_revision_tools_map_to_canonical_operations() {
+        for (name, operation) in [
+            ("diffWebIr", crate::protocol::WEB_IR_DIFF_OPERATION),
+            (
+                "continuityWebIr",
+                crate::protocol::WEB_IR_CONTINUITY_OPERATION,
+            ),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": name,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": {
+                        "before": valid_web_ir_draft(),
+                        "after": valid_web_ir_draft(),
+                        "entityId": "field-1"
+                    }
+                }
+            }))
+            .unwrap();
+            let canonical = canonical_tool_request(&request).unwrap();
+            assert_eq!(canonical.operation, operation);
+            assert_eq!(canonical.payload["before"]["schemaVersion"], 1);
+            canonical.validate().unwrap();
+        }
     }
 
     #[tokio::test]

@@ -16,6 +16,11 @@ const MAX_ERROR_CODE_BYTES: usize = 64;
 const MAX_MESSAGE_BYTES: usize = 512;
 const MAX_DEADLINE_MS: u64 = 15 * 60 * 1_000;
 
+/// Canonical transport operation for browser-free Web IR revision diffs.
+pub const WEB_IR_DIFF_OPERATION: &str = "webIr.diff";
+/// Canonical transport operation for browser-free Web IR continuity checks.
+pub const WEB_IR_CONTINUITY_OPERATION: &str = "webIr.continuity";
+
 /// Canonical transport operation for browser-free Task Protocol compilation.
 pub const TASK_COMPILE_OPERATION: &str = "task.compile";
 
@@ -32,6 +37,49 @@ impl TaskCompilePayload {
         self.task
             .validate()
             .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    }
+}
+
+/// Typed payload carried by a `webIr.diff` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrDiffPayload {
+    pub before: crate::web_ir::GlassWebIrDraft,
+    pub after: crate::web_ir::GlassWebIrDraft,
+}
+
+impl WebIrDiffPayload {
+    /// Validate both draft graphs before diff dispatch.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.before
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(format!("before: {error}")))?;
+        self.after
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(format!("after: {error}")))?;
+        Ok(())
+    }
+}
+
+/// Typed payload carried by a `webIr.continuity` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrContinuityPayload {
+    pub before: crate::web_ir::GlassWebIrDraft,
+    pub after: crate::web_ir::GlassWebIrDraft,
+    pub entity_id: String,
+}
+
+impl WebIrContinuityPayload {
+    /// Validate both draft graphs and the bounded source entity ID.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.before
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(format!("before: {error}")))?;
+        self.after
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(format!("after: {error}")))?;
+        validate_identifier(&self.entity_id, "entityId")
     }
 }
 
@@ -270,6 +318,36 @@ impl GlassRequest {
         payload.validate()?;
         Ok(payload)
     }
+
+    /// Decode and validate a typed `webIr.diff` payload.
+    pub fn decode_web_ir_diff(&self) -> Result<WebIrDiffPayload, ProtocolError> {
+        self.validate()?;
+        if self.operation != WEB_IR_DIFF_OPERATION {
+            return Err(ProtocolError::InvalidField(format!(
+                "expected operation {WEB_IR_DIFF_OPERATION}"
+            )));
+        }
+        let payload: WebIrDiffPayload = serde_json::from_value(self.payload.clone())
+            .map_err(|error| ProtocolError::InvalidField(format!("webIr.diff payload: {error}")))?;
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    /// Decode and validate a typed `webIr.continuity` payload.
+    pub fn decode_web_ir_continuity(&self) -> Result<WebIrContinuityPayload, ProtocolError> {
+        self.validate()?;
+        if self.operation != WEB_IR_CONTINUITY_OPERATION {
+            return Err(ProtocolError::InvalidField(format!(
+                "expected operation {WEB_IR_CONTINUITY_OPERATION}"
+            )));
+        }
+        let payload: WebIrContinuityPayload = serde_json::from_value(self.payload.clone())
+            .map_err(|error| {
+                ProtocolError::InvalidField(format!("webIr.continuity payload: {error}"))
+            })?;
+        payload.validate()?;
+        Ok(payload)
+    }
 }
 
 /// Decode and compile a `task.compile` request without browser access.
@@ -286,6 +364,28 @@ pub fn compile_task_result(request: &GlassRequest) -> Result<TaskCompileResult, 
     Ok(TaskCompileResult {
         plan: compile_task_request(request)?,
     })
+}
+
+/// Compute a bounded Web IR diff from a canonical request.
+pub fn web_ir_diff_result(request: &GlassRequest) -> Result<WebIrDiffResult, ProtocolError> {
+    let payload = request.decode_web_ir_diff()?;
+    let diff = payload
+        .before
+        .diff(&payload.after)
+        .map_err(|error| ProtocolError::InvalidField(error.to_string()))?;
+    Ok(WebIrDiffResult::from_diff(&diff))
+}
+
+/// Classify one Web IR entity from a canonical request.
+pub fn web_ir_continuity_result(
+    request: &GlassRequest,
+) -> Result<WebIrContinuityResult, ProtocolError> {
+    let payload = request.decode_web_ir_continuity()?;
+    let continuity = payload
+        .before
+        .classify_entity_continuity(&payload.after, &payload.entity_id)
+        .map_err(|error| ProtocolError::InvalidField(error.to_string()))?;
+    Ok(WebIrContinuityResult::from(continuity))
 }
 
 /// Canonical operation response shared by supported transports.
@@ -338,6 +438,38 @@ impl GlassResponse {
         })?;
         result.validate()?;
         Ok(result)
+    }
+
+    /// Decode and validate a successful bounded `webIr.diff` result.
+    pub fn decode_web_ir_diff_result(&self) -> Result<WebIrDiffResult, ProtocolError> {
+        self.validate()?;
+        if !self.ok {
+            return Err(ProtocolError::InvalidField(
+                "webIr.diff result requires a successful response".into(),
+            ));
+        }
+        let value = self
+            .result
+            .clone()
+            .ok_or_else(|| ProtocolError::InvalidField("webIr.diff result is missing".into()))?;
+        serde_json::from_value(value)
+            .map_err(|error| ProtocolError::InvalidField(format!("webIr.diff result: {error}")))
+    }
+
+    /// Decode and validate a successful Web IR continuity result.
+    pub fn decode_web_ir_continuity_result(&self) -> Result<WebIrContinuityResult, ProtocolError> {
+        self.validate()?;
+        if !self.ok {
+            return Err(ProtocolError::InvalidField(
+                "webIr.continuity result requires a successful response".into(),
+            ));
+        }
+        let value = self.result.clone().ok_or_else(|| {
+            ProtocolError::InvalidField("webIr.continuity result is missing".into())
+        })?;
+        serde_json::from_value(value).map_err(|error| {
+            ProtocolError::InvalidField(format!("webIr.continuity result: {error}"))
+        })
     }
 }
 
@@ -473,6 +605,46 @@ mod tests {
         }
     }
 
+    fn web_ir_draft(revision: u64, name: &str) -> crate::web_ir::GlassWebIrDraft {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "revision": revision,
+            "entities": [
+                {
+                    "id": "page",
+                    "kind": "page",
+                    "quality": "confirmed",
+                    "evidenceSources": []
+                },
+                {
+                    "id": "field-1",
+                    "kind": "field",
+                    "role": "textbox",
+                    "name": name,
+                    "quality": "strong",
+                    "evidenceSources": ["dom"]
+                }
+            ],
+            "relationships": [
+                {"from": "page", "to": "field-1", "kind": "contains"}
+            ],
+            "coverage": {
+                "structural": "strong",
+                "semantic": "strong",
+                "interactiveEntitiesObserved": 1,
+                "opaqueRegions": 0,
+                "reasons": []
+            },
+            "limits": {
+                "truncated": false,
+                "omittedFacts": 0,
+                "textBytes": 0,
+                "missingSources": []
+            }
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn request_round_trips_and_validates() {
         let request = request();
@@ -509,6 +681,64 @@ mod tests {
         let mut invalid = response.clone();
         invalid.ok = true;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn web_ir_revision_operations_round_trip_with_bounded_results() {
+        let before = web_ir_draft(7, "Email");
+        let after = web_ir_draft(8, "Email address");
+        let diff_request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "diff-1".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: WEB_IR_DIFF_OPERATION.into(),
+            payload: serde_json::to_value(WebIrDiffPayload {
+                before: before.clone(),
+                after: after.clone(),
+            })
+            .unwrap(),
+            deadline_ms: None,
+        };
+        let diff = web_ir_diff_result(&diff_request).unwrap();
+        assert_eq!(diff.from_revision, 7);
+        assert_eq!(diff.to_revision, 8);
+        assert_eq!(diff.entity_changed_count, 1);
+        assert_eq!(diff_request.decode_web_ir_diff().unwrap().before, before);
+
+        let continuity_request = GlassRequest {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "continuity-1".into(),
+            correlation_id: None,
+            session_id: None,
+            mutation_lease: None,
+            operation: WEB_IR_CONTINUITY_OPERATION.into(),
+            payload: serde_json::to_value(WebIrContinuityPayload {
+                before,
+                after,
+                entity_id: "field-1".into(),
+            })
+            .unwrap(),
+            deadline_ms: None,
+        };
+        let continuity = web_ir_continuity_result(&continuity_request).unwrap();
+        assert_eq!(
+            continuity.status,
+            crate::web_ir::DraftEntityContinuityStatus::Changed
+        );
+        let response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: continuity_request.request_id.clone(),
+            correlation_id: None,
+            ok: true,
+            result: Some(serde_json::to_value(&continuity).unwrap()),
+            error: None,
+        };
+        assert_eq!(
+            response.decode_web_ir_continuity_result().unwrap(),
+            continuity
+        );
     }
 
     #[test]

@@ -16,16 +16,28 @@ Rust `glass::protocol` module.
 | `params.arguments` | `payload` |
 | Daemon session and lease context | `sessionId` and `mutationLease` |
 
+Browser-free Web IR revision tools use canonical operation names rather than
+the `browser.` prefix:
+
+| MCP tool | Glass operation |
+|---|---|
+| `diffWebIr` | `webIr.diff` |
+| `continuityWebIr` | `webIr.continuity` |
+
+Their payloads contain two validated draft graphs. Successful results are
+bounded summaries or one continuity classification; entity payloads and page
+content are not returned by the MCP projection.
+
 The CLI and SDKs use the same operation names and payload fields. MCP keeps
 JSON-RPC success and error framing. The operation payload remains bounded and
 versioned.
 
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.
-
 The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
-covers read, leased mutation, workflow, success, and typed-error envelopes.
-Rust tests round-trip the fixture. MCP tests check the canonical mapping.
+covers read, leased mutation, workflow, browser-free Web IR revision operations,
+success, and typed-error envelopes. Rust tests round-trip the fixture. MCP tests
+check the canonical mapping.
 
 ## Compatibility
 

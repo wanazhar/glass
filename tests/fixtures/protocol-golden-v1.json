@@ -33,6 +33,165 @@
         "schemaVersion": 1,
         "workflow": "fixture-workflow"
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-diff-1",
+      "operation": "webIr.diff",
+      "payload": {
+        "before": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            },
+            {
+              "id": "field-1",
+              "kind": "field",
+              "role": "textbox",
+              "name": "Email",
+              "quality": "strong",
+              "evidenceSources": ["dom"]
+            }
+          ],
+          "relationships": [
+            {"from": "page", "to": "field-1", "kind": "contains"}
+          ],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 1,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "after": {
+          "schemaVersion": 1,
+          "revision": 8,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            },
+            {
+              "id": "field-1",
+              "kind": "field",
+              "role": "textbox",
+              "name": "Email address",
+              "quality": "strong",
+              "evidenceSources": ["dom"]
+            }
+          ],
+          "relationships": [
+            {"from": "page", "to": "field-1", "kind": "contains"}
+          ],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 1,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-continuity-1",
+      "operation": "webIr.continuity",
+      "payload": {
+        "before": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            },
+            {
+              "id": "field-1",
+              "kind": "field",
+              "role": "textbox",
+              "name": "Email",
+              "quality": "strong",
+              "evidenceSources": ["dom"]
+            }
+          ],
+          "relationships": [
+            {"from": "page", "to": "field-1", "kind": "contains"}
+          ],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 1,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "after": {
+          "schemaVersion": 1,
+          "revision": 8,
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": []
+            },
+            {
+              "id": "field-1",
+              "kind": "field",
+              "role": "textbox",
+              "name": "Email address",
+              "quality": "strong",
+              "evidenceSources": ["dom"]
+            }
+          ],
+          "relationships": [
+            {"from": "page", "to": "field-1", "kind": "contains"}
+          ],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 1,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "entityId": "field-1"
+      }
     }
   ],
   "responses": [

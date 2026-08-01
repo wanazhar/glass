@@ -3,7 +3,11 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.4
+## [Unreleased] — 0.2.5
+
+## [0.2.4] - 2026-08-01
+### Added
+
 - Browser-free MCP Web IR revision tools now map to canonical `webIr.diff` and
   `webIr.continuity` operations with typed Rust payloads and bounded results.
 - MCP exposes browser-free `inspectWebIr`, `validateWebIr`, `diffWebIr`, and

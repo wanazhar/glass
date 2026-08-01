@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current published release is `glass-browser` version `0.2.3`. This
-checklist is being used for the next crates.io release, `0.2.4`. Linux
+The current published release is `glass-browser` version `0.2.4`. This
+checklist is being used for the next crates.io release, `0.2.5`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
 only Linux arm64 has been verified on the current machine. Windows is
 unsupported.
@@ -22,7 +22,7 @@ binary artifacts.
 
 ## Prepare
 
-- [x] Confirm development version `0.2.4`; release date remains pending
+- [x] Confirm development version `0.2.5`; release date remains pending
       publication.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
@@ -69,14 +69,18 @@ The local browser and package checks are evidence for this machine only.
 
 ## Publish
 
-- [x] Commit the 0.2.4 development version and changelog update.
-- [ ] Create a signed annotated tag such as `v0.2.4` after publication approval.
-- [ ] Publish `glass-browser` from the tagged commit with `cargo publish
-      --locked` after the package checks pass and publication is approved.
-- [ ] Include the local Linux ARM64 verification boundary and known
+- [x] Publish and verify the `0.2.4` crates-only release boundary.
+- [x] Create a signed annotated tag such as `v0.2.4`.
+- [x] Publish `glass-browser` from the tagged commit with `cargo publish
+      --locked` after the package checks passed and publication was approved.
+- [x] Include the local Linux ARM64 verification boundary and known
       limitations in the 0.2.4 release notes or changelog.
-- [ ] Verify installation from crates.io in a clean environment after
-      publication.
+- [x] Verify installation and upgrade smoke checks for the published release.
 - [x] Restore an empty `Unreleased` changelog section after publication.
+- [ ] Run the full 0.2.5 release validation suite and package dry runs.
+- [ ] Create the signed annotated `v0.2.5` tag after publication approval.
+- [ ] Publish `glass-browser` from the tagged commit after explicit approval.
+- [ ] Push the release commit and tag after explicit approval.
+- [ ] Update issue #30 with final verified 0.2.5 release evidence.
 
 A release is not complete while any required checkbox is open.

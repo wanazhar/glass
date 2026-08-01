@@ -143,6 +143,8 @@ Completed:
   diff projection through an explicit offline CLI mode.
 - [ir-030-053](tasks/ir-030-053.md) — harden deterministic Task Protocol
   execution-plan safety checks.
+- [ir-030-054](tasks/ir-030-054.md) — enforce compatible Web IR revision
+  transitions for diffs and continuity.
 
 ## Completed plan: performance overhaul
 Status: Complete

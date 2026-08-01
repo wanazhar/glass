@@ -34,5 +34,20 @@ commit `41b5684`:
 - `cargo run -- --experimental-extensions capabilities` — reported the
   `extensions` capability as `experimental` on this host.
 
+## 0.2.5 readiness
+
+The following checks passed against the local `0.2.5` development checkout at
+commit `d6b9935`:
+
+- `cargo test --all --locked` — 474 passed, 1 ignored;
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
+  --test-threads=1` — 11 passed;
+- `cargo package --locked --no-verify` packaged 203 files;
+- `cargo publish --locked --dry-run --no-verify` completed without uploading;
+- `GLASS_PREVIOUS_VERSION=0.2.4 scripts/smoke-clean-install.sh` — clean
+  install and upgrade smoke passed from 0.2.4 to 0.2.5;
+- `cargo deny check` and `cargo audit` — no license, source, or vulnerability
+  findings.
+
 The support status in the README intentionally calls only this Linux ARM64
 environment locally verified. Other declared targets remain unverified here.

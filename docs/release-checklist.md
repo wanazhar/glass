@@ -50,7 +50,7 @@ cargo publish --locked --dry-run --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
-GLASS_PREVIOUS_VERSION=0.1.18 scripts/smoke-clean-install.sh
+GLASS_PREVIOUS_VERSION=0.2.4 scripts/smoke-clean-install.sh
 ```
 
 Then complete these release checks:

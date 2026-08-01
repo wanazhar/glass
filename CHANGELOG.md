@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.6
+- GitHub Release coverage checks now tolerate release API propagation before
+  declaring a version tag missing.
 
 ## [0.2.5] - 2026-08-01
 - Web IR diff and continuity now reject revision regressions and same-revision

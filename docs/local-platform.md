@@ -17,13 +17,20 @@ not certify a future published crate without repeating the checks.
 
 ## Checks passed
 
-The following checks passed on the `0.2.3` release commit (`v0.2.3`):
+The following checks passed against the local `0.2.4` development checkout at
+commit `41b5684`:
 
-- `cargo test --all-targets --locked` — 457 passed, 1 ignored;
-- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1` — 11 passed;
-- `cargo package --locked --no-verify` — 202 package files validated; and
-- `cargo publish --locked --dry-run --no-verify` — crates.io publication dry-run passed without uploading.
-- `cargo deny check` and `cargo audit` — no license, source, or vulnerability findings.
+- `cargo test --all --locked` — 472 passed, 1 ignored;
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
+  --test-threads=1` — 11 passed;
+- `cargo package --locked --list` — package contents inspected;
+- `cargo package --locked --no-verify` and
+  `cargo publish --locked --dry-run --no-verify` — publication shape passed
+  without uploading;
+- `GLASS_PREVIOUS_VERSION=0.2.3 scripts/smoke-clean-install.sh` — clean
+  install and upgrade smoke passed from 0.2.3 to 0.2.4;
+- `cargo deny check` and `cargo audit` — no license, source, or vulnerability
+  findings.
 - `cargo run -- --experimental-extensions capabilities` — reported the
   `extensions` capability as `experimental` on this host.
 

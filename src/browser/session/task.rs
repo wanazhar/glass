@@ -90,7 +90,7 @@ impl BrowserSession {
         }
         let observation = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
 
-        let scoped_regions = match scoped_regions(&observation, task) {
+        let scoped_regions = match scoped_regions_for_observation(&observation, task) {
             Ok(regions) => regions,
             Err(error) => {
                 return Ok(preflight_result(
@@ -188,7 +188,9 @@ impl BrowserSession {
                 )
                 .await?;
                 let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-                let verified = postconditions_hold(task, &after, &scoped_regions);
+                let after_scoped_regions =
+                    scoped_regions_for_observation(&after, task).unwrap_or_default();
+                let verified = postconditions_hold(task, &after, &after_scoped_regions);
                 let succeeded = verified && form.filled == form.total;
                 steps.push(step(
                     &plan,
@@ -249,8 +251,10 @@ impl BrowserSession {
                 )
                 .await;
                 let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let after_scoped_regions =
+                    scoped_regions_for_observation(&after, task).unwrap_or_default();
                 let verified =
-                    outcome.is_ok() && postconditions_hold(task, &after, &scoped_regions);
+                    outcome.is_ok() && postconditions_hold(task, &after, &after_scoped_regions);
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::SubmitForm,
@@ -337,7 +341,7 @@ fn preflight_result(
     }
 }
 
-fn scoped_regions<'a>(
+fn scoped_regions_for_observation<'a>(
     observation: &'a InspectPageResult,
     task: &GlassTask,
 ) -> BrowserResult<Vec<&'a SemanticRegion>> {
@@ -532,7 +536,7 @@ mod tests {
             focused_target: None,
             alerts: Vec::new(),
         };
-        let error = scoped_regions(&observation, &task()).unwrap_err();
+        let error = scoped_regions_for_observation(&observation, &task()).unwrap_err();
         assert!(error.to_string().contains("not found"));
     }
 }

@@ -217,6 +217,8 @@ impl GlassCapabilityManifest {
         let mut capabilities = BTreeMap::from([
             ("action", true),
             ("semanticRegions", true),
+            ("taskProtocol", true),
+            ("webIr", true),
             ("observationDiffs", true),
             ("intentResolution", true),
             ("workflowRuntime", true),
@@ -243,6 +245,9 @@ impl GlassCapabilityManifest {
                         } else {
                             GlassCapabilityStatus::DisabledByPolicy
                         }
+                    }
+                    "taskProtocol" | "webIr" if *enabled => {
+                        GlassCapabilityStatus::AvailableUncertified
                     }
                     "rawCdp" | "persistentKnowledge" if !enabled => {
                         GlassCapabilityStatus::DisabledByPolicy
@@ -488,6 +493,16 @@ mod tests {
         assert_eq!(manifest.constraints.max_sessions, 4);
         assert!(manifest.capabilities["workflowResume"]);
         assert!(!manifest.capabilities["localDaemon"]);
+        assert!(manifest.capabilities["taskProtocol"]);
+        assert!(manifest.capabilities["webIr"]);
+        assert_eq!(
+            manifest.capability_statuses["taskProtocol"],
+            GlassCapabilityStatus::AvailableUncertified
+        );
+        assert_eq!(
+            manifest.capability_statuses["webIr"],
+            GlassCapabilityStatus::AvailableUncertified
+        );
         assert_eq!(
             manifest.capability_statuses["extensions"],
             GlassCapabilityStatus::DisabledByPolicy
@@ -532,7 +547,7 @@ mod tests {
                 "webIr": [1]
             },
             "requires": ["workflowResume"],
-            "optional": ["extensions"],
+            "optional": ["extensions", "taskProtocol", "webIr"],
             "acceptsExperimental": false,
             "futureField": true
         });
@@ -550,6 +565,14 @@ mod tests {
         assert_eq!(
             agreement.capabilities["extensions"].status,
             GlassCapabilityStatus::DisabledByPolicy
+        );
+        assert_eq!(
+            agreement.capabilities["taskProtocol"].status,
+            GlassCapabilityStatus::AvailableUncertified
+        );
+        assert_eq!(
+            agreement.capabilities["webIr"].status,
+            GlassCapabilityStatus::AvailableUncertified
         );
         assert_eq!(manifest.schemas["workflow"], vec![1]);
     }

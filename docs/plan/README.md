@@ -127,6 +127,8 @@ Completed:
   coverage.
 - [ir-030-045](tasks/ir-030-045.md) — advertise canonical Task and Web IR
   schema versions through capability negotiation.
+- [ir-030-046](tasks/ir-030-046.md) — advertise Task Protocol and Web IR
+  capability statuses.
 
 ## Completed plan: performance overhaul
 Status: Complete

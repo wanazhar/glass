@@ -26,6 +26,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   Protocol and Web IR validation.
 - Capability negotiation now advertises canonical `task` and `webIr` schema
   version `1` entries for browser-free protocol clients.
+- Capability manifests now identify browser-free `taskProtocol` and draft
+  `webIr` surfaces as `availableUncertified`.
 
 ## [0.2.3] - 2026-08-01
 

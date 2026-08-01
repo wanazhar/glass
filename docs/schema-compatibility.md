@@ -39,6 +39,10 @@ the optional `capabilityStatuses` map. Statuses distinguish
 `disabledByPolicy`, `availableUncertified`, and `blockedBySecurityGate`
 without making the additive field required for older clients.
 
+The browser-free `taskProtocol` and draft `webIr` capabilities use
+`availableUncertified` while their contracts mature; this status does not
+claim native browser extraction or cross-platform runtime certification.
+
 ## Capability negotiation
 
 MCP `initialize` returns a `glass` manifest that follows

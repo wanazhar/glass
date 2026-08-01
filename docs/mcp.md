@@ -83,6 +83,10 @@ requests with no common supported version.
 The `task` and `webIr` schemas describe the browser-free Task Protocol and
 draft Web IR contracts; their operations do not start Chrome.
 
+The corresponding `taskProtocol` and `webIr` capabilities report
+`availableUncertified`: the browser-free contracts are usable, but draft Web IR
+and cross-platform runtime evidence are not presented as stable certification.
+
 Read [schema compatibility](schema-compatibility.md) for version rules.
 
 ## Transport limits

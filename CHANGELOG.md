@@ -15,6 +15,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Browser-free MCP Task Protocol tools now map `compileTask` and `validateTask`
   to canonical `task.compile` and `task.validate` operations with typed task
   payloads and validation results.
+- MCP Task Protocol dispatch now routes through the typed canonical request
+  helpers while excluding MCP-only transport options from task payloads.
 
 ## [0.2.3] - 2026-08-01
 

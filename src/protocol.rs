@@ -42,7 +42,7 @@ impl TaskCompilePayload {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.task
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+            .map_err(|error| ProtocolError::TaskCompilation(error.into()))
     }
 }
 
@@ -56,9 +56,7 @@ pub struct TaskValidationPayload {
 impl TaskValidationPayload {
     /// Validate the authored task before validation dispatch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        self.task
-            .validate()
-            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+        self.task.validate().map_err(ProtocolError::TaskValidation)
     }
 }
 
@@ -272,9 +270,7 @@ impl From<crate::web_ir::DraftEntityContinuity> for WebIrContinuityResult {
 impl TaskCompileResult {
     /// Validate the embedded deterministic execution plan.
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        self.plan
-            .validate()
-            .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+        self.plan.validate().map_err(ProtocolError::TaskCompilation)
     }
 }
 
@@ -434,8 +430,7 @@ pub fn compile_task_request(
     request: &GlassRequest,
 ) -> Result<crate::task_compiler::TaskExecutionPlan, ProtocolError> {
     let payload = request.decode_task_compile()?;
-    crate::task_compiler::compile_task(&payload.task)
-        .map_err(|error| ProtocolError::InvalidField(error.to_string()))
+    crate::task_compiler::compile_task(&payload.task).map_err(ProtocolError::TaskCompilation)
 }
 
 /// Decode and compile a `task.compile` request into a typed response payload.
@@ -710,6 +705,8 @@ impl GlassError {
 pub enum ProtocolError {
     UnsupportedVersion(u32),
     InvalidField(String),
+    TaskValidation(crate::task_protocol::TaskProtocolError),
+    TaskCompilation(crate::task_compiler::TaskCompilationError),
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -719,6 +716,8 @@ impl std::fmt::Display for ProtocolError {
                 write!(formatter, "unsupported Glass protocol version {version}")
             }
             Self::InvalidField(detail) => formatter.write_str(detail),
+            Self::TaskValidation(error) => error.fmt(formatter),
+            Self::TaskCompilation(error) => error.fmt(formatter),
         }
     }
 }

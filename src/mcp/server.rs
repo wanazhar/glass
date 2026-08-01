@@ -1345,6 +1345,27 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         }))
         .ok();
     }
+    if let Some(error) = error.downcast_ref::<crate::protocol::ProtocolError>() {
+        return match error {
+            crate::protocol::ProtocolError::TaskValidation(error) => {
+                serde_json::to_string(&json!({
+                    "kind": "taskValidation",
+                    "path": error.path,
+                    "reason": error.reason,
+                }))
+                .ok()
+            }
+            crate::protocol::ProtocolError::TaskCompilation(error) => {
+                serde_json::to_string(&json!({
+                    "kind": "taskCompilation",
+                    "path": error.path,
+                    "reason": error.reason,
+                }))
+                .ok()
+            }
+            _ => None,
+        };
+    }
 
     error
         .downcast_ref::<TargetError>()
@@ -1392,6 +1413,13 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         })
 }
 
+fn canonical_task_request(request: &JsonRpcRequest, task: Value) -> BrowserResult<GlassRequest> {
+    let mut canonical = canonical_tool_request(request)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    canonical.payload = json!({"task": task});
+    Ok(canonical)
+}
+
 async fn call_tool(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
@@ -1427,16 +1455,14 @@ async fn call_tool(
         return serialized_result(&crate::protocol::WebIrContinuityResult::from(continuity));
     }
     if let ToolInvocation::ValidateTask { task } = &invocation {
-        let task = crate::task_protocol::GlassTask::from_json(&serde_json::to_string(task)?)?;
-        return serialized_result(&crate::protocol::TaskValidationResult {
-            valid: true,
-            schema_version: task.schema_version,
-            task: task.task,
-        });
+        let canonical = canonical_task_request(request, task.clone())?;
+        let result = crate::protocol::validate_task_result(&canonical)?;
+        return serialized_result(&result);
     }
     if let ToolInvocation::CompileTask { task } = &invocation {
-        let plan = crate::task_compiler::compile_task(task)?;
-        return serialized_result(&crate::protocol::TaskCompileResult { plan });
+        let canonical = canonical_task_request(request, serde_json::to_value(task)?)?;
+        let result = crate::protocol::compile_task_result(&canonical)?;
+        return serialized_result(&result);
     }
     if matches!(
         &invocation,
@@ -3980,6 +4006,41 @@ mod tests {
                 canonical.decode_task_compile().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn canonical_task_request_excludes_mcp_transport_options() {
+        let task = json!({
+            "schemaVersion": 1,
+            "task": "region.extract",
+            "scope": {"regionName": "Checkout"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        });
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "validate",
+            "method": "tools/call",
+            "params": {
+                "name": "validateTask",
+                "arguments": {
+                    "task": task.clone(),
+                    "responseMode": "reference",
+                    "includeTrace": true
+                }
+            }
+        }))
+        .unwrap();
+        let canonical = canonical_task_request(&request, task).unwrap();
+        assert_eq!(
+            canonical.operation,
+            crate::protocol::TASK_VALIDATE_OPERATION
+        );
+        assert_eq!(
+            canonical.payload,
+            json!({"task": canonical.payload["task"].clone()})
+        );
+        canonical.decode_task_validate().unwrap();
     }
 
     #[tokio::test]

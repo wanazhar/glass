@@ -117,6 +117,8 @@ Completed:
   Web IR inspection and validation.
 - [ir-030-040](tasks/ir-030-040.md) — canonical Glass protocol operations for
   Task Protocol validation and compilation.
+- [ir-030-041](tasks/ir-030-041.md) — route MCP Task Protocol tools through
+  typed canonical dispatch.
 
 ## Completed plan: performance overhaul
 Status: Complete

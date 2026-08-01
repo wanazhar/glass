@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Task Form</title></head>
+  <body>
+    <form aria-label="Checkout" id="checkout">
+      <label>Email <input aria-label="Email" name="email"></label>
+      <button aria-label="Submit" type="submit">Submit</button>
+      <output aria-label="Result" id="result"></output>
+    </form>
+    <script>
+      document.querySelector('#checkout').addEventListener('submit', event => {
+        event.preventDefault();
+        document.querySelector('#result').textContent = 'submitted';
+      });
+    </script>
+  </body>
+</html>

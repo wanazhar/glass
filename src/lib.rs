@@ -84,12 +84,12 @@ pub use browser::{
     KnowledgeScope, KnowledgeSignalKind, KnowledgeSource, KnowledgeStore, KnowledgeStoreChange,
     KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreSnapshot, KnowledgeStoreStats,
     KnowledgeValidationError, NavigationOutcome, PageInfo, SessionOptions, SessionOptionsBuilder,
-    WORKFLOW_SCHEMA_VERSION, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
-    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutput,
-    WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError, WorkflowResumePlan,
-    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
-    WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
-    WorkflowValidationError, WorkflowValueType,
+    TaskExecutionResult, TaskStepResult, WORKFLOW_SCHEMA_VERSION, WorkflowBudgets,
+    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
+    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
+    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };
 
 pub use task_protocol::{

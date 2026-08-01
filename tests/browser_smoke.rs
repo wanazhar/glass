@@ -1,14 +1,19 @@
 use glass::browser::chrome::resolve_chrome_path;
 use glass::browser::session::{
-    ActionKind, BatchStep, BrowserSession, InteractionMode, SessionOptions, TargetError,
-    TargetErrorKind, VerificationPredicate, WaitCondition, WaitTimeout, WorkflowBudgets,
-    WorkflowDefinition, WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowRunStatus,
-    WorkflowStep, WorkflowStepState, WorkflowTrace, WorkflowTransactionClass,
+    ActionKind, BatchStep, BrowserSession, InteractionMode, SemanticObservationLevel,
+    SessionOptions, TargetError, TargetErrorKind, VerificationPredicate, WaitCondition,
+    WaitTimeout, WorkflowBudgets, WorkflowDefinition, WorkflowOutputDeclaration,
+    WorkflowOutputSource, WorkflowRunStatus, WorkflowStep, WorkflowStepState, WorkflowTrace,
+    WorkflowTransactionClass,
 };
 use glass::reliability::{
     ReliabilityFixtureManifest, ReliabilityRunClassification, ReliabilityScenario,
 };
 use glass::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
+use glass::{
+    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
+    TaskRiskClass, TaskScope,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -2473,4 +2478,112 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     session.close().await.unwrap();
     fixture.close().await;
     cross_origin.close().await;
+}
+
+#[tokio::test]
+async fn browser_session_executes_scoped_form_tasks() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping verified form smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "task-form-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let fill_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::FormFill,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("Email"), String::from("agent@example.test"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let fill_result = session
+        .execute_form_task(&fill_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(fill_result.status, "succeeded");
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('[name=email]').value")
+            .await
+            .unwrap(),
+        "agent@example.test"
+    );
+
+    let submit_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::FormSubmit,
+        scope: fill_task.scope.clone(),
+        inputs: BTreeMap::from([(String::from("submit"), String::from("Submit"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::RemoteIrreversible,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let before_submit = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let blocked = session
+        .execute_form_task(&submit_task, before_submit.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(blocked.status, "preflight-failed");
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#result').textContent")
+            .await
+            .unwrap(),
+        ""
+    );
+    let retry_observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let submitted = session
+        .execute_form_task(&submit_task, retry_observation.revision, true)
+        .await
+        .unwrap();
+    assert_eq!(submitted.status, "succeeded");
+    assert_eq!(
+        session
+            .evaluate("document.querySelector('#result').textContent")
+            .await
+            .unwrap(),
+        "submitted"
+    );
+
+    session.close().await.unwrap();
+    fixture_server.close().await;
 }

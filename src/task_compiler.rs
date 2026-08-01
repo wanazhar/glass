@@ -176,16 +176,24 @@ impl TaskExecutionPlan {
                     "task operations must be confirmation-gated when the plan requires it",
                 ));
             }
-            if step.operation == TaskPlanOperation::FillInputs && step.input_names.is_empty() {
+            if matches!(
+                step.operation,
+                TaskPlanOperation::FillInputs | TaskPlanOperation::SubmitForm
+            ) && step.input_names.is_empty()
+            {
                 return Err(TaskCompilationError::new(
                     format!("steps[{index}].inputNames"),
-                    "fill operations require at least one input name",
+                    "form operations require at least one input name",
                 ));
             }
-            if step.operation != TaskPlanOperation::FillInputs && !step.input_names.is_empty() {
+            if !matches!(
+                step.operation,
+                TaskPlanOperation::FillInputs | TaskPlanOperation::SubmitForm
+            ) && !step.input_names.is_empty()
+            {
                 return Err(TaskCompilationError::new(
                     format!("steps[{index}].inputNames"),
-                    "input names are only valid for fill operations",
+                    "input names are only valid for form operations",
                 ));
             }
             let mut input_names = BTreeSet::new();
@@ -234,7 +242,10 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
         .map(|(index, operation)| TaskPlanStep {
             ordinal: u16::try_from(index + 1).expect("fixed operation sequence is bounded"),
             operation,
-            input_names: if operation == TaskPlanOperation::FillInputs {
+            input_names: if matches!(
+                operation,
+                TaskPlanOperation::FillInputs | TaskPlanOperation::SubmitForm
+            ) {
                 input_names.clone()
             } else {
                 Vec::new()
@@ -395,6 +406,18 @@ mod tests {
         assert_eq!(plan.revision, authored.revision);
     }
 
+    #[test]
+    fn submit_plans_preserve_only_input_names() {
+        let plan = compile_task(&task(
+            TaskKind::FormSubmit,
+            TaskRiskClass::RemoteIrreversible,
+        ))
+        .unwrap();
+        assert_eq!(plan.steps[1].operation, TaskPlanOperation::SubmitForm);
+        assert_eq!(plan.steps[1].input_names, vec!["email"]);
+        assert!(!plan.to_canonical_json().unwrap().contains("a@example.test"));
+        assert!(plan.confirmation_required);
+    }
     #[test]
     fn irreversible_and_explicit_confirmation_tasks_are_gated() {
         let irreversible = compile_task(&task(

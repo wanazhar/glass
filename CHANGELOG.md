@@ -4,6 +4,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.7
+- Added a browser-backed, revision-checked Task Protocol runtime for scoped
+  `form.inspect`, `form.fill`, `form.validate`, and `form.submit` operations
+  with bounded timeouts, confirmation gates, and indeterminate-outcome
+  recovery states.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

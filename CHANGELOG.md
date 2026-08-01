@@ -8,6 +8,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   `form.inspect`, `form.fill`, `form.validate`, and `form.submit` operations
   with bounded timeouts, confirmation gates, and indeterminate-outcome
   recovery states.
+- Exposed verified form task execution through `glass task execute` and the
+  MCP `executeTask` tool, both using the same guarded runtime and fresh
+  postcondition observation.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

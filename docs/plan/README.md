@@ -62,8 +62,9 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — the `0.2.7` verified-form execution increment is ready
-for implementation; no publication is authorized.
+Status: In progress — the `0.2.7` verified-form execution increment is
+implemented and exposed through the CLI and MCP; publication remains
+approval-gated.
 
 Completed:
 
@@ -148,6 +149,8 @@ Completed:
   transitions for diffs and continuity.
 - [ir-030-055](tasks/ir-030-055.md) — verified form task execution boundary
   (implemented and covered in `0.2.7`).
+- [ir-030-056](tasks/ir-030-056.md) — expose verified form task execution
+  through CLI and MCP.
 
 ## Completed plan: performance overhaul
 Status: Complete

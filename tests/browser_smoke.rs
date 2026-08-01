@@ -2593,6 +2593,30 @@ async fn browser_session_executes_scoped_form_tasks() {
         .await
         .unwrap();
 
+    let pagination_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::PaginationNext,
+        scope: TaskScope {
+            region_name: Some("Pagination".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("next"), String::from("Next page"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let paginated = session
+        .execute_form_task(&pagination_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(paginated.status, "succeeded");
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+
     let extract_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::RegionExtract,

@@ -236,6 +236,12 @@ impl GlassTask {
                     "navigation.selectTab requires a bounded tab input",
                 ));
             }
+            TaskKind::PaginationNext if !self.inputs.contains_key("next") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.next",
+                    "pagination.next requires a bounded next control input",
+                ));
+            }
             _ => {}
         }
         Ok(())
@@ -414,6 +420,11 @@ mod tests {
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.tab");
         task.inputs.insert("tab".into(), "Payment".into());
+        task.validate().unwrap();
+        task.task = TaskKind::PaginationNext;
+        task.inputs.clear();
+        assert_eq!(task.validate().unwrap_err().path, "inputs.next");
+        task.inputs.insert("next".into(), "Next page".into());
         task.validate().unwrap();
     }
 }

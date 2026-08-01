@@ -161,6 +161,8 @@ Completed:
   selection within scoped regions.
 - [ir-030-061](tasks/ir-030-061.md) — execute guarded inspect, confirm, and
   cancel dialog tasks through CLI, MCP, and Rust.
+- [ir-030-062](tasks/ir-030-062.md) — execute bounded revision-guarded
+  pagination advances within semantic pagination regions.
 
 ## Completed plan: performance overhaul
 Status: Complete

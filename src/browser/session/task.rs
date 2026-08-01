@@ -65,6 +65,7 @@ impl BrowserSession {
                 | TaskKind::FormValidate
                 | TaskKind::FormSubmit
                 | TaskKind::NavigationSelectTab
+                | TaskKind::PaginationNext
                 | TaskKind::RegionExtract
         ) {
             return Ok(preflight_result(
@@ -177,6 +178,76 @@ impl BrowserSession {
                     }
                     .into(),
                     phase: "navigation-verification".into(),
+                    mutation_possible: true,
+                    source_revision: observation.revision,
+                    current_revision: after.revision,
+                    steps,
+                    retry: if succeeded {
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+                    } else {
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+                    },
+                    form: None,
+                    extraction: None,
+                    alerts: alert_labels(after.regions.iter()),
+                })
+            }
+            TaskKind::PaginationNext => {
+                let Some(next_name) = task.inputs.get("next") else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "pagination.next requires the semantic next control input",
+                    ));
+                };
+                let target = match unique_target(&scoped_regions, next_name) {
+                    Ok(target) if matches!(target.role.as_str(), "button" | "link" | "tab") => {
+                        target
+                    }
+                    Ok(_) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            "pagination.next target is not a semantic navigation control",
+                        ));
+                    }
+                    Err(error) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            &error.to_string(),
+                        ));
+                    }
+                };
+                let outcome = bounded(
+                    self.click_with_revision(&target.reference, observation.revision),
+                    task.limits.timeout_ms,
+                )
+                .await;
+                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let succeeded = outcome.is_ok();
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::NextPage,
+                    if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    },
+                    (!succeeded).then(|| "pagination outcome was not verified".into()),
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    }
+                    .into(),
+                    phase: "pagination-verification".into(),
                     mutation_possible: true,
                     source_revision: observation.revision,
                     current_revision: after.revision,

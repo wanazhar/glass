@@ -25,6 +25,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Added guarded `dialog.inspect`, `dialog.confirm`, and `dialog.cancel`
   execution with pending-dialog checks, closure verification, confirmation
   policy, and typed indeterminate recovery.
+- Added bounded `pagination.next` execution with semantic control resolution,
+  fresh post-action observation, and typed indeterminate recovery.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

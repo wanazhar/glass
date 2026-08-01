@@ -344,6 +344,118 @@ impl BrowserSession {
     }
 }
 
+impl BrowserSession {
+    /// Execute a bounded navigation task against one caller-observed revision.
+    pub async fn execute_navigation_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if task.task != TaskKind::NavigationFollow {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "navigation execution only supports navigation.follow tasks",
+            ));
+        }
+        if plan.confirmation_required && !confirmed {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "confirmation is required before this task can navigate the browser",
+            ));
+        }
+        let current_revision = self
+            .page_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_revision != expected_revision {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                current_revision,
+                "source revision is stale; no browser navigation was dispatched",
+            ));
+        }
+        let Some(url) = task.inputs.get("url") else {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "navigation.follow requires the semantic url input",
+            ));
+        };
+        let mut steps = vec![step(
+            &plan,
+            TaskPlanOperation::ObserveScope,
+            "succeeded",
+            None,
+        )];
+        match bounded(
+            self.navigate_with_revision(
+                url,
+                Duration::from_millis(task.limits.timeout_ms),
+                expected_revision,
+            ),
+            task.limits.timeout_ms,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::FollowNavigation,
+                    "succeeded",
+                    None,
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "navigation-verification".into(),
+                    mutation_possible: true,
+                    source_revision: expected_revision,
+                    current_revision: outcome.current_revision,
+                    steps,
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    form: None,
+                    extraction: None,
+                    alerts: Vec::new(),
+                })
+            }
+            Err(error) => {
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::FollowNavigation,
+                    "indeterminate",
+                    Some(error.to_string()),
+                ));
+                let current_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "indeterminate".into(),
+                    phase: "navigation-verification".into(),
+                    mutation_possible: true,
+                    source_revision: expected_revision,
+                    current_revision,
+                    steps,
+                    retry: retry_guidance(
+                        RetryClassification::UnsafeUntilReconciled,
+                        "recover_run",
+                    ),
+                    form: None,
+                    extraction: None,
+                    alerts: Vec::new(),
+                })
+            }
+        }
+    }
+}
+
 fn step(
     plan: &TaskExecutionPlan,
     operation: TaskPlanOperation,

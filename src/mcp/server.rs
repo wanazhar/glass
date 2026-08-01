@@ -1535,11 +1535,16 @@ async fn call_tool(
         confirmed,
     } = invocation
     {
-        return serialized_result(
-            &session
+        let result = if task.task == crate::task_protocol::TaskKind::NavigationFollow {
+            session
+                .execute_navigation_task(task, expected_revision, confirmed)
+                .await?
+        } else {
+            session
                 .execute_form_task(task, expected_revision, confirmed)
-                .await?,
-        );
+                .await?
+        };
+        return serialized_result(&result);
     }
     match invocation {
         ToolInvocation::Navigate {

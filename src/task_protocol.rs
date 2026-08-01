@@ -222,6 +222,13 @@ impl GlassTask {
                 "form.fill requires at least one bounded input",
             ));
         }
+
+        if matches!(self.task, TaskKind::NavigationFollow) && !self.inputs.contains_key("url") {
+            return Err(TaskProtocolError::new(
+                "inputs.url",
+                "navigation.follow requires a bounded url input",
+            ));
+        }
         Ok(())
     }
 
@@ -383,5 +390,16 @@ mod tests {
         invalid.scope.entity_name = Some("Email".into());
         invalid.scope.entity_kind = None;
         assert_eq!(invalid.validate().unwrap_err().path, "scope.entityKind");
+    }
+
+    #[test]
+    fn navigation_follow_requires_bounded_url_input() {
+        let mut task = task();
+        task.task = TaskKind::NavigationFollow;
+        task.inputs.clear();
+        assert_eq!(task.validate().unwrap_err().path, "inputs.url");
+        task.inputs
+            .insert("url".into(), "https://example.test/next".into());
+        task.validate().unwrap();
     }
 }

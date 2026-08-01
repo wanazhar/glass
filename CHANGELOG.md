@@ -16,6 +16,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Standardized Task Protocol execution recovery as typed `retry` guidance with
   explicit classifications and recommended operations across CLI, MCP, and Rust
   results.
+- Added revision-guarded `navigation.follow` execution with bounded URL
+  inputs, shared CLI/MCP routing, verified revision output, and fail-closed
+  recovery for indeterminate navigation.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

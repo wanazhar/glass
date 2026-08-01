@@ -2508,6 +2508,31 @@ async fn browser_session_executes_scoped_form_tasks() {
     .unwrap();
     session.navigate(&fixture_server.url).await.unwrap();
 
+    let before_navigation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let navigation_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::NavigationFollow,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("url"), fixture_server.url.clone())]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let navigated = session
+        .execute_navigation_task(&navigation_task, before_navigation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(navigated.status, "succeeded");
+    assert_eq!(navigated.phase, "navigation-verification");
+
     let observation = session
         .semantic_observe(SemanticObservationLevel::Structured)
         .await

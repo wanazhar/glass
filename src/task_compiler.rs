@@ -390,6 +390,9 @@ mod tests {
     fn compiler_preserves_non_default_execution_guards() {
         let mut authored = task(TaskKind::NavigationFollow, TaskRiskClass::RemoteReversible);
         authored.scope.region_name = Some("Shipping".into());
+        authored
+            .inputs
+            .insert("url".into(), "https://example.test/shipping".into());
         authored.limits = TaskLimits {
             max_actions: 7,
             timeout_ms: 2_500,
@@ -429,6 +432,9 @@ mod tests {
         assert!(irreversible.steps[1].requires_confirmation);
         let mut explicit = task(TaskKind::NavigationFollow, TaskRiskClass::ReadOnly);
         explicit.ambiguity = TaskAmbiguityPolicy::RequireConfirmation;
+        explicit
+            .inputs
+            .insert("url".into(), "https://example.test/next".into());
         assert!(compile_task(&explicit).unwrap().confirmation_required);
     }
 

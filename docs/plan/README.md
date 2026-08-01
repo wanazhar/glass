@@ -155,6 +155,8 @@ Completed:
   extraction through the guarded Task Protocol runtime.
 - [ir-030-058](tasks/ir-030-058.md) — standardize typed task retry guidance
   across guarded execution outcomes.
+- [ir-030-059](tasks/ir-030-059.md) — execute revision-guarded navigation
+  tasks through CLI, MCP, and Rust.
 
 ## Completed plan: performance overhaul
 Status: Complete

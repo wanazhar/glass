@@ -32,6 +32,7 @@ use crate::reliability::{
 };
 use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use crate::results::{ResponseMode, ResultStore, project_and_store};
+use crate::task_protocol::TaskKind;
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
@@ -1222,11 +1223,20 @@ async fn run_command(
         } => {
             let request = read_task_execution_request(input, *expected_revision, *confirm)?;
             let payload = request.decode_task_execute()?;
-            print_json(
-                &session
+            let result = if payload.task.task == TaskKind::NavigationFollow {
+                session
+                    .execute_navigation_task(
+                        &payload.task,
+                        payload.expected_revision,
+                        payload.confirmed,
+                    )
+                    .await?
+            } else {
+                session
                     .execute_form_task(&payload.task, payload.expected_revision, payload.confirmed)
-                    .await?,
-            )?;
+                    .await?
+            };
+            print_json(&result)?;
         }
         Commands::Capabilities
         | Commands::Daemon { .. }

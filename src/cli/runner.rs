@@ -22,8 +22,9 @@ use crate::browser::session::{
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::protocol::{
-    GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_VALIDATE_OPERATION,
-    WEB_IR_CONTINUITY_OPERATION, WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION,
+    GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_EXECUTE_OPERATION,
+    TASK_VALIDATE_OPERATION, WEB_IR_CONTINUITY_OPERATION, WEB_IR_INSPECT_OPERATION,
+    WEB_IR_VALIDATE_OPERATION,
 };
 use crate::reliability::{
     ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
@@ -861,6 +862,31 @@ fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest
     Ok(request)
 }
 
+fn read_task_execution_request(
+    path: &Path,
+    expected_revision: u64,
+    confirmed: bool,
+) -> BrowserResult<GlassRequest> {
+    let source = std::fs::read_to_string(path)?;
+    let task: Value = serde_json::from_str(&source)?;
+    let request = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id: "cli-task-execute".into(),
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation: TASK_EXECUTE_OPERATION.into(),
+        payload: serde_json::json!({
+            "task": task,
+            "expectedRevision": expected_revision,
+            "confirmed": confirmed,
+        }),
+        deadline_ms: None,
+    };
+    request.validate()?;
+    Ok(request)
+}
+
 fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
     match action {
         IrCommand::Validate { input } => {
@@ -1186,22 +1212,6 @@ async fn run_command(
             )
             .await?;
         }
-        Commands::Snapshot {
-            action: SnapshotCommand::Create,
-        } => {
-            let observation = session
-                .semantic_observe(SemanticObservationLevel::Structured)
-                .await?;
-            let snapshot = crate::browser::session::SessionSnapshot::from_observation(
-                session.profile.clone(),
-                observation,
-            );
-            let store = SessionSnapshotStore::new(
-                crate::browser::session::default_session_snapshot_path(&session.profile),
-            );
-            store.save(&snapshot)?;
-            print_json(&snapshot)?;
-        }
         Commands::Task {
             action:
                 TaskCommand::Execute {
@@ -1210,11 +1220,11 @@ async fn run_command(
                     confirm,
                 },
         } => {
-            let request = read_task_request(input, TASK_COMPILE_OPERATION)?;
-            let task = request.decode_task_compile()?.task;
+            let request = read_task_execution_request(input, *expected_revision, *confirm)?;
+            let payload = request.decode_task_execute()?;
             print_json(
                 &session
-                    .execute_form_task(&task, *expected_revision, *confirm)
+                    .execute_form_task(&payload.task, payload.expected_revision, payload.confirmed)
                     .await?,
             )?;
         }
@@ -1985,6 +1995,12 @@ mod tests {
         let compile = read_task_request(&path, TASK_COMPILE_OPERATION).unwrap();
         assert_eq!(compile.operation, TASK_COMPILE_OPERATION);
         assert!(crate::protocol::compile_task_result(&compile).is_ok());
+
+        let execute = read_task_execution_request(&path, 7, true).unwrap();
+        assert_eq!(execute.operation, TASK_EXECUTE_OPERATION);
+        let payload = execute.decode_task_execute().unwrap();
+        assert_eq!(payload.expected_revision, 7);
+        assert!(payload.confirmed);
 
         std::fs::write(
             &path,

@@ -121,6 +121,8 @@ Completed:
   typed canonical dispatch.
 - [ir-030-042](tasks/ir-030-042.md) — route MCP Web IR tools through typed
   canonical dispatch.
+- [ir-030-043](tasks/ir-030-043.md) — typed canonical protocol response fixture
+  coverage.
 
 ## Completed plan: performance overhaul
 Status: Complete

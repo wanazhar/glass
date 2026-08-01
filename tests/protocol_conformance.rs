@@ -127,6 +127,47 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
                 .unwrap(),
             response
         );
+
+        let operation = fixture["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|request| request["requestId"] == response.request_id)
+            .and_then(|request| request["operation"].as_str())
+            .unwrap_or_else(|| panic!("response requestId must match a fixture request"));
+        match operation {
+            "task.validate" => {
+                assert!(response.decode_task_validation_result().unwrap().valid);
+            }
+            "webIr.continuity" => {
+                assert_eq!(
+                    response.decode_web_ir_continuity_result().unwrap().status,
+                    glass::web_ir::DraftEntityContinuityStatus::Changed
+                );
+            }
+            "webIr.diff" => {
+                assert_eq!(
+                    response
+                        .decode_web_ir_diff_result()
+                        .unwrap()
+                        .entity_changed_count,
+                    1
+                );
+            }
+            "webIr.inspect" => {
+                assert_eq!(
+                    response
+                        .decode_web_ir_inspection_result()
+                        .unwrap()
+                        .entity_count,
+                    1
+                );
+            }
+            "webIr.validate" => {
+                assert!(response.decode_web_ir_validation_result().unwrap().valid);
+            }
+            _ => {}
+        }
     }
 }
 

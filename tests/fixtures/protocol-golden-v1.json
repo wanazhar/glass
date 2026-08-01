@@ -307,6 +307,78 @@
         "message": "the observation revision is no longer current",
         "retryable": true
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-diff-1",
+      "ok": true,
+      "result": {
+        "schemaVersion": 1,
+        "fromRevision": 7,
+        "toRevision": 8,
+        "entityAddedCount": 0,
+        "entityRemovedCount": 0,
+        "entityChangedCount": 1,
+        "relationshipAddedCount": 0,
+        "relationshipRemovedCount": 0,
+        "coverageChanged": false,
+        "limitsChanged": false,
+        "diagnosticsChanged": false,
+        "relationshipHintDiagnosticsChanged": false
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-continuity-1",
+      "ok": true,
+      "result": {
+        "requestedId": "field-1",
+        "status": "changed",
+        "currentId": "field-1",
+        "reason": "same revision-local ID has changed semantic identity"
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-validate-1",
+      "ok": true,
+      "result": {
+        "valid": true,
+        "schemaVersion": 1,
+        "revision": 7
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-inspect-1",
+      "ok": true,
+      "result": {
+        "schemaVersion": 1,
+        "revision": 7,
+        "entityCount": 1,
+        "relationshipCount": 0,
+        "coverage": {
+          "structural": "strong",
+          "semantic": "strong",
+          "interactiveEntitiesObserved": 0,
+          "opaqueRegions": 0,
+          "reasons": []
+        },
+        "truncated": false,
+        "opaqueRegions": 0,
+        "diagnosticCount": 0,
+        "relationshipHintDiagnosticCount": 0
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "task-validate-1",
+      "ok": true,
+      "result": {
+        "valid": true,
+        "schemaVersion": 1,
+        "task": "region.extract"
+      }
     }
   ]
 }

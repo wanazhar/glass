@@ -20,6 +20,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - MCP Web IR inspection, validation, diff, and continuity dispatch now routes
   through typed canonical protocol helpers while preserving bounded validation
   errors.
+- Golden protocol fixtures now include typed successful Web IR and Task
+  Protocol response envelopes with decoder round-trip coverage.
 
 ## [0.2.3] - 2026-08-01
 

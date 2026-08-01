@@ -231,6 +231,9 @@ Invalid drafts return `isError: true` with a bounded `webIrValidation` object
 containing `path` and `reason`. These tools are intended for offline inspection
 and protocol conformance; they do not turn a draft into browser authority.
 
+The server dispatches these tools through the typed canonical `webIr.*`
+protocol operations; MCP-only response options are not forwarded into drafts.
+
 `diffWebIr` validates both drafts and returns only bounded change counts and
 revision metadata:
 

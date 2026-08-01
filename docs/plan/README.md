@@ -119,6 +119,8 @@ Completed:
   Task Protocol validation and compilation.
 - [ir-030-041](tasks/ir-030-041.md) — route MCP Task Protocol tools through
   typed canonical dispatch.
+- [ir-030-042](tasks/ir-030-042.md) — route MCP Web IR tools through typed
+  canonical dispatch.
 
 ## Completed plan: performance overhaul
 Status: Complete

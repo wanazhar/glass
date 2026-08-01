@@ -72,7 +72,7 @@ impl WebIrDraftPayload {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.draft
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(format!("draft: {error}")))
+            .map_err(ProtocolError::WebIrValidation)
     }
 }
 
@@ -89,10 +89,10 @@ impl WebIrDiffPayload {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.before
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(format!("before: {error}")))?;
+            .map_err(ProtocolError::WebIrValidation)?;
         self.after
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(format!("after: {error}")))?;
+            .map_err(ProtocolError::WebIrValidation)?;
         Ok(())
     }
 }
@@ -111,10 +111,10 @@ impl WebIrContinuityPayload {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.before
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(format!("before: {error}")))?;
+            .map_err(ProtocolError::WebIrValidation)?;
         self.after
             .validate()
-            .map_err(|error| ProtocolError::InvalidField(format!("after: {error}")))?;
+            .map_err(ProtocolError::WebIrValidation)?;
         validate_identifier(&self.entity_id, "entityId")
     }
 }
@@ -472,7 +472,7 @@ pub fn web_ir_diff_result(request: &GlassRequest) -> Result<WebIrDiffResult, Pro
     let diff = payload
         .before
         .diff(&payload.after)
-        .map_err(|error| ProtocolError::InvalidField(error.to_string()))?;
+        .map_err(ProtocolError::WebIrValidation)?;
     Ok(WebIrDiffResult::from_diff(&diff))
 }
 
@@ -484,7 +484,7 @@ pub fn web_ir_continuity_result(
     let continuity = payload
         .before
         .classify_entity_continuity(&payload.after, &payload.entity_id)
-        .map_err(|error| ProtocolError::InvalidField(error.to_string()))?;
+        .map_err(ProtocolError::WebIrValidation)?;
     Ok(WebIrContinuityResult::from(continuity))
 }
 
@@ -707,6 +707,7 @@ pub enum ProtocolError {
     InvalidField(String),
     TaskValidation(crate::task_protocol::TaskProtocolError),
     TaskCompilation(crate::task_compiler::TaskCompilationError),
+    WebIrValidation(crate::web_ir::WebIrValidationError),
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -718,6 +719,7 @@ impl std::fmt::Display for ProtocolError {
             Self::InvalidField(detail) => formatter.write_str(detail),
             Self::TaskValidation(error) => error.fmt(formatter),
             Self::TaskCompilation(error) => error.fmt(formatter),
+            Self::WebIrValidation(error) => error.fmt(formatter),
         }
     }
 }

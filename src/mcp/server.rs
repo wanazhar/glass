@@ -1363,6 +1363,14 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
                 }))
                 .ok()
             }
+            crate::protocol::ProtocolError::WebIrValidation(error) => {
+                serde_json::to_string(&json!({
+                    "kind": "webIrValidation",
+                    "path": error.path,
+                    "reason": error.reason,
+                }))
+                .ok()
+            }
             _ => None,
         };
     }
@@ -1413,10 +1421,13 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
         })
 }
 
-fn canonical_task_request(request: &JsonRpcRequest, task: Value) -> BrowserResult<GlassRequest> {
+fn canonical_payload_request(
+    request: &JsonRpcRequest,
+    payload: Value,
+) -> BrowserResult<GlassRequest> {
     let mut canonical = canonical_tool_request(request)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    canonical.payload = json!({"task": task});
+    canonical.payload = payload;
     Ok(canonical)
 }
 
@@ -1430,18 +1441,22 @@ async fn call_tool(
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
     if let ToolInvocation::ValidateWebIr { draft } = &invocation {
-        let draft = parse_web_ir_draft(draft)?;
-        return serialized_result(&crate::protocol::WebIrValidationResult::from_draft(&draft));
+        let canonical = canonical_payload_request(request, json!({"draft": draft.clone()}))?;
+        let result = crate::protocol::web_ir_validate_result(&canonical)?;
+        return serialized_result(&result);
     }
     if let ToolInvocation::InspectWebIr { draft } = &invocation {
-        let draft = parse_web_ir_draft(draft)?;
-        return serialized_result(&crate::protocol::WebIrInspectionResult::from_draft(&draft));
+        let canonical = canonical_payload_request(request, json!({"draft": draft.clone()}))?;
+        let result = crate::protocol::web_ir_inspect_result(&canonical)?;
+        return serialized_result(&result);
     }
     if let ToolInvocation::DiffWebIr { before, after } = &invocation {
-        let before = parse_web_ir_draft(before)?;
-        let after = parse_web_ir_draft(after)?;
-        let diff = before.diff(&after)?;
-        return serialized_result(&crate::protocol::WebIrDiffResult::from_diff(&diff));
+        let canonical = canonical_payload_request(
+            request,
+            json!({"before": before.clone(), "after": after.clone()}),
+        )?;
+        let result = crate::protocol::web_ir_diff_result(&canonical)?;
+        return serialized_result(&result);
     }
     if let ToolInvocation::ContinuityWebIr {
         before,
@@ -1449,18 +1464,25 @@ async fn call_tool(
         entity_id,
     } = &invocation
     {
-        let before = parse_web_ir_draft(before)?;
-        let after = parse_web_ir_draft(after)?;
-        let continuity = before.classify_entity_continuity(&after, entity_id)?;
-        return serialized_result(&crate::protocol::WebIrContinuityResult::from(continuity));
+        let canonical = canonical_payload_request(
+            request,
+            json!({
+                "before": before.clone(),
+                "after": after.clone(),
+                "entityId": entity_id
+            }),
+        )?;
+        let result = crate::protocol::web_ir_continuity_result(&canonical)?;
+        return serialized_result(&result);
     }
     if let ToolInvocation::ValidateTask { task } = &invocation {
-        let canonical = canonical_task_request(request, task.clone())?;
+        let canonical = canonical_payload_request(request, json!({"task": task.clone()}))?;
         let result = crate::protocol::validate_task_result(&canonical)?;
         return serialized_result(&result);
     }
     if let ToolInvocation::CompileTask { task } = &invocation {
-        let canonical = canonical_task_request(request, serde_json::to_value(task)?)?;
+        let canonical =
+            canonical_payload_request(request, json!({"task": serde_json::to_value(task)?}))?;
         let result = crate::protocol::compile_task_result(&canonical)?;
         return serialized_result(&result);
     }
@@ -2580,13 +2602,6 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         _ => Err(format!("unknown tool: {tool_name}").into()),
     }
-}
-
-fn parse_web_ir_draft(value: &Value) -> BrowserResult<crate::web_ir::GlassWebIrDraft> {
-    let draft: crate::web_ir::GlassWebIrDraft = serde_json::from_value(value.clone())
-        .map_err(|error| format!("invalid Web IR draft: {error}"))?;
-    draft.validate()?;
-    Ok(draft)
 }
 
 async fn ensure_session<'a>(
@@ -4009,7 +4024,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_task_request_excludes_mcp_transport_options() {
+    fn canonical_payload_request_excludes_mcp_transport_options() {
         let task = json!({
             "schemaVersion": 1,
             "task": "region.extract",
@@ -4031,7 +4046,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let canonical = canonical_task_request(&request, task).unwrap();
+        let canonical = canonical_payload_request(&request, json!({"task": task})).unwrap();
         assert_eq!(
             canonical.operation,
             crate::protocol::TASK_VALIDATE_OPERATION
@@ -4041,6 +4056,35 @@ mod tests {
             json!({"task": canonical.payload["task"].clone()})
         );
         canonical.decode_task_validate().unwrap();
+    }
+
+    #[test]
+    fn canonical_web_ir_request_excludes_mcp_transport_options() {
+        let draft = valid_web_ir_draft();
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "inspect",
+            "method": "tools/call",
+            "params": {
+                "name": "inspectWebIr",
+                "arguments": {
+                    "draft": draft.clone(),
+                    "responseMode": "reference",
+                    "includeTrace": true
+                }
+            }
+        }))
+        .unwrap();
+        let canonical = canonical_payload_request(&request, json!({"draft": draft})).unwrap();
+        assert_eq!(
+            canonical.operation,
+            crate::protocol::WEB_IR_INSPECT_OPERATION
+        );
+        assert_eq!(
+            canonical.payload,
+            json!({"draft": canonical.payload["draft"].clone()})
+        );
+        canonical.decode_web_ir_inspect().unwrap();
     }
 
     #[tokio::test]

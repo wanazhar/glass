@@ -17,6 +17,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   payloads and validation results.
 - MCP Task Protocol dispatch now routes through the typed canonical request
   helpers while excluding MCP-only transport options from task payloads.
+- MCP Web IR inspection, validation, diff, and continuity dispatch now routes
+  through typed canonical protocol helpers while preserving bounded validation
+  errors.
 
 ## [0.2.3] - 2026-08-01
 

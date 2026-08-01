@@ -32,6 +32,9 @@ Revision tools carry two validated draft graphs and return bounded summaries or
 one continuity classification. Entity payloads and page content are not
 returned by the MCP projection.
 
+MCP dispatch constructs these canonical requests and invokes typed protocol
+helpers; MCP-only response options are excluded from canonical payloads.
+
 Browser-free Task Protocol tools also use canonical operation names:
 
 | MCP tool | Glass operation |
@@ -51,10 +54,6 @@ versioned.
 
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.
-The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
-covers read, leased mutation, workflow, browser-free Web IR inspection and
-revision operations, success, and typed-error envelopes. Rust tests round-trip
-the fixture. MCP tests check the canonical mapping.
 
 ## Compatibility
 

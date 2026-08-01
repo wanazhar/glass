@@ -49,8 +49,8 @@ typed-error envelopes. Rust tests round-trip the fixture. MCP tests check the
 canonical mapping.
 
 The fixture includes bounded `taskValidation`, `taskCompilation`, and
-`webIrValidation` details in preflight error envelopes, including
-machine-readable paths and reasons.
+`webIrValidation` details for validation, compilation, diff, and continuity
+preflight error envelopes, including machine-readable paths and reasons.
 
 The CLI and SDKs use the same operation names and payload fields. MCP keeps
 JSON-RPC success and error framing. The operation payload remains bounded and

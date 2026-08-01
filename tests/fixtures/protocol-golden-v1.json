@@ -340,6 +340,97 @@
           }
         }
       }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-diff-invalid-1",
+      "operation": "webIr.diff",
+      "payload": {
+        "before": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "after": {
+          "schemaVersion": 1,
+          "revision": 8,
+          "entities": [],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-continuity-invalid-1",
+      "operation": "webIr.continuity",
+      "payload": {
+        "before": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "entities": [],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "after": {
+          "schemaVersion": 1,
+          "revision": 8,
+          "entities": [],
+          "relationships": [],
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
+        },
+        "entityId": "field-1"
+      }
     }
   ],
   "responses": [
@@ -493,6 +584,46 @@
           "kind": "taskCompilation",
           "path": "inputs",
           "reason": "form.fill requires at least one bounded input"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-diff-invalid-1",
+      "ok": false,
+      "error": {
+        "code": "webIr.invalid",
+        "phase": "preflight",
+        "message": "Web IR validation failed",
+        "mutationPossible": false,
+        "retry": {
+          "classification": "safeAfterReobserve",
+          "recommendedOperation": "inspect_page"
+        },
+        "details": {
+          "kind": "webIrValidation",
+          "path": "entities",
+          "reason": "entity count must be between 1 and the draft bound"
+        }
+      }
+    },
+    {
+      "protocolVersion": 1,
+      "requestId": "web-ir-continuity-invalid-1",
+      "ok": false,
+      "error": {
+        "code": "webIr.invalid",
+        "phase": "preflight",
+        "message": "Web IR validation failed",
+        "mutationPossible": false,
+        "retry": {
+          "classification": "safeAfterReobserve",
+          "recommendedOperation": "inspect_page"
+        },
+        "details": {
+          "kind": "webIrValidation",
+          "path": "entities",
+          "reason": "entity count must be between 1 and the draft bound"
         }
       }
     },

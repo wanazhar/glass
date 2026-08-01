@@ -36,6 +36,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   canonical protocol helpers as MCP while preserving bounded output shapes.
 - CLI Web IR validation, inspection, and continuity now use typed canonical
   protocol helpers; detailed local diff output remains available.
+- Canonical Web IR fixtures now cover typed preflight failures for diff and
+  continuity operations.
 
 ## [0.2.3] - 2026-08-01
 

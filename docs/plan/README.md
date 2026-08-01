@@ -137,6 +137,8 @@ Completed:
   protocol helpers.
 - [ir-030-050](tasks/ir-030-050.md) — route safe CLI Web IR projections through
   canonical protocol helpers.
+- [ir-030-051](tasks/ir-030-051.md) — typed Web IR diff and continuity
+  preflight error fixture coverage.
 
 ## Completed plan: performance overhaul
 Status: Complete

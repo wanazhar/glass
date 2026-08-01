@@ -38,6 +38,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   protocol helpers; detailed local diff output remains available.
 - Canonical Web IR fixtures now cover typed preflight failures for diff and
   continuity operations.
+- Web IR CLI diffs now support an explicit `--summary` mode for bounded
+  canonical output while preserving detailed diagnostics by default.
 
 ## [0.2.3] - 2026-08-01
 

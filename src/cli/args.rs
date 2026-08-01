@@ -717,7 +717,13 @@ pub enum IrCommand {
     /// Print a bounded summary of one validated Web IR draft.
     Inspect { input: PathBuf },
     /// Compute a deterministic diff between two validated Web IR drafts.
-    Diff { before: PathBuf, after: PathBuf },
+    Diff {
+        before: PathBuf,
+        after: PathBuf,
+        /// Print the bounded canonical summary instead of detailed changes.
+        #[arg(long)]
+        summary: bool,
+    },
     /// Classify one entity's continuity across two validated Web IR drafts.
     Continuity {
         before: PathBuf,
@@ -1407,8 +1413,36 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Ir {
-                action: IrCommand::Diff { before, after }
-            }) if before.as_os_str() == "before.json" && after.as_os_str() == "after.json"
+                action: IrCommand::Diff {
+                    before,
+                    after,
+                    summary
+                }
+            }) if before.as_os_str() == "before.json"
+                && after.as_os_str() == "after.json"
+                && !summary
+        ));
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "ir",
+            "diff",
+            "before.json",
+            "after.json",
+            "--summary",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ir {
+                action: IrCommand::Diff {
+                    before,
+                    after,
+                    summary
+                }
+            }) if before.as_os_str() == "before.json"
+                && after.as_os_str() == "after.json"
+                && summary
         ));
 
         let cli = Cli::try_parse_from([

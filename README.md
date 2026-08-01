@@ -102,9 +102,13 @@ Inspect or diff validated browser-free Web IR drafts:
 glass ir validate draft.json
 glass ir inspect draft.json
 glass ir diff before.json after.json
+glass ir diff before.json after.json --summary
 glass ir continuity before.json after.json field-1
 glass ir canonical draft.json
 ```
+
+`ir diff` prints detailed local diagnostics by default; `--summary` emits the
+bounded canonical diff projection used by the protocol helpers.
 
 Use `--profile NAME` for persistent cookies and storage. Use `--incognito`
 for a disposable browser profile.

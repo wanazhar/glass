@@ -139,6 +139,8 @@ Completed:
   canonical protocol helpers.
 - [ir-030-051](tasks/ir-030-051.md) — typed Web IR diff and continuity
   preflight error fixture coverage.
+- [ir-030-052](tasks/ir-030-052.md) — expose the bounded canonical Web IR
+  diff projection through an explicit offline CLI mode.
 
 ## Completed plan: performance overhaul
 Status: Complete

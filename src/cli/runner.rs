@@ -863,10 +863,19 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             let result = crate::protocol::web_ir_inspect_result(&request)?;
             print_json(&result)?;
         }
-        IrCommand::Diff { before, after } => {
+        IrCommand::Diff {
+            before,
+            after,
+            summary,
+        } => {
             let before = read_web_ir_draft(before)?;
             let after = read_web_ir_draft(after)?;
-            print_json(&before.diff(&after)?)?;
+            let diff = before.diff(&after)?;
+            if *summary {
+                print_json(&crate::protocol::WebIrDiffResult::from_diff(&diff))?;
+            } else {
+                print_json(&diff)?;
+            }
         }
         IrCommand::Continuity {
             before,
@@ -1995,6 +2004,16 @@ mod tests {
         let inspect = read_web_ir_request(&path, WEB_IR_INSPECT_OPERATION).unwrap();
         assert_eq!(inspect.operation, WEB_IR_INSPECT_OPERATION);
         assert!(crate::protocol::web_ir_inspect_result(&inspect).is_ok());
+        let before = read_web_ir_draft(&path).unwrap();
+        let diff = before.diff(&before).unwrap();
+        let summary = crate::protocol::WebIrDiffResult::from_diff(&diff);
+        assert_eq!(summary.from_revision, diff.from_revision);
+        assert_eq!(summary.to_revision, diff.to_revision);
+        assert_eq!(summary.entity_added_count, 0);
+        assert_eq!(summary.entity_removed_count, 0);
+        assert_eq!(summary.entity_changed_count, 0);
+        assert_eq!(summary.relationship_added_count, 0);
+        assert_eq!(summary.relationship_removed_count, 0);
 
         let continuity = read_web_ir_continuity_request(&path, &path, "page").unwrap();
         assert_eq!(continuity.operation, WEB_IR_CONTINUITY_OPERATION);

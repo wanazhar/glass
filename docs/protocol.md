@@ -61,8 +61,9 @@ preserving their existing bounded output projections; the CLI does not start
 Chrome for either operation.
 
 CLI `ir validate`, `ir inspect`, and `ir continuity` use the corresponding
-typed Web IR helpers. The detailed CLI `ir diff` projection remains available
-for local diagnostics while canonical MCP diff responses stay bounded.
+typed Web IR helpers. The detailed CLI `ir diff` projection remains the
+default for local diagnostics; `ir diff --summary` selects the bounded
+canonical `WebIrDiffResult` projection used by the protocol helpers.
 
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.

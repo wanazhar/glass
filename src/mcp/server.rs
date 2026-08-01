@@ -243,6 +243,15 @@ enum ToolInvocation<'a> {
     ValidateWebIr {
         draft: Value,
     },
+    DiffWebIr {
+        before: Value,
+        after: Value,
+    },
+    ContinuityWebIr {
+        before: Value,
+        after: Value,
+        entity_id: &'a str,
+    },
     CompileTask {
         task: crate::task_protocol::GlassTask,
     },
@@ -994,6 +1003,8 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "inspectPage"
             | "inspectWebIr"
             | "validateWebIr"
+            | "diffWebIr"
+            | "continuityWebIr"
             | "compileTask"
             | "validateTask"
             | "findTarget"
@@ -1389,6 +1400,23 @@ async fn call_tool(
     if let ToolInvocation::InspectWebIr { draft } = &invocation {
         let draft = parse_web_ir_draft(draft)?;
         return serialized_result(&crate::protocol::WebIrInspectionResult::from_draft(&draft));
+    }
+    if let ToolInvocation::DiffWebIr { before, after } = &invocation {
+        let before = parse_web_ir_draft(before)?;
+        let after = parse_web_ir_draft(after)?;
+        let diff = before.diff(&after)?;
+        return serialized_result(&crate::protocol::WebIrDiffResult::from_diff(&diff));
+    }
+    if let ToolInvocation::ContinuityWebIr {
+        before,
+        after,
+        entity_id,
+    } = &invocation
+    {
+        let before = parse_web_ir_draft(before)?;
+        let after = parse_web_ir_draft(after)?;
+        let continuity = before.classify_entity_continuity(&after, entity_id)?;
+        return serialized_result(&crate::protocol::WebIrContinuityResult::from(continuity));
     }
     if let ToolInvocation::ValidateTask { task } = &invocation {
         let task = crate::task_protocol::GlassTask::from_json(&serde_json::to_string(task)?)?;
@@ -2031,6 +2059,12 @@ async fn call_tool(
         ToolInvocation::ValidateWebIr { .. } => {
             unreachable!("validateWebIr is handled before browser session startup")
         }
+        ToolInvocation::DiffWebIr { .. } => {
+            unreachable!("diffWebIr is handled before browser session startup")
+        }
+        ToolInvocation::ContinuityWebIr { .. } => {
+            unreachable!("continuityWebIr is handled before browser session startup")
+        }
         ToolInvocation::CompileTask { .. } => {
             unreachable!("compileTask is handled before browser session startup")
         }
@@ -2224,6 +2258,33 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .cloned()
                 .ok_or("validateWebIr requires a draft object")?;
             Ok(ToolInvocation::ValidateWebIr { draft })
+        }
+        "diffWebIr" => {
+            let before = arguments
+                .get("before")
+                .cloned()
+                .ok_or("diffWebIr requires a before draft object")?;
+            let after = arguments
+                .get("after")
+                .cloned()
+                .ok_or("diffWebIr requires an after draft object")?;
+            Ok(ToolInvocation::DiffWebIr { before, after })
+        }
+        "continuityWebIr" => {
+            let before = arguments
+                .get("before")
+                .cloned()
+                .ok_or("continuityWebIr requires a before draft object")?;
+            let after = arguments
+                .get("after")
+                .cloned()
+                .ok_or("continuityWebIr requires an after draft object")?;
+            let entity_id = required_string(arguments, "entityId")?;
+            Ok(ToolInvocation::ContinuityWebIr {
+                before,
+                after,
+                entity_id,
+            })
         }
         "compileTask" => {
             let task = arguments
@@ -2534,6 +2595,48 @@ fn tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["draft"],
+                "additionalProperties": false
+            }),
+        },
+        Tool {
+            name: "diffWebIr",
+            description: "Return bounded revision-change counts for two validated Web IR drafts without starting Chrome.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "before": {
+                        "type": "object",
+                        "description": "Earlier bounded Glass Web IR draft JSON."
+                    },
+                    "after": {
+                        "type": "object",
+                        "description": "Later bounded Glass Web IR draft JSON."
+                    }
+                },
+                "required": ["before", "after"],
+                "additionalProperties": false
+            }),
+        },
+        Tool {
+            name: "continuityWebIr",
+            description: "Classify one entity across two validated Web IR drafts without starting Chrome.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "before": {
+                        "type": "object",
+                        "description": "Earlier bounded Glass Web IR draft JSON."
+                    },
+                    "after": {
+                        "type": "object",
+                        "description": "Later bounded Glass Web IR draft JSON."
+                    },
+                    "entityId": {
+                        "type": "string",
+                        "description": "Revision-local entity ID from the before draft."
+                    }
+                },
+                "required": ["before", "after", "entityId"],
                 "additionalProperties": false
             }),
         },
@@ -3836,8 +3939,10 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 80);
+        assert_eq!(tools.len(), 82);
         assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
+        assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
+        assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
@@ -4057,6 +4162,90 @@ mod tests {
                 "reason": "relationships must reference two distinct known entities"
             })
         );
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn diff_web_ir_tool_returns_bounded_summary_without_starting_chrome() {
+        let mut after = valid_web_ir_draft();
+        after["revision"] = json!(8);
+        after["entities"][1]["name"] = json!("Email address");
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "diff-ir",
+            "method": "tools/call",
+            "params": {
+                "name": "diffWebIr",
+                "arguments": {
+                    "before": valid_web_ir_draft(),
+                    "after": after
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = response.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let result: crate::protocol::WebIrDiffResult = serde_json::from_str(&text).unwrap();
+        assert_eq!(result.from_revision, 7);
+        assert_eq!(result.to_revision, 8);
+        assert_eq!(result.entity_changed_count, 1);
+        assert_eq!(result.entity_added_count, 0);
+        assert!(!text.contains("field-1"));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn continuity_web_ir_tool_classifies_entity_without_starting_chrome() {
+        let mut after = valid_web_ir_draft();
+        after["revision"] = json!(8);
+        after["entities"][1]["name"] = json!("Email address");
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "continuity-ir",
+            "method": "tools/call",
+            "params": {
+                "name": "continuityWebIr",
+                "arguments": {
+                    "before": valid_web_ir_draft(),
+                    "after": after,
+                    "entityId": "field-1"
+                }
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let result_value = response.result.unwrap();
+        let text = result_value["content"][0]["text"].as_str().unwrap();
+        let result: crate::protocol::WebIrContinuityResult = serde_json::from_str(text).unwrap();
+        assert_eq!(result.requested_id, "field-1");
+        assert_eq!(
+            result.status,
+            crate::web_ir::DraftEntityContinuityStatus::Changed
+        );
+        assert_eq!(result.current_id.as_deref(), Some("field-1"));
         assert!(session.is_none());
     }
 

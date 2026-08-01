@@ -109,6 +109,8 @@ Completed:
 - [ir-030-035](tasks/ir-030-035.md) — offline Web IR validation command.
 - [ir-030-036](tasks/ir-030-036.md) — browser-free MCP Web IR inspection and
   validation.
+- [ir-030-037](tasks/ir-030-037.md) — browser-free MCP Web IR diff and
+  continuity classification.
 
 ## Completed plan: performance overhaul
 Status: Complete

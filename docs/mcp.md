@@ -142,6 +142,8 @@ A tool may request one bounded failure-trace content item with
 | `validateTask` | Validate a semantic Task Protocol v1 task without compiling or starting Chrome. |
 | `inspectWebIr` | Return bounded summary metadata for a validated browser-free Web IR draft. |
 | `validateWebIr` | Validate a browser-free Web IR draft without starting Chrome. |
+| `diffWebIr` | Return bounded revision-change counts for two validated Web IR drafts. |
+| `continuityWebIr` | Classify one entity across two validated Web IR drafts. |
 | `wait` | Wait for one typed condition. |
 | `diagnostics` | Return bounded redacted console and network data. |
 | `acceptDialog`, `dismissDialog` | Resolve the open JavaScript dialog. |
@@ -222,6 +224,32 @@ relationships, or page content:
 Invalid drafts return `isError: true` with a bounded `webIrValidation` object
 containing `path` and `reason`. These tools are intended for offline inspection
 and protocol conformance; they do not turn a draft into browser authority.
+
+`diffWebIr` validates both drafts and returns only bounded change counts and
+revision metadata:
+
+```json
+{
+  "schemaVersion": 1,
+  "fromRevision": 7,
+  "toRevision": 8,
+  "entityAddedCount": 0,
+  "entityRemovedCount": 0,
+  "entityChangedCount": 1,
+  "relationshipAddedCount": 0,
+  "relationshipRemovedCount": 0,
+  "coverageChanged": false,
+  "limitsChanged": false,
+  "diagnosticsChanged": false,
+  "relationshipHintDiagnosticsChanged": false
+}
+```
+
+`continuityWebIr` validates both drafts and classifies one source entity as
+`unchanged`, `changed`, `rebound`, `removed`, or `ambiguous`. It returns the
+revision-local `currentId` only when a unique current entity is identified.
+Both tools are browser-free, require no mutation lease, and omit entity
+payloads, relationships, and page content from successful responses.
 
 ### Compile a task without starting Chrome
 

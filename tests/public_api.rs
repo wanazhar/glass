@@ -1,7 +1,8 @@
 use glass::{
     DraftEntity, DraftEntityKind, EXTRACTION_CONTRACT_SCHEMA_VERSION, EvidenceSource,
     ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassWebIrDraft,
-    WEB_IR_DRAFT_SCHEMA_VERSION, WebIrInspectionResult, WebIrValidationResult,
+    WEB_IR_DRAFT_SCHEMA_VERSION, WebIrContinuityResult, WebIrDiffResult, WebIrInspectionResult,
+    WebIrValidationResult,
 };
 
 #[test]
@@ -30,5 +31,7 @@ fn crate_root_exposes_experimental_extraction_and_web_ir_contracts() {
     let _draft_type: Option<GlassWebIrDraft> = None;
     let _inspection_type: Option<WebIrInspectionResult> = None;
     let _validation_type: Option<WebIrValidationResult> = None;
+    let _diff_type: Option<WebIrDiffResult> = None;
+    let _continuity_type: Option<WebIrContinuityResult> = None;
     assert_eq!(WEB_IR_DRAFT_SCHEMA_VERSION, 1);
 }

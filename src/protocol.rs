@@ -103,6 +103,86 @@ impl WebIrInspectionResult {
     }
 }
 
+/// Bounded summary result for a browser-free Web IR revision diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrDiffResult {
+    pub schema_version: u32,
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub entity_added_count: usize,
+    pub entity_removed_count: usize,
+    pub entity_changed_count: usize,
+    pub relationship_added_count: usize,
+    pub relationship_removed_count: usize,
+    pub coverage_changed: bool,
+    pub limits_changed: bool,
+    pub diagnostics_changed: bool,
+    pub relationship_hint_diagnostics_changed: bool,
+}
+
+impl WebIrDiffResult {
+    /// Build a bounded summary without exposing entity or page content.
+    pub fn from_diff(diff: &crate::web_ir::GlassWebIrDiff) -> Self {
+        Self {
+            schema_version: diff.schema_version,
+            from_revision: diff.from_revision,
+            to_revision: diff.to_revision,
+            entity_added_count: diff
+                .entity_changes
+                .iter()
+                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Added)
+                .count(),
+            entity_removed_count: diff
+                .entity_changes
+                .iter()
+                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Removed)
+                .count(),
+            entity_changed_count: diff
+                .entity_changes
+                .iter()
+                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Changed)
+                .count(),
+            relationship_added_count: diff
+                .relationship_changes
+                .iter()
+                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Added)
+                .count(),
+            relationship_removed_count: diff
+                .relationship_changes
+                .iter()
+                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Removed)
+                .count(),
+            coverage_changed: diff.coverage_changed,
+            limits_changed: diff.limits_changed,
+            diagnostics_changed: diff.diagnostics_changed,
+            relationship_hint_diagnostics_changed: diff.relationship_hint_diagnostics_changed,
+        }
+    }
+}
+
+/// Browser-free Web IR continuity classification for one entity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrContinuityResult {
+    pub requested_id: String,
+    pub status: crate::web_ir::DraftEntityContinuityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_id: Option<String>,
+    pub reason: String,
+}
+
+impl From<crate::web_ir::DraftEntityContinuity> for WebIrContinuityResult {
+    fn from(continuity: crate::web_ir::DraftEntityContinuity) -> Self {
+        Self {
+            requested_id: continuity.requested_id,
+            status: continuity.status,
+            current_id: continuity.current_id,
+            reason: continuity.reason,
+        }
+    }
+}
+
 impl TaskCompileResult {
     /// Validate the embedded deterministic execution plan.
     pub fn validate(&self) -> Result<(), ProtocolError> {

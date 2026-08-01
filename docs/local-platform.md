@@ -1,6 +1,6 @@
 # Local platform evidence
 
-Status: verified locally on 2026-07-30.
+Status: verified locally on 2026-08-01.
 
 This record covers the current development machine only. It is not a support
 claim for Linux x86-64, macOS, Windows, or any other environment, and it does
@@ -17,12 +17,13 @@ not certify a future published crate without repeating the checks.
 
 ## Checks passed
 
-The following checks passed on this host with the checked-out `0.2.2` source:
+The following checks passed on this host with the checked-out `0.2.3` source:
 
-- `cargo test --all-targets --locked` — 408 passed, 1 ignored;
+- `cargo test --all-targets --locked` — 457 passed, 1 ignored;
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1` — 11 passed;
-- `cargo package --locked --no-verify` — 187 package files validated; and
+- `cargo package --locked --no-verify` — 202 package files validated; and
 - `cargo publish --locked --dry-run --no-verify` — crates.io publication dry-run passed without uploading.
+- `cargo deny check` and `cargo audit` — no license, source, or vulnerability findings.
 - `cargo run -- --experimental-extensions capabilities` — reported the
   `extensions` capability as `experimental` on this host.
 

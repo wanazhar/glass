@@ -7,8 +7,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Browser-free Web IR draft inspection and deterministic revision diff commands
-  are available through the CLI.
+- Browser-free Web IR CLI tooling now supports validation, bounded inspection,
+  deterministic canonicalization, revision diffs, and entity continuity
+  classification.
+- Rust crate-root exports expose the experimental extraction and draft Web IR
+  contracts without making native browser extraction a stable API.
+- Browser-free Task Protocol validation and compilation are available through
+  the CLI and MCP, including bounded explanations and typed failures.
 
 ## [0.2.2] - 2026-07-30
 

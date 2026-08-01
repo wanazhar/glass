@@ -22,15 +22,17 @@ binary artifacts.
 
 ## Prepare
 
-- [ ] Confirm the version and release date.
-- [ ] Check the package name, description, license, README, and repository
-  metadata in `Cargo.toml`.
+- [x] Confirm development version `0.2.3`; release date remains pending
+      publication approval.
+- [x] Check the package name, description, license, README, and repository
+      metadata in `Cargo.toml`.
 - [x] Record the 0.2.0 release date in the changelog.
-- [ ] Record the 0.2.1 release date in the changelog.
+- [x] Record the 0.2.1 release date in the changelog.
+- [x] Record the 0.2.2 release date in the changelog.
 - [x] Check the README installation commands against `glass --help`.
-- [ ] Review dependency and browser-facing security changes.
-- [ ] Check that the working tree has no profiles, screenshots, logs, or other
-  generated data.
+- [x] Review dependency and browser-facing security changes.
+- [x] Check that the working tree has no profiles, screenshots, logs, or other
+      generated data.
 
 ## Validate the checkout
 
@@ -56,23 +58,24 @@ Then complete these release checks:
       its installed Chromium binary.
 - [x] Record the host OS, architecture, Rust target, browser version, and
       commands used for the local platform check.
-- [ ] Keep other declared targets labeled unverified unless their own native
+- [x] Keep other declared targets labeled unverified unless their own native
       environments are tested separately.
-- [ ] Inspect `cargo package --list` and the unpacked package.
-- [ ] Review dependency, license, and vulnerability JSON reports.
+- [x] Inspect `cargo package --list` and the unpacked package.
+- [x] Review dependency, license, and vulnerability JSON reports.
 - [ ] Run a clean-machine crates.io install and upgrade test after publication.
 
 The local browser and package checks are evidence for this machine only.
 
 ## Publish
 
-- [ ] Commit the version and changelog update.
-- [ ] Create a signed annotated tag such as `v0.2.1`.
+- [x] Commit the version and changelog update.
+- [ ] Create a signed annotated tag such as `v0.2.3` after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit with `cargo publish
-      --locked` after the package checks pass.
-- [ ] Include the local Linux ARM64 verification boundary and known
+      --locked` after the package checks pass and publication is approved.
+- [x] Include the local Linux ARM64 verification boundary and known
       limitations in the release notes or changelog.
-- [ ] Verify installation from crates.io in a clean environment.
-- [ ] Restore an empty `Unreleased` changelog section.
+- [ ] Verify installation from crates.io in a clean environment after
+      publication.
+- [ ] Restore an empty `Unreleased` changelog section after publication.
 
 A release is not complete while any required checkbox is open.

@@ -1,9 +1,9 @@
-//! Browser-backed execution for the bounded form Task Protocol families.
+//! Browser-backed execution for the bounded Task Protocol families.
 
 use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
-    InspectPageResult, PendingDialog, SemanticRegion, SemanticTarget, StructuredExtractionRequest,
-    StructuredExtractionResult,
+    InspectPageResult, PendingDialog, SemanticRegion, SemanticRegionKind, SemanticTarget,
+    StructuredExtractionRequest, StructuredExtractionResult,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
@@ -68,13 +68,14 @@ impl BrowserSession {
                 | TaskKind::FormSubmit
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
+                | TaskKind::CollectionExtract
                 | TaskKind::RegionExtract
         ) {
             return Ok(preflight_result(
                 task,
                 &plan,
                 expected_revision,
-                "unsupported task family; browser execution currently supports form and region extraction tasks",
+                "unsupported task family; browser execution currently supports form, collection, and region extraction tasks",
             ));
         }
         if plan.confirmation_required && !confirmed {
@@ -264,6 +265,51 @@ impl BrowserSession {
                     extraction: None,
                     dialog: None,
                     alerts: alert_labels(after.regions.iter()),
+                })
+            }
+            TaskKind::CollectionExtract => {
+                let region = scoped_regions
+                    .first()
+                    .expect("scoped_regions contains exactly one region");
+                if region.kind != SemanticRegionKind::Collection {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "collection.extract scope is not a semantic collection region",
+                    ));
+                }
+                let request = StructuredExtractionRequest {
+                    fields: vec![ExtractionField {
+                        name: "items".into(),
+                        path: "$.targets".into(),
+                        kind: ExtractionKind::RepeatedItems,
+                    }],
+                    region_id: Some(region.id.clone()),
+                    max_items: task.limits.max_items as usize,
+                    max_bytes: 64 * 1024,
+                };
+                let extraction =
+                    bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::ExtractCollection,
+                    "succeeded",
+                    None,
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "extraction".into(),
+                    mutation_possible: false,
+                    source_revision: observation.revision,
+                    current_revision: extraction.source_revision,
+                    steps,
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    form: None,
+                    extraction: Some(extraction),
+                    alerts: alert_labels(scoped_regions.iter().copied()),
+                    dialog: None,
                 })
             }
             TaskKind::RegionExtract => {

@@ -2660,6 +2660,29 @@ async fn browser_session_executes_scoped_form_tasks() {
     assert_eq!(extracted.status, "succeeded");
     assert_eq!(extracted.extraction.as_ref().unwrap().records.len(), 1);
     assert_eq!(extracted.extraction.as_ref().unwrap().provenance, vec!["$"]);
+    let collection_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::CollectionExtract,
+        scope: TaskScope {
+            region_name: Some("Results".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::new(),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let collection = session
+        .execute_task(&collection_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(collection.status, "succeeded");
+    assert_eq!(
+        collection.extraction.as_ref().unwrap().provenance,
+        vec!["$.targets"]
+    );
 
     let fill_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,

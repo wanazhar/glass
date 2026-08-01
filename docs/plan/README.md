@@ -167,6 +167,8 @@ Completed:
   through `dialog.inspect` task results.
 - [ir-030-064](tasks/ir-030-064.md) — route CLI and MCP browser-backed task
   execution through one canonical Rust dispatcher.
+- [ir-030-065](tasks/ir-030-065.md) — execute bounded `collection.extract`
+  against uniquely scoped semantic collection regions.
 
 ## Completed plan: performance overhaul
 Status: Complete

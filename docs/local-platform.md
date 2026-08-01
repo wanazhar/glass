@@ -17,7 +17,7 @@ not certify a future published crate without repeating the checks.
 
 ## Checks passed
 
-The following checks passed on this host with the checked-out `0.2.3` source:
+The following checks passed on the `0.2.3` release commit (`v0.2.3`):
 
 - `cargo test --all-targets --locked` — 457 passed, 1 ignored;
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1` — 11 passed;

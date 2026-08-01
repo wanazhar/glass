@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current published release is `glass-browser` version `0.2.2`. This
-checklist is being used for the next crates.io release, `0.2.3`. Linux
+The current published release is `glass-browser` version `0.2.3`. This
+checklist is being used for the next crates.io release, `0.2.4`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
 only Linux arm64 has been verified on the current machine. Windows is
 unsupported.
@@ -22,13 +22,14 @@ binary artifacts.
 
 ## Prepare
 
-- [x] Confirm development version `0.2.3`; release date remains pending
-      publication approval.
+- [x] Confirm development version `0.2.4`; release date remains pending
+      publication.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
 - [x] Record the 0.2.0 release date in the changelog.
 - [x] Record the 0.2.1 release date in the changelog.
 - [x] Record the 0.2.2 release date in the changelog.
+- [x] Record the 0.2.3 release date in the changelog.
 - [x] Check the README installation commands against `glass --help`.
 - [x] Review dependency and browser-facing security changes.
 - [x] Check that the working tree has no profiles, screenshots, logs, or other
@@ -68,14 +69,14 @@ The local browser and package checks are evidence for this machine only.
 
 ## Publish
 
-- [x] Commit the version and changelog update.
-- [ ] Create a signed annotated tag such as `v0.2.3` after publication approval.
+- [x] Commit the 0.2.4 development version and changelog update.
+- [ ] Create a signed annotated tag such as `v0.2.4` after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit with `cargo publish
       --locked` after the package checks pass and publication is approved.
-- [x] Include the local Linux ARM64 verification boundary and known
-      limitations in the release notes or changelog.
+- [ ] Include the local Linux ARM64 verification boundary and known
+      limitations in the 0.2.4 release notes or changelog.
 - [ ] Verify installation from crates.io in a clean environment after
       publication.
-- [ ] Restore an empty `Unreleased` changelog section after publication.
+- [x] Restore an empty `Unreleased` changelog section after publication.
 
 A release is not complete while any required checkbox is open.

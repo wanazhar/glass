@@ -51,7 +51,9 @@ A client may request protocol and schema versions:
   "protocolVersion": 1,
   "schemas": {
     "action": [1],
-    "workflow": [1]
+    "workflow": [1],
+    "task": [1],
+    "webIr": [1]
   }
 }
 ```
@@ -74,6 +76,8 @@ client must inspect the manifest and policy-sensitive capability flags.
 - [semantic observation v1](schema/semantic-observation-v1.schema.json);
 - [intent v1](schema/intent-resolution-v1.schema.json);
 - [knowledge v1](schema/knowledge-v1.schema.json);
-- [workflow v1](schema/workflow-v1.schema.json); and
-- reliability scenario, fixture, and replay v1; and
-- public read-only adapter inventory v1.
+- [workflow v1](schema/workflow-v1.schema.json);
+- reliability scenario, fixture, and replay v1;
+- public read-only adapter inventory v1; and
+- browser-free Task Protocol v1 and draft Web IR v1 canonical contracts
+  described in [the protocol mapping](protocol.md).

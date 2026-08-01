@@ -125,6 +125,8 @@ Completed:
   coverage.
 - [ir-030-044](tasks/ir-030-044.md) — typed canonical preflight error fixture
   coverage.
+- [ir-030-045](tasks/ir-030-045.md) — advertise canonical Task and Web IR
+  schema versions through capability negotiation.
 
 ## Completed plan: performance overhaul
 Status: Complete

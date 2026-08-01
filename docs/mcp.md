@@ -64,7 +64,9 @@ A client may request Glass versions in `initialize.params.glass`:
   "protocolVersions": [1],
   "schemas": {
     "action": [1],
-    "workflow": [1]
+    "workflow": [1],
+    "task": [1],
+    "webIr": [1]
   },
   "requires": ["workflowResume"],
   "optional": ["extensions"],
@@ -77,6 +79,9 @@ Glass returns the selected versions and effective capability statuses in
 unknown optional capabilities are omitted. Experimental capabilities require
 explicit acceptance. Glass rejects unknown schemas, empty version lists, and
 requests with no common supported version.
+
+The `task` and `webIr` schemas describe the browser-free Task Protocol and
+draft Web IR contracts; their operations do not start Chrome.
 
 Read [schema compatibility](schema-compatibility.md) for version rules.
 

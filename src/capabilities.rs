@@ -18,6 +18,8 @@ use crate::reliability::{
     RELIABILITY_FIXTURE_SCHEMA_VERSION, RELIABILITY_REPLAY_SCHEMA_VERSION,
     RELIABILITY_SCENARIO_SCHEMA_VERSION,
 };
+use crate::task_protocol::TASK_PROTOCOL_SCHEMA_VERSION;
+use crate::web_ir::WEB_IR_DRAFT_SCHEMA_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -393,6 +395,8 @@ impl GlassCapabilityManifest {
 fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
     BTreeMap::from([
         ("protocol".into(), vec![GLASS_PROTOCOL_VERSION]),
+        ("task".into(), vec![TASK_PROTOCOL_SCHEMA_VERSION]),
+        ("webIr".into(), vec![WEB_IR_DRAFT_SCHEMA_VERSION]),
         ("action".into(), vec![1]),
         (
             "observation".into(),
@@ -479,6 +483,8 @@ mod tests {
         assert_eq!(manifest.protocol_version, 1);
         assert_eq!(manifest.schemas["workflow"], vec![1]);
         assert_eq!(manifest.schemas["reliabilityReplay"], vec![1]);
+        assert_eq!(manifest.schemas["task"], vec![1]);
+        assert_eq!(manifest.schemas["webIr"], vec![1]);
         assert_eq!(manifest.constraints.max_sessions, 4);
         assert!(manifest.capabilities["workflowResume"]);
         assert!(!manifest.capabilities["localDaemon"]);
@@ -519,7 +525,12 @@ mod tests {
         let manifest = development_manifest();
         let request = serde_json::json!({
             "protocolVersions": [99, 1],
-            "schemas": {"action": [99, 1], "workflow": [1]},
+            "schemas": {
+                "action": [99, 1],
+                "workflow": [1],
+                "task": [1],
+                "webIr": [1]
+            },
             "requires": ["workflowResume"],
             "optional": ["extensions"],
             "acceptsExperimental": false,
@@ -530,6 +541,8 @@ mod tests {
         assert_eq!(agreement.protocol_version, 1);
         assert_eq!(agreement.agreed_schemas["action"], 1);
         assert_eq!(agreement.agreed_schemas["workflow"], 1);
+        assert_eq!(agreement.agreed_schemas["task"], 1);
+        assert_eq!(agreement.agreed_schemas["webIr"], 1);
         assert_eq!(
             agreement.capabilities["workflowResume"].status,
             GlassCapabilityStatus::Available

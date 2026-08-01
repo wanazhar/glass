@@ -24,6 +24,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   Protocol response envelopes with decoder round-trip coverage.
 - Golden protocol fixtures now cover bounded typed preflight errors for Task
   Protocol and Web IR validation.
+- Capability negotiation now advertises canonical `task` and `webIr` schema
+  version `1` entries for browser-free protocol clients.
 
 ## [0.2.3] - 2026-08-01
 

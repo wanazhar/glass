@@ -168,7 +168,7 @@ impl GlassTask {
         Ok(task)
     }
 
-    /// Validate the task without browser access or mutation.
+    /// Validate the authored task without browser access or mutation.
     pub fn validate(&self) -> Result<(), TaskProtocolError> {
         if self.schema_version != TASK_PROTOCOL_SCHEMA_VERSION {
             return Err(TaskProtocolError::new(
@@ -177,6 +177,7 @@ impl GlassTask {
             ));
         }
         self.scope.validate()?;
+        self.limits.validate()?;
         if self.inputs.len() > MAX_INPUTS {
             return Err(TaskProtocolError::new(
                 "inputs",
@@ -191,24 +192,6 @@ impl GlassTask {
                     "input value exceeds its bound or contains a control character",
                 ));
             }
-        }
-        if !(1..=MAX_ACTIONS).contains(&self.limits.max_actions) {
-            return Err(TaskProtocolError::new(
-                "limits.maxActions",
-                "maxActions must be between 1 and 256",
-            ));
-        }
-        if !(1..=MAX_TIMEOUT_MS).contains(&self.limits.timeout_ms) {
-            return Err(TaskProtocolError::new(
-                "limits.timeoutMs",
-                "timeoutMs must be between 1 and 120000",
-            ));
-        }
-        if !(1..=MAX_ITEMS).contains(&self.limits.max_items) {
-            return Err(TaskProtocolError::new(
-                "limits.maxItems",
-                "maxItems must be between 1 and 4096",
-            ));
         }
         if self.postconditions.len() > MAX_POSTCONDITIONS {
             return Err(TaskProtocolError::new(
@@ -243,8 +226,32 @@ impl GlassTask {
     }
 }
 
+impl TaskLimits {
+    pub(crate) fn validate(&self) -> Result<(), TaskProtocolError> {
+        if !(1..=MAX_ACTIONS).contains(&self.max_actions) {
+            return Err(TaskProtocolError::new(
+                "limits.maxActions",
+                "maxActions must be between 1 and 256",
+            ));
+        }
+        if !(1..=MAX_TIMEOUT_MS).contains(&self.timeout_ms) {
+            return Err(TaskProtocolError::new(
+                "limits.timeoutMs",
+                "timeoutMs must be between 1 and 120000",
+            ));
+        }
+        if !(1..=MAX_ITEMS).contains(&self.max_items) {
+            return Err(TaskProtocolError::new(
+                "limits.maxItems",
+                "maxItems must be between 1 and 4096",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl TaskScope {
-    fn validate(&self) -> Result<(), TaskProtocolError> {
+    pub(crate) fn validate(&self) -> Result<(), TaskProtocolError> {
         if self.region_name.is_none() && self.entity_kind.is_none() && self.entity_name.is_none() {
             return Err(TaskProtocolError::new(
                 "scope",

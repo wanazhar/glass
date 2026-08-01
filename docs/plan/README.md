@@ -141,6 +141,8 @@ Completed:
   preflight error fixture coverage.
 - [ir-030-052](tasks/ir-030-052.md) — expose the bounded canonical Web IR
   diff projection through an explicit offline CLI mode.
+- [ir-030-053](tasks/ir-030-053.md) — harden deterministic Task Protocol
+  execution-plan safety checks.
 
 ## Completed plan: performance overhaul
 Status: Complete

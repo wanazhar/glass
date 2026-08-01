@@ -8,6 +8,7 @@ use crate::task_protocol::{
     TaskPostcondition, TaskProtocolError, TaskRevisionPolicy, TaskRiskClass, TaskScope,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -81,10 +82,55 @@ impl TaskExecutionPlan {
                 "unsupported Task Protocol schema version",
             ));
         }
+        self.scope.validate().map_err(TaskCompilationError::from)?;
+        self.limits.validate().map_err(TaskCompilationError::from)?;
         if self.steps.is_empty() {
             return Err(TaskCompilationError::new(
                 "steps",
                 "execution plan must contain at least one step",
+            ));
+        }
+        if self.steps.len() > self.limits.max_actions as usize {
+            return Err(TaskCompilationError::new(
+                "steps",
+                "execution plan exceeds the maxActions bound",
+            ));
+        }
+        if self.steps[0].operation != TaskPlanOperation::ObserveScope {
+            return Err(TaskCompilationError::new(
+                "steps[0].operation",
+                "execution plan must begin with scope observation",
+            ));
+        }
+        if self
+            .steps
+            .iter()
+            .filter(|step| step.operation == TaskPlanOperation::ObserveScope)
+            .count()
+            != 1
+        {
+            return Err(TaskCompilationError::new(
+                "steps",
+                "execution plan must contain exactly one scope observation",
+            ));
+        }
+        let expected_operation = operation_for_task(self.task);
+        if self
+            .steps
+            .iter()
+            .filter(|step| step.operation == expected_operation)
+            .count()
+            != 1
+        {
+            return Err(TaskCompilationError::new(
+                "steps",
+                "execution plan must contain exactly one task operation",
+            ));
+        }
+        if confirmation_required_for(self.risk, self.ambiguity) && !self.confirmation_required {
+            return Err(TaskCompilationError::new(
+                "confirmationRequired",
+                "plan metadata must require confirmation for this task",
             ));
         }
         for (index, step) in self.steps.iter().enumerate() {
@@ -97,11 +143,51 @@ impl TaskExecutionPlan {
                     "step ordinals must be contiguous and one-based",
                 ));
             }
+            if step.operation == TaskPlanOperation::ObserveScope && step.requires_confirmation {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].requiresConfirmation"),
+                    "scope observation cannot require confirmation",
+                ));
+            }
             if step.requires_confirmation && !self.confirmation_required {
                 return Err(TaskCompilationError::new(
                     format!("steps[{index}].requiresConfirmation"),
                     "a confirmation-gated step requires plan confirmation metadata",
                 ));
+            }
+            if self.confirmation_required
+                && step.operation != TaskPlanOperation::ObserveScope
+                && !step.requires_confirmation
+            {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].requiresConfirmation"),
+                    "task operations must be confirmation-gated when the plan requires it",
+                ));
+            }
+            if step.operation == TaskPlanOperation::FillInputs && step.input_names.is_empty() {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].inputNames"),
+                    "fill operations require at least one input name",
+                ));
+            }
+            if step.operation != TaskPlanOperation::FillInputs && !step.input_names.is_empty() {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].inputNames"),
+                    "input names are only valid for fill operations",
+                ));
+            }
+            let mut input_names = BTreeSet::new();
+            for input_name in &step.input_names {
+                if input_name.is_empty()
+                    || input_name.len() > 64
+                    || input_name.chars().any(char::is_control)
+                    || !input_names.insert(input_name)
+                {
+                    return Err(TaskCompilationError::new(
+                        format!("steps[{index}].inputNames"),
+                        "input names must be unique, bounded, and free of control characters",
+                    ));
+                }
             }
         }
         Ok(())
@@ -118,33 +204,11 @@ impl TaskExecutionPlan {
 /// Compile an authored task without browser access or side effects.
 pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilationError> {
     task.validate().map_err(TaskCompilationError::from)?;
-    let confirmation_required = matches!(
-        task.risk,
-        TaskRiskClass::RemoteIrreversible
-            | TaskRiskClass::Authentication
-            | TaskRiskClass::DataDisclosure
-    ) || matches!(
-        task.ambiguity,
-        crate::task_protocol::TaskAmbiguityPolicy::RequireConfirmation
-    );
-    let mut operations = vec![TaskPlanOperation::ObserveScope];
-    operations.push(match task.task {
-        TaskKind::FormInspect => TaskPlanOperation::InspectForm,
-        TaskKind::FormFill => TaskPlanOperation::FillInputs,
-        TaskKind::FormValidate => TaskPlanOperation::ValidateForm,
-        TaskKind::FormSubmit => TaskPlanOperation::SubmitForm,
-        TaskKind::NavigationFollow => TaskPlanOperation::FollowNavigation,
-        TaskKind::NavigationSelectTab => TaskPlanOperation::SelectTab,
-        TaskKind::TableExtract => TaskPlanOperation::ExtractTable,
-        TaskKind::CollectionExtract => TaskPlanOperation::ExtractCollection,
-        TaskKind::RegionExtract => TaskPlanOperation::ExtractRegion,
-        TaskKind::FieldRead => TaskPlanOperation::ReadField,
-        TaskKind::DialogInspect => TaskPlanOperation::InspectDialog,
-        TaskKind::DialogConfirm => TaskPlanOperation::ConfirmDialog,
-        TaskKind::DialogCancel => TaskPlanOperation::CancelDialog,
-        TaskKind::PaginationNext => TaskPlanOperation::NextPage,
-        TaskKind::PaginationCollect => TaskPlanOperation::CollectPages,
-    });
+    let confirmation_required = confirmation_required_for(task.risk, task.ambiguity);
+    let operations = vec![
+        TaskPlanOperation::ObserveScope,
+        operation_for_task(task.task),
+    ];
     let input_names = task.inputs.keys().cloned().collect::<Vec<_>>();
     let steps = operations
         .into_iter()
@@ -176,6 +240,35 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn operation_for_task(task: TaskKind) -> TaskPlanOperation {
+    match task {
+        TaskKind::FormInspect => TaskPlanOperation::InspectForm,
+        TaskKind::FormFill => TaskPlanOperation::FillInputs,
+        TaskKind::FormValidate => TaskPlanOperation::ValidateForm,
+        TaskKind::FormSubmit => TaskPlanOperation::SubmitForm,
+        TaskKind::NavigationFollow => TaskPlanOperation::FollowNavigation,
+        TaskKind::NavigationSelectTab => TaskPlanOperation::SelectTab,
+        TaskKind::TableExtract => TaskPlanOperation::ExtractTable,
+        TaskKind::CollectionExtract => TaskPlanOperation::ExtractCollection,
+        TaskKind::RegionExtract => TaskPlanOperation::ExtractRegion,
+        TaskKind::FieldRead => TaskPlanOperation::ReadField,
+        TaskKind::DialogInspect => TaskPlanOperation::InspectDialog,
+        TaskKind::DialogConfirm => TaskPlanOperation::ConfirmDialog,
+        TaskKind::DialogCancel => TaskPlanOperation::CancelDialog,
+        TaskKind::PaginationNext => TaskPlanOperation::NextPage,
+        TaskKind::PaginationCollect => TaskPlanOperation::CollectPages,
+    }
+}
+
+fn confirmation_required_for(risk: TaskRiskClass, ambiguity: TaskAmbiguityPolicy) -> bool {
+    matches!(
+        risk,
+        TaskRiskClass::RemoteIrreversible
+            | TaskRiskClass::Authentication
+            | TaskRiskClass::DataDisclosure
+    ) || matches!(ambiguity, TaskAmbiguityPolicy::RequireConfirmation)
 }
 
 /// Path-aware compiler or plan validation failure.
@@ -312,5 +405,40 @@ mod tests {
             compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
         plan.steps[1].ordinal = 3;
         assert_eq!(plan.validate().unwrap_err().path, "steps[1].ordinal");
+    }
+    #[test]
+    fn plan_validation_rejects_steps_over_action_budget() {
+        let mut plan =
+            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        plan.limits.max_actions = 1;
+        assert_eq!(plan.validate().unwrap_err().path, "steps");
+    }
+
+    #[test]
+    fn plan_validation_rejects_task_operation_mismatch() {
+        let mut plan =
+            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        plan.steps[1].operation = TaskPlanOperation::InspectForm;
+        assert_eq!(plan.validate().unwrap_err().path, "steps");
+    }
+
+    #[test]
+    fn plan_validation_rejects_empty_fill_inputs() {
+        let mut plan =
+            compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation)).unwrap();
+        plan.steps[1].input_names.clear();
+        assert_eq!(plan.validate().unwrap_err().path, "steps[1].inputNames");
+    }
+
+    #[test]
+    fn plan_validation_requires_confirmation_for_risky_tasks() {
+        let mut plan = compile_task(&task(
+            TaskKind::FormSubmit,
+            TaskRiskClass::RemoteIrreversible,
+        ))
+        .unwrap();
+        plan.confirmation_required = false;
+        plan.steps[1].requires_confirmation = false;
+        assert_eq!(plan.validate().unwrap_err().path, "confirmationRequired");
     }
 }

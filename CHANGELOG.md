@@ -40,6 +40,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   continuity operations.
 - Web IR CLI diffs now support an explicit `--summary` mode for bounded
   canonical output while preserving detailed diagnostics by default.
+- Task Protocol execution plans now validate bounded limits, operation
+  alignment, fill-input metadata, and confirmation safety before runtime use.
 
 ## [0.2.3] - 2026-08-01
 

@@ -94,7 +94,7 @@ The browser and package checks are evidence for the tested environment only.
       limitations in the 0.2.4 release notes or changelog.
 - [x] Verify installation and upgrade smoke checks for the published release.
 - [x] Restore an empty `Unreleased` changelog section after publication.
-- [ ] Run the full 0.2.5 release validation suite and package dry runs.
+- [x] Run the full 0.2.5 release validation suite and package dry runs.
 - [ ] Create the signed annotated `v0.2.5` tag after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit after explicit approval.
 - [ ] Create and verify the matching published GitHub Release for `v0.2.5`.

@@ -8,7 +8,7 @@ authoritative implementation inventory for four declared targets:
 - macOS x86-64; and
 - macOS arm64.
 
-The matrix records the published 0.2.5 baseline and the 0.2.6 work stream. It
+The matrix records the published 0.2.6 baseline and the 0.2.7 work stream. It
 separates implementation from target status. A capability can be implemented
 while runtime verification on a particular OS remains incomplete.
 

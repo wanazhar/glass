@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current published release is `glass-browser` version `0.2.5`. This
-checklist is being used for the next crates.io release, `0.2.6`. Linux
+The current published release is `glass-browser` version `0.2.6`. This
+checklist is being used for the next crates.io release, `0.2.7`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
 only Linux ARM64 evidence is currently recorded. Other declared targets
 require their own native validation. Windows is unsupported.
@@ -29,7 +29,7 @@ detected idempotently; native binary artifacts are never uploaded.
 
 ## Prepare
 
-- [x] Confirm development version `0.2.6`; release date remains pending
+- [x] Confirm development version `0.2.7`; release date remains pending
       publication.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
@@ -57,7 +57,7 @@ cargo publish --locked --dry-run --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
-GLASS_PREVIOUS_VERSION=0.2.5 scripts/smoke-clean-install.sh
+GLASS_PREVIOUS_VERSION=0.2.6 scripts/smoke-clean-install.sh
 ```
 
 Then complete these release checks:
@@ -87,21 +87,21 @@ The browser and package checks are evidence for the tested environment only.
 
 ## Publish
 
-- [x] Publish and verify the `0.2.5` crates.io package.
-- [x] Create and verify the matching published GitHub Release for `v0.2.5`.
-- [x] Create the signed annotated tag `v0.2.5`.
+- [x] Publish and verify the `0.2.6` crates.io package.
+- [x] Create and verify the matching published GitHub Release for `v0.2.6`.
+- [x] Create the signed annotated tag `v0.2.6`.
 - [x] Publish `glass-browser` from the tagged commit with `cargo publish
       --locked` after the package checks passed and publication was approved.
 - [x] Include the Linux ARM64 validation boundary and known
-      limitations in the 0.2.5 release notes or changelog.
+      limitations in the 0.2.6 release notes or changelog.
 - [x] Verify installation and upgrade smoke checks for the published release.
 - [x] Restore an empty `Unreleased` changelog section after publication.
-- [x] Run the full 0.2.5 release validation suite and package dry runs.
+- [x] Run the full 0.2.6 release validation suite and package dry runs.
 - [x] Push the release commit and tag after explicit approval.
-- [x] Update issue #30 with final verified 0.2.5 release evidence.
-- [ ] Run the full 0.2.6 release validation suite and package dry runs.
-- [ ] Create the signed annotated `v0.2.6` tag after publication approval.
+- [x] Update issue #30 with final verified 0.2.6 release evidence.
+- [ ] Run the full 0.2.7 release validation suite and package dry runs.
+- [ ] Create the signed annotated `v0.2.7` tag after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit after explicit approval.
-- [ ] Create and verify the matching published GitHub Release for `v0.2.6`.
+- [ ] Create and verify the matching published GitHub Release for `v0.2.7`.
 
 A release is not complete while any required checkbox is open.

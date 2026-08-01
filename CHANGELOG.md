@@ -3,7 +3,9 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.6
+## [Unreleased] — 0.2.7
+
+## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before
   declaring a version tag missing.
 

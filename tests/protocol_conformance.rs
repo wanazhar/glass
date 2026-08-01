@@ -68,6 +68,16 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
     stdout.read_line(&mut line).unwrap();
     let mcp_response: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(mcp_response["result"]["glass"], cli_manifest);
+    assert_eq!(cli_manifest["schemas"]["task"], serde_json::json!([1]));
+    assert_eq!(cli_manifest["schemas"]["webIr"], serde_json::json!([1]));
+    assert_eq!(
+        mcp_response["result"]["glassAgreement"]["agreedSchemas"]["task"],
+        1
+    );
+    assert_eq!(
+        mcp_response["result"]["glassAgreement"]["agreedSchemas"]["webIr"],
+        1
+    );
     assert_eq!(
         mcp_response["result"]["glassAgreement"]["protocolVersion"],
         cli_manifest["protocolVersion"]

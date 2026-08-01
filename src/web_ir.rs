@@ -153,7 +153,6 @@ pub struct DraftEntityContinuity {
     pub reason: String,
 }
 
-
 impl DraftEntity {
     /// Return a bounded semantic key suitable only for revision comparison.
     pub fn semantic_identity_key(&self) -> Option<String> {
@@ -412,10 +411,7 @@ impl GlassWebIrDraft {
     /// Forward revisions are accepted. An exact same-revision draft is also
     /// accepted for deterministic self-comparisons; same-revision content
     /// drift and revision regressions fail closed.
-    pub fn validate_revision_transition(
-        &self,
-        next: &Self,
-    ) -> Result<(), WebIrValidationError> {
+    pub fn validate_revision_transition(&self, next: &Self) -> Result<(), WebIrValidationError> {
         self.validate()?;
         next.validate()?;
         if next.revision < self.revision {

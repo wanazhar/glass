@@ -60,6 +60,10 @@ CLI `task validate` and `task compile` use these same typed helpers while
 preserving their existing bounded output projections; the CLI does not start
 Chrome for either operation.
 
+CLI `ir validate`, `ir inspect`, and `ir continuity` use the corresponding
+typed Web IR helpers. The detailed CLI `ir diff` projection remains available
+for local diagnostics while canonical MCP diff responses stay bounded.
+
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.
 

@@ -135,6 +135,8 @@ Completed:
   preflight error coverage.
 - [ir-030-049](tasks/ir-030-049.md) — route CLI Task commands through canonical
   protocol helpers.
+- [ir-030-050](tasks/ir-030-050.md) — route safe CLI Web IR projections through
+  canonical protocol helpers.
 
 ## Completed plan: performance overhaul
 Status: Complete

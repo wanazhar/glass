@@ -34,6 +34,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   errors alongside Task validation and Web IR errors.
 - CLI Task validation and compilation now route through the same typed
   canonical protocol helpers as MCP while preserving bounded output shapes.
+- CLI Web IR validation, inspection, and continuity now use typed canonical
+  protocol helpers; detailed local diff output remains available.
 
 ## [0.2.3] - 2026-08-01
 

@@ -23,6 +23,7 @@ use crate::browser::session::{
 use crate::capabilities::GlassCapabilityManifest;
 use crate::protocol::{
     GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_VALIDATE_OPERATION,
+    WEB_IR_CONTINUITY_OPERATION, WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION,
 };
 use crate::reliability::{
     ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
@@ -853,26 +854,14 @@ fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest
 fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
     match action {
         IrCommand::Validate { input } => {
-            let draft = read_web_ir_draft(input)?;
-            print_json(&serde_json::json!({
-                "valid": true,
-                "schemaVersion": draft.schema_version,
-                "revision": draft.revision,
-            }))?;
+            let request = read_web_ir_request(input, WEB_IR_VALIDATE_OPERATION)?;
+            let result = crate::protocol::web_ir_validate_result(&request)?;
+            print_json(&result)?;
         }
         IrCommand::Inspect { input } => {
-            let draft = read_web_ir_draft(input)?;
-            print_json(&serde_json::json!({
-                "schemaVersion": draft.schema_version,
-                "revision": draft.revision,
-                "entityCount": draft.entities.len(),
-                "relationshipCount": draft.relationships.len(),
-                "coverage": draft.coverage,
-                "truncated": draft.limits.truncated,
-                "opaqueRegions": draft.coverage.opaque_regions,
-                "diagnosticCount": draft.diagnostics.len(),
-                "relationshipHintDiagnosticCount": draft.relationship_hint_diagnostics.len(),
-            }))?;
+            let request = read_web_ir_request(input, WEB_IR_INSPECT_OPERATION)?;
+            let result = crate::protocol::web_ir_inspect_result(&request)?;
+            print_json(&result)?;
         }
         IrCommand::Diff { before, after } => {
             let before = read_web_ir_draft(before)?;
@@ -884,9 +873,9 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             after,
             entity_id,
         } => {
-            let before = read_web_ir_draft(before)?;
-            let after = read_web_ir_draft(after)?;
-            print_json(&before.classify_entity_continuity(&after, entity_id)?)?;
+            let request = read_web_ir_continuity_request(before, after, entity_id)?;
+            let result = crate::protocol::web_ir_continuity_result(&request)?;
+            print_json(&result)?;
         }
         IrCommand::Canonical { input } => {
             let draft = read_web_ir_draft(input)?;
@@ -894,6 +883,48 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
         }
     }
     Ok(())
+}
+
+fn read_web_ir_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest> {
+    let source = std::fs::read_to_string(path)?;
+    let draft: Value = serde_json::from_str(&source)?;
+    let request = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id: format!("cli-{}", operation.replace('.', "-")),
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation: operation.into(),
+        payload: serde_json::json!({"draft": draft}),
+        deadline_ms: None,
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+fn read_web_ir_continuity_request(
+    before: &Path,
+    after: &Path,
+    entity_id: &str,
+) -> BrowserResult<GlassRequest> {
+    let before_source = std::fs::read_to_string(before)?;
+    let after_source = std::fs::read_to_string(after)?;
+    let request = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id: "cli-web-ir-continuity".into(),
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation: WEB_IR_CONTINUITY_OPERATION.into(),
+        payload: serde_json::json!({
+            "before": serde_json::from_str::<Value>(&before_source)?,
+            "after": serde_json::from_str::<Value>(&after_source)?,
+            "entityId": entity_id,
+        }),
+        deadline_ms: None,
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 fn read_web_ir_draft(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrDraft> {
@@ -1934,6 +1965,44 @@ mod tests {
             crate::protocol::compile_task_result(&invalid),
             Err(crate::protocol::ProtocolError::TaskCompilation(_))
         ));
+
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn cli_web_ir_requests_use_canonical_protocol_helpers() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/protocol-golden-v1.json"))
+                .unwrap();
+        let draft = fixture["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|request| request["operation"] == WEB_IR_INSPECT_OPERATION)
+            .and_then(|request| request["payload"]["draft"].as_object())
+            .cloned()
+            .map(Value::Object)
+            .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "glass-cli-web-ir-protocol-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&draft).unwrap()).unwrap();
+
+        let validate = read_web_ir_request(&path, WEB_IR_VALIDATE_OPERATION).unwrap();
+        assert_eq!(validate.operation, WEB_IR_VALIDATE_OPERATION);
+        assert!(crate::protocol::web_ir_validate_result(&validate).is_ok());
+
+        let inspect = read_web_ir_request(&path, WEB_IR_INSPECT_OPERATION).unwrap();
+        assert_eq!(inspect.operation, WEB_IR_INSPECT_OPERATION);
+        assert!(crate::protocol::web_ir_inspect_result(&inspect).is_ok());
+
+        let continuity = read_web_ir_continuity_request(&path, &path, "page").unwrap();
+        assert_eq!(continuity.operation, WEB_IR_CONTINUITY_OPERATION);
+        let result = crate::protocol::web_ir_continuity_result(&continuity).unwrap();
+        assert_eq!(
+            result.status,
+            crate::web_ir::DraftEntityContinuityStatus::Unchanged
+        );
 
         std::fs::remove_file(path).unwrap();
     }

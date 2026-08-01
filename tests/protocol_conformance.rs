@@ -115,6 +115,40 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
                 .unwrap(),
             request
         );
+
+        match request.operation.as_str() {
+            "task.compile" => {
+                assert!(glass::protocol::compile_task_result(&request).is_ok());
+            }
+            "task.validate" if request.request_id == "task-validate-invalid-1" => {
+                assert!(matches!(
+                    glass::protocol::validate_task_result(&request),
+                    Err(glass::protocol::ProtocolError::TaskValidation(_))
+                ));
+            }
+            "task.validate" => {
+                assert!(glass::protocol::validate_task_result(&request).is_ok());
+            }
+            "webIr.continuity" => {
+                assert!(glass::protocol::web_ir_continuity_result(&request).is_ok());
+            }
+            "webIr.diff" => {
+                assert!(glass::protocol::web_ir_diff_result(&request).is_ok());
+            }
+            "webIr.inspect" => {
+                assert!(glass::protocol::web_ir_inspect_result(&request).is_ok());
+            }
+            "webIr.validate" if request.request_id == "web-ir-validate-invalid-1" => {
+                assert!(matches!(
+                    glass::protocol::web_ir_validate_result(&request),
+                    Err(glass::protocol::ProtocolError::WebIrValidation(_))
+                ));
+            }
+            "webIr.validate" => {
+                assert!(glass::protocol::web_ir_validate_result(&request).is_ok());
+            }
+            _ => {}
+        }
     }
     for value in fixture["responses"].as_array().unwrap() {
         let response: GlassResponse = serde_json::from_value(value.clone()).unwrap();

@@ -28,6 +28,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   version `1` entries for browser-free protocol clients.
 - Capability manifests now identify browser-free `taskProtocol` and draft
   `webIr` surfaces as `availableUncertified`.
+- MCP Task tools now expose typed `taskValidation` and `taskCompilation` error
+  details for invalid browser-free requests.
 
 ## [0.2.3] - 2026-08-01
 

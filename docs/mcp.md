@@ -198,6 +198,16 @@ For a valid JSON task that fails Task Protocol validation, the tool returns
 `isError: true` with a bounded `taskValidation` error containing `path` and
 `reason`.
 
+For example, an invalid `form.fill` with no bounded inputs returns:
+
+```json
+{
+  "kind": "taskValidation",
+  "path": "inputs",
+  "reason": "form.fill requires at least one bounded input"
+}
+```
+
 ### Inspect and validate a Web IR draft without starting Chrome
 
 `inspectWebIr` and `validateWebIr` consume a bounded draft JSON object and never

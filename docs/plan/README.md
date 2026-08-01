@@ -129,6 +129,8 @@ Completed:
   schema versions through capability negotiation.
 - [ir-030-046](tasks/ir-030-046.md) — advertise Task Protocol and Web IR
   capability statuses.
+- [ir-030-047](tasks/ir-030-047.md) — typed MCP Task validation and compilation
+  errors.
 
 ## Completed plan: performance overhaul
 Status: Complete

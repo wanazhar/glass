@@ -4324,6 +4324,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_tools_return_typed_invalid_task_without_starting_chrome() {
+        let task = json!({
+            "schemaVersion": 1,
+            "task": "form.fill",
+            "scope": {"regionName": "Checkout"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        });
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        for name in ["validateTask", "compileTask"] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": name,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": {"task": task.clone()}
+                }
+            }))
+            .unwrap();
+            let mut session = None;
+            let response = handle_request(
+                &request,
+                &mut session,
+                &SessionOptions::default(),
+                &policy,
+                None,
+            )
+            .await
+            .unwrap();
+            let result = response.result.unwrap();
+            let expected_kind = if name == "validateTask" {
+                "taskValidation"
+            } else {
+                "taskCompilation"
+            };
+            assert_eq!(result["isError"], true);
+            let error: Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                error,
+                json!({
+                    "kind": expected_kind,
+                    "path": "inputs",
+                    "reason": "form.fill requires at least one bounded input"
+                })
+            );
+            assert!(session.is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn validate_web_ir_tool_returns_typed_invalid_draft_without_starting_chrome() {
         let mut draft = valid_web_ir_draft();
         draft["relationships"][0]["to"] = json!("missing");

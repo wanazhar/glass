@@ -8,8 +8,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   content drift while preserving deterministic self-comparisons.
 - Added issue #30 revision contract coverage for stale transitions, rebinding,
   removal, and ambiguous continuity.
-- Release workflow now creates source-only GitHub Releases for version tags and
-  validates that every version tag has a matching published release record.
+- Release workflow now creates source-only GitHub Releases for version tags,
+  marks the newest release as `Latest`, and validates that every version tag
+  has a matching published release record.
 
 ## [0.2.4] - 2026-08-01
 ### Added

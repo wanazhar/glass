@@ -13,6 +13,8 @@ require their own native validation. Windows is unsupported.
 Every version tag must have a matching, published, non-draft GitHub Release
 entry. The release entry contains generated notes and does not imply native
 binary distribution.
+The newest published release must be explicitly marked `Latest`; older
+release records must not carry that marker.
 
 Versioning and annotated `vX.Y.Z` tags remain part of the process. Each release
 publishes the crate to crates.io and creates a source-only GitHub Release.

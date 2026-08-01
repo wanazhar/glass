@@ -154,6 +154,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "glass-browser ${crate_version}" \
+            --latest \
             --generate-notes
 
       - name: Verify GitHub release records

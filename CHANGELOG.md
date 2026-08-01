@@ -29,6 +29,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   fresh post-action observation, and typed indeterminate recovery.
 - Added typed pending-dialog details to `dialog.inspect` task results without
   changing action-result recovery semantics.
+- Added one canonical Rust task dispatcher shared by CLI and MCP browser-backed
+  execution paths.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

@@ -608,6 +608,31 @@ impl BrowserSession {
 }
 
 impl BrowserSession {
+    /// Execute any currently supported browser-backed Task Protocol family.
+    pub async fn execute_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        match task.task {
+            TaskKind::NavigationFollow => {
+                self.execute_navigation_task(task, expected_revision, confirmed)
+                    .await
+            }
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+                self.execute_dialog_task(task, expected_revision, confirmed)
+                    .await
+            }
+            _ => {
+                self.execute_form_task(task, expected_revision, confirmed)
+                    .await
+            }
+        }
+    }
+}
+
+impl BrowserSession {
     /// Inspect or resolve one pending JavaScript dialog through the Task Protocol.
     pub async fn execute_dialog_task(
         &self,

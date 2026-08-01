@@ -2654,7 +2654,7 @@ async fn browser_session_executes_scoped_form_tasks() {
         postconditions: Vec::new(),
     };
     let extracted = session
-        .execute_form_task(&extract_task, observation.revision, false)
+        .execute_task(&extract_task, observation.revision, false)
         .await
         .unwrap();
     assert_eq!(extracted.status, "succeeded");

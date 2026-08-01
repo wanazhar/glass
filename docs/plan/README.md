@@ -165,6 +165,8 @@ Completed:
   pagination advances within semantic pagination regions.
 - [ir-030-063](tasks/ir-030-063.md) — expose typed pending-dialog details
   through `dialog.inspect` task results.
+- [ir-030-064](tasks/ir-030-064.md) — route CLI and MCP browser-backed task
+  execution through one canonical Rust dispatcher.
 
 ## Completed plan: performance overhaul
 Status: Complete

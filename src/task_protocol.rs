@@ -476,4 +476,13 @@ mod tests {
         task.inputs.insert("next".into(), "Next page".into());
         task.validate().unwrap();
     }
+    #[test]
+    fn pagination_collect_requires_bounded_next_input() {
+        let mut task = task();
+        task.task = TaskKind::PaginationCollect;
+        task.inputs.clear();
+        assert_eq!(task.validate().unwrap_err().path, "inputs.next");
+        task.inputs.insert("next".into(), "Next page".into());
+        task.validate().unwrap();
+    }
 }

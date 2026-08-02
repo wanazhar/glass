@@ -171,7 +171,14 @@ impl BrowserSession {
                 )
                 .await;
                 let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-                let succeeded = outcome.is_ok();
+                let succeeded = outcome.is_ok()
+                    && wait_for_aria_true(
+                        self,
+                        &target.reference,
+                        "aria-selected",
+                        task.limits.timeout_ms,
+                    )
+                    .await;
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::SelectTab,
@@ -1103,20 +1110,27 @@ fn step(
         detail,
     }
 }
-async fn menu_expanded_state(session: &BrowserSession, reference: &str) -> Option<bool> {
+async fn aria_boolean_state(
+    session: &BrowserSession,
+    reference: &str,
+    attribute: &str,
+) -> Option<bool> {
     let reference = parse_revisioned_reference(reference).ok().flatten()?;
     let object_id = session
         .cdp
         .resolve_node_object(None, Some(reference.backend_dom_node_id))
         .await
         .ok()?;
+    let function = format!(
+        "function(){{const value=this.getAttribute({attribute:?});return value === null ? null : value === 'true';}}"
+    );
     let result = session
         .cdp
         .send(
             "Runtime.callFunctionOn",
             Some(json!({
                 "objectId": object_id,
-                "functionDeclaration": "function(){const value=this.getAttribute('aria-expanded');return value === null ? null : value === 'true';}",
+                "functionDeclaration": function,
                 "returnByValue": true,
                 "awaitPromise": false,
             })),
@@ -1133,6 +1147,27 @@ async fn menu_expanded_state(session: &BrowserSession, reference: &str) -> Optio
     result
         .as_ref()
         .and_then(|value| value["result"]["value"].as_bool())
+}
+
+async fn wait_for_aria_true(
+    session: &BrowserSession,
+    reference: &str,
+    attribute: &str,
+    timeout_ms: u64,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match aria_boolean_state(session, reference, attribute).await {
+            Some(true) => return true,
+            None => return false,
+            Some(false) => {}
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(10))).await;
+    }
 }
 
 fn retry_guidance(classification: RetryClassification, operation: &str) -> RetryGuidance {
@@ -1221,9 +1256,13 @@ impl BrowserSession {
         )
         .await;
         let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-        let menu_open = menu_expanded_state(self, &target.reference)
-            .await
-            .is_some_and(|expanded| expanded);
+        let menu_open = wait_for_aria_true(
+            self,
+            &target.reference,
+            "aria-expanded",
+            task.limits.timeout_ms,
+        )
+        .await;
         let succeeded = outcome.is_ok() && menu_open;
         let detail = if outcome.is_err() {
             Some("menu control click was not dispatched".into())

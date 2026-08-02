@@ -5,7 +5,8 @@
     <form aria-label="Checkout" id="checkout">
       <label>Email <input aria-label="Email" name="email"></label>
       <label>Password <input aria-label="Password" name="password" type="password" value="secret"></label>
-      <button aria-label="Payment" role="tab" type="button">Payment</button>
+      <button aria-label="Payment" aria-selected="false" role="tab" type="button">Payment</button>
+      <button aria-label="No-op tab" aria-selected="false" role="tab" type="button">No-op tab</button>
       <button aria-label="Confirm order" id="confirm-order" type="button">
         Confirm order
       </button>
@@ -40,6 +41,11 @@
       products.addEventListener('click', () => {
         const expanded = products.getAttribute('aria-expanded') === 'true';
         products.setAttribute('aria-expanded', String(!expanded));
+      });
+      const paymentTab = document.querySelector('[aria-label="Payment"]');
+      paymentTab.addEventListener('click', event => {
+        const tab = event.currentTarget;
+        setTimeout(() => tab.setAttribute('aria-selected', 'true'), 25);
       });
     </script>
   </body>

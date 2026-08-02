@@ -50,6 +50,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   inputs, revision-aware clicking, and post-action observation.
 - Hardened `navigation.openMenu` to require observable expanded state after
   clicking; unverified clicks now return indeterminate recovery guidance.
+- Hardened `navigation.selectTab` to require delayed-safe observable
+  `aria-selected` state and typed indeterminate recovery.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

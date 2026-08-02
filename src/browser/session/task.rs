@@ -358,7 +358,14 @@ impl BrowserSession {
                 )
                 .await;
                 let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-                let succeeded = outcome.is_ok();
+                let after = wait_for_semantic_page_change(
+                    self,
+                    &observation,
+                    after,
+                    task.limits.timeout_ms,
+                )
+                .await?;
+                let succeeded = outcome.is_ok() && semantic_page_changed(&observation, &after);
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::NextPage,
@@ -1167,6 +1174,32 @@ async fn wait_for_aria_true(
             return false;
         }
         tokio::time::sleep((deadline - now).min(Duration::from_millis(10))).await;
+    }
+}
+
+async fn wait_for_semantic_page_change(
+    session: &BrowserSession,
+    before: &InspectPageResult,
+    mut after: InspectPageResult,
+    timeout_ms: u64,
+) -> BrowserResult<InspectPageResult> {
+    if semantic_page_changed(before, &after) {
+        return Ok(after);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(after);
+        }
+        tokio::time::sleep(remaining.min(Duration::from_millis(10))).await;
+        after = match tokio::time::timeout(remaining, session.inspect_page()).await {
+            Ok(Ok(next)) => next,
+            _ => return Ok(after),
+        };
+        if semantic_page_changed(before, &after) {
+            return Ok(after);
+        }
     }
 }
 

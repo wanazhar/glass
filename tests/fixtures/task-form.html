@@ -19,6 +19,8 @@
     </nav>
     <nav aria-label="Pagination">
       <button aria-label="Next page" type="button">Next</button>
+      <button aria-label="No-op next" type="button">No-op next</button>
+      <button aria-label="Current page 1" type="button">Current page 1</button>
     </nav>
     <section aria-label="Results" role="list">
       <a href="/one" role="listitem">First result</a>
@@ -41,6 +43,18 @@
       products.addEventListener('click', () => {
         const expanded = products.getAttribute('aria-expanded') === 'true';
         products.setAttribute('aria-expanded', String(!expanded));
+      });
+      const results = document.querySelector('[aria-label="Results"]');
+      const nextPage = document.querySelector('[aria-label="Next page"]');
+      let pageNumber = 1;
+      const currentPage = document.querySelector('[aria-label="Current page 1"]');
+      nextPage.addEventListener('click', () => {
+        setTimeout(() => {
+          pageNumber += 1;
+          results.innerHTML = `<a href="/page-${pageNumber}-one" role="listitem">Page ${pageNumber} first result</a><a href="/page-${pageNumber}-two" role="listitem">Page ${pageNumber} second result</a>`;
+          history.pushState({}, '', `/page-${pageNumber}`);
+          currentPage.setAttribute('aria-label', `Current page ${pageNumber}`);
+        }, 25);
       });
       const paymentTab = document.querySelector('[aria-label="Payment"]');
       paymentTab.addEventListener('click', event => {

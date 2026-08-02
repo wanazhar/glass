@@ -189,6 +189,9 @@ Completed:
   through observable expanded state and typed indeterminate recovery.
 - [ir-030-075](tasks/ir-030-075.md) — verify `navigation.selectTab` through
   bounded ARIA-selected polling and indeterminate recovery.
+- [ir-030-076](tasks/ir-030-076.md) — require a bounded semantic page or route
+  transition after `pagination.next`, with delayed-success and no-op recovery
+  coverage.
 
 ## Completed plan: performance overhaul
 Status: Complete

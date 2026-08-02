@@ -179,6 +179,8 @@ Completed:
   `field.read` validation.
 - [ir-030-070](tasks/ir-030-070.md) — require explicit semantic region scopes
   for browser-backed task families.
+- [ir-030-071](tasks/ir-030-071.md) — execute bounded `pagination.collect` with
+  revision-aware page advances and recovery guidance.
 
 ## Completed plan: performance overhaul
 Status: Complete

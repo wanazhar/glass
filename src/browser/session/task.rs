@@ -70,6 +70,7 @@ impl BrowserSession {
                 | TaskKind::FieldRead
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
+                | TaskKind::PaginationCollect
                 | TaskKind::TableExtract
                 | TaskKind::CollectionExtract
                 | TaskKind::RegionExtract
@@ -78,7 +79,7 @@ impl BrowserSession {
                 task,
                 &plan,
                 expected_revision,
-                "unsupported task family; browser execution currently supports form, field, table, collection, and region extraction tasks",
+                "unsupported task family; browser execution currently supports form, field, table, collection, region extraction, and pagination tasks",
             ));
         }
         if plan.confirmation_required && !confirmed {
@@ -197,6 +198,115 @@ impl BrowserSession {
                     extraction: None,
                     dialog: None,
                     alerts: alert_labels(after.regions.iter()),
+                })
+            }
+            TaskKind::PaginationCollect => {
+                let Some(next_name) = task.inputs.get("next") else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "pagination.collect requires the semantic next control input",
+                    ));
+                };
+                let max_pages = task.limits.max_items.min(task.limits.max_actions).max(1) as usize;
+                let source_revision = observation.revision;
+                let mut current = observation;
+                let mut completed = 0usize;
+                let mut stopped = false;
+                while completed < max_pages {
+                    let regions = scoped_regions_for_observation(&current, task)?;
+                    let region = regions
+                        .first()
+                        .expect("scoped_regions contains exactly one region");
+                    let candidates = region
+                        .targets
+                        .iter()
+                        .filter(|target| target.name.eq_ignore_ascii_case(next_name))
+                        .collect::<Vec<_>>();
+                    if candidates.is_empty() {
+                        stopped = true;
+                        break;
+                    }
+                    if candidates.len() > 1 {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            current.revision,
+                            "pagination.collect next control is ambiguous",
+                        ));
+                    }
+                    let target = candidates[0];
+                    if !matches!(target.role.as_str(), "button" | "link" | "tab") {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            current.revision,
+                            "pagination.collect target is not a semantic navigation control",
+                        ));
+                    }
+                    let before_revision = current.revision;
+                    let outcome = bounded(
+                        self.click_with_revision(&target.reference, before_revision),
+                        task.limits.timeout_ms,
+                    )
+                    .await;
+                    let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                    let succeeded = outcome.is_ok();
+                    steps.push(step(
+                        &plan,
+                        TaskPlanOperation::CollectPages,
+                        if succeeded {
+                            "succeeded"
+                        } else {
+                            "indeterminate"
+                        },
+                        (!succeeded).then(|| "pagination outcome was not verified".into()),
+                    ));
+                    if !succeeded {
+                        return Ok(TaskExecutionResult {
+                            task: task.task,
+                            status: "indeterminate".into(),
+                            phase: "pagination-collection".into(),
+                            mutation_possible: true,
+                            source_revision,
+                            current_revision: after.revision,
+                            steps,
+                            retry: retry_guidance(
+                                RetryClassification::UnsafeUntilReconciled,
+                                "recover_run",
+                            ),
+                            form: None,
+                            extraction: None,
+                            dialog: None,
+                            alerts: alert_labels(after.regions.iter()),
+                        });
+                    }
+                    completed += 1;
+                    if after.revision == before_revision {
+                        stopped = true;
+                        current = after;
+                        break;
+                    }
+                    current = after;
+                }
+                let mut alerts = alert_labels(current.regions.iter());
+                if !stopped && completed == max_pages {
+                    alerts.push("pagination-limit-reached".into());
+                }
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "pagination-collection".into(),
+                    mutation_possible: completed > 0,
+                    source_revision,
+                    current_revision: current.revision,
+                    steps,
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    form: None,
+                    extraction: None,
+                    dialog: None,
+                    alerts,
                 })
             }
             TaskKind::PaginationNext => {

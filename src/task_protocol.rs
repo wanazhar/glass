@@ -231,6 +231,7 @@ impl GlassTask {
                 | TaskKind::FieldRead
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
+                | TaskKind::PaginationCollect
                 | TaskKind::TableExtract
                 | TaskKind::CollectionExtract
                 | TaskKind::RegionExtract
@@ -243,6 +244,12 @@ impl GlassTask {
         }
 
         match self.task {
+            TaskKind::PaginationCollect if !self.inputs.contains_key("next") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.next",
+                    "pagination.collect requires a bounded next control input",
+                ));
+            }
             TaskKind::NavigationFollow if !self.inputs.contains_key("url") => {
                 return Err(TaskProtocolError::new(
                     "inputs.url",

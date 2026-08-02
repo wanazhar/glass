@@ -283,7 +283,7 @@ impl BrowserSession {
                         });
                     }
                     completed += 1;
-                    if after.revision == before_revision {
+                    if !semantic_page_changed(&current, &after) {
                         stopped = true;
                         current = after;
                         break;
@@ -493,6 +493,14 @@ impl BrowserSession {
                 };
                 let extraction =
                     bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                if !extraction_matches_observation(&extraction, &observation) {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        extraction.source_revision,
+                        "source revision or route changed during table extraction",
+                    ));
+                }
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::ExtractTable,
@@ -538,6 +546,14 @@ impl BrowserSession {
                 };
                 let extraction =
                     bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                if !extraction_matches_observation(&extraction, &observation) {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        extraction.source_revision,
+                        "source revision or route changed during collection extraction",
+                    ));
+                }
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::ExtractCollection,
@@ -576,6 +592,14 @@ impl BrowserSession {
                 };
                 let extraction =
                     bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                if !extraction_matches_observation(&extraction, &observation) {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        extraction.source_revision,
+                        "source revision or route changed during region extraction",
+                    ));
+                }
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::ExtractRegion,
@@ -1160,6 +1184,50 @@ fn unique_target<'a>(
         [] => Err(format!("semantic form target not found: {name}").into()),
         _ => Err(format!("semantic form target is ambiguous: {name}").into()),
     }
+}
+
+fn extraction_matches_observation(
+    extraction: &StructuredExtractionResult,
+    observation: &InspectPageResult,
+) -> bool {
+    extraction.source_revision == observation.revision
+        && extraction.source_route.target_id == observation.page.target_id
+        && extraction.source_route.frame_id == observation.page.frame_id
+        && extraction.source_route.url == observation.page.url
+}
+
+fn semantic_page_changed(before: &InspectPageResult, after: &InspectPageResult) -> bool {
+    before.page.kind != after.page.kind
+        || before.page.title != after.page.title
+        || before.page.url != after.page.url
+        || before.page.target_id != after.page.target_id
+        || before.page.frame_id != after.page.frame_id
+        || before.page.confidence != after.page.confidence
+        || before.page.evidence != after.page.evidence
+        || semantic_regions_changed(&before.regions, &after.regions)
+}
+
+fn semantic_regions_changed(before: &[SemanticRegion], after: &[SemanticRegion]) -> bool {
+    before.len() != after.len()
+        || before.iter().zip(after).any(|(before, after)| {
+            before.id != after.id
+                || before.kind != after.kind
+                || before.label != after.label
+                || before.interactive_count != after.interactive_count
+                || before.item_count != after.item_count
+                || before.confidence != after.confidence
+                || before.evidence != after.evidence
+                || before.targets.len() != after.targets.len()
+                || before
+                    .targets
+                    .iter()
+                    .zip(&after.targets)
+                    .any(|(before, after)| {
+                        before.role != after.role
+                            || before.name != after.name
+                            || before.input_type != after.input_type
+                    })
+        })
 }
 
 fn alert_labels<'a, I>(regions: I) -> Vec<String>

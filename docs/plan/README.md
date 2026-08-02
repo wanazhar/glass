@@ -181,6 +181,8 @@ Completed:
   for browser-backed task families.
 - [ir-030-071](tasks/ir-030-071.md) — execute bounded `pagination.collect` with
   revision-aware page advances and recovery guidance.
+- [ir-030-072](tasks/ir-030-072.md) — harden extraction revision checks and
+  semantic no-op detection for pagination collection.
 
 ## Completed plan: performance overhaul
 Status: Complete

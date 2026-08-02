@@ -44,6 +44,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   browser-backed task families.
 - Added bounded `pagination.collect` execution with revision-aware advances,
   explicit limits, and indeterminate recovery guidance.
+- Hardened extraction against revision/route drift and stopped pagination
+  collection on semantic no-op controls rather than revision bookkeeping.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

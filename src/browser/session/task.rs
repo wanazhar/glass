@@ -1007,7 +1007,7 @@ fn scoped_regions_for_observation<'a>(
     task: &GlassTask,
 ) -> BrowserResult<Vec<&'a SemanticRegion>> {
     let Some(region_name) = task.scope.region_name.as_deref() else {
-        return Err("form task requires a semantic region scope".into());
+        return Err("browser-backed task requires a semantic region scope".into());
     };
     let regions = observation
         .regions
@@ -1016,8 +1016,8 @@ fn scoped_regions_for_observation<'a>(
         .collect::<Vec<_>>();
     match regions.len() {
         1 => Ok(regions),
-        0 => Err(format!("semantic form region not found: {region_name}").into()),
-        _ => Err(format!("semantic form region is ambiguous: {region_name}").into()),
+        0 => Err(format!("semantic region not found: {region_name}").into()),
+        _ => Err(format!("semantic region is ambiguous: {region_name}").into()),
     }
 }
 

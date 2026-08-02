@@ -222,6 +222,25 @@ impl GlassTask {
                 "form.fill requires at least one bounded input",
             ));
         }
+        if matches!(
+            self.task,
+            TaskKind::FormInspect
+                | TaskKind::FormFill
+                | TaskKind::FormValidate
+                | TaskKind::FormSubmit
+                | TaskKind::FieldRead
+                | TaskKind::NavigationSelectTab
+                | TaskKind::PaginationNext
+                | TaskKind::TableExtract
+                | TaskKind::CollectionExtract
+                | TaskKind::RegionExtract
+        ) && self.scope.region_name.is_none()
+        {
+            return Err(TaskProtocolError::new(
+                "scope.regionName",
+                "browser-backed task requires a semantic region scope",
+            ));
+        }
 
         match self.task {
             TaskKind::NavigationFollow if !self.inputs.contains_key("url") => {
@@ -419,6 +438,15 @@ mod tests {
         invalid.task = TaskKind::FieldRead;
         invalid.inputs.clear();
         assert_eq!(invalid.validate().unwrap_err().path, "inputs.field");
+    }
+
+    #[test]
+    fn browser_backed_tasks_require_region_scope() {
+        let mut invalid = task();
+        invalid.task = TaskKind::FieldRead;
+        invalid.scope.region_name = None;
+        invalid.inputs = BTreeMap::from([(String::from("field"), String::from("Email"))]);
+        assert_eq!(invalid.validate().unwrap_err().path, "scope.regionName");
     }
 
     #[test]

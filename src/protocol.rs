@@ -1136,7 +1136,7 @@ mod tests {
                 "task": {
                     "schemaVersion": 1,
                     "task": "field.read",
-                    "scope": {"entityKind": "field", "entityName": "Email"},
+                    "scope": {"regionName": "Checkout", "entityKind": "field", "entityName": "Email"},
                     "inputs": {"field": "Email"},
                     "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 1},
                     "risk": "readOnly"

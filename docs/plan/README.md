@@ -177,6 +177,8 @@ Completed:
   redaction coverage and post-observation revision checks.
 - [ir-030-069](tasks/ir-030-069.md) — require `inputs.field` during authored
   `field.read` validation.
+- [ir-030-070](tasks/ir-030-070.md) — require explicit semantic region scopes
+  for browser-backed task families.
 
 ## Completed plan: performance overhaul
 Status: Complete

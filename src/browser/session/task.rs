@@ -4,6 +4,7 @@ use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
     InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
     SemanticTarget, StructuredExtractionRequest, StructuredExtractionResult,
+    parse_revisioned_reference,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
@@ -133,80 +134,8 @@ impl BrowserSession {
 
         match task.task {
             TaskKind::NavigationOpenMenu => {
-                let Some(menu_name) = task.inputs.get("menu") else {
-                    return Ok(preflight_result(
-                        task,
-                        &plan,
-                        observation.revision,
-                        "navigation.openMenu requires the semantic menu input",
-                    ));
-                };
-                let target = match unique_target(&scoped_regions, menu_name) {
-                    Ok(target)
-                        if matches!(
-                            target.role.as_str(),
-                            "button" | "link" | "menuitem" | "menu"
-                        ) =>
-                    {
-                        target
-                    }
-                    Ok(_) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            "navigation.openMenu target is not a semantic menu control",
-                        ));
-                    }
-                    Err(error) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            &error.to_string(),
-                        ));
-                    }
-                };
-                let outcome = bounded(
-                    self.click_with_revision(&target.reference, observation.revision),
-                    task.limits.timeout_ms,
-                )
-                .await;
-                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-                let succeeded = outcome.is_ok();
-                steps.push(step(
-                    &plan,
-                    TaskPlanOperation::OpenMenu,
-                    if succeeded {
-                        "succeeded"
-                    } else {
-                        "indeterminate"
-                    },
-                    (!succeeded).then(|| "menu opening outcome was not verified".into()),
-                ));
-                Ok(TaskExecutionResult {
-                    task: task.task,
-                    status: if succeeded {
-                        "succeeded"
-                    } else {
-                        "indeterminate"
-                    }
-                    .into(),
-                    phase: "navigation-verification".into(),
-                    mutation_possible: true,
-                    source_revision: observation.revision,
-                    current_revision: after.revision,
-                    steps,
-                    retry: if succeeded {
-                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
-                    } else {
-                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
-                    },
-                    form: None,
-                    extraction: None,
-                    dialog: None,
-                    alerts: alert_labels(after.regions.iter()),
-                })
+                Box::pin(self.execute_open_menu_task(task, &plan, &observation, &scoped_regions))
+                    .await
             }
             TaskKind::NavigationSelectTab => {
                 let Some(tab_name) = task.inputs.get("tab") else {
@@ -1174,6 +1103,37 @@ fn step(
         detail,
     }
 }
+async fn menu_expanded_state(session: &BrowserSession, reference: &str) -> Option<bool> {
+    let reference = parse_revisioned_reference(reference).ok().flatten()?;
+    let object_id = session
+        .cdp
+        .resolve_node_object(None, Some(reference.backend_dom_node_id))
+        .await
+        .ok()?;
+    let result = session
+        .cdp
+        .send(
+            "Runtime.callFunctionOn",
+            Some(json!({
+                "objectId": object_id,
+                "functionDeclaration": "function(){const value=this.getAttribute('aria-expanded');return value === null ? null : value === 'true';}",
+                "returnByValue": true,
+                "awaitPromise": false,
+            })),
+        )
+        .await
+        .ok();
+    let _ = session
+        .cdp
+        .send(
+            "Runtime.releaseObject",
+            Some(json!({"objectId": object_id})),
+        )
+        .await;
+    result
+        .as_ref()
+        .and_then(|value| value["result"]["value"].as_bool())
+}
 
 fn retry_guidance(classification: RetryClassification, operation: &str) -> RetryGuidance {
     RetryGuidance {
@@ -1210,6 +1170,104 @@ fn preflight_result(
         alerts: Vec::new(),
         extraction: None,
         dialog: None,
+    }
+}
+
+impl BrowserSession {
+    async fn execute_open_menu_task(
+        &self,
+        task: &GlassTask,
+        plan: &TaskExecutionPlan,
+        observation: &InspectPageResult,
+        scoped_regions: &[&SemanticRegion],
+    ) -> BrowserResult<TaskExecutionResult> {
+        let Some(menu_name) = task.inputs.get("menu") else {
+            return Ok(preflight_result(
+                task,
+                plan,
+                observation.revision,
+                "navigation.openMenu requires the semantic menu input",
+            ));
+        };
+        let target = match unique_target(scoped_regions, menu_name) {
+            Ok(target)
+                if target.role.eq_ignore_ascii_case("button")
+                    || target.role.eq_ignore_ascii_case("link")
+                    || target.role.eq_ignore_ascii_case("menuitem")
+                    || target.role.eq_ignore_ascii_case("menu") =>
+            {
+                target
+            }
+            Ok(_) => {
+                return Ok(preflight_result(
+                    task,
+                    plan,
+                    observation.revision,
+                    "navigation.openMenu target is not a semantic menu control",
+                ));
+            }
+            Err(error) => {
+                return Ok(preflight_result(
+                    task,
+                    plan,
+                    observation.revision,
+                    &error.to_string(),
+                ));
+            }
+        };
+        let outcome = bounded(
+            self.click_with_revision(&target.reference, observation.revision),
+            task.limits.timeout_ms,
+        )
+        .await;
+        let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+        let menu_open = menu_expanded_state(self, &target.reference)
+            .await
+            .is_some_and(|expanded| expanded);
+        let succeeded = outcome.is_ok() && menu_open;
+        let detail = if outcome.is_err() {
+            Some("menu control click was not dispatched".into())
+        } else if !menu_open {
+            Some("menu expanded state was not observed after the click".into())
+        } else {
+            None
+        };
+        let steps = vec![
+            step(plan, TaskPlanOperation::ObserveScope, "succeeded", None),
+            step(
+                plan,
+                TaskPlanOperation::OpenMenu,
+                if succeeded {
+                    "succeeded"
+                } else {
+                    "indeterminate"
+                },
+                detail,
+            ),
+        ];
+        Ok(TaskExecutionResult {
+            task: task.task,
+            status: if succeeded {
+                "succeeded"
+            } else {
+                "indeterminate"
+            }
+            .into(),
+            phase: "navigation-verification".into(),
+            mutation_possible: true,
+            source_revision: observation.revision,
+            current_revision: after.revision,
+            steps,
+            retry: if succeeded {
+                retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+            } else {
+                retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+            },
+            form: None,
+            extraction: None,
+            dialog: None,
+            alerts: alert_labels(after.regions.iter()),
+        })
     }
 }
 

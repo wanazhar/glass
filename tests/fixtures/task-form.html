@@ -13,7 +13,8 @@
       <output aria-label="Result" id="result"></output>
     </form>
     <nav aria-label="Main navigation">
-      <button aria-label="Products" aria-haspopup="menu" type="button">Products</button>
+      <button aria-label="Products" aria-haspopup="menu" aria-expanded="false" type="button">Products</button>
+      <button aria-label="No-op menu" aria-haspopup="menu" type="button">No-op menu</button>
     </nav>
     <nav aria-label="Pagination">
       <button aria-label="Next page" type="button">Next</button>
@@ -34,6 +35,11 @@
       });
       document.querySelector('#confirm-order').addEventListener('click', () => {
         setTimeout(() => window.confirm('Confirm order?'), 0);
+      });
+      const products = document.querySelector('[aria-label="Products"]');
+      products.addEventListener('click', () => {
+        const expanded = products.getAttribute('aria-expanded') === 'true';
+        products.setAttribute('aria-expanded', String(!expanded));
       });
     </script>
   </body>

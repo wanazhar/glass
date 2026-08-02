@@ -185,6 +185,8 @@ Completed:
   semantic no-op detection for pagination collection.
 - [ir-030-073](tasks/ir-030-073.md) — add guarded `navigation.openMenu`
   execution with semantic menu-control targets.
+- [ir-030-074](tasks/ir-030-074.md) — verify `navigation.openMenu` outcomes
+  through observable expanded state and typed indeterminate recovery.
 
 ## Completed plan: performance overhaul
 Status: Complete

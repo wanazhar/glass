@@ -2481,6 +2481,60 @@ async fn browser_session_routes_explicit_targets_and_frames() {
 }
 
 #[tokio::test]
+async fn browser_session_rejects_unverified_menu_open() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping menu verification smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "menu-verification-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture_server.url).await.unwrap();
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::NavigationOpenMenu,
+        scope: TaskScope {
+            region_name: Some("Main navigation".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("menu"), String::from("No-op menu"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let result = session
+        .execute_task(&task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "indeterminate");
+    session.close().await.unwrap();
+    fixture_server.close().await;
+}
+
+#[tokio::test]
 async fn browser_session_executes_scoped_form_tasks() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping verified form smoke test; set GLASS_E2E=1 to run it");

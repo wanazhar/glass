@@ -48,6 +48,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   collection on semantic no-op controls rather than revision bookkeeping.
 - Added guarded `navigation.openMenu` execution with explicit semantic menu
   inputs, revision-aware clicking, and post-action observation.
+- Hardened `navigation.openMenu` to require observable expanded state after
+  clicking; unverified clicks now return indeterminate recovery guidance.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

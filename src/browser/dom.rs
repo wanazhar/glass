@@ -689,6 +689,7 @@ pub fn extract_input_type(raw_ax_node: &Value) -> Option<String> {
         .and_then(|prop| prop["value"]["value"].as_str())
         .map(String::from)
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomNode {
     pub node_id: i64,

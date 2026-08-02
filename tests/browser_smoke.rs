@@ -2614,6 +2614,29 @@ async fn browser_session_executes_scoped_form_tasks() {
         .semantic_observe(SemanticObservationLevel::Structured)
         .await
         .unwrap();
+    let menu_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::NavigationOpenMenu,
+        scope: TaskScope {
+            region_name: Some("Main navigation".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("menu"), String::from("Products"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let opened_menu = session
+        .execute_task(&menu_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(opened_menu.status, "succeeded");
+    let observation = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
 
     let pagination_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,

@@ -69,6 +69,7 @@ impl BrowserSession {
                 | TaskKind::FormSubmit
                 | TaskKind::FieldRead
                 | TaskKind::NavigationSelectTab
+                | TaskKind::NavigationOpenMenu
                 | TaskKind::PaginationNext
                 | TaskKind::PaginationCollect
                 | TaskKind::TableExtract
@@ -79,7 +80,7 @@ impl BrowserSession {
                 task,
                 &plan,
                 expected_revision,
-                "unsupported task family; browser execution currently supports form, field, table, collection, region extraction, and pagination tasks",
+                "unsupported task family; browser execution currently supports form, field, table, collection, region extraction, navigation menu, and pagination tasks",
             ));
         }
         if plan.confirmation_required && !confirmed {
@@ -131,6 +132,82 @@ impl BrowserSession {
         )];
 
         match task.task {
+            TaskKind::NavigationOpenMenu => {
+                let Some(menu_name) = task.inputs.get("menu") else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "navigation.openMenu requires the semantic menu input",
+                    ));
+                };
+                let target = match unique_target(&scoped_regions, menu_name) {
+                    Ok(target)
+                        if matches!(
+                            target.role.as_str(),
+                            "button" | "link" | "menuitem" | "menu"
+                        ) =>
+                    {
+                        target
+                    }
+                    Ok(_) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            "navigation.openMenu target is not a semantic menu control",
+                        ));
+                    }
+                    Err(error) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            &error.to_string(),
+                        ));
+                    }
+                };
+                let outcome = bounded(
+                    self.click_with_revision(&target.reference, observation.revision),
+                    task.limits.timeout_ms,
+                )
+                .await;
+                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let succeeded = outcome.is_ok();
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::OpenMenu,
+                    if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    },
+                    (!succeeded).then(|| "menu opening outcome was not verified".into()),
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: if succeeded {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    }
+                    .into(),
+                    phase: "navigation-verification".into(),
+                    mutation_possible: true,
+                    source_revision: observation.revision,
+                    current_revision: after.revision,
+                    steps,
+                    retry: if succeeded {
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+                    } else {
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+                    },
+                    form: None,
+                    extraction: None,
+                    dialog: None,
+                    alerts: alert_labels(after.regions.iter()),
+                })
+            }
             TaskKind::NavigationSelectTab => {
                 let Some(tab_name) = task.inputs.get("tab") else {
                     return Ok(preflight_result(

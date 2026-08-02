@@ -183,6 +183,8 @@ Completed:
   revision-aware page advances and recovery guidance.
 - [ir-030-072](tasks/ir-030-072.md) — harden extraction revision checks and
   semantic no-op detection for pagination collection.
+- [ir-030-073](tasks/ir-030-073.md) — add guarded `navigation.openMenu`
+  execution with semantic menu-control targets.
 
 ## Completed plan: performance overhaul
 Status: Complete

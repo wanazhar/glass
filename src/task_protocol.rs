@@ -35,6 +35,8 @@ pub enum TaskKind {
     NavigationFollow,
     #[serde(rename = "navigation.selectTab")]
     NavigationSelectTab,
+    #[serde(rename = "navigation.openMenu")]
+    NavigationOpenMenu,
     #[serde(rename = "table.extract")]
     TableExtract,
     #[serde(rename = "collection.extract")]
@@ -231,6 +233,7 @@ impl GlassTask {
                 | TaskKind::FieldRead
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
+                | TaskKind::NavigationOpenMenu
                 | TaskKind::PaginationCollect
                 | TaskKind::TableExtract
                 | TaskKind::CollectionExtract
@@ -244,6 +247,12 @@ impl GlassTask {
         }
 
         match self.task {
+            TaskKind::NavigationOpenMenu if !self.inputs.contains_key("menu") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.menu",
+                    "navigation.openMenu requires a bounded menu input",
+                ));
+            }
             TaskKind::PaginationCollect if !self.inputs.contains_key("next") => {
                 return Err(TaskProtocolError::new(
                     "inputs.next",
@@ -469,6 +478,11 @@ mod tests {
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.tab");
         task.inputs.insert("tab".into(), "Payment".into());
+        task.validate().unwrap();
+        task.task = TaskKind::NavigationOpenMenu;
+        task.inputs.clear();
+        assert_eq!(task.validate().unwrap_err().path, "inputs.menu");
+        task.inputs.insert("menu".into(), "Products".into());
         task.validate().unwrap();
         task.task = TaskKind::PaginationNext;
         task.inputs.clear();

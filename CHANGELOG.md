@@ -46,6 +46,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   explicit limits, and indeterminate recovery guidance.
 - Hardened extraction against revision/route drift and stopped pagination
   collection on semantic no-op controls rather than revision bookkeeping.
+- Added guarded `navigation.openMenu` execution with explicit semantic menu
+  inputs, revision-aware clicking, and post-action observation.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

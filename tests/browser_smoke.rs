@@ -2729,6 +2729,29 @@ async fn browser_session_executes_scoped_form_tasks() {
         field_read.extraction.as_ref().unwrap().records[0]["empty"],
         true
     );
+    let password_read_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::FieldRead,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("field"), String::from("Password"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let password_read = session
+        .execute_task(&password_read_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(password_read.status, "succeeded");
+    assert_eq!(
+        password_read.extraction.as_ref().unwrap().records[0]["value"],
+        "<redacted>"
+    );
 
     let fill_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,

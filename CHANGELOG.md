@@ -37,6 +37,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   regions with explicit `$.targets` provenance.
 - Added guarded `field.read` execution with bounded form-state output and
   existing sensitive-value redaction.
+- Added password redaction coverage and a post-observation revision guard to
+  `field.read`.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

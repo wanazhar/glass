@@ -301,6 +301,17 @@ impl BrowserSession {
                 }
                 let values =
                     bounded(self.observe_with_form_values(), task.limits.timeout_ms).await?;
+                let values_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if values_revision != expected_revision {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        values_revision,
+                        "source revision changed while reading field values",
+                    ));
+                }
                 let Some(control) = values
                     .accessibility
                     .interactive

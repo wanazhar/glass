@@ -173,6 +173,8 @@ Completed:
   uniquely scoped semantic table regions.
 - [ir-030-067](tasks/ir-030-067.md) — execute guarded `field.read` with bounded
   form-state output and policy-preserving redaction.
+- [ir-030-068](tasks/ir-030-068.md) — harden `field.read` with sensitive-value
+  redaction coverage and post-observation revision checks.
 
 ## Completed plan: performance overhaul
 Status: Complete

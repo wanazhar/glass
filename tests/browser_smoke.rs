@@ -2706,6 +2706,29 @@ async fn browser_session_executes_scoped_form_tasks() {
         table.extraction.as_ref().unwrap().provenance,
         vec!["$.targets"]
     );
+    let field_read_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::FieldRead,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(String::from("field"), String::from("Email"))]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let field_read = session
+        .execute_task(&field_read_task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(field_read.status, "succeeded");
+    assert_eq!(
+        field_read.extraction.as_ref().unwrap().records[0]["empty"],
+        true
+    );
 
     let fill_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,

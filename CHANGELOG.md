@@ -35,6 +35,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   collection regions with explicit `$.targets` provenance.
 - Added bounded `table.extract` execution for uniquely scoped semantic table
   regions with explicit `$.targets` provenance.
+- Added guarded `field.read` execution with bounded form-state output and
+  existing sensitive-value redaction.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

@@ -171,6 +171,8 @@ Completed:
   against uniquely scoped semantic collection regions.
 - [ir-030-066](tasks/ir-030-066.md) — execute bounded `table.extract` against
   uniquely scoped semantic table regions.
+- [ir-030-067](tasks/ir-030-067.md) — execute guarded `field.read` with bounded
+  form-state output and policy-preserving redaction.
 
 ## Completed plan: performance overhaul
 Status: Complete

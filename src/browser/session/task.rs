@@ -2,13 +2,14 @@
 
 use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
-    InspectPageResult, PendingDialog, SemanticRegion, SemanticRegionKind, SemanticTarget,
-    StructuredExtractionRequest, StructuredExtractionResult,
+    InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
+    SemanticTarget, StructuredExtractionRequest, StructuredExtractionResult,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
 use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind};
 use serde::Serialize;
+use serde_json::json;
 use std::future::Future;
 use std::io::{Error as IoError, ErrorKind};
 use std::time::Duration;
@@ -66,6 +67,7 @@ impl BrowserSession {
                 | TaskKind::FormFill
                 | TaskKind::FormValidate
                 | TaskKind::FormSubmit
+                | TaskKind::FieldRead
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
                 | TaskKind::TableExtract
@@ -76,7 +78,7 @@ impl BrowserSession {
                 task,
                 &plan,
                 expected_revision,
-                "unsupported task family; browser execution currently supports form, collection, and region extraction tasks",
+                "unsupported task family; browser execution currently supports form, field, table, collection, and region extraction tasks",
             ));
         }
         if plan.confirmation_required && !confirmed {
@@ -266,6 +268,84 @@ impl BrowserSession {
                     extraction: None,
                     dialog: None,
                     alerts: alert_labels(after.regions.iter()),
+                })
+            }
+            TaskKind::FieldRead => {
+                let Some(field_name) = task.inputs.get("field") else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "field.read requires the semantic field name in inputs.field",
+                    ));
+                };
+                let target = match unique_target(&scoped_regions, field_name) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        let detail = error.to_string();
+                        return Ok(preflight_result(task, &plan, observation.revision, &detail));
+                    }
+                };
+                let semantic = bounded(
+                    self.semantic_observe(SemanticObservationLevel::Structured),
+                    task.limits.timeout_ms,
+                )
+                .await?;
+                if semantic.revision != expected_revision {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        semantic.revision,
+                        "source revision changed during field read preflight",
+                    ));
+                }
+                let values =
+                    bounded(self.observe_with_form_values(), task.limits.timeout_ms).await?;
+                let Some(control) = values
+                    .accessibility
+                    .interactive
+                    .iter()
+                    .find(|control| control.reference == target.reference)
+                else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        semantic.revision,
+                        "field target was not present in the bounded form-value observation",
+                    ));
+                };
+                let record = json!({
+                    "field": target.name,
+                    "reference": target.reference,
+                    "role": target.role,
+                    "inputType": target.input_type,
+                    "value": control.value,
+                    "checked": control.checked,
+                    "selectedOption": control.selected_option,
+                    "empty": control.empty,
+                    "readOnly": control.read_only,
+                    "required": control.required,
+                });
+                steps.push(step(&plan, TaskPlanOperation::ReadField, "succeeded", None));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "field-read".into(),
+                    mutation_possible: false,
+                    source_revision: semantic.revision,
+                    current_revision: semantic.revision,
+                    steps,
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    form: None,
+                    extraction: Some(StructuredExtractionResult {
+                        source_revision: semantic.revision,
+                        source_route: semantic.route,
+                        records: vec![record],
+                        truncated: false,
+                        provenance: vec!["$.interactive".into()],
+                    }),
+                    dialog: None,
+                    alerts: alert_labels(scoped_regions.iter().copied()),
                 })
             }
             TaskKind::TableExtract => {

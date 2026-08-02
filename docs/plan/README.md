@@ -169,6 +169,8 @@ Completed:
   execution through one canonical Rust dispatcher.
 - [ir-030-065](tasks/ir-030-065.md) — execute bounded `collection.extract`
   against uniquely scoped semantic collection regions.
+- [ir-030-066](tasks/ir-030-066.md) — execute bounded `table.extract` against
+  uniquely scoped semantic table regions.
 
 ## Completed plan: performance overhaul
 Status: Complete

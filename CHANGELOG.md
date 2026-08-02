@@ -33,6 +33,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   execution paths.
 - Added bounded `collection.extract` execution for uniquely scoped semantic
   collection regions with explicit `$.targets` provenance.
+- Added bounded `table.extract` execution for uniquely scoped semantic table
+  regions with explicit `$.targets` provenance.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

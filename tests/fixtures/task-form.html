@@ -18,6 +18,11 @@
       <a href="/one" role="listitem">First result</a>
       <a href="/two" role="listitem">Second result</a>
     </section>
+    <table aria-label="Orders">
+      <tr><th>Item</th><th>Status</th></tr>
+      <tr><td>First order</td><td>Ready</td></tr>
+      <tr><td>Second order</td><td>Pending</td></tr>
+    </table>
     <script>
       document.querySelector('#checkout').addEventListener('submit', event => {
         event.preventDefault();

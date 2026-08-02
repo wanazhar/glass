@@ -68,6 +68,7 @@ impl BrowserSession {
                 | TaskKind::FormSubmit
                 | TaskKind::NavigationSelectTab
                 | TaskKind::PaginationNext
+                | TaskKind::TableExtract
                 | TaskKind::CollectionExtract
                 | TaskKind::RegionExtract
         ) {
@@ -265,6 +266,51 @@ impl BrowserSession {
                     extraction: None,
                     dialog: None,
                     alerts: alert_labels(after.regions.iter()),
+                })
+            }
+            TaskKind::TableExtract => {
+                let region = scoped_regions
+                    .first()
+                    .expect("scoped_regions contains exactly one region");
+                if region.kind != SemanticRegionKind::Table {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "table.extract scope is not a semantic table region",
+                    ));
+                }
+                let request = StructuredExtractionRequest {
+                    fields: vec![ExtractionField {
+                        name: "rows".into(),
+                        path: "$.targets".into(),
+                        kind: ExtractionKind::Table,
+                    }],
+                    region_id: Some(region.id.clone()),
+                    max_items: task.limits.max_items as usize,
+                    max_bytes: 64 * 1024,
+                };
+                let extraction =
+                    bounded(self.extract_structured(&request), task.limits.timeout_ms).await?;
+                steps.push(step(
+                    &plan,
+                    TaskPlanOperation::ExtractTable,
+                    "succeeded",
+                    None,
+                ));
+                Ok(TaskExecutionResult {
+                    task: task.task,
+                    status: "succeeded".into(),
+                    phase: "extraction".into(),
+                    mutation_possible: false,
+                    source_revision: observation.revision,
+                    current_revision: extraction.source_revision,
+                    steps,
+                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    form: None,
+                    extraction: Some(extraction),
+                    alerts: alert_labels(scoped_regions.iter().copied()),
+                    dialog: None,
                 })
             }
             TaskKind::CollectionExtract => {

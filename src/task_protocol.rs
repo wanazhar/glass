@@ -230,6 +230,12 @@ impl GlassTask {
                     "navigation.follow requires a bounded url input",
                 ));
             }
+            TaskKind::FieldRead if !self.inputs.contains_key("field") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.field",
+                    "field.read requires the semantic field name in inputs.field",
+                ));
+            }
             TaskKind::NavigationSelectTab if !self.inputs.contains_key("tab") => {
                 return Err(TaskProtocolError::new(
                     "inputs.tab",
@@ -405,6 +411,14 @@ mod tests {
         invalid.scope.entity_name = Some("Email".into());
         invalid.scope.entity_kind = None;
         assert_eq!(invalid.validate().unwrap_err().path, "scope.entityKind");
+    }
+
+    #[test]
+    fn field_read_requires_semantic_field_input() {
+        let mut invalid = task();
+        invalid.task = TaskKind::FieldRead;
+        invalid.inputs.clear();
+        assert_eq!(invalid.validate().unwrap_err().path, "inputs.field");
     }
 
     #[test]

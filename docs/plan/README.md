@@ -175,6 +175,8 @@ Completed:
   form-state output and policy-preserving redaction.
 - [ir-030-068](tasks/ir-030-068.md) — harden `field.read` with sensitive-value
   redaction coverage and post-observation revision checks.
+- [ir-030-069](tasks/ir-030-069.md) — require `inputs.field` during authored
+  `field.read` validation.
 
 ## Completed plan: performance overhaul
 Status: Complete

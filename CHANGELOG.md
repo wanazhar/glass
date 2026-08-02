@@ -39,6 +39,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
   existing sensitive-value redaction.
 - Added password redaction coverage and a post-observation revision guard to
   `field.read`.
+- Added authored-task validation requiring `inputs.field` for `field.read`.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

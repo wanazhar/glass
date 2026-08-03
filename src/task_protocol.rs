@@ -218,6 +218,12 @@ impl GlassTask {
         for (index, postcondition) in self.postconditions.iter().enumerate() {
             postcondition.validate_at(index)?;
         }
+        if matches!(self.task, TaskKind::FormSubmit) && self.postconditions.is_empty() {
+            return Err(TaskProtocolError::new(
+                "postconditions",
+                "form.submit requires at least one bounded postcondition",
+            ));
+        }
         if matches!(self.task, TaskKind::FormFill) && self.inputs.is_empty() {
             return Err(TaskProtocolError::new(
                 "inputs",
@@ -497,6 +503,20 @@ mod tests {
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());
+        task.validate().unwrap();
+    }
+
+    #[test]
+    fn form_submit_requires_a_postcondition() {
+        let mut task = task();
+        task.task = TaskKind::FormSubmit;
+        task.inputs = BTreeMap::from([(String::from("submit"), String::from("Submit"))]);
+        task.postconditions.clear();
+        assert_eq!(task.validate().unwrap_err().path, "postconditions");
+        task.postconditions.push(TaskPostcondition {
+            kind: TaskPostconditionKind::NavigationOccurred,
+            expected: None,
+        });
         task.validate().unwrap();
     }
 }

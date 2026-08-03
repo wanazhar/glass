@@ -49,6 +49,25 @@ convert source inventory or cross-compilation into a support claim for another
 OS. The current recorded result is in
 [Recorded platform evidence](local-platform.md).
 
+## 0.2.7 candidate validation
+
+The current checkout has a complete pre-publication validation record:
+
+- `cargo test --all-targets --locked`: 499 passed, 1 ignored.
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`:
+  passed.
+- `cargo doc --all-features --locked --no-deps`: passed.
+- `cargo package --locked --no-verify` and
+  `cargo publish --locked --dry-run --no-verify`: passed; dry run performed
+  no upload.
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
+  --test-threads=1`: 15 passed in the recorded Linux ARM64 environment.
+- Version, release-documentation, feature-parity, reliability-matrix, and
+  public-read-only-adapter checks: passed.
+
+These are source-checkout and recorded-environment results only. No tag,
+remote push, crates.io publication, or GitHub Release was performed.
+
 ## Publication boundary
 
 The `glass-browser` `0.2.6` crate is the current published release, and

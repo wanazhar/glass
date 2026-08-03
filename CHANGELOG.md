@@ -60,6 +60,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
   controls during preflight before browser mutation.
 - Hardened `form.fill` to return structured indeterminate recovery results for
   operation or post-fill inspection failures instead of leaking errors.
+- Bound post-action observation failures for navigation, pagination, and form
+  submission to structured indeterminate recovery results.
+- Required explicit bounded postconditions for `form.submit` and made
+  `NavigationOccurred` compare against the source revision.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

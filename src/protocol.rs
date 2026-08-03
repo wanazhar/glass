@@ -1066,7 +1066,8 @@ mod tests {
                     "scope": {"regionName": "Checkout"},
                     "inputs": {"submit": "Submit"},
                     "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
-                    "risk": "remoteIrreversible"
+                    "risk": "remoteIrreversible",
+                    "postconditions": [{"kind": "navigationOccurred"}],
                 },
                 "expectedRevision": 9,
                 "confirmed": true

@@ -200,6 +200,8 @@ Completed:
   other non-submit controls.
 - [ir-030-079](tasks/ir-030-079.md) — convert `form.fill` operation and
   post-fill inspection failures into bounded indeterminate recovery results.
+- [ir-030-080](tasks/ir-030-080.md) — bound mutation verification failures
+  and require explicit `form.submit` postconditions.
 
 ## Completed plan: performance overhaul
 Status: Complete

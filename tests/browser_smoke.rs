@@ -12,7 +12,7 @@ use glass::reliability::{
 use glass::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use glass::{
     GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
-    TaskRiskClass, TaskScope,
+    TaskPostcondition, TaskPostconditionKind, TaskRiskClass, TaskScope,
 };
 use serde_json::{Value, json};
 use std::{
@@ -3034,7 +3034,10 @@ async fn browser_session_executes_scoped_form_tasks() {
         risk: TaskRiskClass::RemoteIrreversible,
         ambiguity: TaskAmbiguityPolicy::Fail,
         revision: Default::default(),
-        postconditions: Vec::new(),
+        postconditions: vec![TaskPostcondition {
+            kind: TaskPostconditionKind::NavigationOccurred,
+            expected: None,
+        }],
     };
     let before_submit = session
         .semantic_observe(SemanticObservationLevel::Structured)

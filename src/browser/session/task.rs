@@ -170,7 +170,23 @@ impl BrowserSession {
                     task.limits.timeout_ms,
                 )
                 .await;
-                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                    Ok(after) => after,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(mutation_failure_result(
+                            task,
+                            &plan,
+                            (observation.revision, current_revision),
+                            steps,
+                            TaskPlanOperation::SelectTab,
+                            "navigation-verification",
+                            format!("post-action observation failed: {error}"),
+                        ));
+                    }
+                };
                 let succeeded = outcome.is_ok()
                     && wait_for_aria_true(
                         self,
@@ -357,14 +373,47 @@ impl BrowserSession {
                     task.limits.timeout_ms,
                 )
                 .await;
-                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-                let after = wait_for_semantic_page_change(
+                let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                    Ok(after) => after,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(mutation_failure_result(
+                            task,
+                            &plan,
+                            (observation.revision, current_revision),
+                            steps,
+                            TaskPlanOperation::NextPage,
+                            "pagination-verification",
+                            format!("post-action observation failed: {error}"),
+                        ));
+                    }
+                };
+                let after = match wait_for_semantic_page_change(
                     self,
                     &observation,
                     after,
                     task.limits.timeout_ms,
                 )
-                .await?;
+                .await
+                {
+                    Ok(after) => after,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(mutation_failure_result(
+                            task,
+                            &plan,
+                            (observation.revision, current_revision),
+                            steps,
+                            TaskPlanOperation::NextPage,
+                            "pagination-verification",
+                            format!("post-action transition observation failed: {error}"),
+                        ));
+                    }
+                };
                 let succeeded = outcome.is_ok() && semantic_page_changed(&observation, &after);
                 steps.push(step(
                     &plan,
@@ -758,7 +807,8 @@ impl BrowserSession {
                 };
                 let after_scoped_regions =
                     scoped_regions_for_observation(&after, task).unwrap_or_default();
-                let verified = postconditions_hold(task, &after, &after_scoped_regions);
+                let verified =
+                    postconditions_hold(task, &after, &after_scoped_regions, observation.revision);
                 let succeeded = verified && form.filled == form.total;
                 steps.push(step(
                     &plan,
@@ -827,11 +877,32 @@ impl BrowserSession {
                     task.limits.timeout_ms,
                 )
                 .await;
-                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                    Ok(after) => after,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(mutation_failure_result(
+                            task,
+                            &plan,
+                            (observation.revision, current_revision),
+                            steps,
+                            TaskPlanOperation::SubmitForm,
+                            "submit-verification",
+                            format!("post-action observation failed: {error}"),
+                        ));
+                    }
+                };
                 let after_scoped_regions =
                     scoped_regions_for_observation(&after, task).unwrap_or_default();
-                let verified =
-                    outcome.is_ok() && postconditions_hold(task, &after, &after_scoped_regions);
+                let verified = outcome.is_ok()
+                    && postconditions_hold(
+                        task,
+                        &after,
+                        &after_scoped_regions,
+                        observation.revision,
+                    );
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::SubmitForm,
@@ -1204,6 +1275,32 @@ fn form_fill_failure_result(
     }
 }
 
+fn mutation_failure_result(
+    task: &GlassTask,
+    plan: &TaskExecutionPlan,
+    revisions: (u64, u64),
+    mut steps: Vec<TaskStepResult>,
+    operation: TaskPlanOperation,
+    phase: &str,
+    detail: impl Into<String>,
+) -> TaskExecutionResult {
+    steps.push(step(plan, operation, "indeterminate", Some(detail.into())));
+    TaskExecutionResult {
+        task: task.task,
+        status: "indeterminate".into(),
+        phase: phase.into(),
+        mutation_possible: true,
+        source_revision: revisions.0,
+        current_revision: revisions.1,
+        steps,
+        retry: retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run"),
+        form: None,
+        extraction: None,
+        dialog: None,
+        alerts: Vec::new(),
+    }
+}
+
 async fn aria_boolean_state(
     session: &BrowserSession,
     reference: &str,
@@ -1385,7 +1482,28 @@ impl BrowserSession {
             task.limits.timeout_ms,
         )
         .await;
-        let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+        let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+            Ok(after) => after,
+            Err(error) => {
+                let current_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                return Ok(mutation_failure_result(
+                    task,
+                    plan,
+                    (observation.revision, current_revision),
+                    vec![step(
+                        plan,
+                        TaskPlanOperation::ObserveScope,
+                        "succeeded",
+                        None,
+                    )],
+                    TaskPlanOperation::OpenMenu,
+                    "navigation-verification",
+                    format!("post-action observation failed: {error}"),
+                ));
+            }
+        };
         let menu_open = wait_for_aria_true(
             self,
             &target.reference,
@@ -1394,8 +1512,8 @@ impl BrowserSession {
         )
         .await;
         let succeeded = outcome.is_ok() && menu_open;
-        let detail = if outcome.is_err() {
-            Some("menu control click was not dispatched".into())
+        let detail = if let Err(error) = outcome {
+            Some(format!("menu control click was not dispatched: {error}"))
         } else if !menu_open {
             Some("menu expanded state was not observed after the click".into())
         } else {
@@ -1548,6 +1666,7 @@ fn postconditions_hold(
     task: &GlassTask,
     observation: &InspectPageResult,
     regions: &[&SemanticRegion],
+    source_revision: u64,
 ) -> bool {
     task.postconditions
         .iter()
@@ -1563,7 +1682,7 @@ fn postconditions_hold(
                         .any(|region| region.label.eq_ignore_ascii_case(expected))
                 })
             }
-            TaskPostconditionKind::NavigationOccurred => observation.revision > 0,
+            TaskPostconditionKind::NavigationOccurred => observation.revision > source_revision,
             TaskPostconditionKind::PageKind => {
                 postcondition.expected.as_ref().is_none_or(|expected| {
                     format!("{:?}", observation.page.kind).eq_ignore_ascii_case(expected)
@@ -1689,6 +1808,34 @@ mod tests {
         assert!(result.mutation_possible);
         assert_eq!(result.current_revision, 8);
         assert_eq!(result.steps[0].status, "indeterminate");
+        assert_eq!(
+            result.retry.classification,
+            RetryClassification::UnsafeUntilReconciled
+        );
+    }
+
+    #[test]
+    fn mutation_failure_returns_bounded_recovery_result() {
+        let task = task();
+        let plan = compile_task(&task).unwrap();
+        let result = mutation_failure_result(
+            &task,
+            &plan,
+            (7, 9),
+            Vec::new(),
+            TaskPlanOperation::SubmitForm,
+            "submit-verification",
+            "post-action observation failed",
+        );
+        assert_eq!(result.status, "indeterminate");
+        assert_eq!(result.phase, "submit-verification");
+        assert!(result.mutation_possible);
+        assert_eq!(result.source_revision, 7);
+        assert_eq!(result.current_revision, 9);
+        assert_eq!(
+            result.steps[0].detail.as_deref(),
+            Some("post-action observation failed")
+        );
         assert_eq!(
             result.retry.classification,
             RetryClassification::UnsafeUntilReconciled

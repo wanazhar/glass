@@ -771,7 +771,15 @@ impl BrowserSession {
                     ));
                 };
                 let target = match unique_target(&scoped_regions, submit_name) {
-                    Ok(target) => target,
+                    Ok(target) if is_semantic_submit_control(target) => target,
+                    Ok(_) => {
+                        return Ok(preflight_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            "form.submit target is not a semantic submit control",
+                        ));
+                    }
                     Err(error) => {
                         return Ok(preflight_result(
                             task,
@@ -1168,6 +1176,10 @@ async fn aria_boolean_state(
     result
         .as_ref()
         .and_then(|value| value["result"]["value"].as_bool())
+}
+
+fn is_semantic_submit_control(target: &SemanticTarget) -> bool {
+    target.role.eq_ignore_ascii_case("button")
 }
 
 fn navigation_destination_matches(requested: &str, actual: &str) -> bool {
@@ -1615,6 +1627,14 @@ mod tests {
         };
         let error = scoped_regions_for_observation(&observation, &task()).unwrap_err();
         assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn submit_target_requires_button_role() {
+        let mut submit = target("Submit", "submit");
+        submit.role = "button".into();
+        assert!(is_semantic_submit_control(&submit));
+        assert!(!is_semantic_submit_control(&target("Email", "email")));
     }
 
     #[test]

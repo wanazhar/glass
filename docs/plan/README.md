@@ -195,6 +195,9 @@ Completed:
 - [ir-030-077](tasks/ir-030-077.md) — verify `navigation.follow` reaches the
   requested destination and return indeterminate recovery for redirects or
   other URL mismatches.
+- [ir-030-078](tasks/ir-030-078.md) — restrict `form.submit` to
+  evidence-backed semantic button targets and fail closed for named fields or
+  other non-submit controls.
 
 ## Completed plan: performance overhaul
 Status: Complete

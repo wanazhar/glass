@@ -3057,6 +3057,20 @@ async fn browser_session_executes_scoped_form_tasks() {
         .semantic_observe(SemanticObservationLevel::Structured)
         .await
         .unwrap();
+    let mut invalid_submit = submit_task.clone();
+    invalid_submit
+        .inputs
+        .insert(String::from("submit"), String::from("Email"));
+    let invalid_submit_result = session
+        .execute_form_task(&invalid_submit, retry_observation.revision, true)
+        .await
+        .unwrap();
+    assert_eq!(invalid_submit_result.status, "preflight-failed");
+    assert_eq!(
+        invalid_submit_result.steps[1].detail.as_deref(),
+        Some("form.submit target is not a semantic submit control")
+    );
+
     let submitted = session
         .execute_form_task(&submit_task, retry_observation.revision, true)
         .await

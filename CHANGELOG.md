@@ -56,6 +56,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   transition after clicking, with delayed-success and no-op recovery coverage.
 - Hardened `navigation.follow` to verify the final destination URL and report
   redirect or mismatch outcomes as indeterminate recovery.
+- Hardened `form.submit` target resolution to reject non-submit semantic
+  controls during preflight before browser mutation.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

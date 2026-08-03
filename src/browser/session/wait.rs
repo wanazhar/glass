@@ -180,7 +180,14 @@ impl BrowserSession {
         loop {
             let now = tokio::time::Instant::now();
             if now >= expires {
-                return Err(wait_timeout(&description, reported_deadline, &last_state).into());
+                return Err(WaitTimeout {
+                    condition: description.clone(),
+                    deadline_ms: reported_deadline.as_millis() as u64,
+                    last_state: bounded_wait_state(&last_state),
+                    observed_page: self.page_info().await.ok(),
+                    reason: "deadline_exceeded",
+                }
+                .into());
             }
             let remaining = expires - now;
             let (matched, state, geometry) = tokio::time::timeout(
@@ -345,6 +352,7 @@ impl BrowserSession {
                     } else {
                         format!("in_flight={}", in_flight.len())
                     },
+                    observed_page: self.page_info().await.ok(),
                     reason: "deadline_exceeded",
                 }
                 .into());

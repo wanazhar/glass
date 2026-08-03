@@ -91,7 +91,7 @@ impl BrowserSession {
                     let page = tokio::time::timeout(remaining, self.page_info())
                         .await
                         .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
-                    self.invalidate_observation();
+                    self.invalidate_observation().await;
                     self.record_audit("navigate", url);
                     Ok(page)
                 }

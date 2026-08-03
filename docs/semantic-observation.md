@@ -11,8 +11,17 @@ Each observation contains:
 - route identity;
 - a page revision;
 - a page classification;
-- region summaries; and
+- region summaries;
+- viewport geometry; and
 - omission and truncation limits.
+
+Structured text is a bounded document projection. When `limits.textTruncated`
+is true, expand a named region instead of assuming the text is complete. The
+observation also reports `limits.textBytes`.
+
+Viewport geometry reports scroll offsets, viewport dimensions, and document
+dimensions. Semantic text remains document-oriented; use the geometry to decide
+whether a fresh observation is needed after scrolling.
 
 A region handle contains the target, frame, URL, and revision. Glass rejects the
 handle when the page changes.
@@ -55,6 +64,12 @@ If `level` is not present, Glass returns the compact `PageContext` response
 for compatibility.
 
 ## Revisions and diffs
+
+The page revision is persisted in the attached page context when possible, so
+separate Glass CLI invocations attached to the same page continue the same
+revision sequence. A new document starts a new page context and therefore a
+new sequence. The daemon remains the preferred option for long-lived guarded
+sessions.
 
 `SemanticObservation::diff_from` accepts observations with the same target,
 frame, URL, and level. The new revision must not be lower than the old revision.

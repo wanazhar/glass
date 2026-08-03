@@ -24,7 +24,7 @@ const MAX_URL_BYTES: usize = 2_048;
 const MAX_TARGETS: usize = 32;
 const MAX_CHANGE_ITEMS: usize = 128;
 const MAX_ROLE_BYTES: usize = 64;
-const MAX_VISIBLE_TEXT_BYTES: usize = 16 * 1024;
+const MAX_VISIBLE_TEXT_BYTES: usize = 8 * 1024;
 
 /// Amount of semantic structure requested by a caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +258,27 @@ pub struct SemanticObservationLimits {
     pub omitted_targets: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitted_bytes: Option<usize>,
+    /// Number of bytes included in the optional bounded text projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_bytes: Option<usize>,
+    /// Whether callers should expand a region instead of relying on text alone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub text_truncated: bool,
+    /// Viewport geometry captured alongside the document-level projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<SemanticViewport>,
+}
+
+/// Bounded viewport geometry associated with one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticViewport {
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub document_width: f64,
+    pub document_height: f64,
 }
 
 /// Versioned semantic page model.
@@ -330,6 +351,9 @@ impl SemanticObservation {
             level,
         );
         let (kind, confidence, evidence) = classify_page(context, &regions);
+        let bounded_text = level
+            .includes_text()
+            .then(|| bounded_semantic_text(&context.text, MAX_VISIBLE_TEXT_BYTES));
         let observation = Self {
             schema_version: SEMANTIC_OBSERVATION_SCHEMA_VERSION,
             revision: context.accessibility.revision,
@@ -345,9 +369,7 @@ impl SemanticObservation {
                 evidence,
             },
             regions,
-            text: level
-                .includes_text()
-                .then(|| bounded_semantic_text(&context.text, MAX_VISIBLE_TEXT_BYTES)),
+            text: bounded_text.clone(),
             accessibility: level.includes_accessibility().then(|| {
                 context
                     .accessibility
@@ -368,10 +390,28 @@ impl SemanticObservation {
             limits: SemanticObservationLimits {
                 truncated: context.accessibility.truncated
                     || context.accessibility.omitted_count > 0
-                    || !context.incomplete.is_empty(),
+                    || !context.incomplete.is_empty()
+                    || bounded_text
+                        .as_deref()
+                        .is_some_and(|text| text.ends_with("[truncated]")),
                 omitted_regions: 0,
                 omitted_targets: context.accessibility.omitted_count,
                 omitted_bytes: None,
+                text_bytes: bounded_text.as_ref().map(String::len),
+                text_truncated: bounded_text
+                    .as_deref()
+                    .is_some_and(|text| text.ends_with("[truncated]")),
+                viewport: context
+                    .boundaries
+                    .viewport
+                    .map(|viewport| SemanticViewport {
+                        scroll_x: viewport.scroll_x,
+                        scroll_y: viewport.scroll_y,
+                        width: viewport.width,
+                        height: viewport.height,
+                        document_width: viewport.document_width,
+                        document_height: viewport.document_height,
+                    }),
             },
         };
         observation.validate()?;
@@ -1156,6 +1196,18 @@ fn classify_page(
             vec!["aria-role=article".into()],
         );
     }
+    let document_signature = url.contains("/doc/html/rfc")
+        || title.starts_with("rfc ")
+        || title.contains("request for comments")
+        || context.text.contains("Status of this Memo")
+        || context.text.contains("Table of Contents");
+    if document_signature {
+        return (
+            SemanticPageKind::Documentation,
+            SemanticConfidence::High,
+            vec!["document-signature=rfc-or-formatted-document".into()],
+        );
+    }
     (
         SemanticPageKind::Generic,
         SemanticConfidence::Unknown,
@@ -1499,5 +1551,28 @@ mod tests {
         .unwrap();
         assert_eq!(scoped.regions.len(), 1);
         assert_eq!(scoped.limits.omitted_regions, 0);
+        let mut document_context = context.clone();
+        document_context.page.url = "https://datatracker.ietf.org/doc/html/rfc2606".into();
+        document_context.page.title = "RFC 2606 - Reserved Top Level DNS Names".into();
+        document_context.text = format!("Status of this Memo\n{}", "x".repeat(9_000));
+        document_context.accessibility.roots.clear();
+        document_context.accessibility.interactive.clear();
+        document_context.boundaries.viewport = Some(super::super::types::ViewportState {
+            scroll_x: 0.0,
+            scroll_y: 500.0,
+            width: 780.0,
+            height: 437.0,
+            document_width: 780.0,
+            document_height: 4_125.0,
+        });
+        let document = SemanticObservation::from_page_context(
+            &document_context,
+            SemanticObservationLevel::Structured,
+        )
+        .unwrap();
+        assert_eq!(document.page.kind, SemanticPageKind::Documentation);
+        assert_eq!(document.page.confidence, SemanticConfidence::High);
+        assert!(document.limits.text_truncated);
+        assert_eq!(document.limits.viewport.unwrap().scroll_y, 500.0);
     }
 }

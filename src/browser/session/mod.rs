@@ -109,7 +109,7 @@ pub use semantic::{
     SemanticObservation, SemanticObservationError, SemanticObservationLevel,
     SemanticObservationLimits, SemanticPage, SemanticPageKind, SemanticRegion,
     SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity, SemanticTarget,
-    SemanticTargetChange,
+    SemanticTargetChange, SemanticViewport,
 };
 pub use snapshot::{
     SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,
@@ -789,6 +789,7 @@ impl BrowserSession {
                 }
             };
             session.select_frame(&frame_id).await?;
+            session.synchronize_persistent_revision().await?;
             Ok::<(), Box<dyn Error>>(())
         }
         .await;

@@ -246,7 +246,7 @@ impl BrowserSession {
                 )
                 .await;
         }
-        self.invalidate_observation();
+        self.invalidate_observation().await;
         Ok(PageTargetInfo {
             active: true,
             ..target

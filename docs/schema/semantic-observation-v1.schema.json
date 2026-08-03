@@ -12,7 +12,7 @@
     "route": {"$ref": "#/$defs/route"},
     "page": {"$ref": "#/$defs/page"},
     "regions": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/region"}},
-    "text": {"type": "string", "maxLength": 16384},
+    "text": {"type": "string", "maxLength": 8192},
     "accessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
     "rawAccessibility": {"type": "array", "items": {"$ref": "#/$defs/accessibilityNode"}},
     "changes": {"$ref": "#/$defs/changeSet"},
@@ -144,7 +144,23 @@
         "truncated": {"type": "boolean"},
         "omittedRegions": {"type": "integer", "minimum": 0},
         "omittedTargets": {"type": "integer", "minimum": 0},
-        "omittedBytes": {"type": "integer", "minimum": 0}
+        "omittedBytes": {"type": "integer", "minimum": 0},
+        "textBytes": {"type": "integer", "minimum": 0},
+        "textTruncated": {"type": "boolean"},
+        "viewport": {"$ref": "#/$defs/viewport"}
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scrollX", "scrollY", "width", "height", "documentWidth", "documentHeight"],
+      "properties": {
+        "scrollX": {"type": "number", "minimum": 0},
+        "scrollY": {"type": "number", "minimum": 0},
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0},
+        "documentWidth": {"type": "number", "minimum": 0},
+        "documentHeight": {"type": "number", "minimum": 0}
       }
     }
   }

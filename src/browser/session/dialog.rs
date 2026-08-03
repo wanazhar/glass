@@ -21,7 +21,7 @@ impl BrowserSession {
     /// Invalidates the observation cache after handling.
     pub async fn accept_dialog(&self) -> BrowserResult<()> {
         self.cdp.handle_javascript_dialog(true).await?;
-        self.invalidate_observation();
+        self.invalidate_observation().await;
         Ok(())
     }
 
@@ -30,7 +30,7 @@ impl BrowserSession {
     /// Invalidates the observation cache after handling.
     pub async fn dismiss_dialog(&self) -> BrowserResult<()> {
         self.cdp.handle_javascript_dialog(false).await?;
-        self.invalidate_observation();
+        self.invalidate_observation().await;
         Ok(())
     }
 }

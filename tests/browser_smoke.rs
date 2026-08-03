@@ -1177,6 +1177,7 @@ async fn browser_session_drives_a_local_fixture() {
     let timeout = timeout.downcast_ref::<WaitTimeout>().unwrap();
     assert_eq!(timeout.reason, "deadline_exceeded");
     assert!(timeout.last_state.len() <= 512);
+    assert!(timeout.observed_page.is_some());
     let cancelled = tokio::time::timeout(
         std::time::Duration::from_millis(100),
         session.wait(

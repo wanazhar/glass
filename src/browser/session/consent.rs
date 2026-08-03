@@ -62,7 +62,7 @@ impl BrowserSession {
             _ => ConsentDismissalOutcome::UnrecognizedFramework,
         };
         if matches!(outcome, ConsentDismissalOutcome::Dismissed) {
-            self.invalidate_observation();
+            self.invalidate_observation().await;
             self.record_audit("dismiss_consent", "recognized_framework");
         }
         Ok(outcome)

@@ -390,6 +390,14 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
         if (element.localName === 'canvas') summary.canvases += 1;
     }
+    summary.viewport = {
+        scroll_x: window.scrollX,
+        scroll_y: window.scrollY,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        document_width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
+        document_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)
+    };
     return {url:location.href, title:document.title, ready_state:document.readyState,
         text:(() => { const source=document.body ? document.body.innerText : ''; const bytes=new Uint8Array(16384);
             const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
@@ -1175,6 +1183,8 @@ pub struct WaitTimeout {
     pub condition: String,
     pub deadline_ms: u64,
     pub last_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_page: Option<PageInfo>,
     pub reason: &'static str,
 }
 
@@ -1712,6 +1722,20 @@ pub struct ObservationBoundarySummary {
     pub truncated: bool,
     #[serde(default)]
     pub text_truncated: bool,
+    /// Current viewport and document geometry captured with the page state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ViewportState>,
+}
+
+/// Bounded viewport geometry for agent-facing observations.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+pub struct ViewportState {
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub document_width: f64,
+    pub document_height: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3714,16 +3738,13 @@ pub(crate) fn wait_timeout(condition: &str, deadline: Duration, last_state: &str
         condition: condition.to_string(),
         deadline_ms: deadline.as_millis() as u64,
         last_state: bounded_wait_state(last_state),
+        observed_page: None,
         reason: "deadline_exceeded",
     }
 }
-
 impl Locator {
     pub fn parse(value: &str) -> BrowserResult<Self> {
         let value = value.trim().trim_matches('"');
-        if value.is_empty() {
-            return Err("element target cannot be empty".into());
-        }
         if parse_revisioned_reference(value)?.is_some() {
             return Ok(Self::Reference(value.to_string()));
         }

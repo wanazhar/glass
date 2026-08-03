@@ -52,7 +52,7 @@ impl BrowserSession {
                     y,
                     hit,
                     execution_id: self.next_execution_id(),
-                    revision: self.invalidate_observation(),
+                    revision: self.invalidate_observation().await,
                     target_id,
                     frame_id,
                 })
@@ -80,7 +80,7 @@ impl BrowserSession {
                 let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 self.cdp.scroll_by(dx, dy).await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
-                let current_revision = self.invalidate_observation();
+                let current_revision = self.invalidate_observation().await;
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Scroll,
@@ -610,7 +610,7 @@ impl BrowserSession {
                 self.dispatch_pointer_events(&remote.object_id, local_point, point, events)
                     .await?;
                 let (target_id, frame_id) = self.route_identity().await?;
-                let current_revision = self.invalidate_observation();
+                let current_revision = self.invalidate_observation().await;
                 let after = self.page_info().await.ok();
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
@@ -766,7 +766,7 @@ impl BrowserSession {
                 };
                 self.cdp.insert_text(text).await?;
                 let (target_id, frame_id) = self.route_identity().await?;
-                let current_revision = self.invalidate_observation();
+                let current_revision = self.invalidate_observation().await;
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Type,
@@ -957,7 +957,7 @@ impl BrowserSession {
         };
         let download_started =
             self.download_sequence.load(Ordering::Relaxed) > before_download_sequence;
-        let current_revision = self.invalidate_observation();
+        let current_revision = self.invalidate_observation().await;
         Ok(ActionOutcome {
             status: ActionStatus::Succeeded,
             action,
@@ -1048,8 +1048,29 @@ impl BrowserSession {
         runtime_value(&raw)
     }
 
-    pub(crate) fn invalidate_observation(&self) -> u64 {
-        self.page_revision.fetch_add(1, Ordering::Relaxed) + 1
+    pub(crate) async fn invalidate_observation(&self) -> u64 {
+        let revision = self.page_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        let expression = format!("globalThis.__glassPageRevision = {revision}; {revision}");
+        let _ = self.cdp.evaluate(&expression).await;
+        revision
+    }
+
+    pub(crate) async fn synchronize_persistent_revision(&self) -> BrowserResult<()> {
+        let revision = self
+            .evaluate_value(
+                "(() => { \
+                    const key = '__glassPageRevision'; \
+                    const current = Number(globalThis[key]); \
+                    if (!Number.isSafeInteger(current) || current < 1) globalThis[key] = 1; \
+                    return Number(globalThis[key]); \
+                })()",
+            )
+            .await?
+            .as_u64()
+            .unwrap_or(1)
+            .max(1);
+        self.page_revision.store(revision, Ordering::Relaxed);
+        Ok(())
     }
 
     pub(crate) fn require_expected_revision(

@@ -4,6 +4,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.7
+- Added viewport-aware semantic observations with bounded document text,
+  document-style page classification, and explicit truncation metadata.
+- Persisted revision identity across attached CLI/MCP sessions and enriched
+  wait timeouts with the last observed page route when available.
 - Added a browser-backed, revision-checked Task Protocol runtime for scoped
   `form.inspect`, `form.fill`, `form.validate`, and `form.submit` operations
   with bounded timeouts, confirmation gates, and indeterminate-outcome

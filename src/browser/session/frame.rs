@@ -189,7 +189,7 @@ impl BrowserSession {
             topology.active_frame_id = Some(frame_id.to_string());
             topology.active_session_id = Some(session_id);
         }
-        self.invalidate_observation();
+        self.invalidate_observation().await;
         Ok(FrameInfo {
             active: true,
             ..frame

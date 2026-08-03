@@ -222,7 +222,7 @@ impl BrowserSession {
                 label: element.label.clone(),
                 reference: element.reference.clone(),
             },
-            revision: self.invalidate_observation(),
+            revision: self.invalidate_observation().await,
             target_id: snapshot.original_target_id.clone(),
             frame_id: snapshot.original_frame_id.clone(),
             causally_verified_popup: true,

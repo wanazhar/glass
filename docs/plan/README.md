@@ -198,6 +198,8 @@ Completed:
 - [ir-030-078](tasks/ir-030-078.md) — restrict `form.submit` to
   evidence-backed semantic button targets and fail closed for named fields or
   other non-submit controls.
+- [ir-030-079](tasks/ir-030-079.md) — convert `form.fill` operation and
+  post-fill inspection failures into bounded indeterminate recovery results.
 
 ## Completed plan: performance overhaul
 Status: Complete

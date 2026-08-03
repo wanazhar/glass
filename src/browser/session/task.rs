@@ -717,12 +717,45 @@ impl BrowserSession {
                     .iter()
                     .map(|(target, value)| (target.as_str(), value.as_str()))
                     .collect::<Vec<_>>();
-                let form = bounded(
+                let form = match bounded(
                     self.fill_form_with_expected_revision(&borrowed, Some(observation.revision)),
                     task.limits.timeout_ms,
                 )
-                .await?;
-                let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                .await
+                {
+                    Ok(form) => form,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(form_fill_failure_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            current_revision,
+                            steps,
+                            None,
+                            error.to_string(),
+                        ));
+                    }
+                };
+                let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                    Ok(after) => after,
+                    Err(error) => {
+                        let current_revision = self
+                            .page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        return Ok(form_fill_failure_result(
+                            task,
+                            &plan,
+                            observation.revision,
+                            current_revision,
+                            steps,
+                            Some(form),
+                            error.to_string(),
+                        ));
+                    }
+                };
                 let after_scoped_regions =
                     scoped_regions_for_observation(&after, task).unwrap_or_default();
                 let verified = postconditions_hold(task, &after, &after_scoped_regions);
@@ -1139,6 +1172,38 @@ fn step(
         detail,
     }
 }
+
+fn form_fill_failure_result(
+    task: &GlassTask,
+    plan: &TaskExecutionPlan,
+    source_revision: u64,
+    current_revision: u64,
+    mut steps: Vec<TaskStepResult>,
+    form: Option<FillFormOutcome>,
+    detail: String,
+) -> TaskExecutionResult {
+    steps.push(step(
+        plan,
+        TaskPlanOperation::FillInputs,
+        "indeterminate",
+        Some(detail),
+    ));
+    TaskExecutionResult {
+        task: task.task,
+        status: "indeterminate".into(),
+        phase: "mutation-verification".into(),
+        mutation_possible: true,
+        source_revision,
+        current_revision,
+        steps,
+        retry: retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run"),
+        form,
+        extraction: None,
+        dialog: None,
+        alerts: Vec::new(),
+    }
+}
+
 async fn aria_boolean_state(
     session: &BrowserSession,
     reference: &str,
@@ -1605,6 +1670,29 @@ mod tests {
         .unwrap();
         assert_eq!(value["classification"], "unsafeUntilReconciled");
         assert_eq!(value["recommendedOperation"], "recover_run");
+    }
+
+    #[test]
+    fn form_fill_failure_returns_recovery_result() {
+        let task = task();
+        let plan = compile_task(&task).unwrap();
+        let result = form_fill_failure_result(
+            &task,
+            &plan,
+            7,
+            8,
+            Vec::new(),
+            None,
+            "task execution exceeded its timeout budget".into(),
+        );
+        assert_eq!(result.status, "indeterminate");
+        assert!(result.mutation_possible);
+        assert_eq!(result.current_revision, 8);
+        assert_eq!(result.steps[0].status, "indeterminate");
+        assert_eq!(
+            result.retry.classification,
+            RetryClassification::UnsafeUntilReconciled
+        );
     }
 
     #[test]

@@ -58,6 +58,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   redirect or mismatch outcomes as indeterminate recovery.
 - Hardened `form.submit` target resolution to reject non-submit semantic
   controls during preflight before browser mutation.
+- Hardened `form.fill` to return structured indeterminate recovery results for
+  operation or post-fill inspection failures instead of leaking errors.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

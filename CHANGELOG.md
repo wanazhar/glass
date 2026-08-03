@@ -54,6 +54,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   `aria-selected` state and typed indeterminate recovery.
 - Hardened `pagination.next` to require a bounded semantic page or route
   transition after clicking, with delayed-success and no-op recovery coverage.
+- Hardened `navigation.follow` to verify the final destination URL and report
+  redirect or mismatch outcomes as indeterminate recovery.
 
 ## [0.2.6] - 2026-08-01
 - GitHub Release coverage checks now tolerate release API propagation before

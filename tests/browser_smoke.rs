@@ -2700,6 +2700,36 @@ async fn browser_session_executes_scoped_form_tasks() {
         .unwrap();
     assert_eq!(navigated.status, "succeeded");
     assert_eq!(navigated.phase, "navigation-verification");
+    let before_redirect = session
+        .semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let redirect_task = GlassTask {
+        schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
+        task: TaskKind::NavigationFollow,
+        scope: TaskScope {
+            region_name: Some("Checkout".into()),
+            ..TaskScope::default()
+        },
+        inputs: BTreeMap::from([(
+            String::from("url"),
+            fixture_server.url.replace("/fixture.html", "/redirect"),
+        )]),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: Default::default(),
+        postconditions: Vec::new(),
+    };
+    let redirected = session
+        .execute_navigation_task(&redirect_task, before_redirect.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(redirected.status, "indeterminate");
+    assert_eq!(
+        redirected.steps[1].detail.as_deref(),
+        Some("navigation destination was not verified")
+    );
 
     let observation = session
         .semantic_observe(SemanticObservationLevel::Structured)

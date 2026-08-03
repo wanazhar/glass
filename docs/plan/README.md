@@ -192,6 +192,9 @@ Completed:
 - [ir-030-076](tasks/ir-030-076.md) — require a bounded semantic page or route
   transition after `pagination.next`, with delayed-success and no-op recovery
   coverage.
+- [ir-030-077](tasks/ir-030-077.md) — verify `navigation.follow` reaches the
+  requested destination and return indeterminate recovery for redirects or
+  other URL mismatches.
 
 ## Completed plan: performance overhaul
 Status: Complete

@@ -891,21 +891,35 @@ impl BrowserSession {
         .await
         {
             Ok(outcome) => {
+                let verified = navigation_destination_matches(url, &outcome.page.url);
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::FollowNavigation,
-                    "succeeded",
-                    None,
+                    if verified {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    },
+                    (!verified).then(|| "navigation destination was not verified".into()),
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
-                    status: "succeeded".into(),
+                    status: if verified {
+                        "succeeded"
+                    } else {
+                        "indeterminate"
+                    }
+                    .into(),
                     phase: "navigation-verification".into(),
                     mutation_possible: true,
                     source_revision: expected_revision,
                     current_revision: outcome.current_revision,
                     steps,
-                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    retry: if verified {
+                        retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
+                    } else {
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
+                    },
                     form: None,
                     extraction: None,
                     alerts: Vec::new(),
@@ -1154,6 +1168,12 @@ async fn aria_boolean_state(
     result
         .as_ref()
         .and_then(|value| value["result"]["value"].as_bool())
+}
+
+fn navigation_destination_matches(requested: &str, actual: &str) -> bool {
+    let requested = requested.split('#').next().unwrap_or(requested);
+    let actual = actual.split('#').next().unwrap_or(actual);
+    requested == actual || requested.trim_end_matches('/') == actual.trim_end_matches('/')
 }
 
 async fn wait_for_aria_true(
@@ -1595,5 +1615,17 @@ mod tests {
         };
         let error = scoped_regions_for_observation(&observation, &task()).unwrap_err();
         assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn navigation_destination_matching_ignores_fragment_and_trailing_slash() {
+        assert!(navigation_destination_matches(
+            "https://example.test/account/#section",
+            "https://example.test/account"
+        ));
+        assert!(!navigation_destination_matches(
+            "https://example.test/account",
+            "https://example.test/settings"
+        ));
     }
 }

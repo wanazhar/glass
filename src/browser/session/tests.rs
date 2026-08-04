@@ -807,6 +807,40 @@ fn locators_parse_explicit_strategies_without_role_only_fallbacks() {
 }
 
 #[test]
+fn media_control_intent_recognizes_play_pause_without_confusing_pause() {
+    assert_eq!(
+        super::action::media_control_intent("role=button;name=Play").unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        super::action::media_control_intent("role=button;name=Pause (k)").unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        super::action::media_control_intent("role=button;name=Play next video").unwrap(),
+        None
+    );
+    assert_eq!(
+        super::action::media_control_intent("css=video").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn network_quiet_ignores_long_lived_resource_types() {
+    assert!(super::wait::is_ignored_network_resource_type(Some(
+        "WebSocket"
+    )));
+    assert!(super::wait::is_ignored_network_resource_type(Some(
+        "EventSource"
+    )));
+    assert!(super::wait::is_ignored_network_resource_type(Some("Media")));
+    assert!(super::wait::is_ignored_network_resource_type(Some("Ping")));
+    assert!(!super::wait::is_ignored_network_resource_type(Some("XHR")));
+    assert!(!super::wait::is_ignored_network_resource_type(None));
+}
+
+#[test]
 fn wait_conditions_parse_typed_forms_and_reject_unbounded_values() {
     assert_eq!(
         WaitCondition::parse("lifecycle=load").unwrap(),

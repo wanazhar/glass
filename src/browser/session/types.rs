@@ -368,7 +368,12 @@ impl Error for CheckpointError {}
 /// Maximum UTF-8 byte length of visible text returned by a compact observation.
 pub const COMPACT_TEXT_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const TEXT_TRUNCATION_MARKER: &str = "\n[truncated]";
-pub(crate) const COMPACT_OBSERVATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
+/// Per-flight budget for compact observation CDP reads.
+///
+/// Large accessibility trees and heavily scripted pages routinely need more
+/// than the historical one-second budget. The bound remains finite so a
+/// broken page cannot hold an agent indefinitely.
+pub(crate) const COMPACT_OBSERVATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) const COMPACT_OBSERVATION_MAX_ATTEMPTS: u8 = 2;
 pub(crate) const COMPACT_ACCESSIBILITY_CACHE_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
@@ -448,7 +453,7 @@ pub(crate) const MAX_VISUAL_BASE64_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const VISUAL_HEADER_BASE64_BYTES: usize = 64 * 1024;
 pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
-    if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
+    if (element) element = element.closest('button,a,audio,video,input,select,textarea,[role],[tabindex]') || element;
     if (!element || !element.isConnected) return {ok:false, reason:'detached'};
     const sample = () => {
         const rect = element.getBoundingClientRect();
@@ -474,7 +479,7 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
         hidden,
         recommendation: hidden ? 'reobserve' : outsideViewport ? 'scrollAndReobserve' : 'inspectOverlay'
     });
-    element.scrollIntoView({block:'nearest', inline:'nearest'});
+    element.scrollIntoView({block:'center', inline:'nearest'});
     const first = sample();
     if (!element.isConnected) return {ok:false, reason:'detached'};
     if (element.getAnimations({subtree:true}).some(animation => animation.playState === 'running')) {
@@ -504,7 +509,7 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
 /// scroll position while answering a dry-run request.
 pub(crate) const PREFLIGHT_FUNCTION: &str = r#"function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
-    if (element) element = element.closest('button,a,input,select,textarea,[role],[tabindex]') || element;
+    if (element) element = element.closest('button,a,audio,video,input,select,textarea,[role],[tabindex]') || element;
     if (!element || !element.isConnected) return {ok:false, reason:'detached'};
     const rect = element.getBoundingClientRect();
     const geometry = {

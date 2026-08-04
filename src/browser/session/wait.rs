@@ -10,6 +10,13 @@ use std::pin::Pin;
 type VerificationCheckFuture<'a> =
     Pin<Box<dyn Future<Output = BrowserResult<(bool, String)>> + 'a>>;
 
+pub(crate) fn is_ignored_network_resource_type(resource_type: Option<&str>) -> bool {
+    matches!(
+        resource_type,
+        Some("WebSocket" | "EventSource" | "Media" | "Ping")
+    )
+}
+
 impl BrowserSession {
     pub(crate) async fn evaluate_predicate_once(
         &self,
@@ -142,24 +149,15 @@ impl BrowserSession {
         condition: WaitCondition,
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
-        self.cdp
-            .with_current_route(async {
-                validate_wait_deadline(deadline)?;
-                condition.validate()?;
-                if let WaitCondition::NetworkQuiet(quiet) = condition {
-                    return tokio::time::timeout(
-                        deadline,
-                        self.wait_for_network_quiet(quiet, deadline),
-                    )
-                    .await
-                    .map_err(|_| {
-                        wait_timeout("network_quiet", deadline, "network_check_pending")
-                    })?;
-                }
-                let mut events = self.cdp.subscribe_events();
-                self.wait_loop(condition, deadline, deadline, &mut events, false)
-                    .await
-            })
+        validate_wait_deadline(deadline)?;
+        condition.validate()?;
+        if let WaitCondition::NetworkQuiet(quiet) = condition {
+            return tokio::time::timeout(deadline, self.wait_for_network_quiet(quiet, deadline))
+                .await
+                .map_err(|_| wait_timeout("network_quiet", deadline, "network_check_pending"))?;
+        }
+        let mut events = self.cdp.subscribe_events();
+        self.wait_loop(condition, deadline, deadline, &mut events, false)
             .await
     }
 
@@ -189,7 +187,14 @@ impl BrowserSession {
                 }
                 .into());
             }
-            let remaining = expires - now;
+            // Refresh the frame route before every probe. This is cheap for
+            // stable pages and prevents a post-SPA-navigation stale-frame
+            // error from poisoning the remainder of the wait.
+            let remaining = expires.saturating_duration_since(now);
+            tokio::time::timeout(remaining, self.ensured_route_identity())
+                .await
+                .map_err(|_| wait_timeout(&description, reported_deadline, &last_state))??;
+            let remaining = expires.saturating_duration_since(tokio::time::Instant::now());
             let (matched, state, geometry) = tokio::time::timeout(
                 remaining,
                 self.check_wait_condition(&condition, previous_geometry.as_deref()),
@@ -344,6 +349,7 @@ impl BrowserSession {
         let mut in_flight = HashSet::new();
         let mut overflowed = false;
         loop {
+            self.ensured_route_identity().await?;
             let now = tokio::time::Instant::now();
             if in_flight.is_empty() && !overflowed && now.duration_since(empty_since) >= quiet {
                 guard.disable().await?;
@@ -374,26 +380,37 @@ impl BrowserSession {
                 _ = tokio::time::sleep((expires - now).min(WAIT_POLL_INTERVAL)) => {}
                 event = events.recv() => match event {
                     Ok(event) => {
-                      let request_id = event.params["requestId"].as_str();
-                      match event.method.as_str() {
-                        "Network.requestWillBeSent" => {
-                            if let Some(id) = request_id {
-                                if in_flight.len() < NETWORK_IN_FLIGHT_LIMIT {
-                                    in_flight.insert(id.to_string());
-                                } else {
-                                    overflowed = true;
+                        let request_id = event.params["requestId"].as_str();
+                        match event.method.as_str() {
+                            "Network.requestWillBeSent" => {
+                                if is_ignored_network_resource_type(event.params["type"].as_str()) {
+                                    continue;
+                                }
+                                if let Some(id) = request_id {
+                                    if in_flight.len() < NETWORK_IN_FLIGHT_LIMIT {
+                                        in_flight.insert(id.to_string());
+                                    } else {
+                                        overflowed = true;
+                                    }
                                 }
                             }
+                            "Network.loadingFinished" | "Network.loadingFailed" => {
+                                if let Some(id) = request_id {
+                                    in_flight.remove(id);
+                                }
+                                if in_flight.is_empty() && !overflowed {
+                                    empty_since = tokio::time::Instant::now();
+                                }
+                            }
+                            _ => {}
                         }
-                        "Network.loadingFinished" | "Network.loadingFailed" => {
-                            if let Some(id) = request_id { in_flight.remove(id); }
-                            if in_flight.is_empty() && !overflowed { empty_since = tokio::time::Instant::now(); }
-                        }
-                        _ => {}
-                      }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return Err("network wait event stream lagged".into()),
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Err("network wait event stream closed".into()),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        return Err("network wait event stream lagged".into());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err("network wait event stream closed".into());
+                    }
                 }
             }
         }

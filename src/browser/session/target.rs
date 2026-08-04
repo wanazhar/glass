@@ -77,16 +77,37 @@ impl BrowserSession {
     }
 
     pub(crate) async fn ensured_route_identity(&self) -> BrowserResult<(String, String)> {
-        if let Ok(route) = self.route_identity().await {
+        let route = self.route_identity().await.ok();
+        let (active_frame_id, frame_is_child) = {
+            let topology = self.topology.lock().await;
+            let active_frame_id = topology.active_frame_id.clone();
+            let frame_is_child = active_frame_id.as_deref().is_some_and(|frame_id| {
+                topology
+                    .frames
+                    .iter()
+                    .find(|frame| frame.id == frame_id)
+                    .is_some_and(|frame| frame.parent_id.is_some())
+            });
+            (active_frame_id, frame_is_child)
+        };
+        let route_is_current = if let Some((target_id, frame_id)) = route.as_ref() {
+            let topology = self.topology.lock().await;
+            topology.active_target_id.as_deref() == Some(target_id.as_str())
+                && topology.active_frame_id.as_deref() == Some(frame_id.as_str())
+                && (!frame_is_child || self.cdp.current_context_id().is_some())
+        } else {
+            false
+        };
+        if route_is_current && let Some(route) = route {
             return Ok(route);
         }
-        let main_frame = self
-            .list_frames()
-            .await?
-            .into_iter()
-            .find(|frame| frame.parent_id.is_none())
-            .ok_or("active target returned no main frame")?;
-        self.select_frame(&main_frame.id).await?;
+        let frames = self.list_frames().await?;
+        let frame_to_select = active_frame_id
+            .as_deref()
+            .and_then(|frame_id| frames.iter().find(|frame| frame.id == frame_id))
+            .or_else(|| frames.iter().find(|frame| frame.parent_id.is_none()))
+            .ok_or("active target returned no selectable frame")?;
+        self.select_frame(&frame_to_select.id).await?;
         self.route_identity().await
     }
 

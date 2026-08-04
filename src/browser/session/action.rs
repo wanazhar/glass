@@ -6,6 +6,25 @@
 
 use super::*;
 
+pub(crate) fn media_control_intent(target: &str) -> BrowserResult<Option<bool>> {
+    let Locator::RoleAndName { role, name } = Locator::parse(target)? else {
+        return Ok(None);
+    };
+    if !role.eq_ignore_ascii_case("button") {
+        return Ok(None);
+    }
+    let normalized = name.to_ascii_lowercase();
+    Ok(
+        if normalized == "play" || normalized.starts_with("play (") {
+            Some(true)
+        } else if normalized == "pause" || normalized.starts_with("pause (") {
+            Some(false)
+        } else {
+            None
+        },
+    )
+}
+
 impl BrowserSession {
     /// Click exact frame-local viewport coordinates. This is an explicit,
     /// policy-gated escape hatch for canvas and map surfaces where no DOM
@@ -541,11 +560,54 @@ impl BrowserSession {
         }).await
     }
 
+    async fn apply_media_control(&self, target: &str) -> BrowserResult<Option<bool>> {
+        let Some(wants_playing) = media_control_intent(target)? else {
+            return Ok(None);
+        };
+        let state = self
+            .evaluate_value(
+                "(() => { const media = document.querySelector('video, audio'); \
+                 if (!media) return null; \
+                 const rect = media.getBoundingClientRect(); \
+                 return {paused: media.paused, x: rect.left + rect.width / 2, \
+                         y: rect.top + rect.height / 2, width: rect.width, height: rect.height}; })()",
+            )
+            .await?;
+        let Some(paused) = state["paused"].as_bool() else {
+            return Ok(None);
+        };
+        if paused != wants_playing {
+            return Ok(Some(false));
+        }
+        let x = state["x"]
+            .as_f64()
+            .ok_or("media target x was not numeric")?;
+        let y = state["y"]
+            .as_f64()
+            .ok_or("media target y was not numeric")?;
+        let width = state["width"].as_f64().unwrap_or(0.0);
+        let height = state["height"].as_f64().unwrap_or(0.0);
+        if !x.is_finite() || !y.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Ok(None);
+        }
+        let point = self.target_viewport_point(Point { x, y }).await?;
+        self.cdp
+            .dispatch_mouse_event("mouseMoved", point.x, point.y, None, None)
+            .await?;
+        self.cdp
+            .dispatch_mouse_event("mousePressed", point.x, point.y, Some("left"), Some(1))
+            .await?;
+        self.cdp
+            .dispatch_mouse_event("mouseReleased", point.x, point.y, Some("left"), Some(1))
+            .await?;
+        Ok(Some(true))
+    }
+
     async fn resolve_click_target(
         &self,
         target: &str,
     ) -> BrowserResult<(ResolvedElement, String, Point)> {
-        const MAX_NODE_RESOLUTION_ATTEMPTS: usize = 3;
+        const MAX_NODE_RESOLUTION_ATTEMPTS: usize = 10;
         let mut last_error: Option<Box<dyn Error>> = None;
 
         for attempt in 0..MAX_NODE_RESOLUTION_ATTEMPTS {
@@ -579,8 +641,28 @@ impl BrowserSession {
                     if error
                         .downcast_ref::<TargetError>()
                         .and_then(|target_error| target_error.reason)
-                        == Some(TargetActionabilityReason::NodeUnavailable) =>
+                        .is_some_and(|reason| {
+                            matches!(
+                                reason,
+                                TargetActionabilityReason::NodeUnavailable
+                                    | TargetActionabilityReason::Detached
+                                    | TargetActionabilityReason::NotVisible
+                                    | TargetActionabilityReason::OutsideViewport
+                                    | TargetActionabilityReason::HitTestBlocked
+                                    | TargetActionabilityReason::VerificationFailed
+                                    | TargetActionabilityReason::GeometryChanged
+                                    | TargetActionabilityReason::UnstableGeometry
+                            )
+                        }) =>
                 {
+                    if let Some(target_error) = error.downcast_ref::<TargetError>() {
+                        tracing::debug!(
+                            attempt,
+                            ?target_error.reason,
+                            ?target_error.diagnostics,
+                            "retrying target actionability verification"
+                        );
+                    }
                     last_error = Some(error);
                     if attempt + 1 < MAX_NODE_RESOLUTION_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -588,7 +670,16 @@ impl BrowserSession {
                     }
                     break;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if let Some(target_error) = error.downcast_ref::<TargetError>() {
+                        tracing::debug!(
+                            ?target_error.reason,
+                            ?target_error.diagnostics,
+                            "target actionability verification failed"
+                        );
+                    }
+                    return Err(error);
+                }
             };
 
             return Ok((element, object_id, local_point));
@@ -603,6 +694,42 @@ impl BrowserSession {
                 self.require_expected_revision(request.expected_revision)?;
                 let previous_revision = self.page_revision.load(Ordering::Relaxed);
                 let before = self.page_info().await.ok();
+                let media_target = if request.action == ActionKind::Click
+                    && media_control_intent(request.target)?.is_some()
+                {
+                    Some(self.resolve_element(request.target).await?)
+                } else {
+                    None
+                };
+                if media_target.is_some()
+                    && let Some(media_changed) = self.apply_media_control(request.target).await?
+                {
+                    let (target_id, frame_id) = self.route_identity().await?;
+                    let current_revision = if media_changed {
+                        self.invalidate_observation().await
+                    } else {
+                        previous_revision
+                    };
+                    return Ok(ActionOutcome {
+                        status: ActionStatus::Succeeded,
+                        action: request.action,
+                        execution_id: self.next_execution_id(),
+                        target: Some(ActionTarget {
+                            label: request.target.to_string(),
+                            reference: None,
+                        }),
+                        revision: current_revision,
+                        previous_revision,
+                        current_revision,
+                        target_id,
+                        frame_id,
+                        verification: ActionVerificationEvidence {
+                            revision_delta: current_revision.saturating_sub(previous_revision),
+                            ..ActionVerificationEvidence::default()
+                        },
+                        evidence: None,
+                    });
+                }
                 let (element, object_id, local_point) =
                     self.resolve_click_target(request.target).await?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);

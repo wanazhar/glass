@@ -4,6 +4,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.7
+- Hardened media clicks for native `<video>` / `<audio>` targets, including
+  state-aware Play/Pause fallback and idempotent already-satisfied controls.
+- Raised compact observation's bounded per-flight deadline to three seconds
+  and made wait probes recover the active frame route after SPA navigation.
 - Added bounded `smoke-sites` live-site compatibility probing with isolated
   sessions, structured observation metrics, safe target preflight, revision
   continuity, and policy-aware classifications.

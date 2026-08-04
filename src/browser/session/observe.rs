@@ -120,21 +120,18 @@ impl BrowserSession {
         {
             return Err(error.into());
         }
-        self.cdp
-            .with_current_route(async {
-                let mut context = self
-                    .compact_observation(use_cache, include_form_values, ranking)
-                    .await?
-                    .into_page_context();
-                if include_dom {
-                    context.dom = Some(self.deep_dom().await?);
-                }
-                if include_screenshot {
-                    context.screenshot = Some(self.screenshot_base64().await?);
-                }
-                Ok(context)
-            })
-            .await
+        self.ensured_route_identity().await?;
+        let mut context = self
+            .compact_observation(use_cache, include_form_values, ranking)
+            .await?
+            .into_page_context();
+        if include_dom {
+            context.dom = Some(self.deep_dom().await?);
+        }
+        if include_screenshot {
+            context.screenshot = Some(self.screenshot_base64().await?);
+        }
+        Ok(context)
     }
 
     async fn compact_observation(
@@ -183,9 +180,11 @@ impl BrowserSession {
                 .await
                 {
                     Err(_) => {
-                        return Err(
-                            "compact observation attempt exceeded its one-second deadline".into(),
-                        );
+                        return Err(format!(
+                            "compact observation attempt exceeded its {}ms deadline",
+                            COMPACT_OBSERVATION_ATTEMPT_TIMEOUT.as_millis()
+                        )
+                        .into());
                     }
                     Ok(Ok(result)) => result,
                     Ok(Err(error))

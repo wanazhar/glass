@@ -535,6 +535,10 @@ impl CdpClient {
         self.current_route().session_id
     }
 
+    pub fn current_context_id(&self) -> Option<i64> {
+        self.current_route().context_id
+    }
+
     pub async fn set_domain_enabled_for(
         &self,
         session_id: Option<String>,

@@ -496,7 +496,7 @@ impl BrowserPolicy {
         }
         if matches!(
             self.preset,
-            PolicyPreset::Development | PolicyPreset::Polite
+            PolicyPreset::Development | PolicyPreset::Ci | PolicyPreset::Polite
         ) {
             return Ok(url);
         }
@@ -792,6 +792,12 @@ mod tests {
         let rules = pinned.prepare_hardened_session(false).await.unwrap();
         assert_eq!(rules.as_deref(), Some("MAP 8.8.8.8 8.8.8.8"));
         assert!(pinned.require_url("https://8.8.8.8/").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ci_urls_do_not_require_hardened_host_pinning() {
+        let policy = BrowserPolicy::ci(std::env::current_dir().unwrap()).unwrap();
+        assert!(policy.require_url("https://example.com/").await.is_ok());
     }
 
     #[test]

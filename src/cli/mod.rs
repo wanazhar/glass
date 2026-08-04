@@ -5,3 +5,4 @@
 
 pub mod args;
 pub mod runner;
+pub(crate) mod site_smoke;

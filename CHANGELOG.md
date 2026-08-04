@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.7
+- Added bounded `smoke-sites` live-site compatibility probing with isolated
+  sessions, structured observation metrics, safe target preflight, revision
+  continuity, and policy-aware classifications.
+- Improved `batch` input diagnostics for stdin, file paths, and rejected inline
+  JSON; CI navigation now permits public HTTP(S) URLs without host pinning
+  while preserving explicit host deny and allow rules.
 - Added viewport-aware semantic observations with bounded document text,
   document-style page classification, and explicit truncation metadata.
 - Persisted revision identity across attached CLI/MCP sessions and enriched

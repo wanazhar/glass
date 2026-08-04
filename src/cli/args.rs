@@ -358,6 +358,14 @@ pub enum Commands {
 
     /// Capture the bounded task-oriented page inspection contract.
     InspectPage,
+    /// Run bounded navigation, observation, inspection, and safe target probes for a site manifest.
+    SmokeSites {
+        /// JSON file containing `{ "sites": [...] }`.
+        input: PathBuf,
+        /// Stop after the first site-level failure.
+        #[arg(long)]
+        stop_on_error: bool,
+    },
 
     /// Resolve target candidates without acting.
     FindTarget { input: PathBuf },

@@ -22,6 +22,11 @@ glass --policy polite navigate https://example.com/public-page
 glass --mcp --policy untrusted-mcp --policy-allow-host example.com
 ```
 
+The `ci` preset intentionally permits public HTTP(S) navigation without
+host-pinning. It still denies persistent profiles and raw CDP. Use `hardened`
+or `untrusted-mcp` with exact `--policy-allow-host` rules when DNS pinning and
+host isolation are required.
+
 ## Hardened policy
 
 Hardened mode requires at least one exact `--policy-allow-host` value:

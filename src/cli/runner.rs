@@ -42,7 +42,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
+pub(crate) fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
     let (width, height) = value
         .split_once('x')
         .ok_or("viewport must use WIDTHxHEIGHT, for example 1280x800")?;
@@ -153,6 +153,15 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             return crate::tui::app::run_tui(&cli).await;
         }
         _ => {}
+    }
+
+    if let Some(Commands::SmokeSites {
+        input,
+        stop_on_error,
+    }) = &cli.command
+    {
+        let viewport = cli.viewport.as_deref().map(parse_viewport).transpose()?;
+        return super::site_smoke::run(&cli, policy, input, viewport, *stop_on_error).await;
     }
 
     let viewport = cli.viewport.as_deref().map(parse_viewport).transpose()?;
@@ -1762,6 +1771,9 @@ async fn run_command(
             session.clipboard_write(text).await?;
             println!("Text written to clipboard");
         }
+        Commands::SmokeSites { .. } => {
+            unreachable!("handled before starting a browser session")
+        }
         Commands::Tui
         | Commands::Ir { .. }
         | Commands::InstallChromium { .. }
@@ -1787,10 +1799,34 @@ fn parse_semantic_level(value: &str) -> BrowserResult<SemanticObservationLevel> 
 fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_json::Value> {
     let mut input = String::new();
     match path {
-        Some(path) => std::fs::File::open(path)?.read_to_string(&mut input)?,
-        None => std::io::stdin().read_to_string(&mut input)?,
+        Some(path) if path.as_os_str() == "-" => {
+            std::io::stdin()
+                .read_to_string(&mut input)
+                .map_err(|error| format!("could not read JSON input from stdin: {error}"))?;
+        }
+        Some(path) => {
+            let text = path.to_string_lossy();
+            if text.trim_start().starts_with('{') || text.trim_start().starts_with('[') {
+                return Err(
+                    "JSON input expects a file path; omit the path or use '-' to read stdin".into(),
+                );
+            }
+            std::fs::File::open(path)
+                .map_err(|error| {
+                    format!("could not read JSON input '{}': {error}", path.display())
+                })?
+                .read_to_string(&mut input)
+                .map_err(|error| {
+                    format!("could not read JSON input '{}': {error}", path.display())
+                })?;
+        }
+        None => {
+            std::io::stdin()
+                .read_to_string(&mut input)
+                .map_err(|error| format!("could not read JSON input from stdin: {error}"))?;
+        }
     };
-    Ok(serde_json::from_str(&input)?)
+    serde_json::from_str(&input).map_err(|error| format!("invalid JSON input: {error}").into())
 }
 
 pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
@@ -2085,5 +2121,19 @@ mod tests {
         );
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn batch_input_rejects_inline_json_and_missing_paths_clearly() {
+        let inline = std::path::PathBuf::from(r#"{"steps":[]}"#);
+        let error = read_json_input(Some(&inline)).unwrap_err().to_string();
+        assert!(error.contains("expects a file path"));
+
+        let missing = std::env::temp_dir().join(format!(
+            "glass-batch-missing-input-{}.json",
+            std::process::id()
+        ));
+        let error = read_json_input(Some(&missing)).unwrap_err().to_string();
+        assert!(error.contains("could not read JSON input"));
     }
 }

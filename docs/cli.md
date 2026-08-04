@@ -68,7 +68,8 @@ close-target ID
 frames
 select-frame ID
 evaluate EXPRESSION
-batch [JSON_FILE]
+batch [JSON_FILE|-]
+smoke-sites MANIFEST
 workflow [JSON_FILE]
 verify PREDICATE_JSON
 resolve-intent [JSON_FILE]
@@ -251,3 +252,13 @@ path.
 Diagnostics use stderr. With `--trace-on-error`, Glass writes a bounded
 failure trace to stderr. The trace includes compact observation and target and
 frame state. It does not include raw page data or secret values.
+
+## Live-site smoke tests
+
+Use `smoke-sites MANIFEST` for a bounded, read-only compatibility probe. It
+performs navigation, compact observation, structured inspection, safe target
+preflight, and a post-observation revision check. See
+[Live-site smoke testing](site-smoke.md) for the manifest and result contract.
+
+`batch` reads a JSON file, stdin when no path is supplied, or stdin explicitly
+with `-`. Inline JSON is not a positional argument.

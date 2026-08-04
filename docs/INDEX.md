@@ -9,6 +9,8 @@ unreleased development build.
 - [Installation and operations](installation.md) — build, browser discovery,
   profiles, attach mode, logging, and production deployment.
 - [CLI reference](cli.md) — global options, commands, targets, and output.
+- [Live-site smoke testing](site-smoke.md) — bounded multi-site navigation,
+  observation, safe preflight probes, metrics, and policy classifications.
 - [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
   bounded verification evidence.
 - [Workflow definitions](workflows.md) — versioned declarative workflows,

@@ -143,6 +143,7 @@ A tool may request one bounded failure-trace content item with
 | `upload` | Set 1 to 16 regular local files. |
 | `screenshot` | Return a PNG image. |
 | `observe` | Return compact or semantic page state. |
+| `observeBootstrap` | Return bounded advisory URL/title/readiness/text/revision evidence without action targets. |
 | `getDOM`, `getText` | Return DOM or visible text. |
 | `evaluate` | Run JavaScript when policy permits. |
 | `scroll` | Scroll by CSS pixels. |
@@ -393,6 +394,11 @@ reversible.
 
 The `observe` tool keeps DOM, screenshot, and form values explicit. A level
 or region cannot silently add these fields.
+
+`observeBootstrap` is a bounded, page-state-only readiness sample. It returns
+URL, title, ready state, bounded visible text, revision, consistency, and
+completeness metadata; it never resolves or returns action-authorizing targets.
+Use `observe` for authoritative target resolution before any action.
 
 Target and frame IDs come from list tools. Popup discovery does not select a
 target. Select targets and frames explicitly.

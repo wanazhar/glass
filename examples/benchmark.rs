@@ -76,6 +76,29 @@ async fn main() -> BrowserResult<()> {
     )
     .await?;
     let rss_after_sessions_start = process_rss_bytes();
+    let owned_browser_ws_url = match fast_session.owned_browser_ws_url() {
+        Some(url) => url.to_string(),
+        None => {
+            let _ = human_session.close().await;
+            let _ = fast_session.close().await;
+            return Err("warm benchmark session did not own a browser endpoint".into());
+        }
+    };
+    // Attach benchmarking is opt-in. When enabled, it reuses the already
+    // verified owned endpoint; the default run never requires an externally
+    // managed Chrome instance.
+    let attach_existing_startup_result =
+        match bench_attach_existing_startup(fast_port, &owned_browser_ws_url, expensive_iterations)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = human_session.close().await;
+                let _ = fast_session.close().await;
+                return Err(error);
+            }
+        };
+    let attach_existing_startup_path = attach_existing_startup_result.clone();
 
     let benchmark_result: BrowserResult<Value> = async {
         // Keep the cold-start envelope for existing consumers, while also
@@ -110,6 +133,19 @@ async fn main() -> BrowserResult<()> {
 
         // ── Dedicated cached compact observe benchmark ─────────────────
         let compact_observe_result = bench_compact_observe(&fast_session, iterations).await?;
+        let full_observation_result =
+            measure("observe_compact_fresh", expensive_iterations, || async {
+                let _ = fast_session.observe_fresh().await?;
+                Ok(())
+            })
+            .await?;
+        let warm_session_reuse_result = compact_observe_result.clone();
+        let mut warm_session_reuse_path = warm_session_reuse_result;
+        warm_session_reuse_path["operation"] = Value::String("warm_session_reuse".to_string());
+        let mut full_observation_path = full_observation_result.clone();
+        full_observation_path["operation"] = Value::String("full_observation".to_string());
+        let cold_owned_startup_path = cold_owned_session_startup_result.clone();
+        let semantic_bootstrap_path = semantic_bootstrap_result.clone();
 
         // ── Client-overhead instrumentation for clicks ────────────────
         let client_overhead_result =
@@ -136,11 +172,7 @@ async fn main() -> BrowserResult<()> {
                 Ok(())
             })
             .await?,
-            measure("observe_compact_fresh", expensive_iterations, || async {
-                let _ = fast_session.observe_fresh().await?;
-                Ok(())
-            })
-            .await?,
+            full_observation_result,
             measure("observe_compact_cached", iterations, || async {
                 let _ = fast_session.observe().await?;
                 Ok(())
@@ -175,6 +207,14 @@ async fn main() -> BrowserResult<()> {
             },
             "iterations": iterations,
             "warm_session_start_ms": warm_session_start_ms,
+            "attach_existing_startup": attach_existing_startup_result,
+            "latency_paths": {
+                "cold_owned_startup": cold_owned_startup_path,
+                "attach_existing_startup": attach_existing_startup_path,
+                "warm_session_reuse": warm_session_reuse_path,
+                "semantic_bootstrap": semantic_bootstrap_path,
+                "full_observation": full_observation_path,
+            },
             "warm_startup_diagnostics": fast_session.startup_diagnostics(),
             "payload_bytes": payload_bytes,
             "glass_process_memory": {
@@ -201,11 +241,66 @@ async fn main() -> BrowserResult<()> {
     if let Ok(report_path) = std::env::var("GLASS_BENCH_REPORT") {
         let json = serde_json::to_string_pretty(&output)?;
         std::fs::write(&report_path, json)?;
+
         eprintln!("Benchmark report written to {report_path}");
     }
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+/// Measure startup when attaching to the endpoint owned by the warm benchmark
+/// session. This is deliberately opt-in: the default benchmark never assumes
+/// an externally managed Chrome and never changes the ownership of the warm
+/// browser. Attached sessions are created and closed sequentially.
+async fn bench_attach_existing_startup(
+    port: u16,
+    expected_browser_ws_url: &str,
+    iterations: usize,
+) -> BrowserResult<Value> {
+    let enabled = std::env::var("GLASS_BENCH_ATTACH").ok().as_deref() == Some("1");
+    if !enabled {
+        return Ok(json!({
+            "operation": "attach_existing_startup",
+            "status": "skipped",
+            "mode": "owned_endpoint_opt_in",
+            "iterations": 0,
+            "startup": Value::Null,
+            "startup_diagnostics": Value::Null,
+            "reason": "set GLASS_BENCH_ATTACH=1 to measure attach startup against the benchmark-owned Chrome",
+        }));
+    }
+
+    let mut startup_samples = Vec::with_capacity(iterations);
+    let mut startup_diagnostics = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let started = Instant::now();
+        let attached = BrowserSession::start_attached_to_browser_ws_url(
+            &SessionOptions::builder()
+                .port(port)
+                .attach(true)
+                .interaction_mode(InteractionMode::Fast)
+                .build()?,
+            expected_browser_ws_url,
+        )
+        .await?;
+        startup_samples.push(started.elapsed());
+        startup_diagnostics.push(*attached.startup_diagnostics());
+        attached.close().await?;
+    }
+
+    Ok(json!({
+        "operation": "attach_existing_startup",
+        "status": "measured",
+        "mode": "owned_endpoint_opt_in",
+        "iterations": iterations,
+        "startup": summarize_samples(
+            "attach_existing_startup",
+            iterations,
+            startup_samples,
+        )?,
+        "startup_diagnostics": summarize_startup_diagnostics(&startup_diagnostics)?,
+        "reason": Value::Null,
+    }))
 }
 
 async fn available_port() -> BrowserResult<u16> {

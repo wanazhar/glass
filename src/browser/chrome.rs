@@ -85,6 +85,7 @@ impl Drop for PortLaunchLock {
 pub struct ChromeProcess {
     pub port: u16,
     pub pid: u32,
+    browser_ws_url: String,
     child: Option<Child>,
     stderr_drain: Option<JoinHandle<()>>,
 }
@@ -92,6 +93,11 @@ pub struct ChromeProcess {
 impl ChromeProcess {
     pub fn ws_debug_url(&self) -> String {
         format!("http://127.0.0.1:{}/json/version", self.port)
+    }
+
+    /// Return the browser WebSocket URL verified as belonging to this process.
+    pub fn browser_ws_url(&self) -> &str {
+        &self.browser_ws_url
     }
 
     /// Stop a Chrome process owned by this instance.
@@ -688,6 +694,7 @@ pub async fn launch_chrome_with_viewport(
     Ok(ChromeProcess {
         port,
         pid,
+        browser_ws_url: child_debugger_url,
         child: Some(child),
         stderr_drain: Some(stderr_drain),
     })

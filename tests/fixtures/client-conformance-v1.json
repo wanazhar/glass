@@ -62,6 +62,7 @@
     "localStorage",
     "navigate",
     "observe",
+    "observeBootstrap",
     "observeDelta",
     "observeKnowledge",
     "preflight",

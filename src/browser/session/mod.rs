@@ -494,6 +494,10 @@ impl BrowserSession {
     pub fn owned_chrome_pid(&self) -> Option<u32> {
         self.chrome.as_ref().map(|chrome| chrome.pid)
     }
+    /// Verified browser WebSocket URL for Chrome launched by this session.
+    pub fn owned_browser_ws_url(&self) -> Option<&str> {
+        self.chrome.as_ref().map(|chrome| chrome.browser_ws_url())
+    }
 
     /// Number of CDP commands issued by this session's page connection.
     pub fn cdp_request_count(&self) -> u64 {
@@ -568,11 +572,45 @@ impl BrowserSession {
         Self::start_with_policy_and_viewport(options, policy, None).await
     }
 
-    /// Start a session with an explicit policy and optional CSS viewport dimensions.
+    /// Start an attached session only if its browser WebSocket URL matches
+    /// `expected_browser_ws_url`.
+    ///
+    /// The expected URL is pinned through CDP connection setup, so a replaced
+    /// endpoint is rejected rather than adopted after a time-of-check race.
+    pub async fn start_attached_to_browser_ws_url(
+        options: &SessionOptions,
+        expected_browser_ws_url: &str,
+    ) -> BrowserResult<Self> {
+        if !options.attach {
+            return Err("expected browser endpoint pin requires attach mode".into());
+        }
+        let policy = match &options.policy {
+            Some(policy) => policy.clone(),
+            None => BrowserPolicy::development(std::env::current_dir()?)?,
+        };
+        Self::start_with_policy_and_viewport_checked(
+            options,
+            policy,
+            None,
+            Some(expected_browser_ws_url),
+        )
+        .await
+    }
+
+    /// Start a session with an explicit browser policy and optional CSS viewport dimensions.
     pub async fn start_with_policy_and_viewport(
+        options: &SessionOptions,
+        policy: BrowserPolicy,
+        viewport: Option<(i64, i64)>,
+    ) -> BrowserResult<Self> {
+        Self::start_with_policy_and_viewport_checked(options, policy, viewport, None).await
+    }
+
+    async fn start_with_policy_and_viewport_checked(
         options: &SessionOptions,
         mut policy: BrowserPolicy,
         viewport: Option<(i64, i64)>,
+        expected_browser_ws_url: Option<&str>,
     ) -> BrowserResult<Self> {
         let startup_started = Instant::now();
         if let Some((width, height)) = viewport
@@ -646,13 +684,38 @@ impl BrowserSession {
             );
         }
         let launch_endpoint_ms = startup_elapsed_ms(launch_endpoint_started);
-        let page_target_started = Instant::now();
-
-        let ws_url = match if options.attach {
-            get_ws_url(options.port, options.target_id.as_deref()).await
-        } else {
-            wait_for_ws_url(options.port, options.target_id.as_deref()).await
-        } {
+        let page_target_result = async {
+            let started = Instant::now();
+            let result = if options.attach {
+                get_ws_url(options.port, options.target_id.as_deref()).await
+            } else {
+                wait_for_ws_url(options.port, options.target_id.as_deref()).await
+            };
+            (result, startup_elapsed_ms(started))
+        };
+        let browser_ws_result = async {
+            let started = Instant::now();
+            let result = if options.attach {
+                get_browser_ws_url(options.port).await
+            } else {
+                chrome
+                    .as_ref()
+                    .map(|process| process.browser_ws_url().to_string())
+                    .ok_or_else(|| "owned Chrome process missing verified browser endpoint".into())
+            };
+            let result = result.and_then(|url| match expected_browser_ws_url {
+                Some(expected) if url != expected => Err(format!(
+                    "attached browser endpoint changed; expected {expected}, received {url}"
+                )
+                .into()),
+                _ => Ok(url),
+            });
+            (result, startup_elapsed_ms(started))
+        };
+        let (ws_result, browser_ws_result) = tokio::join!(page_target_result, browser_ws_result);
+        let (ws_result, page_target_wait_ms) = ws_result;
+        let (browser_ws_result, browser_endpoint_wait_ms) = browser_ws_result;
+        let ws_url = match ws_result {
             Ok(url) => url,
             Err(error) => {
                 if let Some(process) = chrome.as_mut() {
@@ -661,7 +724,6 @@ impl BrowserSession {
                 return Err(error);
             }
         };
-        let page_target_wait_ms = startup_elapsed_ms(page_target_started);
         let target_id = ws_url
             .rsplit('/')
             .next()
@@ -669,7 +731,15 @@ impl BrowserSession {
             .ok_or("page WebSocket URL contained no target ID")?
             .to_string();
         let cdp_connect_started = Instant::now();
-        let browser_ws_url = get_browser_ws_url(options.port).await?;
+        let browser_ws_url = match browser_ws_result {
+            Ok(url) => url,
+            Err(error) => {
+                if let Some(process) = chrome.as_mut() {
+                    let _ = process.shutdown().await;
+                }
+                return Err(error);
+            }
+        };
         let cdp = match CdpClient::connect(&browser_ws_url).await {
             Ok(cdp) => cdp,
             Err(error) => {
@@ -679,7 +749,7 @@ impl BrowserSession {
                 return Err(error);
             }
         };
-        let cdp_connect_ms = startup_elapsed_ms(cdp_connect_started);
+        let cdp_connect_ms = browser_endpoint_wait_ms + startup_elapsed_ms(cdp_connect_started);
         let target_attach_started = Instant::now();
         let launched_incognito_context_id = if !options.attach && options.incognito {
             match target_browser_context_id(&cdp, &target_id, true).await {

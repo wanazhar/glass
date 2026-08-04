@@ -35,6 +35,20 @@ On macOS, socket ownership and mode provide the local access boundary.
 
 The daemon does not support remote network access.
 
+## Reuse one live MCP session
+
+Keep one MCP process and transport connection open for a sequence of related
+operations. The MCP bridge starts its `BrowserSession` lazily on the first
+browser tool call and retains it in the connection's session store; later
+calls on that connection reuse the same owned browser process and active target.
+The stdio server closes that owned session when its input reaches EOF.
+
+Reconnects are intentionally not a browser-session handoff: a new stdio
+process or daemon socket connection gets a new session namespace and must
+observe again before acting. This boundary prevents one client from adopting
+another client's endpoint or browser state. The daemon is a local MCP
+transport and lifecycle owner, not a general-purpose Chrome WebSocket broker.
+
 ## Status and recovery
 
 The status document follows

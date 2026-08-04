@@ -198,9 +198,13 @@ GLASS_BINARY_PATH=target/release/glass \
 The benchmark uses the local fixture and reports:
 
 - repeated cold owned-session startup separately from page navigation;
+- optional attach-to-existing startup against the benchmark's own verified
+  Chrome endpoint;
 - the first uncached compact observation after navigation, separately from
   startup and navigation latency;
-- warm semantic bootstrap latency when the runtime exposes that method;
+- warm session reuse through the cached compact observation path;
+- bounded semantic bootstrap latency, which is readiness evidence only;
+- authoritative full observation latency (the uncached compact observation);
 - fresh and cached compact observation separately;
 - explicit deep-DOM and screenshot capture latency;
 - separate alternating fast-mode and human-mode click samples;
@@ -217,9 +221,34 @@ iterations, mean, p50, and p95; the same summaries are also emitted as
 top-level `results` operations for consumers that index that established
 shape. Startup timing ends after `BrowserSession::start` establishes CDP; the
 benchmark awaits navigation before starting the first-observe timer, so
-network/navigation latency is not charged to startup or observation. The warm
-semantic bootstrap operation is labeled `semantic_bootstrap_warm`; it reports
-bounded readiness evidence only and is not an action-success measurement.
+network/navigation latency is not charged to startup or observation.
+
+The additive `latency_paths` object gives stable names for optimization
+comparisons: `cold_owned_startup`, `attach_existing_startup`,
+`warm_session_reuse`, `semantic_bootstrap`, and `full_observation`.
+`warm_session_reuse` is the cached compact-observation path on an already
+started session. `full_observation` is the authoritative uncached compact
+observation; it must remain distinct from the advisory
+`semantic_bootstrap` path. These entries reuse the corresponding benchmark
+samples and do not alter runtime behavior.
+
+Attach startup is skipped by default and is represented with
+`status: "skipped"` in both `attach_existing_startup` fields. Set
+`GLASS_BENCH_ATTACH=1` to attach sequentially to the benchmark-owned Chrome
+endpoint after it has passed Glass's ownership checks:
+
+```sh
+GLASS_BENCH_ATTACH=1 \
+  GLASS_BENCH_ITERATIONS=50 \
+  GLASS_BENCH_EXPENSIVE_ITERATIONS=50 \
+  cargo run --release --example benchmark > benchmark-attach.json
+```
+
+This opt-in mode does not require or connect to an externally managed browser.
+It reports attach startup only; navigation and observation remain measured
+separately. The warm semantic bootstrap operation is labeled
+`semantic_bootstrap_warm`; it reports bounded readiness evidence only and is
+not an action-success measurement.
 
 The top-level `warm_startup_diagnostics` value and the nested
 `cold_startup_diagnostics` value expose the bounded startup phase timings
@@ -231,9 +260,9 @@ general results.
 `GLASS_BENCH_ITERATIONS` controls normal and warm operations. The expensive
 operations, including repeated cold startup and first-observe samples, use
 `GLASS_BENCH_EXPENSIVE_ITERATIONS` (the normal count by default). Set that
-variable to a smaller positive value only for a diagnostic run; such a run must
-not be used as release evidence. Use p50 and p95, not one average, and avoid
-claiming a regression or improvement from a single run.
+variable to a smaller positive value only for a diagnostic run; such a run
+must not be used as release evidence. Use p50 and p95, not one average, and
+avoid claiming a regression or improvement from a single run.
 
 The payload fields measure serialized `PageContext` JSON only. They do not
 include the JSON-RPC envelope or MCP's separate image-content wrapper. The RSS

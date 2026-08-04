@@ -236,6 +236,7 @@ enum ToolInvocation<'a> {
         level: Option<SemanticObservationLevel>,
         region: Option<&'a str>,
     },
+    ObserveBootstrap,
     InspectPage,
     InspectWebIr {
         draft: Value,
@@ -1025,6 +1026,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
         tool_name,
         "screenshot"
             | "observe"
+            | "observeBootstrap"
             | "observeKnowledge"
             | "inspectPage"
             | "inspectWebIr"
@@ -1810,6 +1812,9 @@ async fn call_tool(
                 }}
             }))
         }
+        ToolInvocation::ObserveBootstrap => {
+            serialized_result_mode(&session.observe_bootstrap().await?, response_mode)
+        }
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.inspect_page().await?, response_mode)
         }
@@ -2378,6 +2383,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             level: optional_semantic_level(arguments)?,
             region: optional_string(arguments, "region")?,
         }),
+        "observeBootstrap" => Ok(ToolInvocation::ObserveBootstrap),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
         "inspectWebIr" => {
             let draft = arguments
@@ -2964,6 +2970,17 @@ fn tools() -> Vec<Tool> {
                     "includeFormValues": {"type": "boolean", "default": false},
                     "level": {"type": "string", "enum": ["summary", "interactive", "structured", "detailed", "raw"]},
                     "region": {"type": "string", "minLength": 1, "maxLength": 128}
+                }
+            }),
+        },
+        Tool {
+            name: "observeBootstrap",
+            description: "Return bounded advisory page URL, title, readiness, visible text, revision, and consistency evidence without action targets.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "responseMode": {"type": "string", "enum": ["minimal", "normal", "diagnostic"], "default": "minimal"}
                 }
             }),
         },
@@ -4267,7 +4284,7 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 83);
+        assert_eq!(tools.len(), 84);
         assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
@@ -4275,6 +4292,15 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
+        let bootstrap = tools
+            .iter()
+            .find(|tool| tool["name"] == "observeBootstrap")
+            .expect("observeBootstrap must be advertised");
+        assert_eq!(
+            bootstrap["inputSchema"]["properties"]["responseMode"]["enum"],
+            json!(["minimal", "normal", "diagnostic"])
+        );
+        assert_eq!(bootstrap["inputSchema"]["additionalProperties"], false);
         let observe = tools.iter().find(|tool| tool["name"] == "observe").unwrap();
         assert_eq!(
             observe["inputSchema"]["properties"]["includeScreenshot"]["default"],
@@ -4898,6 +4924,29 @@ mod tests {
         assert_eq!(task.task, crate::task_protocol::TaskKind::FormInspect);
         assert_eq!(expected_revision, 17);
         assert!(confirmed);
+    }
+    #[test]
+    fn parses_observe_bootstrap_with_response_modes() {
+        let params = json!({
+            "name": "observeBootstrap",
+            "arguments": {"responseMode": "normal"}
+        });
+        assert!(matches!(
+            parse_tool_invocation(&params).unwrap(),
+            ToolInvocation::ObserveBootstrap
+        ));
+        assert_eq!(
+            response_mode_from_params(&params).unwrap(),
+            ResponseMode::Normal
+        );
+
+        let malformed = json!({
+            "name": "observeBootstrap",
+            "arguments": {"responseMode": "verbose"}
+        });
+        let error =
+            response_mode_from_params(&malformed).expect_err("invalid response mode should fail");
+        assert!(error.to_string().contains("responseMode must be"));
     }
 
     #[test]

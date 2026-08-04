@@ -391,6 +391,120 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+#[tokio::test]
+async fn mcp_reuses_browser_session_and_target_across_calls() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let binary = glass_binary_path();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut child = Command::new(binary)
+        .args([
+            "--mcp",
+            "--chrome-path",
+            chrome_path.to_str().unwrap(),
+            "--incognito",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+    )
+    .await;
+    assert_eq!(read_mcp_line(&mut stdout).await["id"], 1);
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"listTargets","arguments":{}}}),
+    )
+    .await;
+    let first_targets = read_mcp_line(&mut stdout).await;
+    let first_targets: Value = serde_json::from_str(
+        first_targets["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let first_target_id = first_targets
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["active"] == true)
+        .and_then(|target| target["id"].as_str())
+        .expect("MCP should expose an active target")
+        .to_string();
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"window.__glass_session_reuse_marker = 7319"}}}),
+    )
+    .await;
+    assert_eq!(
+        read_mcp_line(&mut stdout).await["result"]["content"][0]["text"],
+        "7319"
+    );
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"listTargets","arguments":{}}}),
+    )
+    .await;
+    let second_targets = read_mcp_line(&mut stdout).await;
+    let second_targets: Value = serde_json::from_str(
+        second_targets["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let second_target_id = second_targets
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["active"] == true)
+        .and_then(|target| target["id"].as_str())
+        .expect("MCP should retain an active target")
+        .to_string();
+    assert_eq!(
+        second_target_id, first_target_id,
+        "consecutive calls must reuse the same browser target"
+    );
+
+    write_mcp_line(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"evaluate","arguments":{"expression":"window.__glass_session_reuse_marker"}}}),
+    )
+    .await;
+    assert_eq!(
+        read_mcp_line(&mut stdout).await["result"]["content"][0]["text"],
+        "7319"
+    );
+
+    drop(stdin);
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "MCP session reuse process failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 struct TemporaryProfileHome {
     path: PathBuf,

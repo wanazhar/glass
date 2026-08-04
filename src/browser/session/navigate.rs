@@ -60,6 +60,7 @@ impl BrowserSession {
                 let result = async {
                     let mut events = self.cdp.subscribe_events();
                     let started = tokio::time::Instant::now();
+                    self.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
                     let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
                         .await
                         .map_err(|_| {

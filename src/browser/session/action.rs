@@ -1091,7 +1091,7 @@ impl BrowserSession {
         let download_started =
             self.download_sequence.load(Ordering::Relaxed) > before_download_sequence;
         let current_revision = self.invalidate_observation().await;
-        Ok(ActionOutcome {
+        let outcome = ActionOutcome {
             status: ActionStatus::Succeeded,
             action,
             execution_id: self.next_execution_id(),
@@ -1125,7 +1125,9 @@ impl BrowserSession {
                 ..ActionVerificationEvidence::default()
             },
             evidence: None,
-        })
+        };
+        self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
+        Ok(outcome)
     }
 
     pub(crate) async fn viewport_center(&self) -> BrowserResult<Point> {

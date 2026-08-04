@@ -42,9 +42,9 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
@@ -197,6 +197,8 @@ pub struct BrowserSession {
     pub(crate) audit_log: std::sync::Mutex<VecDeque<AuditEntry>>,
     pub(crate) audit_sequence: AtomicU64,
     pub(crate) audit_enabled: bool,
+    pub(crate) startup_diagnostics: StartupDiagnostics,
+    pub(crate) lifecycle_phases: AtomicU8,
 }
 
 struct CachedObservation {
@@ -360,6 +362,12 @@ struct DisposableProfileDir {
     path: PathBuf,
 }
 
+fn startup_elapsed_ms(started: Instant) -> u64 {
+    started
+        .elapsed()
+        .as_millis()
+        .min(MAX_STARTUP_DIAGNOSTIC_MS as u128) as u64
+}
 const DISPOSABLE_OWNER_FILE: &str = ".glass-owner.json";
 const DISPOSABLE_CLEANUP_BATCH: usize = 1024;
 
@@ -497,6 +505,21 @@ impl BrowserSession {
         self.cdp.cdp_wait_nanos()
     }
 
+    /// Read-only startup phase timings captured while creating this session.
+    pub fn startup_diagnostics(&self) -> &StartupDiagnostics {
+        &self.startup_diagnostics
+    }
+
+    /// Return the lifecycle milestones reached by this session.
+    pub fn lifecycle_diagnostics(&self) -> LifecycleDiagnostics {
+        LifecycleDiagnostics::from_bits(self.lifecycle_phases.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn mark_lifecycle_phase(&self, phase: LifecyclePhase) {
+        self.lifecycle_phases
+            .fetch_or(phase.bit(), Ordering::Release);
+    }
+
     /// Allocate a bounded, session-local identifier for one action attempt.
     ///
     /// The identifier is intentionally opaque to callers. It is unique within
@@ -551,6 +574,7 @@ impl BrowserSession {
         mut policy: BrowserPolicy,
         viewport: Option<(i64, i64)>,
     ) -> BrowserResult<Self> {
+        let startup_started = Instant::now();
         if let Some((width, height)) = viewport
             && (!(320..=10000).contains(&width) || !(240..=10000).contains(&height))
         {
@@ -569,6 +593,7 @@ impl BrowserSession {
         let profile_manager = ProfileManager::new();
         let mut disposable_profile = None;
         let mut chrome = None;
+        let launch_endpoint_started = Instant::now();
 
         // Hold an OS-backed lock until the launched child has been verified
         // and its CDP connection is established. A second Glass process that
@@ -620,6 +645,8 @@ impl BrowserSession {
                 .await?,
             );
         }
+        let launch_endpoint_ms = startup_elapsed_ms(launch_endpoint_started);
+        let page_target_started = Instant::now();
 
         let ws_url = match if options.attach {
             get_ws_url(options.port, options.target_id.as_deref()).await
@@ -634,12 +661,14 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+        let page_target_wait_ms = startup_elapsed_ms(page_target_started);
         let target_id = ws_url
             .rsplit('/')
             .next()
             .filter(|id| !id.is_empty())
             .ok_or("page WebSocket URL contained no target ID")?
             .to_string();
+        let cdp_connect_started = Instant::now();
         let browser_ws_url = get_browser_ws_url(options.port).await?;
         let cdp = match CdpClient::connect(&browser_ws_url).await {
             Ok(cdp) => cdp,
@@ -650,6 +679,8 @@ impl BrowserSession {
                 return Err(error);
             }
         };
+        let cdp_connect_ms = startup_elapsed_ms(cdp_connect_started);
+        let target_attach_started = Instant::now();
         let launched_incognito_context_id = if !options.attach && options.incognito {
             match target_browser_context_id(&cdp, &target_id, true).await {
                 Ok(context_id) => context_id,
@@ -686,6 +717,8 @@ impl BrowserSession {
             None,
             None,
         );
+        let target_attach_ms = startup_elapsed_ms(target_attach_started);
+        let event_setup_started = Instant::now();
 
         let setup = cdp.enable_observation_events().await;
         if let Err(error) = setup {
@@ -695,6 +728,8 @@ impl BrowserSession {
             }
             return Err(Box::new(error));
         }
+        let event_setup_ms = startup_elapsed_ms(event_setup_started);
+        let policy_arm_started = Instant::now();
         let policy_interception = if matches!(
             policy.preset(),
             PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
@@ -703,6 +738,7 @@ impl BrowserSession {
         } else {
             None
         };
+        let policy_arm_ms = startup_elapsed_ms(policy_arm_started);
 
         let page_revision = Arc::new(AtomicU64::new(1));
         let observation_context = Arc::new(Mutex::new(None));
@@ -776,8 +812,17 @@ impl BrowserSession {
             })),
         )
         .await?;
+        let startup_diagnostics = StartupDiagnostics {
+            launch_endpoint_ms,
+            page_target_wait_ms,
+            cdp_connect_ms,
+            target_attach_ms,
+            event_setup_ms,
+            policy_arm_ms,
+            total_startup_ms: 0,
+        };
 
-        let session = Self {
+        let mut session = Self {
             cdp,
             chrome,
             disposable_profile,
@@ -804,6 +849,8 @@ impl BrowserSession {
             policy_interception,
             audit_log: std::sync::Mutex::new(VecDeque::new()),
             audit_sequence: AtomicU64::new(1),
+            startup_diagnostics,
+            lifecycle_phases: AtomicU8::new(0),
             audit_enabled: options.audit,
         };
         let initialize_frame = async {
@@ -831,6 +878,8 @@ impl BrowserSession {
             let _ = session.close().await;
             return Err(error);
         }
+        session.startup_diagnostics.total_startup_ms = startup_elapsed_ms(startup_started);
+        session.mark_lifecycle_phase(LifecyclePhase::BrowserReady);
         Ok(session)
     }
 

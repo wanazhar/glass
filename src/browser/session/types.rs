@@ -1303,6 +1303,40 @@ pub struct CompactAccessibilitySnapshot {
     pub completeness: Option<ObservationCompleteness>,
 }
 
+/// Compact, read-only page evidence used to decide what to inspect next.
+///
+/// Bootstrap is deliberately distinct from [`observe`](crate::browser::session::BrowserSession::observe):
+/// it reports bounded page state and route identity, but never returns
+/// action references or authorizes an action. Callers must obtain an
+/// authoritative observation before resolving a target.
+#[derive(Debug, Clone, Serialize)]
+pub struct BootstrapObservation {
+    /// URL, title, ready state, and target/frame route identity.
+    pub page: PageInfo,
+    /// Bounded visible text sampled from the page.
+    pub text: String,
+    /// Browser page generation at the end of the sample.
+    pub revision: u64,
+    /// Isolated execution context used for the sample.
+    pub context_id: i64,
+    /// Page context identity used to scope semantic evidence.
+    pub page_context_id: String,
+    /// Whether the document is at least interactive.
+    pub ready: bool,
+    /// Whether the two page-state reads were consistent and complete.
+    pub complete: bool,
+    pub consistency: ObservationConsistency,
+    pub boundaries: ObservationBoundarySummary,
+    /// Reasons this bootstrap result is incomplete or advisory only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<ObservationIncompleteReason>,
+}
+
+/// Maximum URL/title bytes emitted by semantic bootstrap.
+pub const BOOTSTRAP_URL_MAX_BYTES: usize = 2 * 1024;
+pub const BOOTSTRAP_TITLE_MAX_BYTES: usize = 1024;
+pub const BOOTSTRAP_CONTEXT_ID_MAX_BYTES: usize = 128;
+
 fn is_zero(value: &usize) -> bool {
     *value == 0
 }
@@ -1458,6 +1492,75 @@ pub struct DiagnosticReport {
     pub console: Vec<ConsoleEvidence>,
     pub network: Vec<NetworkEvidence>,
     pub dropped_events: u64,
+}
+/// Maximum duration retained by [`StartupDiagnostics`] for any startup phase.
+///
+/// Startup diagnostics are deliberately bounded and contain timing metadata
+/// only; they never retain endpoint URLs, target IDs, or browser arguments.
+pub const MAX_STARTUP_DIAGNOSTIC_MS: u64 = 5 * 60 * 1_000;
+
+/// Monotonic startup phase timings captured while constructing a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct StartupDiagnostics {
+    /// Chrome launch (or attach health check) through page endpoint readiness.
+    pub launch_endpoint_ms: u64,
+    /// Time spent waiting for the selected page target WebSocket endpoint.
+    pub page_target_wait_ms: u64,
+    /// Browser WebSocket URL lookup and CDP connection establishment.
+    pub cdp_connect_ms: u64,
+    /// Target discovery, attach, and active-route setup.
+    pub target_attach_ms: u64,
+    /// Observation and topology event subscriptions.
+    pub event_setup_ms: u64,
+    /// Policy interception setup, or zero when the policy does not require it.
+    pub policy_arm_ms: u64,
+    /// Total elapsed time from startup entry through initial frame setup.
+    pub total_startup_ms: u64,
+}
+
+/// Explicit lifecycle milestones observed by a session.
+///
+/// A milestone is set only after the corresponding operation has actually
+/// reached that point. These diagnostics are session-local and contain no page
+/// content, identifiers, or credentials.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleDiagnostics {
+    pub browser_ready: bool,
+    pub navigation_started: bool,
+    pub evidence_ready: bool,
+    pub action_verified: bool,
+}
+
+/// Lifecycle milestone used by internal session instrumentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecyclePhase {
+    BrowserReady,
+    NavigationStarted,
+    EvidenceReady,
+    ActionVerified,
+}
+
+impl LifecyclePhase {
+    pub(crate) const fn bit(self) -> u8 {
+        match self {
+            Self::BrowserReady => 1 << 0,
+            Self::NavigationStarted => 1 << 1,
+            Self::EvidenceReady => 1 << 2,
+            Self::ActionVerified => 1 << 3,
+        }
+    }
+}
+
+impl LifecycleDiagnostics {
+    pub(crate) const fn from_bits(bits: u8) -> Self {
+        Self {
+            browser_ready: bits & LifecyclePhase::BrowserReady.bit() != 0,
+            navigation_started: bits & LifecyclePhase::NavigationStarted.bit() != 0,
+            evidence_ready: bits & LifecyclePhase::EvidenceReady.bit() != 0,
+            action_verified: bits & LifecyclePhase::ActionVerified.bit() != 0,
+        }
+    }
 }
 
 /// A console message captured during diagnostic collection.

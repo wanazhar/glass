@@ -45,6 +45,119 @@ impl BrowserSession {
             .await
     }
 
+    /// Collect bounded readiness evidence without resolving an action target.
+    ///
+    /// This page-state-only operation is intentionally distinct from
+    /// [`BrowserSession::observe`]. It does not request accessibility trees,
+    /// deep DOM, screenshots, form values, or shadow-root expansion. The
+    /// result is advisory: callers must invoke authoritative `observe` before
+    /// resolving or acting on any element.
+    pub async fn observe_bootstrap(&self) -> BrowserResult<BootstrapObservation> {
+        if let Some(interception) = &self.policy_interception
+            && let Some(error) = interception.take_denial().await
+        {
+            return Err(error.into());
+        }
+        self.ensured_route_identity().await?;
+        let (target_id, frame_id) = self.route_identity().await?;
+        let context_id = self.observation_context_id(&target_id, &frame_id).await?;
+        let mut state_context_id = context_id;
+        let mut collected = None;
+        let mut recovered_context = false;
+
+        for attempt in 1..=COMPACT_OBSERVATION_MAX_ATTEMPTS {
+            let start_revision = self.page_revision.load(Ordering::Relaxed);
+            let result = match tokio::time::timeout(COMPACT_OBSERVATION_ATTEMPT_TIMEOUT, async {
+                let start = self.compact_page_state(state_context_id).await?;
+                let end = self.compact_page_state(state_context_id).await?;
+                BrowserResult::Ok((start, end))
+            })
+            .await
+            {
+                Err(_) => {
+                    return Err(format!(
+                        "bootstrap observation attempt exceeded its {}ms deadline",
+                        COMPACT_OBSERVATION_ATTEMPT_TIMEOUT.as_millis()
+                    )
+                    .into());
+                }
+                Ok(Ok(result)) => result,
+                Ok(Err(error))
+                    if is_stale_observation_context(error.as_ref()) && !recovered_context =>
+                {
+                    self.discard_observation_context(&target_id, &frame_id, state_context_id)
+                        .await;
+                    state_context_id = self.observation_context_id(&target_id, &frame_id).await?;
+                    recovered_context = true;
+                    continue;
+                }
+                Ok(Err(error)) => return Err(error),
+            };
+            let end_revision = self.page_revision.load(Ordering::Relaxed);
+            let consistent = start_revision == end_revision
+                && result.0.mutation_revision == result.1.mutation_revision
+                && result.0.page_context_id == result.1.page_context_id;
+            collected = Some((attempt, consistent, start_revision, end_revision, result));
+            if consistent {
+                break;
+            }
+        }
+
+        let (attempts, consistent, start_revision, end_revision, (start, end)) =
+            collected.expect("bootstrap always performs at least one attempt");
+        let page = PageInfo {
+            url: truncate_utf8_bytes(&end.url, BOOTSTRAP_URL_MAX_BYTES),
+            title: truncate_utf8_bytes(&end.title, BOOTSTRAP_TITLE_MAX_BYTES),
+            ready_state: truncate_utf8_bytes(&end.ready_state, BOOTSTRAP_TITLE_MAX_BYTES),
+            target_id: bounded_topology_id(&target_id),
+            frame_id: bounded_topology_id(&frame_id),
+        };
+        let text = truncate_visible_text(&end.text, COMPACT_TEXT_MAX_BYTES);
+        let mut incomplete = Vec::new();
+        if end.boundaries.text_truncated || text.ends_with(TEXT_TRUNCATION_MARKER) {
+            incomplete.push(ObservationIncompleteReason::VisibleText);
+        }
+        if end.boundaries.child_frames > 0 {
+            incomplete.push(ObservationIncompleteReason::FrameBoundary);
+        }
+        if end.boundaries.canvases > 0 {
+            incomplete.push(ObservationIncompleteReason::Canvas);
+        }
+        if end.boundaries.shadow_roots > 0 {
+            incomplete.push(ObservationIncompleteReason::ShadowBoundary);
+        }
+        if end.boundaries.truncated {
+            incomplete.push(ObservationIncompleteReason::BoundaryScan);
+        }
+        if !consistent {
+            incomplete.push(ObservationIncompleteReason::MutationRace);
+        }
+        let page_context_id =
+            truncate_utf8_bytes(&end.page_context_id, BOOTSTRAP_CONTEXT_ID_MAX_BYTES);
+        let ready = matches!(end.ready_state.as_str(), "interactive" | "complete");
+        let complete = ready && consistent && incomplete.is_empty() && !page_context_id.is_empty();
+        self.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
+        Ok(BootstrapObservation {
+            page,
+            text,
+            revision: end_revision,
+            context_id,
+            page_context_id,
+            ready,
+            complete,
+            consistency: ObservationConsistency {
+                consistent,
+                attempts,
+                start_revision,
+                end_revision,
+                start_mutation_revision: start.mutation_revision,
+                end_mutation_revision: end.mutation_revision,
+            },
+            boundaries: end.boundaries,
+            incomplete,
+        })
+    }
+
     /// Collect compact context and explicitly include the full DOM tree.
     pub async fn observe_with_dom(&self) -> BrowserResult<PageContext> {
         self.observe_internal(true, false, true, false, CompactRanking::Relevance)
@@ -131,6 +244,7 @@ impl BrowserSession {
         if include_screenshot {
             context.screenshot = Some(self.screenshot_base64().await?);
         }
+        self.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
         Ok(context)
     }
 

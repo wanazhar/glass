@@ -43,8 +43,64 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         policy_interception: None,
         audit_log: std::sync::Mutex::new(VecDeque::new()),
         audit_sequence: AtomicU64::new(1),
+        startup_diagnostics: StartupDiagnostics::default(),
+        lifecycle_phases: AtomicU8::new(0),
         audit_enabled: false,
     }
+}
+
+#[test]
+fn startup_diagnostics_are_bounded_typed_and_secret_free() {
+    let diagnostics = StartupDiagnostics {
+        launch_endpoint_ms: 3,
+        page_target_wait_ms: 5,
+        cdp_connect_ms: 8,
+        target_attach_ms: 13,
+        event_setup_ms: 21,
+        policy_arm_ms: 34,
+        total_startup_ms: 55,
+    };
+    for phase_ms in [
+        diagnostics.launch_endpoint_ms,
+        diagnostics.page_target_wait_ms,
+        diagnostics.cdp_connect_ms,
+        diagnostics.target_attach_ms,
+        diagnostics.event_setup_ms,
+        diagnostics.policy_arm_ms,
+        diagnostics.total_startup_ms,
+    ] {
+        assert!(phase_ms <= MAX_STARTUP_DIAGNOSTIC_MS);
+    }
+    let serialized = serde_json::to_string(&diagnostics).unwrap();
+    assert!(serialized.contains("\"launch_endpoint_ms\":3"));
+    assert!(!serialized.contains("target_id"));
+    assert!(!serialized.contains("ws://"));
+    assert!(!serialized.contains("secret"));
+}
+
+#[test]
+fn lifecycle_diagnostics_default_and_phase_order_are_explicit() {
+    let defaults = LifecycleDiagnostics::from_bits(0);
+    assert_eq!(defaults, LifecycleDiagnostics::default());
+    assert!(!defaults.browser_ready);
+    assert!(!defaults.navigation_started);
+    assert!(!defaults.evidence_ready);
+    assert!(!defaults.action_verified);
+
+    let bits = LifecyclePhase::BrowserReady.bit()
+        | LifecyclePhase::NavigationStarted.bit()
+        | LifecyclePhase::EvidenceReady.bit()
+        | LifecyclePhase::ActionVerified.bit();
+    let reached = LifecycleDiagnostics::from_bits(bits);
+    assert!(reached.browser_ready);
+    assert!(reached.navigation_started);
+    assert!(reached.evidence_ready);
+    assert!(reached.action_verified);
+    let serialized = serde_json::to_value(reached).unwrap();
+    assert_eq!(serialized["browserReady"], true);
+    assert_eq!(serialized["navigationStarted"], true);
+    assert_eq!(serialized["evidenceReady"], true);
+    assert_eq!(serialized["actionVerified"], true);
 }
 
 #[test]
@@ -321,6 +377,57 @@ async fn observation_server(include_dom: bool) -> (String, tokio::task::JoinHand
         assert!(saw_accessibility);
         assert_eq!(saw_deep_dom, include_dom);
         assert!(saw_flattened);
+    });
+    (format!("ws://{address}"), server)
+}
+
+async fn bootstrap_server(mutation_race: bool) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        let mut methods = Vec::new();
+        let request_count = if mutation_race { 5 } else { 3 };
+        let mut mutation_revision = 0_u64;
+        for _ in 0..request_count {
+            let request = websocket.next().await.unwrap().unwrap();
+            let request: Value = match request {
+                Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                _ => panic!("expected text CDP request"),
+            };
+            let method = request["method"].as_str().unwrap().to_string();
+            methods.push(method.clone());
+            let result = match method.as_str() {
+                "Page.createIsolatedWorld" => serde_json::json!({"executionContextId": 91}),
+                "Runtime.evaluate" => {
+                    mutation_revision += 1;
+                    serde_json::json!({"result": {"value": {
+                        "url": format!("https://bootstrap.test/{}", "u".repeat(3_000)),
+                        "title": "Bootstrap title",
+                        "ready_state": "complete",
+                        "text": format!("{}😀{}", "a".repeat(COMPACT_TEXT_MAX_BYTES), "b".repeat(128)),
+                        "mutation_revision": if mutation_race { mutation_revision } else { 0 },
+                        "page_context_id": "bootstrap-context",
+                        "boundaries": {
+                            "scanned_elements": 2, "scan_limit": 512,
+                            "shadow_roots": 0, "child_frames": 0,
+                            "canvases": 0, "truncated": false
+                        }
+                    }}})
+                }
+                other => panic!("unexpected bootstrap command: {other}"),
+            };
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({"id": request["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        methods
     });
     (format!("ws://{address}"), server)
 }
@@ -1168,6 +1275,70 @@ async fn default_observation_is_compact_and_never_requests_deep_dom() {
 
     session.close().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_is_bounded_and_page_state_only() {
+    let (url, server) = bootstrap_server(false).await;
+    let session = test_session(CdpClient::connect(&url).await.unwrap());
+    let bootstrap = session.observe_bootstrap().await.unwrap();
+    assert!(!bootstrap.complete);
+    assert!(session.lifecycle_diagnostics().evidence_ready);
+    assert_eq!(bootstrap.revision, 1);
+    assert_eq!(bootstrap.context_id, 91);
+    assert_eq!(bootstrap.page_context_id, "bootstrap-context");
+    assert!(bootstrap.page.url.len() <= BOOTSTRAP_URL_MAX_BYTES);
+    assert!(bootstrap.text.len() <= COMPACT_TEXT_MAX_BYTES);
+    assert!(bootstrap.text.ends_with(TEXT_TRUNCATION_MARKER));
+    assert!(
+        bootstrap
+            .incomplete
+            .contains(&ObservationIncompleteReason::VisibleText)
+    );
+    let methods = server.await.unwrap();
+    assert_eq!(
+        methods,
+        vec![
+            "Page.createIsolatedWorld",
+            "Runtime.evaluate",
+            "Runtime.evaluate"
+        ]
+    );
+    assert!(!methods.iter().any(|method| {
+        matches!(
+            method.as_str(),
+            "Accessibility.getFullAXTree"
+                | "DOM.getDocument"
+                | "DOM.getFlattenedDocument"
+                | "Page.captureScreenshot"
+        )
+    }));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_preserves_mutation_consistency_markers() {
+    let (url, server) = bootstrap_server(true).await;
+    let session = test_session(CdpClient::connect(&url).await.unwrap());
+
+    let bootstrap = session.observe_bootstrap().await.unwrap();
+    assert!(!bootstrap.consistency.consistent);
+    assert!(!bootstrap.complete);
+    assert_eq!(bootstrap.consistency.attempts, 2);
+    assert!(
+        bootstrap
+            .incomplete
+            .contains(&ObservationIncompleteReason::MutationRace)
+    );
+    let methods = server.await.unwrap();
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method.as_str() == "Runtime.evaluate")
+            .count(),
+        4
+    );
+    session.close().await.unwrap();
 }
 
 #[tokio::test]

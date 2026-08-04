@@ -197,7 +197,10 @@ GLASS_BINARY_PATH=target/release/glass \
 
 The benchmark uses the local fixture and reports:
 
-- one cold owned-session startup (`cold_start_ms`);
+- repeated cold owned-session startup separately from page navigation;
+- the first uncached compact observation after navigation, separately from
+  startup and navigation latency;
+- warm semantic bootstrap latency when the runtime exposes that method;
 - fresh and cached compact observation separately;
 - explicit deep-DOM and screenshot capture latency;
 - separate alternating fast-mode and human-mode click samples;
@@ -207,13 +210,30 @@ The benchmark uses the local fixture and reports:
 - the supplied Glass binary size, or `null` if no executable is available at
   `GLASS_BINARY_PATH` or `target/release/glass`.
 
-`GLASS_BENCH_ITERATIONS` controls normal operations. The expensive operations
-use the same count by default so a 50-iteration run provides the minimum
-sample count required for fresh-observation release evidence. Set
-`GLASS_BENCH_EXPENSIVE_ITERATIONS` to a smaller positive value only for a
-diagnostic run; such a run must not be used as release evidence. Use p50 and
-p95, not one average, and avoid claiming a regression or improvement from a
-single run.
+The `cold_start` result preserves the scalar `chrome_launch_ms` and
+`cold_first_observe_ms` fields for existing consumers. Its nested
+`cold_owned_session_startup` and `cold_first_observe` summaries report
+iterations, mean, p50, and p95; the same summaries are also emitted as
+top-level `results` operations for consumers that index that established
+shape. Startup timing ends after `BrowserSession::start` establishes CDP; the
+benchmark awaits navigation before starting the first-observe timer, so
+network/navigation latency is not charged to startup or observation. The warm
+semantic bootstrap operation is labeled `semantic_bootstrap_warm`; it reports
+bounded readiness evidence only and is not an action-success measurement.
+
+The top-level `warm_startup_diagnostics` value and the nested
+`cold_startup_diagnostics` value expose the bounded startup phase timings
+captured by `BrowserSession`; they contain timing metadata only and remain
+separate from navigation and evidence latency.
+Cached compact observation remains labeled `observe_compact_cached` in the
+general results.
+
+`GLASS_BENCH_ITERATIONS` controls normal and warm operations. The expensive
+operations, including repeated cold startup and first-observe samples, use
+`GLASS_BENCH_EXPENSIVE_ITERATIONS` (the normal count by default). Set that
+variable to a smaller positive value only for a diagnostic run; such a run must
+not be used as release evidence. Use p50 and p95, not one average, and avoid
+claiming a regression or improvement from a single run.
 
 The payload fields measure serialized `PageContext` JSON only. They do not
 include the JSON-RPC envelope or MCP's separate image-content wrapper. The RSS

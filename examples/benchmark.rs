@@ -1,7 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions, WaitCondition,
+    BrowserResult, BrowserSession, InteractionMode, SessionOptions, StartupDiagnostics,
+    WaitCondition,
 };
 use serde_json::{Value, json};
 use std::{
@@ -42,8 +43,10 @@ async fn main() -> BrowserResult<()> {
     let fixture = include_str!("../tests/fixtures/basic.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
 
-    // ── Cold-start measurement (separate Chrome instance) ─────────────
-    let cold_start_result = bench_cold_start(&chrome_path, &url).await?;
+    // Keep browser startup independent from navigation and observation latency.
+    // The cold run reports repeated owned-session startup samples, while the
+    // first post-navigation observe remains a separate diagnostic.
+    let cold_start_result = bench_cold_start(&chrome_path, &url, expensive_iterations).await?;
 
     let rss_before_start = process_rss_bytes();
     let startup_started = Instant::now();
@@ -75,6 +78,20 @@ async fn main() -> BrowserResult<()> {
     let rss_after_sessions_start = process_rss_bytes();
 
     let benchmark_result: BrowserResult<Value> = async {
+        // Keep the cold-start envelope for existing consumers, while also
+        // exposing its established operation summaries as top-level results.
+        let cold_start_object = cold_start_result
+            .as_object()
+            .ok_or_else(|| "cold_start benchmark returned a non-object".to_string())?;
+        let cold_owned_session_startup_result = cold_start_object
+            .get("cold_owned_session_startup")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_owned_session_startup".to_string())?;
+        let cold_first_observe_result = cold_start_object
+            .get("cold_first_observe")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_first_observe".to_string())?;
+
         fast_session.navigate(&url).await?;
         human_session.navigate(&url).await?;
         warm_click_targets(&fast_session).await?;
@@ -88,7 +105,10 @@ async fn main() -> BrowserResult<()> {
         // Ensure the cache is populated before timing repeated compact turns.
         let _ = fast_session.observe().await?;
 
-        // ── Dedicated compact observe benchmark ───────────────────────
+        // ── Warm semantic bootstrap benchmark ──────────────────────────
+        let semantic_bootstrap_result = bench_semantic_bootstrap(&fast_session, iterations).await?;
+
+        // ── Dedicated cached compact observe benchmark ─────────────────
         let compact_observe_result = bench_compact_observe(&fast_session, iterations).await?;
 
         // ── Client-overhead instrumentation for clicks ────────────────
@@ -139,7 +159,10 @@ async fn main() -> BrowserResult<()> {
             measure_alternating_clicks("click_fast", &fast_session, expensive_iterations).await?,
             measure_alternating_clicks("click_human", &human_session, expensive_iterations).await?,
             compact_observe_result,
+            semantic_bootstrap_result,
             client_overhead_result,
+            cold_owned_session_startup_result,
+            cold_first_observe_result,
             cold_start_result,
         ];
 
@@ -151,8 +174,8 @@ async fn main() -> BrowserResult<()> {
                 "arch": std::env::consts::ARCH,
             },
             "iterations": iterations,
-            "expensive_iterations": expensive_iterations,
             "warm_session_start_ms": warm_session_start_ms,
+            "warm_startup_diagnostics": fast_session.startup_diagnostics(),
             "payload_bytes": payload_bytes,
             "glass_process_memory": {
                 "scope": "Glass client process only; Chrome child-process memory is excluded",
@@ -268,6 +291,20 @@ fn summarize_samples(
     }))
 }
 
+/// Benchmark the warm semantic bootstrap path separately from authoritative
+/// observation. The result is intentionally discarded: bootstrap evidence is
+/// only a readiness hint and must not resolve or authorize an action.
+async fn bench_semantic_bootstrap(
+    session: &BrowserSession,
+    iterations: usize,
+) -> BrowserResult<Value> {
+    measure("semantic_bootstrap_warm", iterations, || async {
+        let _ = session.observe_bootstrap().await?;
+        Ok(())
+    })
+    .await
+}
+
 /// Benchmark compact observe latency over N iterations.
 ///
 /// Uses `session.observe()` (which may hit the compact-context cache when
@@ -285,46 +322,104 @@ async fn bench_compact_observe(
     summarize_samples("compact_observe", iterations, samples)
 }
 
-/// Cold-start measurements: Chrome launch latency + first observe after launch.
+/// Measure owned-session startup separately from the first post-navigation
+/// compact observation. Startup timing ends when `BrowserSession::start`
+/// establishes CDP; navigation is awaited before the observe timer starts.
 ///
-/// Returns a JSON object with:
-/// - `chrome_launch_ms`: wall-clock time to launch Chrome and establish CDP
-/// - `cold_first_observe_ms`: latency of the very first `observe()` call
-///   (before any cache priming), which includes full a11y-tree + screenshot
-///   collection.
+/// The scalar `chrome_launch_ms` and `cold_first_observe_ms` fields retain the
+/// first-sample fields used by existing consumers. The nested result objects
+/// add p50/p95 distributions for repeated cold samples.
 async fn bench_cold_start(
     chrome_path: &std::path::Path,
     fixture_url: &str,
+    iterations: usize,
 ) -> BrowserResult<Value> {
-    // ── fresh Chrome launch ───────────────────────────────────────────
-    let port = available_port().await?;
-    let launch_started = Instant::now();
-    let session = BrowserSession::start(
-        &SessionOptions::builder()
-            .port(port)
-            .chrome_path(chrome_path.to_path_buf())
-            .profile("benchmark-cold")
-            .incognito(true)
-            .interaction_mode(InteractionMode::Fast)
-            .build()?,
-    )
-    .await?;
-    let chrome_launch_ms = launch_started.elapsed().as_secs_f64() * 1000.0;
+    let mut launch_samples = Vec::with_capacity(iterations);
+    let mut observe_samples = Vec::with_capacity(iterations);
+    let mut startup_diagnostics = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        // The startup sample ends after BrowserSession::start establishes CDP.
+        // Navigation is deliberately outside this timer.
+        let port = available_port().await?;
+        let launch_started = Instant::now();
+        let session = BrowserSession::start(
+            &SessionOptions::builder()
+                .port(port)
+                .chrome_path(chrome_path.to_path_buf())
+                .profile("benchmark-cold")
+                .incognito(true)
+                .interaction_mode(InteractionMode::Fast)
+                .build()?,
+        )
+        .await?;
+        startup_diagnostics.push(*session.startup_diagnostics());
+        launch_samples.push(launch_started.elapsed());
 
-    // Navigate to the fixture so the page is ready.
-    session.navigate(fixture_url).await?;
+        // Navigation is completed before timing the first uncached observe, so
+        // network and navigation latency cannot be charged to either metric.
+        session.navigate(fixture_url).await?;
+        let observe_started = Instant::now();
+        let _ = session.observe_fresh().await?;
+        observe_samples.push(observe_started.elapsed());
 
-    // ── first observe (cold, no cache) ────────────────────────────────
-    let observe_started = Instant::now();
-    let _ = session.observe_fresh().await?;
-    let cold_first_observe_ms = observe_started.elapsed().as_secs_f64() * 1000.0;
+        session.close().await?;
+    }
 
-    let _ = session.close().await;
+    let first_launch_ms = launch_samples
+        .first()
+        .map(|sample| sample.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let first_observe_ms = observe_samples
+        .first()
+        .map(|sample| sample.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
 
     Ok(json!({
         "operation": "cold_start",
-        "chrome_launch_ms": chrome_launch_ms,
-        "cold_first_observe_ms": cold_first_observe_ms,
+        // Preserve the original scalar fields for existing consumers. They
+        // remain the first sample; distributions below are the comparison
+        // metrics for the repeated cold run.
+        "chrome_launch_ms": first_launch_ms,
+        "cold_first_observe_ms": first_observe_ms,
+        "cold_owned_session_startup": summarize_samples(
+            "cold_owned_session_startup",
+            iterations,
+            launch_samples,
+        )?,
+        "cold_first_observe": summarize_samples(
+            "cold_first_observe",
+            iterations,
+            observe_samples,
+        )?,
+        "cold_startup_diagnostics": summarize_startup_diagnostics(&startup_diagnostics)?,
+    }))
+}
+
+fn summarize_startup_diagnostics(samples: &[StartupDiagnostics]) -> BrowserResult<Value> {
+    if samples.is_empty() {
+        return Err("startup diagnostics produced no samples".into());
+    }
+
+    let summarize =
+        |name: &str, values: Vec<Duration>| summarize_samples(name, values.len(), values);
+    let field = |read: fn(&StartupDiagnostics) -> u64, name: &str| {
+        summarize(
+            name,
+            samples
+                .iter()
+                .map(|sample| Duration::from_millis(read(sample)))
+                .collect(),
+        )
+    };
+
+    Ok(json!({
+        "launch_endpoint": field(|sample| sample.launch_endpoint_ms, "startup_launch_endpoint")?,
+        "page_target_wait": field(|sample| sample.page_target_wait_ms, "startup_page_target_wait")?,
+        "cdp_connect": field(|sample| sample.cdp_connect_ms, "startup_cdp_connect")?,
+        "target_attach": field(|sample| sample.target_attach_ms, "startup_target_attach")?,
+        "event_setup": field(|sample| sample.event_setup_ms, "startup_event_setup")?,
+        "policy_arm": field(|sample| sample.policy_arm_ms, "startup_policy_arm")?,
+        "total_startup": field(|sample| sample.total_startup_ms, "startup_total")?,
     }))
 }
 

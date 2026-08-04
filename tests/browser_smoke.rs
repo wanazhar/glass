@@ -472,7 +472,6 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
         target_id: None,
         frame_id: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
         audit: false,
         policy: None,
@@ -533,7 +532,6 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         target_id: None,
         frame_id: None,
         headed: false,
-        viewport: None,
         audit: false,
         policy: None,
         interaction_mode: InteractionMode::Fast,
@@ -860,7 +858,6 @@ async fn browser_session_drives_a_local_fixture() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Human,
     })
     .await
@@ -879,7 +876,6 @@ async fn browser_session_drives_a_local_fixture() {
         policy: None,
         frame_id: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -1858,7 +1854,6 @@ async fn browser_session_drives_a_local_fixture() {
         target_id: Some(page_target_id(port).await),
         frame_id: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -1887,7 +1882,6 @@ async fn browser_session_drives_a_local_fixture() {
         target_id: None,
         frame_id: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -1955,7 +1949,6 @@ async fn reliability_lab_controls_produce_independent_oracle_state() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2070,7 +2063,6 @@ async fn reliability_runner_generates_live_fixture_evidence() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2144,7 +2136,6 @@ async fn reliability_capability_suite_generates_live_evidence() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2259,7 +2250,6 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         target_id: None,
         frame_id: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2533,7 +2523,6 @@ async fn browser_session_rejects_unverified_menu_open() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2588,7 +2577,6 @@ async fn browser_session_rejects_unverified_tab_selection() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2646,7 +2634,6 @@ async fn browser_session_rejects_unverified_pagination_next() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await
@@ -2704,7 +2691,6 @@ async fn browser_session_executes_scoped_form_tasks() {
         audit: false,
         policy: None,
         headed: false,
-        viewport: None,
         interaction_mode: InteractionMode::Fast,
     })
     .await

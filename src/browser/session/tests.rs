@@ -917,6 +917,36 @@ fn preflight_diagnostics_are_bounded_and_camel_case() {
 }
 
 #[test]
+fn target_errors_serialize_actionability_diagnostics() {
+    let diagnostics = TargetDiagnostics {
+        matched_count: 1,
+        tag: Some("button".into()),
+        role: Some("button".into()),
+        name: Some("Save".into()),
+        geometry: Some(PreflightGeometry {
+            x: 0.0,
+            y: 900.0,
+            width: 80.0,
+            height: 32.0,
+        }),
+        outside_viewport: true,
+        hit_test_owner: None,
+        hidden: false,
+        recommendation: "scrollAndReobserve".into(),
+    };
+    let error = TargetError {
+        kind: TargetErrorKind::NotActionable,
+        reason: Some(TargetActionabilityReason::OutsideViewport),
+        candidates: Vec::new(),
+        recovery: None,
+        diagnostics: Some(diagnostics),
+    };
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(value["diagnostics"]["outsideViewport"], true);
+    assert_eq!(value["diagnostics"]["recommendation"], "scrollAndReobserve");
+}
+
+#[test]
 fn verification_failures_are_bounded_and_typed() {
     let error = ActionVerificationError {
         kind: ActionFailureKind::VerificationFailed,

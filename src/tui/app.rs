@@ -1074,6 +1074,7 @@ enum ActiveOperationState {
 }
 
 async fn browser_worker(
+    viewport: Option<(i64, i64)>,
     options: SessionOptions,
     policy: BrowserPolicy,
     mut commands: mpsc::Receiver<BrowserCommand>,
@@ -1084,8 +1085,15 @@ async fn browser_worker(
         return;
     }
 
-    let Some(session) =
-        start_browser_session(&options, policy, &mut commands, &events, &mut shutdown).await
+    let Some(session) = start_browser_session(
+        &options,
+        policy,
+        viewport,
+        &mut commands,
+        &events,
+        &mut shutdown,
+    )
+    .await
     else {
         return;
     };
@@ -1100,11 +1108,12 @@ async fn browser_worker(
 async fn start_browser_session(
     options: &SessionOptions,
     policy: BrowserPolicy,
+    viewport: Option<(i64, i64)>,
     commands: &mut mpsc::Receiver<BrowserCommand>,
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Option<BrowserSession> {
-    let start = BrowserSession::start_with_policy(options, policy);
+    let start = BrowserSession::start_with_policy_and_viewport(options, policy, viewport);
     tokio::pin!(start);
 
     loop {
@@ -1901,6 +1910,16 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     let (browser_event_tx, mut browser_events) = mpsc::channel(BROWSER_EVENT_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let viewport = cli
+        .viewport
+        .as_deref()
+        .map(|value| -> Result<(i64, i64), Box<dyn std::error::Error>> {
+            let (width, height) = value
+                .split_once('x')
+                .ok_or("viewport must use WIDTHxHEIGHT")?;
+            Ok((width.parse::<i64>()?, height.parse::<i64>()?))
+        })
+        .transpose()?;
     let options = SessionOptions {
         port: cli.port,
         chrome_path: cli.chrome_path.clone(),
@@ -1910,16 +1929,6 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
-        viewport: cli
-            .viewport
-            .as_deref()
-            .map(|value| -> Result<(i64, i64), Box<dyn std::error::Error>> {
-                let (width, height) = value
-                    .split_once('x')
-                    .ok_or("viewport must use WIDTHxHEIGHT")?;
-                Ok((width.parse::<i64>()?, height.parse::<i64>()?))
-            })
-            .transpose()?,
         interaction_mode: cli.interaction,
         audit: cli.audit,
         policy: None,
@@ -1927,6 +1936,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let local = LocalSet::new();
     let browser_worker = local.spawn_local(browser_worker(
+        viewport,
         options,
         policy.clone(),
         browser_command_rx,

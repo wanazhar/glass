@@ -244,8 +244,6 @@ pub struct SemanticRegion {
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<SemanticTarget>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub omitted_targets: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expansion: Option<SemanticExpansionHandle>,
 }
@@ -338,7 +336,6 @@ impl SemanticObservation {
                 confidence: SemanticConfidence::Unknown,
                 evidence: vec!["no recognized landmark role".into()],
                 targets: Vec::new(),
-                omitted_targets: 0,
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_main".into(),
                     revision: context.accessibility.revision,
@@ -456,7 +453,11 @@ impl SemanticObservation {
         observation.limits.omitted_targets = observation
             .regions
             .first()
-            .map(|region| region.omitted_targets)
+            .map(|region| {
+                region
+                    .interactive_count
+                    .saturating_sub(region.targets.len())
+            })
             .unwrap_or_default();
 
         let selected_text = region_node.map(region_node_text);
@@ -1060,7 +1061,6 @@ fn collect_regions(
             confidence: SemanticConfidence::Exact,
             evidence: vec![format!("aria-role={}", node.role)],
             targets: Vec::new(),
-            omitted_targets: 0,
             expansion: Some(SemanticExpansionHandle {
                 region_id: id.clone(),
                 revision,
@@ -1149,9 +1149,6 @@ fn populate_level(
             append_semantic_target(&mut regions[region_index], control);
         }
     }
-    for (region, group) in regions.iter_mut().zip(grouped) {
-        region.omitted_targets = group.len().saturating_sub(region.targets.len());
-    }
 }
 
 fn append_semantic_target(
@@ -1182,9 +1179,6 @@ fn region_target_priority(kind: SemanticRegionKind) -> u8 {
     }
 }
 
-fn is_zero(value: &usize) -> bool {
-    *value == 0
-}
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1582,7 +1576,6 @@ mod tests {
                 confidence: SemanticConfidence::High,
                 evidence: vec!["repeated item structure".into()],
                 targets: Vec::new(),
-                omitted_targets: 0,
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_results".into(),
                     revision: 42,

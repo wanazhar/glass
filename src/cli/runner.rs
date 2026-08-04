@@ -165,12 +165,12 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
-        viewport,
         interaction_mode: cli.interaction,
         audit: cli.audit,
         policy: None,
     };
-    let session = BrowserSession::start_with_policy(&options, policy).await?;
+    let session =
+        BrowserSession::start_with_policy_and_viewport(&options, policy, viewport).await?;
     let result = if let Some(prompt) = &cli.prompt {
         run_prompt(&session, prompt, cli.response_mode).await
     } else if let Some(command) = &cli.command {

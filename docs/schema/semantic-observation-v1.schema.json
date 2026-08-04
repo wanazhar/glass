@@ -56,7 +56,6 @@
         "confidence": {"enum": ["exact", "high", "medium", "low", "unknown"]},
         "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 128}},
         "targets": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/target"}},
-        "omittedTargets": {"type": "integer", "minimum": 0},
         "expansion": {"$ref": "#/$defs/expansion"}
       }
     },

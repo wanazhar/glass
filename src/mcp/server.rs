@@ -475,6 +475,16 @@ where
 {
     info!("MCP server starting on stdio");
     ProfileManager::validate_name(&cli.profile)?;
+    let viewport = cli
+        .viewport
+        .as_deref()
+        .map(|value| -> Result<(i64, i64), Box<dyn std::error::Error>> {
+            let (width, height) = value
+                .split_once('x')
+                .ok_or("viewport must use WIDTHxHEIGHT")?;
+            Ok((width.parse::<i64>()?, height.parse::<i64>()?))
+        })
+        .transpose()?;
     let options = SessionOptions {
         port: cli.port,
         chrome_path: cli.chrome_path.clone(),
@@ -484,16 +494,6 @@ where
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
-        viewport: cli
-            .viewport
-            .as_deref()
-            .map(|value| -> Result<(i64, i64), Box<dyn std::error::Error>> {
-                let (width, height) = value
-                    .split_once('x')
-                    .ok_or("viewport must use WIDTHxHEIGHT")?;
-                Ok((width.parse::<i64>()?, height.parse::<i64>()?))
-            })
-            .transpose()?,
         interaction_mode: cli.interaction,
         audit: cli.audit,
         policy: None,
@@ -761,6 +761,7 @@ where
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
         let task_policy = policy.clone();
+        let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
@@ -772,11 +773,12 @@ where
             let id = request.id.response_value();
             let operation = async {
                 let mut session = task_session.lock().await;
-                handle_request(
+                handle_request_with_viewport(
                     &request,
                     &mut session,
                     &task_options,
                     &task_policy,
+                    task_viewport,
                     task_knowledge_store.as_deref(),
                 )
                 .await
@@ -1186,11 +1188,31 @@ fn initialize_response_in_mode(
     )
 }
 
+#[cfg(test)]
 async fn handle_request(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
+    knowledge_store_path: Option<&Path>,
+) -> Option<JsonRpcResponse> {
+    handle_request_with_viewport(
+        request,
+        session,
+        options,
+        policy,
+        None,
+        knowledge_store_path,
+    )
+    .await
+}
+
+async fn handle_request_with_viewport(
+    request: &JsonRpcRequest,
+    session: &mut Option<BrowserSession>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
@@ -1254,8 +1276,15 @@ async fn handle_request(
                 "resources/read requires a string `uri` parameter",
             ),
         },
-        "tools/call" => match call_tool(request, session, options, policy, knowledge_store_path)
-            .await
+        "tools/call" => match call_tool(
+            request,
+            session,
+            options,
+            policy,
+            viewport,
+            knowledge_store_path,
+        )
+        .await
         {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => {
@@ -1452,6 +1481,7 @@ async fn call_tool(
     session: &mut Option<BrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
@@ -1537,7 +1567,7 @@ async fn call_tool(
     ) {
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
     }
-    let session = ensure_session(session, options, policy).await?;
+    let session = ensure_session(session, options, policy, viewport).await?;
 
     if let ToolInvocation::ExecuteTask {
         ref task,
@@ -2671,9 +2701,13 @@ async fn ensure_session<'a>(
     session: &'a mut Option<BrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
 ) -> BrowserResult<&'a mut BrowserSession> {
     if session.is_none() {
-        *session = Some(BrowserSession::start_with_policy(options, policy.clone()).await?);
+        *session = Some(
+            BrowserSession::start_with_policy_and_viewport(options, policy.clone(), viewport)
+                .await?,
+        );
     }
     Ok(session.as_mut().expect("session initialized"))
 }

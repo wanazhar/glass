@@ -454,26 +454,49 @@ pub(crate) const HIT_TEST_FUNCTION: &str = r#"async function() {
         const rect = element.getBoundingClientRect();
         return {left:rect.left, top:rect.top, width:rect.width, height:rect.height};
     };
+    const diagnostics = (rect, hidden, outsideViewport, hit) => ({
+        matchedCount: 1,
+        tag: element.tagName.toLowerCase(),
+        role: element.getAttribute('role'),
+        name: (element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 120),
+        geometry: {
+            x: Math.round(rect.left * 10) / 10,
+            y: Math.round(rect.top * 10) / 10,
+            width: Math.round(rect.width * 10) / 10,
+            height: Math.round(rect.height * 10) / 10
+        },
+        outsideViewport,
+        hitTestOwner: hit ? {
+            tag: hit.tagName.toLowerCase(),
+            role: hit.getAttribute('role'),
+            name: (hit.getAttribute('aria-label') || hit.textContent || '').trim().slice(0, 120)
+        } : null,
+        hidden,
+        recommendation: hidden ? 'reobserve' : outsideViewport ? 'scrollAndReobserve' : 'inspectOverlay'
+    });
     element.scrollIntoView({block:'nearest', inline:'nearest'});
     const first = sample();
     if (!element.isConnected) return {ok:false, reason:'detached'};
-    if (element.getAnimations({subtree:true}).some(animation => animation.playState === 'running'))
-        return {ok:false, reason:'unstable_geometry'};
+    if (element.getAnimations({subtree:true}).some(animation => animation.playState === 'running')) {
+        return {ok:false, reason:'unstable_geometry', diagnostics: diagnostics(first, false, false, null)};
+    }
     const second = sample();
     const style = getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || second.width <= 0 || second.height <= 0)
-        return {ok:false, reason:'not_visible'};
-    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
-        return {ok:false, reason:'disabled'};
-    if ([first.left, first.top, first.width, first.height].some((value, index) => Math.abs(value - [second.left, second.top, second.width, second.height][index]) > 1))
-        return {ok:false, reason:'unstable_geometry'};
+    const hidden = style.display === 'none' || style.visibility === 'hidden' ||
+        Number(style.opacity) === 0 || second.width <= 0 || second.height <= 0;
     const x = second.left + second.width / 2;
     const y = second.top + second.height / 2;
-    if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)
-        return {ok:false, reason:'outside_viewport'};
-    const hit = document.elementFromPoint(x, y);
+    const outsideViewport = x < 0 || y < 0 || x >= innerWidth || y >= innerHeight;
+    const hit = !outsideViewport ? document.elementFromPoint(x, y) : null;
+    const evidence = diagnostics(second, hidden, outsideViewport, hit);
+    if (hidden) return {ok:false, reason:'not_visible', diagnostics: evidence};
+    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
+        return {ok:false, reason:'disabled', diagnostics: evidence};
+    if ([first.left, first.top, first.width, first.height].some((value, index) => Math.abs(value - [second.left, second.top, second.width, second.height][index]) > 1))
+        return {ok:false, reason:'unstable_geometry', diagnostics: evidence};
+    if (outsideViewport) return {ok:false, reason:'outside_viewport', diagnostics: evidence};
     if (!hit || (hit !== element && !element.contains(hit)))
-        return {ok:false, reason:'hit_test_blocked'};
+        return {ok:false, reason:'hit_test_blocked', diagnostics: evidence};
     return {ok:true, x, y};
 }"#;
 /// Read-only actionability probe used by `preflight`. Unlike the action probe,
@@ -568,9 +591,6 @@ pub struct SessionOptions {
     pub frame_id: Option<String>,
     #[doc(hidden)]
     pub headed: bool,
-    /// Optional CSS viewport width and height applied before navigation.
-    #[doc(hidden)]
-    pub viewport: Option<(i64, i64)>,
     #[doc(hidden)]
     pub interaction_mode: InteractionMode,
     #[doc(hidden)]
@@ -603,7 +623,6 @@ impl Default for SessionOptions {
             target_id: None,
             frame_id: None,
             headed: false,
-            viewport: None,
             interaction_mode: InteractionMode::Human,
             audit: false,
             policy: None,
@@ -645,13 +664,6 @@ impl SessionOptions {
         {
             return Err("frame ID cannot be empty".into());
         }
-        if let Some((width, height)) = self.viewport
-            && (!(320..=10000).contains(&width) || !(240..=10000).contains(&height))
-        {
-            return Err(
-                "viewport dimensions must be width 320..10000 and height 240..10000".into(),
-            );
-        }
 
         if self.attach {
             if self.incognito {
@@ -691,7 +703,6 @@ pub struct SessionOptionsBuilder {
     profile: String,
     incognito: bool,
     attach: bool,
-    viewport: Option<(i64, i64)>,
     target_id: Option<String>,
     frame_id: Option<String>,
     headed: bool,
@@ -709,7 +720,6 @@ impl Default for SessionOptionsBuilder {
             profile: defaults.profile,
             incognito: defaults.incognito,
             attach: defaults.attach,
-            viewport: defaults.viewport,
             target_id: defaults.target_id,
             frame_id: defaults.frame_id,
             headed: defaults.headed,
@@ -764,11 +774,6 @@ impl SessionOptionsBuilder {
     }
 
     /// Show the browser window (default: `false`, headless).
-    /// Set the CSS viewport dimensions applied before navigation.
-    pub fn viewport(mut self, width: i64, height: i64) -> Self {
-        self.viewport = Some((width, height));
-        self
-    }
     pub fn headed(mut self, headed: bool) -> Self {
         self.headed = headed;
         self
@@ -819,7 +824,6 @@ impl SessionOptionsBuilder {
             profile: self.profile,
             incognito: self.incognito,
             attach: self.attach,
-            viewport: self.viewport,
             target_id: self.target_id,
             frame_id: self.frame_id,
             headed: self.headed,

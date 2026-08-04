@@ -1120,12 +1120,13 @@ impl BrowserSession {
         if value["ok"].as_bool() != Some(true) {
             let reason = value["reason"].as_str().unwrap_or("verification_failed");
             tracing::debug!(reason, "target actionability check failed");
+            let diagnostics = serde_json::from_value(value["diagnostics"].clone()).ok();
             return Err(TargetError {
                 kind: TargetErrorKind::NotActionable,
                 reason: Some(actionability_reason(reason)),
                 candidates: Vec::new(),
                 recovery: None,
-                diagnostics: None,
+                diagnostics,
             }
             .into());
         }

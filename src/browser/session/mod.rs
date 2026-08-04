@@ -516,18 +516,48 @@ impl BrowserSession {
         self.cdp.measure_cdp_wait(future).await
     }
 
+    /// Start a session using the policy embedded in `options`, without viewport emulation.
     pub async fn start(options: &SessionOptions) -> BrowserResult<Self> {
         let policy = match &options.policy {
             Some(policy) => policy.clone(),
             None => BrowserPolicy::development(std::env::current_dir()?)?,
         };
-        Self::start_with_policy(options, policy).await
+        Self::start_with_policy_and_viewport(options, policy, None).await
     }
 
+    /// Start a session using the policy embedded in `options` and CSS viewport dimensions.
+    pub async fn start_with_viewport(
+        options: &SessionOptions,
+        viewport: Option<(i64, i64)>,
+    ) -> BrowserResult<Self> {
+        let policy = match &options.policy {
+            Some(policy) => policy.clone(),
+            None => BrowserPolicy::development(std::env::current_dir()?)?,
+        };
+        Self::start_with_policy_and_viewport(options, policy, viewport).await
+    }
+
+    /// Start a session with an explicit browser policy and no viewport emulation.
     pub async fn start_with_policy(
         options: &SessionOptions,
-        mut policy: BrowserPolicy,
+        policy: BrowserPolicy,
     ) -> BrowserResult<Self> {
+        Self::start_with_policy_and_viewport(options, policy, None).await
+    }
+
+    /// Start a session with an explicit policy and optional CSS viewport dimensions.
+    pub async fn start_with_policy_and_viewport(
+        options: &SessionOptions,
+        mut policy: BrowserPolicy,
+        viewport: Option<(i64, i64)>,
+    ) -> BrowserResult<Self> {
+        if let Some((width, height)) = viewport
+            && (!(320..=10000).contains(&width) || !(240..=10000).contains(&height))
+        {
+            return Err(
+                "viewport dimensions must be width 320..10000 and height 240..10000".into(),
+            );
+        }
         options.validate()?;
         if options.attach {
             policy.require(PolicyCapability::Attach)?;
@@ -585,7 +615,7 @@ impl BrowserSession {
                     options.headed,
                     options.incognito,
                     resolver_rules.as_deref(),
-                    options.viewport,
+                    viewport,
                 )
                 .await?,
             );
@@ -791,7 +821,7 @@ impl BrowserSession {
             };
             session.select_frame(&frame_id).await?;
             session.synchronize_persistent_revision().await?;
-            if let Some((width, height)) = options.viewport {
+            if let Some((width, height)) = viewport {
                 session.set_viewport(width, height, None, None).await?;
             }
             Ok::<(), Box<dyn Error>>(())

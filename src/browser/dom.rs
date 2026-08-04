@@ -329,11 +329,32 @@ fn rank_interactive_controls(controls: &mut [CompactInteractiveElement]) {
 ///
 /// Every published control has a backend DOM node and a revisioned reference,
 /// so it can be resolved without a fresh full accessibility snapshot.
+/// Project a compact accessibility tree using the legacy reference format.
 pub fn project_compact_accessibility(
     nodes: &[AxNode],
     revision: u64,
 ) -> CompactAccessibilityProjection {
-    project_compact_accessibility_with_ranking(nodes, revision, CompactRanking::Relevance)
+    project_compact_accessibility_with_ranking_and_context(
+        nodes,
+        revision,
+        None,
+        CompactRanking::Relevance,
+    )
+}
+
+/// Project compact accessibility with an explicit truncation order and page
+/// context identity.
+pub fn project_compact_accessibility_with_context(
+    nodes: &[AxNode],
+    revision: u64,
+    context_id: &str,
+) -> CompactAccessibilityProjection {
+    project_compact_accessibility_with_ranking_and_context(
+        nodes,
+        revision,
+        Some(context_id),
+        CompactRanking::Relevance,
+    )
 }
 
 /// Project compact accessibility with an explicit truncation order. The
@@ -344,15 +365,25 @@ pub fn project_compact_accessibility_with_ranking(
     revision: u64,
     ranking: CompactRanking,
 ) -> CompactAccessibilityProjection {
+    project_compact_accessibility_with_ranking_and_context(nodes, revision, None, ranking)
+}
+
+/// Internal projection implementation carrying the non-reusable page context
+/// into every published backend-node reference.
+pub fn project_compact_accessibility_with_ranking_and_context(
+    nodes: &[AxNode],
+    revision: u64,
+    context_id: Option<&str>,
+    ranking: CompactRanking,
+) -> CompactAccessibilityProjection {
     let mut state = CompactProjectionState::new();
     let roots = nodes
         .iter()
-        .filter_map(|node| project_compact_node(node, revision, &mut state, &[]))
+        .filter_map(|node| project_compact_node(node, revision, context_id, &mut state, &[]))
         .collect();
     let total_discovered = state.interactive.len();
     let ranking_applied =
         total_discovered > COMPACT_AX_MAX_INTERACTIVE && ranking == CompactRanking::Relevance;
-
     if total_discovered > COMPACT_AX_MAX_INTERACTIVE {
         if ranking == CompactRanking::Relevance {
             rank_interactive_controls(&mut state.interactive);
@@ -360,7 +391,6 @@ pub fn project_compact_accessibility_with_ranking(
         let omitted = total_discovered.saturating_sub(COMPACT_AX_MAX_INTERACTIVE);
         state.interactive.truncate(COMPACT_AX_MAX_INTERACTIVE);
         state.controls_truncated = true;
-
         CompactAccessibilityProjection {
             roots,
             interactive: state.interactive,
@@ -392,6 +422,7 @@ pub fn project_compact_accessibility_with_ranking(
 fn project_compact_node(
     node: &AxNode,
     revision: u64,
+    context_id: Option<&str>,
     state: &mut CompactProjectionState,
     ancestors: &[String],
 ) -> Option<CompactAxNode> {
@@ -415,7 +446,14 @@ fn project_compact_node(
         state.controls_truncated |= control_name.len() < node.name.len();
         if let Some(backend_dom_node_id) = node.backend_dom_node_id {
             state.interactive.push(CompactInteractiveElement {
-                reference: backend_node_reference(revision, backend_dom_node_id),
+                reference: match context_id {
+                    Some(context_id) => backend_node_reference_with_context(
+                        revision,
+                        context_id,
+                        backend_dom_node_id,
+                    ),
+                    None => backend_node_reference(revision, backend_dom_node_id),
+                },
                 role: role.clone(),
                 name: control_name,
                 backend_dom_node_id,
@@ -454,7 +492,9 @@ fn project_compact_node(
     let children = node
         .children
         .iter()
-        .filter_map(|child| project_compact_node(child, revision, state, &child_ancestors))
+        .filter_map(|child| {
+            project_compact_node(child, revision, context_id, state, &child_ancestors)
+        })
         .collect();
     Some(CompactAxNode {
         role,
@@ -469,6 +509,15 @@ fn project_compact_node(
 /// silently selecting an element that inherited an ordinal position.
 pub fn backend_node_reference(revision: u64, backend_dom_node_id: i64) -> String {
     format!("r{revision}:b{backend_dom_node_id}")
+}
+
+/// Format a reference bound to the page document that produced it.
+pub fn backend_node_reference_with_context(
+    revision: u64,
+    context_id: &str,
+    backend_dom_node_id: i64,
+) -> String {
+    format!("r{revision}:c{context_id}:b{backend_dom_node_id}")
 }
 
 fn take_compact_text(text: &str, remaining: &mut usize, truncated: &mut bool) -> String {

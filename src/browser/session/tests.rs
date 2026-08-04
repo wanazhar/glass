@@ -574,7 +574,7 @@ async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, S
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut websocket = accept_async(stream).await.unwrap();
-        for _ in 0..6 {
+        for _ in 0..7 {
             let request = websocket.next().await.unwrap().unwrap();
             let request: Value = match request {
                 Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
@@ -584,17 +584,15 @@ async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, S
                 Some("Page.createIsolatedWorld") => {
                     serde_json::json!({"executionContextId": 73})
                 }
-                Some("Runtime.evaluate") => serde_json::json!({
-                    "result": {"value": if request["params"]["expression"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .contains("JSON.stringify")
-                    {
+                Some("Runtime.evaluate") => {
+                    let expression = request["params"]["expression"].as_str().unwrap_or_default();
+                    let value = if expression.contains("JSON.stringify") {
                         serde_json::Value::String(
                             serde_json::json!({
                                 "url": "https://example.test",
                                 "title": "Example",
                                 "ready_state": "complete",
+                                "page_context_id": "context-1",
                                 "text": text_for_server.clone(),
                             })
                             .to_string(),
@@ -605,9 +603,11 @@ async fn large_accessibility_server() -> (String, tokio::task::JoinHandle<()>, S
                             "title": "Example",
                             "ready_state": "complete",
                             "text": text_for_server.clone(),
+                            "page_context_id": "context-1",
                         })
-                    }}
-                }),
+                    };
+                    serde_json::json!({"result": {"value": value}})
+                }
                 Some("Accessibility.getFullAXTree") => tree.clone(),
                 method => panic!("unexpected compact-observation command: {method:?}"),
             };
@@ -770,6 +770,7 @@ fn revisioned_references_are_parsed_and_validate_their_shape() {
         parse_revisioned_reference("r7:b42").unwrap(),
         Some(RevisionedElementReference {
             revision: 7,
+            context_id: None,
             backend_dom_node_id: 42,
         })
     );
@@ -883,8 +884,36 @@ fn legacy_target_errors_map_to_the_action_taxonomy() {
         reason: None,
         candidates: Vec::new(),
         recovery: None,
+        diagnostics: None,
     };
     assert_eq!(error.failure_kind(), ActionFailureKind::AmbiguousTarget);
+}
+
+#[test]
+fn preflight_diagnostics_are_bounded_and_camel_case() {
+    let diagnostics = TargetDiagnostics {
+        matched_count: 1,
+        tag: Some("button".to_string()),
+        role: Some("button".to_string()),
+        name: Some("Save".to_string()),
+        geometry: Some(PreflightGeometry {
+            x: 12.0,
+            y: 24.0,
+            width: 80.0,
+            height: 32.0,
+        }),
+        outside_viewport: false,
+        hit_test_owner: Some(CoordinateHit {
+            tag: "div".to_string(),
+            role: None,
+            name: None,
+        }),
+        hidden: false,
+        recommendation: "inspectOverlay".to_string(),
+    };
+    let value = serde_json::to_value(diagnostics).unwrap();
+    assert_eq!(value["matchedCount"], 1);
+    assert_eq!(value["hitTestOwner"]["tag"], "div");
 }
 
 #[test]
@@ -1327,7 +1356,10 @@ async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() 
     assert!(context.accessibility.truncated);
     assert_eq!(context.accessibility.revision, 1);
     assert_eq!(context.accessibility.roots[0].role, "RootWebArea");
-    assert_eq!(context.accessibility.interactive[0].reference, "r1:b42");
+    assert_eq!(
+        context.accessibility.interactive[0].reference,
+        "r1:ccontext-1:b42"
+    );
     assert_eq!(context.accessibility.interactive[0].role, "button");
     assert_eq!(context.accessibility.interactive[0].name, "Save");
     assert!(!serialized.contains(&huge_text));
@@ -1345,7 +1377,7 @@ async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() 
 
     let snapshot = session.snapshot().await.unwrap();
     assert_eq!(snapshot.roots[0].name, huge_text);
-    assert_eq!(snapshot.interactive[0].reference, "r1:b42");
+    assert_eq!(snapshot.interactive[0].reference, "r1:ccontext-1:b42");
     assert_eq!(snapshot.interactive[0].description.len(), 33 * 1024);
 
     session.close().await.unwrap();

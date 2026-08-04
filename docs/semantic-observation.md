@@ -19,6 +19,12 @@ Structured text is a bounded document projection. When `limits.textTruncated`
 is true, expand a named region instead of assuming the text is complete. The
 observation also reports `limits.textBytes`.
 
+Region expansion is payload-local. It returns the selected region's bounded
+text, targets, and (for `detailed` or `raw`) accessibility subtree instead of
+repeating the full-page projection. `limits.omittedRegions`,
+`limits.omittedTargets`, and `limits.omittedBytes` make any omitted page-level
+content explicit.
+
 Viewport geometry reports scroll offsets, viewport dimensions, and document
 dimensions. Semantic text remains document-oriented; use the geometry to decide
 whether a fresh observation is needed after scrolling.

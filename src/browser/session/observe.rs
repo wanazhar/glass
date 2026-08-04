@@ -201,7 +201,8 @@ impl BrowserSession {
                 };
             let end_revision = self.page_revision.load(Ordering::Relaxed);
             let consistent = start_revision == end_revision
-                && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision;
+                && attempt_result.0.mutation_revision == attempt_result.2.mutation_revision
+                && attempt_result.0.page_context_id == attempt_result.2.page_context_id;
             collected = Some((
                 attempt,
                 consistent,
@@ -229,10 +230,13 @@ impl BrowserSession {
             frame_id: frame_id.clone(),
         };
         let full_roots = parse_accessibility_tree(&accessibility_raw);
+        let page_context_id =
+            (!page_state.page_context_id.is_empty()).then_some(page_state.page_context_id.as_str());
         let mut compact_accessibility =
-            crate::browser::dom::project_compact_accessibility_with_ranking(
+            crate::browser::dom::project_compact_accessibility_with_ranking_and_context(
                 &full_roots,
                 end_revision,
+                page_context_id,
                 ranking,
             );
         let (mut text, locally_truncated) =
@@ -557,6 +561,31 @@ impl BrowserSession {
             .evaluate_in_context(COMPACT_PAGE_STATE_EXPRESSION, Some(context_id))
             .await?;
         Ok(serde_json::from_value(runtime_value(&raw)?)?)
+    }
+
+    pub(crate) async fn current_page_context_id(&self) -> BrowserResult<String> {
+        let (target_id, frame_id) = self.route_identity().await?;
+        for attempt in 0..2 {
+            let context_id = self.observation_context_id(&target_id, &frame_id).await?;
+            match self.compact_page_state(context_id).await {
+                Ok(state)
+                    if !state.page_context_id.is_empty()
+                        && state.page_context_id.len() <= 128
+                        && state.page_context_id.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                        }) =>
+                {
+                    return Ok(state.page_context_id);
+                }
+                Ok(_) => return Err("browser returned an invalid page context identity".into()),
+                Err(error) if attempt == 0 && is_stale_observation_context(error.as_ref()) => {
+                    self.discard_observation_context(&target_id, &frame_id, context_id)
+                        .await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err("browser page context identity could not be read".into())
     }
 
     async fn observation_context_id(&self, target_id: &str, frame_id: &str) -> BrowserResult<i64> {

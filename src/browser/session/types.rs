@@ -28,7 +28,7 @@ use crate::browser::cdp::{CdpClient, CdpEventWithParams, RuntimeEvaluateResponse
 use crate::browser::chrome::ChromeProcess;
 use crate::browser::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
-    find_interactive_elements, format_tree,
+    backend_node_reference_with_context, find_interactive_elements, format_tree,
 };
 use crate::browser::mouse::{MouseEngine, Point};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
@@ -373,6 +373,18 @@ pub(crate) const COMPACT_OBSERVATION_MAX_ATTEMPTS: u8 = 2;
 pub(crate) const COMPACT_ACCESSIBILITY_CACHE_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
     const key = '__glassObservationRevision';
+    const contextKey = '__glassPageContextId';
+    let contextId = globalThis[contextKey];
+    if (typeof contextId !== 'string' || contextId.length === 0) {
+        contextId = globalThis.crypto?.randomUUID?.()
+            || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        Object.defineProperty(globalThis, contextKey, {
+            value: contextId,
+            configurable: false,
+            enumerable: false,
+            writable: false
+        });
+    }
     let state = globalThis[key];
     if (!state) {
         state = {revision: 0};
@@ -399,6 +411,7 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         document_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)
     };
     return {url:location.href, title:document.title, ready_state:document.readyState,
+        page_context_id:contextId,
         text:(() => { const source=document.body ? document.body.innerText : ''; const bytes=new Uint8Array(16384);
             const encoded=new TextEncoder().encodeInto(source, bytes); summary.text_truncated=encoded.read < source.length;
             return new TextDecoder().decode(bytes.subarray(0, encoded.written)); })(),
@@ -478,22 +491,39 @@ pub(crate) const PREFLIGHT_FUNCTION: &str = r#"function() {
         height: Math.round(rect.height * 10) / 10
     };
     const style = getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0)
-        return {ok:false, reason:'not_visible', geometry};
-    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
-        return {ok:false, reason:'disabled', geometry};
+    const hidden = style.display === 'none' || style.visibility === 'hidden' ||
+        Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0;
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
-    const inViewport = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
-    const hit = inViewport ? document.elementFromPoint(x, y) : null;
+    const outsideViewport = x < 0 || y < 0 || x >= innerWidth || y >= innerHeight;
+    const hit = !outsideViewport ? document.elementFromPoint(x, y) : null;
+    const hitTestOwner = hit ? {
+        tag: hit.tagName.toLowerCase(),
+        role: hit.getAttribute('role'),
+        name: (hit.getAttribute('aria-label') || hit.textContent || '').trim().slice(0, 120)
+    } : null;
+    const diagnostics = {
+        matchedCount: 1,
+        tag: element.tagName.toLowerCase(),
+        role: element.getAttribute('role'),
+        name: (element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 120),
+        geometry,
+        outsideViewport,
+        hitTestOwner: hitTestOwner,
+        recommendation: hidden ? 'reobserve' : outsideViewport ? 'scrollAndReobserve' : 'inspectOverlay'
+    };
     const hints = {
         likelyNavigation: element.matches('a[href], [role="link"]'),
         likelyPopup: element.matches('[target="_blank"], [rel~="noopener"], [aria-haspopup]'),
         likelyFormSubmit: element.matches('button[type="submit"], input[type="submit"]')
     };
-    if (!inViewport) return {ok:false, reason:'outside_viewport', geometry, hints};
-    if (!hit || (hit !== element && !element.contains(hit))) return {ok:false, reason:'hit_test_blocked', geometry, hints};
-    return {ok:true, geometry, hints};
+    if (hidden) return {ok:false, reason:'not_visible', geometry, hints, diagnostics};
+    if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
+        return {ok:false, reason:'disabled', geometry, hints, diagnostics};
+    if (outsideViewport) return {ok:false, reason:'outside_viewport', geometry, hints, diagnostics};
+    if (!hit || (hit !== element && !element.contains(hit)))
+        return {ok:false, reason:'hit_test_blocked', geometry, hints, diagnostics};
+    return {ok:true, geometry, hints, diagnostics};
 }"#;
 pub(crate) const WAIT_TARGET_STATE_FUNCTION: &str = r#"function() {
     let element = this && this.nodeType === Node.ELEMENT_NODE ? this : this && this.parentElement;
@@ -538,9 +568,11 @@ pub struct SessionOptions {
     pub frame_id: Option<String>,
     #[doc(hidden)]
     pub headed: bool,
+    /// Optional CSS viewport width and height applied before navigation.
+    #[doc(hidden)]
+    pub viewport: Option<(i64, i64)>,
     #[doc(hidden)]
     pub interaction_mode: InteractionMode,
-    /// Whether the session audit log is enabled.
     #[doc(hidden)]
     pub audit: bool,
     /// Optional policy override for the session. When `None`,
@@ -571,6 +603,7 @@ impl Default for SessionOptions {
             target_id: None,
             frame_id: None,
             headed: false,
+            viewport: None,
             interaction_mode: InteractionMode::Human,
             audit: false,
             policy: None,
@@ -612,6 +645,13 @@ impl SessionOptions {
         {
             return Err("frame ID cannot be empty".into());
         }
+        if let Some((width, height)) = self.viewport
+            && (!(320..=10000).contains(&width) || !(240..=10000).contains(&height))
+        {
+            return Err(
+                "viewport dimensions must be width 320..10000 and height 240..10000".into(),
+            );
+        }
 
         if self.attach {
             if self.incognito {
@@ -651,6 +691,7 @@ pub struct SessionOptionsBuilder {
     profile: String,
     incognito: bool,
     attach: bool,
+    viewport: Option<(i64, i64)>,
     target_id: Option<String>,
     frame_id: Option<String>,
     headed: bool,
@@ -668,6 +709,7 @@ impl Default for SessionOptionsBuilder {
             profile: defaults.profile,
             incognito: defaults.incognito,
             attach: defaults.attach,
+            viewport: defaults.viewport,
             target_id: defaults.target_id,
             frame_id: defaults.frame_id,
             headed: defaults.headed,
@@ -722,6 +764,11 @@ impl SessionOptionsBuilder {
     }
 
     /// Show the browser window (default: `false`, headless).
+    /// Set the CSS viewport dimensions applied before navigation.
+    pub fn viewport(mut self, width: i64, height: i64) -> Self {
+        self.viewport = Some((width, height));
+        self
+    }
     pub fn headed(mut self, headed: bool) -> Self {
         self.headed = headed;
         self
@@ -772,6 +819,7 @@ impl SessionOptionsBuilder {
             profile: self.profile,
             incognito: self.incognito,
             attach: self.attach,
+            viewport: self.viewport,
             target_id: self.target_id,
             frame_id: self.frame_id,
             headed: self.headed,
@@ -901,6 +949,26 @@ pub struct CandidateSummary {
     pub reference: Option<String>,
 }
 
+/// Bounded browser evidence explaining why a resolved element was not actionable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetDiagnostics {
+    pub matched_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<PreflightGeometry>,
+    pub outside_viewport: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_test_owner: Option<CoordinateHit>,
+    pub hidden: bool,
+    pub recommendation: String,
+}
+
 /// A bounded, structured targeting failure safe for agent-facing protocols.
 #[derive(Debug, Clone)]
 pub struct TargetError {
@@ -908,6 +976,7 @@ pub struct TargetError {
     pub reason: Option<TargetActionabilityReason>,
     pub candidates: Vec<CandidateSummary>,
     pub recovery: Option<StaleReferenceRecovery>,
+    pub diagnostics: Option<TargetDiagnostics>,
 }
 
 impl Serialize for TargetError {
@@ -915,7 +984,7 @@ impl Serialize for TargetError {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("TargetError", 5)?;
+        let mut state = serializer.serialize_struct("TargetError", 6)?;
         state.serialize_field("kind", &self.kind)?;
         state.serialize_field("failureKind", &self.failure_kind())?;
         if let Some(reason) = &self.reason {
@@ -926,6 +995,9 @@ impl Serialize for TargetError {
         }
         if let Some(recovery) = &self.recovery {
             state.serialize_field("recovery", recovery)?;
+        }
+        if let Some(diagnostics) = &self.diagnostics {
+            state.serialize_field("diagnostics", diagnostics)?;
         }
         state.end()
     }
@@ -972,11 +1044,14 @@ pub struct PreflightOutcome {
     pub geometry: Option<PreflightGeometry>,
     /// Advisory action hints; they never override `actionable`.
     pub hints: PreflightHints,
+    /// Bounded evidence for an actionable-target failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<TargetDiagnostics>,
     pub target_id: Option<String>,
     pub frame_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PreflightGeometry {
     pub x: f64,
     pub y: f64,
@@ -1163,6 +1238,8 @@ pub enum WaitCondition {
     TargetEnabled(String),
     TargetStable(String),
     Text(String),
+    /// Wait for a named semantic region to exist with at least one target.
+    SemanticRegion(String),
     JavaScript(String),
     NetworkQuiet(Duration),
 }
@@ -2092,9 +2169,9 @@ pub struct ActionOutcome {
     pub evidence: Option<Value>,
 }
 
-/// Revision-aware navigation result. The legacy navigation API continues to
-/// return [`PageInfo`], while callers opting into the contract receive the
-/// same status/revision/evidence envelope as input actions.
+/// Revision-aware navigation result. Browser lifecycle completion is distinct
+/// from application hydration; callers can request an explicit wait for the
+/// latter.
 #[derive(Debug, Clone, Serialize)]
 pub struct NavigationOutcome {
     pub status: ActionStatus,
@@ -2106,6 +2183,10 @@ pub struct NavigationOutcome {
     pub previous_revision: u64,
     #[serde(rename = "currentRevision")]
     pub current_revision: u64,
+    #[serde(rename = "browserLoadCompleted")]
+    pub browser_load_completed: bool,
+    #[serde(rename = "applicationReady")]
+    pub application_ready: bool,
     pub verification: ActionVerificationEvidence,
 }
 
@@ -2123,7 +2204,7 @@ pub struct CoordinateClickOutcome {
     pub frame_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinateHit {
     pub tag: String,
     pub role: Option<String>,
@@ -2238,6 +2319,8 @@ pub(crate) struct EvaluatedPageState {
     #[serde(default)]
     pub(crate) boundaries: ObservationBoundarySummary,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) page_context_id: String,
 }
 
 impl AccessibilitySnapshot {
@@ -2647,12 +2730,25 @@ pub(crate) async fn wait_for_stable_popup_topology(
 }
 
 pub(crate) fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<InteractiveElement> {
+    interactive_elements_with_context(roots, revision, None)
+}
+
+pub(crate) fn interactive_elements_with_context(
+    roots: &[AxNode],
+    revision: u64,
+    context_id: Option<&str>,
+) -> Vec<InteractiveElement> {
     find_interactive_elements(roots)
         .into_iter()
         .filter_map(|node| {
             let backend_dom_node_id = node.backend_dom_node_id?;
+            let reference = context_id
+                .map(|context| {
+                    backend_node_reference_with_context(revision, context, backend_dom_node_id)
+                })
+                .unwrap_or_else(|| backend_node_reference(revision, backend_dom_node_id));
             Some(InteractiveElement {
-                reference: backend_node_reference(revision, backend_dom_node_id),
+                reference,
                 role: node.role.clone(),
                 name: node.name.clone(),
                 description: node.description.clone(),
@@ -3667,6 +3763,7 @@ impl WaitCondition {
             "target-enabled" => Self::TargetEnabled(argument.to_string()),
             "target-stable" => Self::TargetStable(argument.to_string()),
             "text" => Self::Text(argument.to_string()),
+            "semantic-region" => Self::SemanticRegion(argument.to_string()),
             "js" => Self::JavaScript(argument.to_string()),
             "network-quiet" => {
                 let duration = Duration::from_millis(argument.parse::<u64>()?);
@@ -3691,6 +3788,7 @@ impl WaitCondition {
             Self::TargetEnabled(_) => "target_enabled".to_string(),
             Self::TargetStable(_) => "target_stable".to_string(),
             Self::Text(_) => "text".to_string(),
+            Self::SemanticRegion(_) => "semantic_region".to_string(),
             Self::JavaScript(_) => "javascript_predicate".to_string(),
             Self::NetworkQuiet(_) => "network_quiet".to_string(),
         }
@@ -3707,6 +3805,7 @@ impl WaitCondition {
             | Self::TargetEnabled(value)
             | Self::TargetStable(value)
             | Self::Text(value)
+            | Self::SemanticRegion(value)
             | Self::JavaScript(value) => Some(value),
             Self::NetworkQuiet(duration) => {
                 if duration.is_zero() || *duration > MAX_WAIT_DEADLINE {
@@ -4644,32 +4743,50 @@ pub(crate) fn actionability_reason(reason: &str) -> TargetActionabilityReason {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RevisionedElementReference {
     pub(crate) revision: u64,
+    pub(crate) context_id: Option<String>,
     pub(crate) backend_dom_node_id: i64,
 }
 
-/// Parse the public `r<revision>:b<backend-node-id>` reference shape.
-///
-/// Values that do not resemble this exact shape remain normal accessible-name
-/// or CSS-selector targets. A malformed value with the marker is an explicit
-/// error instead of a silent fallback.
+/// Parse a revisioned backend-node reference. New references use
+/// `r<revision>:c<context>:b<backend-node-id>`; the legacy shape is retained
+/// only for parsing old persisted data and is rejected before actions.
 pub(crate) fn parse_revisioned_reference(
     value: &str,
 ) -> BrowserResult<Option<RevisionedElementReference>> {
     let Some(rest) = value.strip_prefix('r') else {
         return Ok(None);
     };
-    let Some((revision, backend_dom_node_id)) = rest.split_once(":b") else {
+    let Some((revision, remainder)) = rest.split_once(':') else {
         return Ok(None);
     };
-    if revision.is_empty() || backend_dom_node_id.is_empty() {
+    if revision.is_empty() || remainder.is_empty() {
         return Err(format!("invalid revisioned element reference: {value}").into());
     }
     let revision = revision
         .parse::<u64>()
         .map_err(|_| format!("invalid element reference revision: {value}"))?;
+    let (context_id, backend_dom_node_id) = if let Some(remainder) = remainder.strip_prefix("c") {
+        let Some((context_id, backend_dom_node_id)) = remainder.split_once(":b") else {
+            return Err(format!("invalid contextual element reference: {value}").into());
+        };
+        if context_id.is_empty()
+            || context_id.len() > 128
+            || !context_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(format!("invalid element reference context: {value}").into());
+        }
+        (Some(context_id.to_string()), backend_dom_node_id)
+    } else {
+        let Some(backend_dom_node_id) = remainder.strip_prefix("b") else {
+            return Err(format!("invalid revisioned element reference: {value}").into());
+        };
+        (None, backend_dom_node_id)
+    };
     let backend_dom_node_id = backend_dom_node_id
         .parse::<i64>()
         .ok()
@@ -4677,6 +4794,7 @@ pub(crate) fn parse_revisioned_reference(
         .ok_or_else(|| format!("invalid backend node ID in element reference: {value}"))?;
     Ok(Some(RevisionedElementReference {
         revision,
+        context_id,
         backend_dom_node_id,
     }))
 }

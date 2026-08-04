@@ -1883,6 +1883,7 @@ mod tests {
                     input_type: None,
                 },
             ],
+            omitted_targets: 0,
             expansion: Some(SemanticExpansionHandle {
                 region_id: "region_navigation_1".into(),
                 revision: 42,

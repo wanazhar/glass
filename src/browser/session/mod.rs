@@ -51,7 +51,7 @@ use tokio::sync::Mutex;
 use super::cdp::CdpClient;
 use super::chrome::{
     ChromeProcess, PortLaunchLock, check_chrome_health, get_browser_ws_url, get_ws_url,
-    is_port_occupied, launch_chrome_with_options, resolve_chrome_path,
+    is_port_occupied, launch_chrome_with_viewport, resolve_chrome_path,
 };
 use super::dom::{
     CompactInteractiveElement, CompactRanking, DomNode, parse_accessibility_tree, parse_dom_tree,
@@ -578,13 +578,14 @@ impl BrowserSession {
                 profile_manager.ensure_profile_dir(&options.profile)?
             };
             chrome = Some(
-                launch_chrome_with_options(
+                launch_chrome_with_viewport(
                     &chrome_path,
                     options.port,
                     Some(&profile_dir),
                     options.headed,
                     options.incognito,
                     resolver_rules.as_deref(),
+                    options.viewport,
                 )
                 .await?,
             );
@@ -790,6 +791,9 @@ impl BrowserSession {
             };
             session.select_frame(&frame_id).await?;
             session.synchronize_persistent_revision().await?;
+            if let Some((width, height)) = options.viewport {
+                session.set_viewport(width, height, None, None).await?;
+            }
             Ok::<(), Box<dyn Error>>(())
         }
         .await;

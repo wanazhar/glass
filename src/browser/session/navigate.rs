@@ -142,6 +142,8 @@ impl BrowserSession {
             page,
             previous_revision,
             current_revision,
+            browser_load_completed: true,
+            application_ready: false,
         })
     }
 }

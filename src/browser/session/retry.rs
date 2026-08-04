@@ -160,6 +160,7 @@ mod tests {
             reason: None,
             candidates: vec![],
             recovery: None,
+            diagnostics: None,
         };
         assert!(!is_retryable_default(&target_error));
     }
@@ -171,6 +172,7 @@ mod tests {
             reason: None,
             candidates: vec![],
             recovery: None,
+            diagnostics: None,
         };
         assert!(!is_retryable_default(&target_error));
     }
@@ -182,6 +184,7 @@ mod tests {
             reason: None,
             candidates: vec![],
             recovery: None,
+            diagnostics: None,
         };
         assert!(!is_retryable_default(&target_error));
     }

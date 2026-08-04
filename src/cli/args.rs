@@ -79,6 +79,9 @@ pub struct Cli {
     /// Show the browser window instead of using headless mode.
     #[arg(long, global = true)]
     pub headed: bool,
+    /// CSS viewport dimensions applied before navigation, for example `1280x800`.
+    #[arg(long, global = true, value_name = "WIDTHxHEIGHT")]
+    pub viewport: Option<String>,
 
     /// Pointer behavior for click actions.
     #[arg(long, global = true, value_enum, default_value_t = InteractionMode::Human)]

@@ -484,6 +484,16 @@ where
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
+        viewport: cli
+            .viewport
+            .as_deref()
+            .map(|value| -> Result<(i64, i64), Box<dyn std::error::Error>> {
+                let (width, height) = value
+                    .split_once('x')
+                    .ok_or("viewport must use WIDTHxHEIGHT")?;
+                Ok((width.parse::<i64>()?, height.parse::<i64>()?))
+            })
+            .transpose()?,
         interaction_mode: cli.interaction,
         audit: cli.audit,
         policy: None,

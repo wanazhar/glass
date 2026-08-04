@@ -1739,6 +1739,7 @@ mod tests {
             confidence: SemanticConfidence::Exact,
             evidence: Vec::new(),
             targets,
+            omitted_targets: 0,
             expansion: None,
         }
     }

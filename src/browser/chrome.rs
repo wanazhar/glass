@@ -635,20 +635,20 @@ pub async fn launch_chrome(
     port: u16,
     profile_dir: Option<&Path>,
 ) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
-    launch_chrome_with_options(chrome_path, port, profile_dir, false, false, None).await
+    launch_chrome_with_viewport(chrome_path, port, profile_dir, false, false, None, None).await
 }
 
-/// Launch Chrome with remote debugging enabled.
-pub async fn launch_chrome_with_options(
+/// Launch Chrome with remote debugging enabled and an optional initial window size.
+pub async fn launch_chrome_with_viewport(
     chrome_path: &Path,
     port: u16,
     profile_dir: Option<&Path>,
     headed: bool,
     incognito: bool,
     host_resolver_rules: Option<&str>,
+    viewport: Option<(i64, i64)>,
 ) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
-    let args = chrome_arguments(port, profile_dir, headed, incognito);
-
+    let args = chrome_arguments(port, profile_dir, headed, incognito, viewport);
     info!(binary = %chrome_path.display(), arguments = %args.join(" "), "launching Chrome");
     let mut command = Command::new(chrome_path);
     command
@@ -666,7 +666,6 @@ pub async fn launch_chrome_with_options(
         .take()
         .ok_or("Chrome startup did not provide a stderr stream")?;
     let mut stderr = BufReader::new(stderr).lines();
-
     let child_debugger_url = match wait_for_child_debugger_url(&mut child, &mut stderr, port).await
     {
         Ok(url) => url,
@@ -681,22 +680,38 @@ pub async fn launch_chrome_with_options(
         stop_startup_child(&mut child).await;
         return Err(error);
     }
-
-    // Chrome can continue to write diagnostic output after startup. Drain it
-    // rather than retaining an unread pipe that could eventually block the
-    // child, but do not retain any diagnostic text in Glass memory.
     let mut stderr = stderr.into_inner();
     let stderr_drain = tokio::spawn(async move {
         let mut sink = tokio::io::sink();
         let _ = tokio::io::copy(&mut stderr, &mut sink).await;
     });
-
     Ok(ChromeProcess {
         port,
         pid,
         child: Some(child),
         stderr_drain: Some(stderr_drain),
     })
+}
+
+/// Legacy launcher preserving the historical default viewport.
+pub async fn launch_chrome_with_options(
+    chrome_path: &Path,
+    port: u16,
+    profile_dir: Option<&Path>,
+    headed: bool,
+    incognito: bool,
+    host_resolver_rules: Option<&str>,
+) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
+    launch_chrome_with_viewport(
+        chrome_path,
+        port,
+        profile_dir,
+        headed,
+        incognito,
+        host_resolver_rules,
+        None,
+    )
+    .await
 }
 
 /// Wait for Chrome's own DevTools listener announcement.
@@ -784,6 +799,7 @@ fn chrome_arguments(
     profile_dir: Option<&Path>,
     headed: bool,
     incognito: bool,
+    viewport: Option<(i64, i64)>,
 ) -> Vec<String> {
     let mut args = vec![
         format!("--remote-debugging-port={port}"),
@@ -798,9 +814,12 @@ fn chrome_arguments(
         "--disable-session-crashed-bubble".to_string(),
         "--disable-restore-session-state".to_string(),
         "--disable-features=Translate,BackForwardCache".to_string(),
-        "--window-size=1280,720".to_string(),
+        format!(
+            "--window-size={},{}",
+            viewport.map_or(1280, |(width, _)| width),
+            viewport.map_or(720, |(_, height)| height)
+        ),
     ];
-
     if !headed {
         args.push("--headless=new".to_string());
         args.push("--hide-scrollbars".to_string());
@@ -1204,7 +1223,7 @@ mod tests {
     #[test]
     fn chrome_arguments_add_incognito_and_disposable_profile_dir() {
         let profile = Path::new("/tmp/glass-incognito");
-        let args = chrome_arguments(9222, Some(profile), false, true);
+        let args = chrome_arguments(9222, Some(profile), false, true, None);
 
         assert!(args.contains(&"--incognito".to_string()));
         assert!(args.contains(&"--user-data-dir=/tmp/glass-incognito".to_string()));

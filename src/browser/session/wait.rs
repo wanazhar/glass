@@ -245,6 +245,19 @@ impl BrowserSession {
                 let matched = value.as_bool().unwrap_or(false);
                 Ok((matched, format!("present={matched}"), None))
             }
+            WaitCondition::SemanticRegion(region_id) => {
+                let context = self.observe_fresh().await?;
+                let observation = SemanticObservation::from_page_context(
+                    &context,
+                    SemanticObservationLevel::Interactive,
+                )?;
+                let region = observation
+                    .regions
+                    .iter()
+                    .find(|region| region.id == *region_id);
+                let matched = region.is_some_and(|region| !region.targets.is_empty());
+                Ok((matched, format!("region={region_id};ready={matched}"), None))
+            }
             WaitCondition::JavaScript(expression) => {
                 let value = self.evaluate_value(expression).await?;
                 let matched = value

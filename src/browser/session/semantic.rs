@@ -244,6 +244,8 @@ pub struct SemanticRegion {
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<SemanticTarget>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_targets: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expansion: Option<SemanticExpansionHandle>,
 }
@@ -336,6 +338,7 @@ impl SemanticObservation {
                 confidence: SemanticConfidence::Unknown,
                 evidence: vec!["no recognized landmark role".into()],
                 targets: Vec::new(),
+                omitted_targets: 0,
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_main".into(),
                     revision: context.accessibility.revision,
@@ -422,11 +425,15 @@ impl SemanticObservation {
     /// region. The source context is still classified in full so the region
     /// ID and its target grouping follow the same deterministic rules as the
     /// page-level observation.
+    /// Build a revision-scoped observation containing one previously named
+    /// region. Large page-level text and accessibility payloads are narrowed
+    /// to the selected region before serialization.
     pub fn scoped_region_from_page_context(
         context: &PageContext,
         level: SemanticObservationLevel,
         region_id: &str,
     ) -> Result<Self, SemanticObservationError> {
+        let region_node = find_region_node(context, region_id);
         let mut observation = Self::from_page_context(context, level)?;
         let region_index = observation
             .regions
@@ -442,9 +449,38 @@ impl SemanticObservation {
                 )
             })?;
         let omitted_regions = observation.regions.len().saturating_sub(1);
-        observation.regions = vec![observation.regions.remove(region_index)];
+        let selected = observation.regions.remove(region_index);
+        observation.regions = vec![selected];
         observation.limits.omitted_regions = omitted_regions;
         observation.limits.truncated |= omitted_regions > 0;
+        observation.limits.omitted_targets = observation
+            .regions
+            .first()
+            .map(|region| region.omitted_targets)
+            .unwrap_or_default();
+
+        let selected_text = region_node.map(region_node_text);
+        observation.text = level
+            .includes_text()
+            .then(|| selected_text.clone().unwrap_or_default())
+            .filter(|text| !text.is_empty());
+        observation.limits.text_bytes = observation.text.as_ref().map(String::len);
+        observation.limits.text_truncated = observation
+            .text
+            .as_deref()
+            .is_some_and(|text| text.ends_with("[truncated]"));
+        observation.limits.omitted_bytes =
+            selected_text.map(|text| context.text.len().saturating_sub(text.len()));
+        observation.accessibility = level.includes_accessibility().then(|| {
+            region_node
+                .map(|node| vec![to_semantic_node(node)])
+                .unwrap_or_default()
+        });
+        observation.raw_accessibility = level.includes_raw_accessibility().then(|| {
+            region_node
+                .map(|node| vec![to_semantic_node(node)])
+                .unwrap_or_default()
+        });
         observation.validate()?;
         Ok(observation)
     }
@@ -1024,6 +1060,7 @@ fn collect_regions(
             confidence: SemanticConfidence::Exact,
             evidence: vec![format!("aria-role={}", node.role)],
             targets: Vec::new(),
+            omitted_targets: 0,
             expansion: Some(SemanticExpansionHandle {
                 region_id: id.clone(),
                 revision,
@@ -1036,17 +1073,18 @@ fn collect_regions(
         collect_regions(child, revision, route, regions, anchors);
     }
 }
-
 fn populate_level(
     regions: &mut [SemanticRegion],
     controls: &[crate::browser::dom::CompactInteractiveElement],
     anchors: &[(String, Option<String>)],
     level: SemanticObservationLevel,
 ) {
-    if !level.includes_targets() {
+    if !level.includes_targets() || regions.is_empty() {
         return;
     }
-    for control in controls.iter().take(MAX_TARGETS) {
+    let mut grouped: Vec<Vec<&crate::browser::dom::CompactInteractiveElement>> =
+        (0..regions.len()).map(|_| Vec::new()).collect();
+    for control in controls {
         let region_index = anchors
             .iter()
             .enumerate()
@@ -1058,20 +1096,95 @@ fn populate_level(
             .map(|(index, _)| index)
             .next_back()
             .unwrap_or_else(|| regions.len().saturating_sub(1));
-        if let Some(region) = regions.get_mut(region_index) {
-            region.targets.push(SemanticTarget {
-                reference: control.reference.clone(),
-                role: bounded_semantic_text(&control.role, MAX_ROLE_BYTES),
-                name: bounded_semantic_text(&control.name, MAX_LABEL_BYTES),
-                input_type: control
-                    .input_type
-                    .as_deref()
-                    .map(|value| bounded_semantic_text(value, MAX_ROLE_BYTES)),
-            });
+        if let Some(group) = grouped.get_mut(region_index) {
+            group.push(control);
         }
+    }
+
+    let active_regions: Vec<usize> = grouped
+        .iter()
+        .enumerate()
+        .filter_map(|(index, controls)| (!controls.is_empty()).then_some(index))
+        .collect();
+    let reserved = active_regions.len().min(MAX_TARGETS);
+    let mut selected = vec![false; controls.len()];
+    let mut selected_count = 0;
+    // Reserve one document-order target for every region before spending the
+    // remaining budget on high-value primary/content regions.
+    for (region_index, group) in grouped.iter().enumerate() {
+        if selected_count >= reserved || group.is_empty() {
+            continue;
+        }
+        let control = group[0];
+        if let Some(global_index) = controls
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, control))
+        {
+            selected[global_index] = true;
+            selected_count += 1;
+            append_semantic_target(&mut regions[region_index], control);
+        }
+    }
+    let mut priority: Vec<usize> = active_regions
+        .into_iter()
+        .filter(|index| grouped[*index].len() > 1)
+        .collect();
+    priority.sort_by_key(|index| (region_target_priority(regions[*index].kind), *index));
+    for region_index in priority {
+        for control in grouped[region_index].iter().skip(1) {
+            if selected_count >= MAX_TARGETS {
+                break;
+            }
+            let Some(global_index) = controls
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, *control))
+            else {
+                continue;
+            };
+            if selected[global_index] {
+                continue;
+            }
+            selected[global_index] = true;
+            selected_count += 1;
+            append_semantic_target(&mut regions[region_index], control);
+        }
+    }
+    for (region, group) in regions.iter_mut().zip(grouped) {
+        region.omitted_targets = group.len().saturating_sub(region.targets.len());
     }
 }
 
+fn append_semantic_target(
+    region: &mut SemanticRegion,
+    control: &crate::browser::dom::CompactInteractiveElement,
+) {
+    region.targets.push(SemanticTarget {
+        reference: control.reference.clone(),
+        role: bounded_semantic_text(&control.role, MAX_ROLE_BYTES),
+        name: bounded_semantic_text(&control.name, MAX_LABEL_BYTES),
+        input_type: control
+            .input_type
+            .as_deref()
+            .map(|value| bounded_semantic_text(value, MAX_ROLE_BYTES)),
+    });
+}
+
+fn region_target_priority(kind: SemanticRegionKind) -> u8 {
+    match kind {
+        SemanticRegionKind::Main
+        | SemanticRegionKind::Collection
+        | SemanticRegionKind::Results
+        | SemanticRegionKind::Article => 0,
+        SemanticRegionKind::Navigation
+        | SemanticRegionKind::Search
+        | SemanticRegionKind::Toolbar => 1,
+        _ => 2,
+    }
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1087,6 +1200,84 @@ fn to_semantic_node(node: &CompactAxNode) -> SemanticAccessibilityNode {
 
 fn count_interactive(node: &CompactAxNode) -> usize {
     usize::from(node.interactive) + node.children.iter().map(count_interactive).sum::<usize>()
+}
+
+fn find_region_node<'a>(context: &'a PageContext, region_id: &str) -> Option<&'a CompactAxNode> {
+    if region_id == "region_main" {
+        return context.accessibility.roots.first();
+    }
+    let body = region_id.strip_prefix("region_")?;
+    let (kind_name, ordinal) = body.rsplit_once('_')?;
+    let ordinal = ordinal.parse::<usize>().ok()?;
+    let kind = [
+        SemanticRegionKind::Navigation,
+        SemanticRegionKind::Main,
+        SemanticRegionKind::Search,
+        SemanticRegionKind::Form,
+        SemanticRegionKind::Dialog,
+        SemanticRegionKind::Alert,
+        SemanticRegionKind::Status,
+        SemanticRegionKind::Toolbar,
+        SemanticRegionKind::FilterPanel,
+        SemanticRegionKind::Results,
+        SemanticRegionKind::Collection,
+        SemanticRegionKind::Table,
+        SemanticRegionKind::Pagination,
+        SemanticRegionKind::Article,
+        SemanticRegionKind::Sidebar,
+        SemanticRegionKind::CheckoutSummary,
+        SemanticRegionKind::Authentication,
+        SemanticRegionKind::Footer,
+    ]
+    .into_iter()
+    .find(|kind| region_kind_name(*kind) == kind_name)?;
+    let mut seen = 0;
+    context
+        .accessibility
+        .roots
+        .iter()
+        .find_map(|node| find_region_node_in(node, kind, ordinal, &mut seen))
+}
+
+fn find_region_node_in<'a>(
+    node: &'a CompactAxNode,
+    target_kind: SemanticRegionKind,
+    target_ordinal: usize,
+    seen: &mut usize,
+) -> Option<&'a CompactAxNode> {
+    if region_kind(&node.role) == Some(target_kind) {
+        *seen += 1;
+        if *seen == target_ordinal {
+            return Some(node);
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_region_node_in(child, target_kind, target_ordinal, seen))
+}
+
+fn region_node_text(node: &CompactAxNode) -> String {
+    let mut text = String::new();
+    append_region_node_text(node, &mut text);
+    bounded_semantic_text(&text, MAX_VISIBLE_TEXT_BYTES)
+}
+
+fn append_region_node_text(node: &CompactAxNode, output: &mut String) {
+    if output.len() >= MAX_VISIBLE_TEXT_BYTES {
+        return;
+    }
+    if !node.name.is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&bounded_semantic_text(
+            &node.name,
+            MAX_LABEL_BYTES.min(MAX_VISIBLE_TEXT_BYTES.saturating_sub(output.len())),
+        ));
+    }
+    for child in &node.children {
+        append_region_node_text(child, output);
+    }
 }
 
 fn region_kind(role: &str) -> Option<SemanticRegionKind> {
@@ -1180,6 +1371,52 @@ fn classify_page(
             kind,
             SemanticConfidence::High,
             vec!["aria-role=search".into()],
+        );
+    }
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let collection_segment = segments.iter().enumerate().find(|(_, segment)| {
+        matches!(
+            **segment,
+            "issues" | "pulls" | "discussions" | "search" | "results" | "items"
+        )
+    });
+    let numeric_detail = collection_segment.is_some_and(|(index, _)| {
+        segments
+            .get(index + 1)
+            .is_some_and(|segment| segment.chars().all(|character| character.is_ascii_digit()))
+    });
+    let repeated_items = regions.iter().any(|region| {
+        matches!(
+            region.kind,
+            SemanticRegionKind::Results
+                | SemanticRegionKind::Collection
+                | SemanticRegionKind::Table
+        ) && region.item_count.is_some_and(|count| count >= 2)
+    });
+    let lower_text = context.text.to_ascii_lowercase();
+    let detail_metadata = ["status", "opened", "assignee", "labels", "comments"]
+        .iter()
+        .filter(|term| lower_text.contains(**term))
+        .count();
+    if numeric_detail
+        || (context.page.title.trim().len() >= 8
+            && (has(SemanticRegionKind::Article) || detail_metadata >= 2))
+    {
+        return (
+            SemanticPageKind::Detail,
+            SemanticConfidence::Medium,
+            vec!["route-or-detail-metadata-signature".into()],
+        );
+    }
+    if repeated_items || collection_segment.is_some() {
+        return (
+            SemanticPageKind::Listing,
+            SemanticConfidence::Medium,
+            vec!["repeated-items-or-collection-route".into()],
         );
     }
     if has(SemanticRegionKind::Form) {
@@ -1345,6 +1582,7 @@ mod tests {
                 confidence: SemanticConfidence::High,
                 evidence: vec!["repeated item structure".into()],
                 targets: Vec::new(),
+                omitted_targets: 0,
                 expansion: Some(SemanticExpansionHandle {
                     region_id: "region_results".into(),
                     revision: 42,
@@ -1529,6 +1767,54 @@ mod tests {
         assert_eq!(semantic.regions[0].interactive_count, 1);
         assert!(semantic.regions[0].targets.is_empty());
         assert!(!semantic.limits.truncated);
+        let mut listing_context = context.clone();
+        listing_context.page.url = "https://github.example/issues".into();
+        listing_context.page.title = "Issues".into();
+        listing_context.text = "Issue one\nIssue two".into();
+        listing_context.accessibility.roots = vec![CompactAxNode {
+            role: "list".into(),
+            name: "Issues".into(),
+            children: vec![
+                CompactAxNode {
+                    role: "listitem".into(),
+                    name: "Issue one".into(),
+                    children: Vec::new(),
+                    interactive: false,
+                },
+                CompactAxNode {
+                    role: "listitem".into(),
+                    name: "Issue two".into(),
+                    children: Vec::new(),
+                    interactive: false,
+                },
+            ],
+            interactive: false,
+        }];
+        let listing = SemanticObservation::from_page_context(
+            &listing_context,
+            SemanticObservationLevel::Structured,
+        )
+        .unwrap();
+        assert_eq!(listing.page.kind, SemanticPageKind::Listing);
+        assert_eq!(listing.page.confidence, SemanticConfidence::Medium);
+        assert!(
+            listing
+                .page
+                .evidence
+                .iter()
+                .any(|item| item.contains("collection"))
+        );
+
+        listing_context.page.url = "https://github.example/issues/42109".into();
+        listing_context.page.title = "Issue 42109".into();
+        listing_context.text = "Status Open Labels Comments".into();
+        let detail = SemanticObservation::from_page_context(
+            &listing_context,
+            SemanticObservationLevel::Structured,
+        )
+        .unwrap();
+        assert_eq!(detail.page.kind, SemanticPageKind::Detail);
+        assert_eq!(detail.page.confidence, SemanticConfidence::Medium);
 
         let interactive =
             SemanticObservation::from_page_context(&context, SemanticObservationLevel::Interactive)
@@ -1545,12 +1831,17 @@ mod tests {
 
         let scoped = SemanticObservation::scoped_region_from_page_context(
             &context,
-            SemanticObservationLevel::Structured,
+            SemanticObservationLevel::Detailed,
             "region_search_1",
         )
         .unwrap();
         assert_eq!(scoped.regions.len(), 1);
         assert_eq!(scoped.limits.omitted_regions, 0);
+        assert_eq!(scoped.text.as_deref(), Some("Site search\nQuery"));
+        assert_eq!(
+            scoped.accessibility.as_ref().unwrap()[0].name,
+            "Site search"
+        );
         let mut document_context = context.clone();
         document_context.page.url = "https://datatracker.ietf.org/doc/html/rfc2606".into();
         document_context.page.title = "RFC 2606 - Reserved Top Level DNS Names".into();

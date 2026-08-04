@@ -11,6 +11,7 @@ struct PreflightProbeError {
     reason: TargetActionabilityReason,
     geometry: Option<PreflightGeometry>,
     hints: PreflightHints,
+    diagnostics: Option<TargetDiagnostics>,
 }
 
 impl std::fmt::Display for PreflightProbeError {
@@ -67,6 +68,7 @@ impl BrowserSession {
                             reason: None,
                             candidates,
                             recovery: None,
+                            diagnostics: None,
                         }
                         .into());
                     }
@@ -82,6 +84,7 @@ impl BrowserSession {
                 reason: None,
                 candidates: Vec::new(),
                 recovery: None,
+                diagnostics: None,
             }
             .into())
         } else {
@@ -94,6 +97,7 @@ impl BrowserSession {
                     reason: None,
                     candidates,
                     recovery: None,
+                    diagnostics: None,
                 }
                 .into()),
                 TargetResolution::NotFound => Err(TargetError {
@@ -101,6 +105,7 @@ impl BrowserSession {
                     reason: None,
                     candidates: Vec::new(),
                     recovery: None,
+                    diagnostics: None,
                 }
                 .into()),
             }
@@ -140,6 +145,9 @@ impl BrowserSession {
                         .map(|e| e.candidates.clone())
                         .unwrap_or_default(),
                     error_kind,
+                    diagnostics: error
+                        .downcast_ref::<PreflightProbeError>()
+                        .and_then(|e| e.diagnostics.clone()),
                     revision,
                     geometry: None,
                     hints: PreflightHints::default(),
@@ -152,9 +160,9 @@ impl BrowserSession {
         // Use a distinct read-only probe. The normal action probe may scroll
         // the target into view, which is correct before a click but violates
         // preflight's side-effect-free contract.
-        let (actionable, actionability_reason, geometry, hints) =
+        let (actionable, actionability_reason, geometry, hints, diagnostics) =
             match self.check_element_preflight(&element).await {
-                Ok((geometry, hints)) => (true, None, Some(geometry), hints),
+                Ok((geometry, hints)) => (true, None, Some(geometry), hints, None),
                 Err(error) => {
                     let target_error = error.downcast_ref::<TargetError>();
                     let probe_error = error.downcast_ref::<PreflightProbeError>();
@@ -163,7 +171,8 @@ impl BrowserSession {
                         .or_else(|| target_error.and_then(|e| e.reason));
                     let geometry = probe_error.and_then(|e| e.geometry);
                     let hints = probe_error.map(|e| e.hints).unwrap_or_default();
-                    (false, reason, geometry, hints)
+                    let diagnostics = probe_error.and_then(|e| e.diagnostics.clone());
+                    (false, reason, geometry, hints, diagnostics)
                 }
             };
 
@@ -178,6 +187,7 @@ impl BrowserSession {
             revision,
             geometry,
             hints,
+            diagnostics,
             target_id,
             frame_id,
         }
@@ -198,6 +208,7 @@ impl BrowserSession {
                 reason: TargetActionabilityReason::NodeUnavailable,
                 geometry: None,
                 hints: PreflightHints::default(),
+                diagnostics: None,
             })?;
         let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
         let raw = self
@@ -208,6 +219,7 @@ impl BrowserSession {
                 reason: TargetActionabilityReason::NodeUnavailable,
                 geometry: None,
                 hints: PreflightHints::default(),
+                diagnostics: None,
             })?;
         let value = runtime_value(&raw)?;
         let geometry = value["geometry"].as_object().and_then(|geometry| {
@@ -233,6 +245,7 @@ impl BrowserSession {
                 reason: actionability_reason(reason),
                 geometry,
                 hints,
+                diagnostics: serde_json::from_value(value["diagnostics"].clone()).ok(),
             }
             .into());
         }
@@ -246,6 +259,21 @@ impl BrowserSession {
         if let Locator::Reference(target) = locator {
             let reference = parse_revisioned_reference(target)?
                 .ok_or_else(|| format!("invalid revisioned element reference: {target}"))?;
+            let current_context_id = self.page_context_id().await?;
+            if reference.context_id.as_deref() != Some(current_context_id.as_str()) {
+                return Err(TargetError {
+                    kind: TargetErrorKind::StaleReference,
+                    reason: None,
+                    candidates: Vec::new(),
+                    recovery: Some(StaleReferenceRecovery {
+                        suggestion: "reobserve",
+                        from_revision: reference.revision,
+                        stale_ref: target.to_string(),
+                    }),
+                    diagnostics: None,
+                }
+                .into());
+            }
             let current_revision = self.page_revision.load(Ordering::Relaxed);
             if reference.revision != current_revision {
                 return Err(TargetError {
@@ -257,6 +285,7 @@ impl BrowserSession {
                         from_revision: reference.revision,
                         stale_ref: target.to_string(),
                     }),
+                    diagnostics: None,
                 }
                 .into());
             }
@@ -273,7 +302,8 @@ impl BrowserSession {
         let revision = self.page_revision.load(Ordering::Relaxed);
         let raw = serde_json::to_value(self.cdp.get_accessibility_tree().await?)?;
         let roots = parse_accessibility_tree(&raw);
-        let interactive = interactive_elements(&roots, revision);
+        let context_id = self.page_context_id().await?;
+        let interactive = interactive_elements_with_context(&roots, revision, Some(&context_id));
         let matches: Vec<&InteractiveElement> = match locator {
             Locator::AccessibleName(name) => interactive
                 .iter()

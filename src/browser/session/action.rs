@@ -112,7 +112,9 @@ impl BrowserSession {
                 let revision = self.page_revision.load(Ordering::Relaxed);
                 let raw = serde_json::to_value(self.cdp.get_accessibility_tree().await?)?;
                 let roots = parse_accessibility_tree(&raw);
-                let interactive = interactive_elements(&roots, revision);
+                let context_id = self.page_context_id().await?;
+                let interactive =
+                    interactive_elements_with_context(&roots, revision, Some(&context_id));
                 Ok(AccessibilitySnapshot {
                     page: self.page_info().await?,
                     roots,
@@ -232,6 +234,7 @@ impl BrowserSession {
                         reason: Some(TargetActionabilityReason::GeometryChanged),
                         candidates: Vec::new(),
                         recovery: None,
+                        diagnostics: None,
                     }
                     .into());
                 }
@@ -276,6 +279,7 @@ impl BrowserSession {
                         reason: Some(TargetActionabilityReason::GeometryChanged),
                         candidates: Vec::new(),
                         recovery: None,
+                        diagnostics: None,
                     }
                     .into());
                 }
@@ -559,6 +563,7 @@ impl BrowserSession {
                         reason: Some(TargetActionabilityReason::NodeUnavailable),
                         candidates: Vec::new(),
                         recovery: None,
+                        diagnostics: None,
                     }));
                     if attempt + 1 < MAX_NODE_RESOLUTION_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -691,6 +696,7 @@ impl BrowserSession {
                 reason: Some(TargetActionabilityReason::GeometryChanged),
                 candidates: Vec::new(),
                 recovery: None,
+                diagnostics: None,
             }
             .into());
         }
@@ -1048,6 +1054,10 @@ impl BrowserSession {
         runtime_value(&raw)
     }
 
+    pub(crate) async fn page_context_id(&self) -> BrowserResult<String> {
+        self.current_page_context_id().await
+    }
+
     pub(crate) async fn invalidate_observation(&self) -> u64 {
         let revision = self.page_revision.fetch_add(1, Ordering::Relaxed) + 1;
         let expression = format!("globalThis.__glassPageRevision = {revision}; {revision}");
@@ -1101,6 +1111,7 @@ impl BrowserSession {
                     reason: Some(TargetActionabilityReason::NodeUnavailable),
                     candidates: Vec::new(),
                     recovery: None,
+                    diagnostics: None,
                 }
                 .into());
             }
@@ -1114,6 +1125,7 @@ impl BrowserSession {
                 reason: Some(actionability_reason(reason)),
                 candidates: Vec::new(),
                 recovery: None,
+                diagnostics: None,
             }
             .into());
         }

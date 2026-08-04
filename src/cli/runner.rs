@@ -42,6 +42,22 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or("viewport must use WIDTHxHEIGHT, for example 1280x800")?;
+    let width = width
+        .parse::<i64>()
+        .map_err(|_| "viewport width must be an integer")?;
+    let height = height
+        .parse::<i64>()
+        .map_err(|_| "viewport height must be an integer")?;
+    if !(320..=10000).contains(&width) || !(240..=10000).contains(&height) {
+        return Err("viewport dimensions must be width 320..10000 and height 240..10000".into());
+    }
+    Ok((width, height))
+}
+
 /// Top-level command-line entry point: parses CLI arguments and dispatches
 /// to the appropriate runner (one-shot, TUI, or MCP server).
 pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
@@ -139,6 +155,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         _ => {}
     }
 
+    let viewport = cli.viewport.as_deref().map(parse_viewport).transpose()?;
     let options = SessionOptions {
         port: cli.port,
         chrome_path: cli.chrome_path.clone(),
@@ -148,6 +165,7 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
+        viewport,
         interaction_mode: cli.interaction,
         audit: cli.audit,
         policy: None,

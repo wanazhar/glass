@@ -67,6 +67,7 @@ async fn main() -> BrowserResult<()> {
         target_id: None,
         frame_id: None,
         headed: false,
+        viewport: None,
         interaction_mode: InteractionMode::Fast,
         audit: false,
         policy: None,

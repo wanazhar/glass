@@ -38,6 +38,7 @@ impl BrowserSession {
                             reason: Some(TargetActionabilityReason::NodeUnavailable),
                             candidates: Vec::new(),
                             recovery: None,
+                            diagnostics: None,
                         }
                     })?;
                 let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
@@ -162,6 +163,7 @@ impl BrowserSession {
                 reason: Some(TargetActionabilityReason::GeometryChanged),
                 candidates: Vec::new(),
                 recovery: None,
+                diagnostics: None,
             }
             .into());
         }

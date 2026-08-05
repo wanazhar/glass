@@ -11,7 +11,7 @@ async fn main() -> glass::BrowserResult<()> {
         fields: vec![ExtractionField {
             name: "title".into(),
             path: "title".into(),
-            kind: ExtractionKind::Scalar,
+            kind: ExtractionKind::String,
         }],
         region_id: None,
         start_index: 0,

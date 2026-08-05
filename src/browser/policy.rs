@@ -510,6 +510,19 @@ impl BrowserPolicy {
             .contains(&PolicyCapability::ReadSensitiveExtraction)
     }
 
+    /// Require the dedicated sensitive structured-extraction capability.
+    pub fn require_sensitive_extraction(&self) -> Result<(), PolicyError> {
+        if self.allow_sensitive_extraction() {
+            Ok(())
+        } else {
+            Err(PolicyError::Denied {
+                operation: capability_name(PolicyCapability::ReadSensitiveExtraction).to_string(),
+                reason: "sensitive structured extraction requires explicit capability access"
+                    .to_string(),
+            })
+        }
+    }
+
     pub async fn require_url(&self, value: &str) -> Result<Url, PolicyError> {
         let url = Url::parse(value).map_err(|error| PolicyError::Denied {
             operation: "navigate".to_string(),
@@ -873,6 +886,11 @@ mod tests {
         let root = std::env::current_dir().unwrap();
         let default = BrowserPolicy::development(&root).unwrap();
         assert!(!default.allow_sensitive_extraction());
+        let denied = default.require_sensitive_extraction().unwrap_err();
+        assert_eq!(
+            denied.contract().operation.as_deref(),
+            Some("read_sensitive_extraction")
+        );
 
         let form_only = BrowserPolicy::new(
             PolicyPreset::Development,
@@ -891,6 +909,7 @@ mod tests {
         )
         .unwrap();
         assert!(extraction.allow_sensitive_extraction());
+        assert!(extraction.require_sensitive_extraction().is_ok());
     }
 
     #[tokio::test]

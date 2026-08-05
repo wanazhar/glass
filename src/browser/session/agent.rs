@@ -284,13 +284,8 @@ impl BrowserSession {
         request: &StructuredExtractionRequest,
     ) -> BrowserResult<StructuredExtractionResult> {
         validate_extraction_request(request)?;
-        if request.fields.iter().any(extraction_field_is_sensitive)
-            && !self.policy.allow_sensitive_extraction()
-        {
-            return Err(
-                "sensitive extraction requires the explicit read_sensitive_extraction capability"
-                    .into(),
-            );
+        if request.fields.iter().any(extraction_field_is_sensitive) {
+            self.policy.require_sensitive_extraction()?;
         }
         let contract_hash = extraction_contract_hash(request);
         let observation = self

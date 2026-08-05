@@ -178,6 +178,12 @@ A tool may request one bounded failure-trace content item with
 `string`, `optionalString`, `number`, `currency`, `date`, `dateTime`,
 `boolean`, `url`, `enum`, `list`, `record`, `table`, and `repeatedItems`;
 legacy `scalar`, `optionalScalar`, and `object` kinds remain accepted.
+
+The request uses the same camelCase JSON contract from the CLI
+`extract-structured` command (the CLI reads the request from its input JSON
+file). `maxItems` is 1..256 and defaults to 64; `maxBytes` is 1..262144 and
+defaults to 65536. `fields` contains 1..32 entries, with names capped at 128
+bytes and non-empty paths capped at 512 bytes. `regionId` is capped at 128 bytes.
 Field names or paths that identify passwords, tokens, cookies, authorization
 data, payment data, or similar secrets require the explicit
 `read_sensitive_extraction` capability; otherwise extraction fails closed.
@@ -196,6 +202,12 @@ bounded `recordItems`; each item carries its source field, zero-based source
 index, semantic value, and any evidence-backed entity references.
 The compatibility `records` envelope remains unchanged. Extraction is read-only
 and never serializes authored input values.
+
+Tools that return this contract accept `responseMode` values `minimal`,
+`normal`, and `diagnostic`; MCP defaults to `minimal`. The CLI exposes the same
+projection through the global `--response-mode` option. The extraction payload
+and result fields are unchanged by the projection; diagnostic details remain
+available through the bounded local result artifact.
 Semantic table and collection regions also expose bounded `structuredRecords`
 under the region projection. Table records use bounded column-header keys;
 collection records expose semantic name, heading, description, and link fields

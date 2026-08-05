@@ -3088,7 +3088,7 @@ fn tools() -> Vec<Tool> {
                             "required":["name","path","kind"],
                             "properties":{
                                 "name":{"type":"string","minLength":1,"maxLength":128},
-                                "path":{"type":"string","maxLength":512},
+                                "path":{"type":"string","minLength":1,"maxLength":512},
                                 "kind":{
                                     "type":"string",
                                     "enum":[
@@ -3101,7 +3101,7 @@ fn tools() -> Vec<Tool> {
                         }
                     },
                     "regionId":{"type":"string","minLength":1,"maxLength":128},
-                    "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":256},
+                    "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":64},
                     "startIndex":{"type":"integer","minimum":0,"maximum":256,"default":0},
                     "continuation":{
                         "type":"object",
@@ -3117,14 +3117,14 @@ fn tools() -> Vec<Tool> {
                                 "additionalProperties":false,
                                 "required":["targetId","frameId","url"],
                                 "properties":{
-                                    "targetId":{"type":"string"},
-                                    "frameId":{"type":"string"},
-                                    "url":{"type":"string"}
+                                    "targetId":{"type":"string","minLength":1,"maxLength":128},
+                                    "frameId":{"type":"string","minLength":1,"maxLength":128},
+                                    "url":{"type":"string","minLength":1,"maxLength":2048}
                                 }
                             }
                         }
                     },
-                    "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144},
+                    "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":65536},
                     "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),

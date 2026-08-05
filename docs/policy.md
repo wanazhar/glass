@@ -1,7 +1,7 @@
 # Policy reference
 
 Glass applies one named policy to each session. A policy marks a capability as
-`Allow`, `Deny`, or `RequireConfirmation`.
+`allow`, `deny`, or `require_confirmation` in serialized policy decisions.
 
 ## Presets
 
@@ -61,25 +61,28 @@ These capabilities are policy controlled:
 | `consent_dismissal` | Click recognized consent controls. |
 | `declared_agent_identity` | Sign an explicitly supplied request. |
 
+`read_sensitive_form_values` does not grant `read_sensitive_extraction`.
+Structured extraction checks the dedicated capability independently and fails
+closed when secret-like names or paths are requested without it.
+
 Raw CDP is an unrestricted escape hatch. Use an explicit allow decision. A
 confirmation token cannot grant raw CDP.
 
 ## Confirmation
 
-A capability with `RequireConfirmation` needs a one-use token. Request a
-confirmation from the CLI:
+A capability with `require_confirmation` returns a typed
+`confirmation_required` policy result until a one-use token is available.
+Supply a token from fixed CLI configuration:
 
 ```console
-glass --policy-confirm evaluate navigate https://example.com
+glass --policy-confirm-once evaluate navigate https://example.com
 ```
 
-An MCP client uses the `confirm` tool with the capability name. Glass scopes
-the token to that capability and consumes it when the operation runs.
-
-Use `--policy-confirm-once CAPABILITY` for one confirmed operation.
-
-Keep policy options in fixed deployment configuration. Do not copy them from
-untrusted page data or request data.
+For an MCP server, configure `--policy-confirm-once` when starting the server;
+there is no request-controlled `confirm` tool. Glass scopes the token to that
+capability and consumes it when the operation runs. Keep policy options in
+fixed deployment configuration. Do not copy them from untrusted page data or
+request data.
 
 ## Host rules
 
@@ -104,5 +107,11 @@ IP literals.
 | `hardened` | Confirm | Allow | Confirm | Confirm | Deny | Confirm |
 | `untrusted-mcp` | Confirm | Confirm | Confirm | Confirm | Deny | Deny |
 
-A policy error returns a typed rule, phase, and remediation result. Glass
-rejects invalid policy combinations before it starts Chrome.
+A policy error is serialized as the versioned `PolicyErrorContract`:
+`schemaVersion`, `policyVersion`, `kind`, optional `operation`, `ruleId`,
+`phase`, `reason`, optional `remediation`, and `overridePossible`.
+`kind` is `denied`, `confirmation_required`, or `invalid_configuration`;
+`operation` uses the stable snake-case capability names listed above.
+Denied and confirmation-required errors occur during `preflight`; invalid
+configuration errors occur during `configuration`. Glass rejects invalid
+policy combinations before it starts Chrome.

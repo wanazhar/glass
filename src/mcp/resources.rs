@@ -111,36 +111,52 @@ The `batch` tool supports `fixed`, `chain`, and `unguarded` revision modes.
 
 ## Targeting errors (`TargetError`)
 
-| `kind` | `recoverable` | `suggested_tool` | Meaning |
-|--------|--------------|-------------------|---------|
-| `not_found` | `true` | `observe` | Zero elements matched |
-| `ambiguous` | `false` | — | Multiple matches; agent must refine |
-| `stale_reference` | `true` | `observe` | Revision changed; re-observe |
-| `disabled` | `false` | — | Element exists but is disabled |
-| `hit_test_blocked` | `true` | `dismissDialog` or manual | Overlay/obstruction |
-| `outside_viewport` | `true` | `scroll` | Out of visible area |
+Targeting failures serialize `kind` and `failureKind`, with optional bounded
+`reason`, `candidates`, `recovery`, and `diagnostics` fields:
 
-## Policy errors (`PolicyError`)
+| `kind` | `failureKind` | Meaning |
+|--------|---------------|---------|
+| `not_found` | `target_not_found` | Zero elements matched; re-observe |
+| `ambiguous` | `ambiguous_target` | Multiple matches; refine the locator |
+| `stale_reference` | `stale_revision` | Revision changed; re-observe |
+| `not_actionable` | `verification_failed` | The matched element failed actionability checks |
 
-| `kind` | `recoverable` | Meaning |
-|--------|--------------|---------|
-| `denied` | `false` | Capability denied by active policy preset |
-| `confirmation_required` | `false` | Requires one-time approval (not via MCP) |
+`reason` is a bounded actionability enum such as `disabled`,
+`hit_test_blocked`, or `outside_viewport`; it is not a top-level error kind.
+
+## Policy errors (`PolicyErrorContract`)
+
+Every policy failure is a versioned object with these fields:
+`schemaVersion`, `policyVersion`, `kind`, optional `operation`, `ruleId`,
+`phase`, `reason`, optional `remediation`, and `overridePossible`.
+`kind` is one of:
+
+| `kind` | `phase` | Meaning |
+|--------|---------|---------|
+| `denied` | `preflight` | Capability denied by the active policy |
+| `confirmation_required` | `preflight` | One confirmation token is required |
+| `invalid_configuration` | `configuration` | Policy configuration is invalid |
+
+`operation` uses the stable snake-case capability name, for example
+`read_sensitive_extraction`. A confirmation-required result is not approved
+implicitly by an MCP request; configure a one-use token with
+`--policy-confirm-once` or change the fixed server policy before retrying.
+`overridePossible` indicates whether changing policy or supplying a token can
+resolve the failure.
 
 ## Wait timeout (`WaitTimeout`)
 
-| `kind` | `recoverable` | Meaning |
-|--------|--------------|---------|
-| `timeout` | `true` | Condition not met within deadline |
+A timeout serializes `condition`, `deadlineMs`, bounded `lastState`, `reason`,
+and an optional bounded `observedPage`. It does not use a generic
+`recoverable` flag; callers should use the condition and last state to choose
+whether to retry.
 
 ## General rules
 
-- `recoverable: true` means retrying the same operation may succeed
-  (after re-observing, scrolling, dismissing overlays, etc.).
-- `recoverable: false` means retrying the same operation will fail
-  identically — change locator, policy, or approach.
-- Error payloads are bounded; they never contain raw page content,
-  evaluated source, or secrets.
+- Typed errors expose stable machine-readable fields before free-text details.
+- Recovery metadata is bounded and must not be treated as permission to retry.
+- Error payloads never contain raw page content, evaluated source, or secrets.
+
 "#;
 
 const RESOURCE_LIMITS: &str = r#"# Glass Observation Budgets & Limits
@@ -168,10 +184,16 @@ traversal order.
 
 When `includeFormValues` is enabled, at most 16 known form controls are read;
 values are capped at 256 bytes, select labels at 128 bytes, and sensitive
-fields are redacted unless `ReadSensitiveFormValues` is explicitly allowed.
+fields are redacted unless `read_sensitive_form_values` is explicitly allowed.
+
+Structured extraction accepts at most 32 fields. Field names are limited to
+128 bytes and paths to 512 bytes. `maxItems` is 1..256 (default 64), and
+`maxBytes` is 1..256 KiB (default 64 KiB). `startIndex` and continuation
+`nextIndex` are bounded to 256. Continuation route IDs are limited to 128
+bytes and route URLs to 2 KiB.
 
 Structured extraction of secret-like fields requires the dedicated
-`ReadSensitiveExtraction` capability; form-value permissions do not grant it.
+`read_sensitive_extraction` capability; form-value permissions do not grant it.
 
 `preflight` performs a read-only resolution and hit test without pointer
 events, focus, or scrolling. `clickAt` is the policy-gated exact-coordinate
@@ -270,7 +292,7 @@ const RESOURCES: &[ResourceDef] = &[
     ResourceDef {
         uri: "glass://contract/errors",
         name: "Typed Errors & Recovery",
-        description: "Error kinds with recoverable flag and suggested recovery tool",
+        description: "Typed targeting, policy, and timeout errors with bounded recovery metadata",
         mime_type: "text/markdown",
         content: RESOURCE_ERRORS,
     },
@@ -333,7 +355,7 @@ mod tests {
     fn limits_resource_documents_dedicated_extraction_capability() {
         let resource = read_resource("glass://contract/limits").unwrap();
         let text = resource["contents"][0]["text"].as_str().unwrap();
-        assert!(text.contains("ReadSensitiveExtraction"));
+        assert!(text.contains("read_sensitive_extraction"));
         assert!(text.contains("form-value permissions do not grant it"));
     }
 

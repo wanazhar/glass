@@ -27,6 +27,7 @@ pub enum PolicyCapability {
     RawCdp,
     ReadFormValues,
     ReadSensitiveFormValues,
+    ReadSensitiveExtraction,
     CoordinateClick,
     ConsentDismissal,
     DeclaredAgentIdentity,
@@ -502,6 +503,13 @@ impl BrowserPolicy {
             .contains(&PolicyCapability::ReadSensitiveFormValues)
     }
 
+    /// Whether secret-like structured extraction fields may be read.
+    /// This capability is denied by default and must be explicitly allowed.
+    pub fn allow_sensitive_extraction(&self) -> bool {
+        self.allowed_capabilities
+            .contains(&PolicyCapability::ReadSensitiveExtraction)
+    }
+
     pub async fn require_url(&self, value: &str) -> Result<Url, PolicyError> {
         let url = Url::parse(value).map_err(|error| PolicyError::Denied {
             operation: "navigate".to_string(),
@@ -684,6 +692,7 @@ fn capability_name(capability: PolicyCapability) -> &'static str {
         PolicyCapability::RawCdp => "raw_cdp",
         PolicyCapability::ReadFormValues => "read_form_values",
         PolicyCapability::ReadSensitiveFormValues => "read_sensitive_form_values",
+        PolicyCapability::ReadSensitiveExtraction => "read_sensitive_extraction",
         PolicyCapability::CoordinateClick => "coordinate_click",
         PolicyCapability::ConsentDismissal => "consent_dismissal",
         PolicyCapability::DeclaredAgentIdentity => "declared_agent_identity",
@@ -857,6 +866,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sensitive_extraction_requires_its_dedicated_capability() {
+        let root = std::env::current_dir().unwrap();
+        let default = BrowserPolicy::development(&root).unwrap();
+        assert!(!default.allow_sensitive_extraction());
+
+        let form_only = BrowserPolicy::new(
+            PolicyPreset::Development,
+            &root,
+            [PolicyCapability::ReadSensitiveFormValues],
+            [],
+        )
+        .unwrap();
+        assert!(!form_only.allow_sensitive_extraction());
+
+        let extraction = BrowserPolicy::new(
+            PolicyPreset::Development,
+            &root,
+            [PolicyCapability::ReadSensitiveExtraction],
+            [],
+        )
+        .unwrap();
+        assert!(extraction.allow_sensitive_extraction());
     }
 
     #[tokio::test]

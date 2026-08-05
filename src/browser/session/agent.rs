@@ -285,10 +285,10 @@ impl BrowserSession {
     ) -> BrowserResult<StructuredExtractionResult> {
         validate_extraction_request(request)?;
         if request.fields.iter().any(extraction_field_is_sensitive)
-            && !self.policy.allow_sensitive_form_values()
+            && !self.policy.allow_sensitive_extraction()
         {
             return Err(
-                "sensitive extraction requires the explicit read_sensitive_form_values capability"
+                "sensitive extraction requires the explicit read_sensitive_extraction capability"
                     .into(),
             );
         }

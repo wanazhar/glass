@@ -57,6 +57,7 @@ These capabilities are policy controlled:
 | `raw_cdp` | Send direct CDP methods. |
 | `read_form_values` | Read non-password form values. |
 | `read_sensitive_form_values` | Read password or payment form values. |
+| `read_sensitive_extraction` | Read secret-like structured extraction fields. |
 | `consent_dismissal` | Click recognized consent controls. |
 | `declared_agent_identity` | Sign an explicitly supplied request. |
 

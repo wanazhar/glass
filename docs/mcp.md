@@ -180,7 +180,7 @@ A tool may request one bounded failure-trace content item with
 legacy `scalar`, `optionalScalar`, and `object` kinds remain accepted.
 Field names or paths that identify passwords, tokens, cookies, authorization
 data, payment data, or similar secrets require the explicit
-`read_sensitive_form_values` capability; otherwise extraction fails closed.
+`read_sensitive_extraction` capability; otherwise extraction fails closed.
 Successful results include the source revision and route, compatibility
 `provenance` paths, field-level `fieldProvenance` with optional region/entity
 references, and `limits` containing requested bounds, observed item count,

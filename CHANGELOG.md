@@ -10,6 +10,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   extraction while preserving the compatibility records envelope.
 - Added bounded semantic table and collection records from accessibility
   evidence, with compatibility fallback to interactive targets.
+- Structured record changes now participate in revision-aware semantic page
+  change detection for task verification and pagination.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

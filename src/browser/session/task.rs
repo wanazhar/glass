@@ -1653,6 +1653,7 @@ fn semantic_regions_changed(before: &[SemanticRegion], after: &[SemanticRegion])
                 || before.interactive_count != after.interactive_count
                 || before.item_count != after.item_count
                 || before.confidence != after.confidence
+                || before.structured_records != after.structured_records
                 || before.evidence != after.evidence
                 || before.targets.len() != after.targets.len()
                 || before
@@ -1729,6 +1730,7 @@ mod tests {
     use super::*;
     use crate::browser::session::{
         SemanticConfidence, SemanticPage, SemanticPageKind, SemanticRegionKind,
+        SemanticStructuredRecord,
     };
     use crate::task_protocol::{
         TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskLimits, TaskRiskClass, TaskScope,
@@ -1757,6 +1759,23 @@ mod tests {
             targets,
             expansion: None,
         }
+    }
+
+    #[test]
+    fn structured_record_changes_count_as_page_changes() {
+        let before = region("Results", Vec::new());
+        let mut after = before.clone();
+        assert!(!semantic_regions_changed(
+            std::slice::from_ref(&before),
+            std::slice::from_ref(&after)
+        ));
+        after.structured_records.push(SemanticStructuredRecord {
+            fields: BTreeMap::from([("Status".into(), "Ready".into())]),
+        });
+        assert!(semantic_regions_changed(
+            std::slice::from_ref(&before),
+            std::slice::from_ref(&after)
+        ));
     }
 
     fn task() -> GlassTask {

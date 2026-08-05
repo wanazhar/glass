@@ -209,6 +209,8 @@ Completed:
 
 - [ir-030-083](tasks/ir-030-083.md) — populate bounded semantic table and
   collection records from accessibility evidence.
+- [ir-030-084](tasks/ir-030-084.md) — include structured record changes in
+  revision-aware semantic page checks.
 
 ## Completed plan: performance overhaul
 Status: Complete

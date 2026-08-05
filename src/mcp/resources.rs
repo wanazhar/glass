@@ -170,6 +170,9 @@ When `includeFormValues` is enabled, at most 16 known form controls are read;
 values are capped at 256 bytes, select labels at 128 bytes, and sensitive
 fields are redacted unless `ReadSensitiveFormValues` is explicitly allowed.
 
+Structured extraction of secret-like fields requires the dedicated
+`ReadSensitiveExtraction` capability; form-value permissions do not grant it.
+
 `preflight` performs a read-only resolution and hit test without pointer
 events, focus, or scrolling. `clickAt` is the policy-gated exact-coordinate
 escape hatch for canvas and map surfaces.
@@ -324,6 +327,14 @@ mod tests {
             let text = contents[0]["text"].as_str().unwrap();
             assert!(!text.is_empty());
         }
+    }
+
+    #[test]
+    fn limits_resource_documents_dedicated_extraction_capability() {
+        let resource = read_resource("glass://contract/limits").unwrap();
+        let text = resource["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("ReadSensitiveExtraction"));
+        assert!(text.contains("form-value permissions do not grant it"));
     }
 
     #[test]

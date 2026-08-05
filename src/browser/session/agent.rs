@@ -284,6 +284,14 @@ impl BrowserSession {
         request: &StructuredExtractionRequest,
     ) -> BrowserResult<StructuredExtractionResult> {
         validate_extraction_request(request)?;
+        if request.fields.iter().any(extraction_field_is_sensitive)
+            && !self.policy.allow_sensitive_form_values()
+        {
+            return Err(
+                "sensitive extraction requires the explicit read_sensitive_form_values capability"
+                    .into(),
+            );
+        }
         let contract_hash = extraction_contract_hash(request);
         let observation = self
             .semantic_observe(SemanticObservationLevel::Structured)
@@ -443,6 +451,31 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
         }
     }
     Ok(())
+}
+
+fn extraction_field_is_sensitive(field: &ExtractionField) -> bool {
+    is_sensitive_extraction_text(&field.name) || is_sensitive_extraction_text(&field.path)
+}
+
+fn is_sensitive_extraction_text(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "cookie",
+        "authorization",
+        "credit_card",
+        "card_number",
+        "cvv",
+        "ssn",
+        "social_security",
+    ]
+    .iter()
+    .any(|term| value.contains(term))
 }
 
 fn continuation_matches_source(
@@ -665,6 +698,25 @@ mod tests {
         request.start_index = 0;
         request.continuation.as_mut().unwrap().next_index = 257;
         assert!(validate_extraction_request(&request).is_err());
+    }
+
+    #[test]
+    fn sensitive_extraction_fields_are_detected_conservatively() {
+        assert!(extraction_field_is_sensitive(&ExtractionField {
+            name: "authToken".into(),
+            path: "$.record.value".into(),
+            kind: ExtractionKind::String,
+        }));
+        assert!(extraction_field_is_sensitive(&ExtractionField {
+            name: "value".into(),
+            path: "$.password".into(),
+            kind: ExtractionKind::String,
+        }));
+        assert!(!extraction_field_is_sensitive(&ExtractionField {
+            name: "title".into(),
+            path: "$.page.title".into(),
+            kind: ExtractionKind::String,
+        }));
     }
 
     #[test]

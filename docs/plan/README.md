@@ -219,6 +219,8 @@ Completed:
   semantic region.
 - [ir-030-088](tasks/ir-030-088.md) — bind continuations to the extraction
   field contract.
+- [ir-030-089](tasks/ir-030-089.md) — add fail-closed sensitive extraction
+  gating for secret-like field names and paths.
 
 ## Completed plan: performance overhaul
 Status: Complete

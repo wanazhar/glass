@@ -19,6 +19,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Continuations now retain and validate the requested semantic region scope.
 - Continuations now retain and validate a non-sensitive extraction contract
   fingerprint.
+- Added fail-closed sensitive extraction gating for secret-like field names
+  and paths.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

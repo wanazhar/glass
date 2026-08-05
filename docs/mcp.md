@@ -178,6 +178,9 @@ A tool may request one bounded failure-trace content item with
 `string`, `optionalString`, `number`, `currency`, `date`, `dateTime`,
 `boolean`, `url`, `enum`, `list`, `record`, `table`, and `repeatedItems`;
 legacy `scalar`, `optionalScalar`, and `object` kinds remain accepted.
+Field names or paths that identify passwords, tokens, cookies, authorization
+data, payment data, or similar secrets require the explicit
+`read_sensitive_form_values` capability; otherwise extraction fails closed.
 Successful results include the source revision and route, compatibility
 `provenance` paths, field-level `fieldProvenance` with optional region/entity
 references, and `limits` containing requested bounds, observed item count,

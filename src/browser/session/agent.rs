@@ -56,12 +56,26 @@ pub struct ExtractionField {
 }
 
 /// Supported bounded extraction shapes.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+///
+/// The legacy variants remain available for compatibility. The explicit
+/// variants are preferred for new requests because they let callers state the
+/// expected scalar contract without relying on a broad `Scalar` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ExtractionKind {
     Scalar,
     OptionalScalar,
+    String,
+    OptionalString,
+    Number,
+    Currency,
+    Date,
+    DateTime,
+    Boolean,
+    Url,
+    Enum,
     List,
+    Record,
     Object,
     Table,
     RepeatedItems,
@@ -80,7 +94,7 @@ pub struct StructuredExtractionRequest {
     pub max_bytes: usize,
 }
 
-/// Bounded typed extraction output with revision provenance.
+/// Bounded typed extraction output with revision and field provenance.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredExtractionResult {
@@ -89,6 +103,32 @@ pub struct StructuredExtractionResult {
     pub records: Vec<Value>,
     pub truncated: bool,
     pub provenance: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_provenance: Vec<StructuredExtractionProvenance>,
+    pub limits: StructuredExtractionLimits,
+}
+
+/// Evidence supporting one extracted field.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredExtractionProvenance {
+    pub field: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<String>,
+}
+
+/// Explicit output bounds and observed extraction size.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredExtractionLimits {
+    pub max_items: usize,
+    pub max_bytes: usize,
+    pub observed_items: usize,
+    pub serialized_bytes: usize,
+    pub truncated: bool,
 }
 
 /// Recovery information for a run identifier that may outlive a session.
@@ -215,36 +255,50 @@ impl BrowserSession {
         let observation = self
             .semantic_observe(SemanticObservationLevel::Structured)
             .await?;
-        let source = if let Some(region_id) = &request.region_id {
+        let scoped_region = request.region_id.as_deref().and_then(|region_id| {
             observation
                 .regions
                 .iter()
-                .find(|region| region.id == *region_id)
-                .map(serde_json::to_value)
-                .transpose()?
-                .ok_or_else(|| format!("region not found: {region_id}"))?
+                .find(|region| region.id == region_id)
+        });
+        if request.region_id.is_some() && scoped_region.is_none() {
+            let region_id = request.region_id.as_deref().unwrap_or_default();
+            return Err(format!("region not found: {region_id}").into());
+        }
+        let source = if let Some(region) = scoped_region {
+            serde_json::to_value(region)?
         } else {
             serde_json::to_value(&observation)?
         };
         let mut record = Map::new();
         let mut truncated = false;
+        let mut observed_items = 0usize;
+        let mut field_provenance = Vec::with_capacity(request.fields.len());
         for field in &request.fields {
             let value = value_at_path(&source, &field.path).cloned();
             let mut value = validate_extracted_value(value, field)?;
-            if let Value::Array(items) = &mut value
-                && items.len() > request.max_items
-            {
-                items.truncate(request.max_items);
-                truncated = true;
+            let entity_ids = provenance_entity_ids(&value);
+            if let Value::Array(items) = &mut value {
+                observed_items = observed_items.saturating_add(items.len());
+                if items.len() > request.max_items {
+                    items.truncate(request.max_items);
+                    truncated = true;
+                }
             }
+            field_provenance.push(StructuredExtractionProvenance {
+                field: field.name.clone(),
+                path: field.path.clone(),
+                region_id: request.region_id.clone(),
+                entity_ids,
+            });
             record.insert(field.name.clone(), value);
         }
         let serialized = serde_json::to_vec(&record)?;
-        if serialized.len() > request.max_bytes {
+        let serialized_bytes = serialized.len();
+        if serialized_bytes > request.max_bytes {
             return Err(format!(
                 "extraction exceeds maxBytes ({} > {})",
-                serialized.len(),
-                request.max_bytes
+                serialized_bytes, request.max_bytes
             )
             .into());
         }
@@ -258,6 +312,14 @@ impl BrowserSession {
                 .iter()
                 .map(|field| field.path.clone())
                 .collect(),
+            field_provenance,
+            limits: StructuredExtractionLimits {
+                max_items: request.max_items,
+                max_bytes: request.max_bytes,
+                observed_items,
+                serialized_bytes,
+                truncated,
+            },
         })
     }
 
@@ -316,15 +378,63 @@ fn validate_extracted_value(value: Option<Value>, field: &ExtractionField) -> Br
         ExtractionKind::OptionalScalar => {
             value.is_null() || value.is_string() || value.is_number() || value.is_boolean()
         }
-        ExtractionKind::List | ExtractionKind::RepeatedItems | ExtractionKind::Table => {
+        ExtractionKind::String | ExtractionKind::Enum => value.is_string(),
+        ExtractionKind::OptionalString => value.is_null() || value.is_string(),
+        ExtractionKind::Number => value.is_number(),
+        ExtractionKind::Currency => {
+            value.is_number() || value.as_str().is_some_and(is_currency_string)
+        }
+        ExtractionKind::Date => value.as_str().is_some_and(is_iso_date),
+        ExtractionKind::DateTime => value
+            .as_str()
+            .is_some_and(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok()),
+        ExtractionKind::Boolean => value.is_boolean(),
+        ExtractionKind::Url => value
+            .as_str()
+            .and_then(|value| url::Url::parse(value).ok())
+            .is_some_and(|url| !url.scheme().is_empty()),
+        ExtractionKind::List | ExtractionKind::Table | ExtractionKind::RepeatedItems => {
             value.is_array()
         }
-        ExtractionKind::Object => value.is_object(),
+        ExtractionKind::Record | ExtractionKind::Object => value.is_object(),
     };
     if !valid {
         return Err(format!("field {} does not match its declared type", field.name).into());
     }
     Ok(value)
+}
+
+fn provenance_entity_ids(value: &Value) -> Vec<String> {
+    let Value::Array(items) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.get("reference").and_then(Value::as_str))
+        .filter(|reference| !reference.is_empty() && reference.len() <= 128)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_iso_date(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes()[4] == b'-'
+        && value.as_bytes()[7] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
+fn is_currency_string(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 64
+        && value.chars().any(|character| character.is_ascii_digit())
+        && value.chars().all(|character| {
+            character.is_ascii_digit()
+                || matches!(character, '.' | ',' | '-' | ' ' | '$' | '€' | '£' | '¥')
+        })
 }
 
 fn default_extraction_items() -> usize {
@@ -357,5 +467,109 @@ mod tests {
                 .unwrap(),
             Value::String("Glass".into())
         );
+    }
+
+    #[test]
+    fn explicit_extraction_kinds_validate_typed_values() {
+        let cases = [
+            (ExtractionKind::String, Value::String("Glass".into())),
+            (ExtractionKind::OptionalString, Value::Null),
+            (ExtractionKind::Number, serde_json::json!(42)),
+            (ExtractionKind::Currency, Value::String("$42.00".into())),
+            (ExtractionKind::Date, Value::String("2026-08-01".into())),
+            (
+                ExtractionKind::DateTime,
+                Value::String("2026-08-01T12:00:00Z".into()),
+            ),
+            (ExtractionKind::Boolean, Value::Bool(true)),
+            (
+                ExtractionKind::Url,
+                Value::String("https://example.test/orders".into()),
+            ),
+            (ExtractionKind::Enum, Value::String("submitted".into())),
+            (ExtractionKind::List, serde_json::json!([1, 2])),
+            (ExtractionKind::Record, serde_json::json!({"id": 1})),
+            (ExtractionKind::Table, serde_json::json!([])),
+            (ExtractionKind::RepeatedItems, serde_json::json!([])),
+        ];
+        for (kind, value) in cases {
+            let field = ExtractionField {
+                name: "value".into(),
+                path: "$.value".into(),
+                kind,
+            };
+            assert!(
+                validate_extracted_value(Some(value), &field).is_ok(),
+                "expected {kind:?} to accept its typed value"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_extraction_kinds_reject_incompatible_values() {
+        for (kind, value) in [
+            (ExtractionKind::Number, Value::String("42".into())),
+            (ExtractionKind::Date, Value::String("not-a-date".into())),
+            (ExtractionKind::DateTime, Value::String("2026-08-01".into())),
+            (ExtractionKind::Boolean, Value::String("true".into())),
+            (ExtractionKind::Url, Value::String("not a url".into())),
+            (ExtractionKind::Table, Value::Object(Map::new())),
+        ] {
+            let field = ExtractionField {
+                name: "value".into(),
+                path: "$.value".into(),
+                kind,
+            };
+            assert!(
+                validate_extracted_value(Some(value), &field).is_err(),
+                "expected {kind:?} to reject the incompatible value"
+            );
+        }
+    }
+
+    #[test]
+    fn extraction_provenance_ids_and_limits_are_bounded_and_serialized() {
+        let value = serde_json::json!([
+            {"reference": "r7:b1"},
+            {"reference": "r7:b2"},
+            {"label": "no-reference"}
+        ]);
+        assert_eq!(
+            provenance_entity_ids(&value),
+            vec!["r7:b1".to_string(), "r7:b2".to_string()]
+        );
+        let result = StructuredExtractionResult {
+            source_revision: 7,
+            source_route: SemanticRouteIdentity {
+                target_id: "target".into(),
+                frame_id: "frame".into(),
+                url: "https://example.test".into(),
+            },
+            records: vec![value],
+            truncated: true,
+            provenance: vec!["$.targets".into()],
+            field_provenance: vec![StructuredExtractionProvenance {
+                field: "items".into(),
+                path: "$.targets".into(),
+                region_id: Some("region_results".into()),
+                entity_ids: vec!["r7:b1".into()],
+            }],
+            limits: StructuredExtractionLimits {
+                max_items: 2,
+                max_bytes: 1024,
+                observed_items: 3,
+                serialized_bytes: 128,
+                truncated: true,
+            },
+        };
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["sourceRevision"], 7);
+        assert_eq!(
+            serialized["fieldProvenance"][0]["regionId"],
+            "region_results"
+        );
+        assert_eq!(serialized["fieldProvenance"][0]["entityIds"][0], "r7:b1");
+        assert_eq!(serialized["limits"]["observedItems"], 3);
+        assert_eq!(serialized["limits"]["truncated"], true);
     }
 }

@@ -173,6 +173,17 @@ A tool may request one bounded failure-trace content item with
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |
 
+`extractStructured` fields are bounded semantic projections. Each field has a
+`name`, a semantic `path`, and a `kind`. Supported explicit kinds are
+`string`, `optionalString`, `number`, `currency`, `date`, `dateTime`,
+`boolean`, `url`, `enum`, `list`, `record`, `table`, and `repeatedItems`;
+legacy `scalar`, `optionalScalar`, and `object` kinds remain accepted.
+Successful results include the source revision and route, compatibility
+`provenance` paths, field-level `fieldProvenance` with optional region/entity
+references, and `limits` containing requested bounds, observed item count,
+serialized bytes, and truncation status. Extraction is read-only and never
+serializes authored input values.
+
 The `diagnostics` result also includes bounded `startupDiagnostics` timings
 (`launch_endpoint_ms`, `page_target_wait_ms`, `cdp_connect_ms`,
 `target_attach_ms`, `event_setup_ms`, `policy_arm_ms`, and `total_startup_ms`)

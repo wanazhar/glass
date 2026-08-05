@@ -62,9 +62,9 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — the `0.2.7` verified-form execution increment is
-implemented and exposed through the CLI and MCP; publication remains
-approval-gated.
+Status: In progress — the first `0.2.8` native structured-extraction slice is
+complete; subsequent table/collection schema and compiler work remains planned
+under Issue #30 after the published `0.2.7` baseline.
 
 Completed:
 
@@ -202,6 +202,8 @@ Completed:
   post-fill inspection failures into bounded indeterminate recovery results.
 - [ir-030-080](tasks/ir-030-080.md) — bound mutation verification failures
   and require explicit `form.submit` postconditions.
+- [ir-030-081](tasks/ir-030-081.md) — add typed structured-extraction kinds,
+  field-level provenance, and explicit output-limit metadata.
 
 ## Completed plan: performance overhaul
 Status: Complete

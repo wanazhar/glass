@@ -3078,8 +3078,29 @@ fn tools() -> Vec<Tool> {
                 "additionalProperties":false,
                 "required":["fields"],
                 "properties":{
-                    "fields":{"type":"array","minItems":1,"maxItems":32},
-                    "regionId":{"type":"string"},
+                    "fields":{
+                        "type":"array",
+                        "minItems":1,
+                        "maxItems":32,
+                        "items":{
+                            "type":"object",
+                            "additionalProperties":false,
+                            "required":["name","path","kind"],
+                            "properties":{
+                                "name":{"type":"string","minLength":1,"maxLength":128},
+                                "path":{"type":"string","maxLength":512},
+                                "kind":{
+                                    "type":"string",
+                                    "enum":[
+                                        "scalar","optionalScalar","string","optionalString",
+                                        "number","currency","date","dateTime","boolean","url",
+                                        "enum","list","record","object","table","repeatedItems"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "regionId":{"type":"string","minLength":1,"maxLength":128},
                     "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":256},
                     "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144},
                     "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
@@ -4333,6 +4354,19 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
+        let extraction = tools
+            .iter()
+            .find(|tool| tool["name"] == "extractStructured")
+            .expect("extractStructured must be advertised");
+        assert_eq!(
+            extraction["inputSchema"]["properties"]["fields"]["items"]["required"],
+            json!(["name", "path", "kind"])
+        );
+        assert_eq!(
+            extraction["inputSchema"]["properties"]["fields"]["items"]["properties"]["kind"]["enum"]
+                [7],
+            "dateTime"
+        );
         let bootstrap = tools
             .iter()
             .find(|tool| tool["name"] == "observeBootstrap")

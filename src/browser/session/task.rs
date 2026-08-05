@@ -3,8 +3,8 @@
 use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
     InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
-    SemanticTarget, StructuredExtractionRequest, StructuredExtractionResult,
-    parse_revisioned_reference,
+    SemanticTarget, StructuredExtractionLimits, StructuredExtractionProvenance,
+    StructuredExtractionRequest, StructuredExtractionResult, parse_revisioned_reference,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
@@ -530,9 +530,23 @@ impl BrowserSession {
                     extraction: Some(StructuredExtractionResult {
                         source_revision: semantic.revision,
                         source_route: semantic.route,
-                        records: vec![record],
-                        truncated: false,
+                        records: vec![record.clone()],
                         provenance: vec!["$.interactive".into()],
+                        truncated: false,
+                        field_provenance: vec![StructuredExtractionProvenance {
+                            field: "field".into(),
+                            path: "$.interactive".into(),
+                            region_id: scoped_regions.first().map(|region| region.id.clone()),
+                            entity_ids: vec![target.reference.clone()],
+                        }],
+                        limits: StructuredExtractionLimits {
+                            max_items: task.limits.max_items as usize,
+                            max_bytes: 64 * 1024,
+                            observed_items: 1,
+                            serialized_bytes: serde_json::to_vec(&record)
+                                .map_or(0, |bytes| bytes.len()),
+                            truncated: false,
+                        },
                     }),
                     dialog: None,
                     alerts: alert_labels(scoped_regions.iter().copied()),

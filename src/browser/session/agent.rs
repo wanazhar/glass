@@ -94,6 +94,17 @@ pub struct StructuredExtractionRequest {
     pub max_bytes: usize,
 }
 
+/// One bounded item from a table or repeated collection extraction.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredExtractionRecord {
+    pub field: String,
+    pub index: usize,
+    pub value: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<String>,
+}
+
 /// Bounded typed extraction output with revision and field provenance.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +112,8 @@ pub struct StructuredExtractionResult {
     pub source_revision: u64,
     pub source_route: SemanticRouteIdentity,
     pub records: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_items: Vec<StructuredExtractionRecord>,
     pub truncated: bool,
     pub provenance: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -273,6 +286,7 @@ impl BrowserSession {
         let mut record = Map::new();
         let mut truncated = false;
         let mut observed_items = 0usize;
+        let mut record_items = Vec::new();
         let mut field_provenance = Vec::with_capacity(request.fields.len());
         for field in &request.fields {
             let value = value_at_path(&source, &field.path).cloned();
@@ -284,6 +298,7 @@ impl BrowserSession {
                     items.truncate(request.max_items);
                     truncated = true;
                 }
+                record_items.extend(extraction_record_items(field, &value));
             }
             field_provenance.push(StructuredExtractionProvenance {
                 field: field.name.clone(),
@@ -306,6 +321,7 @@ impl BrowserSession {
             source_revision: observation.revision,
             source_route: observation.route,
             records: vec![record.into()],
+            record_items,
             truncated,
             provenance: request
                 .fields
@@ -413,6 +429,36 @@ fn provenance_entity_ids(value: &Value) -> Vec<String> {
         .filter_map(|item| item.get("reference").and_then(Value::as_str))
         .filter(|reference| !reference.is_empty() && reference.len() <= 128)
         .map(str::to_owned)
+        .collect()
+}
+
+fn extraction_record_items(
+    field: &ExtractionField,
+    value: &Value,
+) -> Vec<StructuredExtractionRecord> {
+    if !matches!(
+        field.kind,
+        ExtractionKind::Table | ExtractionKind::RepeatedItems
+    ) {
+        return Vec::new();
+    }
+    let Value::Array(items) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| StructuredExtractionRecord {
+            field: field.name.clone(),
+            index,
+            value: item.clone(),
+            entity_ids: item
+                .get("reference")
+                .and_then(Value::as_str)
+                .filter(|reference| !reference.is_empty() && reference.len() <= 128)
+                .map(|reference| vec![reference.to_owned()])
+                .unwrap_or_default(),
+        })
         .collect()
 }
 
@@ -528,6 +574,34 @@ mod tests {
     }
 
     #[test]
+    fn table_and_collection_items_preserve_bounded_record_provenance() {
+        let table = ExtractionField {
+            name: "rows".into(),
+            path: "$.targets".into(),
+            kind: ExtractionKind::Table,
+        };
+        let value = serde_json::json!([
+            {"reference": "r7:b1", "name": "Hosting"},
+            {"name": "unreferenced"}
+        ]);
+        let items = extraction_record_items(&table, &value);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].field, "rows");
+        assert_eq!(items[0].index, 0);
+        assert_eq!(items[0].entity_ids, vec!["r7:b1"]);
+        assert!(
+            extraction_record_items(
+                &ExtractionField {
+                    kind: ExtractionKind::String,
+                    ..table
+                },
+                &value
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn extraction_provenance_ids_and_limits_are_bounded_and_serialized() {
         let value = serde_json::json!([
             {"reference": "r7:b1"},
@@ -546,6 +620,12 @@ mod tests {
                 url: "https://example.test".into(),
             },
             records: vec![value],
+            record_items: vec![StructuredExtractionRecord {
+                field: "items".into(),
+                index: 0,
+                value: serde_json::json!({"reference": "r7:b1"}),
+                entity_ids: vec!["r7:b1".into()],
+            }],
             truncated: true,
             provenance: vec!["$.targets".into()],
             field_provenance: vec![StructuredExtractionProvenance {
@@ -564,6 +644,9 @@ mod tests {
         };
         let serialized = serde_json::to_value(result).unwrap();
         assert_eq!(serialized["sourceRevision"], 7);
+        assert_eq!(serialized["recordItems"][0]["field"], "items");
+        assert_eq!(serialized["recordItems"][0]["index"], 0);
+        assert_eq!(serialized["recordItems"][0]["entityIds"][0], "r7:b1");
         assert_eq!(
             serialized["fieldProvenance"][0]["regionId"],
             "region_results"

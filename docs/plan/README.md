@@ -204,6 +204,8 @@ Completed:
   and require explicit `form.submit` postconditions.
 - [ir-030-081](tasks/ir-030-081.md) — add typed structured-extraction kinds,
   field-level provenance, and explicit output-limit metadata.
+- [ir-030-082](tasks/ir-030-082.md) — add bounded item-level records for
+  semantic table and repeated-collection extraction.
 
 ## Completed plan: performance overhaul
 Status: Complete

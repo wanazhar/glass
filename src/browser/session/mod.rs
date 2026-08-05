@@ -69,7 +69,7 @@ mod types;
 pub use agent::{
     ActAndVerifyResult, ExtractionField, ExtractionKind, FindTargetResult, InspectPageResult,
     RecoverRunResult, StructuredExtractionLimits, StructuredExtractionProvenance,
-    StructuredExtractionRequest, StructuredExtractionResult,
+    StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
 };
 pub use authoring::{
     WORKFLOW_AUTHORING_SCHEMA_VERSION, WorkflowAuthoringDocument, WorkflowAuthoringFormat,

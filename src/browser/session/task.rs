@@ -531,6 +531,7 @@ impl BrowserSession {
                         source_revision: semantic.revision,
                         source_route: semantic.route,
                         records: vec![record.clone()],
+                        record_items: Vec::new(),
                         provenance: vec!["$.interactive".into()],
                         truncated: false,
                         field_provenance: vec![StructuredExtractionProvenance {

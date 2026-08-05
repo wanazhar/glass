@@ -6,6 +6,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 ## [Unreleased] — 0.2.8
 - Added explicit typed structured-extraction kinds, field-level semantic
   provenance, entity references, and observed output-limit metadata.
+- Added bounded `recordItems` for semantic table and repeated-collection
+  extraction while preserving the compatibility records envelope.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

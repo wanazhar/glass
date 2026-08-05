@@ -181,8 +181,11 @@ legacy `scalar`, `optionalScalar`, and `object` kinds remain accepted.
 Successful results include the source revision and route, compatibility
 `provenance` paths, field-level `fieldProvenance` with optional region/entity
 references, and `limits` containing requested bounds, observed item count,
-serialized bytes, and truncation status. Extraction is read-only and never
-serializes authored input values.
+serialized bytes, and truncation status. Table and repeated-collection fields
+also return bounded `recordItems`; each item carries its source field,
+zero-based index, semantic value, and any evidence-backed entity references.
+The compatibility `records` envelope remains unchanged. Extraction is read-only
+and never serializes authored input values.
 
 The `diagnostics` result also includes bounded `startupDiagnostics` timings
 (`launch_endpoint_ms`, `page_target_wait_ms`, `cdp_connect_ms`,

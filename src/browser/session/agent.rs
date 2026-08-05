@@ -458,24 +458,27 @@ fn extraction_field_is_sensitive(field: &ExtractionField) -> bool {
 }
 
 fn is_sensitive_extraction_text(value: &str) -> bool {
-    let value = value.to_ascii_lowercase();
+    let normalized: String = value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect();
     [
         "password",
         "passwd",
         "secret",
         "token",
-        "api_key",
         "apikey",
         "cookie",
         "authorization",
-        "credit_card",
-        "card_number",
+        "creditcard",
+        "cardnumber",
         "cvv",
         "ssn",
-        "social_security",
+        "socialsecurity",
     ]
     .iter()
-    .any(|term| value.contains(term))
+    .any(|term| normalized.contains(term))
 }
 
 fn continuation_matches_source(
@@ -710,6 +713,11 @@ mod tests {
         assert!(extraction_field_is_sensitive(&ExtractionField {
             name: "value".into(),
             path: "$.password".into(),
+            kind: ExtractionKind::String,
+        }));
+        assert!(extraction_field_is_sensitive(&ExtractionField {
+            name: "creditCard".into(),
+            path: "$.billing.card_number".into(),
             kind: ExtractionKind::String,
         }));
         assert!(!extraction_field_is_sensitive(&ExtractionField {

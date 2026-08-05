@@ -5503,6 +5503,20 @@ mod tests {
     }
 
     #[test]
+    fn serializes_policy_denials_as_typed_mcp_content() {
+        let error = crate::browser::policy::PolicyError::Denied {
+            operation: "read_sensitive_extraction".to_string(),
+            reason: "explicit capability required".to_string(),
+        };
+        let text = typed_browser_error(&error).expect("policy error should remain typed");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "denied");
+        assert_eq!(value["operation"], "read_sensitive_extraction");
+        assert_eq!(value["ruleId"], "policy.read_sensitive_extraction.denied");
+        assert_eq!(value["phase"], "preflight");
+    }
+
+    #[test]
     fn action_results_are_compact_json_text() {
         let result = action_result(ActionOutcome {
             status: ActionStatus::Succeeded,

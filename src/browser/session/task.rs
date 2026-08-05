@@ -534,6 +534,7 @@ impl BrowserSession {
                         record_items: Vec::new(),
                         provenance: vec!["$.interactive".into()],
                         truncated: false,
+                        continuation: None,
                         field_provenance: vec![StructuredExtractionProvenance {
                             field: "field".into(),
                             path: "$.interactive".into(),
@@ -572,6 +573,7 @@ impl BrowserSession {
                         kind: ExtractionKind::Table,
                     }],
                     region_id: Some(region.id.clone()),
+                    start_index: 0,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };
@@ -625,6 +627,7 @@ impl BrowserSession {
                         kind: ExtractionKind::RepeatedItems,
                     }],
                     region_id: Some(region.id.clone()),
+                    start_index: 0,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };
@@ -671,6 +674,7 @@ impl BrowserSession {
                         kind: ExtractionKind::Object,
                     }],
                     region_id: Some(region_id),
+                    start_index: 0,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };

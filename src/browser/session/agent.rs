@@ -88,6 +88,8 @@ pub struct StructuredExtractionRequest {
     pub fields: Vec<ExtractionField>,
     #[serde(default)]
     pub region_id: Option<String>,
+    #[serde(default)]
+    pub start_index: usize,
     #[serde(default = "default_extraction_items")]
     pub max_items: usize,
     #[serde(default = "default_extraction_bytes")]
@@ -118,7 +120,18 @@ pub struct StructuredExtractionResult {
     pub provenance: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_provenance: Vec<StructuredExtractionProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<StructuredExtractionContinuation>,
     pub limits: StructuredExtractionLimits,
+}
+
+/// Revision-bound continuation for a bounded item extraction.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredExtractionContinuation {
+    pub next_index: usize,
+    pub source_revision: u64,
+    pub source_route: SemanticRouteIdentity,
 }
 
 /// Evidence supporting one extracted field.
@@ -285,21 +298,28 @@ impl BrowserSession {
         };
         let mut record = Map::new();
         let mut truncated = false;
+        let mut next_index: Option<usize> = None;
         let mut observed_items = 0usize;
         let mut record_items = Vec::new();
         let mut field_provenance = Vec::with_capacity(request.fields.len());
         for field in &request.fields {
             let value = extraction_source_value(&source, field);
             let mut value = validate_extracted_value(value, field)?;
-            let entity_ids = provenance_entity_ids(&value);
             if let Value::Array(items) = &mut value {
-                observed_items = observed_items.saturating_add(items.len());
-                if items.len() > request.max_items {
-                    items.truncate(request.max_items);
-                    truncated = true;
+                let item_count = items.len();
+                observed_items = observed_items.saturating_add(item_count);
+                let start = request.start_index.min(item_count);
+                let end = start.saturating_add(request.max_items).min(item_count);
+                truncated |= start > 0 || end < item_count;
+                if end < item_count {
+                    next_index = Some(next_index.map_or(end, |current| current.max(end)));
                 }
-                record_items.extend(extraction_record_items(field, &value));
+                if start > 0 || end < item_count {
+                    *items = items[start..end].to_vec();
+                }
+                record_items.extend(extraction_record_items(field, &value, start));
             }
+            let entity_ids = provenance_entity_ids(&value);
             field_provenance.push(StructuredExtractionProvenance {
                 field: field.name.clone(),
                 path: field.path.clone(),
@@ -317,9 +337,15 @@ impl BrowserSession {
             )
             .into());
         }
+        let source_route = observation.route.clone();
+        let continuation = next_index.map(|next_index| StructuredExtractionContinuation {
+            next_index,
+            source_revision: observation.revision,
+            source_route: source_route.clone(),
+        });
         Ok(StructuredExtractionResult {
             source_revision: observation.revision,
-            source_route: observation.route,
+            source_route,
             records: vec![record.into()],
             record_items,
             truncated,
@@ -329,6 +355,7 @@ impl BrowserSession {
                 .map(|field| field.path.clone())
                 .collect(),
             field_provenance,
+            continuation,
             limits: StructuredExtractionLimits {
                 max_items: request.max_items,
                 max_bytes: request.max_bytes,
@@ -363,6 +390,9 @@ impl BrowserSession {
 fn validate_extraction_request(request: &StructuredExtractionRequest) -> BrowserResult<()> {
     if request.fields.is_empty() || request.fields.len() > MAX_EXTRACTION_FIELDS {
         return Err(format!("fields must contain 1..={MAX_EXTRACTION_FIELDS} entries").into());
+    }
+    if request.start_index > MAX_EXTRACTION_ITEMS {
+        return Err(format!("startIndex must be <= {MAX_EXTRACTION_ITEMS}").into());
     }
     if !(1..=MAX_EXTRACTION_ITEMS).contains(&request.max_items) {
         return Err(format!("maxItems must be 1..={MAX_EXTRACTION_ITEMS}").into());
@@ -448,6 +478,7 @@ fn provenance_entity_ids(value: &Value) -> Vec<String> {
 fn extraction_record_items(
     field: &ExtractionField,
     value: &Value,
+    start_index: usize,
 ) -> Vec<StructuredExtractionRecord> {
     if !matches!(
         field.kind,
@@ -463,7 +494,7 @@ fn extraction_record_items(
         .enumerate()
         .map(|(index, item)| StructuredExtractionRecord {
             field: field.name.clone(),
-            index,
+            index: start_index + index,
             value: item.clone(),
             entity_ids: item
                 .get("reference")
@@ -517,6 +548,7 @@ mod tests {
                 kind: ExtractionKind::Scalar,
             }],
             region_id: None,
+            start_index: 0,
             max_items: 1,
             max_bytes: 1024,
         };
@@ -597,10 +629,9 @@ mod tests {
             {"reference": "r7:b1", "name": "Hosting"},
             {"name": "unreferenced"}
         ]);
-        let items = extraction_record_items(&table, &value);
+        let items = extraction_record_items(&table, &value, 3);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].field, "rows");
-        assert_eq!(items[0].index, 0);
+        assert_eq!(items[0].index, 3);
         assert_eq!(items[0].entity_ids, vec!["r7:b1"]);
         assert!(
             extraction_record_items(
@@ -608,7 +639,8 @@ mod tests {
                     kind: ExtractionKind::String,
                     ..table
                 },
-                &value
+                &value,
+                0,
             )
             .is_empty()
         );
@@ -647,6 +679,15 @@ mod tests {
                 region_id: Some("region_results".into()),
                 entity_ids: vec!["r7:b1".into()],
             }],
+            continuation: Some(StructuredExtractionContinuation {
+                next_index: 2,
+                source_revision: 7,
+                source_route: SemanticRouteIdentity {
+                    target_id: "target".into(),
+                    frame_id: "frame".into(),
+                    url: "https://example.test".into(),
+                },
+            }),
             limits: StructuredExtractionLimits {
                 max_items: 2,
                 max_bytes: 1024,
@@ -656,6 +697,7 @@ mod tests {
             },
         };
         let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["continuation"]["nextIndex"], 2);
         assert_eq!(serialized["sourceRevision"], 7);
         assert_eq!(serialized["recordItems"][0]["field"], "items");
         assert_eq!(serialized["recordItems"][0]["index"], 0);

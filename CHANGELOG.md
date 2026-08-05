@@ -12,6 +12,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   evidence, with compatibility fallback to interactive targets.
 - Structured record changes now participate in revision-aware semantic page
   change detection for task verification and pagination.
+- Added bounded `startIndex` requests and revision-bound continuation metadata
+  for resumable table and repeated-item extraction.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

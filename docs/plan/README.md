@@ -211,6 +211,8 @@ Completed:
   collection records from accessibility evidence.
 - [ir-030-084](tasks/ir-030-084.md) — include structured record changes in
   revision-aware semantic page checks.
+- [ir-030-085](tasks/ir-030-085.md) — add bounded, revision-bound
+  continuation metadata for truncated extraction.
 
 ## Completed plan: performance overhaul
 Status: Complete

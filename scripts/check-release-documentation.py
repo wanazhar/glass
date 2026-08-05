@@ -2,6 +2,7 @@
 """Validate release truth markers in the current user-facing documentation."""
 
 import pathlib
+import re
 import sys
 
 
@@ -9,6 +10,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": ["| 0.2.7 | Current published release |", "docs/feature-parity.md", "docs/release-evidence.md"],
     "CHANGELOG.md": ["## [0.2.7] - 2026-08-05", "## [Unreleased] — 0.2.8"],
+    "docs/plan/README.md": [
+        "[`ir-030-081`](tasks/ir-030-081.md)",
+        "[`ir-030-089`](tasks/ir-030-089.md)",
+        "0.2.8` changes",
+        "remain unreleased.",
+    ],
     "docs/release-checklist.md": [
         "current published release is `glass-browser` version `0.2.7`",
         "next crates.io release, `0.2.8`",
@@ -35,6 +42,20 @@ FORBIDDEN_MARKERS = (
     "0.2.0 is not published",
     "do not publish 0.2.0",
     "0.2.0 local release candidate",
+)
+FORBIDDEN_CURRENT_RELEASE_PATTERNS = (
+    re.compile(r"\b0\.2\.8\s+is\s+published\b", re.IGNORECASE),
+    re.compile(
+        r"\b0\.2\.8\s+is\s+(?:the\s+)?(?:current|latest)\s+"
+        r"(?:published\s+)?(?:release|version)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:the\s+)?(?:current|latest)\s+"
+        r"(?:published\s+)?(?:release|version)\s+is\s+"
+        r"(?:`?glass-browser`?\s+version\s+)?`?0\.2\.8`?\b",
+        re.IGNORECASE,
+    ),
 )
 
 PUBLIC_FACING_DOCS = (
@@ -80,12 +101,23 @@ def main() -> None:
         for marker in FORBIDDEN_MARKERS:
             if marker in lowered:
                 failures.append(f"{relative} contains stale release claim {marker!r}")
+        if relative not in PUBLIC_FACING_DOCS:
+            for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
+                if pattern.search(lowered):
+                    failures.append(
+                        f"{relative} contains current-release claim for 0.2.8"
+                    )
     for relative in PUBLIC_FACING_DOCS:
         path = ROOT / relative
         try:
             lowered = path.read_text(encoding="utf-8").lower()
         except OSError as error:
             fail(f"cannot read {relative}: {error}")
+        for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
+            if pattern.search(lowered):
+                failures.append(
+                    f"{relative} contains current-release claim for 0.2.8"
+                )
         for marker in FORBIDDEN_PUBLIC_MARKERS:
             if marker in lowered:
                 failures.append(

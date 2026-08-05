@@ -21,6 +21,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   fingerprint.
 - Added fail-closed sensitive extraction gating for secret-like field names
   and paths.
+- Sensitive extraction denials now use the typed policy error contract with a
+  stable `read_sensitive_extraction` operation.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

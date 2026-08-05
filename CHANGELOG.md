@@ -8,6 +8,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   provenance, entity references, and observed output-limit metadata.
 - Added bounded `recordItems` for semantic table and repeated-collection
   extraction while preserving the compatibility records envelope.
+- Added bounded semantic table and collection records from accessibility
+  evidence, with compatibility fallback to interactive targets.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

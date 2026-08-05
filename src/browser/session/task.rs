@@ -568,7 +568,7 @@ impl BrowserSession {
                 let request = StructuredExtractionRequest {
                     fields: vec![ExtractionField {
                         name: "rows".into(),
-                        path: "$.targets".into(),
+                        path: "$.structuredRecords".into(),
                         kind: ExtractionKind::Table,
                     }],
                     region_id: Some(region.id.clone()),
@@ -621,7 +621,7 @@ impl BrowserSession {
                 let request = StructuredExtractionRequest {
                     fields: vec![ExtractionField {
                         name: "items".into(),
-                        path: "$.targets".into(),
+                        path: "$.structuredRecords".into(),
                         kind: ExtractionKind::RepeatedItems,
                     }],
                     region_id: Some(region.id.clone()),
@@ -1751,6 +1751,7 @@ mod tests {
             label: label.into(),
             interactive_count: targets.len(),
             item_count: None,
+            structured_records: Vec::new(),
             confidence: SemanticConfidence::Exact,
             evidence: Vec::new(),
             targets,

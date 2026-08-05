@@ -186,6 +186,12 @@ also return bounded `recordItems`; each item carries its source field,
 zero-based index, semantic value, and any evidence-backed entity references.
 The compatibility `records` envelope remains unchanged. Extraction is read-only
 and never serializes authored input values.
+Semantic table and collection regions also expose bounded `structuredRecords`
+under the region projection. Table records use bounded column-header keys;
+collection records expose semantic name, heading, description, and link fields
+when those accessibility facts are present. Browser-backed task extraction
+uses this projection and falls back to bounded interactive targets when the
+page exposes no structured accessibility records.
 
 The `diagnostics` result also includes bounded `startupDiagnostics` timings
 (`launch_endpoint_ms`, `page_target_wait_ms`, `cdp_connect_ms`,

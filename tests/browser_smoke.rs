@@ -3061,7 +3061,15 @@ async fn browser_session_executes_scoped_form_tasks() {
     assert_eq!(collection.status, "succeeded");
     assert_eq!(
         collection.extraction.as_ref().unwrap().provenance,
-        vec!["$.targets"]
+        vec!["$.structuredRecords"]
+    );
+    assert!(
+        !collection
+            .extraction
+            .as_ref()
+            .unwrap()
+            .record_items
+            .is_empty()
     );
     let table_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
@@ -3084,8 +3092,9 @@ async fn browser_session_executes_scoped_form_tasks() {
     assert_eq!(table.status, "succeeded");
     assert_eq!(
         table.extraction.as_ref().unwrap().provenance,
-        vec!["$.targets"]
+        vec!["$.structuredRecords"]
     );
+    assert!(!table.extraction.as_ref().unwrap().record_items.is_empty());
     let field_read_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::FieldRead,

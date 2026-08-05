@@ -1861,6 +1861,7 @@ mod tests {
             label: "Navigation".into(),
             interactive_count: 3,
             item_count: None,
+            structured_records: Vec::new(),
             confidence: super::super::SemanticConfidence::Exact,
             evidence: vec!["aria-role=navigation".into()],
             targets: vec![

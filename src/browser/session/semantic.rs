@@ -5,13 +5,12 @@
 //! existing detailed and raw observation callers remain compatible while the
 //! semantic surface is built incrementally.
 
+use super::types::PageContext;
+use crate::browser::dom::CompactAxNode;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::Value;
-use std::collections::BTreeSet;
-
-use super::types::PageContext;
-use crate::browser::dom::CompactAxNode;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const SEMANTIC_OBSERVATION_SCHEMA_VERSION: u32 = 1;
 const MAX_REGIONS: usize = 64;
@@ -23,6 +22,8 @@ const MAX_TITLE_BYTES: usize = 1_024;
 const MAX_URL_BYTES: usize = 2_048;
 const MAX_TARGETS: usize = 32;
 const MAX_CHANGE_ITEMS: usize = 128;
+const MAX_STRUCTURED_RECORDS: usize = 256;
+const MAX_STRUCTURED_FIELDS: usize = 32;
 const MAX_ROLE_BYTES: usize = 64;
 const MAX_VISIBLE_TEXT_BYTES: usize = 8 * 1024;
 
@@ -161,6 +162,13 @@ pub struct SemanticTarget {
     pub input_type: Option<String>,
 }
 
+/// One bounded semantic table row or repeated collection item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticStructuredRecord {
+    pub fields: BTreeMap<String, String>,
+}
+
 /// A bounded accessibility node included only by detailed semantic levels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,7 +181,6 @@ pub struct SemanticAccessibilityNode {
     #[serde(default, skip_serializing_if = "is_false")]
     pub interactive: bool,
 }
-
 /// Kind of bounded semantic entity change between two compatible revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -240,6 +247,8 @@ pub struct SemanticRegion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_count: Option<usize>,
     pub confidence: SemanticConfidence,
+    #[serde(default)]
+    pub structured_records: Vec<SemanticStructuredRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -326,6 +335,15 @@ impl SemanticObservation {
                 &mut anchors,
             );
         }
+        for region in &mut regions {
+            if matches!(
+                region.kind,
+                SemanticRegionKind::Collection | SemanticRegionKind::Table
+            ) && let Some(node) = find_region_node(context, region.id.as_str())
+            {
+                region.structured_records = structured_records_for_region(node, region.kind);
+            }
+        }
         if regions.is_empty() {
             regions.push(SemanticRegion {
                 id: "region_main".into(),
@@ -333,6 +351,7 @@ impl SemanticObservation {
                 label: "Unclassified page content".into(),
                 interactive_count: context.accessibility.interactive.len(),
                 item_count: None,
+                structured_records: Vec::new(),
                 confidence: SemanticConfidence::Unknown,
                 evidence: vec!["no recognized landmark role".into()],
                 targets: Vec::new(),
@@ -1026,6 +1045,139 @@ impl std::fmt::Display for SemanticObservationError {
 }
 
 impl std::error::Error for SemanticObservationError {}
+fn structured_records_for_region(
+    node: &CompactAxNode,
+    kind: SemanticRegionKind,
+) -> Vec<SemanticStructuredRecord> {
+    match kind {
+        SemanticRegionKind::Table => table_records(node),
+        SemanticRegionKind::Collection => collection_records(node),
+        _ => Vec::new(),
+    }
+}
+
+fn table_records(node: &CompactAxNode) -> Vec<SemanticStructuredRecord> {
+    let mut header_nodes = Vec::new();
+    collect_role_nodes(node, "columnheader", &mut header_nodes);
+    let headers: Vec<String> = header_nodes
+        .into_iter()
+        .map(|header| bounded_semantic_text(&header.name, MAX_LABEL_BYTES))
+        .collect();
+    let mut rows = Vec::new();
+    collect_role_nodes(node, "row", &mut rows);
+    rows.into_iter()
+        .take(MAX_STRUCTURED_RECORDS)
+        .filter(|row| !contains_role(row, "columnheader"))
+        .filter_map(|row| {
+            let mut cells = Vec::new();
+            collect_row_cells(row, &mut cells);
+            if cells.is_empty() {
+                return None;
+            }
+            let mut fields = BTreeMap::new();
+            for (index, cell) in cells.into_iter().take(MAX_STRUCTURED_FIELDS).enumerate() {
+                let header = headers
+                    .get(index)
+                    .filter(|header| !header.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| format!("column_{}", index + 1));
+                insert_record_field(&mut fields, header, cell);
+            }
+            Some(SemanticStructuredRecord { fields })
+        })
+        .collect()
+}
+
+fn collection_records(node: &CompactAxNode) -> Vec<SemanticStructuredRecord> {
+    let mut items = Vec::new();
+    collect_role_nodes(node, "listitem", &mut items);
+    items
+        .into_iter()
+        .take(MAX_STRUCTURED_RECORDS)
+        .filter_map(|item| {
+            let mut fields = BTreeMap::new();
+            if !item.name.is_empty() {
+                insert_record_field(
+                    &mut fields,
+                    "name".into(),
+                    bounded_semantic_text(&item.name, MAX_LABEL_BYTES),
+                );
+            }
+            collect_collection_fields(item, &mut fields);
+            (!fields.is_empty()).then_some(SemanticStructuredRecord { fields })
+        })
+        .collect()
+}
+
+fn collect_role_nodes<'a>(
+    node: &'a CompactAxNode,
+    role: &str,
+    output: &mut Vec<&'a CompactAxNode>,
+) {
+    if node.role == role {
+        output.push(node);
+    }
+    for child in &node.children {
+        collect_role_nodes(child, role, output);
+    }
+}
+
+fn collect_row_cells(node: &CompactAxNode, output: &mut Vec<String>) {
+    for child in &node.children {
+        if matches!(child.role.as_str(), "cell" | "gridcell" | "columnheader") {
+            output.push(bounded_semantic_text(&child.name, MAX_LABEL_BYTES));
+        } else if child.role != "row" {
+            collect_row_cells(child, output);
+        }
+    }
+}
+
+fn collect_collection_fields(node: &CompactAxNode, fields: &mut BTreeMap<String, String>) {
+    for child in &node.children {
+        let key = match child.role.as_str() {
+            "heading" => Some("heading"),
+            "paragraph" => Some("description"),
+            "link" => Some("link"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            if !child.name.is_empty() {
+                insert_record_field(
+                    fields,
+                    key.into(),
+                    bounded_semantic_text(&child.name, MAX_LABEL_BYTES),
+                );
+            }
+        } else if child.role != "listitem" {
+            collect_collection_fields(child, fields);
+        }
+        if fields.len() >= MAX_STRUCTURED_FIELDS {
+            return;
+        }
+    }
+}
+
+fn contains_role(node: &CompactAxNode, role: &str) -> bool {
+    node.role == role || node.children.iter().any(|child| contains_role(child, role))
+}
+
+fn insert_record_field(fields: &mut BTreeMap<String, String>, key: String, value: String) {
+    if fields.len() >= MAX_STRUCTURED_FIELDS {
+        return;
+    }
+    let base = if key.is_empty() {
+        "field".to_string()
+    } else {
+        key
+    };
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while fields.contains_key(&candidate) {
+        candidate = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    fields.insert(candidate, value);
+}
 
 fn collect_regions(
     node: &CompactAxNode,
@@ -1048,6 +1200,7 @@ fn collect_regions(
             ),
             _ => None,
         };
+        let structured_records = Vec::new();
         regions.push(SemanticRegion {
             id: id.clone(),
             kind,
@@ -1058,6 +1211,7 @@ fn collect_regions(
             },
             interactive_count: count_interactive(node),
             item_count,
+            structured_records,
             confidence: SemanticConfidence::Exact,
             evidence: vec![format!("aria-role={}", node.role)],
             targets: Vec::new(),
@@ -1573,6 +1727,7 @@ mod tests {
                 label: "Search results".into(),
                 interactive_count: 2,
                 item_count: Some(10),
+                structured_records: Vec::new(),
                 confidence: SemanticConfidence::High,
                 evidence: vec!["repeated item structure".into()],
                 targets: Vec::new(),
@@ -1589,6 +1744,89 @@ mod tests {
             limits: SemanticObservationLimits::default(),
             route,
         }
+    }
+
+    #[test]
+    fn extracts_bounded_table_and_collection_records_from_accessibility_nodes() {
+        let table = CompactAxNode {
+            role: "table".into(),
+            name: "Orders".into(),
+            children: vec![
+                CompactAxNode {
+                    role: "row".into(),
+                    name: String::new(),
+                    children: vec![
+                        CompactAxNode {
+                            role: "columnheader".into(),
+                            name: "Item".into(),
+                            children: Vec::new(),
+                            interactive: false,
+                        },
+                        CompactAxNode {
+                            role: "columnheader".into(),
+                            name: "Status".into(),
+                            children: Vec::new(),
+                            interactive: false,
+                        },
+                    ],
+                    interactive: false,
+                },
+                CompactAxNode {
+                    role: "row".into(),
+                    name: String::new(),
+                    children: vec![
+                        CompactAxNode {
+                            role: "cell".into(),
+                            name: "First order".into(),
+                            children: Vec::new(),
+                            interactive: false,
+                        },
+                        CompactAxNode {
+                            role: "cell".into(),
+                            name: "Ready".into(),
+                            children: Vec::new(),
+                            interactive: false,
+                        },
+                    ],
+                    interactive: false,
+                },
+            ],
+            interactive: false,
+        };
+        let rows = table_records(&table);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields["Item"], "First order");
+        assert_eq!(rows[0].fields["Status"], "Ready");
+
+        let collection = CompactAxNode {
+            role: "list".into(),
+            name: "Results".into(),
+            children: vec![CompactAxNode {
+                role: "listitem".into(),
+                name: "Glass".into(),
+                children: vec![
+                    CompactAxNode {
+                        role: "heading".into(),
+                        name: "Glass".into(),
+                        children: Vec::new(),
+                        interactive: false,
+                    },
+                    CompactAxNode {
+                        role: "link".into(),
+                        name: "Open result".into(),
+                        children: Vec::new(),
+                        interactive: true,
+                    },
+                ],
+                interactive: false,
+            }],
+            interactive: false,
+        };
+        let items = collection_records(&collection);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].fields["name"], "Glass");
+        assert_eq!(items[0].fields["heading"], "Glass");
+        assert_eq!(items[0].fields["link"], "Open result");
     }
 
     #[test]

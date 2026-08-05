@@ -289,7 +289,7 @@ impl BrowserSession {
         let mut record_items = Vec::new();
         let mut field_provenance = Vec::with_capacity(request.fields.len());
         for field in &request.fields {
-            let value = value_at_path(&source, &field.path).cloned();
+            let value = extraction_source_value(&source, field);
             let mut value = validate_extracted_value(value, field)?;
             let entity_ids = provenance_entity_ids(&value);
             if let Value::Array(items) = &mut value {
@@ -376,6 +376,19 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
         }
     }
     Ok(())
+}
+
+fn extraction_source_value(source: &Value, field: &ExtractionField) -> Option<Value> {
+    let value = value_at_path(source, &field.path).cloned();
+    if field.path == "$.structuredRecords"
+        && value
+            .as_ref()
+            .is_some_and(|value| value.as_array().is_some_and(Vec::is_empty))
+    {
+        value_at_path(source, "$.targets").cloned().or(value)
+    } else {
+        value
+    }
 }
 
 fn value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {

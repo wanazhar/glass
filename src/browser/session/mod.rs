@@ -114,8 +114,8 @@ pub use semantic::{
     SemanticChangeSet, SemanticConfidence, SemanticContinuity, SemanticExpansionHandle,
     SemanticObservation, SemanticObservationError, SemanticObservationLevel,
     SemanticObservationLimits, SemanticPage, SemanticPageKind, SemanticRegion,
-    SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity, SemanticTarget,
-    SemanticTargetChange, SemanticViewport,
+    SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity, SemanticStructuredRecord,
+    SemanticTarget, SemanticTargetChange, SemanticViewport,
 };
 pub use snapshot::{
     SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,

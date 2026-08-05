@@ -62,9 +62,9 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — the first `0.2.8` native structured-extraction slice is
-complete; subsequent table/collection schema and compiler work remains planned
-under Issue #30 after the published `0.2.7` baseline.
+Status: In progress — the first `0.2.8` native structured-extraction slices
+are complete; subsequent table/collection schema and compiler work remains
+planned under Issue #30 after the published `0.2.7` baseline.
 
 Completed:
 
@@ -206,6 +206,9 @@ Completed:
   field-level provenance, and explicit output-limit metadata.
 - [ir-030-082](tasks/ir-030-082.md) — add bounded item-level records for
   semantic table and repeated-collection extraction.
+
+- [ir-030-083](tasks/ir-030-083.md) — populate bounded semantic table and
+  collection records from accessibility evidence.
 
 ## Completed plan: performance overhaul
 Status: Complete

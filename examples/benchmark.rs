@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{
     BrowserResult, BrowserSession, InteractionMode, SessionOptions, StartupDiagnostics,
-    WaitCondition,
+    VerificationPredicate, WaitCondition,
 };
 use serde_json::{Value, json};
 use std::{
@@ -13,6 +13,7 @@ use std::{
 use tokio::net::TcpListener;
 
 const DEFAULT_ITERATIONS: usize = 50;
+const MAX_ITERATIONS: usize = 100;
 const MAX_PAGE_CLASS_ITERATIONS: usize = 100;
 
 struct PageClassFixture {
@@ -91,12 +92,14 @@ async fn main() -> BrowserResult<()> {
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|iterations| *iterations > 0)
-        .unwrap_or(DEFAULT_ITERATIONS);
+        .unwrap_or(DEFAULT_ITERATIONS)
+        .min(MAX_ITERATIONS);
     let expensive_iterations = std::env::var("GLASS_BENCH_EXPENSIVE_ITERATIONS")
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|iterations| *iterations > 0)
-        .unwrap_or(iterations);
+        .unwrap_or(iterations)
+        .min(MAX_ITERATIONS);
     let fixture = include_str!("../tests/fixtures/basic.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
     let page_class_fixtures = local_page_class_fixtures(fixture);
@@ -113,8 +116,8 @@ async fn main() -> BrowserResult<()> {
     let cold_start_result = bench_cold_start(&chrome_path, &url, expensive_iterations).await?;
 
     let rss_before_start = process_rss_bytes();
-    let startup_started = Instant::now();
     let fast_port = available_port().await?;
+    let startup_started = Instant::now();
     let fast_session = BrowserSession::start(
         &SessionOptions::builder()
             .port(fast_port)
@@ -178,12 +181,32 @@ async fn main() -> BrowserResult<()> {
             .get("cold_first_observe")
             .cloned()
             .ok_or_else(|| "cold_start omitted cold_first_observe".to_string())?;
+        let cold_navigation_result = cold_start_object
+            .get("cold_navigation")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_navigation".to_string())?;
+        let cold_semantic_bootstrap_result = cold_start_object
+            .get("cold_semantic_bootstrap")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_semantic_bootstrap".to_string())?;
+        let cold_full_observation_result = cold_start_object
+            .get("cold_full_observation")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_full_observation".to_string())?;
+        let cold_post_verification_result = cold_start_object
+            .get("cold_post_verification")
+            .cloned()
+            .ok_or_else(|| "cold_start omitted cold_post_verification".to_string())?;
 
         let page_class_latency_result =
             bench_page_class_latencies(&fast_session, &page_class_fixtures, page_class_iterations)
                 .await?;
 
-        fast_session.navigate(&url).await?;
+        let warm_navigation_result = measure("navigation_warm_persistent", iterations, || async {
+            fast_session.navigate(&url).await?;
+            Ok(())
+        })
+        .await?;
         human_session.navigate(&url).await?;
         warm_click_targets(&fast_session).await?;
         warm_click_targets(&human_session).await?;
@@ -207,6 +230,8 @@ async fn main() -> BrowserResult<()> {
                 Ok(())
             })
             .await?;
+        let post_verification_result =
+            bench_post_verification(&fast_session, expensive_iterations).await?;
         let warm_session_reuse_result = compact_observe_result.clone();
         let mut warm_session_reuse_path = warm_session_reuse_result;
         warm_session_reuse_path["operation"] = Value::String("warm_session_reuse".to_string());
@@ -218,6 +243,12 @@ async fn main() -> BrowserResult<()> {
         // ── Client-overhead instrumentation for clicks ────────────────
         let client_overhead_result =
             bench_client_overhead(&fast_session, expensive_iterations).await?;
+
+        let warm_session_creation_result = summarize_samples(
+            "warm_session_creation",
+            1,
+            vec![Duration::from_secs_f64(warm_session_start_ms / 1000.0)],
+        )?;
 
         let results = vec![
             measure("evaluate", iterations, || async {
@@ -260,8 +291,9 @@ async fn main() -> BrowserResult<()> {
             measure_alternating_clicks("click_human", &human_session, expensive_iterations).await?,
             compact_observe_result,
             semantic_bootstrap_result,
+            post_verification_result.clone(),
             client_overhead_result,
-            cold_owned_session_startup_result,
+            cold_owned_session_startup_result.clone(),
             cold_first_observe_result,
             cold_start_result,
         ];
@@ -274,16 +306,52 @@ async fn main() -> BrowserResult<()> {
                 "arch": std::env::consts::ARCH,
             },
             "iterations": iterations,
+            "expensive_iterations": expensive_iterations,
             "warm_session_start_ms": warm_session_start_ms,
             "attach_existing_startup": attach_existing_startup_result,
             "latency_paths": {
                 "cold_owned_startup": cold_owned_startup_path,
                 "attach_existing_startup": attach_existing_startup_path,
                 "warm_session_reuse": warm_session_reuse_path,
-                "semantic_bootstrap": semantic_bootstrap_path,
-                "full_observation": full_observation_path,
+                "semantic_bootstrap": semantic_bootstrap_path.clone(),
+                "full_observation": full_observation_path.clone(),
+            },
+            "session_modes": {
+                "cold_isolated": {
+                    "lifecycle": "new owned incognito session per sample; closed after checkpoints",
+                    "network_latency": {
+                        "included": false,
+                        "scope": "local data:text/html fixture only",
+                        "reason": "public network latency is excluded from this local comparison",
+                    },
+                    "startup": cold_owned_session_startup_result,
+                    "navigation": cold_navigation_result,
+                    "semantic_bootstrap": cold_semantic_bootstrap_result,
+                    "full_observation": cold_full_observation_result.clone(),
+                    "full_inspection": cold_full_observation_result,
+                    "post_verification": cold_post_verification_result,
+                },
+                "warm_persistent": {
+                    "lifecycle": "one owned incognito session reused across checkpoints",
+                    "network_latency": {
+                        "included": false,
+                        "scope": "local data:text/html fixture only",
+                        "reason": "public network latency is excluded from this local comparison",
+                    },
+                    "session_creation": warm_session_creation_result,
+                    "navigation": warm_navigation_result,
+                    "semantic_bootstrap": semantic_bootstrap_path,
+                    "full_observation": full_observation_path.clone(),
+                    "full_inspection": full_observation_path,
+                    "post_verification": post_verification_result,
+                },
             },
             "page_class_latency": page_class_latency_result,
+            "network_latency": {
+                "included": false,
+                "scope": "default benchmark uses local data:text/html fixtures",
+                "public_sites": "not contacted",
+            },
             "warm_startup_diagnostics": fast_session.startup_diagnostics(),
             "payload_bytes": payload_bytes,
             "glass_process_memory": {
@@ -455,6 +523,31 @@ fn summarize_samples(
     }))
 }
 
+/// Benchmark the authoritative post-action verification checkpoint separately
+/// from action dispatch. The fixture is local and the predicate is bounded;
+/// this never contacts a public website or evaluates caller-provided input.
+async fn bench_post_verification(
+    session: &BrowserSession,
+    iterations: usize,
+) -> BrowserResult<Value> {
+    let mut samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let _ = session.click("Unique visible phrase").await?;
+        let started = Instant::now();
+        let _ = session.click("Save").await?;
+        let _ = session
+            .verify(
+                VerificationPredicate::TextContains {
+                    value: "Saved".to_string(),
+                },
+                Duration::from_secs(1),
+            )
+            .await?;
+        samples.push(started.elapsed());
+    }
+    summarize_samples("post_verification", iterations, samples)
+}
+
 /// Benchmark the warm semantic bootstrap path separately from authoritative
 /// observation. The result is intentionally discarded: bootstrap evidence is
 /// only a readiness hint and must not resolve or authorize an action.
@@ -560,11 +653,14 @@ async fn bench_cold_start(
     iterations: usize,
 ) -> BrowserResult<Value> {
     let mut launch_samples = Vec::with_capacity(iterations);
+    let mut navigation_samples = Vec::with_capacity(iterations);
+    let mut bootstrap_samples = Vec::with_capacity(iterations);
     let mut observe_samples = Vec::with_capacity(iterations);
+    let mut post_verification_samples = Vec::with_capacity(iterations);
     let mut startup_diagnostics = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         // The startup sample ends after BrowserSession::start establishes CDP.
-        // Navigation is deliberately outside this timer.
+        // Navigation and all evidence checkpoints are timed independently.
         let port = available_port().await?;
         let launch_started = Instant::now();
         let session = BrowserSession::start(
@@ -580,12 +676,29 @@ async fn bench_cold_start(
         startup_diagnostics.push(*session.startup_diagnostics());
         launch_samples.push(launch_started.elapsed());
 
-        // Navigation is completed before timing the first uncached observe, so
-        // network and navigation latency cannot be charged to either metric.
+        let navigation_started = Instant::now();
         session.navigate(fixture_url).await?;
+        navigation_samples.push(navigation_started.elapsed());
+
+        let bootstrap_started = Instant::now();
+        let _ = session.observe_bootstrap().await?;
+        bootstrap_samples.push(bootstrap_started.elapsed());
+
         let observe_started = Instant::now();
         let _ = session.observe_fresh().await?;
         observe_samples.push(observe_started.elapsed());
+
+        let _ = session.click("Save").await?;
+        let verification_started = Instant::now();
+        let _ = session
+            .verify(
+                VerificationPredicate::TextContains {
+                    value: "Saved".to_string(),
+                },
+                Duration::from_secs(1),
+            )
+            .await?;
+        post_verification_samples.push(verification_started.elapsed());
 
         session.close().await?;
     }
@@ -611,11 +724,36 @@ async fn bench_cold_start(
             iterations,
             launch_samples,
         )?,
+        "cold_navigation": summarize_samples(
+            "cold_navigation",
+            iterations,
+            navigation_samples,
+        )?,
+        "cold_semantic_bootstrap": summarize_samples(
+            "cold_semantic_bootstrap",
+            iterations,
+            bootstrap_samples,
+        )?,
         "cold_first_observe": summarize_samples(
             "cold_first_observe",
             iterations,
+            observe_samples.clone(),
+        )?,
+        "cold_full_observation": summarize_samples(
+            "cold_full_observation",
+            iterations,
             observe_samples,
         )?,
+        "cold_post_verification": summarize_samples(
+            "cold_post_verification",
+            iterations,
+            post_verification_samples,
+        )?,
+        "network_latency": {
+            "included": false,
+            "scope": "local data:text/html fixture only",
+            "reason": "public network latency is excluded from this local comparison",
+        },
         "cold_startup_diagnostics": summarize_startup_diagnostics(&startup_diagnostics)?,
     }))
 }

@@ -1235,6 +1235,10 @@ fn diagnostics_redact_secrets_and_bound_retention() {
     assert!(!redacted.contains("fragment"));
     assert!(redacted.contains("token=%5Bredacted%5D"));
 
+    let malformed = redact_diagnostic_url("https://user:pass@example.test/%zz?token=secret");
+    assert!(!malformed.contains("user"));
+    assert!(!malformed.contains("pass"));
+    assert!(!malformed.contains("secret"));
     let headers = serde_json::json!({
         "Authorization": "Bearer secret",
         "Cookie": "session=secret",

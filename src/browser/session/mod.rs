@@ -148,6 +148,7 @@ mod locator;
 mod navigate;
 mod observe;
 mod polite;
+pub(crate) use polite::{PoliteNavigationClassification, classify_polite_navigation_error};
 mod popup;
 mod retry;
 mod semantic;

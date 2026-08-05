@@ -205,6 +205,7 @@ The benchmark uses the local fixture and reports:
 - warm session reuse through the cached compact observation path;
 - bounded semantic bootstrap latency, which is readiness evidence only;
 - authoritative full observation latency (the uncached compact observation);
+- an explicit post-verification checkpoint after a local fixture action;
 - fresh and cached compact observation separately;
 - explicit deep-DOM and screenshot capture latency;
 - separate alternating fast-mode and human-mode click samples;
@@ -213,6 +214,28 @@ The benchmark uses the local fixture and reports:
   processes; and
 - the supplied Glass binary size, or `null` if no executable is available at
   `GLASS_BINARY_PATH` or `target/release/glass`.
+
+The additive `session_modes` object makes lifecycle comparisons explicit:
+`cold_isolated` starts and closes a new owned incognito session for every
+sample, while `warm_persistent` reuses one owned incognito session. Each mode
+reports startup/session creation, navigation, semantic bootstrap, full
+observation, and post-verification as independent checkpoint distributions.
+Every repeated distribution includes bounded iteration count, mean, p50, p95,
+minimum, and maximum milliseconds. Existing top-level keys and established
+`results` entries remain present; the new checkpoint and mode summaries are
+additive views over the same samples.
+
+The default report is local-only: its `data:text/html` fixture navigation,
+semantic bootstrap, inspection, and post-verification measurements do not
+contact public sites. The report marks `network_latency.included` as `false`
+and identifies public-site latency as out of scope. Do not compare these local
+fixture timings with public network latency without a separate, explicitly
+labeled experiment.
+
+`GLASS_BENCH_ITERATIONS` and `GLASS_BENCH_EXPENSIVE_ITERATIONS` are positive
+sample-count controls capped at 100; their defaults remain 50. This cap keeps
+startup churn, output distributions, and response-size measurements bounded.
+`GLASS_BENCH_PAGE_CLASS_ITERATIONS` retains its separate cap of 100.
 
 The additive `page_class_latency` matrix measures deterministic local data-URL
 fixtures for `normal_static`, `dynamic_listing`, `challenge_interstitial`, and
@@ -228,12 +251,13 @@ The default benchmark never contacts a public website. Set
 
 The `cold_start` result preserves the scalar `chrome_launch_ms` and
 `cold_first_observe_ms` fields for existing consumers. Its nested
-`cold_owned_session_startup` and `cold_first_observe` summaries report
-iterations, mean, p50, and p95; the same summaries are also emitted as
-top-level `results` operations for consumers that index that established
-shape. Startup timing ends after `BrowserSession::start` establishes CDP; the
-benchmark awaits navigation before starting the first-observe timer, so
-network/navigation latency is not charged to startup or observation.
+`cold_owned_session_startup`, `cold_navigation`, `cold_semantic_bootstrap`,
+`cold_first_observe`, `cold_full_observation`, and `cold_post_verification`
+summaries report bounded repeated-sample distributions; the established
+startup and first-observe summaries are also emitted as top-level `results`
+operations. Startup timing ends after `BrowserSession::start` establishes CDP,
+and navigation is awaited before evidence timers start, so network/navigation
+latency is not charged to startup or evidence checkpoints.
 
 The additive `latency_paths` object gives stable names for optimization
 comparisons: `cold_owned_startup`, `attach_existing_startup`,

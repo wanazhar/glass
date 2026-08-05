@@ -3051,10 +3051,18 @@ pub(crate) fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
 
 pub(crate) fn redact_diagnostic_url(value: &str) -> String {
     let Ok(mut url) = url::Url::parse(value) else {
-        return truncate_utf8_bytes(
-            value.split('?').next().unwrap_or(""),
-            MAX_DIAGNOSTIC_URL_BYTES,
-        );
+        let without_suffix = value.split(['?', '#']).next().unwrap_or("");
+        let redacted = if let Some((scheme, rest)) = without_suffix.split_once("://") {
+            let authority_end = rest.find('/').unwrap_or(rest.len());
+            let authority = &rest[..authority_end];
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            format!("{scheme}://{host}{}", &rest[authority_end..])
+        } else {
+            without_suffix.to_string()
+        };
+        return truncate_utf8_bytes(&redacted, MAX_DIAGNOSTIC_URL_BYTES);
     };
     let _ = url.set_username("");
     let _ = url.set_password(None);

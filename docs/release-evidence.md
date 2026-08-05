@@ -51,22 +51,30 @@ OS. The current recorded result is in
 
 ## 0.2.7 candidate validation
 
-The current checkout has a complete pre-publication validation record:
+The current checkout has a complete pre-publication validation record for the
+0.2.7 candidate:
 
-- `cargo test --all-targets --locked`: 499 passed, 1 ignored.
+- `cargo test --all-targets --locked`: 553 passed, 1 ignored.
 - `cargo clippy --all-targets --all-features --locked -- -D warnings`:
   passed.
 - `cargo doc --all-features --locked --no-deps`: passed.
-- `cargo package --locked --no-verify` and
-  `cargo publish --locked --dry-run --no-verify`: passed; dry run performed
+- `cargo deny check`, `cargo audit`, and the fuzz binary check: passed.
+- `cargo package --locked --no-verify` packaged 209 files.
+- `cargo publish --locked --dry-run --no-verify` passed; the dry run performed
   no upload.
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
-  --test-threads=1`: 15 passed in the recorded Linux ARM64 environment.
+  --test-threads=1`: 16 passed in the recorded Linux ARM64 environment.
+- `GLASS_PREVIOUS_VERSION=0.2.6 scripts/smoke-clean-install.sh`: passed for
+  clean candidate installation and local upgrade simulation from 0.2.6 to
+  0.2.7.
 - Version, release-documentation, feature-parity, reliability-matrix, and
   public-read-only-adapter checks: passed.
 
 These are source-checkout and recorded-environment results only. No tag,
 remote push, crates.io publication, or GitHub Release was performed.
+
+Post-publication clean-install verification and tagged-release record checks
+remain pending until the 0.2.7 release boundary is approved.
 
 ## Publication boundary
 

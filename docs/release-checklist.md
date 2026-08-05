@@ -70,7 +70,7 @@ Then complete these release checks:
       environments are tested separately.
 - [x] Inspect `cargo package --list` and the unpacked package.
 - [x] Review dependency, license, and vulnerability JSON reports.
-- [x] Run a clean-machine crates.io install and upgrade test after publication.
+- [ ] Run a clean-machine crates.io install and upgrade test after publication.
 
 ## Verify GitHub release records
 
@@ -99,7 +99,7 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Run the full 0.2.6 release validation suite and package dry runs.
 - [x] Push the release commit and tag after explicit approval.
 - [x] Update issue #30 with final verified 0.2.6 release evidence.
-- [ ] Run the full 0.2.7 release validation suite and package dry runs.
+- [x] Run the full 0.2.7 release validation suite and package dry runs.
 - [ ] Create the signed annotated `v0.2.7` tag after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit after explicit approval.
 - [ ] Create and verify the matching published GitHub Release for `v0.2.7`.

@@ -14,6 +14,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   change detection for task verification and pagination.
 - Added bounded `startIndex` requests and revision-bound continuation metadata
   for resumable table and repeated-item extraction.
+- Continuation requests now fail closed when source revision or route metadata
+  does not match the fresh semantic observation.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

@@ -15,6 +15,7 @@ async fn main() -> glass::BrowserResult<()> {
         }],
         region_id: None,
         start_index: 0,
+        continuation: None,
         max_items: 16,
         max_bytes: 16 * 1024,
     };

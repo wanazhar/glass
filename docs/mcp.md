@@ -184,8 +184,9 @@ references, and `limits` containing requested bounds, observed item count,
 serialized bytes, and truncation status. Array fields can be resumed with a
 bounded `startIndex`; when more items remain, the result includes a
 revision-bound `continuation` containing the next index, source revision, and
-source route. Callers must preserve that revision and route when requesting
-the next bounded slice. Table and repeated-collection fields also return
+source route. Callers should pass that returned continuation object in the
+next request; Glass rejects it if the fresh semantic observation has a
+different revision or route. Table and repeated-collection fields also return
 bounded `recordItems`; each item carries its source field, zero-based source
 index, semantic value, and any evidence-backed entity references.
 The compatibility `records` envelope remains unchanged. Extraction is read-only

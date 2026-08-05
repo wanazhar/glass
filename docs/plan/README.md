@@ -213,6 +213,8 @@ Completed:
   revision-aware semantic page checks.
 - [ir-030-085](tasks/ir-030-085.md) — add bounded, revision-bound
   continuation metadata for truncated extraction.
+- [ir-030-086](tasks/ir-030-086.md) — validate continuation revision and route
+  before resuming extraction.
 
 ## Completed plan: performance overhaul
 Status: Complete

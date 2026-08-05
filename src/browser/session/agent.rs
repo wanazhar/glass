@@ -90,6 +90,8 @@ pub struct StructuredExtractionRequest {
     pub region_id: Option<String>,
     #[serde(default)]
     pub start_index: usize,
+    #[serde(default)]
+    pub continuation: Option<StructuredExtractionContinuation>,
     #[serde(default = "default_extraction_items")]
     pub max_items: usize,
     #[serde(default = "default_extraction_bytes")]
@@ -126,7 +128,7 @@ pub struct StructuredExtractionResult {
 }
 
 /// Revision-bound continuation for a bounded item extraction.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredExtractionContinuation {
     pub next_index: usize,
@@ -281,6 +283,18 @@ impl BrowserSession {
         let observation = self
             .semantic_observe(SemanticObservationLevel::Structured)
             .await?;
+        if let Some(continuation) = &request.continuation
+            && (continuation.source_revision != observation.revision
+                || continuation.source_route != observation.route)
+        {
+            return Err(
+                "continuation does not match the current semantic source revision and route".into(),
+            );
+        }
+        let start_index = request
+            .continuation
+            .as_ref()
+            .map_or(request.start_index, |continuation| continuation.next_index);
         let scoped_region = request.region_id.as_deref().and_then(|region_id| {
             observation
                 .regions
@@ -308,7 +322,7 @@ impl BrowserSession {
             if let Value::Array(items) = &mut value {
                 let item_count = items.len();
                 observed_items = observed_items.saturating_add(item_count);
-                let start = request.start_index.min(item_count);
+                let start = start_index.min(item_count);
                 let end = start.saturating_add(request.max_items).min(item_count);
                 truncated |= start > 0 || end < item_count;
                 if end < item_count {
@@ -393,6 +407,16 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
     }
     if request.start_index > MAX_EXTRACTION_ITEMS {
         return Err(format!("startIndex must be <= {MAX_EXTRACTION_ITEMS}").into());
+    }
+    if let Some(continuation) = &request.continuation {
+        if continuation.next_index > MAX_EXTRACTION_ITEMS {
+            return Err(format!("continuation nextIndex must be <= {MAX_EXTRACTION_ITEMS}").into());
+        }
+        if request.start_index != 0 && request.start_index != continuation.next_index {
+            return Err(
+                "startIndex must match continuation nextIndex when both are provided".into(),
+            );
+        }
     }
     if !(1..=MAX_EXTRACTION_ITEMS).contains(&request.max_items) {
         return Err(format!("maxItems must be 1..={MAX_EXTRACTION_ITEMS}").into());
@@ -549,6 +573,7 @@ mod tests {
             }],
             region_id: None,
             start_index: 0,
+            continuation: None,
             max_items: 1,
             max_bytes: 1024,
         };
@@ -558,6 +583,37 @@ mod tests {
                 .unwrap(),
             Value::String("Glass".into())
         );
+    }
+
+    #[test]
+    fn continuation_requests_require_a_bounded_consistent_index() {
+        let route = SemanticRouteIdentity {
+            target_id: "target".into(),
+            frame_id: "frame".into(),
+            url: "https://example.test".into(),
+        };
+        let mut request = StructuredExtractionRequest {
+            fields: vec![ExtractionField {
+                name: "items".into(),
+                path: "$.items".into(),
+                kind: ExtractionKind::RepeatedItems,
+            }],
+            region_id: None,
+            start_index: 0,
+            continuation: Some(StructuredExtractionContinuation {
+                next_index: 4,
+                source_revision: 7,
+                source_route: route,
+            }),
+            max_items: 2,
+            max_bytes: 1024,
+        };
+        validate_extraction_request(&request).unwrap();
+        request.start_index = 3;
+        assert!(validate_extraction_request(&request).is_err());
+        request.start_index = 0;
+        request.continuation.as_mut().unwrap().next_index = 257;
+        assert!(validate_extraction_request(&request).is_err());
     }
 
     #[test]

@@ -3103,6 +3103,25 @@ fn tools() -> Vec<Tool> {
                     "regionId":{"type":"string","minLength":1,"maxLength":128},
                     "maxItems":{"type":"integer","minimum":1,"maximum":256,"default":256},
                     "startIndex":{"type":"integer","minimum":0,"maximum":256,"default":0},
+                    "continuation":{
+                        "type":"object",
+                        "additionalProperties":false,
+                        "required":["nextIndex","sourceRevision","sourceRoute"],
+                        "properties":{
+                            "nextIndex":{"type":"integer","minimum":0,"maximum":256},
+                            "sourceRevision":{"type":"integer","minimum":0},
+                            "sourceRoute":{
+                                "type":"object",
+                                "additionalProperties":false,
+                                "required":["targetId","frameId","url"],
+                                "properties":{
+                                    "targetId":{"type":"string"},
+                                    "frameId":{"type":"string"},
+                                    "url":{"type":"string"}
+                                }
+                            }
+                        }
+                    },
                     "maxBytes":{"type":"integer","minimum":1,"maximum":262144,"default":262144},
                     "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }

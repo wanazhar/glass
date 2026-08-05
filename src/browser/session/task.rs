@@ -574,6 +574,7 @@ impl BrowserSession {
                     }],
                     region_id: Some(region.id.clone()),
                     start_index: 0,
+                    continuation: None,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };
@@ -628,6 +629,7 @@ impl BrowserSession {
                     }],
                     region_id: Some(region.id.clone()),
                     start_index: 0,
+                    continuation: None,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };
@@ -675,6 +677,7 @@ impl BrowserSession {
                     }],
                     region_id: Some(region_id),
                     start_index: 0,
+                    continuation: None,
                     max_items: task.limits.max_items as usize,
                     max_bytes: 64 * 1024,
                 };

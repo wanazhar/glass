@@ -7,8 +7,6 @@ use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use url::Url;
 
-const MAX_NAVIGATION_EVIDENCE_EVENTS: usize = 256;
-
 pub(crate) struct NavigationRedirectCollector {
     requested_url: String,
     frame_id: Option<String>,
@@ -205,7 +203,7 @@ impl BrowserSession {
                 }
                 let result = async {
                     let mut events = self.cdp.subscribe_events();
-                    let mut payload_events = self.cdp.subscribe_events_with_params();
+                    let payload_events = self.cdp.subscribe_events_with_params();
                     let route_session_id = self.cdp.current_session_id();
                     self.cdp.enable_network().await?;
                     let started = tokio::time::Instant::now();
@@ -221,29 +219,43 @@ impl BrowserSession {
                         self.cdp
                             .set_active_frame_context(Some(frame_id.to_string()), None);
                     }
-                    let remaining = deadline.saturating_sub(started.elapsed());
-                    self.wait_loop(
-                        WaitCondition::Lifecycle("complete".to_string()),
-                        remaining,
-                        deadline,
-                        &mut events,
-                        true,
-                    )
-                    .await?;
-                    let mut redirect_collector =
-                        NavigationRedirectCollector::new(&url, navigation.frame_id.as_deref());
-                    for _ in 0..MAX_NAVIGATION_EVIDENCE_EVENTS {
-                        match payload_events.try_recv() {
-                            Ok(event)
-                                if route_session_id.as_deref() == event.session_id.as_deref()
-                                    || route_session_id.is_none() =>
-                            {
-                                redirect_collector.observe(&event);
+                    let redirect_collector = Arc::new(tokio::sync::Mutex::new(
+                        NavigationRedirectCollector::new(&url, navigation.frame_id.as_deref()),
+                    ));
+                    let collector_for_task = Arc::clone(&redirect_collector);
+                    let collector_task = tokio::spawn(async move {
+                        let mut payload_events = payload_events;
+                        loop {
+                            match payload_events.recv().await {
+                                Ok(event)
+                                    if route_session_id.as_deref()
+                                        == event.session_id.as_deref()
+                                        || route_session_id.is_none() =>
+                                {
+                                    collector_for_task.lock().await.observe(&event);
+                                }
+                                Ok(_) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Ok(_) => {}
-                            Err(_) => break,
                         }
-                    }
+                    });
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    let wait_result = self
+                        .wait_loop(
+                            WaitCondition::Lifecycle("complete".to_string()),
+                            remaining,
+                            deadline,
+                            &mut events,
+                            true,
+                        )
+                        .await;
+                    collector_task.abort();
+                    let _ = collector_task.await;
+                    let redirect_collector = Arc::try_unwrap(redirect_collector)
+                        .map_err(|_| "navigation redirect collector still in use")?
+                        .into_inner();
+                    wait_result?;
                     let remaining = deadline.saturating_sub(started.elapsed());
                     let main_frame = self
                         .list_frames()

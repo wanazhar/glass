@@ -17,6 +17,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Continuation requests now fail closed when source revision or route metadata
   does not match the fresh semantic observation.
 - Continuations now retain and validate the requested semantic region scope.
+- Continuations now retain and validate a non-sensitive extraction contract
+  fingerprint.
 
 ## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including

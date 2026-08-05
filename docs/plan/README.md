@@ -217,6 +217,8 @@ Completed:
   before resuming extraction.
 - [ir-030-087](tasks/ir-030-087.md) — bind continuations to the requested
   semantic region.
+- [ir-030-088](tasks/ir-030-088.md) — bind continuations to the extraction
+  field contract.
 
 ## Completed plan: performance overhaul
 Status: Complete

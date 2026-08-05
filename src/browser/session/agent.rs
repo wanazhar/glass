@@ -4,6 +4,7 @@ use super::*;
 use crate::protocol::{RetryClassification, RetryGuidance};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const MAX_EXTRACTION_FIELDS: usize = 32;
@@ -135,6 +136,7 @@ pub struct StructuredExtractionContinuation {
     pub source_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_id: Option<String>,
+    pub contract_hash: String,
     pub source_route: SemanticRouteIdentity,
 }
 
@@ -282,6 +284,7 @@ impl BrowserSession {
         request: &StructuredExtractionRequest,
     ) -> BrowserResult<StructuredExtractionResult> {
         validate_extraction_request(request)?;
+        let contract_hash = extraction_contract_hash(request);
         let observation = self
             .semantic_observe(SemanticObservationLevel::Structured)
             .await?;
@@ -291,10 +294,11 @@ impl BrowserSession {
                 observation.revision,
                 &observation.route,
                 request.region_id.as_deref(),
+                &contract_hash,
             )
         {
             return Err(
-                "continuation does not match the current semantic source revision, route, or region"
+                "continuation does not match the current semantic source, region, or extraction contract"
                     .into(),
             );
         }
@@ -364,6 +368,7 @@ impl BrowserSession {
             source_revision: observation.revision,
             source_route: source_route.clone(),
             region_id: request.region_id.clone(),
+            contract_hash: contract_hash.clone(),
         });
         Ok(StructuredExtractionResult {
             source_revision: observation.revision,
@@ -445,12 +450,20 @@ fn continuation_matches_source(
     revision: u64,
     route: &SemanticRouteIdentity,
     region_id: Option<&str>,
+    contract_hash: &str,
 ) -> bool {
     continuation.source_revision == revision
         && continuation.source_route == *route
         && continuation.region_id.as_deref() == region_id
+        && continuation.contract_hash == contract_hash
 }
 
+fn extraction_contract_hash(request: &StructuredExtractionRequest) -> String {
+    let canonical = serde_json::to_vec(&(&request.fields, &request.region_id))
+        .expect("extraction contract is serializable");
+    let digest = Sha256::digest(canonical);
+    format!("sha256:{digest:x}")
+}
 fn extraction_source_value(source: &Value, field: &ExtractionField) -> Option<Value> {
     let value = value_at_path(source, &field.path).cloned();
     if field.path == "$.structuredRecords"
@@ -622,20 +635,30 @@ mod tests {
             continuation: Some(StructuredExtractionContinuation {
                 next_index: 4,
                 source_revision: 7,
+                contract_hash: "sha256:test".into(),
                 region_id: None,
                 source_route: route.clone(),
             }),
             max_items: 2,
             max_bytes: 1024,
         };
+        let contract_hash = extraction_contract_hash(&request);
+        request.continuation.as_mut().unwrap().contract_hash = contract_hash.clone();
         validate_extraction_request(&request).unwrap();
         let continuation = request.continuation.as_ref().unwrap();
-        assert!(continuation_matches_source(continuation, 7, &route, None));
+        assert!(continuation_matches_source(
+            continuation,
+            7,
+            &route,
+            None,
+            &contract_hash
+        ));
         assert!(!continuation_matches_source(
             continuation,
             7,
             &route,
-            Some("other-region")
+            Some("other-region"),
+            &contract_hash,
         ));
         request.start_index = 3;
         assert!(validate_extraction_request(&request).is_err());
@@ -766,6 +789,7 @@ mod tests {
             continuation: Some(StructuredExtractionContinuation {
                 next_index: 2,
                 source_revision: 7,
+                contract_hash: "sha256:test".into(),
                 region_id: Some("region_results".into()),
                 source_route: SemanticRouteIdentity {
                     target_id: "target".into(),

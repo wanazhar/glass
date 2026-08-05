@@ -3106,10 +3106,11 @@ fn tools() -> Vec<Tool> {
                     "continuation":{
                         "type":"object",
                         "additionalProperties":false,
-                        "required":["nextIndex","sourceRevision","sourceRoute"],
+                        "required":["nextIndex","sourceRevision","sourceRoute","contractHash"],
                         "properties":{
                             "nextIndex":{"type":"integer","minimum":0,"maximum":256},
                             "sourceRevision":{"type":"integer","minimum":0},
+                            "contractHash":{"type":"string","minLength":71,"maxLength":71},
                             "regionId":{"type":"string","minLength":1,"maxLength":128},
                             "sourceRoute":{
                                 "type":"object",
@@ -4391,6 +4392,10 @@ mod tests {
         assert_eq!(
             extraction["inputSchema"]["properties"]["startIndex"]["minimum"],
             0
+        );
+        assert_eq!(
+            extraction["inputSchema"]["properties"]["continuation"]["properties"]["contractHash"]["minLength"],
+            71
         );
         let bootstrap = tools
             .iter()

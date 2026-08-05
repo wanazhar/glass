@@ -195,6 +195,16 @@ GLASS_BINARY_PATH=target/release/glass \
   cargo run --release --example benchmark > benchmark.json
 ```
 
+`GLASS_BENCH_MODE` labels the intended control envelope without changing the
+legacy cold or warm paths. It accepts `coverage` (the default) or
+`sequential_controlled` (also accepted as `sequential-controlled`). Both modes
+run one bounded operation at a time against the embedded local fixture;
+`sequential_controlled` is the explicit mode for matched performance-baseline
+runs, while `coverage` is the safe deterministic mode for exercising the full
+diagnostic matrix. The report emits the canonical mode in both top-level
+`mode` and `provenance.mode`. Unknown mode values fail closed before Chrome
+startup.
+
 The benchmark uses the local fixture and reports:
 
 - repeated cold owned-session startup separately from page navigation;
@@ -237,6 +247,16 @@ counts, the 100-iteration caps, and this minimum claim count.
 The top-level `claim_policy` repeats these bounds for consumers that need a
 machine-readable gate: one sample is never claim-eligible, and comparative
 claims require two independent eligible runs.
+
+The additive `provenance` object records the canonical mode, UTC timestamp,
+fixture and network scope, OS/architecture, bounded viewport dimensions,
+iteration caps, and a Chrome/Chromium executable identity with a best-effort
+version hint. It never records browser arguments, endpoint URLs, or secrets.
+Use `coverage` for broad local correctness/performance diagnostics; use
+`sequential_controlled` for a performance baseline only when repeating the
+same fixture, Chrome build, viewport, machine, and capped sample counts. A
+coverage run is not interchangeable with a sequential-controlled baseline,
+even though both retain the cold-isolated and warm-persistent distributions.
 
 Interpret `cold_isolated` as lifecycle/setup evidence: each sample pays for a
 new owned incognito browser session. The separate startup distribution includes
@@ -341,6 +361,25 @@ GLASS_BINARY_PATH=target/release-size/glass \
   GLASS_BENCH_ITERATIONS=50 \
   cargo run --release --example benchmark > benchmark-size.json
 ```
+
+## Coverage runs are not performance baselines
+
+Live-site coverage and local benchmark measurements answer different
+questions. A manifest run may contain many sites (including a parallel
+coverage batch) to expose compatibility, policy, redirect, challenge, and
+readiness outcomes. Its aggregate throughput or wall time is not a comparable
+performance baseline: sites have different content and network paths, startup
+and robots delays vary, and parallel scheduling changes contention. In
+particular, no single 50-site run proves a performance regression or
+improvement.
+
+Use each smoke result's per-site provenance (`requestedUrl`, `finalUrl`,
+`sameOrigin`, `redirectCount`, `redirectEvidence`, `pageState`,
+`classification`, `startupDiagnostics`, and `steps`) for diagnosis. For a
+benchmark claim, select one controlled mode, match the machine, Chrome build,
+fixture, viewport, and sample bounds, and report independent claim-eligible
+runs. Do not combine cold startup, warm reuse, controlled
+attach, or public-network timings into one unlabeled number.
 
 ## Fair Playwright comparison
 

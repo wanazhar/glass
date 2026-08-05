@@ -2,7 +2,8 @@
 
 use crate::browser::policy::{BrowserPolicy, PolicyPreset};
 use crate::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, NavigationRedirectStatus, PageState,
+    BrowserResult, BrowserSession, InteractionMode, NavigationExecution, NavigationReadiness,
+    NavigationReadinessPhase, NavigationReadinessStatus, NavigationRedirectStatus, PageState,
     PoliteNavigationClassification, SemanticPageKind, SessionOptions, StartupDiagnostics,
     TargetActionabilityReason, TargetErrorKind, classify_polite_navigation_error,
     redact_diagnostic_url, truncate_utf8_bytes,
@@ -98,6 +99,8 @@ struct SiteSmokeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     redirect_evidence: Option<SmokeRedirectEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    navigation_readiness: Option<SmokeNavigationReadiness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ready_state: Option<String>,
@@ -133,6 +136,15 @@ struct SmokeRedirectEvidence {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeNavigationReadiness {
+    status: &'static str,
+    phase: &'static str,
+    lifecycle_complete: bool,
+    timeout_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -470,6 +482,7 @@ async fn run_site(
             status: "unknown",
             source: Some("bounded navigation redirect evidence unavailable".into()),
         }),
+        navigation_readiness: None,
         title: None,
         ready_state: None,
         page_state: None,
@@ -516,7 +529,7 @@ async fn run_site(
 
     let navigation_started = Instant::now();
     let navigation = match session
-        .navigate_with_deadline_and_metadata(&site.url, Duration::from_secs(30))
+        .navigate_with_deadline_and_readiness(&site.url, Duration::from_secs(30))
         .await
     {
         Ok(navigation) => navigation,
@@ -533,7 +546,13 @@ async fn run_site(
             return result;
         }
     };
-    let (page, (redirect_count, redirect_evidence)) = navigation;
+    let NavigationExecution {
+        page,
+        redirect_count,
+        redirect_evidence,
+        readiness,
+    } = navigation;
+    result.navigation_readiness = Some(smoke_navigation_readiness(&readiness));
     result.final_url = Some(redact_diagnostic_url(&page.url));
     result.same_origin = same_origin(&site.url, &page.url);
     result.redirect_count = redirect_count;
@@ -549,6 +568,12 @@ async fn run_site(
     result
         .steps
         .push(success_step("navigate", navigation_started, Some(&page)));
+    let navigation_complete = navigation_is_complete(&readiness);
+    if !navigation_complete {
+        result.status = "partial";
+        result.classification = "navigation_partial";
+        result.recovery_hint = Some("reobserve_before_action");
+    }
 
     if !apply_expectations(&mut result, site, &page.url, None) {
         result.steps.push(skipped_step(
@@ -558,6 +583,10 @@ async fn run_site(
         result.steps.push(skipped_step(
             "preflight",
             "navigation expectation mismatch prevented target resolution",
+        ));
+        result.steps.push(skipped_step(
+            "postInspectPage",
+            "navigation expectation mismatch prevented recovery",
         ));
         result.duration_ms = elapsed_ms(started);
         let _ = session.close().await;
@@ -648,14 +677,52 @@ async fn run_site(
         let _ = session.close().await;
         return result;
     }
+    if !navigation_complete {
+        let bootstrap_page_state = result.page_state;
+        if !apply_expectations(&mut result, site, &bootstrap.page.url, bootstrap_page_state) {
+            result.steps.push(skipped_step(
+                "inspectPage",
+                "partial navigation expectation mismatch prevented inspection",
+            ));
+            result.steps.push(skipped_step(
+                "preflight",
+                "partial navigation expectation mismatch prevented target resolution",
+            ));
+            result.steps.push(skipped_step(
+                "postInspectPage",
+                "partial navigation expectation mismatch prevented recovery",
+            ));
+            result.duration_ms = elapsed_ms(started);
+            let _ = session.close().await;
+            return result;
+        }
+        result.status = "partial";
+        result.classification = "navigation_partial";
+        result.recovery_hint = Some("reobserve_before_action");
+        result.steps.push(skipped_step(
+            "inspectPage",
+            "partial navigation readiness does not authorize inspection",
+        ));
+        result.steps.push(skipped_step(
+            "preflight",
+            "partial navigation readiness does not authorize target resolution",
+        ));
+        result.steps.push(skipped_step(
+            "postInspectPage",
+            "partial navigation readiness does not trigger recovery",
+        ));
+        result.duration_ms = elapsed_ms(started);
+        let _ = session.close().await;
+        return result;
+    }
 
-    // Bootstrap is sufficient for state-only pages. A full inspection is
-    // reserved for configured target resolution or an automatic target probe.
-    let needs_inspection = site.target.is_some()
-        || matches!(
-            bootstrap.classification.state,
-            PageState::Normal | PageState::Unknown | PageState::Loading
-        );
+    // Bootstrap classifies state before any target-bearing inspection.
+    let needs_inspection = page_state_allows_actions(result.page_state)
+        && (site.target.is_some()
+            || matches!(
+                bootstrap.classification.state,
+                PageState::Normal | PageState::Unknown | PageState::Loading
+            ));
     let mut inspection;
     if needs_inspection {
         let inspect_started = Instant::now();
@@ -683,6 +750,22 @@ async fn run_site(
                     result.steps.push(skipped_step(
                         "preflight",
                         "page expectation mismatch prevented target resolution",
+                    ));
+                    result.duration_ms = elapsed_ms(started);
+                    let _ = session.close().await;
+                    return result;
+                }
+                if !page_state_allows_actions(result.page_state) {
+                    result.status = "partial";
+                    result.classification = "page_state_requires_review";
+                    result.recovery_hint = Some("reobserve_before_action");
+                    result.steps.push(skipped_step(
+                        "preflight",
+                        "non-actionable page state does not authorize target resolution",
+                    ));
+                    result.steps.push(skipped_step(
+                        "postInspectPage",
+                        "non-actionable page state does not trigger recovery",
                     ));
                     result.duration_ms = elapsed_ms(started);
                     let _ = session.close().await;
@@ -823,21 +906,26 @@ async fn run_site(
                         let _ = session.close().await;
                         return result;
                     }
-                    if refreshed_page_state == "challenge" {
+                    if !page_state_allows_actions(Some(refreshed_page_state)) {
                         result.status = "partial";
-                        result.classification = "challenge_interstitial";
-                        result.recovery_hint = None;
+                        result.classification = if refreshed_page_state == "challenge" {
+                            "challenge_interstitial"
+                        } else {
+                            "page_state_requires_review"
+                        };
+                        result.recovery_hint = (refreshed_page_state != "challenge")
+                            .then_some("reobserve_before_action");
                         result.steps.push(skipped_step(
                             "reinspectPage",
-                            "challenge interstitial does not trigger inspection",
+                            "refreshed page state is not actionable; inspection skipped",
                         ));
                         result.steps.push(skipped_step(
                             "preflightRetry",
-                            "challenge interstitial does not authorize target resolution",
+                            "refreshed page state does not authorize retry",
                         ));
                         result.steps.push(skipped_step(
                             "postInspectPage",
-                            "challenge interstitial does not trigger recovery",
+                            "refreshed page state does not trigger recovery",
                         ));
                         result.duration_ms = elapsed_ms(started);
                         let _ = session.close().await;
@@ -866,11 +954,30 @@ async fn run_site(
                         .iter()
                         .map(|region| region.targets.len())
                         .sum();
+                    if let Some(state) = semantic_page_state(&value.page.kind) {
+                        result.page_state = Some(state);
+                    }
                     result.steps.push(success_step(
                         "reinspectPage",
                         reinspect_started,
                         Some(&value),
                     ));
+                    if !page_state_allows_actions(result.page_state) {
+                        result.status = "partial";
+                        result.classification = "page_state_requires_review";
+                        result.recovery_hint = Some("reobserve_before_action");
+                        result.steps.push(skipped_step(
+                            "preflightRetry",
+                            "reinspected page state does not authorize retry",
+                        ));
+                        result.steps.push(skipped_step(
+                            "postInspectPage",
+                            "reinspected page state does not trigger recovery",
+                        ));
+                        result.duration_ms = elapsed_ms(started);
+                        let _ = session.close().await;
+                        return result;
+                    }
                     if site.target.is_none() {
                         target = value
                             .regions
@@ -1069,6 +1176,37 @@ fn page_state_name(state: PageState) -> &'static str {
     }
 }
 
+fn smoke_navigation_readiness(readiness: &NavigationReadiness) -> SmokeNavigationReadiness {
+    SmokeNavigationReadiness {
+        status: navigation_readiness_status_name(&readiness.status),
+        phase: navigation_readiness_phase_name(&readiness.phase),
+        lifecycle_complete: readiness.lifecycle_complete,
+        timeout_ms: readiness.timeout_ms,
+    }
+}
+
+fn navigation_readiness_status_name(status: &NavigationReadinessStatus) -> &'static str {
+    match status {
+        NavigationReadinessStatus::Complete => "complete",
+        NavigationReadinessStatus::Partial => "partial",
+    }
+}
+
+fn navigation_readiness_phase_name(phase: &NavigationReadinessPhase) -> &'static str {
+    match phase {
+        NavigationReadinessPhase::Document => "document",
+        NavigationReadinessPhase::Lifecycle => "lifecycle",
+    }
+}
+
+fn navigation_is_complete(readiness: &NavigationReadiness) -> bool {
+    matches!(&readiness.status, NavigationReadinessStatus::Complete) && readiness.lifecycle_complete
+}
+
+fn page_state_allows_actions(state: Option<&'static str>) -> bool {
+    matches!(state, Some("normal" | "unknown"))
+}
+
 fn semantic_page_state(kind: &SemanticPageKind) -> Option<&'static str> {
     match kind {
         SemanticPageKind::AccessDenied => Some("accessDenied"),
@@ -1195,6 +1333,165 @@ mod tests {
         ));
         assert!(!is_timeout_error("detached target"));
     }
+    #[test]
+    fn navigation_readiness_serializes_additively() {
+        let value = serde_json::to_value(SmokeNavigationReadiness {
+            status: "partial",
+            phase: "document",
+            lifecycle_complete: false,
+            timeout_ms: 750,
+        })
+        .unwrap();
+        assert_eq!(value["status"], "partial");
+        assert_eq!(value["phase"], "document");
+        assert_eq!(value["lifecycleComplete"], false);
+        assert_eq!(value["timeoutMs"], 750);
+    }
+
+    fn smoke_result_for_expectations() -> SiteSmokeResult {
+        SiteSmokeResult {
+            id: "test".into(),
+            requested_url: "https://example.test/start".into(),
+            final_url: None,
+            same_origin: None,
+            redirect_count: None,
+            redirect_evidence: None,
+            navigation_readiness: None,
+            title: None,
+            ready_state: None,
+            page_state: None,
+            status: "passed",
+            classification: "normal",
+            recovery_hint: None,
+            duration_ms: 0,
+            startup_diagnostics: None,
+            steps: Vec::new(),
+            metrics: SiteSmokeMetrics::default(),
+            expectation_failures: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn smoke_site(
+        expected_origin: Option<&str>,
+        expected_page_state: Option<&str>,
+        allow_redirect: Option<bool>,
+    ) -> SiteSmokeSpec {
+        SiteSmokeSpec {
+            id: "test".into(),
+            url: "https://example.test/start".into(),
+            target: None,
+            expected_origin: expected_origin.map(str::to_string),
+            expected_page_state: expected_page_state.map(str::to_string),
+            allow_redirect,
+        }
+    }
+
+    #[test]
+    fn reobserve_expectation_mismatches_are_reported_not_overwritten() {
+        let site = smoke_site(Some("https://example.test"), Some("normal"), Some(false));
+        let mut result = smoke_result_for_expectations();
+        result.redirect_count = Some(0);
+        assert!(apply_expectations(
+            &mut result,
+            &site,
+            "https://example.test/start",
+            Some("normal")
+        ));
+
+        // A fresh observation is authoritative: changed origin, page state,
+        // and redirect evidence must surface as a failed expectation.
+        result.redirect_count = Some(1);
+        assert!(!apply_expectations(
+            &mut result,
+            &site,
+            "https://other.example/final",
+            Some("challenge")
+        ));
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.classification, "expectation_mismatch");
+        assert_eq!(
+            result
+                .expectation_failures
+                .iter()
+                .map(|failure| failure.kind)
+                .collect::<Vec<_>>(),
+            vec!["expected_origin", "allow_redirect", "expected_page_state"]
+        );
+        assert_eq!(
+            result.expectation_failures[0].actual.as_deref(),
+            Some("https://other.example")
+        );
+    }
+
+    #[test]
+    fn unknown_redirect_evidence_cannot_satisfy_no_redirect_expectation() {
+        let site = smoke_site(None, None, Some(false));
+        let mut result = smoke_result_for_expectations();
+        result.redirect_count = None;
+        assert!(!apply_expectations(
+            &mut result,
+            &site,
+            "https://example.test/start",
+            Some("normal")
+        ));
+        let failure = &result.expectation_failures[0];
+        assert_eq!(failure.kind, "allow_redirect");
+        assert_eq!(failure.expected, "false");
+        assert_eq!(failure.actual.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn stale_or_detached_preflight_never_counts_as_authorized() {
+        let base = crate::browser::session::PreflightOutcome {
+            action: crate::browser::session::PreflightAction::Click,
+            unique: true,
+            element: None,
+            actionable: Some(true),
+            actionability_reason: None,
+            candidates: Vec::new(),
+            error_kind: None,
+            revision: 9,
+            geometry: None,
+            hints: crate::browser::session::PreflightHints::default(),
+            diagnostics: None,
+            target_id: Some("target".into()),
+            frame_id: Some("frame".into()),
+        };
+        assert!(!is_stale_preflight(&base, Some(9)));
+
+        let mut detached = base.clone();
+        detached.actionability_reason = Some(TargetActionabilityReason::Detached);
+        assert!(is_stale_preflight(&detached, Some(9)));
+
+        let mut stale_kind = base.clone();
+        stale_kind.error_kind = Some(TargetErrorKind::StaleReference);
+        assert!(is_stale_preflight(&stale_kind, Some(9)));
+
+        assert!(is_stale_preflight(&base, Some(10)));
+    }
+
+    #[test]
+    fn unsafe_page_states_skip_action_recovery_and_keep_policy_hints_distinct() {
+        assert_eq!(page_state_name(PageState::Challenge), "challenge");
+        let skipped = skipped_step(
+            "preflight",
+            "challenge interstitial does not authorize target preflight",
+        );
+        assert_eq!(skipped.status, "skipped");
+        assert!(
+            skipped
+                .error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("does not authorize"))
+        );
+        assert_eq!(
+            policy_recovery_hint("robots_policy_denied"),
+            Some("review_robots_policy")
+        );
+        assert_eq!(policy_recovery_hint("navigation_error"), None);
+    }
+
     #[test]
     fn page_state_and_origin_metadata_are_conservative() {
         assert_eq!(page_state_name(PageState::AccessDenied), "accessDenied");

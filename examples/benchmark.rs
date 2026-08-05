@@ -1,4 +1,5 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+use chrono::Utc;
 use glass::browser::chrome::detect_chrome;
 use glass::browser::session::{
     BrowserResult, BrowserSession, InteractionMode, SessionOptions, StartupDiagnostics,
@@ -7,10 +8,11 @@ use glass::browser::session::{
 use serde_json::{Value, json};
 use std::{
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, Instant},
 };
-use tokio::net::TcpListener;
+use tokio::{io::AsyncReadExt, net::TcpListener, process::Command, time::timeout};
 
 const DEFAULT_ITERATIONS: usize = 50;
 const MAX_ITERATIONS: usize = 100;
@@ -18,6 +20,131 @@ const MAX_PAGE_CLASS_ITERATIONS: usize = 100;
 /// Minimum completed samples required before a timing distribution supports a
 /// performance claim. Smaller runs remain useful diagnostics only.
 const MIN_CLAIM_ITERATIONS: usize = 20;
+
+/// Explicitly labels the workload intent so reports are not compared across
+/// incompatible execution controls. Coverage remains the conservative default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkMode {
+    Coverage,
+    SequentialControlled,
+}
+
+impl BenchmarkMode {
+    fn parse() -> BrowserResult<Self> {
+        match std::env::var("GLASS_BENCH_MODE").ok().as_deref() {
+            None | Some("coverage") => Ok(Self::Coverage),
+            Some("sequential_controlled") | Some("sequential-controlled") => {
+                Ok(Self::SequentialControlled)
+            }
+            Some(value) => Err(format!(
+                "unsupported GLASS_BENCH_MODE {value:?}; expected coverage or sequential_controlled"
+            )
+            .into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Coverage => "coverage",
+            Self::SequentialControlled => "sequential_controlled",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Coverage => {
+                "bounded local fixture coverage; preserves cold-isolated and warm-persistent paths"
+            }
+            Self::SequentialControlled => {
+                "sequential controlled measurement; one operation at a time with matched local fixture scope"
+            }
+        }
+    }
+}
+
+/// Return a bounded, non-sensitive Chrome identity/version hint.
+///
+/// The executable receives only `--version`; command-line arguments and
+/// environment are never included in the report. Failure to obtain a version
+/// is diagnostic and does not make the benchmark fail.
+fn canonical_chrome_version(line: &str) -> Option<String> {
+    if !line.contains("Chrome") && !line.contains("Chromium") {
+        return None;
+    }
+    line.split_whitespace().find_map(|token| {
+        let candidate =
+            token.trim_matches(|character: char| !character.is_ascii_digit() && character != '.');
+        let parts: Vec<_> = candidate.split('.').collect();
+        if parts.len() != 4
+            || parts.iter().any(|part| {
+                part.is_empty() || !part.chars().all(|character| character.is_ascii_digit())
+            })
+        {
+            return None;
+        }
+        Some(parts.join("."))
+    })
+}
+
+async fn chrome_identity(path: &Path) -> Value {
+    // Do not expose the selected filesystem path: it may contain usernames,
+    // tokens, or other command-line material supplied by the caller.
+    let executable = "detected_chrome_or_chromium";
+    let version = async {
+        let mut child = Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return None;
+        };
+        let mut bytes = [0_u8; 256];
+        let count = match timeout(Duration::from_secs(2), stdout.read(&mut bytes)).await {
+            Ok(Ok(count)) => count,
+            _ => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return None;
+            }
+        };
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let text = String::from_utf8_lossy(&bytes[..count]);
+        canonical_chrome_version(text.lines().next()?.trim())
+    }
+    .await;
+    json!({
+        "family": "Chrome/Chromium",
+        "executable": executable,
+        "version": version,
+    })
+}
+
+/// Capture only bounded viewport dimensions from the local benchmark page.
+async fn viewport_provenance(session: &BrowserSession) -> Value {
+    let value = session
+        .evaluate("[window.innerWidth, window.innerHeight]")
+        .await
+        .ok();
+    let width = value
+        .as_ref()
+        .and_then(|value| value.get(0))
+        .and_then(Value::as_u64);
+    let height = value
+        .as_ref()
+        .and_then(|value| value.get(1))
+        .and_then(Value::as_u64);
+    json!({
+        "width": width,
+        "height": height,
+        "source": "window_inner_dimensions",
+    })
+}
 
 const PERCENTILE_METHOD: &str = "nearest_rank";
 
@@ -95,6 +222,8 @@ async fn main() -> BrowserResult<()> {
     let Some(chrome_path) = detect_chrome() else {
         return Err("Chrome/Chromium is required for the benchmark".into());
     };
+    let benchmark_mode = BenchmarkMode::parse()?;
+    let chrome_provenance = chrome_identity(&chrome_path).await;
     let iterations = std::env::var("GLASS_BENCH_ITERATIONS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -214,6 +343,7 @@ async fn main() -> BrowserResult<()> {
             Ok(())
         })
         .await?;
+        let viewport = viewport_provenance(&fast_session).await;
         human_session.navigate(&url).await?;
         warm_click_targets(&fast_session).await?;
         warm_click_targets(&human_session).await?;
@@ -308,6 +438,35 @@ async fn main() -> BrowserResult<()> {
         Ok(json!({
             "tool": "glass",
             "browser": "Chrome/Chromium via raw CDP",
+            "mode": benchmark_mode.as_str(),
+            "provenance": {
+                "schema_version": 1,
+                "mode": benchmark_mode.as_str(),
+                "mode_description": benchmark_mode.description(),
+                "execution": "sequential_one_operation_at_a_time",
+                "fixture": {
+                    "kind": "embedded_local_html",
+                    "source": "tests/fixtures/basic.html",
+                    "url_scheme": "data",
+                    "network_scope": "local_fixture_only",
+                },
+                "network": {
+                    "public_sites_contacted": false,
+                    "scope": "local_data_url_fixtures_only",
+                },
+                "timestamp": Utc::now().to_rfc3339(),
+                "environment": {
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                },
+                "chrome": chrome_provenance,
+                "viewport": viewport,
+                "iteration_caps": {
+                    "normal": MAX_ITERATIONS,
+                    "expensive": MAX_ITERATIONS,
+                    "page_class": MAX_PAGE_CLASS_ITERATIONS,
+                },
+            },
             "environment": {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,

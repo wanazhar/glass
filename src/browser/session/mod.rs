@@ -146,6 +146,10 @@ mod knowledge;
 mod knowledge_store;
 mod locator;
 mod navigate;
+pub(crate) use navigate::{
+    NavigationExecution, NavigationReadiness, NavigationReadinessPhase, NavigationReadinessStatus,
+};
+
 mod observe;
 mod polite;
 pub(crate) use polite::{PoliteNavigationClassification, classify_polite_navigation_error};

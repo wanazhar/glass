@@ -7,11 +7,72 @@ use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use url::Url;
 
+const NAVIGATION_WAIT_EVIDENCE_RESERVE: Duration = Duration::from_millis(50);
+
+struct NavigationCollectorTask(Option<tokio::task::JoinHandle<()>>);
+
+impl NavigationCollectorTask {
+    fn new(task: tokio::task::JoinHandle<()>) -> Self {
+        Self(Some(task))
+    }
+
+    async fn stop(mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for NavigationCollectorTask {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 pub(crate) struct NavigationRedirectCollector {
     requested_url: String,
     frame_id: Option<String>,
     request_id: Option<String>,
     redirect_count: Option<u16>,
+}
+
+/// Bounded readiness status for a navigation execution.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum NavigationReadinessStatus {
+    Complete,
+    Partial,
+}
+
+/// Phase reached by a bounded navigation execution.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum NavigationReadinessPhase {
+    Document,
+    Lifecycle,
+}
+
+/// Readiness evidence collected while navigating.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationReadiness {
+    pub status: NavigationReadinessStatus,
+    pub phase: NavigationReadinessPhase,
+    pub lifecycle_complete: bool,
+    pub timeout_ms: u64,
+}
+
+/// Bounded navigation metadata for crate-internal smoke and diagnostics.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationExecution {
+    pub page: PageInfo,
+    pub redirect_count: Option<u16>,
+    pub redirect_evidence: NavigationRedirectEvidence,
+    pub readiness: NavigationReadiness,
 }
 
 impl NavigationRedirectCollector {
@@ -49,6 +110,7 @@ impl NavigationRedirectCollector {
             return;
         }
         let request = &event.params["request"];
+
         if request["type"]
             .as_str()
             .is_some_and(|kind| kind != "Document")
@@ -68,6 +130,13 @@ impl NavigationRedirectCollector {
                     .is_some_and(serde_json::Value::is_object),
             ));
         }
+    }
+    pub(crate) fn set_frame_id(&mut self, frame_id: Option<&str>) {
+        if self.frame_id.as_deref() != frame_id {
+            self.request_id = None;
+            self.redirect_count = None;
+        }
+        self.frame_id = frame_id.map(str::to_string);
     }
 
     pub(crate) fn finish(self) -> (Option<u16>, NavigationRedirectEvidence) {
@@ -150,10 +219,20 @@ impl BrowserSession {
         let json = value
             .as_str()
             .ok_or("document state evaluation returned a non-string value")?;
+
+
                 let mut page: PageInfo = serde_json::from_str(json)?;
                 (page.target_id, page.frame_id) = self.route_identity().await?;
                 Ok(page)
         }).await
+    }
+    fn bounded_partial_navigation_page(mut page: PageInfo) -> PageInfo {
+        page.url = truncate_utf8_bytes(&safe_navigation_url(&page.url), BOOTSTRAP_URL_MAX_BYTES);
+        page.title = truncate_utf8_bytes(&page.title, BOOTSTRAP_TITLE_MAX_BYTES);
+        page.ready_state = truncate_utf8_bytes(&page.ready_state, BOOTSTRAP_TITLE_MAX_BYTES);
+        page.target_id = bounded_topology_id(&page.target_id);
+        page.frame_id = bounded_topology_id(&page.frame_id);
+        page
     }
 
     /// Navigate the active target to a URL with a 20-second deadline.
@@ -190,6 +269,28 @@ impl BrowserSession {
         url: &str,
         deadline: Duration,
     ) -> BrowserResult<(PageInfo, (Option<u16>, NavigationRedirectEvidence))> {
+        let execution = self
+            .navigate_with_deadline_and_readiness(url, deadline)
+            .await?;
+        if !execution.readiness.lifecycle_complete {
+            return Err(wait_timeout("lifecycle", deadline, "lifecycle_incomplete").into());
+        }
+        Ok((
+            execution.page,
+            (execution.redirect_count, execution.redirect_evidence),
+        ))
+    }
+
+    /// Navigate with bounded lifecycle and page-readiness evidence.
+    ///
+    /// A partial result is returned only when the navigation command succeeds,
+    /// the lifecycle wait reaches its deadline, and a bounded page-info probe
+    /// succeeds. It is advisory evidence and does not verify an action.
+    pub(crate) async fn navigate_with_deadline_and_readiness(
+        &self,
+        url: &str,
+        deadline: Duration,
+    ) -> BrowserResult<NavigationExecution> {
         self.cdp
             .with_current_target_route(async {
                 validate_wait_deadline(deadline)?;
@@ -201,29 +302,32 @@ impl BrowserSession {
                 {
                     return Err(error.into());
                 }
+
                 let result = async {
+                    let started = tokio::time::Instant::now();
                     let mut events = self.cdp.subscribe_events();
                     let payload_events = self.cdp.subscribe_events_with_params();
                     let route_session_id = self.cdp.current_session_id();
-                    self.cdp.enable_network().await?;
-                    let started = tokio::time::Instant::now();
-                    self.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
-                    let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    tokio::time::timeout(remaining, self.cdp.enable_network())
                         .await
                         .map_err(|_| {
-                            wait_timeout("lifecycle", deadline, "navigate_command_pending")
+                            wait_timeout("lifecycle", deadline, "enable_network_pending")
                         })??;
-                    if let Some(frame_id) = navigation.frame_id.as_deref() {
-                        validate_topology_id(frame_id)?;
-                        self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
-                        self.cdp
-                            .set_active_frame_context(Some(frame_id.to_string()), None);
-                    }
+                    self.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
+
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    let initial_frame_id = tokio::time::timeout(remaining, async {
+                        self.topology.lock().await.active_frame_id.clone()
+                    })
+                    .await
+                    .ok()
+                    .flatten();
                     let redirect_collector = Arc::new(tokio::sync::Mutex::new(
-                        NavigationRedirectCollector::new(&url, navigation.frame_id.as_deref()),
+                        NavigationRedirectCollector::new(&url, initial_frame_id.as_deref()),
                     ));
                     let collector_for_task = Arc::clone(&redirect_collector);
-                    let collector_task = tokio::spawn(async move {
+                    let collector_task = NavigationCollectorTask::new(tokio::spawn(async move {
                         let mut payload_events = payload_events;
                         loop {
                             match payload_events.recv().await {
@@ -239,38 +343,175 @@ impl BrowserSession {
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
                         }
-                    });
+                    }));
+
                     let remaining = deadline.saturating_sub(started.elapsed());
-                    let wait_result = self
-                        .wait_loop(
-                            WaitCondition::Lifecycle("complete".to_string()),
+                    let navigation =
+                        match tokio::time::timeout(remaining, self.cdp.navigate(&url)).await {
+                            Err(_) => {
+                                collector_task.stop().await;
+                                return Err(wait_timeout(
+                                    "lifecycle",
+                                    deadline,
+                                    "navigate_command_pending",
+                                )
+                                .into());
+                            }
+                            Ok(Err(error)) => {
+                                collector_task.stop().await;
+                                return Err(error.into());
+                            }
+                            Ok(Ok(navigation)) => navigation,
+                        };
+
+                    if let Some(frame_id) = navigation.frame_id.as_deref() {
+                        if let Err(error) = validate_topology_id(frame_id) {
+                            collector_task.stop().await;
+                            return Err(error);
+                        }
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        if tokio::time::timeout(remaining, async {
+                            self.topology.lock().await.active_frame_id = Some(frame_id.to_string());
+                        })
+                        .await
+                        .is_err()
+                        {
+                            collector_task.stop().await;
+                            return Err(wait_timeout(
+                                "lifecycle",
+                                deadline,
+                                "topology_update_pending",
+                            )
+                            .into());
+                        }
+                        self.cdp
+                            .set_active_frame_context(Some(frame_id.to_string()), None);
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        if tokio::time::timeout(remaining, async {
+                            redirect_collector.lock().await.set_frame_id(Some(frame_id));
+                        })
+                        .await
+                        .is_err()
+                        {
+                            collector_task.stop().await;
+                            return Err(wait_timeout(
+                                "lifecycle",
+                                deadline,
+                                "redirect_evidence_pending",
+                            )
+                            .into());
+                        }
+                    }
+
+                    let remaining = deadline.saturating_sub(started.elapsed());
+                    let wait_budget = remaining.saturating_sub(NAVIGATION_WAIT_EVIDENCE_RESERVE);
+                    let wait_result = if wait_budget.is_zero() {
+                        Err(wait_timeout("lifecycle", deadline, "lifecycle_pending").into())
+                    } else {
+                        match tokio::time::timeout(
                             remaining,
-                            deadline,
-                            &mut events,
-                            true,
+                            self.wait_loop(
+                                WaitCondition::Lifecycle("complete".to_string()),
+                                wait_budget,
+                                deadline,
+                                &mut events,
+                                true,
+                            ),
                         )
-                        .await;
-                    collector_task.abort();
-                    let _ = collector_task.await;
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                Err(wait_timeout("lifecycle", deadline, "lifecycle_pending").into())
+                            }
+                        }
+                    };
+
+                    let mut observed_page = None;
+                    let lifecycle_complete = match wait_result {
+                        Ok(_) => true,
+                        Err(error) => {
+                            if let Some(timeout) = error.downcast_ref::<WaitTimeout>() {
+                                observed_page = timeout.observed_page.clone();
+                                false
+                            } else {
+                                collector_task.stop().await;
+                                return Err(error);
+                            }
+                        }
+                    };
+
+                    collector_task.stop().await;
                     let redirect_collector = Arc::try_unwrap(redirect_collector)
                         .map_err(|_| "navigation redirect collector still in use")?
                         .into_inner();
-                    wait_result?;
-                    let remaining = deadline.saturating_sub(started.elapsed());
-                    let main_frame = self
-                        .list_frames()
-                        .await?
-                        .into_iter()
-                        .find(|frame| frame.parent_id.is_none())
-                        .ok_or("navigated target returned no main frame")?;
-                    self.select_frame(&main_frame.id).await?;
-                    let page = tokio::time::timeout(remaining, self.page_info())
-                        .await
-                        .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+                    let (redirect_count, redirect_evidence) = redirect_collector.finish();
+
+                    let page = if lifecycle_complete {
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        let frames = tokio::time::timeout(remaining, self.list_frames())
+                            .await
+                            .map_err(|_| {
+                            wait_timeout("lifecycle", deadline, "frames_pending")
+                        })??;
+                        let main_frame = frames
+                            .into_iter()
+                            .find(|frame| frame.parent_id.is_none())
+                            .ok_or("navigated target returned no main frame")?;
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        tokio::time::timeout(remaining, self.select_frame(&main_frame.id))
+                            .await
+                            .map_err(|_| wait_timeout("lifecycle", deadline, "frame_pending"))??;
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        tokio::time::timeout(remaining, self.page_info())
+                            .await
+                            .map_err(|_| {
+                                wait_timeout("lifecycle", deadline, "page_info_pending")
+                            })??
+                    } else if let Some(page) = observed_page {
+                        page
+                    } else {
+                        let remaining = deadline.saturating_sub(started.elapsed());
+                        if remaining.is_zero() {
+                            return Err(
+                                wait_timeout("lifecycle", deadline, "page_info_pending").into()
+                            );
+                        }
+                        tokio::time::timeout(remaining, self.page_info())
+                            .await
+                            .map_err(|_| {
+                                wait_timeout("lifecycle", deadline, "page_info_pending")
+                            })??
+                    };
+
                     self.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
+                    let page = if lifecycle_complete {
+                        page
+                    } else {
+                        Self::bounded_partial_navigation_page(page)
+                    };
+
                     self.invalidate_observation().await;
                     self.record_audit("navigate", safe_navigation_url(&url));
-                    Ok((page, redirect_collector.finish()))
+                    Ok(NavigationExecution {
+                        page,
+                        redirect_count,
+                        redirect_evidence,
+                        readiness: NavigationReadiness {
+                            status: if lifecycle_complete {
+                                NavigationReadinessStatus::Complete
+                            } else {
+                                NavigationReadinessStatus::Partial
+                            },
+                            phase: if lifecycle_complete {
+                                NavigationReadinessPhase::Lifecycle
+                            } else {
+                                NavigationReadinessPhase::Document
+                            },
+                            lifecycle_complete,
+                            timeout_ms: deadline.as_millis() as u64,
+                        },
+                    })
                 }
                 .await;
                 if let Some(error) = match &self.policy_interception {

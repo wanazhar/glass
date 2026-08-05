@@ -132,6 +132,97 @@ re-observe after any target becomes stale. Recovery is read-only and bounded:
 at most one fresh bootstrap/inspection and one preflight retry is attempted,
 and no action is retried or authorized by bootstrap evidence.
 
+### Structured navigation readiness
+
+Every site result carries an additive `navigationReadiness` object when
+navigation returns enough bounded evidence to report it:
+
+```json
+{
+  "navigationReadiness": {
+    "status": "complete",
+    "phase": "lifecycle",
+    "lifecycleComplete": true,
+    "timeoutMs": 30000
+  }
+}
+```
+
+`navigationReadiness.status` is `complete` or `partial`;
+`navigationReadiness.phase` is `document` or `lifecycle`. A `partial` result
+means the navigation command returned and a bounded page-info checkpoint
+succeeded, but the requested lifecycle condition did not complete before
+`timeoutMs`. Partial readiness is evidence for reporting only: it never
+authorizes a target resolution or action. Command, policy, or bounded page-info
+failures remain site failures rather than partial readiness.
+
+Bootstrap-first is deliberate. `observeBootstrap` is a bounded, page-state-only
+checkpoint and never supplies action-authorizing targets. `inspectPage` is
+requested only when a configured target, an automatic target probe, or richer
+semantic evidence requires it. `preflight` is read-only and side-effect-free;
+successful bootstrap evidence cannot be used to skip the current inspection or
+preflight. A page-state classification therefore remains separate from the
+operation `classification`.
+
+### Timing and recovery contract
+
+`startupDiagnostics` reports session creation separately from page work. Its
+bounded fields are `launch_endpoint_ms`, `page_target_wait_ms`,
+`cdp_connect_ms`, `target_attach_ms`, `event_setup_ms`, `policy_arm_ms`, and
+`total_startup_ms`.
+`steps` reports independently timed `startup`, `navigate`, `observeBootstrap`,
+`inspectPage`, `preflight`, `preflightRetry`, `reobserve`, `reinspectPage`, and
+`postInspectPage` operations when they occur. Each step has `name`, `status`,
+`durationMs`, optional `responseBytes`, and a bounded optional `error`.
+`durationMs` for the site is wall-clock end-to-end time; it must not be treated
+as navigation latency.
+
+Navigation timeout, inspection timeout, and a lifecycle-only partial readiness
+are distinct outcomes. A navigation command that does not return a page and
+cannot produce bounded page information is a failed navigation (for example
+`navigation_timeout` or `navigation_error`), not a partial success. A returned
+page with `navigationReadiness.status: "partial"` is reported separately and
+requires the normal bootstrap-first checks. Inspection timeout preserves
+navigation/bootstrap evidence and is `status: "partial"` with
+`classification: "inspection_timeout"`.
+When navigation returns a page with partial readiness, the operation
+classification is `navigation_partial`.
+
+The report is per-site provenance, not just an aggregate score. `requestedUrl`,
+`finalUrl`, `sameOrigin`, `redirectCount`, and `redirectEvidence` identify the
+bounded navigation observation; `redirectEvidence.status` is `observed` or
+`unknown`, and `redirectEvidence.source` explains the evidence boundary.
+`policyProvenance` contains `robotsEnforced`, `enforcement`, and `source`.
+URLs and diagnostic text remain bounded and redacted as in the CLI contract.
+
+Recovery is intentionally finite: a stale or detached target permits at most
+one fresh `observeBootstrap` plus inspection and one read-only preflight retry.
+No action is retried. `recoveryHint: "reobserve_before_action"` means the
+caller must obtain fresh evidence; it is not permission to act.
+
+### Interpreting page states and policy outcomes
+
+`pageState` (`normal`, `challenge`, `consent`, `accessDenied`, `loginRequired`,
+`empty`, or `unknown`) is advisory and must not be conflated with
+`classification`. A challenge interstitial detected from bounded navigation
+metadata is `pageState: "challenge"`,
+`classification: "challenge_interstitial"`, and `status: "partial"`; it skips
+inspection, preflight, and recovery. Consent, login, access-denied, and empty
+states are reported for review and do not authorize an action.
+
+`url_policy_denied` means the active URL policy rejected the requested URL.
+`robots_policy_denied` means robots retrieval/status or path rules rejected it.
+Both are fail-closed, carry their distinct recovery hints, and never authorize a
+retry or policy bypass. A timeout is a runtime outcome, not a robots outcome.
+
+### Coverage batches versus performance
+
+Running many manifest entries concurrently can improve coverage throughput, but
+the resulting batch is not a comparable performance baseline. Site content,
+network conditions, browser startup churn, policy delays, redirects, challenge
+rates, and scheduling differ per entry. Use the per-site fields above for
+diagnosis; use the controlled local benchmark modes for performance claims.
+
 A non-zero exit status means at least one site has `status: "failed"`. Policy
 denials remain machine-readable in the report.
 

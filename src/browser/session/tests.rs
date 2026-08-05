@@ -1159,6 +1159,188 @@ fn navigation_redirect_collector_distinguishes_observed_zero_from_unknown() {
         NavigationRedirectStatus::Unknown
     ));
 }
+#[test]
+fn navigation_redirect_collector_filters_frame_url_and_resource_noise() {
+    let mut collector =
+        NavigationRedirectCollector::new("https://example.test/start", Some("frame-1"));
+
+    // A different route must not seed the evidence chain.
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "other-frame",
+            "frameId": "frame-2",
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/start"
+            }
+        }),
+        session_id: Some("session-other".into()),
+    });
+    // Subresources and a different document URL are not navigation evidence.
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "image",
+            "frameId": "frame-1",
+            "request": {
+                "type": "Image",
+                "url": "https://example.test/start"
+            }
+        }),
+        session_id: Some("session-current".into()),
+    });
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "other-document",
+            "frameId": "frame-1",
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/other"
+            }
+        }),
+        session_id: Some("session-current".into()),
+    });
+
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "document",
+            "frameId": "frame-1",
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/start"
+            }
+        }),
+        session_id: Some("session-current".into()),
+    });
+    // A redirect from another frame cannot inflate the current route.
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "document",
+            "frameId": "frame-2",
+            "redirectResponse": {"status": 302},
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/final"
+            }
+        }),
+        session_id: Some("session-other".into()),
+    });
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".into(),
+        params: serde_json::json!({
+            "requestId": "document",
+            "frameId": "frame-1",
+            "redirectResponse": {"status": 302},
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/final"
+            }
+        }),
+        session_id: Some("session-current".into()),
+    });
+
+    let (count, evidence) = collector.finish();
+    assert_eq!(count, Some(1));
+    assert!(matches!(
+        evidence.status,
+        NavigationRedirectStatus::Observed
+    ));
+    assert_eq!(
+        evidence.source.as_deref(),
+        Some("Network.requestWillBeSent")
+    );
+    assert!(
+        evidence
+            .source
+            .as_ref()
+            .is_some_and(|source| source.len() <= 64)
+    );
+}
+
+#[test]
+fn page_classification_is_bounded_and_never_action_authorization() {
+    let page = PageInfo {
+        url: "https://example.test/challenge".into(),
+        title: "Just a moment".into(),
+        ready_state: "complete".into(),
+        target_id: "target-1".into(),
+        frame_id: "frame-1".into(),
+    };
+    let classification = classify_page_state(
+        &page,
+        "Checking your browser before accessing. Verify you are human.",
+        &[],
+    );
+    assert_eq!(classification.state, PageState::Challenge);
+    assert_eq!(
+        classification.next_step,
+        PageStateNextStep::InspectChallenge
+    );
+    assert!(classification.evidence.len() <= 4);
+    assert!(
+        classification
+            .evidence
+            .iter()
+            .all(|item| item.signal.len() <= 160 && item.detail.len() <= 160)
+    );
+    // The classification only recommends inspection; action authorization
+    // still requires a fresh authoritative preflight.
+    assert_ne!(classification.next_step, PageStateNextStep::Inspect);
+}
+#[test]
+fn navigation_readiness_serializes_bounded_phase_and_completion() {
+    let partial = NavigationReadiness {
+        status: NavigationReadinessStatus::Partial,
+        phase: NavigationReadinessPhase::Document,
+        lifecycle_complete: false,
+        timeout_ms: 750,
+    };
+    let value = serde_json::to_value(&partial).unwrap();
+    assert_eq!(value["status"], "partial");
+    assert_eq!(value["phase"], "document");
+    assert_eq!(value["lifecycleComplete"], false);
+    assert_eq!(value["timeoutMs"], 750);
+
+    let complete = NavigationReadiness {
+        status: NavigationReadinessStatus::Complete,
+        phase: NavigationReadinessPhase::Lifecycle,
+        lifecycle_complete: true,
+        timeout_ms: 1_000,
+    };
+    let value = serde_json::to_value(complete).unwrap();
+    assert_eq!(value["status"], "complete");
+    assert_eq!(value["phase"], "lifecycle");
+    assert_eq!(value["lifecycleComplete"], true);
+}
+
+#[test]
+fn robots_policy_errors_are_typed_separately_from_navigation_failures() {
+    let denied = super::polite::PoliteNavigationError::RobotsPathDenied {
+        path: "/private".into(),
+    };
+    assert_eq!(
+        denied.classification(),
+        PoliteNavigationClassification::RobotsPathDenied
+    );
+    assert_eq!(
+        classify_polite_navigation_error(&denied),
+        PoliteNavigationClassification::RobotsPathDenied
+    );
+
+    let transport = std::io::Error::other("navigation failed");
+    assert_eq!(
+        classify_polite_navigation_error(&transport),
+        PoliteNavigationClassification::Unknown
+    );
+    assert_ne!(
+        denied.classification(),
+        classify_polite_navigation_error(&transport)
+    );
+}
 
 #[test]
 fn navigation_identity_metadata_serializes_observed_zero_redirects() {

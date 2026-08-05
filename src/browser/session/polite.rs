@@ -6,12 +6,14 @@
 
 use super::*;
 use futures_util::StreamExt;
+use std::collections::HashSet;
 use std::fmt;
 
 const POLITE_MIN_DELAY: Duration = Duration::from_secs(1);
 const POLITE_MAX_DELAY: Duration = Duration::from_secs(30);
 const ROBOTS_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ROBOTS_BODY_BYTES: usize = 128 * 1024;
+const MAX_ROBOTS_REDIRECTS: usize = 2;
 
 /// Stable runtime category for a polite-navigation result.
 ///
@@ -73,6 +75,7 @@ pub(crate) enum PoliteNavigationError {
     RobotsStatus { status: u16 },
     RobotsPathDenied { path: String },
     RobotsUnavailable { reason: String },
+    RobotsRedirectRejected { reason: String },
     RobotsBodyTooLarge,
 }
 
@@ -90,7 +93,9 @@ impl PoliteNavigationError {
                 }
             }
             Self::RobotsPathDenied { .. } => PoliteNavigationClassification::RobotsPathDenied,
-            Self::RobotsUnavailable { .. } | Self::RobotsBodyTooLarge => {
+            Self::RobotsUnavailable { .. }
+            | Self::RobotsRedirectRejected { .. }
+            | Self::RobotsBodyTooLarge => {
                 PoliteNavigationClassification::RobotsUnavailable { status: None }
             }
         }
@@ -120,6 +125,12 @@ impl fmt::Display for PoliteNavigationError {
                 write!(
                     formatter,
                     "polite navigation denied: robots.txt unavailable"
+                )
+            }
+            Self::RobotsRedirectRejected { reason } => {
+                write!(
+                    formatter,
+                    "polite navigation denied: robots.txt redirect rejected: {reason}"
                 )
             }
             Self::RobotsBodyTooLarge => {
@@ -184,19 +195,7 @@ impl BrowserSession {
                 env!("CARGO_PKG_VERSION")
             ))
             .build()?;
-        let response = client.get(robots_url).send().await.map_err(|_| {
-            PoliteNavigationError::RobotsUnavailable {
-                reason: "robots.txt request failed".to_string(),
-            }
-        })?;
-        let status = response.status().as_u16();
-        let body = if response.status() == reqwest::StatusCode::NOT_FOUND {
-            String::new()
-        } else if response.status().is_success() {
-            read_bounded_body(response).await?
-        } else {
-            return Err(PoliteNavigationError::RobotsStatus { status }.into());
-        };
+        let (status, body) = fetch_robots(&client, &parsed, robots_url).await?;
         let rules = RobotsRules::parse(&body);
         let path = parsed.path();
         if rules.disallows(path) {
@@ -236,6 +235,107 @@ impl BrowserSession {
     pub(crate) async fn enforce_polite_navigation(&self, url: &str) -> BrowserResult<()> {
         self.polite_navigation_outcome(url).await.map(|_| ())
     }
+}
+async fn fetch_robots(
+    client: &reqwest::Client,
+    requested: &url::Url,
+    initial: url::Url,
+) -> BrowserResult<(u16, String)> {
+    let mut current = initial;
+    let mut visited = HashSet::new();
+
+    for redirect_count in 0..=MAX_ROBOTS_REDIRECTS {
+        if !visited.insert(current.clone()) {
+            return Err(PoliteNavigationError::RobotsRedirectRejected {
+                reason: "redirect loop detected".to_string(),
+            }
+            .into());
+        }
+        let response = client.get(current.clone()).send().await.map_err(|_| {
+            PoliteNavigationError::RobotsUnavailable {
+                reason: "robots.txt request failed".to_string(),
+            }
+        })?;
+        let status = response.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::MOVED_PERMANENTLY
+                | reqwest::StatusCode::FOUND
+                | reqwest::StatusCode::SEE_OTHER
+                | reqwest::StatusCode::TEMPORARY_REDIRECT
+                | reqwest::StatusCode::PERMANENT_REDIRECT
+        ) {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| PoliteNavigationError::RobotsRedirectRejected {
+                    reason: "redirect location is missing or invalid".to_string(),
+                })?;
+            current =
+                next_robots_redirect(requested, &current, location, redirect_count, &visited)?;
+            continue;
+        }
+        let status = status.as_u16();
+        let body = if status == reqwest::StatusCode::NOT_FOUND.as_u16() {
+            String::new()
+        } else if (200..400).contains(&status) {
+            read_bounded_body(response).await?
+        } else {
+            return Err(PoliteNavigationError::RobotsStatus { status }.into());
+        };
+        return Ok((status, body));
+    }
+    unreachable!("robots redirect loop always returns")
+}
+
+fn resolve_robots_redirect(
+    requested: &url::Url,
+    current: &url::Url,
+    location: &str,
+) -> Result<url::Url, PoliteNavigationError> {
+    let mut destination =
+        current
+            .join(location)
+            .map_err(|_| PoliteNavigationError::RobotsRedirectRejected {
+                reason: "redirect location is invalid".to_string(),
+            })?;
+    let _ = destination.set_username("");
+    let _ = destination.set_password(None);
+    destination.set_query(None);
+    destination.set_fragment(None);
+    if !same_origin(requested, &destination) {
+        return Err(PoliteNavigationError::RobotsRedirectRejected {
+            reason: "redirect leaves requested origin".to_string(),
+        });
+    }
+    Ok(destination)
+}
+fn next_robots_redirect(
+    requested: &url::Url,
+    current: &url::Url,
+    location: &str,
+    redirect_count: usize,
+    visited: &HashSet<url::Url>,
+) -> Result<url::Url, PoliteNavigationError> {
+    if redirect_count >= MAX_ROBOTS_REDIRECTS {
+        return Err(PoliteNavigationError::RobotsRedirectRejected {
+            reason: "redirect budget exhausted".to_string(),
+        });
+    }
+    let destination = resolve_robots_redirect(requested, current, location)?;
+    if visited.contains(&destination) {
+        return Err(PoliteNavigationError::RobotsRedirectRejected {
+            reason: "redirect loop detected".to_string(),
+        });
+    }
+    Ok(destination)
+}
+
+fn same_origin(left: &url::Url, right: &url::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 async fn read_bounded_body(response: reqwest::Response) -> BrowserResult<String> {
@@ -382,6 +482,76 @@ mod tests {
             classify_polite_navigation_error(&robots),
             PoliteNavigationClassification::RobotsStatus { status: 403 }
         );
+    }
+
+    #[test]
+    fn follows_same_origin_redirect_after_stripping_sensitive_url_parts() {
+        let requested = url::Url::parse("https://example.test/start").unwrap();
+        let current = url::Url::parse("https://example.test/robots.txt").unwrap();
+        let visited = HashSet::from([current.clone()]);
+        let destination = next_robots_redirect(
+            &requested,
+            &current,
+            "https://user:secret@example.test/policy?token=redacted#fragment",
+            0,
+            &visited,
+        )
+        .unwrap();
+        assert_eq!(destination.as_str(), "https://example.test/policy");
+        assert!(destination.username().is_empty());
+        assert!(destination.password().is_none());
+        assert!(destination.query().is_none());
+        assert!(destination.fragment().is_none());
+    }
+
+    #[test]
+    fn rejects_cross_origin_robots_redirects() {
+        let requested = url::Url::parse("https://example.test/start").unwrap();
+        let current = url::Url::parse("https://example.test/robots.txt").unwrap();
+        let error = next_robots_redirect(
+            &requested,
+            &current,
+            "https://other.test/robots.txt",
+            0,
+            &HashSet::from([current.clone()]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &error,
+            PoliteNavigationError::RobotsRedirectRejected { .. }
+        ));
+        assert!(error.to_string().contains("leaves requested origin"));
+    }
+
+    #[test]
+    fn rejects_redirect_loops_and_budget_exhaustion() {
+        let requested = url::Url::parse("https://example.test/start").unwrap();
+        let current = url::Url::parse("https://example.test/robots.txt").unwrap();
+        let visited = HashSet::from([current.clone()]);
+        let loop_error =
+            next_robots_redirect(&requested, &current, "/robots.txt", 0, &visited).unwrap_err();
+        assert!(loop_error.to_string().contains("loop"));
+
+        let budget_error = next_robots_redirect(
+            &requested,
+            &current,
+            "/next.txt",
+            MAX_ROBOTS_REDIRECTS,
+            &visited,
+        )
+        .unwrap_err();
+        assert!(budget_error.to_string().contains("budget"));
+    }
+
+    #[test]
+    fn denies_terminal_418_and_403_robots_responses() {
+        for status in [418, 403] {
+            let error = PoliteNavigationError::RobotsStatus { status };
+            assert_eq!(
+                error.classification(),
+                PoliteNavigationClassification::RobotsStatus { status }
+            );
+        }
     }
 
     #[test]

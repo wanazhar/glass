@@ -185,7 +185,9 @@ impl BrowserSession {
             })
     }
 
-    async fn navigate_with_deadline_and_metadata(
+    /// Run the bounded navigation lifecycle and retain raw page metadata plus
+    /// redirect evidence for crate-internal callers.
+    pub(crate) async fn navigate_with_deadline_and_metadata(
         &self,
         url: &str,
         deadline: Duration,
@@ -205,6 +207,7 @@ impl BrowserSession {
                     let mut events = self.cdp.subscribe_events();
                     let mut payload_events = self.cdp.subscribe_events_with_params();
                     let route_session_id = self.cdp.current_session_id();
+                    self.cdp.enable_network().await?;
                     let started = tokio::time::Instant::now();
                     self.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
                     let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))

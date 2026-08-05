@@ -18,6 +18,12 @@ access-denied page, or empty page) do not trigger a full inspection. They are
 reported with a page-state classification separate from the operation
 classification.
 
+Challenge evidence is checked immediately from bounded navigation metadata. A
+known interstitial title such as `Just a moment...` is reported as
+`pageState: "challenge"` and `classification: "challenge_interstitial"` with
+`status: "partial"`; it does not trigger inspection, target preflight, or
+recovery.
+
 No clicks, form submissions, downloads, screenshots, logins, or JavaScript
 evaluation are performed.
 
@@ -34,6 +40,25 @@ The input is a JSON file with up to 32 sites:
   ]
 }
 ```
+
+Each site may also include additive expectations:
+
+```json
+{
+  "id": "docs",
+  "url": "https://developer.mozilla.org/en-US/",
+  "expectedOrigin": "https://developer.mozilla.org",
+  "expectedPageState": "normal",
+  "allowRedirect": false
+}
+```
+
+`expectedOrigin` must be an absolute HTTP(S) origin, and `expectedPageState`
+must be one of `normal`, `challenge`, `consent`, `accessDenied`,
+`loginRequired`, `empty`, or `unknown`. `allowRedirect` defaults to the
+legacy behavior when omitted; explicitly setting it to `false` reports a
+bounded `classification: "expectation_mismatch"` if a redirect is observed
+(or redirect evidence is unavailable). Old manifests remain valid.
 
 `target` is optional. When omitted, Glass probes the first bounded semantic
 target published by `inspectPage` when the bootstrap state calls for target
@@ -67,6 +92,12 @@ denials and robots/runtime-policy denials are distinct:
 
 Neither denial authorizes a retry or bypass. Use `development` only when the
 operator is authorized to bypass that robots gate.
+
+The report includes additive `policyProvenance` metadata. Its
+`robotsEnforced` boolean and `enforcement` value (`"enforced"` or
+`"not_enforced"`) distinguish the polite robots gate from policies that do not
+enforce robots rules. This is provenance only; it never authorizes a retry or
+bypass.
 
 `--stop-on-error` stops after the first site-level failure. Without it, all
 manifest entries run and the command exits non-zero if any site fails.
@@ -103,6 +134,9 @@ and no action is retried or authorized by bootstrap evidence.
 
 A non-zero exit status means at least one site has `status: "failed"`. Policy
 denials remain machine-readable in the report.
+
+Expectation failures are machine-readable and bounded in each site result
+under `expectationFailures`, with `kind`, `expected`, and `actual` fields.
 
 ## Batch input
 

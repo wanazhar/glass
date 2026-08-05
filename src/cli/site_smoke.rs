@@ -2,9 +2,10 @@
 
 use crate::browser::policy::{BrowserPolicy, PolicyPreset};
 use crate::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, PageState, PoliteNavigationClassification,
-    SemanticPageKind, SessionOptions, StartupDiagnostics, TargetActionabilityReason,
-    TargetErrorKind, classify_polite_navigation_error, redact_diagnostic_url, truncate_utf8_bytes,
+    BrowserResult, BrowserSession, InteractionMode, NavigationRedirectStatus, PageState,
+    PoliteNavigationClassification, SemanticPageKind, SessionOptions, StartupDiagnostics,
+    TargetActionabilityReason, TargetErrorKind, classify_polite_navigation_error,
+    redact_diagnostic_url, truncate_utf8_bytes,
 };
 use crate::cli::args::Cli;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,11 @@ enum SiteSmokeInput {
 
 #[derive(Debug, Clone, Deserialize)]
 struct SiteSmokeManifest {
-    #[serde(default = "default_schema_version")]
+    #[serde(
+        rename = "schemaVersion",
+        alias = "schema_version",
+        default = "default_schema_version"
+    )]
     schema_version: u8,
     sites: Vec<SiteSmokeSpec>,
 }
@@ -40,6 +45,13 @@ struct SiteSmokeSpec {
     url: String,
     #[serde(default)]
     target: Option<String>,
+    #[serde(rename = "expectedOrigin", alias = "expected_origin", default)]
+    expected_origin: Option<String>,
+    #[serde(rename = "expectedPageState", alias = "expected_page_state", default)]
+    expected_page_state: Option<String>,
+    /// `None` preserves the legacy behavior, which allowed redirects.
+    #[serde(rename = "allowRedirect", alias = "allow_redirect", default)]
+    allow_redirect: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +59,7 @@ struct SiteSmokeSpec {
 struct SiteSmokeReport {
     schema_version: u8,
     policy: PolicyPreset,
+    policy_provenance: SmokePolicyProvenance,
     viewport: Option<SmokeViewport>,
     total: usize,
     completed: usize,
@@ -54,6 +67,14 @@ struct SiteSmokeReport {
     partial: usize,
     failed: usize,
     sites: Vec<SiteSmokeResult>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokePolicyProvenance {
+    robots_enforced: bool,
+    enforcement: &'static str,
+    source: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,8 +112,19 @@ struct SiteSmokeResult {
     startup_diagnostics: Option<StartupDiagnostics>,
     steps: Vec<SiteSmokeStep>,
     metrics: SiteSmokeMetrics,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    expectation_failures: Vec<SmokeExpectationFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeExpectationFailure {
+    kind: &'static str,
+    expected: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,6 +246,15 @@ pub(crate) async fn run(
     let report = SiteSmokeReport {
         schema_version: SITE_SMOKE_SCHEMA_VERSION,
         policy: policy.preset(),
+        policy_provenance: SmokePolicyProvenance {
+            robots_enforced: policy.is_polite(),
+            enforcement: if policy.is_polite() {
+                "enforced"
+            } else {
+                "not_enforced"
+            },
+            source: "browser_policy",
+        },
         viewport: viewport.map(|(width, height)| SmokeViewport { width, height }),
         total,
         completed: results.len(),
@@ -268,8 +309,148 @@ fn parse_manifest(source: &str) -> BrowserResult<Vec<SiteSmokeSpec>> {
             )
             .into());
         }
+        if let Some(origin) = site.expected_origin.as_deref()
+            && !valid_expected_origin(origin)
+        {
+            return Err(format!(
+                "site '{}' expectedOrigin must be an absolute HTTP(S) origin",
+                site.id
+            )
+            .into());
+        }
+        if let Some(state) = site.expected_page_state.as_deref()
+            && !valid_expected_page_state(state)
+        {
+            return Err(format!(
+                "site '{}' expectedPageState is not a supported page state",
+                site.id
+            )
+            .into());
+        }
     }
     Ok(sites)
+}
+fn valid_expected_origin(origin: &str) -> bool {
+    if origin.is_empty() || origin.len() > MAX_URL_BYTES {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return false;
+    };
+    matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.origin().ascii_serialization() != "null"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && (parsed.path().is_empty() || parsed.path() == "/")
+        && parsed.fragment().is_none()
+}
+
+fn valid_expected_page_state(state: &str) -> bool {
+    matches!(
+        state,
+        "normal" | "challenge" | "consent" | "accessDenied" | "loginRequired" | "empty" | "unknown"
+    )
+}
+
+fn challenge_interstitial_title(title: &str) -> bool {
+    let normalized = title
+        .chars()
+        .take(MAX_ERROR_BYTES)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    matches!(
+        normalized.as_str(),
+        "just a moment"
+            | "checking your browser"
+            | "checking if the site connection is secure"
+            | "verify you are human"
+            | "verify that you are human"
+            | "human verification"
+            | "performing security verification"
+            | "security verification"
+            | "enable javascript and cookies"
+            | "enable javascript to continue"
+    )
+}
+
+fn apply_expectations(
+    result: &mut SiteSmokeResult,
+    site: &SiteSmokeSpec,
+    final_url: &str,
+    page_state: Option<&'static str>,
+) -> bool {
+    if let Some(expected_origin) = site.expected_origin.as_deref()
+        && !result
+            .expectation_failures
+            .iter()
+            .any(|failure| failure.kind == "expected_origin")
+    {
+        let matches = same_origin(expected_origin, final_url) == Some(true);
+        if !matches {
+            result.expectation_failures.push(SmokeExpectationFailure {
+                kind: "expected_origin",
+                expected: bounded_error(expected_origin),
+                actual: origin_for_url(final_url).map(|origin| bounded_error(&origin)),
+            });
+        }
+    }
+    if site.allow_redirect == Some(false)
+        && !result
+            .expectation_failures
+            .iter()
+            .any(|failure| failure.kind == "allow_redirect")
+    {
+        let no_redirect = result.redirect_count == Some(0);
+        if !no_redirect {
+            result.expectation_failures.push(SmokeExpectationFailure {
+                kind: "allow_redirect",
+                expected: "false".into(),
+                actual: Some(
+                    result
+                        .redirect_count
+                        .map(|count| count.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+            });
+        }
+    }
+    if let (Some(expected), Some(actual)) = (site.expected_page_state.as_deref(), page_state)
+        && expected != actual
+        && !result
+            .expectation_failures
+            .iter()
+            .any(|failure| failure.kind == "expected_page_state")
+    {
+        result.expectation_failures.push(SmokeExpectationFailure {
+            kind: "expected_page_state",
+            expected: expected.into(),
+            actual: Some(actual.into()),
+        });
+    }
+    if !result.expectation_failures.is_empty() {
+        result.status = "failed";
+        result.classification = "expectation_mismatch";
+        result.recovery_hint = None;
+        result.error = Some("bounded site expectation mismatch".into());
+        false
+    } else {
+        true
+    }
+}
+
+fn origin_for_url(value: &str) -> Option<String> {
+    let parsed = url::Url::parse(value).ok()?;
+    let origin = parsed.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
 }
 
 async fn run_site(
@@ -287,7 +468,7 @@ async fn run_site(
         redirect_count: None,
         redirect_evidence: Some(SmokeRedirectEvidence {
             status: "unknown",
-            source: Some("legacy navigation API did not expose bounded redirect events".into()),
+            source: Some("bounded navigation redirect evidence unavailable".into()),
         }),
         title: None,
         ready_state: None,
@@ -299,6 +480,7 @@ async fn run_site(
         startup_diagnostics: None,
         steps: Vec::new(),
         metrics: SiteSmokeMetrics::default(),
+        expectation_failures: Vec::new(),
         error: None,
     };
 
@@ -333,20 +515,11 @@ async fn run_site(
         };
 
     let navigation_started = Instant::now();
-    let page = match session
-        .navigate_with_deadline(&site.url, Duration::from_secs(30))
+    let navigation = match session
+        .navigate_with_deadline_and_metadata(&site.url, Duration::from_secs(30))
         .await
     {
-        Ok(page) => {
-            result.final_url = Some(redact_diagnostic_url(&page.url));
-            result.same_origin = same_origin(&site.url, &page.url);
-            result.title = Some(truncate_utf8_bytes(&page.title, MAX_ERROR_BYTES));
-            result.ready_state = Some(page.ready_state.clone());
-            result
-                .steps
-                .push(success_step("navigate", navigation_started, Some(&page)));
-            page
-        }
+        Ok(navigation) => navigation,
         Err(error) => {
             let message = bounded_error(&error.to_string());
             result.classification = classify_navigation_error(&*error);
@@ -360,8 +533,67 @@ async fn run_site(
             return result;
         }
     };
+    let (page, (redirect_count, redirect_evidence)) = navigation;
+    result.final_url = Some(redact_diagnostic_url(&page.url));
+    result.same_origin = same_origin(&site.url, &page.url);
+    result.redirect_count = redirect_count;
+    result.redirect_evidence = Some(SmokeRedirectEvidence {
+        status: match redirect_evidence.status {
+            NavigationRedirectStatus::Observed => "observed",
+            NavigationRedirectStatus::Unknown => "unknown",
+        },
+        source: redirect_evidence.source,
+    });
+    result.title = Some(truncate_utf8_bytes(&page.title, MAX_ERROR_BYTES));
+    result.ready_state = Some(page.ready_state.clone());
+    result
+        .steps
+        .push(success_step("navigate", navigation_started, Some(&page)));
+
+    if !apply_expectations(&mut result, site, &page.url, None) {
+        result.steps.push(skipped_step(
+            "observeBootstrap",
+            "navigation expectation mismatch prevented page observation",
+        ));
+        result.steps.push(skipped_step(
+            "preflight",
+            "navigation expectation mismatch prevented target resolution",
+        ));
+        result.duration_ms = elapsed_ms(started);
+        let _ = session.close().await;
+        return result;
+    }
+
+    if challenge_interstitial_title(&page.title) {
+        result.page_state = Some("challenge");
+        result.status = "partial";
+        result.classification = "challenge_interstitial";
+        let page_state = result.page_state;
+        let _ = apply_expectations(&mut result, site, &page.url, page_state);
+        result.steps.push(skipped_step(
+            "observeBootstrap",
+            "challenge interstitial detected from bounded navigation metadata",
+        ));
+        result.steps.push(skipped_step(
+            "inspectPage",
+            "challenge interstitial does not trigger inspection",
+        ));
+        result.steps.push(skipped_step(
+            "preflight",
+            "challenge interstitial does not authorize target preflight",
+        ));
+        result.steps.push(skipped_step(
+            "postInspectPage",
+            "challenge interstitial does not trigger recovery",
+        ));
+        result.duration_ms = elapsed_ms(started);
+        let _ = session.close().await;
+        return result;
+    }
 
     let bootstrap_started = Instant::now();
+    // Bootstrap is sufficient for state-only pages. A full inspection is
+    // reserved for configured target resolution or an automatic target probe.
     let first_bootstrap_revision;
     let bootstrap = match session.observe_bootstrap().await {
         Ok(bootstrap) => {
@@ -395,6 +627,27 @@ async fn run_site(
             return result;
         }
     };
+    if bootstrap.classification.state == PageState::Challenge {
+        result.status = "partial";
+        result.classification = "challenge_interstitial";
+        result.recovery_hint = None;
+        let _ = apply_expectations(&mut result, site, &bootstrap.page.url, Some("challenge"));
+        result.steps.push(skipped_step(
+            "inspectPage",
+            "challenge interstitial does not trigger inspection",
+        ));
+        result.steps.push(skipped_step(
+            "preflight",
+            "challenge interstitial does not authorize target preflight",
+        ));
+        result.steps.push(skipped_step(
+            "postInspectPage",
+            "challenge interstitial does not trigger recovery",
+        ));
+        result.duration_ms = elapsed_ms(started);
+        let _ = session.close().await;
+        return result;
+    }
 
     // Bootstrap is sufficient for state-only pages. A full inspection is
     // reserved for configured target resolution or an automatic target probe.
@@ -425,6 +678,16 @@ async fn run_site(
                 result
                     .steps
                     .push(success_step("inspectPage", inspect_started, Some(&value)));
+                let page_state = result.page_state;
+                if !apply_expectations(&mut result, site, &value.page.url, page_state) {
+                    result.steps.push(skipped_step(
+                        "preflight",
+                        "page expectation mismatch prevented target resolution",
+                    ));
+                    result.duration_ms = elapsed_ms(started);
+                    let _ = session.close().await;
+                    return result;
+                }
                 inspection = Some(value);
             }
             Err(error) => {
@@ -446,13 +709,27 @@ async fn run_site(
             }
         }
     } else {
+        result.status = "partial";
+        result.classification = "page_state_requires_review";
+        result.recovery_hint = Some("reobserve_before_action");
+        let page_state = result.page_state;
+        if !apply_expectations(&mut result, site, &bootstrap.page.url, page_state) {
+            result.steps.push(skipped_step(
+                "preflight",
+                "page expectation mismatch prevented target resolution",
+            ));
+            result.steps.push(skipped_step(
+                "postInspectPage",
+                "page expectation mismatch prevented recovery",
+            ));
+            result.duration_ms = elapsed_ms(started);
+            let _ = session.close().await;
+            return result;
+        }
         result.steps.push(skipped_step(
             "inspectPage",
             "bootstrap page state did not require target resolution",
         ));
-        result.status = "partial";
-        result.classification = "page_state_requires_review";
-        result.recovery_hint = Some("reobserve_before_action");
         result.steps.push(skipped_step(
             "preflight",
             "no target resolution performed for classified page state",
@@ -511,11 +788,61 @@ async fn run_site(
             let reobserve_started = Instant::now();
             match session.observe_bootstrap().await {
                 Ok(value) => {
-                    result.page_state = Some(page_state_name(value.classification.state));
+                    let refreshed_page_state = page_state_name(value.classification.state);
+                    result.final_url = Some(redact_diagnostic_url(&value.page.url));
+                    result.same_origin = same_origin(&site.url, &value.page.url);
+                    result.title = Some(truncate_utf8_bytes(&value.page.title, MAX_ERROR_BYTES));
+                    result.ready_state = Some(value.page.ready_state.clone());
+                    result.page_state = Some(refreshed_page_state);
+                    result.metrics.bootstrap_bytes =
+                        serde_json::to_vec(&value).ok().map(|bytes| bytes.len());
                     result.metrics.bootstrap_revision = Some(value.revision);
+                    let expectations_match = apply_expectations(
+                        &mut result,
+                        site,
+                        &value.page.url,
+                        Some(refreshed_page_state),
+                    );
                     result
                         .steps
                         .push(success_step("reobserve", reobserve_started, Some(&value)));
+                    if !expectations_match {
+                        result.steps.push(skipped_step(
+                            "reinspectPage",
+                            "refreshed page expectation mismatch prevented inspection",
+                        ));
+                        result.steps.push(skipped_step(
+                            "preflightRetry",
+                            "refreshed page expectation mismatch prevented retry",
+                        ));
+                        result.steps.push(skipped_step(
+                            "postInspectPage",
+                            "refreshed page expectation mismatch prevented recovery",
+                        ));
+                        result.duration_ms = elapsed_ms(started);
+                        let _ = session.close().await;
+                        return result;
+                    }
+                    if refreshed_page_state == "challenge" {
+                        result.status = "partial";
+                        result.classification = "challenge_interstitial";
+                        result.recovery_hint = None;
+                        result.steps.push(skipped_step(
+                            "reinspectPage",
+                            "challenge interstitial does not trigger inspection",
+                        ));
+                        result.steps.push(skipped_step(
+                            "preflightRetry",
+                            "challenge interstitial does not authorize target resolution",
+                        ));
+                        result.steps.push(skipped_step(
+                            "postInspectPage",
+                            "challenge interstitial does not trigger recovery",
+                        ));
+                        result.duration_ms = elapsed_ms(started);
+                        let _ = session.close().await;
+                        return result;
+                    }
                 }
                 Err(error) => {
                     let message = bounded_error(&error.to_string());
@@ -801,6 +1128,51 @@ mod tests {
         assert_eq!(parse_manifest(manifest).unwrap().len(), 1);
         let duplicate = r#"{"schemaVersion":1,"sites":[{"id":"same","url":"https://a.example"},{"id":"same","url":"https://b.example"}]}"#;
         assert!(parse_manifest(duplicate).is_err());
+    }
+
+    #[test]
+    fn old_manifests_keep_legacy_defaults() {
+        let sites = parse_manifest(
+            r#"{"schemaVersion":1,"sites":[{"id":"docs","url":"https://example.test"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(sites[0].expected_origin, None);
+        assert_eq!(sites[0].expected_page_state, None);
+        assert_eq!(sites[0].allow_redirect, None);
+    }
+
+    #[test]
+    fn validates_expectation_contracts() {
+        assert!(parse_manifest(
+            r#"{"schemaVersion":1,"sites":[{"id":"docs","url":"https://example.test","expectedOrigin":"https://example.test","expectedPageState":"normal","allowRedirect":false}]}"#,
+        )
+        .is_ok());
+        assert!(parse_manifest(
+            r#"{"schemaVersion":1,"sites":[{"id":"docs","url":"https://example.test","expectedOrigin":"https://example.test/path"}]}"#,
+        )
+        .is_err());
+        assert!(parse_manifest(
+            r#"{"schemaVersion":1,"sites":[{"id":"docs","url":"https://example.test","expectedPageState":"bogus"}]}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn detects_bounded_challenge_titles() {
+        assert!(challenge_interstitial_title("Just a moment..."));
+        assert!(!challenge_interstitial_title("A moment in history"));
+    }
+
+    #[test]
+    fn serializes_policy_provenance_additively() {
+        let value = serde_json::to_value(SmokePolicyProvenance {
+            robots_enforced: true,
+            enforcement: "enforced",
+            source: "browser_policy",
+        })
+        .unwrap();
+        assert_eq!(value["robotsEnforced"], true);
+        assert_eq!(value["enforcement"], "enforced");
     }
 
     #[test]

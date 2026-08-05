@@ -1125,6 +1125,70 @@ fn navigation_redirect_count_requires_bounded_network_evidence() {
 }
 
 #[test]
+fn navigation_redirect_collector_distinguishes_observed_zero_from_unknown() {
+    let mut collector =
+        NavigationRedirectCollector::new("https://example.test/start", Some("frame-1"));
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".to_string(),
+        params: serde_json::json!({
+            "requestId": "request-1",
+            "frameId": "frame-1",
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/start"
+            }
+        }),
+        session_id: None,
+    });
+
+    let (count, evidence) = collector.finish();
+    assert_eq!(count, Some(0));
+    assert!(matches!(
+        evidence.status,
+        NavigationRedirectStatus::Observed
+    ));
+    assert_eq!(
+        evidence.source.as_deref(),
+        Some("Network.requestWillBeSent")
+    );
+
+    let (_, unknown_evidence) =
+        NavigationRedirectCollector::new("https://example.test/start", Some("frame-1")).finish();
+    assert!(matches!(
+        unknown_evidence.status,
+        NavigationRedirectStatus::Unknown
+    ));
+}
+
+#[test]
+fn navigation_identity_metadata_serializes_observed_zero_redirects() {
+    let page = PageInfo {
+        url: "https://example.test/final".to_string(),
+        title: "Final".to_string(),
+        ready_state: "complete".to_string(),
+        target_id: "target-1".to_string(),
+        frame_id: "frame-1".to_string(),
+    };
+    let identity = navigation_identity(
+        "https://example.test/start",
+        &page,
+        Some(0),
+        NavigationRedirectEvidence {
+            status: NavigationRedirectStatus::Observed,
+            source: Some("Network.requestWillBeSent".to_string()),
+        },
+    );
+    let value = serde_json::to_value(identity).unwrap();
+    assert_eq!(value["redirectCount"], 0);
+    assert_eq!(value["redirectEvidence"]["status"], "observed");
+    assert_eq!(
+        value["redirectEvidence"]["source"],
+        "Network.requestWillBeSent"
+    );
+    assert_eq!(value["sameOrigin"], true);
+}
+
+#[test]
 fn revision_contract_errors_are_typed_and_recoverable() {
     let error = ActionContractError::stale_revision(7, 9);
     let value = serde_json::to_value(&error).unwrap();

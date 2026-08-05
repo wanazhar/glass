@@ -225,6 +225,29 @@ minimum, and maximum milliseconds. Existing top-level keys and established
 `results` entries remain present; the new checkpoint and mode summaries are
 additive views over the same samples.
 
+Each timing distribution also carries `statistical_evidence`: its completed
+sample count, the bounded maximum sample count, the claim-eligibility
+threshold, and a `percentile_scope` that states that p50 and p95 use the
+nearest-rank method over all completed samples in that distribution. A
+distribution with fewer than 20 completed samples is diagnostic only; it must
+not support a performance regression, improvement, or threshold claim. The
+report's `sampling` object records the normal, expensive, and page-class
+counts, the 100-iteration caps, and this minimum claim count.
+
+The top-level `claim_policy` repeats these bounds for consumers that need a
+machine-readable gate: one sample is never claim-eligible, and comparative
+claims require two independent eligible runs.
+
+Interpret `cold_isolated` as lifecycle/setup evidence: each sample pays for a
+new owned incognito browser session. The separate startup distribution includes
+process and CDP setup variability; first-observation distributions begin after
+navigation and bootstrap. Interpret `warm_persistent` as steady-state reuse
+evidence: one session is reused, and cached compact observation can make its
+reuse path materially different from authoritative fresh observation.
+Do not compare a cold distribution with a warm distribution as a direct
+optimization claim unless the lifecycle, fixture, Chrome build, machine, and
+sample counts are matched and the relevant distributions are claim-eligible.
+
 The default report is local-only: its `data:text/html` fixture navigation,
 semantic bootstrap, inspection, and post-verification measurements do not
 contact public sites. The report marks `network_latency.included` as `false`
@@ -295,10 +318,15 @@ general results.
 
 `GLASS_BENCH_ITERATIONS` controls normal and warm operations. The expensive
 operations, including repeated cold startup and first-observe samples, use
-`GLASS_BENCH_EXPENSIVE_ITERATIONS` (the normal count by default). Set that
+`GLASS_BENCH_EXPENSIVE_ITERATIONS` (the normal count by default). Set either
 variable to a smaller positive value only for a diagnostic run; such a run
-must not be used as release evidence. Use p50 and p95, not one average, and
-avoid claiming a regression or improvement from a single run.
+must not be used as release evidence. The hard cap is 100 iterations for each
+general or expensive distribution (and separately for page-class samples).
+For a performance claim, require at least 20 completed samples in every
+distribution being claimed, inspect p50 and p95 together, and collect at least
+two independent eligible runs under the same machine, Chrome build, fixture,
+and lifecycle. One short run, one average, or a cold/warm mismatch is
+insufficient evidence.
 
 The payload fields measure serialized `PageContext` JSON only. They do not
 include the JSON-RPC envelope or MCP's separate image-content wrapper. The RSS

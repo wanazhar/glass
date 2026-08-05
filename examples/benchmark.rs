@@ -15,6 +15,11 @@ use tokio::net::TcpListener;
 const DEFAULT_ITERATIONS: usize = 50;
 const MAX_ITERATIONS: usize = 100;
 const MAX_PAGE_CLASS_ITERATIONS: usize = 100;
+/// Minimum completed samples required before a timing distribution supports a
+/// performance claim. Smaller runs remain useful diagnostics only.
+const MIN_CLAIM_ITERATIONS: usize = 20;
+
+const PERCENTILE_METHOD: &str = "nearest_rank";
 
 struct PageClassFixture {
     name: &'static str,
@@ -74,12 +79,14 @@ document.querySelector("#listing").innerHTML =
 
 /// Compute a percentile from a sorted slice of f64 values.
 ///
-/// Uses the nearest-rank method: `index = round((len - 1) * p)`.
+/// Uses the nearest-rank method: `rank = ceil(len * p)`, with one-based
+/// ranks clamped so `p = 0` selects the first value.
 /// Panics if `data` is empty.
 pub fn percentile(data: &[f64], p: f64) -> f64 {
     assert!(!data.is_empty(), "percentile requires non-empty data");
     assert!((0.0..=1.0).contains(&p), "percentile p must be in [0, 1]");
-    let index = ((data.len().saturating_sub(1)) as f64 * p).round() as usize;
+    let rank = (p * data.len() as f64).ceil() as usize;
+    let index = rank.saturating_sub(1).min(data.len() - 1);
     data[index]
 }
 
@@ -305,6 +312,21 @@ async fn main() -> BrowserResult<()> {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
             },
+            "sampling": {
+                "normal_iterations": iterations,
+                "expensive_iterations": expensive_iterations,
+                "page_class_iterations": page_class_iterations,
+                "max_iterations": MAX_ITERATIONS,
+                "max_page_class_iterations": MAX_PAGE_CLASS_ITERATIONS,
+                "min_claim_iterations": MIN_CLAIM_ITERATIONS,
+                "claim_policy": "timing claims require at least min_claim_iterations completed samples per distribution",
+            },
+            "claim_policy": {
+                "minimum_samples_per_reported_path": MIN_CLAIM_ITERATIONS,
+                "maximum_samples_per_reported_path": MAX_ITERATIONS,
+                "one_sample_supports_claim": false,
+                "comparative_claim_minimum_runs": 2,
+            },
             "iterations": iterations,
             "expensive_iterations": expensive_iterations,
             "warm_session_start_ms": warm_session_start_ms,
@@ -498,6 +520,31 @@ where
     summarize_samples(name, iterations, samples)
 }
 
+fn distribution_metadata(sample_count: usize) -> Value {
+    let claim_eligible = sample_count >= MIN_CLAIM_ITERATIONS;
+    json!({
+        "sample_count": sample_count,
+        "max_samples": MAX_ITERATIONS,
+        "claim": {
+            "eligible": claim_eligible,
+            "minimum_samples": MIN_CLAIM_ITERATIONS,
+            "minimum_independent_runs_for_comparison": 2,
+            "scope": "descriptive timing evidence; comparative claims require matched repeated runs",
+            "reason": if claim_eligible {
+                "minimum completed-sample threshold met"
+            } else {
+                "diagnostic only: minimum completed-sample threshold not met"
+            },
+        },
+        "percentile_scope": {
+            "method": PERCENTILE_METHOD,
+            "sample_set": "all completed timing samples in this distribution",
+            "p50": "50th percentile over the completed timing samples",
+            "p95": "95th percentile over the completed timing samples",
+        },
+    })
+}
+
 fn summarize_samples(
     name: &str,
     iterations: usize,
@@ -507,9 +554,10 @@ fn summarize_samples(
         return Err(format!("{name} produced no benchmark samples").into());
     }
     samples.sort_unstable();
+    let sample_count = samples.len();
     let total: Duration = samples.iter().copied().sum();
     let ms: Vec<f64> = samples.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
-    let average_ms = total.as_secs_f64() * 1000.0 / iterations as f64;
+    let average_ms = total.as_secs_f64() * 1000.0 / sample_count as f64;
     Ok(json!({
         "operation": name,
         "iterations": iterations,
@@ -520,6 +568,7 @@ fn summarize_samples(
         "p95_ms": percentile(&ms, 0.95),
         "min_ms": ms.first().copied().unwrap_or(0.0),
         "max_ms": ms.last().copied().unwrap_or(0.0),
+        "statistical_evidence": distribution_metadata(sample_count),
     }))
 }
 
@@ -847,6 +896,7 @@ async fn bench_client_overhead(
             "p95_ms": percentile(data, 0.95),
             "min_ms": data.first().copied().unwrap_or(0.0),
             "max_ms": data.last().copied().unwrap_or(0.0),
+            "statistical_evidence": distribution_metadata(data.len()),
         })
     };
 
@@ -930,8 +980,22 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(summary["p50_ms"], 3.0);
+        assert_eq!(
+            summary["statistical_evidence"]["max_samples"],
+            MAX_ITERATIONS
+        );
+        assert_eq!(summary["p50_ms"], 2.0);
         assert_eq!(summary["p95_ms"], 4.0);
+        assert_eq!(summary["statistical_evidence"]["sample_count"], 4);
+        assert_eq!(
+            summary["statistical_evidence"]["claim"]["minimum_samples"],
+            MIN_CLAIM_ITERATIONS
+        );
+        assert_eq!(summary["statistical_evidence"]["claim"]["eligible"], false);
+        assert_eq!(
+            summary["statistical_evidence"]["percentile_scope"]["method"],
+            PERCENTILE_METHOD
+        );
     }
 
     #[test]

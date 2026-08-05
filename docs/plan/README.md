@@ -215,6 +215,8 @@ Completed:
   continuation metadata for truncated extraction.
 - [ir-030-086](tasks/ir-030-086.md) — validate continuation revision and route
   before resuming extraction.
+- [ir-030-087](tasks/ir-030-087.md) — bind continuations to the requested
+  semantic region.
 
 ## Completed plan: performance overhaul
 Status: Complete

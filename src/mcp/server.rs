@@ -3110,6 +3110,7 @@ fn tools() -> Vec<Tool> {
                         "properties":{
                             "nextIndex":{"type":"integer","minimum":0,"maximum":256},
                             "sourceRevision":{"type":"integer","minimum":0},
+                            "regionId":{"type":"string","minLength":1,"maxLength":128},
                             "sourceRoute":{
                                 "type":"object",
                                 "additionalProperties":false,

@@ -133,6 +133,8 @@ pub struct StructuredExtractionResult {
 pub struct StructuredExtractionContinuation {
     pub next_index: usize,
     pub source_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
     pub source_route: SemanticRouteIdentity,
 }
 
@@ -284,11 +286,16 @@ impl BrowserSession {
             .semantic_observe(SemanticObservationLevel::Structured)
             .await?;
         if let Some(continuation) = &request.continuation
-            && (continuation.source_revision != observation.revision
-                || continuation.source_route != observation.route)
+            && !continuation_matches_source(
+                continuation,
+                observation.revision,
+                &observation.route,
+                request.region_id.as_deref(),
+            )
         {
             return Err(
-                "continuation does not match the current semantic source revision and route".into(),
+                "continuation does not match the current semantic source revision, route, or region"
+                    .into(),
             );
         }
         let start_index = request
@@ -356,6 +363,7 @@ impl BrowserSession {
             next_index,
             source_revision: observation.revision,
             source_route: source_route.clone(),
+            region_id: request.region_id.clone(),
         });
         Ok(StructuredExtractionResult {
             source_revision: observation.revision,
@@ -430,6 +438,17 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
         }
     }
     Ok(())
+}
+
+fn continuation_matches_source(
+    continuation: &StructuredExtractionContinuation,
+    revision: u64,
+    route: &SemanticRouteIdentity,
+    region_id: Option<&str>,
+) -> bool {
+    continuation.source_revision == revision
+        && continuation.source_route == *route
+        && continuation.region_id.as_deref() == region_id
 }
 
 fn extraction_source_value(source: &Value, field: &ExtractionField) -> Option<Value> {
@@ -603,12 +622,21 @@ mod tests {
             continuation: Some(StructuredExtractionContinuation {
                 next_index: 4,
                 source_revision: 7,
-                source_route: route,
+                region_id: None,
+                source_route: route.clone(),
             }),
             max_items: 2,
             max_bytes: 1024,
         };
         validate_extraction_request(&request).unwrap();
+        let continuation = request.continuation.as_ref().unwrap();
+        assert!(continuation_matches_source(continuation, 7, &route, None));
+        assert!(!continuation_matches_source(
+            continuation,
+            7,
+            &route,
+            Some("other-region")
+        ));
         request.start_index = 3;
         assert!(validate_extraction_request(&request).is_err());
         request.start_index = 0;
@@ -738,6 +766,7 @@ mod tests {
             continuation: Some(StructuredExtractionContinuation {
                 next_index: 2,
                 source_revision: 7,
+                region_id: Some("region_results".into()),
                 source_route: SemanticRouteIdentity {
                     target_id: "target".into(),
                     frame_id: "frame".into(),

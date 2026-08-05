@@ -13,6 +13,63 @@ use std::{
 use tokio::net::TcpListener;
 
 const DEFAULT_ITERATIONS: usize = 50;
+const MAX_PAGE_CLASS_ITERATIONS: usize = 100;
+
+struct PageClassFixture {
+    name: &'static str,
+    page_class: &'static str,
+    description: &'static str,
+    url: String,
+}
+
+fn local_page_class_fixtures(normal_html: &str) -> Vec<PageClassFixture> {
+    let dynamic_listing_html = r##"<!doctype html>
+<html><head><title>Dynamic listing</title></head>
+<body><main id="listing"></main><script>
+const items = ["Alpha", "Bravo", "Charlie", "Delta"];
+document.querySelector("#listing").innerHTML =
+  "<h1>Results</h1><ul>" + items.map(item => "<li>" + item + "</li>").join("") + "</ul>";
+</script></body></html>"##;
+    let challenge_html = r#"<!doctype html>
+<html><head><title>Checking your browser</title></head>
+<body><main><h1>Checking your browser before accessing</h1><p>Complete the security check to continue.</p></main></body></html>"#;
+    let empty_html = r#"<!doctype html><html><head><title></title></head><body></body></html>"#;
+
+    [
+        (
+            "normal_static",
+            "normal",
+            "static local document",
+            normal_html,
+        ),
+        (
+            "dynamic_listing",
+            "normal",
+            "synchronously rendered local listing",
+            dynamic_listing_html,
+        ),
+        (
+            "challenge_interstitial",
+            "challenge",
+            "local challenge/interstitial document",
+            challenge_html,
+        ),
+        (
+            "empty_unknown",
+            "empty",
+            "local empty document with no actionable content",
+            empty_html,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, page_class, description, html)| PageClassFixture {
+        name,
+        page_class,
+        description,
+        url: format!("data:text/html;base64,{}", STANDARD.encode(html)),
+    })
+    .collect()
+}
 
 /// Compute a percentile from a sorted slice of f64 values.
 ///
@@ -42,10 +99,17 @@ async fn main() -> BrowserResult<()> {
         .unwrap_or(iterations);
     let fixture = include_str!("../tests/fixtures/basic.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
+    let page_class_fixtures = local_page_class_fixtures(fixture);
 
     // Keep browser startup independent from navigation and observation latency.
     // The cold run reports repeated owned-session startup samples, while the
     // first post-navigation observe remains a separate diagnostic.
+    let page_class_iterations = std::env::var("GLASS_BENCH_PAGE_CLASS_ITERATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|iterations| *iterations > 0)
+        .unwrap_or(iterations)
+        .min(MAX_PAGE_CLASS_ITERATIONS);
     let cold_start_result = bench_cold_start(&chrome_path, &url, expensive_iterations).await?;
 
     let rss_before_start = process_rss_bytes();
@@ -114,6 +178,10 @@ async fn main() -> BrowserResult<()> {
             .get("cold_first_observe")
             .cloned()
             .ok_or_else(|| "cold_start omitted cold_first_observe".to_string())?;
+
+        let page_class_latency_result =
+            bench_page_class_latencies(&fast_session, &page_class_fixtures, page_class_iterations)
+                .await?;
 
         fast_session.navigate(&url).await?;
         human_session.navigate(&url).await?;
@@ -215,6 +283,7 @@ async fn main() -> BrowserResult<()> {
                 "semantic_bootstrap": semantic_bootstrap_path,
                 "full_observation": full_observation_path,
             },
+            "page_class_latency": page_class_latency_result,
             "warm_startup_diagnostics": fast_session.startup_diagnostics(),
             "payload_bytes": payload_bytes,
             "glass_process_memory": {
@@ -415,6 +484,67 @@ async fn bench_compact_observe(
         samples.push(started.elapsed());
     }
     summarize_samples("compact_observe", iterations, samples)
+}
+
+/// Measure deterministic local fixture classes without charging bootstrap or
+/// authoritative inspection for navigation. The fixture URLs are data URLs, so
+/// public-network latency is deliberately outside this matrix.
+async fn bench_page_class_latencies(
+    session: &BrowserSession,
+    fixtures: &[PageClassFixture],
+    iterations: usize,
+) -> BrowserResult<Value> {
+    let first_fixture = fixtures
+        .first()
+        .ok_or_else(|| "page-class benchmark has no fixtures".to_string())?;
+    let mut summaries = serde_json::Map::new();
+
+    for fixture in fixtures {
+        let navigation = measure("navigation", iterations, || async {
+            session.navigate(&fixture.url).await?;
+            Ok(())
+        })
+        .await?;
+        let semantic_bootstrap = measure("semantic_bootstrap", iterations, || async {
+            let _ = session.observe_bootstrap().await?;
+            Ok(())
+        })
+        .await?;
+        let full_observation = measure("full_observation", iterations, || async {
+            let _ = session.observe_fresh().await?;
+            Ok(())
+        })
+        .await?;
+
+        summaries.insert(
+            fixture.name.to_string(),
+            json!({
+                "fixture": fixture.name,
+                "page_class": fixture.page_class,
+                "classification_source": "bounded_local_fixture_label",
+                "description": fixture.description,
+                "navigation": navigation,
+                "semantic_bootstrap": semantic_bootstrap,
+                "full_observation": full_observation,
+            }),
+        );
+    }
+
+    // Leave the caller on the normal fixture so the established benchmark
+    // operations retain their original page and click targets.
+    session.navigate(&first_fixture.url).await?;
+
+    Ok(json!({
+        "operation": "page_class_latency",
+        "mode": "local_deterministic_fixtures",
+        "iterations": iterations,
+        "network_latency": {
+            "included": false,
+            "scope": "not measured",
+            "reason": "all fixtures use data:text/html URLs; public-site latency is separate and opt-in",
+        },
+        "summaries": Value::Object(summaries),
+    }))
 }
 
 /// Measure owned-session startup separately from the first post-navigation
@@ -664,5 +794,28 @@ mod tests {
 
         assert_eq!(summary["p50_ms"], 3.0);
         assert_eq!(summary["p95_ms"], 4.0);
+    }
+
+    #[test]
+    fn local_page_class_fixtures_are_bounded_and_network_free() {
+        let fixtures = local_page_class_fixtures("<html><body>normal</body></html>");
+        let classes: Vec<_> = fixtures.iter().map(|fixture| fixture.page_class).collect();
+        assert_eq!(classes, vec!["normal", "normal", "challenge", "empty"]);
+        let names: Vec<_> = fixtures.iter().map(|fixture| fixture.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "normal_static",
+                "dynamic_listing",
+                "challenge_interstitial",
+                "empty_unknown",
+            ]
+        );
+        assert!(
+            fixtures
+                .iter()
+                .all(|fixture| fixture.url.starts_with("data:text/html;base64,"))
+        );
+        assert!(MAX_PAGE_CLASS_ITERATIONS > 0);
     }
 }

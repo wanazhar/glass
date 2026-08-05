@@ -36,6 +36,7 @@ use crate::browser::session::{
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
+const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
 use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
@@ -145,6 +146,9 @@ struct RequestLogMetadata<'a> {
 }
 
 enum ToolInvocation<'a> {
+    PreflightNavigation {
+        url: &'a str,
+    },
     Navigate {
         url: &'a str,
         timeout_ms: u64,
@@ -1045,6 +1049,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "knowledgeShow"
             | "knowledgeStats"
             | "preflight"
+            | "preflightNavigation"
             | "getDOM"
             | "getText"
             | "listTargets"
@@ -1552,6 +1557,9 @@ async fn call_tool(
             .decode_task_execute()
             .map_err(|error| error.to_string())?;
     }
+    if let ToolInvocation::PreflightNavigation { url } = &invocation {
+        return serialized_result(&policy.preflight_navigation(url));
+    }
     if matches!(
         &invocation,
         ToolInvocation::KnowledgeList
@@ -1583,6 +1591,9 @@ async fn call_tool(
         return serialized_result(&result);
     }
     match invocation {
+        ToolInvocation::PreflightNavigation { .. } => {
+            unreachable!("preflightNavigation is handled before browser session startup")
+        }
         ToolInvocation::Navigate {
             url,
             timeout_ms,
@@ -2283,6 +2294,19 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     }
 
     match tool_name {
+        "preflightNavigation" => {
+            let url = required_string(arguments, "url")?;
+            if url.len() > MAX_PREFLIGHT_URL_BYTES {
+                return Err("url must be at most 8192 bytes".into());
+            }
+            if arguments
+                .as_object()
+                .is_some_and(|object| object.keys().any(|key| key != "url"))
+            {
+                return Err("preflightNavigation accepts only the url argument".into());
+            }
+            Ok(ToolInvocation::PreflightNavigation { url })
+        }
         "navigate" => Ok(ToolInvocation::Navigate {
             url: required_string(arguments, "url")?,
             timeout_ms: optional_u64(arguments, "timeoutMs", 20_000)?,
@@ -2844,6 +2868,18 @@ fn tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["task", "expectedRevision"],
+                "additionalProperties": false
+            }),
+        },
+        Tool {
+            name: "preflightNavigation",
+            description: "Check navigation URL policy without starting Chrome or consuming confirmation tokens.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "minLength": 1, "maxLength": 8192}
+                },
+                "required": ["url"],
                 "additionalProperties": false
             }),
         },
@@ -4284,8 +4320,13 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 84);
-        assert!(tools.iter().any(|tool| tool["name"] == "compileTask"));
+        assert_eq!(tools.len(), 85);
+        let preflight = tools
+            .iter()
+            .find(|tool| tool["name"] == "preflightNavigation")
+            .expect("preflightNavigation must be advertised");
+        assert_eq!(preflight["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(preflight["inputSchema"]["additionalProperties"], false);
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "executeTask"));
@@ -4440,6 +4481,71 @@ mod tests {
                     .as_str()
                     .is_some_and(|description| description.contains("explicit"))
         }));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn preflight_navigation_is_browser_free_and_machine_readable() {
+        async fn invoke(policy: &BrowserPolicy, url: &str) -> (Value, Option<BrowserSession>) {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": "preflight",
+                "method": "tools/call",
+                "params": {
+                    "name": "preflightNavigation",
+                    "arguments": {"url": url}
+                }
+            }))
+            .unwrap();
+            let mut session = None;
+            let response = handle_request(
+                &request,
+                &mut session,
+                &SessionOptions::default(),
+                policy,
+                None,
+            )
+            .await
+            .unwrap();
+            let text = response
+                .result
+                .as_ref()
+                .and_then(|result| result["content"][0]["text"].as_str())
+                .expect("preflight result text");
+            (serde_json::from_str(text).unwrap(), session)
+        }
+
+        let root = std::env::current_dir().unwrap();
+        let allowed_policy = BrowserPolicy::development(&root).unwrap();
+        let (allowed, session) = invoke(&allowed_policy, "example.com/path").await;
+        assert_eq!(allowed["decision"], "allow");
+        assert_eq!(allowed["normalizedUrl"], "https://example.com/path");
+        assert_eq!(allowed["host"], "example.com");
+        assert_eq!(allowed["confirmationRequired"], false);
+        assert!(session.is_none());
+
+        let denied_policy = allowed_policy
+            .clone()
+            .with_host_rules([], ["example.com".to_string()])
+            .unwrap();
+        let (denied, session) = invoke(&denied_policy, "https://example.com/").await;
+        assert_eq!(denied["decision"], "deny");
+        assert!(
+            denied["reason"]
+                .as_str()
+                .unwrap()
+                .contains("explicitly denied")
+        );
+        assert!(session.is_none());
+
+        let (malformed, session) = invoke(&allowed_policy, "http://[").await;
+        assert_eq!(malformed["decision"], "deny");
+        assert!(
+            malformed["reason"]
+                .as_str()
+                .unwrap()
+                .contains("URL is invalid")
+        );
         assert!(session.is_none());
     }
 
@@ -4897,6 +5003,30 @@ mod tests {
             assert!(cancellations.lock().unwrap().is_empty());
         }
     }
+    #[test]
+    fn parses_preflight_navigation_url() {
+        let oversized = json!({
+            "name": "preflightNavigation",
+            "arguments": {"url": "https://example.com/".to_string() + &"a".repeat(MAX_PREFLIGHT_URL_BYTES)}
+        });
+        assert!(parse_tool_invocation(&oversized).is_err());
+        let extra = json!({
+            "name": "preflightNavigation",
+            "arguments": {"url": "example.com", "unexpected": true}
+        });
+        assert!(parse_tool_invocation(&extra).is_err());
+        let params = json!({
+            "name": "preflightNavigation",
+            "arguments": {"url": "example.com"}
+        });
+        assert!(matches!(
+            parse_tool_invocation(&params).unwrap(),
+            ToolInvocation::PreflightNavigation { url: "example.com" }
+        ));
+        let missing = json!({"name": "preflightNavigation", "arguments": {}});
+        assert!(parse_tool_invocation(&missing).is_err());
+    }
+
     #[test]
     fn parses_revision_guarded_execute_task() {
         let params = json!({

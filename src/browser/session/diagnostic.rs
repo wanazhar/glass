@@ -55,6 +55,8 @@ impl BrowserSession {
                     console,
                     network,
                     dropped_events,
+                    startup_diagnostics: self.startup_diagnostics,
+                    lifecycle: self.lifecycle_diagnostics(),
                 })
             })
             .await

@@ -138,8 +138,9 @@ impl BrowserSession {
         let complete = ready && consistent && incomplete.is_empty() && !page_context_id.is_empty();
         self.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
         Ok(BootstrapObservation {
-            page,
-            text,
+            page: page.clone(),
+            text: text.clone(),
+            classification: classify_page_state(&page, &text, &[]),
             revision: end_revision,
             context_id,
             page_context_id,

@@ -134,6 +134,7 @@ A tool may request one bounded failure-trace content item with
 | Tool | Result |
 |---|---|
 | `navigate` | Navigate and return page state. |
+| `preflightNavigation` | Check a normalized URL against navigation policy without starting Chrome or consuming confirmation tokens. |
 | `click`, `doubleClick`, `hover` | Perform one verified pointer action. |
 | `clickExpectPopup` | Verify one popup caused by the click. |
 | `type`, `clear`, `check`, `uncheck`, `select` | Perform one form action. |
@@ -171,6 +172,42 @@ A tool may request one bounded failure-trace content item with
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |
+
+The `diagnostics` result also includes bounded `startupDiagnostics` timings
+(`launch_endpoint_ms`, `page_target_wait_ms`, `cdp_connect_ms`,
+`target_attach_ms`, `event_setup_ms`, `policy_arm_ms`, and `total_startup_ms`)
+and `lifecycle` milestones (`browserReady`, `navigationStarted`, `evidenceReady`,
+and `actionVerified`). These are metadata-only and never include URLs, target
+IDs, page text, or credentials. MCP initialization/transport negotiation means
+only that the server is ready to answer protocol requests; it is not evidence
+that Chrome or the selected page is browser-ready. Use the diagnostic
+milestones when a caller needs to distinguish process/session readiness from
+page evidence or a verified action.
+
+### Preflight, confirm, then navigate
+
+Call `preflightNavigation` before `navigate` when a caller needs a
+browser-free policy decision. The response contains the normalized URL, host,
+decision, reason, and `confirmationRequired`. Preflight is read-only: it does
+not start Chrome, resolve DNS, or spend a `--policy-confirm-once` token.
+
+If the decision is `allow`, call `navigate` with the same URL. If a future
+policy reports `confirmation_required`, obtain the caller's explicit
+confirmation through the configured policy boundary and then call `navigate`;
+preflight itself never authorizes or consumes that confirmation. A `deny`
+decision must not be bypassed by calling `navigate`. In hardened mode, an
+unpinned allowed host is reported as denied with a host-pinning reason rather
+than being resolved or silently allowed.
+
+### Navigation result metadata
+
+Revision-aware navigation returns an additive `identity` object alongside the
+existing `page` and revision fields. It contains the normalized requested URL,
+the observed final URL after lifecycle completion, a parsed `sameOrigin` result,
+advisory page-state `classification`, and bounded redirect evidence. The
+`redirectCount` is `null` when the bounded CDP/network evidence needed to
+derive a count was not available; it is never inferred from a URL difference.
+Authority credentials are removed from serialized URLs.
 
 ### Validate a task without starting Chrome
 

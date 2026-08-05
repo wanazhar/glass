@@ -214,6 +214,18 @@ The benchmark uses the local fixture and reports:
 - the supplied Glass binary size, or `null` if no executable is available at
   `GLASS_BINARY_PATH` or `target/release/glass`.
 
+The additive `page_class_latency` matrix measures deterministic local data-URL
+fixtures for `normal_static`, `dynamic_listing`, `challenge_interstitial`, and
+`empty_unknown`. Each fixture has a bounded advisory `page_class` label from
+the stable vocabulary (`normal`, `challenge`, or `empty`). Each summary reports
+navigation, advisory semantic bootstrap, and authoritative full-observation
+latency independently, with iterations, mean, p50, p95, minimum, and maximum
+milliseconds. Navigation is local fixture load time; public-network latency is
+not included and must be measured as a separate, explicitly labeled experiment.
+The default benchmark never contacts a public website. Set
+`GLASS_BENCH_PAGE_CLASS_ITERATIONS` to choose a bounded positive sample count
+(capped at 100); it defaults to `GLASS_BENCH_ITERATIONS`.
+
 The `cold_start` result preserves the scalar `chrome_launch_ms` and
 `cold_first_observe_ms` fields for existing consumers. Its nested
 `cold_owned_session_startup` and `cold_first_observe` summaries report

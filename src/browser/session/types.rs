@@ -24,6 +24,7 @@ use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
+use super::PageClassification;
 use crate::browser::cdp::{CdpClient, CdpEventWithParams, RuntimeEvaluateResponse};
 use crate::browser::chrome::ChromeProcess;
 use crate::browser::dom::{
@@ -1315,6 +1316,8 @@ pub struct BootstrapObservation {
     pub page: PageInfo,
     /// Bounded visible text sampled from the page.
     pub text: String,
+    /// Conservative, advisory page-state classification. Page content may change.
+    pub classification: PageClassification,
     /// Browser page generation at the end of the sample.
     pub revision: u64,
     /// Isolated execution context used for the sample.
@@ -1492,7 +1495,13 @@ pub struct DiagnosticReport {
     pub console: Vec<ConsoleEvidence>,
     pub network: Vec<NetworkEvidence>,
     pub dropped_events: u64,
+    /// Metadata-only startup timing; contains no browser endpoint or process identity.
+    #[serde(rename = "startupDiagnostics")]
+    pub startup_diagnostics: StartupDiagnostics,
+    /// Session milestones distinguish browser-process readiness from page evidence and verified actions.
+    pub lifecycle: LifecycleDiagnostics,
 }
+
 /// Maximum duration retained by [`StartupDiagnostics`] for any startup phase.
 ///
 /// Startup diagnostics are deliberately bounded and contain timing metadata
@@ -2281,6 +2290,46 @@ pub struct ActionOutcome {
     pub evidence: Option<Value>,
 }
 
+/// Bounded evidence describing whether redirect metadata was available for a
+/// navigation. An unknown status is distinct from observing a navigation with
+/// zero redirects.
+#[derive(Debug, Clone, Serialize)]
+pub struct NavigationRedirectEvidence {
+    pub status: NavigationRedirectStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Availability of redirect evidence collected during navigation.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationRedirectStatus {
+    Observed,
+    Unknown,
+}
+
+/// Bounded identity and page-state metadata for a revision-aware navigation.
+///
+/// URLs are normalized and authority credentials are removed before this
+/// value is serialized. Classification is advisory and derived only from the
+/// metadata already collected by navigation; callers should re-observe before
+/// acting on it.
+#[derive(Debug, Clone, Serialize)]
+pub struct NavigationIdentityMetadata {
+    #[serde(rename = "requestedUrl")]
+    pub requested_url: String,
+    #[serde(rename = "observedFinalUrl")]
+    pub observed_final_url: String,
+    #[serde(rename = "sameOrigin")]
+    pub same_origin: Option<bool>,
+    #[serde(rename = "redirectCount")]
+    pub redirect_count: Option<u16>,
+    #[serde(rename = "redirectEvidence")]
+    pub redirect_evidence: NavigationRedirectEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<PageClassification>,
+}
+
 /// Revision-aware navigation result. Browser lifecycle completion is distinct
 /// from application hydration; callers can request an explicit wait for the
 /// latter.
@@ -2299,6 +2348,7 @@ pub struct NavigationOutcome {
     pub browser_load_completed: bool,
     #[serde(rename = "applicationReady")]
     pub application_ready: bool,
+    pub identity: NavigationIdentityMetadata,
     pub verification: ActionVerificationEvidence,
 }
 

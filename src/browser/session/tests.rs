@@ -1,3 +1,4 @@
+use super::navigate::{NavigationRedirectCollector, navigation_identity, navigation_same_origin};
 use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;
@@ -101,6 +102,42 @@ fn lifecycle_diagnostics_default_and_phase_order_are_explicit() {
     assert_eq!(serialized["navigationStarted"], true);
     assert_eq!(serialized["evidenceReady"], true);
     assert_eq!(serialized["actionVerified"], true);
+}
+
+#[test]
+fn diagnostic_report_exposes_bounded_session_snapshot_without_secrets() {
+    let startup = StartupDiagnostics {
+        launch_endpoint_ms: 7,
+        page_target_wait_ms: 11,
+        cdp_connect_ms: 13,
+        target_attach_ms: 17,
+        event_setup_ms: 19,
+        policy_arm_ms: 23,
+        total_startup_ms: 29,
+    };
+    let lifecycle = LifecycleDiagnostics::from_bits(
+        LifecyclePhase::BrowserReady.bit() | LifecyclePhase::EvidenceReady.bit(),
+    );
+    let report = DiagnosticReport {
+        target_id: "target".into(),
+        frame_id: "frame".into(),
+        duration_ms: 1,
+        console: Vec::new(),
+        network: Vec::new(),
+        dropped_events: 0,
+        startup_diagnostics: startup,
+        lifecycle,
+    };
+    let value = serde_json::to_value(report).unwrap();
+    assert_eq!(value["startupDiagnostics"]["launch_endpoint_ms"], 7);
+    assert_eq!(value["lifecycle"]["browserReady"], true);
+    assert_eq!(value["lifecycle"]["navigationStarted"], false);
+    let serialized = value.to_string();
+    assert!(!serialized.contains("ws://"));
+    assert!(!serialized.contains("https://"));
+    assert!(!serialized.contains("password"));
+    assert!(!serialized.contains("cookie"));
+    assert!(!serialized.contains("token"));
 }
 
 #[test]
@@ -1007,6 +1044,87 @@ fn action_outcomes_are_compact_and_serializable() {
 }
 
 #[test]
+fn navigation_identity_derives_same_origin_from_parsed_urls() {
+    assert_eq!(
+        navigation_same_origin("https://example.test/start", "https://example.test/final",),
+        Some(true)
+    );
+    assert_eq!(
+        navigation_same_origin("https://example.test/start", "https://other.test/final",),
+        Some(false)
+    );
+    assert_eq!(navigation_same_origin("about:blank", "about:blank"), None);
+}
+
+#[test]
+fn navigation_identity_serializes_bounded_additive_metadata() {
+    let page = PageInfo {
+        url: "https://user:secret@other.test/final".to_string(),
+        title: "Final".to_string(),
+        ready_state: "complete".to_string(),
+        target_id: "target-1".to_string(),
+        frame_id: "frame-1".to_string(),
+    };
+    let identity = navigation_identity(
+        "https://user:secret@example.test/start",
+        &page,
+        None,
+        NavigationRedirectEvidence {
+            status: NavigationRedirectStatus::Unknown,
+            source: Some("bounded network evidence unavailable".to_string()),
+        },
+    );
+    let value = serde_json::to_value(identity).unwrap();
+    assert_eq!(value["requestedUrl"], "https://example.test/start");
+    assert_eq!(value["observedFinalUrl"], "https://other.test/final");
+    assert_eq!(value["sameOrigin"], false);
+    assert!(value["redirectCount"].is_null());
+    assert_eq!(value["redirectEvidence"]["status"], "unknown");
+    assert_eq!(value["classification"]["state"], "normal");
+
+    let serialized = value.to_string();
+    assert!(!serialized.contains("secret"));
+    assert!(!serialized.contains("user:"));
+}
+
+#[test]
+fn navigation_redirect_count_requires_bounded_network_evidence() {
+    let mut collector =
+        NavigationRedirectCollector::new("https://example.test/start", Some("frame-1"));
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".to_string(),
+        params: serde_json::json!({
+            "requestId": "request-1",
+            "frameId": "frame-1",
+            "request": {
+                "type": "Document",
+                "url": "https://example.test/start"
+            }
+        }),
+        session_id: None,
+    });
+    collector.observe(&CdpEventWithParams {
+        method: "Network.requestWillBeSent".to_string(),
+        params: serde_json::json!({
+            "requestId": "request-1",
+            "frameId": "frame-1",
+            "redirectResponse": {"status": 302},
+            "request": {
+                "type": "Document",
+                "url": "https://other.test/final"
+            }
+        }),
+        session_id: None,
+    });
+    let (count, evidence) = collector.finish();
+    assert_eq!(count, Some(1));
+    assert!(matches!(
+        evidence.status,
+        NavigationRedirectStatus::Observed
+    ));
+}
+
+#[test]
 fn revision_contract_errors_are_typed_and_recoverable() {
     let error = ActionContractError::stale_revision(7, 9);
     let value = serde_json::to_value(&error).unwrap();
@@ -1360,6 +1478,39 @@ async fn mutation_race_retries_once_marks_incomplete_and_is_not_cached() {
     assert!(session.observation_cache.lock().await.is_none());
 
     session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn diagnostics_snapshot_includes_session_readiness_metadata() {
+    let (url, server) = diagnostic_cleanup_server().await;
+    let cdp = CdpClient::connect(&url).await.unwrap();
+    let session = test_session(cdp.clone());
+    cdp.set_active_target_route(
+        Some("test-target".to_string()),
+        Some("diagnostic-session".to_string()),
+        Some("test-frame".to_string()),
+        None,
+    );
+    session.mark_lifecycle_phase(LifecyclePhase::BrowserReady);
+    assert!(session.lifecycle_diagnostics().browser_ready);
+    session.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
+    assert!(session.lifecycle_diagnostics().navigation_started);
+    session.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
+    assert!(session.lifecycle_diagnostics().evidence_ready);
+    session.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
+    assert!(session.lifecycle_diagnostics().action_verified);
+    let report = session.diagnostics(Duration::from_millis(5)).await.unwrap();
+    assert_eq!(report.startup_diagnostics, StartupDiagnostics::default());
+    assert!(report.lifecycle.browser_ready);
+    assert!(report.lifecycle.navigation_started);
+    assert!(report.lifecycle.evidence_ready);
+    assert!(report.lifecycle.action_verified);
+    let serialized = serde_json::to_value(report).unwrap();
+    assert!(serialized.get("startupDiagnostics").is_some());
+    assert!(serialized.get("lifecycle").is_some());
+    assert!(!serialized.to_string().contains("password"));
+    assert!(!serialized.to_string().contains("cookie"));
     server.await.unwrap();
 }
 

@@ -60,6 +60,11 @@ use super::mouse::{MouseEngine, Point};
 use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
 use super::profile::ProfileManager;
 
+mod classification;
+pub use classification::{
+    PageClassification, PageState, PageStateEvidence, PageStateLandmark, PageStateNextStep,
+    classify_compact_observation, classify_page_state,
+};
 mod types;
 pub use agent::{
     ActAndVerifyResult, ExtractionField, ExtractionKind, FindTargetResult, InspectPageResult,

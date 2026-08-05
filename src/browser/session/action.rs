@@ -66,6 +66,7 @@ impl BrowserSession {
                     .dispatch_mouse_event("mouseReleased", x, y, Some("left"), Some(1))
                     .await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
+                self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(CoordinateClickOutcome {
                     x,
                     y,
@@ -100,6 +101,7 @@ impl BrowserSession {
                 self.cdp.scroll_by(dx, dy).await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
                 let current_revision = self.invalidate_observation().await;
+                self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Scroll,
@@ -710,6 +712,7 @@ impl BrowserSession {
                     } else {
                         previous_revision
                     };
+                    self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                     return Ok(ActionOutcome {
                         status: ActionStatus::Succeeded,
                         action: request.action,
@@ -744,6 +747,7 @@ impl BrowserSession {
                 let (target_id, frame_id) = self.route_identity().await?;
                 let current_revision = self.invalidate_observation().await;
                 let after = self.page_info().await.ok();
+                self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: request.action,
@@ -900,6 +904,7 @@ impl BrowserSession {
                 self.cdp.insert_text(text).await?;
                 let (target_id, frame_id) = self.route_identity().await?;
                 let current_revision = self.invalidate_observation().await;
+                self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
                     action: ActionKind::Type,

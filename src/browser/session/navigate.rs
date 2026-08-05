@@ -4,6 +4,136 @@
 //! and evaluates JavaScript expressions in the page context.
 
 use super::*;
+use crate::browser::cdp::CdpEventWithParams;
+use url::Url;
+
+const MAX_NAVIGATION_EVIDENCE_EVENTS: usize = 256;
+
+pub(crate) struct NavigationRedirectCollector {
+    requested_url: String,
+    frame_id: Option<String>,
+    request_id: Option<String>,
+    redirect_count: Option<u16>,
+}
+
+impl NavigationRedirectCollector {
+    pub(crate) fn new(requested_url: &str, frame_id: Option<&str>) -> Self {
+        Self {
+            requested_url: requested_url.to_string(),
+            frame_id: frame_id.map(str::to_string),
+            request_id: None,
+            redirect_count: None,
+        }
+    }
+
+    pub(crate) fn observe(&mut self, event: &CdpEventWithParams) {
+        if event.method != "Network.requestWillBeSent" {
+            return;
+        }
+        let Some(request_id) = event.params["requestId"].as_str() else {
+            return;
+        };
+        if let Some(frame_id) = self.frame_id.as_deref()
+            && let Some(event_frame_id) = event.params["frameId"].as_str()
+            && event_frame_id != frame_id
+        {
+            return;
+        }
+        if self.request_id.as_deref() == Some(request_id) {
+            if event
+                .params
+                .get("redirectResponse")
+                .is_some_and(serde_json::Value::is_object)
+            {
+                let count = self.redirect_count.get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
+            return;
+        }
+        let request = &event.params["request"];
+        if request["type"]
+            .as_str()
+            .is_some_and(|kind| kind != "Document")
+            || !navigation_urls_match(
+                request["url"].as_str().unwrap_or_default(),
+                &self.requested_url,
+            )
+        {
+            return;
+        }
+        if self.request_id.is_none() {
+            self.request_id = Some(request_id.to_string());
+            self.redirect_count = Some(u16::from(
+                event
+                    .params
+                    .get("redirectResponse")
+                    .is_some_and(serde_json::Value::is_object),
+            ));
+        }
+    }
+
+    pub(crate) fn finish(self) -> (Option<u16>, NavigationRedirectEvidence) {
+        match self.redirect_count {
+            Some(count) => (
+                Some(count),
+                NavigationRedirectEvidence {
+                    status: NavigationRedirectStatus::Observed,
+                    source: Some("Network.requestWillBeSent".to_string()),
+                },
+            ),
+            None => (
+                None,
+                NavigationRedirectEvidence {
+                    status: NavigationRedirectStatus::Unknown,
+                    source: Some("bounded network evidence unavailable".to_string()),
+                },
+            ),
+        }
+    }
+}
+
+fn navigation_urls_match(observed: &str, requested: &str) -> bool {
+    match (Url::parse(observed), Url::parse(requested)) {
+        (Ok(observed), Ok(requested)) => observed == requested,
+        _ => observed == requested,
+    }
+}
+
+/// Derive same-origin metadata from parsed URLs. Opaque origins (for example
+/// `about:blank`) are intentionally reported as unknown rather than guessed.
+pub(crate) fn navigation_same_origin(requested: &str, observed: &str) -> Option<bool> {
+    let requested = Url::parse(requested).ok()?;
+    let observed = Url::parse(observed).ok()?;
+    let requested_origin = requested.origin();
+    let observed_origin = observed.origin();
+    if requested_origin.ascii_serialization() == "null"
+        || observed_origin.ascii_serialization() == "null"
+    {
+        return None;
+    }
+    Some(requested_origin == observed_origin)
+}
+
+fn safe_navigation_url(value: &str) -> String {
+    redact_diagnostic_url(value)
+}
+
+pub(crate) fn navigation_identity(
+    requested_url: &str,
+    page: &PageInfo,
+    redirect_count: Option<u16>,
+    redirect_evidence: NavigationRedirectEvidence,
+) -> NavigationIdentityMetadata {
+    let observed_final_url = safe_navigation_url(&page.url);
+    NavigationIdentityMetadata {
+        requested_url: safe_navigation_url(requested_url),
+        same_origin: navigation_same_origin(requested_url, &page.url),
+        observed_final_url,
+        redirect_count,
+        redirect_evidence,
+        classification: Some(classify_page_state(page, "", &[])),
+    }
+}
 
 impl BrowserSession {
     /// Return the current page's URL, title, and ready state.
@@ -46,6 +176,20 @@ impl BrowserSession {
         url: &str,
         deadline: Duration,
     ) -> BrowserResult<PageInfo> {
+        self.navigate_with_deadline_and_metadata(url, deadline)
+            .await
+            .map(|(mut page, _)| {
+                page.url = safe_navigation_url(&page.url);
+                self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
+                page
+            })
+    }
+
+    async fn navigate_with_deadline_and_metadata(
+        &self,
+        url: &str,
+        deadline: Duration,
+    ) -> BrowserResult<(PageInfo, (Option<u16>, NavigationRedirectEvidence))> {
         self.cdp
             .with_current_target_route(async {
                 validate_wait_deadline(deadline)?;
@@ -59,6 +203,8 @@ impl BrowserSession {
                 }
                 let result = async {
                     let mut events = self.cdp.subscribe_events();
+                    let mut payload_events = self.cdp.subscribe_events_with_params();
+                    let route_session_id = self.cdp.current_session_id();
                     let started = tokio::time::Instant::now();
                     self.mark_lifecycle_phase(LifecyclePhase::NavigationStarted);
                     let navigation = tokio::time::timeout(deadline, self.cdp.navigate(&url))
@@ -81,6 +227,20 @@ impl BrowserSession {
                         true,
                     )
                     .await?;
+                    let mut redirect_collector =
+                        NavigationRedirectCollector::new(&url, navigation.frame_id.as_deref());
+                    for _ in 0..MAX_NAVIGATION_EVIDENCE_EVENTS {
+                        match payload_events.try_recv() {
+                            Ok(event)
+                                if route_session_id.as_deref() == event.session_id.as_deref()
+                                    || route_session_id.is_none() =>
+                            {
+                                redirect_collector.observe(&event);
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
                     let remaining = deadline.saturating_sub(started.elapsed());
                     let main_frame = self
                         .list_frames()
@@ -92,9 +252,10 @@ impl BrowserSession {
                     let page = tokio::time::timeout(remaining, self.page_info())
                         .await
                         .map_err(|_| wait_timeout("lifecycle", deadline, "page_info_pending"))??;
+                    self.mark_lifecycle_phase(LifecyclePhase::EvidenceReady);
                     self.invalidate_observation().await;
-                    self.record_audit("navigate", url);
-                    Ok(page)
+                    self.record_audit("navigate", safe_navigation_url(&url));
+                    Ok((page, redirect_collector.finish()))
                 }
                 .await;
                 if let Some(error) = match &self.policy_interception {
@@ -120,31 +281,41 @@ impl BrowserSession {
         self.require_expected_revision(Some(expected_revision))?;
         let previous_revision = self.page_revision.load(Ordering::Relaxed);
         let before = self.page_info().await.ok();
-        let page = self.navigate_with_deadline(url, deadline).await?;
+        let normalized_url = normalize_url(url);
+        let (page, (redirect_count, redirect_evidence)) = self
+            .navigate_with_deadline_and_metadata(url, deadline)
+            .await?;
         let current_revision = self.page_revision.load(Ordering::Relaxed);
+        let identity =
+            navigation_identity(&normalized_url, &page, redirect_count, redirect_evidence);
+        let verification = ActionVerificationEvidence {
+            revision_delta: current_revision.saturating_sub(previous_revision),
+            url_changed: before.as_ref().is_some_and(|before| before.url != page.url),
+            title_changed: before
+                .as_ref()
+                .is_some_and(|before| before.title != page.title),
+            target_changed: before
+                .as_ref()
+                .is_some_and(|before| before.target_id != page.target_id),
+            frame_changed: before
+                .as_ref()
+                .is_some_and(|before| before.frame_id != page.frame_id),
+            ..ActionVerificationEvidence::default()
+        };
+        let mut safe_page = page;
+        safe_page.url = safe_navigation_url(&safe_page.url);
+        self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
         Ok(NavigationOutcome {
             status: ActionStatus::Succeeded,
             action: ActionKind::Navigate,
             execution_id: self.next_execution_id(),
-            verification: ActionVerificationEvidence {
-                revision_delta: current_revision.saturating_sub(previous_revision),
-                url_changed: before.as_ref().is_some_and(|before| before.url != page.url),
-                title_changed: before
-                    .as_ref()
-                    .is_some_and(|before| before.title != page.title),
-                target_changed: before
-                    .as_ref()
-                    .is_some_and(|before| before.target_id != page.target_id),
-                frame_changed: before
-                    .as_ref()
-                    .is_some_and(|before| before.frame_id != page.frame_id),
-                ..ActionVerificationEvidence::default()
-            },
-            page,
+            page: safe_page,
             previous_revision,
             current_revision,
             browser_load_completed: true,
             application_ready: false,
+            identity,
+            verification,
         })
     }
 }

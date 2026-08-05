@@ -70,6 +70,28 @@ pub enum PolicyDecision {
     Deny { reason: String },
     RequireConfirmation { reason: String },
 }
+/// Browser-free, read-only navigation policy result.
+///
+/// This deliberately reports only URL policy evidence. It does not resolve
+/// hosts, mutate confirmation tokens, or start a browser session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationPreflight {
+    pub schema_version: u32,
+    pub normalized_url: Option<String>,
+    pub host: Option<String>,
+    pub decision: NavigationPreflightDecision,
+    pub reason: String,
+    pub confirmation_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavigationPreflightDecision {
+    Allow,
+    Deny,
+    ConfirmationRequired,
+}
 
 #[derive(Debug, Clone)]
 pub struct BrowserPolicy {
@@ -485,6 +507,72 @@ impl BrowserPolicy {
             operation: "navigate".to_string(),
             reason: format!("URL is invalid: {error}"),
         })?;
+        self.check_url(&url)?;
+        Ok(url)
+    }
+
+    /// Evaluate a navigation URL without starting a browser or consuming a
+    /// confirmation token. This intentionally performs no DNS lookup; hardened
+    /// policies report an unpinned host instead of resolving it here.
+    pub fn preflight_navigation(&self, value: &str) -> NavigationPreflight {
+        let normalized = normalize_navigation_url(value);
+        let parsed = Url::parse(&normalized);
+        let (safe_url, host) = match parsed {
+            Ok(url) => {
+                let host = url
+                    .host_str()
+                    .map(|host| host.trim_end_matches('.').to_string());
+                (Some(redacted_url(&url)), host)
+            }
+            Err(error) => {
+                return NavigationPreflight {
+                    schema_version: POLICY_SCHEMA_VERSION,
+                    normalized_url: None,
+                    host: None,
+                    decision: NavigationPreflightDecision::Deny,
+                    reason: format!("URL is invalid: {error}"),
+                    confirmation_required: false,
+                };
+            }
+        };
+        let url = Url::parse(&normalized).expect("navigation URL parsed above");
+        match self.check_url(&url) {
+            Ok(()) => NavigationPreflight {
+                schema_version: POLICY_SCHEMA_VERSION,
+                normalized_url: safe_url,
+                host,
+                decision: NavigationPreflightDecision::Allow,
+                reason: "URL passes the active navigation policy".to_string(),
+                confirmation_required: false,
+            },
+            Err(PolicyError::Denied { reason, .. }) => NavigationPreflight {
+                schema_version: POLICY_SCHEMA_VERSION,
+                normalized_url: safe_url,
+                host,
+                decision: NavigationPreflightDecision::Deny,
+                reason,
+                confirmation_required: false,
+            },
+            Err(PolicyError::ConfirmationRequired { reason, .. }) => NavigationPreflight {
+                schema_version: POLICY_SCHEMA_VERSION,
+                normalized_url: safe_url,
+                host,
+                decision: NavigationPreflightDecision::ConfirmationRequired,
+                reason,
+                confirmation_required: true,
+            },
+            Err(PolicyError::InvalidConfiguration { reason }) => NavigationPreflight {
+                schema_version: POLICY_SCHEMA_VERSION,
+                normalized_url: safe_url,
+                host,
+                decision: NavigationPreflightDecision::Deny,
+                reason,
+                confirmation_required: false,
+            },
+        }
+    }
+
+    fn check_url(&self, url: &Url) -> Result<(), PolicyError> {
         let host = url.host_str().map(|host| host.trim_end_matches('.'));
         if host.is_some_and(|host| self.denied_hosts.contains(host)) {
             return Err(url_denied("host is explicitly denied"));
@@ -498,7 +586,7 @@ impl BrowserPolicy {
             self.preset,
             PolicyPreset::Development | PolicyPreset::Ci | PolicyPreset::Polite
         ) {
-            return Ok(url);
+            return Ok(());
         }
         if url.host_str().is_some_and(|host| host.ends_with('.')) {
             return Err(url_denied(
@@ -527,7 +615,7 @@ impl BrowserPolicy {
                 "host resolves to a non-public or reserved network destination",
             ));
         }
-        Ok(url)
+        Ok(())
     }
 
     pub fn require_existing_path(&self, value: &Path) -> Result<PathBuf, PolicyError> {
@@ -626,6 +714,30 @@ fn normalize_host_rules(
             Ok(host)
         })
         .collect()
+}
+fn normalize_navigation_url(value: &str) -> String {
+    let value = value.trim();
+    if value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("about:")
+        || value.starts_with("file:")
+        || value.starts_with("data:")
+    {
+        value.to_string()
+    } else {
+        format!("https://{value}")
+    }
+}
+
+fn redacted_url(url: &Url) -> String {
+    let mut safe = url.clone();
+    if !safe.username().is_empty() {
+        let _ = safe.set_username("");
+    }
+    if safe.password().is_some() {
+        let _ = safe.set_password(None);
+    }
+    safe.to_string()
 }
 
 fn url_denied(reason: &str) -> PolicyError {
@@ -798,6 +910,62 @@ mod tests {
     async fn ci_urls_do_not_require_hardened_host_pinning() {
         let policy = BrowserPolicy::ci(std::env::current_dir().unwrap()).unwrap();
         assert!(policy.require_url("https://example.com/").await.is_ok());
+    }
+
+    #[test]
+    fn navigation_preflight_is_read_only_and_redacts_credentials() {
+        let root = std::env::current_dir().unwrap();
+        let policy = BrowserPolicy::development(&root).unwrap();
+        let allowed = policy.preflight_navigation(" example.com/path ");
+        assert_eq!(allowed.decision, NavigationPreflightDecision::Allow);
+        assert_eq!(
+            allowed.normalized_url.as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(allowed.host.as_deref(), Some("example.com"));
+        assert!(!allowed.confirmation_required);
+
+        let denied = policy
+            .with_host_rules([], ["example.com".to_string()])
+            .unwrap()
+            .preflight_navigation("https://user:secret@example.com/");
+        assert_eq!(denied.decision, NavigationPreflightDecision::Deny);
+        assert_eq!(denied.host.as_deref(), Some("example.com"));
+        assert!(
+            !denied
+                .normalized_url
+                .as_deref()
+                .unwrap_or_default()
+                .contains("secret")
+        );
+    }
+
+    #[test]
+    fn navigation_preflight_reports_malformed_urls_without_dns_or_session() {
+        let root = std::env::current_dir().unwrap();
+        let policy = BrowserPolicy::development(&root).unwrap();
+        let result = policy.preflight_navigation("http://[");
+        assert_eq!(result.decision, NavigationPreflightDecision::Deny);
+        assert!(result.normalized_url.is_none());
+        assert!(result.host.is_none());
+        assert!(result.reason.contains("URL is invalid"));
+
+        let hardened = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
+        let result = hardened.preflight_navigation("https://example.com/");
+
+        let confirmed = BrowserPolicy::new(
+            PolicyPreset::Hardened,
+            &root,
+            [],
+            [PolicyCapability::Evaluate],
+        )
+        .unwrap()
+        .with_confirmation_tokens([PolicyCapability::Evaluate])
+        .unwrap();
+        let _ = confirmed.preflight_navigation("https://example.com/");
+        assert!(confirmed.require(PolicyCapability::Evaluate).is_ok());
+        assert_eq!(result.decision, NavigationPreflightDecision::Deny);
+        assert!(result.reason.contains("not pinned"));
     }
 
     #[test]

@@ -1884,10 +1884,7 @@ mod tests {
             fields: BTreeMap::from([("name".into(), "x".repeat(MAX_LABEL_BYTES + 1))]),
         }];
         let error = oversized_value.validate().unwrap_err();
-        assert_eq!(
-            error.path,
-            "regions[0].structuredRecords[0].fields.name"
-        );
+        assert_eq!(error.path, "regions[0].structuredRecords[0].fields.name");
     }
 
     #[test]

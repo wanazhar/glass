@@ -3,7 +3,9 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.7
+## [Unreleased] — 0.2.8
+
+## [0.2.7] - 2026-08-05
 - Hardened media clicks for native `<video>` / `<audio>` targets, including
   state-aware Play/Pause fallback and idempotent already-satisfied controls.
 - Raised compact observation's bounded per-flight deadline to three seconds

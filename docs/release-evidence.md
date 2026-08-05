@@ -1,11 +1,11 @@
 # Release evidence
 
-The 0.2.7 development path publishes the `glass-browser` crate on crates.io
-and creates a source-only GitHub Release with generated notes. The project does
-not publish native GitHub release binaries, installers, or updater
-infrastructure.
+The 0.2.8 development path follows the crates-only distribution boundary.
+The published `glass-browser` 0.2.7 release has a source-only GitHub Release
+with generated notes. The project does not publish native GitHub release
+binaries, installers, or updater infrastructure.
 
-The published 0.2.6 release and 0.2.7 development work retain bounded MCP
+The published 0.2.7 release and 0.2.8 development work retain bounded MCP
 response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
@@ -49,10 +49,9 @@ convert source inventory or cross-compilation into a support claim for another
 OS. The current recorded result is in
 [Recorded platform evidence](local-platform.md).
 
-## 0.2.7 candidate validation
+## 0.2.7 release validation
 
-The current checkout has a complete pre-publication validation record for the
-0.2.7 candidate:
+The tagged checkout passed the complete pre-publication validation suite:
 
 - `cargo test --all-targets --locked`: 553 passed, 1 ignored.
 - `cargo clippy --all-targets --all-features --locked -- -D warnings`:
@@ -65,23 +64,26 @@ The current checkout has a complete pre-publication validation record for the
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
   --test-threads=1`: 16 passed in the recorded Linux ARM64 environment.
 - `GLASS_PREVIOUS_VERSION=0.2.6 scripts/smoke-clean-install.sh`: passed for
-  clean candidate installation and local upgrade simulation from 0.2.6 to
-  0.2.7.
-- Version, release-documentation, feature-parity, reliability-matrix, and
-  public-read-only-adapter checks: passed.
+  the candidate package and local upgrade simulation from 0.2.6 to 0.2.7.
+- Published-crate install smoke for `glass-browser 0.2.7`: passed.
+- Version, release-documentation, feature-parity, reliability-matrix,
+  public-read-only-adapter, and GitHub release-record checks: passed.
 
-These are source-checkout and recorded-environment results only. No tag,
-remote push, crates.io publication, or GitHub Release was performed.
+Publication verification:
 
-Post-publication clean-install verification and tagged-release record checks
-remain pending until the 0.2.7 release boundary is approved.
+- crates.io contains `glass-browser 0.2.7`.
+- Signed tag `v0.2.7` is present.
+- GitHub Release `v0.2.7` is published, non-draft, non-prerelease, and marked
+  latest.
+- Release workflow `30979367498` completed successfully.
+- GitHub release coverage now validates 27 version tags.
+
+The native evidence remains limited to the recorded Linux ARM64 environment;
+other declared targets are not certified by this release.
 
 ## Publication boundary
 
-The `glass-browser` `0.2.6` crate is the current published release, and
-`v0.2.6` has a matching GitHub Release entry. The 0.2.7 changes are not
-published until explicitly approved. Its eventual annotated tag must have both
-a crates.io package publication and a matching non-draft GitHub Release before
-the release is considered complete. No native binary assets are expected; this
-checkout makes no cross-platform support claim beyond the recorded Linux ARM64
-validation environment.
+The `glass-browser` `0.2.7` crate is the current published release, and
+`v0.2.7` has a matching published GitHub Release entry. The 0.2.8 changes are
+development-only and have not been published. No native binary assets are
+expected.

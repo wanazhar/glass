@@ -109,6 +109,6 @@ The `0.2.0` publication boundary has been crossed, followed by the
 binaries. This historical audit does not close issue #28; its remote definition
 still needs to reflect the release policy before its status can be reconsidered.
 
-The correct current labels are: `0.2.6 published; source-only GitHub Release
-record and local certification` and `0.2.7 local development; not ready for
+The correct current labels are: `0.2.7 published; source-only GitHub Release
+record and local certification` and `0.2.8 local development; not ready for
 public release`.

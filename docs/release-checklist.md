@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current published release is `glass-browser` version `0.2.6`. This
-checklist is being used for the next crates.io release, `0.2.7`. Linux
+The current published release is `glass-browser` version `0.2.7`. This
+checklist is being used for the next crates.io release, `0.2.8`. Linux
 x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared targets;
 only Linux ARM64 evidence is currently recorded. Other declared targets
 require their own native validation. Windows is unsupported.
@@ -29,7 +29,7 @@ detected idempotently; native binary artifacts are never uploaded.
 
 ## Prepare
 
-- [x] Confirm development version `0.2.7`; release date remains pending
+- [x] Confirm development version `0.2.8`; release date remains pending
       publication.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
@@ -57,7 +57,7 @@ cargo publish --locked --dry-run --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
-GLASS_PREVIOUS_VERSION=0.2.6 scripts/smoke-clean-install.sh
+GLASS_PREVIOUS_VERSION=0.2.7 scripts/smoke-clean-install.sh
 ```
 
 Then complete these release checks:
@@ -70,7 +70,7 @@ Then complete these release checks:
       environments are tested separately.
 - [x] Inspect `cargo package --list` and the unpacked package.
 - [x] Review dependency, license, and vulnerability JSON reports.
-- [ ] Run a clean-machine crates.io install and upgrade test after publication.
+- [x] Run a clean-machine crates.io install and upgrade test after publication.
 
 ## Verify GitHub release records
 
@@ -100,8 +100,8 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Push the release commit and tag after explicit approval.
 - [x] Update issue #30 with final verified 0.2.6 release evidence.
 - [x] Run the full 0.2.7 release validation suite and package dry runs.
-- [ ] Create the signed annotated `v0.2.7` tag after publication approval.
-- [ ] Publish `glass-browser` from the tagged commit after explicit approval.
-- [ ] Create and verify the matching published GitHub Release for `v0.2.7`.
+- [x] Create the signed annotated `v0.2.7` tag after publication approval.
+- [x] Publish `glass-browser` from the tagged commit after explicit approval.
+- [x] Create and verify the matching published GitHub Release for `v0.2.7`.
 
 A release is not complete while any required checkbox is open.

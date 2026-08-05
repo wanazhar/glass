@@ -706,6 +706,36 @@ impl SemanticObservation {
                     )?;
                 }
             }
+            let record_path = format!("{path}.structuredRecords");
+            if region.structured_records.len() > MAX_STRUCTURED_RECORDS {
+                return Err(SemanticObservationError::new(
+                    &record_path,
+                    format!("contains more than {MAX_STRUCTURED_RECORDS} records"),
+                ));
+            }
+            for (record_index, record) in region.structured_records.iter().enumerate() {
+                let fields_path = format!("{record_path}[{record_index}].fields");
+                if record.fields.len() > MAX_STRUCTURED_FIELDS {
+                    return Err(SemanticObservationError::new(
+                        &fields_path,
+                        format!("contains more than {MAX_STRUCTURED_FIELDS} fields"),
+                    ));
+                }
+                for (field_name, field_value) in &record.fields {
+                    validate_text(
+                        &format!("{fields_path}.{field_name}"),
+                        field_name,
+                        MAX_LABEL_BYTES,
+                        false,
+                    )?;
+                    validate_text(
+                        &format!("{fields_path}.{field_name}"),
+                        field_value,
+                        MAX_LABEL_BYTES,
+                        true,
+                    )?;
+                }
+            }
             if let Some(expansion) = &region.expansion {
                 if expansion.region_id != region.id || expansion.revision != self.revision {
                     return Err(SemanticObservationError::new(
@@ -1827,6 +1857,37 @@ mod tests {
         assert_eq!(items[0].fields["name"], "Glass");
         assert_eq!(items[0].fields["heading"], "Glass");
         assert_eq!(items[0].fields["link"], "Open result");
+    }
+
+    #[test]
+    fn rejects_unbounded_structured_records_and_fields() {
+        let mut too_many = observation();
+        too_many.regions[0].structured_records = (0..=MAX_STRUCTURED_RECORDS)
+            .map(|_| SemanticStructuredRecord {
+                fields: BTreeMap::from([("name".into(), "value".into())]),
+            })
+            .collect();
+        let error = too_many.validate().unwrap_err();
+        assert_eq!(error.path, "regions[0].structuredRecords");
+
+        let mut too_many_fields = observation();
+        too_many_fields.regions[0].structured_records = vec![SemanticStructuredRecord {
+            fields: (0..=MAX_STRUCTURED_FIELDS)
+                .map(|index| (format!("field_{index}"), "value".into()))
+                .collect(),
+        }];
+        let error = too_many_fields.validate().unwrap_err();
+        assert_eq!(error.path, "regions[0].structuredRecords[0].fields");
+
+        let mut oversized_value = observation();
+        oversized_value.regions[0].structured_records = vec![SemanticStructuredRecord {
+            fields: BTreeMap::from([("name".into(), "x".repeat(MAX_LABEL_BYTES + 1))]),
+        }];
+        let error = oversized_value.validate().unwrap_err();
+        assert_eq!(
+            error.path,
+            "regions[0].structuredRecords[0].fields.name"
+        );
     }
 
     #[test]

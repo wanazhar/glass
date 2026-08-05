@@ -441,6 +441,9 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
         return Err(format!("maxBytes must be 1..={MAX_EXTRACTION_BYTES}").into());
     }
     for field in &request.fields {
+        if field.path.is_empty() {
+            return Err("extraction field paths must be non-empty".into());
+        }
         if field.name.is_empty() || field.name.len() > 128 || field.path.len() > 512 {
             return Err("extraction field names and paths must be bounded".into());
         }
@@ -601,6 +604,7 @@ fn is_iso_date(value: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+        && chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 fn is_currency_string(value: &str) -> bool {
@@ -646,6 +650,23 @@ mod tests {
                 .unwrap(),
             Value::String("Glass".into())
         );
+    }
+
+    #[test]
+    fn extraction_paths_must_be_non_empty() {
+        let request = StructuredExtractionRequest {
+            fields: vec![ExtractionField {
+                name: "title".into(),
+                path: String::new(),
+                kind: ExtractionKind::String,
+            }],
+            region_id: None,
+            start_index: 0,
+            continuation: None,
+            max_items: 1,
+            max_bytes: 1024,
+        };
+        assert!(validate_extraction_request(&request).is_err());
     }
 
     #[test]
@@ -763,6 +784,7 @@ mod tests {
         for (kind, value) in [
             (ExtractionKind::Number, Value::String("42".into())),
             (ExtractionKind::Date, Value::String("not-a-date".into())),
+            (ExtractionKind::Date, Value::String("2026-02-30".into())),
             (ExtractionKind::DateTime, Value::String("2026-08-01".into())),
             (ExtractionKind::Boolean, Value::String("true".into())),
             (ExtractionKind::Url, Value::String("not a url".into())),

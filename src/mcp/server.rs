@@ -3072,7 +3072,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "extractStructured",
-            description: "Extract bounded typed fields from a fresh semantic page or region.",
+            description: "Extract bounded typed fields from a fresh semantic page or region; secret-like fields require the explicit read_sensitive_extraction capability.",
             input_schema: json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -4380,6 +4380,12 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "extractStructured")
             .expect("extractStructured must be advertised");
+        assert!(
+            extraction["description"]
+                .as_str()
+                .unwrap()
+                .contains("read_sensitive_extraction")
+        );
         assert_eq!(
             extraction["inputSchema"]["properties"]["fields"]["items"]["required"],
             json!(["name", "path", "kind"])

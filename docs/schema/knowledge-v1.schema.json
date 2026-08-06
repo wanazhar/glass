@@ -93,6 +93,7 @@
       "required": ["kind", "understanding", "coverage"],
       "properties": {
         "kind": {"enum": ["document", "accessibility", "shadowDocument", "frameDocument", "svg", "canvas2d", "webgl", "webgpu", "embeddedDocument", "embeddedPdf", "pdf", "media", "terminal", "remoteApplication", "browserNative", "extensionDefined", "unknown", "opaque"]},
+        "extensionId": {"type": "string", "minLength": 1, "maxLength": 128},
         "understanding": {"enum": ["opaque", "inferred", "partial", "strong", "taskCompilable"]},
         "coverage": {"enum": ["none", "structural", "semantic", "interaction", "complete"]}
       }

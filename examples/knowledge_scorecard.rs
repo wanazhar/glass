@@ -71,6 +71,7 @@ impl Context {
             landmarks: self.landmarks,
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339(&self.now)?.timestamp(),
             current_revision: observation_revision,
+            current_extension_id: None,
             surface_kind: Some(self.surface_kind),
             backend_kind: Some(self.backend_kind),
             backend_capabilities: self.backend_capabilities,

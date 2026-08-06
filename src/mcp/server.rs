@@ -3853,6 +3853,7 @@ fn parse_knowledge_lookup_options(arguments: &Value) -> BrowserResult<KnowledgeL
         policy_preset: String::new(),
         now_epoch_seconds: 0,
         current_revision: None,
+        current_extension_id: None,
         surface_kind: None,
         backend_kind: None,
         backend_capabilities: Vec::new(),

@@ -608,6 +608,7 @@ mod tests {
                     kind: KnowledgeSurfaceKind::Document,
                     understanding: KnowledgeUnderstandingLevel::Strong,
                     coverage: KnowledgeSurfaceCoverage::Semantic,
+                    extension_id: None,
                 },
                 backend: KnowledgeBackendProvenance {
                     backend: KnowledgeBackendKind::Cdp,
@@ -702,6 +703,7 @@ mod tests {
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
             current_revision: 1,
+            current_extension_id: None,
             landmarks: vec!["documentation".into()],
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:02Z")
                 .unwrap()

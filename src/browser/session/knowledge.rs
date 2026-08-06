@@ -24,6 +24,7 @@ const MAX_RETRIEVAL_SIGNALS: usize = 16;
 const MAX_BACKEND_CAPABILITIES: usize = 32;
 const MAX_DATA_BYTES: usize = 16 * 1024;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
+const MAX_EXTENSION_ID_BYTES: usize = 128;
 const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_OBJECT_ENTRIES: usize = 64;
 const MAX_JSON_ARRAY_ENTRIES: usize = 64;
@@ -44,11 +45,11 @@ pub struct KnowledgeLookupContext {
     pub landmarks: Vec<String>,
     pub now_epoch_seconds: i64,
     pub current_revision: u64,
-    /// Current source dimensions are optional for callers that only need
-    /// scope assessment; portability checks fail closed when absent.
     pub surface_kind: Option<KnowledgeSurfaceKind>,
     pub backend_kind: Option<KnowledgeBackendKind>,
+    /// Current source dimensions are optional for callers that only need
     pub backend_capabilities: Vec<KnowledgeBackendCapability>,
+    pub current_extension_id: Option<String>,
 }
 
 /// Explicit session inputs used to construct a lookup context from an
@@ -65,6 +66,7 @@ pub struct KnowledgeLookupOptions {
     pub policy_preset: String,
     pub now_epoch_seconds: i64,
     pub current_revision: Option<u64>,
+    pub current_extension_id: Option<String>,
     pub surface_kind: Option<KnowledgeSurfaceKind>,
     pub backend_kind: Option<KnowledgeBackendKind>,
     pub backend_capabilities: Vec<KnowledgeBackendCapability>,
@@ -126,6 +128,19 @@ impl KnowledgeLookupContext {
             ));
         }
         let current_revision = observation.revision;
+        let current_extension_id = options.current_extension_id.clone();
+        if options.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined)
+            && current_extension_id.is_none()
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentExtensionId",
+                "extension-defined contexts require an extension identifier",
+            ));
+        }
+        if let Some(extension_id) = &current_extension_id {
+            validate_text("currentExtensionId", extension_id, MAX_EXTENSION_ID_BYTES, false)?;
+            validate_public_text("currentExtensionId", extension_id)?;
+        }
         validate_backend_capabilities("backendCapabilities", &options.backend_capabilities)?;
         Ok(Self {
             origin,
@@ -146,6 +161,7 @@ impl KnowledgeLookupContext {
             surface_kind: options.surface_kind,
             backend_kind: options.backend_kind,
             backend_capabilities: options.backend_capabilities,
+            current_extension_id,
             current_revision,
         })
     }
@@ -299,12 +315,14 @@ pub enum KnowledgeProfileScope {
     Authenticated,
     ProfileBound,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeSurfaceProvenance {
     pub kind: KnowledgeSurfaceKind,
     pub understanding: KnowledgeUnderstandingLevel,
     pub coverage: KnowledgeSurfaceCoverage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_id: Option<String>,
 }
 
 /// Surface kinds are deliberately transport-neutral and closed over the
@@ -360,6 +378,7 @@ impl Default for KnowledgeSurfaceProvenance {
             kind: KnowledgeSurfaceKind::Opaque,
             understanding: KnowledgeUnderstandingLevel::Opaque,
             coverage: KnowledgeSurfaceCoverage::None,
+            extension_id: None,
         }
     }
 }
@@ -1085,6 +1104,11 @@ impl KnowledgeRecord {
         } else if current_revision_conflict {
             conflicts.push("current Web IR revision does not match".into());
         }
+        let extension_conflict = self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined
+            && self.source.surface.extension_id.as_ref() != context.current_extension_id.as_ref();
+        if extension_conflict {
+            conflicts.push("extension provenance does not match".into());
+        }
         let provenance_conflict = matches!(
             self.source.surface.kind,
             KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
@@ -1145,6 +1169,7 @@ impl KnowledgeRecord {
             KnowledgeAssessmentStatus::OutOfScope
         } else if current_validation_conflict
             || current_revision_conflict
+            || extension_conflict
             || provenance_conflict
             || portability_conflict
             || !missing_landmarks.is_empty()
@@ -1437,6 +1462,19 @@ impl KnowledgeStoreSnapshot {
     }
 }
 
+fn validate_source(source: &KnowledgeSource) -> Result<(), KnowledgeValidationError> {
+    validate_timestamp("source.firstSeenAt", &source.first_seen_at)?;
+    validate_timestamp("source.lastVerifiedAt", &source.last_verified_at)?;
+    validate_text(
+        "source.glassVersion",
+        &source.glass_version,
+        MAX_SCOPE_VALUE_BYTES,
+        false,
+    )?;
+    validate_surface_provenance(&source.surface)?;
+    validate_backend_provenance(&source.backend)
+}
+
 fn validate_scope(scope: &KnowledgeScope) -> Result<(), KnowledgeValidationError> {
     validate_text("scope.origin", &scope.origin, 2048, false)?;
     validate_text("scope.pathPattern", &scope.path_pattern, 512, false)?;
@@ -1488,22 +1526,34 @@ fn validate_scope(scope: &KnowledgeScope) -> Result<(), KnowledgeValidationError
     }
 }
 
-fn validate_source(source: &KnowledgeSource) -> Result<(), KnowledgeValidationError> {
-    validate_timestamp("source.firstSeenAt", &source.first_seen_at)?;
-    validate_timestamp("source.lastVerifiedAt", &source.last_verified_at)?;
-    validate_text(
-        "source.glassVersion",
-        &source.glass_version,
-        MAX_SCOPE_VALUE_BYTES,
-        false,
-    )?;
-    validate_surface_provenance(&source.surface)?;
-    validate_backend_provenance(&source.backend)
-}
-
 fn validate_surface_provenance(
     surface: &KnowledgeSurfaceProvenance,
 ) -> Result<(), KnowledgeValidationError> {
+    if surface.kind == KnowledgeSurfaceKind::ExtensionDefined
+        && surface.extension_id.is_none()
+    {
+        return Err(KnowledgeValidationError::new(
+            "source.surface.extensionId",
+            "extension-defined surfaces require a bounded extension identifier",
+        ));
+    }
+    if surface.kind != KnowledgeSurfaceKind::ExtensionDefined
+        && surface.extension_id.is_some()
+    {
+        return Err(KnowledgeValidationError::new(
+            "source.surface.extensionId",
+            "extension identifiers are only valid for extension-defined surfaces",
+        ));
+    }
+    if let Some(extension_id) = &surface.extension_id {
+        validate_text(
+            "source.surface.extensionId",
+            extension_id,
+            MAX_EXTENSION_ID_BYTES,
+            false,
+        )?;
+        validate_public_text("source.surface.extensionId", extension_id)?;
+    }
     if surface.coverage == KnowledgeSurfaceCoverage::None
         && surface.understanding != KnowledgeUnderstandingLevel::Opaque
     {
@@ -1846,6 +1896,7 @@ mod tests {
             policy_preset: "balanced".into(),
             now_epoch_seconds: 0,
             current_revision: None,
+            current_extension_id: None,
             surface_kind: Some(KnowledgeSurfaceKind::Svg),
             backend_kind: Some(KnowledgeBackendKind::Visual),
             backend_capabilities: vec![KnowledgeBackendCapability::Capture],
@@ -1902,6 +1953,7 @@ mod tests {
                     kind: KnowledgeSurfaceKind::Document,
                     understanding: KnowledgeUnderstandingLevel::Strong,
                     coverage: KnowledgeSurfaceCoverage::Semantic,
+                    extension_id: None,
                 },
                 backend: KnowledgeBackendProvenance {
                     backend: KnowledgeBackendKind::Cdp,
@@ -2041,6 +2093,7 @@ mod tests {
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
             current_revision: 42,
+            current_extension_id: None,
             landmarks: vec!["documentation".into(), "main".into(), "search".into()],
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:00Z")
                 .unwrap()
@@ -2065,6 +2118,32 @@ mod tests {
             assessment
                 .conflicts
                 .contains(&"current Web IR revision does not match".to_string())
+        );
+    }
+    #[test]
+    fn extension_identity_must_match_live_surface() {
+        let mut extension = record();
+        extension.source.surface.kind = KnowledgeSurfaceKind::ExtensionDefined;
+        extension.source.surface.extension_id = Some("com.example.alpha".into());
+        let mut context = lookup_context();
+        context.surface_kind = Some(KnowledgeSurfaceKind::ExtensionDefined);
+        context.current_extension_id = Some("com.example.alpha".into());
+        assert_eq!(
+            extension.assess(&context).status,
+            KnowledgeAssessmentStatus::Eligible
+        );
+        context.current_extension_id = Some("com.example.beta".into());
+        let mismatch = extension.assess(&context);
+        assert_eq!(mismatch.status, KnowledgeAssessmentStatus::Stale);
+        assert!(
+            mismatch
+                .conflicts
+                .contains(&"extension provenance does not match".to_string())
+        );
+        context.current_extension_id = None;
+        assert_eq!(
+            extension.assess(&context).status,
+            KnowledgeAssessmentStatus::Stale
         );
     }
     #[test]
@@ -2213,6 +2292,7 @@ mod tests {
                     kind: KnowledgeSurfaceKind::Document,
                     understanding: KnowledgeUnderstandingLevel::Strong,
                     coverage: KnowledgeSurfaceCoverage::Semantic,
+                    extension_id: None,
                 },
                 backend: KnowledgeBackendProvenance {
                     backend: KnowledgeBackendKind::Cdp,
@@ -2269,6 +2349,7 @@ mod tests {
                     kind: KnowledgeSurfaceKind::Document,
                     understanding: KnowledgeUnderstandingLevel::Strong,
                     coverage: KnowledgeSurfaceCoverage::Semantic,
+                    extension_id: None,
                 },
                 backend: KnowledgeBackendProvenance {
                     backend: KnowledgeBackendKind::Cdp,
@@ -2307,6 +2388,7 @@ mod tests {
                     kind: KnowledgeSurfaceKind::Document,
                     understanding: KnowledgeUnderstandingLevel::Strong,
                     coverage: KnowledgeSurfaceCoverage::Semantic,
+                    extension_id: None,
                 },
                 backend: KnowledgeBackendProvenance {
                     backend: KnowledgeBackendKind::Cdp,
@@ -2333,6 +2415,7 @@ mod tests {
             kind: KnowledgeSurfaceKind::Document,
             understanding: KnowledgeUnderstandingLevel::Strong,
             coverage: KnowledgeSurfaceCoverage::Semantic,
+            extension_id: None,
         };
         record.source.backend = KnowledgeBackendProvenance {
             backend: KnowledgeBackendKind::Cdp,
@@ -2408,6 +2491,12 @@ mod tests {
         base.source.backend.profile = "session-token-profile".into();
         let error = base.validate().unwrap_err();
         assert_eq!(error.path, "source.backend.profile");
+        base.source.surface.kind = KnowledgeSurfaceKind::ExtensionDefined;
+        let error = base.validate().unwrap_err();
+        assert_eq!(error.path, "source.surface.extensionId");
+        base.source.surface.extension_id = Some("x".repeat(MAX_EXTENSION_ID_BYTES + 1));
+        let error = base.validate().unwrap_err();
+        assert_eq!(error.path, "source.surface.extensionId");
 
         let mut influenced = record();
         influenced.source.backend.profile = "production".into();

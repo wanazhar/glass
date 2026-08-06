@@ -3,6 +3,8 @@
 //! Manages named profiles backed by Chrome user-data directories. Profiles
 //! persist cookies, localStorage, and all browser state across sessions.
 
+use fs2::FileExt;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -14,6 +16,14 @@ use tracing::info;
 /// truth.
 pub struct ProfileManager {
     profiles_dir: PathBuf,
+}
+
+/// Process-held ownership of a profile by one named workspace.
+#[derive(Debug)]
+pub struct ProfileLock {
+    _file: File,
+    pub profile: String,
+    pub workspace: String,
 }
 
 impl ProfileManager {
@@ -136,6 +146,19 @@ impl ProfileManager {
         }
         info!(%name, "deleted persisted Chrome profile data");
         Ok(())
+    }
+    /// Acquire an exclusive process lock tying this profile to one workspace.
+    /// The guard must remain alive for the duration of browser ownership.
+    pub fn lock_profile(&self, profile: &str, workspace: &str) -> Result<ProfileLock, Box<dyn std::error::Error>> {
+        Self::validate_name(profile)?;
+        Self::validate_name(workspace)?;
+        let profile_dir = self.create_profile(profile)?;
+        let lock_path = profile_dir.join(".glass-workspace.lock");
+        let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
+        file.try_lock_exclusive().map_err(|error| {
+            format!("profile {profile} is already owned by another workspace: {error}")
+        })?;
+        Ok(ProfileLock { _file: file, profile: profile.to_owned(), workspace: workspace.to_owned() })
     }
 
     fn legacy_chrome_data_dir(&self, name: &str) -> PathBuf {

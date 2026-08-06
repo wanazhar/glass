@@ -4,12 +4,14 @@
 //! the durable address space and the authority boundary that later integrations
 //! may use to connect those handles.
 
+use fs2::FileExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{MapAccess, SeqAccess, Visitor};
-use std::fmt;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::Read;
+use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -934,6 +936,9 @@ pub struct LeaseSnapshot {
     pub state: MutationLeaseState,
     pub revision: Revision,
 }
+impl Default for LeaseSnapshot {
+    fn default() -> Self { Self { state: MutationLeaseState::Available, revision: Revision(0) } }
+}
 impl LeaseSnapshot {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
@@ -968,6 +973,18 @@ pub struct MutationLeaseAuthority {
     state: MutationLeaseState,
     revision: Revision,
 }
+fn parse_raw_lease(raw: Option<RawLeaseSnapshotWire>) -> Result<LeaseSnapshot, String> {
+    let Some(raw) = raw else { return Ok(LeaseSnapshot::default()) };
+    let state = match raw.state {
+        RawLeaseStateWire::Available => MutationLeaseState::Available,
+        RawLeaseStateWire::Held { lease_id, holder } => MutationLeaseState::Held {
+            lease_id: LeaseId::new(lease_id).map_err(|error| error.to_string())?,
+            holder: AttachmentId::new(holder).map_err(|error| error.to_string())?,
+        },
+    };
+    Ok(LeaseSnapshot { state, revision: raw.revision })
+}
+
 
 impl Default for MutationLeaseAuthority {
     fn default() -> Self { Self { state: MutationLeaseState::Available, revision: Revision(0) } }
@@ -975,6 +992,9 @@ impl Default for MutationLeaseAuthority {
 impl MutationLeaseAuthority {
     pub fn snapshot(&self) -> LeaseSnapshot { LeaseSnapshot { state: self.state.clone(), revision: self.revision } }
 
+    pub fn from_snapshot(snapshot: LeaseSnapshot) -> Self {
+        Self { state: snapshot.state, revision: snapshot.revision }
+    }
     pub fn acquire(&mut self, attachment: &Attachment, expected: Revision) -> Result<LeaseGrant, LeaseError> {
         self.check_revision(expected)?;
         self.check_mutation(attachment)?;
@@ -1038,6 +1058,11 @@ impl MutationLeaseAuthority {
         Ok(self.revision)
     }
 }
+fn serialize_lease_authority<S>(authority: &MutationLeaseAuthority, serializer: S) -> Result<S::Ok, S::Error>
+where S: Serializer {
+    authority.snapshot().serialize(serializer)
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Workspace {
@@ -1046,7 +1071,7 @@ pub struct Workspace {
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
     attachments: BTreeMap<AttachmentId, Attachment>,
-    #[serde(skip)]
+    #[serde(rename = "lease", serialize_with = "serialize_lease_authority")]
     lease_authority: MutationLeaseAuthority,
 }
 
@@ -1071,6 +1096,7 @@ impl Workspace {
         let config = WorkspaceConfig { profile_mode: raw.config.profile_mode, privacy_mode: raw.config.privacy_mode, storage: raw.config.storage, profile_id, generation: raw.config.generation };
         let mut workspace = Self::new(identity, config).map_err(wire_error)?;
         workspace.lifecycle = raw.lifecycle;
+        workspace.lease_authority = MutationLeaseAuthority::from_snapshot(parse_raw_lease(raw.lease).map_err(wire_error)?);
         let scope = WorkspaceScope { workspace_id: workspace.identity.id().clone(), profile_id: workspace.config.profile_id.clone(), generation: workspace.config.generation, storage: workspace.config.storage };
         for attachment in attachments.values() {
             if attachment.scope() != &scope {
@@ -1093,11 +1119,32 @@ impl Workspace {
         WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation, storage: self.config.storage }
     }
 
+    /// Validate that a durable resource belongs to this workspace incarnation.
+    pub fn validate_reference(&self, reference: &ResourceReference) -> Result<(), ScopeError> {
+        self.scope().validate(reference.scope())
+    }
+
+    /// Return the browser resource reference for this workspace.
+    pub fn resource_reference(&self) -> ResourceReference {
+        ResourceReference::workspace(self.identity.id().clone())
+    }
+
     pub fn transition(&mut self, next: WorkspaceLifecycle) -> Result<(), LifecycleError> {
         if !self.lifecycle.can_transition_to(next) {
             return Err(LifecycleError::InvalidTransition { from: self.lifecycle, to: next });
         }
         self.lifecycle = next;
+        Ok(())
+    }
+
+    /// Reset runtime attachments and lease state while preserving workspace identity/config.
+    pub fn reset(&mut self) -> Result<(), LifecycleError> {
+        if matches!(self.lifecycle, WorkspaceLifecycle::Closing | WorkspaceLifecycle::Closed) {
+            return Err(LifecycleError::NotMutable { state: self.lifecycle });
+        }
+        self.attachments.clear();
+        self.lease_authority = MutationLeaseAuthority::default();
+        self.lifecycle = WorkspaceLifecycle::Active;
         Ok(())
     }
 
@@ -1183,6 +1230,8 @@ struct RawWorkspace {
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
     attachments: BoundedAttachments,
+    #[serde(default)]
+    lease: Option<RawLeaseSnapshotWire>,
 }
 impl<'de> Deserialize<'de> for Workspace {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -1214,6 +1263,7 @@ impl<'de> Deserialize<'de> for Workspace {
         }
         let mut workspace = Workspace::new(raw.identity, raw.config).map_err(serde::de::Error::custom)?;
         workspace.lifecycle = raw.lifecycle;
+        workspace.lease_authority = MutationLeaseAuthority::from_snapshot(parse_raw_lease(raw.lease).map_err(serde::de::Error::custom)?);
         workspace.attachments = raw.attachments.0;
         Ok(workspace)
     }
@@ -1269,6 +1319,8 @@ struct RawWorkspaceWire {
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
     attachments: BoundedWireAttachments,
+    #[serde(default)]
+    lease: Option<RawLeaseSnapshotWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1385,6 +1437,190 @@ display_error!(LeaseError, {
     Self::StaleRevision(_) => "mutation lease revision is stale",
     Self::RevisionOverflow(_) => "mutation lease revision overflow"
 });
+/// Schema marker for durable workspace snapshots.
+pub const WORKSPACE_SCHEMA_VERSION: u32 = 1;
+const WORKSPACE_FILE_SUFFIX: &str = ".json";
+const WORKSPACE_LOCK_SUFFIX: &str = ".lock";
+
+/// Durable, process-safe storage for named workspaces.
+///
+/// A workspace snapshot is written by rename, so readers never observe a
+/// partially written document. Mutations take an advisory lock beside the
+/// snapshot and fail explicitly when another coordinator owns it.
+#[derive(Debug, Clone)]
+pub struct WorkspaceStore {
+    root: PathBuf,
+}
+/// Stable coordinator name for callers that do not need to know the storage
+/// implementation details.
+pub type WorkspaceCoordinator = WorkspaceStore;
+
+
+#[derive(Debug)]
+pub struct WorkspaceProfileLock {
+    file: File,
+    pub workspace_id: WorkspaceId,
+    pub profile_id: ProfileId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceStoreError {
+    Io(String),
+    Corrupt(String),
+    InvalidName(WorkspaceError),
+    AlreadyExists(WorkspaceId),
+    NotFound(WorkspaceId),
+    ProfileLocked(ProfileId),
+    WorkspaceMismatch { expected: WorkspaceId, actual: WorkspaceId },
+    Lifecycle(LifecycleError),
+    Workspace(WorkspaceError),
+}
+
+impl fmt::Display for WorkspaceStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "workspace storage I/O error: {error}"),
+            Self::Corrupt(error) => write!(formatter, "workspace snapshot is corrupt: {error}"),
+            Self::InvalidName(error) => write!(formatter, "invalid workspace name: {error}"),
+            Self::AlreadyExists(id) => write!(formatter, "workspace already exists: {id}"),
+            Self::NotFound(id) => write!(formatter, "workspace not found: {id}"),
+            Self::ProfileLocked(id) => write!(formatter, "profile is already owned: {id}"),
+            Self::WorkspaceMismatch { expected, actual } => write!(formatter, "workspace snapshot belongs to {actual}, expected {expected}"),
+            Self::Lifecycle(error) => error.fmt(formatter),
+            Self::Workspace(error) => error.fmt(formatter),
+        }
+    }
+}
+impl std::error::Error for WorkspaceStoreError {}
+impl From<WorkspaceError> for WorkspaceStoreError {
+    fn from(error: WorkspaceError) -> Self { Self::Workspace(error) }
+}
+impl From<LifecycleError> for WorkspaceStoreError {
+    fn from(error: LifecycleError) -> Self { Self::Lifecycle(error) }
+}
+
+impl WorkspaceStore {
+    pub fn new(root: impl Into<PathBuf>) -> Result<Self, WorkspaceStoreError> {
+        let root = root.into();
+        fs::create_dir_all(root.join("workspaces")).map_err(io_error)?;
+        fs::create_dir_all(root.join("profiles")).map_err(io_error)?;
+        Ok(Self { root })
+    }
+    pub fn root(&self) -> &Path { &self.root }
+    pub fn default_path() -> PathBuf {
+        std::env::var_os("GLASS_CONFIG_HOME").map(PathBuf::from).or_else(dirs::config_dir)
+            .unwrap_or_else(|| PathBuf::from(".")).join("glass")
+    }
+    pub fn open_default() -> Result<Self, WorkspaceStoreError> { Self::new(Self::default_path()) }
+    pub fn path_for(&self, id: &WorkspaceId) -> PathBuf {
+        self.root.join("workspaces").join(format!("{id}{WORKSPACE_FILE_SUFFIX}"))
+    }
+    fn lock_path_for(&self, id: &WorkspaceId) -> PathBuf {
+        self.root.join("workspaces").join(format!("{id}{WORKSPACE_LOCK_SUFFIX}"))
+    }
+    pub fn create(
+        &self,
+        id: WorkspaceId,
+        aliases: impl IntoIterator<Item = WorkspaceAlias>,
+        config: WorkspaceConfig,
+    ) -> Result<Workspace, WorkspaceStoreError> {
+        let identity = WorkspaceIdentity::new(id.clone(), aliases)?;
+        let workspace = Workspace::new(identity, config)?;
+        if self.path_for(&id).exists() { return Err(WorkspaceStoreError::AlreadyExists(id)); }
+        self.save(&workspace)?;
+        Ok(workspace)
+    }
+    pub fn open(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        let path = self.path_for(id);
+        let bytes = fs::read(&path).map_err(|error| if error.kind() == io::ErrorKind::NotFound {
+            WorkspaceStoreError::NotFound(id.clone())
+        } else { io_error(error) })?;
+        if bytes.len() > MAX_WIRE_BYTES { return Err(WorkspaceStoreError::Corrupt("snapshot exceeds wire limit".into())); }
+        let text = String::from_utf8(bytes).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+        let workspace = Workspace::from_json(&text).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+        if workspace.identity().id() != id {
+            return Err(WorkspaceStoreError::WorkspaceMismatch { expected: id.clone(), actual: workspace.identity().id().clone() });
+        }
+        Ok(workspace)
+    }
+    pub fn save(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
+        let id = workspace.identity().id();
+        let _lock = self.lock_workspace(id)?;
+        let bytes = serde_json::to_vec(workspace).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+        if bytes.len() > MAX_WIRE_BYTES { return Err(WorkspaceStoreError::Corrupt("snapshot exceeds wire limit".into())); }
+        atomic_write(&self.path_for(id), &bytes)
+    }
+    pub fn update<F>(&self, id: &WorkspaceId, operation: F) -> Result<Workspace, WorkspaceStoreError>
+    where F: FnOnce(&mut Workspace) -> Result<(), WorkspaceStoreError> {
+        let mut workspace = self.open(id)?;
+        operation(&mut workspace)?;
+        self.save(&workspace)?;
+        Ok(workspace)
+    }
+    pub fn list(&self) -> Result<Vec<WorkspaceId>, WorkspaceStoreError> {
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(self.root.join("workspaces")).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") { continue; }
+            if let Some(name) = path.file_stem().and_then(|value| value.to_str()) {
+                if let Ok(id) = WorkspaceId::new(name) { ids.push(id); }
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+    pub fn clone_workspace(&self, source: &WorkspaceId, target: WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        if self.path_for(&target).exists() { return Err(WorkspaceStoreError::AlreadyExists(target)); }
+        let source_workspace = self.open(source)?;
+        let config = match source_workspace.config().storage {
+            WorkspaceStorage::Durable => WorkspaceConfig::durable_named(ProfileId::new(target.as_str()).map_err(WorkspaceStoreError::InvalidName)?),
+            WorkspaceStorage::Ephemeral => WorkspaceConfig::ephemeral_private(None),
+        };
+        self.create(target, std::iter::empty(), config)
+    }
+    pub fn suspend(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        self.update(id, |workspace| { workspace.transition(WorkspaceLifecycle::Suspended)?; Ok(()) })
+    }
+    pub fn resume(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        self.update(id, |workspace| { workspace.transition(WorkspaceLifecycle::Active)?; Ok(()) })
+    }
+    pub fn reset(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        self.update(id, |workspace| { workspace.reset()?; Ok(()) })
+    }
+    pub fn delete(&self, id: &WorkspaceId) -> Result<(), WorkspaceStoreError> {
+        let mut workspace = self.open(id)?;
+        if workspace.lifecycle() != WorkspaceLifecycle::Closed {
+            if workspace.lifecycle() != WorkspaceLifecycle::Closing { workspace.transition(WorkspaceLifecycle::Closing)?; }
+            workspace.transition(WorkspaceLifecycle::Closed)?;
+        }
+        let _lock = self.lock_workspace(id)?;
+        fs::remove_file(self.path_for(id)).map_err(io_error)
+    }
+    pub fn lock_workspace(&self, id: &WorkspaceId) -> Result<File, WorkspaceStoreError> {
+        let file = OpenOptions::new().create(true).read(true).write(true).open(self.lock_path_for(id)).map_err(io_error)?;
+        file.try_lock_exclusive().map_err(|_| WorkspaceStoreError::ProfileLocked(ProfileId::new(id.as_str()).unwrap_or_else(|_| ProfileId::new("workspace").expect("bounded fallback"))))?;
+        Ok(file)
+    }
+    pub fn lock_profile(&self, workspace_id: &WorkspaceId, profile_id: &ProfileId) -> Result<WorkspaceProfileLock, WorkspaceStoreError> {
+        let path = self.root.join("profiles").join(format!("{profile_id}.lock"));
+        let file = OpenOptions::new().create(true).read(true).write(true).open(path).map_err(io_error)?;
+        file.try_lock_exclusive().map_err(|_| WorkspaceStoreError::ProfileLocked(profile_id.clone()))?;
+        Ok(WorkspaceProfileLock { file, workspace_id: workspace_id.clone(), profile_id: profile_id.clone() })
+    }
+}
+
+fn io_error(error: io::Error) -> WorkspaceStoreError { WorkspaceStoreError::Io(error.to_string()) }
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceStoreError> {
+    let parent = path.parent().ok_or_else(|| WorkspaceStoreError::Io("workspace path has no parent".into()))?;
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let tmp = parent.join(format!(".{}.tmp-{}", path.file_name().and_then(|name| name.to_str()).unwrap_or("workspace"), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)));
+    let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp).map_err(io_error)?;
+    file.write_all(bytes).map_err(io_error)?;
+    file.sync_all().map_err(io_error)?;
+    drop(file);
+    fs::rename(&tmp, path).map_err(|error| { let _ = fs::remove_file(&tmp); io_error(error) })
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OwnershipError {
@@ -1448,4 +1684,77 @@ mod tests {
         assert!(matches!(authority.release(&human, &replacement.lease_id, replacement.revision), Err(LeaseError::NotHolder)));
         authority.release(&agent, &replacement.lease_id, replacement.revision).unwrap();
     }
+}
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("glass-workspace-{name}-{}-{}", std::process::id(), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn named_workspace_lifecycle_is_persisted_atomically() {
+        let root = test_root("lifecycle");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("research").unwrap();
+        store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("research").unwrap())).unwrap();
+        assert_eq!(store.list().unwrap(), vec![id.clone()]);
+        assert_eq!(store.suspend(&id).unwrap().lifecycle(), WorkspaceLifecycle::Suspended);
+        assert_eq!(store.resume(&id).unwrap().lifecycle(), WorkspaceLifecycle::Active);
+        assert_eq!(store.reset(&id).unwrap().lifecycle(), WorkspaceLifecycle::Active);
+        let clone = store.clone_workspace(&id, WorkspaceId::new("sandbox").unwrap()).unwrap();
+        assert_eq!(clone.config().profile_id.as_ref().unwrap().as_str(), "sandbox");
+        store.delete(&id).unwrap();
+        assert!(matches!(store.open(&id), Err(WorkspaceStoreError::NotFound(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_locks_are_exclusive_but_workspace_locks_are_independent() {
+        let root = test_root("locks");
+        let first = WorkspaceStore::new(&root).unwrap();
+        let second = WorkspaceStore::new(&root).unwrap();
+        let workspace_a = WorkspaceId::new("one").unwrap();
+        let workspace_b = WorkspaceId::new("two").unwrap();
+        let profile = ProfileId::new("shared").unwrap();
+        let _first = first.lock_profile(&workspace_a, &profile).unwrap();
+        assert!(matches!(second.lock_profile(&workspace_b, &profile), Err(WorkspaceStoreError::ProfileLocked(_))));
+        let other = ProfileId::new("isolated").unwrap();
+        let _second = second.lock_profile(&workspace_b, &other).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resource_and_attachment_scope_validation_survives_reload() {
+        let root = test_root("scope");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("bounded").unwrap();
+        let mut workspace = store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("bounded").unwrap())).unwrap();
+        let scope = workspace.scope();
+        let attachment = Attachment::new(AttachmentId::new("tui").unwrap(), ResourceId::new("actor").unwrap(), ActorRole::Human, AttachmentCapabilities::mutating(), scope.clone()).unwrap();
+        workspace.attach(attachment).unwrap();
+        store.save(&workspace).unwrap();
+        let loaded = store.open(&id).unwrap();
+        assert_eq!(loaded.attachments().len(), 1);
+        let foreign = ResourceReference::target(WorkspaceScope::profile(WorkspaceId::new("other").unwrap(), ProfileId::new("other").unwrap()), ResourceId::new("tab").unwrap()).unwrap();
+        assert!(loaded.validate_reference(&foreign).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn mutation_lease_survives_workspace_reload() {
+        let root = test_root("lease");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("leased").unwrap();
+        let mut workspace = store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("leased").unwrap())).unwrap();
+        let attachment = Attachment::new(AttachmentId::new("human").unwrap(), ResourceId::new("actor").unwrap(), ActorRole::Human, AttachmentCapabilities::mutating(), workspace.scope()).unwrap();
+        workspace.attach(attachment.clone()).unwrap();
+        let grant = workspace.acquire_lease(attachment.id(), Revision(0)).unwrap();
+        store.save(&workspace).unwrap();
+        assert_eq!(store.open(&id).unwrap().lease().state, MutationLeaseState::Held { lease_id: grant.lease_id, holder: attachment.id().clone() });
+        let _ = fs::remove_dir_all(root);
+    }
+
 }

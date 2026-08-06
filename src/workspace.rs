@@ -125,7 +125,8 @@ macro_rules! bounded_name {
             }
             pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
                 validate_wire_bytes(input)?;
-                serde_json::from_str(input)
+                let value = serde_json::from_str::<String>(input)?;
+                Self::new(value).map_err(|error| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())))
             }
 
             pub fn as_str(&self) -> &str { &self.0 }
@@ -143,33 +144,10 @@ macro_rules! bounded_name {
                 serializer.serialize_str(&self.0)
             }
         }
-
         impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            fn deserialize<D>(_: D) -> Result<Self, D::Error>
             where D: Deserializer<'de> {
-                struct NameVisitor;
-                impl<'de> Visitor<'de> for NameVisitor {
-                    type Value = $name;
-                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        formatter.write_str("a bounded ASCII identifier")
-                    }
-                    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
-                    where E: serde::de::Error {
-                        Self::Value::new(value).map_err(E::custom)
-                    }
-                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-                    where E: serde::de::Error {
-                        Self::Value::new(value).map_err(E::custom)
-                    }
-                    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-                    where E: serde::de::Error {
-                        if value.len() > $max {
-                            return Err(E::custom(WorkspaceError::InvalidName { label: $label, reason: "is too long" }));
-                        }
-                        Self::Value::new(value).map_err(E::custom)
-                    }
-                }
-                deserializer.deserialize_str(NameVisitor)
+                Err(serde::de::Error::custom("direct bounded identity deserialization is unsupported; use from_json"))
             }
         }
 
@@ -195,6 +173,10 @@ pub struct WorkspaceIdentity {
 }
 
 impl WorkspaceIdentity {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        serde_json::from_str(input)
+    }
     pub fn new(id: WorkspaceId, aliases: impl IntoIterator<Item = WorkspaceAlias>) -> Result<Self, WorkspaceError> {
         let mut normalized = BTreeSet::new();
         for alias in aliases {
@@ -386,10 +368,6 @@ pub struct WorkspaceScope {
     storage: WorkspaceStorage,
 }
 impl WorkspaceScope {
-    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
-        validate_wire_bytes(input)?;
-        serde_json::from_str(input)
-    }
     pub fn workspace(workspace_id: WorkspaceId) -> Self { Self { workspace_id, profile_id: None, generation: None, storage: WorkspaceStorage::Durable } }
     pub fn profile(workspace_id: WorkspaceId, profile_id: ProfileId) -> Self { Self { workspace_id, profile_id: Some(profile_id), generation: None, storage: WorkspaceStorage::Durable } }
     pub fn ephemeral(workspace_id: WorkspaceId, generation: WorkspaceGeneration) -> Self { Self { workspace_id, profile_id: None, generation: Some(generation), storage: WorkspaceStorage::Ephemeral } }
@@ -404,10 +382,15 @@ impl WorkspaceScope {
     pub fn profile_id(&self) -> Option<&ProfileId> { self.profile_id.as_ref() }
     pub fn generation(&self) -> Option<WorkspaceGeneration> { self.generation }
     pub fn storage(&self) -> WorkspaceStorage { self.storage }
-    pub fn contains(&self, other: &Self) -> bool {
-        self.workspace_id == other.workspace_id && self.profile_id == other.profile_id && self.generation == other.generation && self.storage == other.storage
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        let raw: RawWorkspaceScopeWire = serde_json::from_str(input)?;
+        let workspace_id = WorkspaceId::new(raw.workspace_id).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let profile_id = raw.profile_id.map(ProfileId::new).transpose().map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let generation = raw.generation.map(WorkspaceGeneration::new).transpose().map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let scope = Self { workspace_id, profile_id, generation, storage: raw.storage.unwrap_or(if generation.is_some() { WorkspaceStorage::Ephemeral } else { WorkspaceStorage::Durable }) };
+        scope.validate_invariants().map(|()| scope).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))
     }
-
     pub fn validate(&self, other: &Self) -> Result<(), ScopeError> {
         if self.workspace_id != other.workspace_id {
             return Err(ScopeError::WorkspaceMismatch { expected: self.workspace_id.clone(), actual: other.workspace_id.clone() });
@@ -431,6 +414,18 @@ impl WorkspaceScope {
             _ => Ok(()),
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceScopeWire {
+    workspace_id: String,
+    #[serde(default)]
+    profile_id: Option<String>,
+    #[serde(default)]
+    generation: Option<u64>,
+    #[serde(default)]
+    storage: Option<WorkspaceStorage>,
 }
 
 #[derive(Deserialize)]

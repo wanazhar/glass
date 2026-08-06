@@ -142,10 +142,7 @@ fn ownership_deserialization_preserves_domain_checks() {
 
 #[test]
 fn legacy_generation_scope_migrates_to_ephemeral_storage() {
-    let scope: WorkspaceScope = serde_json::from_value(serde_json::json!({
-        "workspaceId": "legacy",
-        "generation": 9
-    })).unwrap();
+    let scope = WorkspaceScope::from_json(r#"{"workspaceId":"legacy","generation":9}"#).unwrap();
     assert_eq!(scope.storage(), WorkspaceStorage::Ephemeral);
     let reference = ResourceReference::browser(scope, ResourceId::new("browser").unwrap()).unwrap();
     assert_eq!(reference.to_string(), "glass://workspace/legacy/generation/9/browser/browser");
@@ -156,4 +153,10 @@ fn legacy_generation_scope_migrates_to_ephemeral_storage() {
 fn escaped_oversized_identity_is_rejected_before_decode() {
     let escaped = format!("\"{}\"", "\\u0061".repeat(MAX_WIRE_BYTES));
     assert!(WorkspaceId::from_json(&escaped).is_err());
+}
+
+#[test]
+fn direct_identity_deserialization_requires_capped_loader() {
+    assert!(serde_json::from_str::<WorkspaceId>("\"valid-id\"").is_err());
+    assert_eq!(WorkspaceId::from_json("\"valid-id\"").unwrap().as_str(), "valid-id");
 }

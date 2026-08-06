@@ -390,23 +390,28 @@ impl BrowserSession {
 
     /// Reconcile a run ID conservatively when the original session is gone.
     pub fn recover_run(&self, execution_id: &str) -> BrowserResult<RecoverRunResult> {
-        if execution_id.is_empty() || execution_id.len() > 128 {
-            return Err("execution ID must be 1..=128 bytes".into());
-        }
-        Ok(RecoverRunResult {
-            execution_id: execution_id.into(),
-            known: false,
-            phase: "reconciliation".into(),
-            dispatch_happened: false,
-            mutation_possible: true,
-            reconciliation: "session-local execution evidence is unavailable; observe before retry"
-                .into(),
-            retry: RetryGuidance {
-                classification: RetryClassification::UnsafeUntilReconciled,
-                recommended_operation: "inspect_page".into(),
-            },
-        })
+        recover_run(execution_id)
     }
+}
+
+/// Reconcile a run ID without requiring a live browser session.
+pub fn recover_run(execution_id: &str) -> BrowserResult<RecoverRunResult> {
+    if execution_id.is_empty() || execution_id.len() > 128 {
+        return Err("execution ID must be 1..=128 bytes".into());
+    }
+    Ok(RecoverRunResult {
+        execution_id: execution_id.into(),
+        known: false,
+        phase: "reconciliation".into(),
+        dispatch_happened: false,
+        mutation_possible: true,
+        reconciliation: "session-local execution evidence is unavailable; observe before retry"
+            .into(),
+        retry: RetryGuidance {
+            classification: RetryClassification::UnsafeUntilReconciled,
+            recommended_operation: "inspect_page".into(),
+        },
+    })
 }
 
 fn finalize_extraction_result(

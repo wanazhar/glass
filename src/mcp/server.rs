@@ -32,6 +32,7 @@ use crate::browser::session::{
     SemanticObservationLevel, SessionOptions, SessionSnapshotStore, StructuredExtractionRequest,
     TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat,
     WaitCondition, WaitTimeout, default_knowledge_store_path, default_session_snapshot_path,
+    recover_run,
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
@@ -1603,6 +1604,9 @@ async fn call_tool(
         ToolInvocation::ResolveIntentWithKnowledge { .. }
     ) {
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
+    }
+    if let ToolInvocation::RecoverRun { execution_id } = &invocation {
+        return serialized_result(&recover_run(execution_id)?);
     }
     let session = ensure_session(session, options, policy, viewport).await?;
 
@@ -4604,6 +4608,41 @@ mod tests {
                     .as_str()
                     .is_some_and(|description| description.contains("explicit"))
         }));
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn recover_run_is_browser_free_and_conservative() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "recover",
+            "method": "tools/call",
+            "params": {
+                "name": "recoverRun",
+                "arguments": {"executionId": "run-123"}
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = response.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let result: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(result["executionId"], "run-123");
+        assert_eq!(result["known"], false);
+        assert_eq!(result["mutationPossible"], true);
+        assert_eq!(result["retry"]["classification"], "unsafeUntilReconciled");
         assert!(session.is_none());
     }
 

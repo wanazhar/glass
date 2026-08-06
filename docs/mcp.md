@@ -204,6 +204,10 @@ index, semantic value, and any evidence-backed entity references.
 The compatibility `records` envelope remains unchanged. Extraction is read-only
 and never serializes authored input values.
 
+`recoverRun` and the equivalent CLI command are browser-free: they accept a
+bounded execution ID and return conservative reconciliation guidance without
+starting Chrome.
+
 Tools that return this contract accept `responseMode` values `minimal`,
 `normal`, and `diagnostic`; MCP defaults to `minimal`. The CLI exposes the same
 projection through the global `--response-mode` option. The extraction payload

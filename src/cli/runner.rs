@@ -155,6 +155,12 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         _ => {}
     }
 
+    if let Some(Commands::RecoverRun { execution_id }) = &cli.command {
+        let result = crate::browser::session::recover_run(execution_id)?;
+        print_json_mode(&result, cli.response_mode)?;
+        return Ok(());
+    }
+
     if let Some(Commands::SmokeSites {
         input,
         stop_on_error,

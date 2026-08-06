@@ -70,6 +70,7 @@ pub use agent::{
     ActAndVerifyResult, ExtractionField, ExtractionKind, FindTargetResult, InspectPageResult,
     RecoverRunResult, StructuredExtractionLimits, StructuredExtractionProvenance,
     StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
+    recover_run,
 };
 pub use authoring::{
     WORKFLOW_AUTHORING_SCHEMA_VERSION, WorkflowAuthoringDocument, WorkflowAuthoringFormat,

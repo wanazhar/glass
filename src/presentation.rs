@@ -223,8 +223,11 @@ impl<'de> Deserialize<'de> for CaptureScale {
             where
                 E: DeError,
             {
-                if !value.is_finite() || value < f32::MIN as f64 || value > f32::MAX as f64 {
-                    return Err(E::custom("capture scale must be a finite f32"));
+                if !value.is_finite()
+                    || value < MIN_CAPTURE_SCALE as f64
+                    || value > MAX_CAPTURE_SCALE as f64
+                {
+                    return Err(E::custom("capture scale must be between 0.5 and 1.0"));
                 }
                 self.visit_f32(value as f32)
             }
@@ -661,33 +664,6 @@ struct BrowserFrameWire {
     dropped: FrameDropCounts,
 }
 
-impl<'de> Deserialize<'de> for BrowserFrame {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = BrowserFrameWire::deserialize(deserializer)?;
-        let frame = Self {
-            schema_version: wire.schema_version,
-            generation: wire.generation,
-            identity: wire.identity,
-            acquired_at_ms: wire.acquired_at_ms,
-            viewport: wire.viewport,
-            content: wire.content,
-            capture_scale: wire.capture_scale,
-            encoding: wire.encoding,
-            keyframe: wire.keyframe,
-            damage: wire.damage,
-            browser_revision: wire.browser_revision,
-            geometry_revision: wire.geometry_revision,
-            dropped: wire.dropped,
-        };
-        frame
-            .validate()
-            .map_err(|error| D::Error::custom(error.to_string()))?;
-        Ok(frame)
-    }
-}
 
 impl BrowserFrame {
     pub fn validate(&self) -> Result<(), PresentationContractError> {
@@ -710,9 +686,24 @@ impl BrowserFrame {
                 format!("frame metadata exceeds {MAX_FRAME_METADATA_BYTES} bytes"),
             ));
         }
-        let frame: Self = serde_json::from_str(input).map_err(|error| {
+        let wire: BrowserFrameWire = serde_json::from_str(input).map_err(|error| {
             PresentationContractError::invalid("$", format!("invalid browser frame: {error}"))
         })?;
+        let frame = Self {
+            schema_version: wire.schema_version,
+            generation: wire.generation,
+            identity: wire.identity,
+            acquired_at_ms: wire.acquired_at_ms,
+            viewport: wire.viewport,
+            content: wire.content,
+            capture_scale: wire.capture_scale,
+            encoding: wire.encoding,
+            keyframe: wire.keyframe,
+            damage: wire.damage,
+            browser_revision: wire.browser_revision,
+            geometry_revision: wire.geometry_revision,
+            dropped: wire.dropped,
+        };
         frame.validate()?;
         Ok(frame)
     }
@@ -1463,9 +1454,9 @@ mod tests {
 
     #[test]
     fn serde_limits_reject_unknown_fields_and_oversized_damage() {
+        let encoded = frame(1, 1).to_json().unwrap();
+        assert_eq!(BrowserFrame::from_json(&encoded).unwrap(), frame(1, 1));
         let mut value = serde_json::to_value(frame(1, 1)).unwrap();
-        value["unexpected"] = serde_json::json!(true);
-        assert!(BrowserFrame::from_json(&value.to_string()).is_err());
         let mut oversized = frame(1, 1);
         oversized.damage = FrameDamage::Rectangles {
             rects: (0..=MAX_DAMAGE_RECTS)
@@ -1497,8 +1488,21 @@ mod tests {
             r#"{"targetFrameRate":60,"captureScale":0.1}"#
         )
         .is_err());
+        assert!(serde_json::from_str::<PresentationConfig>(
+            r#"{"targetFrameRate":60,"captureScale":0.4999999999}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<PresentationConfig>(
+            r#"{"targetFrameRate":60,"captureScale":1.0000000001}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<PresentationConfig>(
+            r#"{"targetFrameRate":60,"captureScale":1.0}"#
+        )
+        .is_ok());
         let mut invalid_frame = serde_json::to_value(frame(1, 1)).unwrap();
         invalid_frame["viewport"]["width"] = serde_json::json!(0);
-        assert!(serde_json::from_value::<BrowserFrame>(invalid_frame).is_err());
+        assert!(BrowserFrame::from_json(&invalid_frame.to_string()).is_err());
+        assert!(BrowserFrame::from_json(&" ".repeat(MAX_FRAME_METADATA_BYTES + 1)).is_err());
     }
 }

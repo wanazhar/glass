@@ -99,6 +99,7 @@ impl BrowserSession {
                     opaque_regions: 0,
                     reasons: Vec::new(),
                 },
+                surface_set: None,
             };
             let ir = crate::web_ir::reconcile_evidence(&evidence)?;
             return compile_task(task, &ir).map_err(|error| error.to_string().into());

@@ -5,9 +5,10 @@
 //! and preserves explicit uncertainty, coverage, and resource limits.
 
 use crate::extraction::{
-    EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
-    ExtractionEvidenceLimits, ExtractionScope,
+    EvidenceCoverage, EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource,
+    ExtractionEvidence, ExtractionEvidenceLimits, ExtractionScope,
 };
+use crate::surfaces::SurfaceSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -315,6 +316,9 @@ pub struct GlassWebIrV1 {
     pub entity_details: BTreeMap<String, WebIrEntityDetails>,
     pub coverage: crate::extraction::EvidenceCoverage,
     pub limits: ExtractionEvidenceLimits,
+    /// Validated surface provenance retained alongside semantic entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_set: Option<SurfaceSet>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -512,6 +516,11 @@ impl GlassWebIrV1 {
                 ));
             }
             validate_entity_details(entity_id, details, &ids)?;
+        }
+        if let Some(surface_set) = &self.surface_set {
+            surface_set
+                .validate()
+                .map_err(|error| WebIrValidationError::new("surfaceSet", error.to_string()))?;
         }
         if self.relationships.len() > MAX_WEB_IR_RELATIONSHIPS {
             return Err(WebIrValidationError::new(
@@ -871,6 +880,11 @@ impl GlassWebIrV1 {
                     right.name.as_deref().unwrap_or_default(),
                 ))
         });
+        if let Some(surface_set) = &mut canonical.surface_set {
+            surface_set
+                .surfaces
+                .sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
+        }
         for entity in &mut canonical.entities {
             entity.evidence_sources.sort();
             entity.evidence_sources.dedup();
@@ -1155,6 +1169,7 @@ pub fn reconcile_evidence(
         entity_details,
         coverage: evidence.coverage.clone(),
         limits: evidence.limits.clone(),
+        surface_set: evidence.surface_set.clone(),
         diagnostics: diagnostics.into_iter().collect(),
         relationship_hint_diagnostics,
     };
@@ -1735,6 +1750,7 @@ mod tests {
                 text_bytes: 15,
                 missing_sources: Vec::new(),
             },
+            surface_set: None,
         }
     }
 

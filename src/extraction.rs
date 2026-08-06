@@ -5,6 +5,11 @@
 //! Glass Web IR without dispatching browser actions.
 use crate::browser::dom::{CompactAxNode, CompactInteractiveElement, DomNode};
 use crate::browser::session::{PageContext, find_region_node};
+use crate::surfaces::{
+    CoverageLevel, InteractionCoverage, ProvenanceSourceClass, Surface, SurfaceCapability,
+    SurfaceCoverage, SurfaceEvidence, SurfaceEvidenceSource, SurfaceId, SurfaceKind,
+    SurfaceProvenance, SurfaceRevision, SurfaceSet, UnderstandingLevel, SURFACE_SCHEMA_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
@@ -60,6 +65,13 @@ pub enum EvidenceSource {
     Dialogs,
     Frames,
     ShadowDom,
+    Svg,
+    CanvasDetection,
+    MediaMetadata,
+    EmbeddedDocument,
+    Pdf,
+    BrowserNative,
+    Bridge,
     BoundedProbe,
 }
 
@@ -225,6 +237,9 @@ pub struct ExtractionEvidence {
     pub facts: Vec<EvidenceFact>,
     pub limits: ExtractionEvidenceLimits,
     pub coverage: EvidenceCoverage,
+    /// Validated transport-neutral surface evidence for this observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_set: Option<SurfaceSet>,
 }
 
 /// One redacted, source-labelled fact from browser evidence.
@@ -343,6 +358,13 @@ fn relationship_hint_allowed(source: EvidenceSource, hint: EvidenceRelationshipH
         | EvidenceSource::Dialogs
         | EvidenceSource::Frames
         | EvidenceSource::ShadowDom
+        | EvidenceSource::Svg
+        | EvidenceSource::CanvasDetection
+        | EvidenceSource::MediaMetadata
+        | EvidenceSource::EmbeddedDocument
+        | EvidenceSource::Pdf
+        | EvidenceSource::BrowserNative
+        | EvidenceSource::Bridge
         | EvidenceSource::BoundedProbe => false,
     }
 }
@@ -531,6 +553,34 @@ pub fn extract_page_context(
                     );
                 }
             }
+            EvidenceSource::Svg
+            | EvidenceSource::CanvasDetection
+            | EvidenceSource::MediaMetadata
+            | EvidenceSource::EmbeddedDocument
+            | EvidenceSource::Pdf
+            | EvidenceSource::BrowserNative
+            | EvidenceSource::Bridge => {
+                let count = match source {
+                    EvidenceSource::Svg => context.boundaries.svg_elements,
+                    EvidenceSource::CanvasDetection => context.boundaries.canvases,
+                    EvidenceSource::MediaMetadata => context.boundaries.media_elements,
+                    EvidenceSource::EmbeddedDocument => context.boundaries.embedded_documents,
+                    EvidenceSource::Pdf => context.boundaries.pdf_documents,
+                    EvidenceSource::BrowserNative => context.boundaries.native_surfaces,
+                    EvidenceSource::Bridge => 0,
+                    _ => 0,
+                };
+                if count > 0 {
+                    push_boundary_fact(
+                        &mut collector,
+                        *source,
+                        "surface",
+                        format!("{count} observed surface(s)"),
+                    );
+                } else {
+                    missing_sources.insert(*source);
+                }
+            }
             EvidenceSource::BoundedProbe => {
                 if let Some(viewport) = context.boundaries.viewport {
                     push_boundary_fact(
@@ -574,9 +624,259 @@ pub fn extract_page_context(
             missing_sources: missing_source_values,
         },
         coverage,
+        surface_set: build_surface_set(context, &request.sources, &missing_sources)?,
     };
     trim_to_output_budget(&mut evidence, request.budgets.max_output_bytes)?;
     Ok(evidence)
+}
+
+fn build_surface_set(
+    context: &PageContext,
+    requested: &[EvidenceSource],
+    missing: &BTreeSet<EvidenceSource>,
+) -> Result<Option<SurfaceSet>, ExtractionContractError> {
+    let revision = SurfaceRevision::new(context.accessibility.revision.max(1))
+        .map_err(|error| ExtractionContractError::new("surfaceSet.revision", error.to_string()))?;
+    let quality = if context.boundaries.truncated || context.accessibility.truncated {
+        CoverageLevel::Partial
+    } else {
+        CoverageLevel::Strong
+    };
+    let provenance = |source: SurfaceEvidenceSource| SurfaceProvenance {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        source_class: ProvenanceSourceClass::LiveWebIr,
+        source_id: format!("page:{}", revision.0),
+        backend: None,
+        backend_version: None,
+        adapter_version: Some("browser-observation-1".into()),
+        bridge_version: None,
+        bridge_origin: None,
+        bridge_trust: None,
+        grant_token: None,
+        bridge_capabilities: Vec::new(),
+        source_revision: revision,
+        observed_at: "2026-01-01T00:00:00Z".into(),
+        validated_at: "2026-01-01T00:00:00Z".into(),
+    };
+    let evidence = |source: SurfaceEvidenceSource, detail: String, level| SurfaceEvidence {
+        source,
+        quality: level,
+        provenance: provenance(source),
+        detail: Some(detail),
+    };
+    let available = |source: EvidenceSource| requested.contains(&source) && !missing.contains(&source);
+    let mut surfaces = Vec::new();
+    let mut add = |id: String,
+                   parent: Option<SurfaceId>,
+                   kind: SurfaceKind,
+                   evidence_values: Vec<SurfaceEvidence>,
+                   understanding: UnderstandingLevel,
+                   coverage: SurfaceCoverage,
+                   capabilities: Vec<SurfaceCapability>| {
+        let surface_id = SurfaceId::new(id)
+            .map_err(|error| ExtractionContractError::new("surfaceSet.surfaces", error.to_string()))?;
+        let nesting_depth = u16::from(parent.is_some());
+        surfaces.push(Surface {
+            schema_version: SURFACE_SCHEMA_VERSION,
+            surface_id,
+            parent_surface_id: parent,
+            nesting_depth,
+            kind,
+            capabilities,
+            understanding,
+            coverage,
+            evidence: evidence_values,
+            revision,
+            diagnostics: Vec::new(),
+        });
+        Ok::<(), ExtractionContractError>(())
+    };
+
+    let mut document_evidence = Vec::new();
+    if available(EvidenceSource::Dom) {
+        document_evidence.push(evidence(
+            SurfaceEvidenceSource::Dom,
+            "observed document structure".into(),
+            quality,
+        ));
+    }
+    if available(EvidenceSource::Accessibility) {
+        document_evidence.push(evidence(
+            SurfaceEvidenceSource::Accessibility,
+            "observed accessibility semantics".into(),
+            quality,
+        ));
+    }
+    if document_evidence.is_empty() {
+        return Ok(None);
+    }
+    let root_id = SurfaceId::new("document")
+        .map_err(|error| ExtractionContractError::new("surfaceSet.surfaces", error.to_string()))?;
+    add(
+        "document".into(),
+        None,
+        SurfaceKind::Document,
+        document_evidence,
+        UnderstandingLevel::Structural,
+        SurfaceCoverage {
+            structural: quality,
+            semantic: if available(EvidenceSource::Accessibility) {
+                quality
+            } else {
+                CoverageLevel::Partial
+            },
+            interaction: InteractionCoverage::Unavailable,
+        },
+        vec![
+            SurfaceCapability::ReadStructure,
+            SurfaceCapability::ReadText,
+            SurfaceCapability::ReadRelations,
+            SurfaceCapability::ReadState,
+            SurfaceCapability::Extraction,
+            SurfaceCapability::RevisionObservation,
+        ],
+    )?;
+
+    let mut add_children = |kind: SurfaceKind,
+                            source: SurfaceEvidenceSource,
+                            request_source: EvidenceSource,
+                            count: usize,
+                            prefix: &str| -> Result<(), ExtractionContractError> {
+        if !available(request_source) {
+            return Ok(());
+        }
+        for index in 0..count.min(256) {
+            if surfaces.len() >= 256 {
+                break;
+            }
+            add(
+                format!("{prefix}_{index}"),
+                Some(root_id.clone()),
+                kind.clone(),
+                vec![evidence(source, format!("observed {prefix} boundary"), quality)],
+                UnderstandingLevel::Structural,
+                SurfaceCoverage {
+                    structural: quality,
+                    semantic: CoverageLevel::Partial,
+                    interaction: InteractionCoverage::Unavailable,
+                },
+                vec![SurfaceCapability::ReadStructure],
+            )?;
+        }
+        Ok(())
+    };
+    add_children(
+        SurfaceKind::FrameDocument,
+        SurfaceEvidenceSource::Frame,
+        EvidenceSource::Frames,
+        context.boundaries.child_frames,
+        "frame",
+    )?;
+    add_children(
+        SurfaceKind::ShadowDocument,
+        SurfaceEvidenceSource::ShadowDom,
+        EvidenceSource::ShadowDom,
+        context.boundaries.shadow_roots,
+        "shadow",
+    )?;
+    add_children(
+        SurfaceKind::Svg,
+        SurfaceEvidenceSource::Svg,
+        EvidenceSource::Svg,
+        context.boundaries.svg_elements,
+        "svg",
+    )?;
+    add_children(
+        SurfaceKind::Media,
+        SurfaceEvidenceSource::MediaMetadata,
+        EvidenceSource::MediaMetadata,
+        context.boundaries.media_elements,
+        "media",
+    )?;
+    add_children(
+        SurfaceKind::EmbeddedDocument,
+        SurfaceEvidenceSource::EmbeddedDocument,
+        EvidenceSource::EmbeddedDocument,
+        context.boundaries.embedded_documents,
+        "embedded",
+    )?;
+    add_children(
+        SurfaceKind::Pdf,
+        SurfaceEvidenceSource::Pdf,
+        EvidenceSource::Pdf,
+        context.boundaries.pdf_documents,
+        "pdf",
+    )?;
+    add_children(
+        SurfaceKind::BrowserNative,
+        SurfaceEvidenceSource::BrowserNative,
+        EvidenceSource::BrowserNative,
+        context.boundaries.native_surfaces,
+        "native",
+    )?;
+    drop(add_children);
+
+    let canvas_2d = if context.boundaries.canvas_2d == 0
+        && context.boundaries.webgl_canvases == 0
+        && context.boundaries.webgpu_canvases == 0
+    {
+        context.boundaries.canvases
+    } else {
+        context.boundaries.canvas_2d
+    };
+    for (kind, count, prefix) in [
+        (SurfaceKind::Canvas2d, canvas_2d, "canvas2d"),
+        (SurfaceKind::Webgl, context.boundaries.webgl_canvases, "webgl"),
+        (SurfaceKind::Webgpu, context.boundaries.webgpu_canvases, "webgpu"),
+    ] {
+        if !available(EvidenceSource::CanvasDetection) {
+            continue;
+        }
+        for index in 0..count.min(256) {
+            if surfaces.len() >= 256 {
+                break;
+            }
+            add(
+                format!("{prefix}_{index}"),
+                Some(root_id.clone()),
+                kind,
+                vec![evidence(
+                    SurfaceEvidenceSource::CanvasDetection,
+                    format!("observed {prefix} graphics boundary"),
+                    CoverageLevel::Strong,
+                )],
+                UnderstandingLevel::CoordinateOnly,
+                SurfaceCoverage {
+                    structural: CoverageLevel::Partial,
+                    semantic: CoverageLevel::Partial,
+                    interaction: InteractionCoverage::CoordinateOnly,
+                },
+                vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Capture],
+            )?;
+        }
+    }
+    if context.boundaries.truncated && surfaces.len() < 256 {
+        add(
+            "opaque_boundary".into(),
+            Some(root_id),
+            SurfaceKind::Opaque,
+            vec![evidence(
+                SurfaceEvidenceSource::Layout,
+                "bounded observation omitted surface details".into(),
+                CoverageLevel::Opaque,
+            )],
+            UnderstandingLevel::Opaque,
+            SurfaceCoverage::OPAQUE,
+            Vec::new(),
+        )?;
+    }
+    let set = SurfaceSet {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        surfaces,
+    };
+    set.validate()
+        .map_err(|error| ExtractionContractError::new("surfaceSet", error.to_string()))?;
+    Ok(Some(set))
 }
 
 struct EvidenceCollector {
@@ -1068,6 +1368,9 @@ fn trim_to_output_budget(
         > max_output_bytes as usize
     {
         if evidence.facts.pop().is_none() {
+            if evidence.surface_set.take().is_some() {
+                continue;
+            }
             return Err(ExtractionContractError::new(
                 "budgets.maxOutputBytes",
                 "output budget is too small for extraction metadata",
@@ -1356,6 +1659,68 @@ mod tests {
                 .unwrap()
                 .contains("secret-value")
         );
+    }
+
+    #[test]
+    fn extraction_reconciles_compatible_multi_surface_observation() {
+        let mut context = page_context();
+        context.boundaries = crate::browser::session::ObservationBoundarySummary {
+            canvases: 3,
+            canvas_2d: 1,
+            webgl_canvases: 1,
+            webgpu_canvases: 1,
+            child_frames: 1,
+            shadow_roots: 1,
+            svg_elements: 1,
+            media_elements: 1,
+            embedded_documents: 1,
+            pdf_documents: 1,
+            native_surfaces: 1,
+            truncated: true,
+            ..Default::default()
+        };
+        let mut request = request();
+        request.sources = vec![
+            EvidenceSource::Accessibility,
+            EvidenceSource::Dom,
+            EvidenceSource::Layout,
+            EvidenceSource::Frames,
+            EvidenceSource::ShadowDom,
+            EvidenceSource::Svg,
+            EvidenceSource::CanvasDetection,
+            EvidenceSource::MediaMetadata,
+            EvidenceSource::EmbeddedDocument,
+            EvidenceSource::Pdf,
+            EvidenceSource::BrowserNative,
+        ];
+        let evidence = extract_page_context(&context, &request).unwrap();
+        let surfaces = evidence.surface_set.as_ref().expect("surface evidence");
+        surfaces.validate().unwrap();
+        assert!(surfaces
+            .surfaces
+            .iter()
+            .any(|surface| surface.kind == SurfaceKind::Webgl));
+        assert!(surfaces
+            .surfaces
+            .iter()
+            .any(|surface| surface.kind == SurfaceKind::Webgpu));
+        assert!(surfaces
+            .surfaces
+            .iter()
+            .any(|surface| surface.kind == SurfaceKind::BrowserNative));
+        let opaque = surfaces
+            .surfaces
+            .iter()
+            .find(|surface| surface.kind == SurfaceKind::Opaque)
+            .expect("bounded omission should remain opaque");
+        assert_eq!(opaque.understanding, UnderstandingLevel::Opaque);
+        assert!(opaque.capabilities.is_empty());
+        let ir = crate::web_ir::reconcile_evidence(&evidence).unwrap();
+        assert!(ir.surface_set.is_some());
+        let mut unauthorized = opaque.clone();
+        unauthorized.capabilities.push(SurfaceCapability::SemanticAction);
+        assert!(unauthorized.validate().is_err());
+        assert!(ir.to_canonical_json().unwrap().contains("surfaceSet"));
     }
     #[test]
     fn extraction_emits_controls_hint_for_custom_form_roles() {

@@ -398,7 +398,9 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         observer.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
         globalThis[key] = state;
     }
-    const summary = {scanned_elements:0, scan_limit:512, shadow_roots:0, child_frames:0, canvases:0, truncated:false};
+    const summary = {scanned_elements:0, scan_limit:512, shadow_roots:0, child_frames:0, canvases:0,
+        canvas_2d:0, webgl_canvases:0, webgpu_canvases:0, svg_elements:0, media_elements:0,
+        embedded_documents:0, pdf_documents:0, native_surfaces:0, truncated:false};
     const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
     while (walker.nextNode()) {
         if (summary.scanned_elements >= summary.scan_limit) { summary.truncated = true; break; }
@@ -407,7 +409,17 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.shadowRoot) summary.shadow_roots += 1;
         if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
         if (element.localName === 'canvas') summary.canvases += 1;
-    }
+        if (element.localName === 'svg') summary.svg_elements += 1;
+        if (element.localName === 'audio' || element.localName === 'video') summary.media_elements += 1;
+        if (element.localName === 'object' || element.localName === 'embed') {
+            summary.embedded_documents += 1;
+            const type = (element.getAttribute('type') || '').toLowerCase();
+            const resource = (element.getAttribute('data') || element.getAttribute('src') || '').toLowerCase();
+            if (type === 'application/pdf' || resource.split(/[?#]/, 1)[0].endsWith('.pdf')) {
+                summary.pdf_documents += 1;
+            }
+        }
+    summary.canvas_2d = summary.canvases;
     summary.viewport = {
         scroll_x: window.scrollX,
         scroll_y: window.scrollY,
@@ -1917,6 +1929,20 @@ pub struct ObservationBoundarySummary {
     pub shadow_roots: usize,
     pub child_frames: usize,
     pub canvases: usize,
+    #[serde(default)]
+    pub canvas_2d: usize,
+    #[serde(default)]
+    pub webgl_canvases: usize,
+    #[serde(default)]
+    pub svg_elements: usize,
+    #[serde(default)]
+    pub media_elements: usize,
+    #[serde(default)]
+    pub embedded_documents: usize,
+    #[serde(default)]
+    pub pdf_documents: usize,
+    #[serde(default)]
+    pub native_surfaces: usize,
     pub truncated: bool,
     #[serde(default)]
     pub text_truncated: bool,

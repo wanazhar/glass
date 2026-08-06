@@ -179,10 +179,12 @@ impl WorkspaceIdentity {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
         let raw: RawWorkspaceIdentityWire = serde_json::from_str(input)?;
-        let id = WorkspaceId::new(raw.id).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
-        let aliases = raw.aliases.into_iter().map(WorkspaceAlias::new).collect::<Result<Vec<_>, _>>()
-            .map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
-        Self::new(id, aliases).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))
+        Self::from_wire(raw)
+    }
+    fn from_wire(raw: RawWorkspaceIdentityWire) -> Result<Self, serde_json::Error> {
+        let id = WorkspaceId::new(raw.id).map_err(wire_error)?;
+        let aliases = raw.aliases.into_iter().map(WorkspaceAlias::new).collect::<Result<Vec<_>, _>>().map_err(wire_error)?;
+        Self::new(id, aliases).map_err(wire_error)
     }
     pub fn new(id: WorkspaceId, aliases: impl IntoIterator<Item = WorkspaceAlias>) -> Result<Self, WorkspaceError> {
         let mut normalized = BTreeSet::new();
@@ -970,7 +972,16 @@ pub struct Workspace {
 impl Workspace {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
-        serde_json::from_str(input)
+        let raw: RawWorkspaceWire = serde_json::from_str(input)?;
+        if !raw.attachments.is_null() && raw.attachments.as_object().map_or(true, |map| !map.is_empty()) {
+            return Err(wire_error("workspace attachment wire loading requires a scoped attachment loader"));
+        }
+        let identity = WorkspaceIdentity::from_wire(raw.identity)?;
+        let profile_id = raw.config.profile_id.map(ProfileId::new).transpose().map_err(wire_error)?;
+        let config = WorkspaceConfig { profile_mode: raw.config.profile_mode, privacy_mode: raw.config.privacy_mode, storage: raw.config.storage, profile_id, generation: raw.config.generation };
+        let mut workspace = Self::new(identity, config).map_err(wire_error)?;
+        workspace.lifecycle = raw.lifecycle;
+        Ok(workspace)
     }
     pub fn new(identity: WorkspaceIdentity, config: WorkspaceConfig) -> Result<Self, WorkspaceError> {
         config.validate()?;
@@ -1108,6 +1119,28 @@ impl<'de> Deserialize<'de> for Workspace {
         workspace.attachments = raw.attachments.0;
         Ok(workspace)
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceConfigWire {
+    profile_mode: ProfileMode,
+    privacy_mode: PrivacyMode,
+    storage: WorkspaceStorage,
+    #[serde(default)]
+    profile_id: Option<String>,
+    #[serde(default)]
+    generation: Option<WorkspaceGeneration>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceWire {
+    identity: RawWorkspaceIdentityWire,
+    config: RawWorkspaceConfigWire,
+    lifecycle: WorkspaceLifecycle,
+    #[serde(default)]
+    attachments: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

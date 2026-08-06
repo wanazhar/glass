@@ -146,6 +146,12 @@ where
 {
     deserializer.deserialize_str(BoundedStringVisitor::<MAX_LIMITATION_BYTES, true>)
 }
+fn deserialize_diagnostic<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_DIAGNOSTIC_BYTES, true>)
+}
 
 struct BoundedOptionVisitor<const LIMIT: usize, const REQUIRED: bool>;
 
@@ -1270,7 +1276,7 @@ impl<'de> Deserialize<'de> for BackendSelectionRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackendSelectionResult {
     pub schema_version: u32,
@@ -1278,6 +1284,53 @@ pub struct BackendSelectionResult {
     pub reason: SelectionReason,
     #[serde(deserialize_with = "deserialize_bounded_candidates")]
     pub considered_backend_ids: Vec<String>,
+}
+
+impl BackendSelectionResult {
+    pub fn validate(&self) -> Result<(), BrowserBackendError> {
+        if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
+            return Err(invalid("schema version", "unsupported browser backend schema"));
+        }
+        self.selected.validate()?;
+        validate_vec_len(
+            "considered backend ids",
+            self.considered_backend_ids.len(),
+            MAX_BACKEND_CANDIDATES,
+        )?;
+        for id in &self.considered_backend_ids {
+            validate_text("considered backend id", id, MAX_BACKEND_ID_BYTES)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackendSelectionResultWire {
+    schema_version: u32,
+    selected: BackendProfile,
+    reason: SelectionReason,
+    #[serde(deserialize_with = "deserialize_bounded_candidates")]
+    considered_backend_ids: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for BackendSelectionResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BackendSelectionResultWire::deserialize(deserializer)?;
+        let result = Self {
+            schema_version: wire.schema_version,
+            selected: wire.selected,
+            reason: wire.reason,
+            considered_backend_ids: wire.considered_backend_ids,
+        };
+        result
+            .validate()
+            .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1310,21 +1363,26 @@ pub fn select_backend(
         });
     }
     let mut seen_backend_ids = BTreeSet::new();
+    let mut considered_backend_ids = Vec::with_capacity(profiles.len());
+    let mut preferred_rejection = None;
     for profile in profiles {
-        if !seen_backend_ids.insert(profile.identity.backend_id.as_str()) {
-            return Err(invalid("backend profiles", "duplicate backend id"));
+        match profile.validate() {
+            Ok(()) => {
+                if !seen_backend_ids.insert(profile.identity.backend_id.as_str()) {
+                    return Err(invalid("backend profiles", "duplicate backend id"));
+                }
+                considered_backend_ids.push(profile.identity.backend_id.clone());
+            }
+            Err(error) => {
+                if request.preferred_backend_id.as_ref() == Some(&profile.identity.backend_id) {
+                    preferred_rejection = Some(error.to_string());
+                }
+            }
         }
     }
-
-    let mut considered_backend_ids = profiles
-        .iter()
-        .map(|profile| profile.identity.backend_id.clone())
-        .collect::<Vec<_>>();
     considered_backend_ids.sort();
-    considered_backend_ids.dedup();
 
     let mut eligible = Vec::new();
-    let mut preferred_rejection = None;
     for profile in profiles {
         let id = &profile.identity.backend_id;
         if let Err(error) = profile.validate() {
@@ -1445,33 +1503,33 @@ pub enum BrowserBackendError {
         declared: bool,
     },
     InvalidConfiguration {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_backend_id")]
         field: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_diagnostic")]
         reason: String,
     },
     Connection {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_backend_id")]
         operation: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_diagnostic")]
         reason: String,
     },
     Lifecycle {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_backend_id")]
         operation: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_limitation")]
         state: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_diagnostic")]
         reason: String,
     },
     UnsupportedOperation {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_backend_id")]
         operation: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_diagnostic")]
         reason: String,
     },
     SelectionFailed {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
+        #[serde(deserialize_with = "deserialize_diagnostic")]
         reason: String,
     },
 }
@@ -2399,10 +2457,48 @@ mod tests {
             "contexts": contexts
         }))
         .is_err());
+        assert!(serde_json::from_value::<BrowserBackendError>(json!({
+            "kind": "selectionFailed",
+            "details": { "reason": "x".repeat(MAX_DIAGNOSTIC_BYTES + 1) }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<BrowserBackendError>(json!({
+            "kind": "invalidConfiguration",
+            "details": {
+                "field": "x".repeat(MAX_BACKEND_ID_BYTES + 1),
+                "reason": "invalid"
+            }
+        }))
+        .is_err());
         let oversized_key = json!({
             "entries": { "k".repeat(MAX_BACKEND_ID_BYTES + 1): "value" }
         });
         assert!(serde_json::from_value::<StorageResult>(oversized_key).is_err());
+    }
+    #[test]
+    fn selection_result_deserialization_validates_schema_and_candidate_ids() {
+        let selected = profile("cdp", CertificationLevel::Partial);
+        let malformed = json!({
+            "schemaVersion": BROWSER_BACKEND_SCHEMA_VERSION + 1,
+            "selected": selected,
+            "reason": "certificationThenCapability",
+            "consideredBackendIds": ["cdp"]
+        });
+        assert!(serde_json::from_value::<BackendSelectionResult>(malformed).is_err());
+
+        let invalid = profile(&"x".repeat(MAX_BACKEND_ID_BYTES + 1), CertificationLevel::Partial);
+        let valid = profile("valid", CertificationLevel::Partial);
+        let request = BackendSelectionRequest {
+            schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
+            glass_version: "0.3.1".into(),
+            preferred_backend_id: None,
+            required_capabilities: Vec::new(),
+            minimum_certification: CertificationLevel::Partial,
+            browser_family: Some("chromium".into()),
+            browser_version: Some("150.0.0".into()),
+        };
+        let result = select_backend(&request, &[invalid, valid]).unwrap();
+        assert_eq!(result.considered_backend_ids, vec!["valid"]);
     }
 
     #[test]

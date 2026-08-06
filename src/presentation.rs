@@ -168,7 +168,7 @@ impl PaneGeometry {
 }
 
 /// A capture scale independent from frame pacing.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct CaptureScale(f32);
 
@@ -198,9 +198,32 @@ impl CaptureScale {
         Ok(PixelSize::new(width, height))
     }
 }
+impl<'de> Deserialize<'de> for CaptureScale {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ScaleVisitor;
+        impl<'de> Visitor<'de> for ScaleVisitor {
+            type Value = CaptureScale;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a finite capture scale between 0.5 and 1.0")
+            }
+
+            fn visit_f32<E>(self, value: f32) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                CaptureScale::new(value).map_err(|error| E::custom(error.to_string()))
+            }
+        }
+        deserializer.deserialize_f32(ScaleVisitor)
+    }
+}
 
 /// An independently validated target presentation rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct FrameRate(u16);
 
@@ -217,6 +240,37 @@ impl FrameRate {
 
     pub const fn get(self) -> u16 {
         self.0
+    }
+}
+impl<'de> Deserialize<'de> for FrameRate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RateVisitor;
+        impl<'de> Visitor<'de> for RateVisitor {
+            type Value = FrameRate;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an integer frame rate between 1 and 60")
+            }
+
+            fn visit_u16<E>(self, value: u16) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                FrameRate::new(value).map_err(|error| E::custom(error.to_string()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                let value = u16::try_from(value).map_err(|_| E::custom("frame rate overflows u16"))?;
+                self.visit_u16(value)
+            }
+        }
+        deserializer.deserialize_u16(RateVisitor)
     }
 }
 
@@ -259,7 +313,7 @@ impl PresentationConfig {
 /// Browser viewport and pane placement tied to browser and geometry revisions.
 /// `displayed_image` models letterboxing/clipping inside the pane; input outside
 /// that rectangle is rejected instead of being mapped to browser content.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewportGeometry {
     pub pane: PaneGeometry,
@@ -269,6 +323,39 @@ pub struct ViewportGeometry {
     pub capture_scale: CaptureScale,
     pub browser_revision: u64,
     pub geometry_revision: u64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ViewportGeometryWire {
+    pane: PaneGeometry,
+    displayed_image: PixelRect,
+    viewport: PixelSize,
+    content: PixelSize,
+    capture_scale: CaptureScale,
+    browser_revision: u64,
+    geometry_revision: u64,
+}
+
+impl<'de> Deserialize<'de> for ViewportGeometry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ViewportGeometryWire::deserialize(deserializer)?;
+        let geometry = Self {
+            pane: wire.pane,
+            displayed_image: wire.displayed_image,
+            viewport: wire.viewport,
+            content: wire.content,
+            capture_scale: wire.capture_scale,
+            browser_revision: wire.browser_revision,
+            geometry_revision: wire.geometry_revision,
+        };
+        geometry
+            .validate()
+            .map_err(|error| D::Error::custom(error.to_string()))?;
+        Ok(geometry)
+    }
 }
 
 impl ViewportGeometry {
@@ -415,7 +502,6 @@ fn fit_image_rect(
         height.max(1),
     ))
 }
-
 /// A target and its presentation resource identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -452,7 +538,7 @@ pub enum FrameEncoding {
 }
 
 /// A damage description for a frame, bounded to a small set of rectangles.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum FrameDamage {
     Full,
@@ -460,6 +546,31 @@ pub enum FrameDamage {
         #[serde(deserialize_with = "deserialize_bounded_rectangles")]
         rects: Vec<PixelRect>,
     },
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+enum FrameDamageWire {
+    Full,
+    Rectangles {
+        #[serde(deserialize_with = "deserialize_bounded_rectangles")]
+        rects: Vec<PixelRect>,
+    },
+}
+
+impl<'de> Deserialize<'de> for FrameDamage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let damage = match FrameDamageWire::deserialize(deserializer)? {
+            FrameDamageWire::Full => Self::Full,
+            FrameDamageWire::Rectangles { rects } => Self::Rectangles { rects },
+        };
+        damage
+            .validate()
+            .map_err(|error| D::Error::custom(error.to_string()))?;
+        Ok(damage)
+    }
 }
 
 impl FrameDamage {
@@ -490,7 +601,7 @@ pub struct FrameDropCounts {
 
 /// Metadata for one acquired browser frame. No pixel payload is retained or
 /// serialized; implementations own transient bytes separately and explicitly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserFrame {
     pub schema_version: u32,
@@ -506,6 +617,51 @@ pub struct BrowserFrame {
     pub browser_revision: u64,
     pub geometry_revision: u64,
     pub dropped: FrameDropCounts,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserFrameWire {
+    schema_version: u32,
+    generation: u64,
+    identity: TargetResourceIdentity,
+    acquired_at_ms: u64,
+    viewport: PixelSize,
+    content: PixelSize,
+    capture_scale: CaptureScale,
+    encoding: FrameEncoding,
+    keyframe: bool,
+    damage: FrameDamage,
+    browser_revision: u64,
+    geometry_revision: u64,
+    dropped: FrameDropCounts,
+}
+
+impl<'de> Deserialize<'de> for BrowserFrame {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = BrowserFrameWire::deserialize(deserializer)?;
+        let frame = Self {
+            schema_version: wire.schema_version,
+            generation: wire.generation,
+            identity: wire.identity,
+            acquired_at_ms: wire.acquired_at_ms,
+            viewport: wire.viewport,
+            content: wire.content,
+            capture_scale: wire.capture_scale,
+            encoding: wire.encoding,
+            keyframe: wire.keyframe,
+            damage: wire.damage,
+            browser_revision: wire.browser_revision,
+            geometry_revision: wire.geometry_revision,
+            dropped: wire.dropped,
+        };
+        frame
+            .validate()
+            .map_err(|error| D::Error::custom(error.to_string()))?;
+        Ok(frame)
+    }
 }
 
 impl BrowserFrame {
@@ -668,12 +824,10 @@ impl LatestFrameMailbox {
         }
         let revision_is_stale = self.current.as_ref().is_some_and(|current| {
             frame.browser_revision < current.browser_revision
-                || (frame.browser_revision == current.browser_revision
-                    && frame.geometry_revision < current.geometry_revision)
+                || frame.geometry_revision < current.geometry_revision
         }) || self.pending.as_ref().is_some_and(|pending| {
             frame.browser_revision < pending.browser_revision
-                || (frame.browser_revision == pending.browser_revision
-                    && frame.geometry_revision < pending.geometry_revision)
+                || frame.geometry_revision < pending.geometry_revision
         });
         if revision_is_stale
             || self
@@ -706,8 +860,53 @@ impl LatestFrameMailbox {
         }
     }
 
+    /// Submit only when the producer snapshot is the caller's current browser
+    /// and geometry revision. Plain [`Self::submit`] remains useful for a
+    /// producer that already owns the revision stream.
+    pub fn submit_for_revision(
+        &mut self,
+        frame: BrowserFrame,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<SubmitOutcome, PresentationContractError> {
+        if frame.browser_revision != browser_revision {
+            return Err(PresentationContractError::StaleRevision {
+                expected: browser_revision,
+                actual: frame.browser_revision,
+            });
+        }
+        if frame.geometry_revision != geometry_revision {
+            return Err(PresentationContractError::StaleGeometryRevision {
+                expected: geometry_revision,
+                actual: frame.geometry_revision,
+            });
+        }
+        self.submit(frame)
+    }
+
     pub fn current(&self) -> Option<&BrowserFrame> {
         self.current.as_ref()
+    }
+    pub fn current_for_revision(
+        &self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Option<&BrowserFrame>, PresentationContractError> {
+        if let Some(frame) = self.current.as_ref() {
+            validate_frame_revision(frame, browser_revision, geometry_revision)?;
+        }
+        Ok(self.current.as_ref())
+    }
+
+    pub fn pending_for_revision(
+        &self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Option<&BrowserFrame>, PresentationContractError> {
+        if let Some(frame) = self.pending.as_ref() {
+            validate_frame_revision(frame, browser_revision, geometry_revision)?;
+        }
+        Ok(self.pending.as_ref())
     }
 
     pub fn pending(&self) -> Option<&BrowserFrame> {
@@ -1031,6 +1230,25 @@ fn validate_identity(field: &str, value: &str) -> Result<(), PresentationContrac
     }
     Ok(())
 }
+fn validate_frame_revision(
+    frame: &BrowserFrame,
+    browser_revision: u64,
+    geometry_revision: u64,
+) -> Result<(), PresentationContractError> {
+    if frame.browser_revision != browser_revision {
+        return Err(PresentationContractError::StaleRevision {
+            expected: browser_revision,
+            actual: frame.browser_revision,
+        });
+    }
+    if frame.geometry_revision != geometry_revision {
+        return Err(PresentationContractError::StaleGeometryRevision {
+            expected: geometry_revision,
+            actual: frame.geometry_revision,
+        });
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,6 +1308,34 @@ mod tests {
         wrong.identity.target_id = "other".into();
         assert_eq!(mailbox.submit(wrong), Err(PresentationContractError::TargetMismatch));
         assert_eq!(mailbox.counters().stale_rejected, 1);
+    }
+    #[test]
+    fn mailbox_rejects_older_geometry_even_when_browser_revision_advances() {
+        let mut mailbox = LatestFrameMailbox::new(identity()).unwrap();
+        mailbox.submit(frame(1, 2)).unwrap();
+        let mut older_geometry = frame(2, 3);
+        older_geometry.geometry_revision = 1;
+        assert_eq!(
+            mailbox.submit(older_geometry).unwrap(),
+            SubmitOutcome::DroppedStale
+        );
+        assert_eq!(mailbox.current().unwrap().generation, 1);
+    }
+
+    #[test]
+    fn mailbox_revision_views_and_submit_guard_reject_stale_frames() {
+        let mut mailbox = LatestFrameMailbox::new(identity()).unwrap();
+        assert!(matches!(
+            mailbox.submit_for_revision(frame(1, 1), 1, 9),
+            Err(PresentationContractError::StaleGeometryRevision { .. })
+        ));
+        mailbox.submit(frame(1, 2)).unwrap();
+        assert!(matches!(
+            mailbox.current_for_revision(2, 9),
+            Err(PresentationContractError::StaleGeometryRevision { .. })
+        ));
+        assert!(mailbox.current_for_revision(3, 2).is_err());
+        assert!(mailbox.pending_for_revision(2, 2).unwrap().is_none());
     }
     #[test]
     fn mailbox_clear_retains_identity_and_rebind_resets_state() {
@@ -1198,5 +1444,16 @@ mod tests {
             }
         });
         assert!(BrowserFrame::from_json(&oversized_json.to_string()).is_err());
+        assert!(serde_json::from_str::<PresentationConfig>(
+            r#"{"targetFrameRate":0,"captureScale":1.0}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<PresentationConfig>(
+            r#"{"targetFrameRate":60,"captureScale":0.1}"#
+        )
+        .is_err());
+        let mut invalid_frame = serde_json::to_value(frame(1, 1)).unwrap();
+        invalid_frame["viewport"]["width"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<BrowserFrame>(invalid_frame).is_err());
     }
 }

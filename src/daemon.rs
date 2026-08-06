@@ -202,9 +202,15 @@ fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
     Ok(())
 }
 
+fn validate_workflow_request_id(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err("workflow request id must be a bounded identifier without controls".into());
+    }
+    Ok(())
+}
+
 fn validate_active_run(run: &DaemonActiveRun) -> Result<(), String> {
-    validate_lease_identity(&run.request_id, "requestId")
-        .map_err(|error| error.to_string())?;
+    validate_workflow_request_id(&run.request_id)?;
     validate_lease_identity(&run.owner_id, "ownerId").map_err(|error| error.to_string())?;
     if run.started_at.is_empty() || run.started_at.len() > 128 {
         return Err("startedAt must be a bounded non-empty timestamp".into());
@@ -314,13 +320,10 @@ impl DaemonStatusState {
         request_id: &str,
         owner_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        validate_lease_identity(request_id, "requestId")
-            .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
+        validate_workflow_request_id(request_id)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         validate_lease_identity(owner_id, "ownerId")
             .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
-        if request_id.is_empty() || request_id.len() > 128 {
-            return Err("workflow request id exceeds the daemon status bound".into());
-        }
         let mut status = self.status.lock().await;
         if status.active_runs.len() >= MAX_DAEMON_ACTIVE_RUNS {
             return Err("daemon active workflow limit reached".into());
@@ -1081,18 +1084,19 @@ mod tests {
         let state = DaemonStatusState::new(&status_path, status);
 
         state
-            .begin_workflow("workflow-1", "daemon-client-1")
+            .begin_workflow("workflow 1", "daemon-client-1")
             .await
             .unwrap();
         let active: DaemonStatus =
             serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
-        assert_eq!(active.active_runs[0].request_id, "workflow-1");
+        assert_eq!(active.active_runs[0].request_id, "workflow 1");
+        assert!(state.begin_workflow("workflow\n2", "daemon-client-1").await.is_err());
         assert_eq!(state.record_interrupted_workflows().await.unwrap(), 1);
         let recovery_log = std::fs::read_to_string(log_path_for(&status_path)).unwrap();
-        assert!(recovery_log.contains("workflow-1"));
+        assert!(recovery_log.contains("workflow 1"));
 
         state
-            .finish_workflow("workflow-1", "daemon-client-1")
+            .finish_workflow("workflow 1", "daemon-client-1")
             .await
             .unwrap();
         let finished: DaemonStatus =

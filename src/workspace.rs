@@ -47,7 +47,7 @@ impl WorkspaceGeneration {
         }
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system clock predates Unix epoch")
+            .unwrap_or_default()
             .as_nanos() as u64;
         let process = u64::from(std::process::id()).rotate_left(29);
         let sequence = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -338,7 +338,7 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceScope {
     workspace_id: WorkspaceId,
@@ -382,6 +382,40 @@ impl WorkspaceScope {
             return Err(ScopeError::StorageMismatch { expected: self.storage, actual: other.storage });
         }
         Ok(())
+    }
+    fn validate_invariants(&self) -> Result<(), ScopeError> {
+        match (self.storage, self.generation) {
+            (WorkspaceStorage::Durable, Some(generation)) => Err(ScopeError::StorageGenerationMismatch { storage: self.storage, generation: Some(generation) }),
+            (WorkspaceStorage::Ephemeral, None) => Err(ScopeError::StorageGenerationMismatch { storage: self.storage, generation: None }),
+            (_, Some(WorkspaceGeneration(0))) => Err(ScopeError::StorageGenerationMismatch { storage: self.storage, generation: self.generation }),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceScope {
+    workspace_id: WorkspaceId,
+    #[serde(default)]
+    profile_id: Option<ProfileId>,
+    #[serde(default)]
+    generation: Option<WorkspaceGeneration>,
+    #[serde(default)]
+    storage: WorkspaceStorage,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let raw = RawWorkspaceScope::deserialize(deserializer)?;
+        let scope = Self {
+            workspace_id: raw.workspace_id,
+            profile_id: raw.profile_id,
+            generation: raw.generation,
+            storage: raw.storage,
+        };
+        scope.validate_invariants().map(|()| scope).map_err(serde::de::Error::custom)
     }
 }
 
@@ -427,6 +461,7 @@ impl<'de> Deserialize<'de> for ResourceReference {
 
 impl ResourceReference {
     pub fn new(scope: WorkspaceScope, resource: ResourceKind) -> Result<Self, ReferenceError> {
+        scope.validate_invariants().map_err(ReferenceError::Scope)?;
         if scope.storage == WorkspaceStorage::Ephemeral && scope.generation.is_none() {
             return Err(ReferenceError::MissingGeneration);
         }
@@ -666,8 +701,7 @@ pub enum OwnershipOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OwnershipDomain { Workspace, Browser, Presentation, ExternalAttachment }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnershipBoundary {
     pub scope: WorkspaceScope,
@@ -687,6 +721,22 @@ impl OwnershipBoundary {
             return Err(OwnershipError::DomainOwnerMismatch);
         }
         Ok(Self { scope, domain, owner })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOwnershipBoundary {
+    scope: WorkspaceScope,
+    domain: OwnershipDomain,
+    owner: OwnershipOwner,
+}
+
+impl<'de> Deserialize<'de> for OwnershipBoundary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let raw = RawOwnershipBoundary::deserialize(deserializer)?;
+        Self::new(raw.scope, raw.domain, raw.owner).map_err(serde::de::Error::custom)
     }
 }
 
@@ -970,6 +1020,7 @@ pub enum ScopeError {
     ProfileMismatch { expected: Option<ProfileId>, actual: Option<ProfileId> },
     GenerationMismatch { expected: Option<WorkspaceGeneration>, actual: Option<WorkspaceGeneration> },
     StorageMismatch { expected: WorkspaceStorage, actual: WorkspaceStorage },
+    StorageGenerationMismatch { storage: WorkspaceStorage, generation: Option<WorkspaceGeneration> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1031,7 +1082,8 @@ display_error!(ScopeError, {
     Self::WorkspaceMismatch { .. } => "resource belongs to another workspace",
     Self::ProfileMismatch { .. } => "resource belongs to another profile",
     Self::GenerationMismatch { .. } => "resource belongs to another workspace generation",
-    Self::StorageMismatch { .. } => "resource belongs to another workspace storage mode"
+    Self::StorageMismatch { .. } => "resource belongs to another workspace storage mode",
+    Self::StorageGenerationMismatch { .. } => "workspace storage and generation are inconsistent"
 });
 display_error!(StaleRevisionError, { Self { .. } => "revision is stale" });
 display_error!(LifecycleError, {

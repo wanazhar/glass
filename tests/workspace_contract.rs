@@ -113,11 +113,10 @@ fn profile_reference_cannot_overwrite_scope() {
 
 #[test]
 fn ephemeral_scope_requires_generation_and_ownership_is_checked() {
-    let missing_scope: WorkspaceScope = serde_json::from_value(serde_json::json!({
+    assert!(serde_json::from_value::<WorkspaceScope>(serde_json::json!({
         "workspaceId": "ephemeral",
         "storage": "ephemeral"
-    })).unwrap();
-    assert!(ResourceReference::browser(missing_scope, ResourceId::new("b").unwrap()).is_err());
+    })).is_err());
     let scope = WorkspaceScope::workspace(WorkspaceId::new("owner").unwrap());
     assert!(OwnershipBoundary::new(
         scope,
@@ -129,4 +128,14 @@ fn ephemeral_scope_requires_generation_and_ownership_is_checked() {
         "privacyMode": "private",
         "storage": "durable"
     })).is_err());
+}
+
+#[test]
+fn ownership_deserialization_preserves_domain_checks() {
+    let invalid = serde_json::json!({
+        "scope": {"workspaceId": "owner", "storage": "durable"},
+        "domain": "browser",
+        "owner": {"type": "workspace", "id": "owner"}
+    });
+    assert!(serde_json::from_value::<OwnershipBoundary>(invalid).is_err());
 }

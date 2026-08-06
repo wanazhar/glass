@@ -162,7 +162,12 @@ impl KnowledgeLookupContext {
         let workspace_id = options.workspace_id.clone();
         let workspace_generation = options.workspace_generation;
         if let Some(extension_id) = &current_extension_id {
-            validate_text("currentExtensionId", extension_id, MAX_EXTENSION_ID_BYTES, false)?;
+            validate_text(
+                "currentExtensionId",
+                extension_id,
+                MAX_EXTENSION_ID_BYTES,
+                false,
+            )?;
             validate_public_text("currentExtensionId", extension_id)?;
         }
         validate_backend_capabilities("backendCapabilities", &options.backend_capabilities)?;
@@ -224,7 +229,12 @@ impl KnowledgeLookupContext {
             ));
         }
         if let Some(extension_id) = &context.current_extension_id {
-            validate_text("currentExtensionId", extension_id, MAX_EXTENSION_ID_BYTES, false)?;
+            validate_text(
+                "currentExtensionId",
+                extension_id,
+                MAX_EXTENSION_ID_BYTES,
+                false,
+            )?;
             validate_public_text("currentExtensionId", extension_id)?;
         }
         Ok(context)
@@ -484,7 +494,7 @@ impl Default for KnowledgeBackendProvenance {
 }
 
 /// How safely a remembered fact may travel between surfaces and backends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum KnowledgePortability {
     SemanticPortable,
@@ -492,13 +502,15 @@ pub enum KnowledgePortability {
     BackendCapabilityDependent,
     BackendSpecific,
     BrowserSpecific,
+    #[default]
     NonPortable,
 }
 
 /// The advisory role memory had in producing a compiler input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum KnowledgeMemoryInfluence {
+    #[default]
     None,
     RankingOnly,
     TemplateSuggested,
@@ -664,12 +676,14 @@ pub struct KnowledgeRetrievalReport {
 
 impl KnowledgeRetrievalReport {
     pub fn selected(&self) -> impl Iterator<Item = &KnowledgeRetrievalCandidate> {
-        self.candidates.iter().filter(|candidate| candidate.selected)
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.selected)
     }
 }
 
 /// Provenance and verification counters for a knowledge record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeSource {
     pub first_seen_at: String,
@@ -682,29 +696,6 @@ pub struct KnowledgeSource {
     pub backend: KnowledgeBackendProvenance,
 }
 
-impl Default for KnowledgeSource {
-    fn default() -> Self {
-        Self {
-            first_seen_at: String::new(),
-            last_verified_at: String::new(),
-            glass_version: String::new(),
-            verification_count: 0,
-            surface: KnowledgeSurfaceProvenance::default(),
-            backend: KnowledgeBackendProvenance::default(),
-        }
-    }
-}
-impl Default for KnowledgePortability {
-    fn default() -> Self {
-        Self::NonPortable
-    }
-}
-
-impl Default for KnowledgeMemoryInfluence {
-    fn default() -> Self {
-        Self::None
-    }
-}
 fn is_legacy_surface(value: &KnowledgeSurfaceProvenance) -> bool {
     *value == KnowledgeSurfaceProvenance::default()
 }
@@ -722,8 +713,7 @@ fn is_no_memory_influence(value: &KnowledgeMemoryInfluence) -> bool {
 }
 
 fn is_empty_retrieval(value: &KnowledgeRetrievalExplanation) -> bool {
-    value.signals.is_empty()
-        && value.current_validation == KnowledgeCurrentValidation::default()
+    value.signals.is_empty() && value.current_validation == KnowledgeCurrentValidation::default()
 }
 
 /// Conditions that make remembered knowledge stale or unusable.
@@ -759,10 +749,7 @@ pub struct KnowledgeRecord {
     pub confidence: KnowledgeConfidence,
     pub invalidation: KnowledgeInvalidation,
     pub data: Value,
-    #[serde(
-        default,
-        skip_serializing_if = "is_nonportable"
-    )]
+    #[serde(default, skip_serializing_if = "is_nonportable")]
     pub portability: KnowledgePortability,
     #[serde(default, skip_serializing_if = "is_no_memory_influence")]
     pub memory_influence: KnowledgeMemoryInfluence,
@@ -1262,10 +1249,10 @@ impl KnowledgeRecord {
 
         let current_contradiction = self.retrieval.current_validation.status
             == KnowledgeCurrentValidationStatus::Contradicted;
-        let current_validation_conflict = self.retrieval.current_validation.status
-            != KnowledgeCurrentValidationStatus::Validated;
-        let current_revision_conflict = self.retrieval.current_validation.current_revision
-            != Some(context.current_revision);
+        let current_validation_conflict =
+            self.retrieval.current_validation.status != KnowledgeCurrentValidationStatus::Validated;
+        let current_revision_conflict =
+            self.retrieval.current_validation.current_revision != Some(context.current_revision);
         if current_contradiction {
             conflicts.push("current validation contradicts live Web IR".into());
         } else if current_validation_conflict {
@@ -1279,7 +1266,8 @@ impl KnowledgeRecord {
             conflicts.push("record lifecycle is contradicted".into());
         }
         let record_extension = self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined;
-        let context_extension = context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined);
+        let context_extension =
+            context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined);
         let extension_conflict = record_extension != context_extension
             || (record_extension
                 && self.source.surface.extension_id.as_ref()
@@ -1290,7 +1278,8 @@ impl KnowledgeRecord {
         let provenance_conflict = matches!(
             self.source.surface.kind,
             KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
-        ) || self.source.surface.understanding == KnowledgeUnderstandingLevel::Opaque
+        ) || self.source.surface.understanding
+            == KnowledgeUnderstandingLevel::Opaque
             || self.source.surface.coverage == KnowledgeSurfaceCoverage::None
             || self.source.backend.backend == KnowledgeBackendKind::Unknown;
         if provenance_conflict {
@@ -1345,31 +1334,30 @@ impl KnowledgeRecord {
                     | "policy scope does not match"
             )
         });
-        let status = if current_contradiction {
-            KnowledgeAssessmentStatus::Contradicted
-        } else if self.confidence == KnowledgeConfidence::Contradicted {
-            KnowledgeAssessmentStatus::Contradicted
-        } else if self.confidence == KnowledgeConfidence::Quarantined {
-            KnowledgeAssessmentStatus::Quarantined
-        } else if scope_conflict {
-            KnowledgeAssessmentStatus::OutOfScope
-        } else if current_validation_conflict
-            || current_revision_conflict
-            || extension_conflict
-            || provenance_conflict
-            || portability_conflict
-            || !missing_landmarks.is_empty()
-            || age_seconds.is_none()
-            || self.confidence == KnowledgeConfidence::Stale
-            || self
-                .invalidation
-                .max_age_seconds
-                .is_some_and(|maximum| age_seconds.is_some_and(|age| age > maximum as i64))
-        {
-            KnowledgeAssessmentStatus::Stale
-        } else {
-            KnowledgeAssessmentStatus::Eligible
-        };
+        let status =
+            if current_contradiction || self.confidence == KnowledgeConfidence::Contradicted {
+                KnowledgeAssessmentStatus::Contradicted
+            } else if self.confidence == KnowledgeConfidence::Quarantined {
+                KnowledgeAssessmentStatus::Quarantined
+            } else if scope_conflict {
+                KnowledgeAssessmentStatus::OutOfScope
+            } else if current_validation_conflict
+                || current_revision_conflict
+                || extension_conflict
+                || provenance_conflict
+                || portability_conflict
+                || !missing_landmarks.is_empty()
+                || age_seconds.is_none()
+                || self.confidence == KnowledgeConfidence::Stale
+                || self
+                    .invalidation
+                    .max_age_seconds
+                    .is_some_and(|maximum| age_seconds.is_some_and(|age| age > maximum as i64))
+            {
+                KnowledgeAssessmentStatus::Stale
+            } else {
+                KnowledgeAssessmentStatus::Eligible
+            };
         KnowledgeAssessment {
             record_id: self.record_id.clone(),
             status,
@@ -1453,13 +1441,11 @@ impl KnowledgeRecord {
             });
         }
 
-        if query
-            .landmarks
-            .iter()
-            .any(|landmark| self.invalidation.required_landmarks.iter().any(|required| {
+        if query.landmarks.iter().any(|landmark| {
+            self.invalidation.required_landmarks.iter().any(|required| {
                 normalized_knowledge_value(required) == normalized_knowledge_value(landmark)
-            }))
-        {
+            })
+        }) {
             signals.push(KnowledgeRetrievalSignal {
                 kind: KnowledgeRetrievalSignalKind::GraphDistance,
                 detail: "current landmark is connected to the record".into(),
@@ -1924,17 +1910,13 @@ fn validate_workspace_scope(
 fn validate_surface_provenance(
     surface: &KnowledgeSurfaceProvenance,
 ) -> Result<(), KnowledgeValidationError> {
-    if surface.kind == KnowledgeSurfaceKind::ExtensionDefined
-        && surface.extension_id.is_none()
-    {
+    if surface.kind == KnowledgeSurfaceKind::ExtensionDefined && surface.extension_id.is_none() {
         return Err(KnowledgeValidationError::new(
             "source.surface.extensionId",
             "extension-defined surfaces require a bounded extension identifier",
         ));
     }
-    if surface.kind != KnowledgeSurfaceKind::ExtensionDefined
-        && surface.extension_id.is_some()
-    {
+    if surface.kind != KnowledgeSurfaceKind::ExtensionDefined && surface.extension_id.is_some() {
         return Err(KnowledgeValidationError::new(
             "source.surface.extensionId",
             "extension identifiers are only valid for extension-defined surfaces",
@@ -2105,7 +2087,13 @@ fn validate_public_text(path: &str, value: &str) -> Result<(), KnowledgeValidati
         .collect::<String>()
         .to_ascii_lowercase();
     const FORBIDDEN: &[&str] = &[
-        "authorization", "cookie", "credential", "password", "secret", "session", "token",
+        "authorization",
+        "cookie",
+        "credential",
+        "password",
+        "secret",
+        "session",
+        "token",
     ];
     if FORBIDDEN.iter().any(|word| normalized.contains(word)) {
         return Err(KnowledgeValidationError::new(
@@ -2300,8 +2288,7 @@ mod tests {
         };
         let mut mismatch = options.clone();
         mismatch.current_revision = Some(observation.revision.saturating_sub(1));
-        let error = KnowledgeLookupContext::from_observation(&observation, mismatch)
-            .unwrap_err();
+        let error = KnowledgeLookupContext::from_observation(&observation, mismatch).unwrap_err();
         assert_eq!(error.path, "currentRevision");
         let context = KnowledgeLookupContext::from_observation(&observation, options).unwrap();
         assert_eq!(context.surface_kind, Some(KnowledgeSurfaceKind::Svg));
@@ -2424,12 +2411,17 @@ mod tests {
             },
         );
         assert!(candidate.rejection.is_none());
-        assert!(candidate.signals.iter().any(|signal| {
-            signal.kind == KnowledgeRetrievalSignalKind::ExactPageFamilyMatch
-        }));
-        assert!(candidate.signals.iter().any(|signal| {
-            signal.kind == KnowledgeRetrievalSignalKind::BackendMatch
-        }));
+        assert!(
+            candidate.signals.iter().any(|signal| {
+                signal.kind == KnowledgeRetrievalSignalKind::ExactPageFamilyMatch
+            })
+        );
+        assert!(
+            candidate
+                .signals
+                .iter()
+                .any(|signal| { signal.kind == KnowledgeRetrievalSignalKind::BackendMatch })
+        );
     }
 
     #[test]
@@ -2441,7 +2433,10 @@ mod tests {
                 ..KnowledgeRetrievalQuery::default()
             },
         );
-        assert_eq!(candidate.rejection, Some(KnowledgeRejectionReason::Contradicted));
+        assert_eq!(
+            candidate.rejection,
+            Some(KnowledgeRejectionReason::Contradicted)
+        );
     }
 
     #[test]
@@ -2533,24 +2528,34 @@ mod tests {
             ..KnowledgeRetrievalQuery::default()
         };
         for (confidence, expected) in [
-            (KnowledgeConfidence::Stale, KnowledgeRejectionReason::StaleLifecycle),
+            (
+                KnowledgeConfidence::Stale,
+                KnowledgeRejectionReason::StaleLifecycle,
+            ),
             (
                 KnowledgeConfidence::Contradicted,
                 KnowledgeRejectionReason::ContradictedLifecycle,
             ),
-            (KnowledgeConfidence::Quarantined, KnowledgeRejectionReason::Quarantined),
+            (
+                KnowledgeConfidence::Quarantined,
+                KnowledgeRejectionReason::Quarantined,
+            ),
         ] {
             let mut historical = record();
             historical.confidence = confidence;
             assert_eq!(
-                historical.retrieve_candidate(&retrieval_context(), &query).rejection,
+                historical
+                    .retrieve_candidate(&retrieval_context(), &query)
+                    .rejection,
                 Some(expected)
             );
         }
         let mut opaque = record();
         opaque.source.surface.understanding = KnowledgeUnderstandingLevel::Opaque;
         assert_eq!(
-            opaque.retrieve_candidate(&retrieval_context(), &query).rejection,
+            opaque
+                .retrieve_candidate(&retrieval_context(), &query)
+                .rejection,
             Some(KnowledgeRejectionReason::OpaqueProvenance)
         );
         let mut extension = record();
@@ -2559,7 +2564,9 @@ mod tests {
         let mut extension_context = retrieval_context();
         extension_context.current_extension_id = Some("com.example.alpha".into());
         assert_eq!(
-            extension.retrieve_candidate(&extension_context, &query).rejection,
+            extension
+                .retrieve_candidate(&extension_context, &query)
+                .rejection,
             Some(KnowledgeRejectionReason::ExtensionMismatch)
         );
     }
@@ -2727,10 +2734,7 @@ mod tests {
     }
     #[test]
     fn lookup_capabilities_are_bounded_and_unique() {
-        let oversized = vec![
-            KnowledgeBackendCapability::Navigation;
-            MAX_BACKEND_CAPABILITIES + 1
-        ];
+        let oversized = vec![KnowledgeBackendCapability::Navigation; MAX_BACKEND_CAPABILITIES + 1];
         let error = validate_backend_capabilities("backendCapabilities", &oversized).unwrap_err();
         assert_eq!(error.path, "backendCapabilities");
         let duplicate = vec![
@@ -2795,7 +2799,10 @@ mod tests {
             value.retrieval.current_validation.status,
             KnowledgeCurrentValidationStatus::Stale
         );
-        assert_eq!(value.assess(&lookup_context()).status, KnowledgeAssessmentStatus::Stale);
+        assert_eq!(
+            value.assess(&lookup_context()).status,
+            KnowledgeAssessmentStatus::Stale
+        );
     }
 
     #[test]
@@ -2806,11 +2813,14 @@ mod tests {
         assert_eq!(error.path, "retrieval.currentValidation.currentRevision");
 
         let mut signal_value = record();
-        signal_value.retrieval.signals.push(KnowledgeRetrievalSignal {
-            kind: KnowledgeRetrievalSignalKind::SemanticSimilarity,
-            detail: "token from page".into(),
-            score_millis: None,
-        });
+        signal_value
+            .retrieval
+            .signals
+            .push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::SemanticSimilarity,
+                detail: "token from page".into(),
+                score_millis: None,
+            });
         let error = signal_value.validate().unwrap_err();
         assert_eq!(error.path, "retrieval.signals[0].detail");
         assert!(
@@ -3051,7 +3061,10 @@ mod tests {
         snapshot.validate().unwrap();
         let migrated = &snapshot.records[0];
         assert_eq!(migrated.source.surface.kind, KnowledgeSurfaceKind::Opaque);
-        assert_eq!(migrated.source.backend.backend, KnowledgeBackendKind::Unknown);
+        assert_eq!(
+            migrated.source.backend.backend,
+            KnowledgeBackendKind::Unknown
+        );
         assert_eq!(migrated.portability, KnowledgePortability::NonPortable);
         assert_eq!(migrated.memory_influence, KnowledgeMemoryInfluence::None);
         assert_eq!(

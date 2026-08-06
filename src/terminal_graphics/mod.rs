@@ -28,12 +28,13 @@ const KITTY_INTRO: &[u8] = b"\x1b_G";
 const KITTY_END: &[u8] = b"\x1b\\";
 
 /// Terminal capability selected by negotiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphicsMode {
     /// Kitty graphics protocol, including terminals which advertise a
     /// compatible implementation such as WezTerm or Ghostty.
     Kitty,
     /// Ratatui-safe textual/ANSI presentation.
+    #[default]
     Semantic,
 }
 
@@ -43,11 +44,6 @@ impl GraphicsMode {
             Self::Kitty => "Kitty graphics",
             Self::Semantic => "semantic fallback",
         }
-    }
-}
-impl Default for GraphicsMode {
-    fn default() -> Self {
-        Self::Semantic
     }
 }
 
@@ -154,13 +150,21 @@ pub enum GraphicsError {
 impl Display for GraphicsError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(message) => write!(formatter, "invalid terminal graphics state: {message}"),
+            Self::Invalid(message) => {
+                write!(formatter, "invalid terminal graphics state: {message}")
+            }
             Self::Presentation(error) => Display::fmt(error, formatter),
             Self::PayloadTooLarge { actual, maximum } => {
-                write!(formatter, "frame payload is {actual} bytes; maximum is {maximum}")
+                write!(
+                    formatter,
+                    "frame payload is {actual} bytes; maximum is {maximum}"
+                )
             }
             Self::OutputTooLarge { actual, maximum } => {
-                write!(formatter, "terminal output is {actual} bytes; maximum is {maximum}")
+                write!(
+                    formatter,
+                    "terminal output is {actual} bytes; maximum is {maximum}"
+                )
             }
         }
     }
@@ -233,7 +237,10 @@ pub struct TerminalGraphics {
 }
 
 impl TerminalGraphics {
-    pub fn new(mode: GraphicsMode, identity: TargetResourceIdentity) -> Result<Self, GraphicsError> {
+    pub fn new(
+        mode: GraphicsMode,
+        identity: TargetResourceIdentity,
+    ) -> Result<Self, GraphicsError> {
         Ok(Self {
             mode,
             mailbox: LatestFrameMailbox::new(identity)?,
@@ -331,9 +338,7 @@ impl TerminalGraphics {
     /// Release all frames when Ratatui reports a zero-sized pane. This is an
     /// explicit empty-pane state rather than an invalid geometry error.
     pub fn clear_pane(&mut self) -> Result<bool, GraphicsError> {
-        let changed = self.geometry.is_some()
-            || !self.mailbox.is_empty()
-            || !self.pane.is_empty();
+        let changed = self.geometry.is_some() || !self.mailbox.is_empty() || !self.pane.is_empty();
         if !changed {
             return Ok(false);
         }
@@ -344,6 +349,8 @@ impl TerminalGraphics {
             .cloned()
             .ok_or_else(|| GraphicsError::Invalid("graphics mailbox has no identity".into()))?;
         self.mailbox.rebind(identity)?;
+        self.geometry = None;
+        self.pane = PaneArea::default();
         self.cleaned = false;
         Ok(true)
     }
@@ -362,7 +369,9 @@ impl TerminalGraphics {
             });
         }
         if self.cleaned {
-            return Err(GraphicsError::Invalid("graphics renderer is shut down".into()));
+            return Err(GraphicsError::Invalid(
+                "graphics renderer is shut down".into(),
+            ));
         }
         if let Some(geometry) = self.geometry.as_ref() {
             geometry.check_snapshot(frame.browser_revision, frame.geometry_revision)?;
@@ -579,8 +588,14 @@ impl TerminalGraphics {
             replaced_frames: counters.replaced_pending,
             dropped_frames: counters.dropped,
             stale_frames: counters.stale_rejected,
-            current_bytes: self.current_payload.as_ref().map_or(0, |frame| frame.bytes.len()),
-            pending_bytes: self.pending_payload.as_ref().map_or(0, |frame| frame.bytes.len()),
+            current_bytes: self
+                .current_payload
+                .as_ref()
+                .map_or(0, |frame| frame.bytes.len()),
+            pending_bytes: self
+                .pending_payload
+                .as_ref()
+                .map_or(0, |frame| frame.bytes.len()),
             geometry_revision: self.geometry_revision,
             cleanup_count: self.cleanup_count,
         }
@@ -611,16 +626,10 @@ impl TerminalGraphics {
 
     fn clear_payloads(&mut self, reason: FrameCleanupReason) {
         if let Some(frame) = self.current_payload.take() {
-            self.record(
-                frame.frame,
-                FrameOwnershipEvent::Released { reason },
-            );
+            self.record(frame.frame, FrameOwnershipEvent::Released { reason });
         }
         if let Some(frame) = self.pending_payload.take() {
-            self.record(
-                frame.frame,
-                FrameOwnershipEvent::Released { reason },
-            );
+            self.record(frame.frame, FrameOwnershipEvent::Released { reason });
         }
         self.mailbox.clear();
     }
@@ -660,7 +669,8 @@ fn bounded_text(value: &str, maximum: usize) -> String {
 mod tests {
     use super::*;
     use crate::presentation::{
-        BrowserFrame, FrameDamage, FrameDropCounts, FrameEncoding, PRESENTATION_CONTRACT_SCHEMA_VERSION,
+        BrowserFrame, FrameDamage, FrameDropCounts, FrameEncoding,
+        PRESENTATION_CONTRACT_SCHEMA_VERSION,
     };
 
     fn identity() -> TargetResourceIdentity {
@@ -696,11 +706,19 @@ mod tests {
             GraphicsMode::Kitty
         );
         assert_eq!(
-            negotiate(TerminalEnvironment::new(Some("xterm"), Some("unknown"), None)),
+            negotiate(TerminalEnvironment::new(
+                Some("xterm"),
+                Some("unknown"),
+                None
+            )),
             GraphicsMode::Semantic
         );
         assert_eq!(
-            negotiate(TerminalEnvironment::new(Some("dumb"), Some("kitty"), Some("1"))),
+            negotiate(TerminalEnvironment::new(
+                Some("dumb"),
+                Some("kitty"),
+                Some("1")
+            )),
             GraphicsMode::Semantic
         );
     }
@@ -717,9 +735,18 @@ mod tests {
                 1,
             )
             .unwrap();
-        assert_eq!(graphics.submit(frame(1, 1), b"one").unwrap(), SubmitResult::Presented);
-        assert_eq!(graphics.submit(frame(2, 1), b"two").unwrap(), SubmitResult::Queued);
-        assert_eq!(graphics.submit(frame(3, 1), b"three").unwrap(), SubmitResult::Replaced);
+        assert_eq!(
+            graphics.submit(frame(1, 1), b"one").unwrap(),
+            SubmitResult::Presented
+        );
+        assert_eq!(
+            graphics.submit(frame(2, 1), b"two").unwrap(),
+            SubmitResult::Queued
+        );
+        assert_eq!(
+            graphics.submit(frame(3, 1), b"three").unwrap(),
+            SubmitResult::Replaced
+        );
         let diagnostics = graphics.diagnostics();
         assert_eq!(diagnostics.pending_bytes, 5);
         assert_eq!(diagnostics.replaced_frames, 1);
@@ -739,7 +766,6 @@ mod tests {
         assert!(graphics.ownership().any(|record| {
             record.generation == 3 && record.event == FrameOwnershipEvent::Presented
         }));
-
     }
     #[test]
     fn raw_rgba_render_uses_encoding_and_image_placement() {
@@ -776,7 +802,9 @@ mod tests {
                 3,
             )
             .unwrap();
-        graphics.submit(frame(1, 1), b"frame").unwrap();
+        let mut current = frame(1, 1);
+        current.browser_revision = 3;
+        graphics.submit(current, b"frame").unwrap();
         assert!(graphics.clear_pane().unwrap());
         assert!(graphics.geometry().is_none());
         assert_eq!(graphics.diagnostics().current_bytes, 0);
@@ -822,7 +850,10 @@ mod tests {
             )
             .unwrap();
         graphics.submit(frame(2, 1), b"frame").unwrap();
-        assert_eq!(graphics.submit(frame(1, 1), b"old").unwrap(), SubmitResult::Stale);
+        assert_eq!(
+            graphics.submit(frame(1, 1), b"old").unwrap(),
+            SubmitResult::Stale
+        );
         graphics
             .resize(
                 PaneArea::new(0, 0, 50, 20),

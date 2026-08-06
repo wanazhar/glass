@@ -2598,7 +2598,7 @@ pub struct BrowserSession {
     pub(crate) disposable_profile: Option<DisposableProfileDir>,
     pub(crate) launched_incognito_context_id: Option<String>,
     pub(crate) profile: String,
-    pub(crate) profile_lock: Option<ProfileLock>,
+    pub(crate) _profile_lock: Option<ProfileLock>,
     pub(crate) interaction_mode: InteractionMode,
     pub(crate) mouse: MouseEngine,
     pub(crate) pointer: Mutex<Option<Point>>,

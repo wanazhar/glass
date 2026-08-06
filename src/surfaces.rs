@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv6Addr;
 use std::fmt::{Display, Formatter};
+use std::net::Ipv6Addr;
 
 /// Schema version for the multi-surface contract.
 pub const SURFACE_SCHEMA_VERSION: u32 = 1;
@@ -222,9 +222,7 @@ impl SurfaceCoverage {
     };
 
     fn validate(&self, level: UnderstandingLevel) -> Result<(), SurfaceContractError> {
-        if level >= UnderstandingLevel::Structural
-            && self.structural == CoverageLevel::Opaque
-        {
+        if level >= UnderstandingLevel::Structural && self.structural == CoverageLevel::Opaque {
             return Err(SurfaceContractError::new(
                 "coverage.structural",
                 "structural understanding requires structural coverage",
@@ -454,14 +452,8 @@ impl SurfaceProvenance {
                 "evidence provenance revision must match the surface revision",
             ));
         }
-        validate_canonical_timestamp(
-            &format!("{path}.observedAt"),
-            &self.observed_at,
-        )?;
-        validate_canonical_timestamp(
-            &format!("{path}.validatedAt"),
-            &self.validated_at,
-        )?;
+        validate_canonical_timestamp(&format!("{path}.observedAt"), &self.observed_at)?;
+        validate_canonical_timestamp(&format!("{path}.validatedAt"), &self.validated_at)?;
         if self.validated_at < self.observed_at {
             return Err(SurfaceContractError::new(
                 format!("{path}.validatedAt"),
@@ -845,10 +837,11 @@ impl Surface {
             .any(|evidence| evidence.quality >= CoverageLevel::Strong);
         let has_any_semantic_evidence = semantic_evidence.next().is_some();
         let needs_semantics = self.understanding >= UnderstandingLevel::Semantic
-            || self.capabilities.contains(&SurfaceCapability::SemanticAction);
+            || self
+                .capabilities
+                .contains(&SurfaceCapability::SemanticAction);
         if needs_semantics
-            && (self.coverage.semantic < CoverageLevel::Strong
-                || !has_strong_semantic_evidence)
+            && (self.coverage.semantic < CoverageLevel::Strong || !has_strong_semantic_evidence)
         {
             return Err(SurfaceContractError::new(
                 "evidence",
@@ -863,7 +856,9 @@ impl Surface {
         }
         let media_action_requested = matches!(self.kind, SurfaceKind::Media)
             && (self.understanding == UnderstandingLevel::TaskCompilable
-                || self.capabilities.contains(&SurfaceCapability::SemanticAction));
+                || self
+                    .capabilities
+                    .contains(&SurfaceCapability::SemanticAction));
         if media_action_requested
             && !self.evidence.iter().any(|evidence| {
                 evidence.quality >= CoverageLevel::Strong
@@ -955,13 +950,17 @@ impl Surface {
                     evidence.source,
                     SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
                 ) && evidence.provenance.bridge_trust == Some(BridgeTrustLevel::CapabilityGranted)
-                    && evidence.provenance.grant_token.as_ref().is_some_and(|token| {
-                        grants.grants.get(token).is_some_and(|grant| {
-                            required
-                                .iter()
-                                .all(|capability| grant.capabilities.contains(capability))
+                    && evidence
+                        .provenance
+                        .grant_token
+                        .as_ref()
+                        .is_some_and(|token| {
+                            grants.grants.get(token).is_some_and(|grant| {
+                                required
+                                    .iter()
+                                    .all(|capability| grant.capabilities.contains(capability))
+                            })
                         })
-                    })
             }) {
                 return Err(SurfaceContractError::new(
                     "evidence",
@@ -1024,9 +1023,7 @@ impl Surface {
                 SurfaceCapability::Input
                 | SurfaceCapability::KeyboardInput
                 | SurfaceCapability::PointerInput
-                | SurfaceCapability::CoordinateAction => {
-                    UnderstandingLevel::CoordinateOnly
-                }
+                | SurfaceCapability::CoordinateAction => UnderstandingLevel::CoordinateOnly,
                 SurfaceCapability::Capture
                 | SurfaceCapability::Bridge
                 | SurfaceCapability::RevisionObservation => UnderstandingLevel::Opaque,
@@ -1111,9 +1108,8 @@ impl Surface {
                 "surface payload exceeds the contract bound",
             ));
         }
-        let surface: Self = serde_json::from_str(input).map_err(|error| {
-            SurfaceContractError::new("$", format!("invalid surface: {error}"))
-        })?;
+        let surface: Self = serde_json::from_str(input)
+            .map_err(|error| SurfaceContractError::new("$", format!("invalid surface: {error}")))?;
         surface.validate_with_grants(grants)?;
         Ok(surface)
     }
@@ -1408,7 +1404,10 @@ fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -
                 | SurfaceEvidenceSource::Extension
         ),
         SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::RemoteApplication => matches!(
             source,
@@ -1429,7 +1428,10 @@ fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -
                 | SurfaceEvidenceSource::Extension
         ),
         SurfaceKind::ExtensionDefined { .. } => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
@@ -1442,7 +1444,10 @@ fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
         return !matches!(kind, SurfaceKind::Unknown | SurfaceKind::Opaque);
     }
     match kind {
-        SurfaceKind::Document => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::Document => matches!(
+            source,
+            SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility
+        ),
         SurfaceKind::Accessibility => source == SurfaceEvidenceSource::Accessibility,
         SurfaceKind::ShadowDocument => matches!(
             source,
@@ -1463,7 +1468,10 @@ fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
                 | SurfaceEvidenceSource::Accessibility
         ),
         SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::EmbeddedDocument => matches!(
             source,
@@ -1488,7 +1496,10 @@ fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
                 | SurfaceEvidenceSource::Extension
         ),
         SurfaceKind::RemoteApplication => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::BrowserNative => matches!(
             source,
@@ -1497,7 +1508,10 @@ fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
                 | SurfaceEvidenceSource::Extension
         ),
         SurfaceKind::ExtensionDefined { .. } => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
@@ -1511,10 +1525,19 @@ fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
         return !matches!(kind, SurfaceKind::Unknown | SurfaceKind::Opaque);
     }
     match kind {
-        SurfaceKind::Document => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::Document => matches!(
+            source,
+            SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility
+        ),
         SurfaceKind::Accessibility => source == SurfaceEvidenceSource::Accessibility,
-        SurfaceKind::ShadowDocument => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
-        SurfaceKind::FrameDocument => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::ShadowDocument => matches!(
+            source,
+            SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::FrameDocument => matches!(
+            source,
+            SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility
+        ),
         SurfaceKind::Svg => matches!(
             source,
             SurfaceEvidenceSource::Svg
@@ -1522,7 +1545,10 @@ fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
                 | SurfaceEvidenceSource::Accessibility
         ),
         SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::EmbeddedDocument => matches!(
             source,
@@ -1540,10 +1566,16 @@ fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
         SurfaceKind::Terminal => source == SurfaceEvidenceSource::TerminalProtocol,
         SurfaceKind::BrowserNative => source == SurfaceEvidenceSource::BrowserNative,
         SurfaceKind::RemoteApplication => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::ExtensionDefined { .. } => {
-            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+            matches!(
+                source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
         }
         SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
@@ -1587,10 +1619,7 @@ fn validate_identifier_with_max(
     Ok(())
 }
 
-fn validate_extension_component(
-    path: &str,
-    value: &str,
-) -> Result<(), SurfaceContractError> {
+fn validate_extension_component(path: &str, value: &str) -> Result<(), SurfaceContractError> {
     if value.contains(':') {
         return Err(SurfaceContractError::new(
             path,
@@ -1613,10 +1642,7 @@ fn validate_bounded_text(
     }
     Ok(())
 }
-fn validate_canonical_timestamp(
-    path: &str,
-    value: &str,
-) -> Result<(), SurfaceContractError> {
+fn validate_canonical_timestamp(path: &str, value: &str) -> Result<(), SurfaceContractError> {
     if value.len() != 20
         || value.as_bytes()[4] != b'-'
         || value.as_bytes()[7] != b'-'
@@ -1624,13 +1650,9 @@ fn validate_canonical_timestamp(
         || value.as_bytes()[13] != b':'
         || value.as_bytes()[16] != b':'
         || value.as_bytes()[19] != b'Z'
-        || value
-            .as_bytes()
-            .iter()
-            .enumerate()
-            .any(|(index, byte)| {
-                !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
-            })
+        || value.as_bytes().iter().enumerate().any(|(index, byte)| {
+            !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
+        })
     {
         return Err(SurfaceContractError::new(
             path,
@@ -1684,9 +1706,9 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
     };
     if authority.is_empty()
         || authority.contains('@')
-        || authority.chars().any(|character| {
-            character.is_whitespace() || matches!(character, '/' | '?' | '#')
-        })
+        || authority
+            .chars()
+            .any(|character| character.is_whitespace() || matches!(character, '/' | '?' | '#'))
     {
         return Err(SurfaceContractError::new(
             path,
@@ -1695,7 +1717,10 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
     }
     let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
         let Some(end) = rest.find(']') else {
-            return Err(SurfaceContractError::new(path, "invalid bracketed origin host"));
+            return Err(SurfaceContractError::new(
+                path,
+                "invalid bracketed origin host",
+            ));
         };
         let host = &rest[..end];
         if host.parse::<Ipv6Addr>().is_err() {
@@ -1707,7 +1732,10 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
         let suffix = &rest[end + 1..];
         let port = suffix.strip_prefix(':');
         if !suffix.is_empty() && port.is_none() {
-            return Err(SurfaceContractError::new(path, "invalid origin authority suffix"));
+            return Err(SurfaceContractError::new(
+                path,
+                "invalid origin authority suffix",
+            ));
         }
         (host, port)
     } else {
@@ -1715,22 +1743,25 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
         let host = parts.next().unwrap_or_default();
         let port = parts.next();
         if parts.next().is_some() {
-            return Err(SurfaceContractError::new(path, "origin host must use a valid port"));
+            return Err(SurfaceContractError::new(
+                path,
+                "origin host must use a valid port",
+            ));
         }
         (host, port)
     };
     let valid_host = if host.contains(':') {
         !host.is_empty()
-            && host.chars().all(|character| {
-                character.is_ascii_hexdigit() || matches!(character, ':' | '.')
-            })
+            && host
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() || matches!(character, ':' | '.'))
     } else {
         !host.is_empty()
             && host.split('.').all(|label| {
                 !label.is_empty()
-                    && label.chars().all(|character| {
-                        character.is_ascii_alphanumeric() || character == '-'
-                    })
+                    && label
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '-')
                     && label.as_bytes()[0].is_ascii_alphanumeric()
                     && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
             })
@@ -1741,17 +1772,18 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
             "origin host contains malformed labels",
         ));
     }
-    if let Some(port) = port {
-        if port.is_empty()
+    if let Some(port) = port
+        && (port.is_empty()
             || !port.chars().all(|character| character.is_ascii_digit())
-            || port.parse::<u16>().is_err()
-        {
-            return Err(SurfaceContractError::new(path, "origin port must be 1-65535"));
-        }
+            || port.parse::<u16>().is_err())
+    {
+        return Err(SurfaceContractError::new(
+            path,
+            "origin port must be 1-65535",
+        ));
     }
     Ok(())
 }
-
 
 fn validate_nesting(has_parent: bool, depth: u16) -> Result<(), SurfaceContractError> {
     if depth > MAX_SURFACE_NESTING_DEPTH {
@@ -1780,7 +1812,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn surface(kind: SurfaceKind, level: UnderstandingLevel, capabilities: Vec<SurfaceCapability>) -> Surface {
+    fn surface(
+        kind: SurfaceKind,
+        level: UnderstandingLevel,
+        capabilities: Vec<SurfaceCapability>,
+    ) -> Surface {
         let (source, provenance) = if matches!(&kind, SurfaceKind::ExtensionDefined { .. }) {
             (
                 SurfaceEvidenceSource::Bridge,
@@ -1832,7 +1868,11 @@ mod tests {
             understanding: level,
             coverage: SurfaceCoverage {
                 structural: CoverageLevel::Strong,
-                semantic: if level >= UnderstandingLevel::Semantic { CoverageLevel::Strong } else { CoverageLevel::Partial },
+                semantic: if level >= UnderstandingLevel::Semantic {
+                    CoverageLevel::Strong
+                } else {
+                    CoverageLevel::Partial
+                },
                 interaction: match level {
                     UnderstandingLevel::Opaque => InteractionCoverage::Unavailable,
                     UnderstandingLevel::CoordinateOnly => InteractionCoverage::CoordinateOnly,
@@ -1841,7 +1881,12 @@ mod tests {
                     UnderstandingLevel::TaskCompilable => InteractionCoverage::TaskCompilable,
                 },
             },
-            evidence: vec![SurfaceEvidence { source, quality: CoverageLevel::Strong, provenance, detail: None }],
+            evidence: vec![SurfaceEvidence {
+                source,
+                quality: CoverageLevel::Strong,
+                provenance,
+                detail: None,
+            }],
             revision: SurfaceRevision(1),
             diagnostics: vec![],
         }
@@ -1864,7 +1909,10 @@ mod tests {
             })
             .unwrap();
         let encoded = value.to_canonical_json_with_grants(&grants).unwrap();
-        assert_eq!(Surface::from_json_with_grants(&encoded, &grants).unwrap(), value);
+        assert_eq!(
+            Surface::from_json_with_grants(&encoded, &grants).unwrap(),
+            value
+        );
         assert!(encoded.contains("extensionDefined"));
     }
 
@@ -1878,7 +1926,14 @@ mod tests {
 
     #[test]
     fn bounds_duplicates_and_understanding_invariants() {
-        let mut value = surface(SurfaceKind::Canvas2d, UnderstandingLevel::CoordinateOnly, vec![SurfaceCapability::CoordinateAction, SurfaceCapability::CoordinateAction]);
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![
+                SurfaceCapability::CoordinateAction,
+                SurfaceCapability::CoordinateAction,
+            ],
+        );
         assert!(value.validate().is_err());
         value.capabilities = vec![SurfaceCapability::SemanticAction];
         assert!(value.validate().is_err());
@@ -1886,25 +1941,57 @@ mod tests {
         value.nesting_depth = MAX_SURFACE_NESTING_DEPTH + 1;
         assert!(value.validate().is_err());
         value.nesting_depth = 0;
-        value.diagnostics = (0..=MAX_SURFACE_DIAGNOSTICS).map(|index| SurfaceDiagnostic { severity: DiagnosticSeverity::Warning, code: format!("d{index}"), message: "bounded".into() }).collect();
+        value.diagnostics = (0..=MAX_SURFACE_DIAGNOSTICS)
+            .map(|index| SurfaceDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                code: format!("d{index}"),
+                message: "bounded".into(),
+            })
+            .collect();
         assert!(value.validate().is_err());
     }
 
     #[test]
     fn nesting_requires_existing_parent_and_adjacent_depth() {
-        let root = surface(SurfaceKind::Document, UnderstandingLevel::Structural, vec![SurfaceCapability::ReadStructure]);
-        let mut child = surface(SurfaceKind::Svg, UnderstandingLevel::Structural, vec![SurfaceCapability::ReadStructure]);
+        let root = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        let mut child = surface(
+            SurfaceKind::Svg,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
         child.surface_id = SurfaceId::new("surface.svg.main").unwrap();
         child.parent_surface_id = Some(root.surface_id.clone());
         child.nesting_depth = 1;
-        assert!(SurfaceSet { schema_version: 1, surfaces: vec![root.clone(), child.clone()] }.validate().is_ok());
+        assert!(
+            SurfaceSet {
+                schema_version: 1,
+                surfaces: vec![root.clone(), child.clone()]
+            }
+            .validate()
+            .is_ok()
+        );
         child.nesting_depth = 2;
-        assert!(SurfaceSet { schema_version: 1, surfaces: vec![root, child] }.validate().is_err());
+        assert!(
+            SurfaceSet {
+                schema_version: 1,
+                surfaces: vec![root, child]
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
     fn task_compilable_requires_guard_capabilities() {
-        let value = surface(SurfaceKind::Document, UnderstandingLevel::TaskCompilable, vec![SurfaceCapability::ReadStructure]);
+        let value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::TaskCompilable,
+            vec![SurfaceCapability::ReadStructure],
+        );
         assert!(value.validate().is_err());
     }
     #[test]
@@ -1950,14 +2037,18 @@ mod tests {
 
     #[test]
     fn oversized_json_is_rejected_before_deserialization() {
-        let input = format!(r#"{{"padding":"{}"}}"#, "x".repeat(MAX_SURFACE_PAYLOAD_BYTES));
+        let input = format!(
+            r#"{{"padding":"{}"}}"#,
+            "x".repeat(MAX_SURFACE_PAYLOAD_BYTES)
+        );
         let error = Surface::from_json(&input).unwrap_err();
         assert_eq!(error.path, "$");
     }
 
     #[test]
     fn extension_identity_is_versioned_and_colon_free() {
-        let extension = ExtensionIdentifier::new_versioned("vendor.example", "chart", "2.1").unwrap();
+        let extension =
+            ExtensionIdentifier::new_versioned("vendor.example", "chart", "2.1").unwrap();
         assert_eq!(extension.qualified_name(), "vendor.example:chart@2.1");
         assert!(ExtensionIdentifier::new("vendor:example", "chart").is_err());
     }
@@ -1977,7 +2068,10 @@ mod tests {
         let mut value = surface(
             SurfaceKind::Canvas2d,
             UnderstandingLevel::CoordinateOnly,
-            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
+            vec![
+                SurfaceCapability::CoordinateAction,
+                SurfaceCapability::Input,
+            ],
         );
         value.evidence[0].source = SurfaceEvidenceSource::Memory;
         value.evidence[0].provenance.source_class = ProvenanceSourceClass::Memory;
@@ -1990,7 +2084,10 @@ mod tests {
         let mut value = surface(
             SurfaceKind::ExtensionDefined { extension },
             UnderstandingLevel::Semantic,
-            vec![SurfaceCapability::ReadStructure, SurfaceCapability::SemanticAction],
+            vec![
+                SurfaceCapability::ReadStructure,
+                SurfaceCapability::SemanticAction,
+            ],
         );
         assert!(value.validate().is_err());
         value.evidence[0]
@@ -2119,7 +2216,10 @@ mod tests {
         let mut value = surface(
             SurfaceKind::Canvas2d,
             UnderstandingLevel::CoordinateOnly,
-            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
+            vec![
+                SurfaceCapability::CoordinateAction,
+                SurfaceCapability::Input,
+            ],
         );
         value.evidence[0].source = SurfaceEvidenceSource::Visual;
         value.evidence[0].provenance.source_class = ProvenanceSourceClass::Visual;
@@ -2137,7 +2237,6 @@ mod tests {
         assert!(metadata_only.validate().is_err());
         metadata_only.evidence[0].source = SurfaceEvidenceSource::BrowserNative;
         assert!(metadata_only.validate().is_err());
-
 
         let controls = surface(
             SurfaceKind::Media,
@@ -2170,7 +2269,10 @@ mod tests {
         registry.insert(grant.clone()).unwrap();
         assert!(registry.insert(grant).is_err());
         assert_eq!(registry.grants.len(), 1);
-        let oversized = format!(r#"{{"grants":{{"x":"{}"}}}}"#, "x".repeat(MAX_BRIDGE_GRANT_PAYLOAD_BYTES));
+        let oversized = format!(
+            r#"{{"grants":{{"x":"{}"}}}}"#,
+            "x".repeat(MAX_BRIDGE_GRANT_PAYLOAD_BYTES)
+        );
         assert!(BridgeGrantRegistry::from_json(&oversized).is_err());
     }
     #[test]
@@ -2212,11 +2314,13 @@ mod tests {
         let mut value = surface(
             SurfaceKind::Canvas2d,
             UnderstandingLevel::CoordinateOnly,
-            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
+            vec![
+                SurfaceCapability::CoordinateAction,
+                SurfaceCapability::Input,
+            ],
         );
         value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
         value.evidence[0].quality = CoverageLevel::Strong;
         assert!(value.validate().is_err());
     }
-
 }

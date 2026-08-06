@@ -45,14 +45,6 @@
 pub mod browser;
 /// Transport-neutral backend capability contract.
 pub mod browser_backend;
-/// Browser-neutral terminal frame presentation contracts.
-pub mod presentation;
-/// Bounded, evidenced browser surface contracts.
-pub mod surfaces;
-/// Bounded terminal graphics adapters.
-pub mod terminal_graphics;
-/// Bounded workspace identity and lifecycle contracts.
-pub mod workspace;
 /// Versioned Glass protocol and capability negotiation.
 pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.
@@ -65,6 +57,8 @@ pub mod extensions;
 pub mod extraction;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
+/// Browser-neutral terminal frame presentation contracts.
+pub mod presentation;
 /// Transport-neutral versioned request and response envelopes.
 pub mod protocol;
 /// Versioned browser-free reliability scenario contracts.
@@ -73,14 +67,20 @@ pub mod reliability;
 pub mod reliability_runner;
 /// Bounded agent-facing response projections and local result artifacts.
 pub mod results;
+/// Bounded, evidenced browser surface contracts.
+pub mod surfaces;
 /// Browser-free deterministic Task Protocol execution-plan compiler.
 pub mod task_compiler;
 /// Strict, bounded authored Task Protocol v1 inputs.
 pub mod task_protocol;
+/// Bounded terminal graphics adapters.
+pub mod terminal_graphics;
 /// Ratatui terminal interface.
 pub mod tui;
 /// Stable Glass Web IR v1 reconciliation and validation.
 pub mod web_ir;
+/// Bounded workspace identity and lifecycle contracts.
+pub mod workspace;
 
 // Keep the most common embedding types on the crate root. Lower-level and
 // capability-specific APIs remain organized under `glass::browser`.

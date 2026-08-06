@@ -107,10 +107,10 @@ pub use knowledge::{
     KnowledgePortability, KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordBuildOptions,
     KnowledgeRecordKind, KnowledgeRejectionReason, KnowledgeRetrievalCandidate,
     KnowledgeRetrievalExplanation, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
-    KnowledgeRetrievalSignal, KnowledgeRetrievalSignalKind, KnowledgeScope,
-    KnowledgeSignalKind, KnowledgeSource, KnowledgeStoreSnapshot, KnowledgeSurfaceCoverage,
-    KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
-    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KnowledgeRetrievalSignal, KnowledgeRetrievalSignalKind, KnowledgeScope, KnowledgeSignalKind,
+    KnowledgeSource, KnowledgeStoreSnapshot, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
+    KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
+    MAX_KNOWLEDGE_RECORDS,
 };
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgePurgeResult, KnowledgeStore, KnowledgeStoreChange,
@@ -691,7 +691,8 @@ impl BrowserSession {
                 disposable_profile = Some(directory);
                 path
             } else {
-                profile_lock = Some(profile_manager.lock_profile(&options.profile, &options.profile)?);
+                profile_lock =
+                    Some(profile_manager.lock_profile(&options.profile, &options.profile)?);
                 profile_manager.ensure_profile_dir(&options.profile)?
             };
             chrome = Some(

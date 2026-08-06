@@ -75,13 +75,16 @@ impl Context {
             surface_kind: Some(self.surface_kind),
             backend_kind: Some(self.backend_kind),
             backend_capabilities: self.backend_capabilities,
+            workspace_id: None,
+            workspace_generation: None,
         })
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let corpus: Corpus =
-        serde_json::from_str(include_str!("../benchmarks/scenarios/knowledge-scorecard-v2.json"))?;
+    let corpus: Corpus = serde_json::from_str(include_str!(
+        "../benchmarks/scenarios/knowledge-scorecard-v2.json"
+    ))?;
     assert_eq!(corpus.schema_version, 1);
     let mut names = BTreeSet::new();
     let mut ids = BTreeSet::new();

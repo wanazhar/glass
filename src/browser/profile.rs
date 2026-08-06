@@ -157,18 +157,29 @@ impl ProfileManager {
             .read(true)
             .write(true)
             .open(lock_path)?;
-        file.try_lock_exclusive().map_err(|error| -> Box<dyn std::error::Error> { format!("profile {profile} is already owned: {error}").into() })?;
+        file.try_lock_exclusive()
+            .map_err(|error| -> Box<dyn std::error::Error> {
+                format!("profile {profile} is already owned: {error}").into()
+            })?;
         Ok(file)
     }
 
     /// Acquire an exclusive process lock tying this profile to one workspace.
     /// The guard must remain alive for the duration of browser ownership.
-    pub fn lock_profile(&self, profile: &str, workspace: &str) -> Result<ProfileLock, Box<dyn std::error::Error>> {
+    pub fn lock_profile(
+        &self,
+        profile: &str,
+        workspace: &str,
+    ) -> Result<ProfileLock, Box<dyn std::error::Error>> {
         Self::validate_name(profile)?;
         Self::validate_name(workspace)?;
         let file = self.acquire_profile_lock(profile)?;
         self.create_profile(profile)?;
-        Ok(ProfileLock { _file: file, profile: profile.to_owned(), workspace: workspace.to_owned() })
+        Ok(ProfileLock {
+            _file: file,
+            profile: profile.to_owned(),
+            workspace: workspace.to_owned(),
+        })
     }
 
     fn legacy_chrome_data_dir(&self, name: &str) -> PathBuf {
@@ -263,7 +274,6 @@ mod tests {
         assert!(second.lock_profile("work", "second").is_err());
         let _ = std::fs::remove_dir_all(profiles_dir);
     }
-
 
     #[test]
     fn create_profile_migrates_legacy_chrome_data() {

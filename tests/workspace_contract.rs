@@ -1,3 +1,4 @@
+#[allow(dead_code, clippy::enum_variant_names)]
 #[path = "../src/workspace.rs"]
 mod workspace;
 
@@ -5,24 +6,56 @@ use workspace::*;
 
 #[test]
 fn references_round_trip_and_reject_cross_scope() {
-    let scope = WorkspaceScope::profile(WorkspaceId::new("Workspace-A").unwrap(), ProfileId::new("profile-a").unwrap());
-    let reference = ResourceReference::browser(scope.clone(), ResourceId::new("browser-1").unwrap()).unwrap();
+    let scope = WorkspaceScope::profile(
+        WorkspaceId::new("Workspace-A").unwrap(),
+        ProfileId::new("profile-a").unwrap(),
+    );
+    let reference =
+        ResourceReference::browser(scope.clone(), ResourceId::new("browser-1").unwrap()).unwrap();
     let encoded = reference.to_string();
     assert_eq!(encoded.parse::<ResourceReference>().unwrap(), reference);
-    let other = WorkspaceScope::profile(WorkspaceId::new("workspace-b").unwrap(), ProfileId::new("profile-a").unwrap());
-    assert!(matches!(reference.validate_scope(&other), Err(ScopeError::WorkspaceMismatch { .. })));
+    let other = WorkspaceScope::profile(
+        WorkspaceId::new("workspace-b").unwrap(),
+        ProfileId::new("profile-a").unwrap(),
+    );
+    assert!(matches!(
+        reference.validate_scope(&other),
+        Err(ScopeError::WorkspaceMismatch { .. })
+    ));
 }
 
 #[test]
 fn observers_are_read_only_and_takeover_is_revision_guarded() {
     let scope = WorkspaceScope::workspace(WorkspaceId::new("lease-test").unwrap());
-    let observer = Attachment::new(AttachmentId::new("observer").unwrap(), ResourceId::new("actor-o").unwrap(), ActorRole::Observer, AttachmentCapabilities::observer(), scope.clone()).unwrap();
-    let human = Attachment::new(AttachmentId::new("human").unwrap(), ResourceId::new("actor-h").unwrap(), ActorRole::Human, AttachmentCapabilities::takeover(), scope).unwrap();
+    let observer = Attachment::new(
+        AttachmentId::new("observer").unwrap(),
+        ResourceId::new("actor-o").unwrap(),
+        ActorRole::Observer,
+        AttachmentCapabilities::observer(),
+        scope.clone(),
+    )
+    .unwrap();
+    let human = Attachment::new(
+        AttachmentId::new("human").unwrap(),
+        ResourceId::new("actor-h").unwrap(),
+        ActorRole::Human,
+        AttachmentCapabilities::takeover(),
+        scope,
+    )
+    .unwrap();
     let mut authority = MutationLeaseAuthority::default();
-    assert!(matches!(authority.acquire(&observer, Revision(0)), Err(LeaseError::ObserverMutationDenied)));
+    assert!(matches!(
+        authority.acquire(&observer, Revision(0)),
+        Err(LeaseError::ObserverMutationDenied)
+    ));
     let grant = authority.acquire(&human, Revision(0)).unwrap();
-    assert!(matches!(authority.takeover(&human, Revision(0)), Err(LeaseError::StaleRevision(_))));
-    authority.release(&human, &grant.lease_id, grant.revision).unwrap();
+    assert!(matches!(
+        authority.takeover(&human, Revision(0)),
+        Err(LeaseError::StaleRevision(_))
+    ));
+    authority
+        .release(&human, &grant.lease_id, grant.revision)
+        .unwrap();
     assert_eq!(authority.snapshot().state, MutationLeaseState::Available);
 }
 
@@ -31,8 +64,14 @@ fn ephemeral_generation_is_part_of_reference_identity() {
     let scope = WorkspaceScope::workspace(WorkspaceId::new("ephemeral").unwrap())
         .with_generation(WorkspaceGeneration::new(7).unwrap());
     let reference = ResourceReference::browser(scope, ResourceId::new("b").unwrap()).unwrap();
-    assert_eq!(reference.to_string(), "glass://workspace/ephemeral/generation/7/browser/b");
-    assert_eq!(reference.to_string().parse::<ResourceReference>().unwrap(), reference);
+    assert_eq!(
+        reference.to_string(),
+        "glass://workspace/ephemeral/generation/7/browser/b"
+    );
+    assert_eq!(
+        reference.to_string().parse::<ResourceReference>().unwrap(),
+        reference
+    );
     assert!(WorkspaceGeneration::new(0).is_err());
 }
 
@@ -55,7 +94,8 @@ fn invalid_reference_and_configuration_are_rejected_on_deserialize() {
 
 #[test]
 fn workspace_disconnect_revokes_lease_and_closing_rejects_mutations() {
-    let identity = WorkspaceIdentity::new(WorkspaceId::new("lease-workspace").unwrap(), []).unwrap();
+    let identity =
+        WorkspaceIdentity::new(WorkspaceId::new("lease-workspace").unwrap(), []).unwrap();
     let mut workspace = Workspace::new(identity, WorkspaceConfig::ephemeral_private(None)).unwrap();
     let scope = workspace.scope();
     let attachment = Attachment::new(
@@ -64,15 +104,21 @@ fn workspace_disconnect_revokes_lease_and_closing_rejects_mutations() {
         ActorRole::Human,
         AttachmentCapabilities::mutating(),
         scope,
-    ).unwrap();
+    )
+    .unwrap();
     workspace.attach(attachment.clone()).unwrap();
-    let grant = workspace.acquire_lease(attachment.id(), Revision(0)).unwrap();
+    let grant = workspace
+        .acquire_lease(attachment.id(), Revision(0))
+        .unwrap();
     assert_eq!(grant.revision, Revision(1));
     workspace.disconnect(attachment.id()).unwrap();
     assert_eq!(workspace.lease().state, MutationLeaseState::Available);
     assert_eq!(workspace.lease().revision, Revision(2));
     workspace.transition(WorkspaceLifecycle::Closing).unwrap();
-    assert!(matches!(workspace.acquire_lease(attachment.id(), Revision(2)), Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))));
+    assert!(matches!(
+        workspace.acquire_lease(attachment.id(), Revision(2)),
+        Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))
+    ));
 }
 
 #[test]
@@ -94,12 +140,23 @@ fn duplicate_attachments_and_unbounded_references_are_rejected() {
         ActorRole::Human,
         AttachmentCapabilities::mutating(),
         workspace.scope(),
-    ).unwrap();
+    )
+    .unwrap();
     workspace.attach(attachment.clone()).unwrap();
-    assert!(matches!(workspace.attach(attachment), Err(WorkspaceError::DuplicateAttachment)));
-    let oversized = format!("glass://workspace/w/browser/{}", "x".repeat(MAX_REFERENCE_URI_BYTES));
+    assert!(matches!(
+        workspace.attach(attachment),
+        Err(WorkspaceError::DuplicateAttachment)
+    ));
+    let oversized = format!(
+        "glass://workspace/w/browser/{}",
+        "x".repeat(MAX_REFERENCE_URI_BYTES)
+    );
     assert!(oversized.parse::<ResourceReference>().is_err());
-    assert!("glass://workspace/w/generation/0/browser/b".parse::<ResourceReference>().is_err());
+    assert!(
+        "glass://workspace/w/generation/0/browser/b"
+            .parse::<ResourceReference>()
+            .is_err()
+    );
 }
 
 #[test]
@@ -113,21 +170,30 @@ fn profile_reference_cannot_overwrite_scope() {
 
 #[test]
 fn ephemeral_scope_requires_generation_and_ownership_is_checked() {
-    assert!(serde_json::from_value::<WorkspaceScope>(serde_json::json!({
-        "workspaceId": "ephemeral",
-        "storage": "ephemeral"
-    })).is_err());
+    assert!(
+        serde_json::from_value::<WorkspaceScope>(serde_json::json!({
+            "workspaceId": "ephemeral",
+            "storage": "ephemeral"
+        }))
+        .is_err()
+    );
     let scope = WorkspaceScope::workspace(WorkspaceId::new("owner").unwrap());
-    assert!(OwnershipBoundary::new(
-        scope,
-        OwnershipDomain::Browser,
-        OwnershipOwner::Workspace(WorkspaceId::new("owner").unwrap()),
-    ).is_err());
-    assert!(serde_json::from_value::<WorkspaceConfig>(serde_json::json!({
-        "profileMode": "named",
-        "privacyMode": "private",
-        "storage": "durable"
-    })).is_err());
+    assert!(
+        OwnershipBoundary::new(
+            scope,
+            OwnershipDomain::Browser,
+            OwnershipOwner::Workspace(WorkspaceId::new("owner").unwrap()),
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<WorkspaceConfig>(serde_json::json!({
+            "profileMode": "named",
+            "privacyMode": "private",
+            "storage": "durable"
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -145,8 +211,14 @@ fn legacy_generation_scope_migrates_to_ephemeral_storage() {
     let scope = WorkspaceScope::from_json(r#"{"workspaceId":"legacy","generation":9}"#).unwrap();
     assert_eq!(scope.storage(), WorkspaceStorage::Ephemeral);
     let reference = ResourceReference::browser(scope, ResourceId::new("browser").unwrap()).unwrap();
-    assert_eq!(reference.to_string(), "glass://workspace/legacy/generation/9/browser/browser");
-    assert_eq!(reference.to_string().parse::<ResourceReference>().unwrap(), reference);
+    assert_eq!(
+        reference.to_string(),
+        "glass://workspace/legacy/generation/9/browser/browser"
+    );
+    assert_eq!(
+        reference.to_string().parse::<ResourceReference>().unwrap(),
+        reference
+    );
 }
 
 #[test]
@@ -158,7 +230,10 @@ fn escaped_oversized_identity_is_rejected_before_decode() {
 #[test]
 fn direct_identity_deserialization_requires_capped_loader() {
     assert!(serde_json::from_str::<WorkspaceId>("\"valid-id\"").is_err());
-    assert_eq!(WorkspaceId::from_json("\"valid-id\"").unwrap().as_str(), "valid-id");
+    assert_eq!(
+        WorkspaceId::from_json("\"valid-id\"").unwrap().as_str(),
+        "valid-id"
+    );
 }
 
 #[test]
@@ -172,7 +247,8 @@ fn capped_snapshot_loads_scoped_attachments() {
         ActorRole::Human,
         AttachmentCapabilities::mutating(),
         workspace.scope(),
-    ).unwrap();
+    )
+    .unwrap();
     workspace.attach(attachment).unwrap();
     let encoded = serde_json::to_string(&workspace).unwrap();
     let loaded = Workspace::from_json(&encoded).unwrap();

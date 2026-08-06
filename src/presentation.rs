@@ -51,10 +51,16 @@ impl Display for PresentationContractError {
         match self {
             Self::Invalid { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::StaleRevision { expected, actual } => {
-                write!(f, "stale presentation revision: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "stale presentation revision: expected {expected}, got {actual}"
+                )
             }
             Self::StaleGeometryRevision { expected, actual } => {
-                write!(f, "stale geometry revision: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "stale geometry revision: expected {expected}, got {actual}"
+                )
             }
             Self::TargetMismatch => write!(f, "frame target does not match mailbox target"),
             Self::OutsidePane => write!(f, "point is outside the presentation pane"),
@@ -159,7 +165,12 @@ pub struct PaneGeometry {
 
 impl PaneGeometry {
     pub fn rect(&self) -> PixelRect {
-        PixelRect::new(self.origin.x, self.origin.y, self.size.width, self.size.height)
+        PixelRect::new(
+            self.origin.x,
+            self.origin.y,
+            self.size.width,
+            self.size.height,
+        )
     }
 
     pub fn validate(&self) -> Result<(), PresentationContractError> {
@@ -294,7 +305,8 @@ impl<'de> Deserialize<'de> for FrameRate {
             where
                 E: DeError,
             {
-                let value = u16::try_from(value).map_err(|_| E::custom("frame rate overflows u16"))?;
+                let value =
+                    u16::try_from(value).map_err(|_| E::custom("frame rate overflows u16"))?;
                 self.visit_u16(value)
             }
         }
@@ -439,10 +451,7 @@ impl ViewportGeometry {
         Ok(())
     }
 
-    pub fn check_geometry_revision(
-        &self,
-        revision: u64,
-    ) -> Result<(), PresentationContractError> {
+    pub fn check_geometry_revision(&self, revision: u64) -> Result<(), PresentationContractError> {
         if revision != self.geometry_revision {
             return Err(PresentationContractError::StaleGeometryRevision {
                 expected: self.geometry_revision,
@@ -518,10 +527,16 @@ fn fit_image_rect(
     let viewport_height = viewport.height as u64;
     let (width, height) = if pane_width * viewport_height <= pane_height * viewport_width {
         let width = pane.size.width;
-        (width, ((pane_width * viewport_height) / viewport_width) as u32)
+        (
+            width,
+            ((pane_width * viewport_height) / viewport_width) as u32,
+        )
     } else {
         let height = pane.size.height;
-        (((pane_height * viewport_width) / viewport_height) as u32, height)
+        (
+            ((pane_height * viewport_width) / viewport_height) as u32,
+            height,
+        )
     };
     Ok(PixelRect::new(
         pane.origin.x + (pane.size.width - width) / 2,
@@ -543,10 +558,7 @@ pub struct TargetResourceIdentity {
 struct TargetResourceIdentityWire {
     #[serde(deserialize_with = "deserialize_bounded_identity")]
     target_id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_bounded_identity"
-    )]
+    #[serde(default, deserialize_with = "deserialize_optional_bounded_identity")]
     resource_id: Option<String>,
 }
 
@@ -685,7 +697,6 @@ struct BrowserFrameWire {
     geometry_revision: u64,
     dropped: FrameDropCounts,
 }
-
 
 impl BrowserFrame {
     pub fn validate(&self) -> Result<(), PresentationContractError> {
@@ -860,7 +871,10 @@ impl LatestFrameMailbox {
         })
     }
 
-    pub fn submit(&mut self, frame: BrowserFrame) -> Result<SubmitOutcome, PresentationContractError> {
+    pub fn submit(
+        &mut self,
+        frame: BrowserFrame,
+    ) -> Result<SubmitOutcome, PresentationContractError> {
         frame.validate()?;
         if self.identity.as_ref() != Some(&frame.identity) {
             return Err(PresentationContractError::TargetMismatch);
@@ -1068,16 +1082,10 @@ pub struct FrameOwnershipRecord {
 }
 
 /// Whether a backend may persist payload bytes. Default is deliberately false.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FrameStoragePolicy {
     pub persist_bytes: bool,
-}
-
-impl Default for FrameStoragePolicy {
-    fn default() -> Self {
-        Self { persist_bytes: false }
-    }
 }
 
 /// Cumulative presentation metrics. Latencies are integer milliseconds and are
@@ -1340,7 +1348,10 @@ mod tests {
         let mut mailbox = LatestFrameMailbox::new(identity()).unwrap();
         assert_eq!(mailbox.submit(frame(1, 1)).unwrap(), SubmitOutcome::Current);
         assert_eq!(mailbox.submit(frame(2, 1)).unwrap(), SubmitOutcome::Pending);
-        assert_eq!(mailbox.submit(frame(3, 1)).unwrap(), SubmitOutcome::ReplacedPending);
+        assert_eq!(
+            mailbox.submit(frame(3, 1)).unwrap(),
+            SubmitOutcome::ReplacedPending
+        );
         assert_eq!(mailbox.len(), 2);
         assert_eq!(mailbox.pending(1, 1).unwrap().unwrap().generation, 3);
         assert_eq!(mailbox.counters().replaced_pending, 1);
@@ -1352,7 +1363,10 @@ mod tests {
         assert_eq!(mailbox.pending(1, 1).unwrap().unwrap().generation, 3);
         assert_eq!(mailbox.counters().stale_rejected, 1);
         assert_eq!(mailbox.counters().dropped, 2);
-        assert_eq!(mailbox.promote_pending(1, 1).unwrap().unwrap().generation, 1);
+        assert_eq!(
+            mailbox.promote_pending(1, 1).unwrap().unwrap().generation,
+            1
+        );
         assert_eq!(mailbox.current(1, 1).unwrap().unwrap().generation, 3);
         assert_eq!(mailbox.len(), 1);
     }
@@ -1361,10 +1375,16 @@ mod tests {
     fn mailbox_rejects_stale_and_wrong_target_frames() {
         let mut mailbox = LatestFrameMailbox::new(identity()).unwrap();
         mailbox.submit(frame(4, 2)).unwrap();
-        assert_eq!(mailbox.submit(frame(3, 2)).unwrap(), SubmitOutcome::DroppedStale);
+        assert_eq!(
+            mailbox.submit(frame(3, 2)).unwrap(),
+            SubmitOutcome::DroppedStale
+        );
         let mut wrong = frame(5, 2);
         wrong.identity.target_id = "other".into();
-        assert_eq!(mailbox.submit(wrong), Err(PresentationContractError::TargetMismatch));
+        assert_eq!(
+            mailbox.submit(wrong),
+            Err(PresentationContractError::TargetMismatch)
+        );
         assert_eq!(mailbox.counters().stale_rejected, 1);
     }
     #[test]
@@ -1468,7 +1488,13 @@ mod tests {
     fn scale_and_rate_validation_are_independent() {
         assert!(FrameRate::new(0).is_err());
         assert!(FrameRate::new(61).is_err());
-        assert_eq!(PresentationConfig::new(30, 0.5).unwrap().target_frame_rate.get(), 30);
+        assert_eq!(
+            PresentationConfig::new(30, 0.5)
+                .unwrap()
+                .target_frame_rate
+                .get(),
+            30
+        );
         assert!(CaptureScale::new(0.49).is_err());
         assert!(CaptureScale::new(1.01).is_err());
         assert!(PresentationConfig::new(60, 0.5).is_ok());
@@ -1501,34 +1527,41 @@ mod tests {
             }
         });
         assert!(BrowserFrame::from_json(&oversized_json.to_string()).is_err());
-        assert!(serde_json::from_str::<PresentationConfig>(
-            r#"{"targetFrameRate":0,"captureScale":1.0}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<PresentationConfig>(
-            r#"{"targetFrameRate":60,"captureScale":0.1}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<PresentationConfig>(
-            r#"{"targetFrameRate":60,"captureScale":0.4999999999}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<PresentationConfig>(
-            r#"{"targetFrameRate":60,"captureScale":1.0000000001}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<PresentationConfig>(
-            r#"{"targetFrameRate":60,"captureScale":1.0}"#
-        )
-        .is_ok());
-        let escaped_identity = frame(1, 1)
-            .to_json()
-            .unwrap()
-            .replacen(
-                "\"target-1\"",
-                &format!("\"{}\"", "\\u0078".repeat(MAX_IDENTITY_BYTES + 1)),
-                1,
-            );
+        assert!(
+            serde_json::from_str::<PresentationConfig>(
+                r#"{"targetFrameRate":0,"captureScale":1.0}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PresentationConfig>(
+                r#"{"targetFrameRate":60,"captureScale":0.1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PresentationConfig>(
+                r#"{"targetFrameRate":60,"captureScale":0.4999999999}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PresentationConfig>(
+                r#"{"targetFrameRate":60,"captureScale":1.0000000001}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PresentationConfig>(
+                r#"{"targetFrameRate":60,"captureScale":1.0}"#
+            )
+            .is_ok()
+        );
+        let escaped_identity = frame(1, 1).to_json().unwrap().replacen(
+            "\"target-1\"",
+            &format!("\"{}\"", "\\u0078".repeat(MAX_IDENTITY_BYTES + 1)),
+            1,
+        );
         assert!(BrowserFrame::from_json(&escaped_identity).is_err());
         let mut invalid_frame = serde_json::to_value(frame(1, 1)).unwrap();
         invalid_frame["viewport"]["width"] = serde_json::json!(0);

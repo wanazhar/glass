@@ -5,8 +5,8 @@
 //! transport, but transport identifiers and command/domain types must not cross
 //! this boundary.
 
-use serde::{Deserialize, Serialize};
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -56,7 +56,10 @@ fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBack
 
 fn validate_vec_len(field: &str, len: usize, max: usize) -> Result<(), BrowserBackendError> {
     if len > max {
-        return Err(invalid(field, &format!("must contain at most {max} entries")));
+        return Err(invalid(
+            field,
+            &format!("must contain at most {max} entries"),
+        ));
     }
     Ok(())
 }
@@ -64,7 +67,10 @@ fn validate_vec_len(field: &str, len: usize, max: usize) -> Result<(), BrowserBa
 fn validate_json(field: &str, value: &serde_json::Value) -> Result<(), BrowserBackendError> {
     let bytes = serde_json::to_vec(value).map_err(|error| invalid(field, &error.to_string()))?;
     if bytes.len() > MAX_JSON_BYTES {
-        return Err(invalid(field, "serialized JSON exceeds the bounded payload size"));
+        return Err(invalid(
+            field,
+            "serialized JSON exceeds the bounded payload size",
+        ));
     }
     Ok(())
 }
@@ -181,7 +187,6 @@ impl<'de, const LIMIT: usize, const REQUIRED: bool> Visitor<'de>
     }
 }
 
-
 fn deserialize_version_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -201,7 +206,6 @@ where
 {
     deserializer.deserialize_option(BoundedOptionVisitor::<MAX_BROWSER_FAMILY_BYTES, true>)
 }
-
 
 struct BoundedVecVisitor<T, const LIMIT: usize>(std::marker::PhantomData<T>);
 
@@ -227,7 +231,9 @@ where
             values.push(value);
         }
         if access.next_element::<T>()?.is_some() {
-            return Err(serde::de::Error::custom("vector exceeds the bounded entry count"));
+            return Err(serde::de::Error::custom(
+                "vector exceeds the bounded entry count",
+            ));
         }
         Ok(values)
     }
@@ -238,7 +244,9 @@ where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX_CONTEXTS>(std::marker::PhantomData))
+    deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX_CONTEXTS>(
+        std::marker::PhantomData,
+    ))
 }
 fn deserialize_bounded_contexts<'de, D>(deserializer: D) -> Result<Vec<BrowsingContext>, D::Error>
 where
@@ -246,7 +254,9 @@ where
 {
     deserialize_bounded_vec::<D, BrowsingContext>(deserializer)
 }
-fn deserialize_bounded_dependencies<'de, D>(deserializer: D) -> Result<Vec<CapabilityDependency>, D::Error>
+fn deserialize_bounded_dependencies<'de, D>(
+    deserializer: D,
+) -> Result<Vec<CapabilityDependency>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -272,9 +282,10 @@ fn deserialize_bounded_requirements<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_seq(BoundedVecVisitor::<CapabilityRequirement, MAX_SELECTION_REQUIREMENTS>(
-        std::marker::PhantomData,
-    ))
+    deserializer.deserialize_seq(BoundedVecVisitor::<
+        CapabilityRequirement,
+        MAX_SELECTION_REQUIREMENTS,
+    >(std::marker::PhantomData))
 }
 
 struct BoundedBytesVisitor;
@@ -325,7 +336,9 @@ impl<'de> Visitor<'de> for BoundedBytesVisitor {
             values.push(value);
         }
         if access.next_element::<u8>()?.is_some() {
-            return Err(serde::de::Error::custom("capture exceeds the bounded payload size"));
+            return Err(serde::de::Error::custom(
+                "capture exceeds the bounded payload size",
+            ));
         }
         Ok(values)
     }
@@ -387,7 +400,9 @@ impl<'de> DeserializeSeed<'de> for JsonKeySeed {
             }
         }
 
-        deserializer.deserialize_str(JsonKeyVisitor { budget: self.budget })
+        deserializer.deserialize_str(JsonKeyVisitor {
+            budget: self.budget,
+        })
     }
 }
 
@@ -428,9 +443,7 @@ impl<'de> DeserializeSeed<'de> for BoundedStringSeed {
 
 struct BoundedLimitedStringSeed<const BYTE_LIMIT: usize>;
 
-impl<'de, const BYTE_LIMIT: usize> DeserializeSeed<'de>
-    for BoundedLimitedStringSeed<BYTE_LIMIT>
-{
+impl<'de, const BYTE_LIMIT: usize> DeserializeSeed<'de> for BoundedLimitedStringSeed<BYTE_LIMIT> {
     type Value = String;
 
     fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
@@ -458,8 +471,7 @@ impl<'de, const LIMIT: usize, const BYTE_LIMIT: usize> Visitor<'de>
     {
         let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(LIMIT));
         while values.len() < LIMIT {
-            let Some(value) =
-                access.next_element_seed(BoundedLimitedStringSeed::<BYTE_LIMIT>)?
+            let Some(value) = access.next_element_seed(BoundedLimitedStringSeed::<BYTE_LIMIT>)?
             else {
                 return Ok(values);
             };
@@ -477,14 +489,12 @@ impl<'de, const LIMIT: usize, const BYTE_LIMIT: usize> Visitor<'de>
     }
 }
 
-
 fn deserialize_bounded_limitation_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     deserializer.deserialize_seq(BoundedStringVecVisitor::<16, MAX_LIMITATION_BYTES>)
 }
-
 
 struct BoundedStringMapVisitor<const LIMIT: usize, const KEY_BYTES: usize>;
 
@@ -504,10 +514,9 @@ impl<'de, const LIMIT: usize, const KEY_BYTES: usize> Visitor<'de>
         let mut values = BTreeMap::new();
         let mut pairs = 0;
         while pairs < LIMIT {
-            let Some((key, value)) = access.next_entry_seed(
-                BoundedLimitedStringSeed::<KEY_BYTES>,
-                BoundedStringSeed,
-            )? else {
+            let Some((key, value)) =
+                access.next_entry_seed(BoundedLimitedStringSeed::<KEY_BYTES>, BoundedStringSeed)?
+            else {
                 return Ok(values);
             };
             pairs += 1;
@@ -531,7 +540,8 @@ fn deserialize_bounded_string_map<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_map(BoundedStringMapVisitor::<MAX_STORAGE_ENTRIES, MAX_BACKEND_ID_BYTES>)
+    deserializer
+        .deserialize_map(BoundedStringMapVisitor::<MAX_STORAGE_ENTRIES, MAX_BACKEND_ID_BYTES>)
 }
 
 struct JsonVisitor {
@@ -629,16 +639,22 @@ impl<'de> Visitor<'de> for JsonVisitor {
             let Some(value) = access.next_element_seed(JsonSeed {
                 budget: self.budget.clone(),
                 depth: self.depth + 1,
-            })? else {
+            })?
+            else {
                 return Ok(serde_json::Value::Array(values));
             };
             values.push(value);
         }
-        if access.next_element_seed(JsonSeed {
-            budget: self.budget.clone(),
-            depth: self.depth + 1,
-        })?.is_some() {
-            return Err(serde::de::Error::custom("JSON array exceeds the bounded entry count"));
+        if access
+            .next_element_seed(JsonSeed {
+                budget: self.budget.clone(),
+                depth: self.depth + 1,
+            })?
+            .is_some()
+        {
+            return Err(serde::de::Error::custom(
+                "JSON array exceeds the bounded entry count",
+            ));
         }
         Ok(serde_json::Value::Array(values))
     }
@@ -652,19 +668,35 @@ impl<'de> Visitor<'de> for JsonVisitor {
         let mut pairs = 0;
         while pairs < MAX_STORAGE_ENTRIES {
             let Some((key, value)) = access.next_entry_seed(
-                JsonKeySeed { budget: self.budget.clone() },
-                JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
-            )? else {
+                JsonKeySeed {
+                    budget: self.budget.clone(),
+                },
+                JsonSeed {
+                    budget: self.budget.clone(),
+                    depth: self.depth + 1,
+                },
+            )?
+            else {
                 return Ok(serde_json::Value::Object(values));
             };
             pairs += 1;
             values.insert(key, value);
         }
-        if access.next_entry_seed(
-            JsonKeySeed { budget: self.budget.clone() },
-            JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
-        )?.is_some() {
-            return Err(serde::de::Error::custom("JSON object exceeds the bounded entry count"));
+        if access
+            .next_entry_seed(
+                JsonKeySeed {
+                    budget: self.budget.clone(),
+                },
+                JsonSeed {
+                    budget: self.budget.clone(),
+                    depth: self.depth + 1,
+                },
+            )?
+            .is_some()
+        {
+            return Err(serde::de::Error::custom(
+                "JSON object exceeds the bounded entry count",
+            ));
         }
         Ok(serde_json::Value::Object(values))
     }
@@ -710,18 +742,20 @@ where
             values.insert(key, value);
         }
         if access.next_entry::<K, V>()?.is_some() {
-            return Err(serde::de::Error::custom("map exceeds the bounded entry count"));
+            return Err(serde::de::Error::custom(
+                "map exceeds the bounded entry count",
+            ));
         }
         Ok(values)
     }
 }
 
-
 fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_seq(BoundedStringVecVisitor::<MAX_BACKEND_CANDIDATES, MAX_BACKEND_ID_BYTES>)
+    deserializer
+        .deserialize_seq(BoundedStringVecVisitor::<MAX_BACKEND_CANDIDATES, MAX_BACKEND_ID_BYTES>)
 }
 
 fn deserialize_bounded_download_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -971,25 +1005,38 @@ pub struct CertificationProfile {
 
 impl CertificationProfile {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
-        validate_text("certification glass version", &self.glass_version, MAX_VERSION_BYTES)?;
+        validate_text(
+            "certification glass version",
+            &self.glass_version,
+            MAX_VERSION_BYTES,
+        )?;
         validate_vec_len(
             "certification tested capabilities",
             self.tested_capabilities.len(),
             MAX_CAPABILITIES,
         )?;
-        validate_vec_len("certification limitations", self.limitations.len(), MAX_LIMITATIONS)?;
+        validate_vec_len(
+            "certification limitations",
+            self.limitations.len(),
+            MAX_LIMITATIONS,
+        )?;
         for limitation in &self.limitations {
             validate_text("certification limitation", limitation, MAX_LIMITATION_BYTES)?;
         }
-        if self.level == CertificationLevel::ProductionCertified && self.tested_capabilities.is_empty() {
+        if self.level == CertificationLevel::ProductionCertified
+            && self.tested_capabilities.is_empty()
+        {
             return Err(invalid(
                 "certification tested capabilities",
                 "production certification requires conformance coverage",
             ));
         }
-        if self.level == CertificationLevel::Unsupported && self.tested_capabilities.iter().any(|capability| {
-            capability != &BrowserCapability::Contexts
-        }) {
+        if self.level == CertificationLevel::Unsupported
+            && self
+                .tested_capabilities
+                .iter()
+                .any(|capability| capability != &BrowserCapability::Contexts)
+        {
             return Err(invalid(
                 "certification tested capabilities",
                 "unsupported backends cannot claim tested semantic capabilities",
@@ -1030,7 +1077,10 @@ pub struct BackendProfile {
 impl BackendProfile {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
-            return Err(invalid("schema version", "unsupported browser backend schema"));
+            return Err(invalid(
+                "schema version",
+                "unsupported browser backend schema",
+            ));
         }
         self.identity.validate()?;
         validate_vec_len("capabilities", self.capabilities.len(), MAX_CAPABILITIES)?;
@@ -1055,7 +1105,10 @@ impl BackendProfile {
             validate_dependency_closure(self, *capability, &mut BTreeSet::new())?;
         }
         if self.identity.certification.level == CertificationLevel::Unsupported
-            && self.capabilities.values().any(|descriptor| descriptor.level != SupportLevel::Unavailable)
+            && self
+                .capabilities
+                .values()
+                .any(|descriptor| descriptor.level != SupportLevel::Unavailable)
         {
             return Err(invalid(
                 "capabilities",
@@ -1095,7 +1148,10 @@ fn validate_dependency_closure(
     visiting: &mut BTreeSet<BrowserCapability>,
 ) -> Result<(), BrowserBackendError> {
     if !visiting.insert(capability) {
-        return Err(invalid("capability dependencies", "dependency cycle detected"));
+        return Err(invalid(
+            "capability dependencies",
+            "dependency cycle detected",
+        ));
     }
     let descriptor = profile
         .capabilities
@@ -1176,7 +1232,10 @@ fn default_minimum_certification() -> CertificationLevel {
 impl BackendSelectionRequest {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
-            return Err(invalid("schema version", "unsupported browser backend schema"));
+            return Err(invalid(
+                "schema version",
+                "unsupported browser backend schema",
+            ));
         }
         validate_text("glass version", &self.glass_version, MAX_VERSION_BYTES)?;
         if let Some(id) = &self.preferred_backend_id {
@@ -1189,7 +1248,10 @@ impl BackendSelectionRequest {
         )?;
         for requirement in &self.required_capabilities {
             if requirement.minimum == SupportLevel::Unavailable {
-                return Err(invalid("required capability", "minimum cannot be unavailable"));
+                return Err(invalid(
+                    "required capability",
+                    "minimum cannot be unavailable",
+                ));
             }
         }
         if let Some(family) = &self.browser_family {
@@ -1260,7 +1322,10 @@ pub struct BackendSelectionResult {
 impl BackendSelectionResult {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
-            return Err(invalid("schema version", "unsupported browser backend schema"));
+            return Err(invalid(
+                "schema version",
+                "unsupported browser backend schema",
+            ));
         }
         self.selected.validate()?;
         validate_vec_len(
@@ -1364,27 +1429,35 @@ pub fn select_backend(
         }
         if profile.identity.certification.glass_version != request.glass_version {
             if request.preferred_backend_id.as_ref() == Some(id) {
-                preferred_rejection = Some("backend certification targets a different Glass version".into());
+                preferred_rejection =
+                    Some("backend certification targets a different Glass version".into());
             }
             continue;
         }
-        let rejection = if profile.identity.certification.level.rank()
-            < request.minimum_certification.rank()
-        {
-            Some(SelectionRejection::CertificationBelowMinimum)
-        } else if let Some(family) = request.browser_family.as_deref()
-            && !profile.identity.browser.contains(family, request.browser_version.as_deref())
-        {
-            Some(SelectionRejection::BrowserMismatch)
-        } else {
-            request.required_capabilities.iter().find_map(|requirement| {
-                (!profile
-                    .capability(requirement.capability)
-                    .level
-                    .satisfies(requirement.minimum))
-                .then_some(SelectionRejection::MissingCapability(requirement.capability))
-            })
-        };
+        let rejection =
+            if profile.identity.certification.level.rank() < request.minimum_certification.rank() {
+                Some(SelectionRejection::CertificationBelowMinimum)
+            } else if let Some(family) = request.browser_family.as_deref()
+                && !profile
+                    .identity
+                    .browser
+                    .contains(family, request.browser_version.as_deref())
+            {
+                Some(SelectionRejection::BrowserMismatch)
+            } else {
+                request
+                    .required_capabilities
+                    .iter()
+                    .find_map(|requirement| {
+                        (!profile
+                            .capability(requirement.capability)
+                            .level
+                            .satisfies(requirement.minimum))
+                        .then_some(SelectionRejection::MissingCapability(
+                            requirement.capability,
+                        ))
+                    })
+            };
         if let Some(rejection) = rejection {
             if request.preferred_backend_id.as_ref() == Some(id) {
                 preferred_rejection = Some(format_selection_rejection(&rejection));
@@ -1395,7 +1468,10 @@ pub fn select_backend(
     }
 
     if let Some(preferred) = &request.preferred_backend_id {
-        let Some(profile) = eligible.iter().find(|profile| &profile.identity.backend_id == preferred) else {
+        let Some(profile) = eligible
+            .iter()
+            .find(|profile| &profile.identity.backend_id == preferred)
+        else {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: preferred_rejection
                     .unwrap_or_else(|| format!("preferred backend `{preferred}` is not available")),
@@ -1511,11 +1587,26 @@ impl fmt::Display for BrowserBackendError {
             Self::CapabilityUnavailable { capability, .. } => {
                 write!(formatter, "capability unavailable: {capability:?}")
             }
-            Self::InvalidConfiguration { field, reason } => write!(formatter, "invalid {field}: {reason}"),
-            Self::Connection { operation, reason } => write!(formatter, "connection failure during {operation}: {reason}"),
-            Self::Lifecycle { operation, state, reason } => write!(formatter, "lifecycle failure during {operation} ({state}): {reason}"),
-            Self::UnsupportedOperation { operation, reason } => write!(formatter, "unsupported operation {operation}: {reason}"),
-            Self::SelectionFailed { reason } => write!(formatter, "backend selection failed: {reason}"),
+            Self::InvalidConfiguration { field, reason } => {
+                write!(formatter, "invalid {field}: {reason}")
+            }
+            Self::Connection { operation, reason } => {
+                write!(formatter, "connection failure during {operation}: {reason}")
+            }
+            Self::Lifecycle {
+                operation,
+                state,
+                reason,
+            } => write!(
+                formatter,
+                "lifecycle failure during {operation} ({state}): {reason}"
+            ),
+            Self::UnsupportedOperation { operation, reason } => {
+                write!(formatter, "unsupported operation {operation}: {reason}")
+            }
+            Self::SelectionFailed { reason } => {
+                write!(formatter, "backend selection failed: {reason}")
+            }
         }
     }
 }
@@ -1543,14 +1634,24 @@ impl BackendContract for BrowserBackendError {
                     ));
                 }
                 Ok(())
-            },
+            }
             Self::InvalidConfiguration { field, reason }
-            | Self::Connection { operation: field, reason }
-            | Self::UnsupportedOperation { operation: field, reason } => {
+            | Self::Connection {
+                operation: field,
+                reason,
+            }
+            | Self::UnsupportedOperation {
+                operation: field,
+                reason,
+            } => {
                 validate_text("error field", field, MAX_BACKEND_ID_BYTES)?;
                 validate_text("error reason", reason, MAX_DIAGNOSTIC_BYTES)
             }
-            Self::Lifecycle { operation, state, reason } => {
+            Self::Lifecycle {
+                operation,
+                state,
+                reason,
+            } => {
                 validate_text("error operation", operation, MAX_BACKEND_ID_BYTES)?;
                 validate_text("error state", state, MAX_LIMITATION_BYTES)?;
                 validate_text("error reason", reason, MAX_DIAGNOSTIC_BYTES)
@@ -1637,15 +1738,24 @@ pub struct ActionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SemanticAction {
-    Click { #[serde(deserialize_with = "deserialize_bounded_string")] target: String },
+    Click {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+    },
     Type {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         target: String,
         #[serde(deserialize_with = "deserialize_bounded_string")]
         text: String,
     },
-    KeyPress { #[serde(deserialize_with = "deserialize_bounded_string")] key: String },
-    Scroll { delta_x: i32, delta_y: i32 },
+    KeyPress {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        key: String,
+    },
+    Scroll {
+        delta_x: i32,
+        delta_y: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1897,7 +2007,10 @@ impl BackendContract for CaptureRequest {
 impl BackendContract for CaptureResult {
     fn validate(&self) -> Result<(), BrowserBackendError> {
         if self.bytes.len() > MAX_CAPTURE_BYTES {
-            return Err(invalid("capture bytes", "capture exceeds the bounded payload size"));
+            return Err(invalid(
+                "capture bytes",
+                "capture exceeds the bounded payload size",
+            ));
         }
         Ok(())
     }
@@ -2115,11 +2228,15 @@ impl<'a> BrowserBackendDispatcher<'a> {
     }
 
     pub fn initialize(&self) -> BackendFuture<'a, ()> {
-        self.call(BackendOperation::Initialize, BackendRequest::Initialize, |response| {
-            matches!(response, BackendResponse::Unit)
-                .then_some(())
-                .ok_or_else(|| unsupported_response("initialize"))
-        })
+        self.call(
+            BackendOperation::Initialize,
+            BackendRequest::Initialize,
+            |response| {
+                matches!(response, BackendResponse::Unit)
+                    .then_some(())
+                    .ok_or_else(|| unsupported_response("initialize"))
+            },
+        )
     }
 
     pub fn close(&self) -> BackendFuture<'a, ()> {
@@ -2131,73 +2248,113 @@ impl<'a> BrowserBackendDispatcher<'a> {
     }
 
     pub fn navigate(&self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult> {
-        self.call(BackendOperation::Navigate, BackendRequest::Navigate(request), |response| match response {
-            BackendResponse::Navigation(value) => Ok(value),
-            _ => Err(unsupported_response("navigate")),
-        })
+        self.call(
+            BackendOperation::Navigate,
+            BackendRequest::Navigate(request),
+            |response| match response {
+                BackendResponse::Navigation(value) => Ok(value),
+                _ => Err(unsupported_response("navigate")),
+            },
+        )
     }
 
     pub fn contexts(&self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>> {
-        self.call(BackendOperation::Contexts, BackendRequest::Contexts(request), |response| match response {
-            BackendResponse::Contexts(value) => Ok(value),
-            _ => Err(unsupported_response("contexts")),
-        })
+        self.call(
+            BackendOperation::Contexts,
+            BackendRequest::Contexts(request),
+            |response| match response {
+                BackendResponse::Contexts(value) => Ok(value),
+                _ => Err(unsupported_response("contexts")),
+            },
+        )
     }
 
     pub fn evidence(&self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult> {
-        self.call(BackendOperation::Evidence, BackendRequest::Evidence(request), |response| match response {
-            BackendResponse::Evidence(value) => Ok(value),
-            _ => Err(unsupported_response("evidence")),
-        })
+        self.call(
+            BackendOperation::Evidence,
+            BackendRequest::Evidence(request),
+            |response| match response {
+                BackendResponse::Evidence(value) => Ok(value),
+                _ => Err(unsupported_response("evidence")),
+            },
+        )
     }
 
     pub fn action(&self, request: ActionRequest) -> BackendFuture<'a, ActionResult> {
-        self.call(BackendOperation::Action, BackendRequest::Action(request), |response| match response {
-            BackendResponse::Action(value) => Ok(value),
-            _ => Err(unsupported_response("action")),
-        })
+        self.call(
+            BackendOperation::Action,
+            BackendRequest::Action(request),
+            |response| match response {
+                BackendResponse::Action(value) => Ok(value),
+                _ => Err(unsupported_response("action")),
+            },
+        )
     }
 
     pub fn effects(&self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult> {
-        self.call(BackendOperation::Effects, BackendRequest::Effects(request), |response| match response {
-            BackendResponse::Effects(value) => Ok(value),
-            _ => Err(unsupported_response("effects")),
-        })
+        self.call(
+            BackendOperation::Effects,
+            BackendRequest::Effects(request),
+            |response| match response {
+                BackendResponse::Effects(value) => Ok(value),
+                _ => Err(unsupported_response("effects")),
+            },
+        )
     }
 
     pub fn script(&self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult> {
-        self.call(BackendOperation::Script, BackendRequest::Script(request), |response| match response {
-            BackendResponse::Script(value) => Ok(value),
-            _ => Err(unsupported_response("script")),
-        })
+        self.call(
+            BackendOperation::Script,
+            BackendRequest::Script(request),
+            |response| match response {
+                BackendResponse::Script(value) => Ok(value),
+                _ => Err(unsupported_response("script")),
+            },
+        )
     }
 
     pub fn capture(&self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult> {
-        self.call(BackendOperation::Capture, BackendRequest::Capture(request), |response| match response {
-            BackendResponse::Capture(value) => Ok(value),
-            _ => Err(unsupported_response("capture")),
-        })
+        self.call(
+            BackendOperation::Capture,
+            BackendRequest::Capture(request),
+            |response| match response {
+                BackendResponse::Capture(value) => Ok(value),
+                _ => Err(unsupported_response("capture")),
+            },
+        )
     }
 
     pub fn storage(&self, request: StorageRequest) -> BackendFuture<'a, StorageResult> {
-        self.call(BackendOperation::Storage, BackendRequest::Storage(request), |response| match response {
-            BackendResponse::Storage(value) => Ok(value),
-            _ => Err(unsupported_response("storage")),
-        })
+        self.call(
+            BackendOperation::Storage,
+            BackendRequest::Storage(request),
+            |response| match response {
+                BackendResponse::Storage(value) => Ok(value),
+                _ => Err(unsupported_response("storage")),
+            },
+        )
     }
 
     pub fn prompt(&self, request: PromptRequest) -> BackendFuture<'a, PromptResult> {
-        self.call(BackendOperation::Prompt, BackendRequest::Prompt(request), |response| match response {
-            BackendResponse::Prompt(value) => Ok(value),
-            _ => Err(unsupported_response("prompt")),
-        })
+        self.call(
+            BackendOperation::Prompt,
+            BackendRequest::Prompt(request),
+            |response| match response {
+                BackendResponse::Prompt(value) => Ok(value),
+                _ => Err(unsupported_response("prompt")),
+            },
+        )
     }
 
     pub fn download(&self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult> {
-        self.call(BackendOperation::Download, BackendRequest::Download(request), |response| match response {
-            BackendResponse::Download(value) => Ok(value),
-            _ => Err(unsupported_response("download")),
-        })
+        self.call(
+            BackendOperation::Download,
+            BackendRequest::Download(request),
+            |response| match response {
+                BackendResponse::Download(value) => Ok(value),
+                _ => Err(unsupported_response("download")),
+            },
+        )
     }
 
     fn call<T>(
@@ -2213,7 +2370,9 @@ impl<'a> BrowserBackendDispatcher<'a> {
         Box::pin(async move {
             validate_request(&request)?;
             backend.profile().validate()?;
-            backend.profile().require_operation(operation, SupportLevel::Available)?;
+            backend
+                .profile()
+                .require_operation(operation, SupportLevel::Available)?;
             let response = validate_backend_result(backend.dispatch(operation, request).await)?;
             let result = decode(response)?;
             result.validate()?;
@@ -2282,7 +2441,8 @@ mod tests {
                 certification: CertificationProfile {
                     level: certification,
                     glass_version: "0.3.1".into(),
-                    tested_capabilities: if certification == CertificationLevel::ProductionCertified {
+                    tested_capabilities: if certification == CertificationLevel::ProductionCertified
+                    {
                         BrowserCapability::ALL.to_vec()
                     } else {
                         Vec::new()
@@ -2328,14 +2488,20 @@ mod tests {
         dispatcher.close().await.unwrap();
     }
 
-
     #[test]
     fn profile_serialization_is_stable_and_camel_case() {
-        let value = serde_json::to_value(profile("cdp", CertificationLevel::ProductionCertified)).unwrap();
+        let value =
+            serde_json::to_value(profile("cdp", CertificationLevel::ProductionCertified)).unwrap();
         assert_eq!(value["schemaVersion"], json!(1));
         assert_eq!(value["identity"]["backendId"], json!("cdp"));
-        assert_eq!(value["identity"]["certification"]["level"], json!("productionCertified"));
-        assert_eq!(value["capabilities"]["navigation"]["level"], json!("available"));
+        assert_eq!(
+            value["identity"]["certification"]["level"],
+            json!("productionCertified")
+        );
+        assert_eq!(
+            value["capabilities"]["navigation"]["level"],
+            json!("available")
+        );
         assert!(serde_json::from_value::<BackendProfile>(value).is_ok());
     }
 
@@ -2346,18 +2512,27 @@ mod tests {
             bytes: vec![0, 1, 2, 255],
         };
         let encoded = serde_json::to_value(&capture).unwrap();
-        assert_eq!(serde_json::from_value::<CaptureResult>(encoded).unwrap(), capture);
+        assert_eq!(
+            serde_json::from_value::<CaptureResult>(encoded).unwrap(),
+            capture
+        );
 
         let script = ScriptResult {
             value: json!({"ok": true, "items": [1, 2, 3]}),
         };
         let encoded = serde_json::to_value(&script).unwrap();
-        assert_eq!(serde_json::from_value::<ScriptResult>(encoded).unwrap(), script);
+        assert_eq!(
+            serde_json::from_value::<ScriptResult>(encoded).unwrap(),
+            script
+        );
         let optional = ScriptResult {
             value: json!({"": ""}),
         };
         let encoded = serde_json::to_value(&optional).unwrap();
-        assert_eq!(serde_json::from_value::<ScriptResult>(encoded).unwrap(), optional);
+        assert_eq!(
+            serde_json::from_value::<ScriptResult>(encoded).unwrap(),
+            optional
+        );
     }
 
     #[test]
@@ -2382,9 +2557,19 @@ mod tests {
 
         let mut automatic = request;
         automatic.preferred_backend_id = None;
-        let selected = select_backend(&automatic, &[profile("bidi", CertificationLevel::Experimental), production]).unwrap();
+        let selected = select_backend(
+            &automatic,
+            &[
+                profile("bidi", CertificationLevel::Experimental),
+                production,
+            ],
+        )
+        .unwrap();
         assert_eq!(selected.selected.identity.backend_id, "cdp");
-        assert_eq!(selected.reason, SelectionReason::CertificationThenCapability);
+        assert_eq!(
+            selected.reason,
+            SelectionReason::CertificationThenCapability
+        );
     }
 
     #[test]
@@ -2395,7 +2580,10 @@ mod tests {
         assert_eq!(descriptor.level, SupportLevel::Unavailable);
         assert!(matches!(
             backend.require(BrowserCapability::Downloads, SupportLevel::Partial),
-            Err(BrowserBackendError::CapabilityUnavailable { declared: false, .. })
+            Err(BrowserBackendError::CapabilityUnavailable {
+                declared: false,
+                ..
+            })
         ));
     }
 
@@ -2403,7 +2591,9 @@ mod tests {
     fn production_certification_requires_conformance_evidence() {
         let mut backend = profile("bad", CertificationLevel::ProductionCertified);
         backend.identity.certification.tested_capabilities.clear();
-        assert!(matches!(backend.validate(), Err(BrowserBackendError::InvalidConfiguration { field, .. }) if field == "certification tested capabilities"));
+        assert!(
+            matches!(backend.validate(), Err(BrowserBackendError::InvalidConfiguration { field, .. }) if field == "certification tested capabilities")
+        );
     }
 
     #[test]
@@ -2415,15 +2605,31 @@ mod tests {
                 actual: SupportLevel::Unavailable,
                 declared: false,
             },
-            BrowserBackendError::InvalidConfiguration { field: "url".into(), reason: "empty".into() },
-            BrowserBackendError::Connection { operation: "initialize".into(), reason: "refused".into() },
-            BrowserBackendError::Lifecycle { operation: "close".into(), state: "closing".into(), reason: "timeout".into() },
-            BrowserBackendError::UnsupportedOperation { operation: "capture".into(), reason: "not implemented".into() },
+            BrowserBackendError::InvalidConfiguration {
+                field: "url".into(),
+                reason: "empty".into(),
+            },
+            BrowserBackendError::Connection {
+                operation: "initialize".into(),
+                reason: "refused".into(),
+            },
+            BrowserBackendError::Lifecycle {
+                operation: "close".into(),
+                state: "closing".into(),
+                reason: "timeout".into(),
+            },
+            BrowserBackendError::UnsupportedOperation {
+                operation: "capture".into(),
+                reason: "not implemented".into(),
+            },
         ];
         for error in errors {
             let encoded = serde_json::to_value(&error).unwrap();
             assert!(encoded.get("kind").is_some());
-            assert_eq!(serde_json::from_value::<BrowserBackendError>(encoded).unwrap(), error);
+            assert_eq!(
+                serde_json::from_value::<BrowserBackendError>(encoded).unwrap(),
+                error
+            );
         }
     }
     #[test]
@@ -2440,23 +2646,29 @@ mod tests {
         let contexts = (0..=MAX_CONTEXTS)
             .map(|index| json!({ "contextId": format!("ctx-{index}"), "url": "https://example.test", "active": true }))
             .collect::<Vec<_>>();
-        assert!(serde_json::from_value::<BackendResponse>(json!({
-            "contexts": contexts
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<BrowserBackendError>(json!({
-            "kind": "selectionFailed",
-            "details": { "reason": "x".repeat(MAX_DIAGNOSTIC_BYTES + 1) }
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<BrowserBackendError>(json!({
-            "kind": "invalidConfiguration",
-            "details": {
-                "field": "x".repeat(MAX_BACKEND_ID_BYTES + 1),
-                "reason": "invalid"
-            }
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<BackendResponse>(json!({
+                "contexts": contexts
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<BrowserBackendError>(json!({
+                "kind": "selectionFailed",
+                "details": { "reason": "x".repeat(MAX_DIAGNOSTIC_BYTES + 1) }
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<BrowserBackendError>(json!({
+                "kind": "invalidConfiguration",
+                "details": {
+                    "field": "x".repeat(MAX_BACKEND_ID_BYTES + 1),
+                    "reason": "invalid"
+                }
+            }))
+            .is_err()
+        );
         let oversized_key = json!({
             "entries": { "k".repeat(MAX_BACKEND_ID_BYTES + 1): "value" }
         });
@@ -2468,10 +2680,12 @@ mod tests {
                 json!(true),
             );
         }
-        assert!(serde_json::from_value::<ScriptResult>(json!({
-            "value": serde_json::Value::Object(oversized_key_object)
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ScriptResult>(json!({
+                "value": serde_json::Value::Object(oversized_key_object)
+            }))
+            .is_err()
+        );
     }
     #[test]
     fn selection_result_deserialization_validates_schema_and_candidate_ids() {
@@ -2484,7 +2698,10 @@ mod tests {
         });
         assert!(serde_json::from_value::<BackendSelectionResult>(malformed).is_err());
 
-        let invalid = profile(&"x".repeat(MAX_BACKEND_ID_BYTES + 1), CertificationLevel::Partial);
+        let invalid = profile(
+            &"x".repeat(MAX_BACKEND_ID_BYTES + 1),
+            CertificationLevel::Partial,
+        );
         let valid = profile("valid", CertificationLevel::Partial);
         let request = BackendSelectionRequest {
             schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
@@ -2508,7 +2725,9 @@ mod tests {
             minimum: SupportLevel::Available,
             reason: "fresh evidence".into(),
         });
-        backend.capabilities.insert(BrowserCapability::Navigation, evidence);
+        backend
+            .capabilities
+            .insert(BrowserCapability::Navigation, evidence);
         backend.capabilities.remove(&BrowserCapability::Evidence);
         assert!(backend.validate().is_err());
 
@@ -2603,15 +2822,18 @@ mod tests {
             select_backend(&request, &profiles),
             Err(BrowserBackendError::InvalidConfiguration { field, .. }) if field == "backend candidates"
         ));
-        assert!(BrowserBackendError::SelectionFailed {
-            reason: "x".repeat(MAX_DIAGNOSTIC_BYTES + 1),
-        }
-        .validate()
-        .is_err());
+        assert!(
+            BrowserBackendError::SelectionFailed {
+                reason: "x".repeat(MAX_DIAGNOSTIC_BYTES + 1),
+            }
+            .validate()
+            .is_err()
+        );
     }
     #[test]
     fn direct_profile_deserialization_validates_dependency_closure() {
-        let mut value = serde_json::to_value(profile("closure-json", CertificationLevel::Partial)).unwrap();
+        let mut value =
+            serde_json::to_value(profile("closure-json", CertificationLevel::Partial)).unwrap();
         value["capabilities"]["navigation"]["dependencies"] = json!([{
             "capability": "evidence",
             "minimum": "available",

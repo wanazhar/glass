@@ -1,3 +1,5 @@
+/// Typed CDP adapter implementing the transport-neutral browser backend boundary.
+pub mod backend_adapter;
 /// Low-level CDP WebSocket client for Chrome DevTools Protocol communication.
 pub mod cdp;
 /// Chrome/Chromium process lifecycle, binary resolution, and health checks.
@@ -12,8 +14,6 @@ pub mod policy;
 pub mod profile;
 /// Central browser session orchestrating all CDP operations.
 pub mod session;
-/// Typed CDP adapter implementing the transport-neutral browser backend boundary.
-pub mod backend_adapter;
 pub(crate) use backend_adapter::CdpSessionBackend;
 
 // Re-export key session types to the browser module level.

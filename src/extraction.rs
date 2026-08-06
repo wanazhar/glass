@@ -6,10 +6,10 @@
 use crate::browser::dom::{CompactAxNode, CompactInteractiveElement, DomNode};
 use crate::browser::session::{PageContext, find_region_node};
 use crate::surfaces::{
-    CoverageLevel, DiagnosticSeverity, InteractionCoverage, ProvenanceSourceClass, Surface,
-    SurfaceCapability, SurfaceCoverage, SurfaceDiagnostic, SurfaceEvidence, SurfaceEvidenceSource,
-    SurfaceId, SurfaceKind, SurfaceProvenance, SurfaceRevision, SurfaceSet, UnderstandingLevel,
-    SURFACE_SCHEMA_VERSION,
+    CoverageLevel, DiagnosticSeverity, InteractionCoverage, ProvenanceSourceClass,
+    SURFACE_SCHEMA_VERSION, Surface, SurfaceCapability, SurfaceCoverage, SurfaceDiagnostic,
+    SurfaceEvidence, SurfaceEvidenceSource, SurfaceId, SurfaceKind, SurfaceProvenance,
+    SurfaceRevision, SurfaceSet, UnderstandingLevel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -670,19 +670,21 @@ fn build_surface_set(
         provenance: provenance(),
         detail: Some(detail),
     };
-    let available = |source: EvidenceSource| requested.contains(&source) && !missing.contains(&source);
+    let available =
+        |source: EvidenceSource| requested.contains(&source) && !missing.contains(&source);
     let mut surfaces = Vec::new();
     let mut surface_bound_omitted = false;
     let add = |surfaces: &mut Vec<Surface>,
-                   id: String,
-                   parent: Option<SurfaceId>,
-                   kind: SurfaceKind,
-                   evidence_values: Vec<SurfaceEvidence>,
-                   understanding: UnderstandingLevel,
-                   coverage: SurfaceCoverage,
-                   capabilities: Vec<SurfaceCapability>| {
-        let surface_id = SurfaceId::new(id)
-            .map_err(|error| ExtractionContractError::new("surfaceSet.surfaces", error.to_string()))?;
+               id: String,
+               parent: Option<SurfaceId>,
+               kind: SurfaceKind,
+               evidence_values: Vec<SurfaceEvidence>,
+               understanding: UnderstandingLevel,
+               coverage: SurfaceCoverage,
+               capabilities: Vec<SurfaceCapability>| {
+        let surface_id = SurfaceId::new(id).map_err(|error| {
+            ExtractionContractError::new("surfaceSet.surfaces", error.to_string())
+        })?;
         let nesting_depth = u16::from(parent.is_some());
         surfaces.push(Surface {
             schema_version: SURFACE_SCHEMA_VERSION,
@@ -750,7 +752,8 @@ fn build_surface_set(
                             source: SurfaceEvidenceSource,
                             request_source: EvidenceSource,
                             count: usize,
-                            prefix: &str| -> Result<(), ExtractionContractError> {
+                            prefix: &str|
+     -> Result<(), ExtractionContractError> {
         if !available(request_source) {
             return Ok(());
         }
@@ -764,7 +767,11 @@ fn build_surface_set(
                 format!("{prefix}_{index}"),
                 parent_surface_id.clone(),
                 kind.clone(),
-                vec![evidence(source, format!("observed {prefix} boundary"), quality)],
+                vec![evidence(
+                    source,
+                    format!("observed {prefix} boundary"),
+                    quality,
+                )],
                 UnderstandingLevel::Structural,
                 SurfaceCoverage {
                     structural: quality,
@@ -825,7 +832,6 @@ fn build_surface_set(
         context.boundaries.native_surfaces,
         "native",
     )?;
-    drop(add_children);
 
     let canvas_2d = if context.boundaries.canvas_2d == 0
         && context.boundaries.webgl_canvases == 0
@@ -837,8 +843,16 @@ fn build_surface_set(
     };
     for (kind, count, prefix) in [
         (SurfaceKind::Canvas2d, canvas_2d, "canvas2d"),
-        (SurfaceKind::Webgl, context.boundaries.webgl_canvases, "webgl"),
-        (SurfaceKind::Webgpu, context.boundaries.webgpu_canvases, "webgpu"),
+        (
+            SurfaceKind::Webgl,
+            context.boundaries.webgl_canvases,
+            "webgl",
+        ),
+        (
+            SurfaceKind::Webgpu,
+            context.boundaries.webgpu_canvases,
+            "webgpu",
+        ),
     ] {
         if !available(EvidenceSource::CanvasDetection) {
             continue;
@@ -864,7 +878,10 @@ fn build_surface_set(
                     semantic: CoverageLevel::Partial,
                     interaction: InteractionCoverage::CoordinateOnly,
                 },
-                vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Capture],
+                vec![
+                    SurfaceCapability::CoordinateAction,
+                    SurfaceCapability::Capture,
+                ],
             )?;
         }
     }
@@ -884,14 +901,12 @@ fn build_surface_set(
             Vec::new(),
         )?;
     }
-    if surface_bound_omitted {
-        if let Some(surface) = surfaces.first_mut() {
-            surface.diagnostics.push(SurfaceDiagnostic {
-                severity: DiagnosticSeverity::Warning,
-                code: "surfaceBound".into(),
-                message: "additional observed surfaces omitted at the contract bound".into(),
-            });
-        }
+    if surface_bound_omitted && let Some(surface) = surfaces.first_mut() {
+        surface.diagnostics.push(SurfaceDiagnostic {
+            severity: DiagnosticSeverity::Warning,
+            code: "surfaceBound".into(),
+            message: "additional observed surfaces omitted at the contract bound".into(),
+        });
     }
     if surfaces.is_empty() {
         return Ok(None);
@@ -1722,18 +1737,24 @@ mod tests {
         let evidence = extract_page_context(&context, &request).unwrap();
         let surfaces = evidence.surface_set.as_ref().expect("surface evidence");
         surfaces.validate().unwrap();
-        assert!(surfaces
-            .surfaces
-            .iter()
-            .any(|surface| surface.kind == SurfaceKind::Webgl));
-        assert!(surfaces
-            .surfaces
-            .iter()
-            .any(|surface| surface.kind == SurfaceKind::Webgpu));
-        assert!(surfaces
-            .surfaces
-            .iter()
-            .any(|surface| surface.kind == SurfaceKind::BrowserNative));
+        assert!(
+            surfaces
+                .surfaces
+                .iter()
+                .any(|surface| surface.kind == SurfaceKind::Webgl)
+        );
+        assert!(
+            surfaces
+                .surfaces
+                .iter()
+                .any(|surface| surface.kind == SurfaceKind::Webgpu)
+        );
+        assert!(
+            surfaces
+                .surfaces
+                .iter()
+                .any(|surface| surface.kind == SurfaceKind::BrowserNative)
+        );
         let opaque = surfaces
             .surfaces
             .iter()
@@ -1744,7 +1765,9 @@ mod tests {
         let ir = crate::web_ir::reconcile_evidence(&evidence).unwrap();
         assert!(ir.surface_set.is_some());
         let mut unauthorized = opaque.clone();
-        unauthorized.capabilities.push(SurfaceCapability::SemanticAction);
+        unauthorized
+            .capabilities
+            .push(SurfaceCapability::SemanticAction);
         assert!(unauthorized.validate().is_err());
         let mut reversed = ir.clone();
         if let Some(surface_set) = &mut reversed.surface_set {

@@ -8,6 +8,7 @@ use super::args::{
     KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, SnapshotCommand,
     TaskCommand, WorkflowAuthoringCommand,
 };
+use crate::browser::CdpSessionBackend;
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
@@ -20,7 +21,6 @@ use crate::browser::session::{
     default_knowledge_store_path, diff_workflows, format_workflow_yaml, preview_workflow,
     record_semantic_events,
 };
-use crate::browser::CdpSessionBackend;
 use crate::browser_backend::{BrowserBackendDispatcher, NavigationRequest};
 use crate::capabilities::GlassCapabilityManifest;
 use crate::protocol::{

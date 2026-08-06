@@ -562,7 +562,7 @@ impl App {
         stdout.flush()
     }
 
-    fn submit_graphics_frame(
+    pub fn submit_graphics_frame(
         &mut self,
         frame: BrowserFrame,
         payload: &[u8],
@@ -2274,11 +2274,20 @@ mod tests {
     #[test]
     fn graphics_geometry_tracks_resize_and_releases_on_shutdown() {
         let mut app = App::new();
-        assert!(app.sync_graphics_geometry(Rect::new(0, 0, 100, 30)).unwrap());
+        assert!(
+            app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
+                .unwrap()
+        );
         let first_revision = app.graphics.geometry_revision();
         assert!(first_revision > 0);
-        assert!(!app.sync_graphics_geometry(Rect::new(0, 0, 100, 30)).unwrap());
-        assert!(app.sync_graphics_geometry(Rect::new(0, 0, 120, 30)).unwrap());
+        assert!(
+            !app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
+                .unwrap()
+        );
+        assert!(
+            app.sync_graphics_geometry(Rect::new(0, 0, 120, 30))
+                .unwrap()
+        );
         assert!(app.graphics.geometry_revision() > first_revision);
         app.graphics_shutdown().unwrap();
         assert_eq!(app.graphics.diagnostics().current_bytes, 0);

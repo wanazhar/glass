@@ -4,16 +4,16 @@
 //! not make a browser session consult remembered data; callers must opt into
 //! each later knowledge-assisted operation.
 
+use super::knowledge::{
+    KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
+};
 use super::{
     KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeLookupContext,
     KnowledgeRecord, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
-use super::knowledge::{
-    KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
-};
 use fs2::FileExt;
-use sha2::{Digest, Sha256};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -43,7 +43,11 @@ pub fn default_knowledge_store_path_for_workspace(
     workspace_generation: Option<u64>,
 ) -> PathBuf {
     let digest = Sha256::digest(
-        format!("{profile}\u{1f}{workspace_id}\u{1f}{:?}", workspace_generation).as_bytes(),
+        format!(
+            "{profile}\u{1f}{workspace_id}\u{1f}{:?}",
+            workspace_generation
+        )
+        .as_bytes(),
     );
     std::env::var_os("GLASS_CONFIG_HOME")
         .map(PathBuf::from)
@@ -212,7 +216,10 @@ impl KnowledgeStore {
                 .then_with(|| left.record_id.cmp(&right.record_id))
         });
         let mut selected_record_ids = Vec::new();
-        for candidate in candidates.iter_mut().filter(|candidate| candidate.rejection.is_none()) {
+        for candidate in candidates
+            .iter_mut()
+            .filter(|candidate| candidate.rejection.is_none())
+        {
             if selected_record_ids.len() >= limit {
                 break;
             }
@@ -630,13 +637,13 @@ impl From<KnowledgeValidationError> for KnowledgeStoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::knowledge::{
-        KnowledgeBackendKind, KnowledgeBackendProvenance, KnowledgeBackendCapability,
+        KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
         KnowledgeCurrentValidation, KnowledgeEvidenceQuality, KnowledgeMemoryInfluence,
         KnowledgePortability, KnowledgeRetrievalExplanation, KnowledgeSurfaceCoverage,
         KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
     };
+    use super::*;
     use crate::browser::session::{
         KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
         KnowledgeScope, KnowledgeSource,
@@ -826,11 +833,8 @@ mod tests {
     }
     #[test]
     fn workspace_path_hashes_untrusted_profile_and_is_bounded() {
-        let path = default_knowledge_store_path_for_workspace(
-            "../escape",
-            "workspace-alpha",
-            Some(7),
-        );
+        let path =
+            default_knowledge_store_path_for_workspace("../escape", "workspace-alpha", Some(7));
         let file_name = path.file_name().unwrap().to_string_lossy();
         assert!(file_name.starts_with("workspace-"));
         assert!(!file_name.contains(".."));

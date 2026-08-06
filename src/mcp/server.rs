@@ -3857,6 +3857,8 @@ fn parse_knowledge_lookup_options(arguments: &Value) -> BrowserResult<KnowledgeL
         surface_kind: None,
         backend_kind: None,
         backend_capabilities: Vec::new(),
+        workspace_id: optional_string(arguments, "workspaceId")?.map(str::to_string),
+        workspace_generation: optional_u64_value(arguments, "workspaceGeneration")?,
     })
 }
 

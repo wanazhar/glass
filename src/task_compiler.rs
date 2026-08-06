@@ -70,20 +70,10 @@ pub struct TaskMemoryAdvisory {
     pub influence: KnowledgeMemoryInfluence,
 }
 
-/// Optional memory inputs for compilation. With the default value, compiler
-/// output is byte-for-byte deterministic and independent of the store.
+#[derive(Debug, Clone, Default)]
 pub struct TaskCompilationOptions<'a> {
     pub knowledge_store: Option<&'a KnowledgeStore>,
     pub knowledge_context: Option<&'a KnowledgeLookupContext>,
-}
-
-impl<'a> Default for TaskCompilationOptions<'a> {
-    fn default() -> Self {
-        Self {
-            knowledge_store: None,
-            knowledge_context: None,
-        }
-    }
 }
 
 /// One inspectable runtime guard emitted by compilation.
@@ -446,7 +436,6 @@ pub fn compile_task_with_options(
     ir: &GlassWebIrV1,
     options: TaskCompilationOptions<'_>,
 ) -> Result<TaskExecutionPlan, TaskCompilationError> {
-
     task.validate().map_err(TaskCompilationError::from)?;
     ir.validate()
         .map_err(|error| TaskCompilationError::new(format!("ir.{}", error.path), error.reason))?;

@@ -719,9 +719,10 @@ pub enum TaskCommand {
         #[arg(long)]
         explain: bool,
     },
-    /// Execute a validated form Task Protocol task against the current browser.
+    /// Execute a validated browser-backed Task Protocol task against the current browser.
     Execute {
-        /// JSON file containing the authored form task.
+        /// JSON file containing the authored task from the form, navigation, dialog,
+        /// pagination, extraction, or field-read Task Protocol families.
         input: PathBuf,
         /// Revision from the caller's preceding semantic observation.
         #[arg(long)]
@@ -1408,6 +1409,23 @@ mod tests {
             }) if input.as_os_str() == "task.json"
                 && output.as_os_str() == "plan.json"
                 && explain
+        ));
+    }
+
+    #[test]
+    fn task_execute_help_advertises_supported_families() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let execute = command
+            .find_subcommand_mut("task")
+            .and_then(|task| task.find_subcommand_mut("execute"))
+            .expect("task execute command should be present");
+        let help = execute.render_help().to_string();
+        let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(normalized.contains(
+            "form, navigation, dialog, pagination, extraction, or field-read Task Protocol families"
         ));
     }
     #[test]

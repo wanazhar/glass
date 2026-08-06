@@ -793,6 +793,11 @@ impl Attachment {
 
     pub fn can_mutate(&self) -> bool { self.role != ActorRole::Observer && self.capabilities.contains(AttachmentCapability::Mutate) }
     pub fn can_takeover(&self) -> bool { self.can_mutate() && self.capabilities.contains(AttachmentCapability::Takeover) }
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        let raw: RawAttachmentWire = serde_json::from_str(input)?;
+        Self::from_wire(raw)
+    }
     fn from_wire(raw: RawAttachmentWire) -> Result<Self, serde_json::Error> {
         let id = AttachmentId::new(raw.id).map_err(wire_error)?;
         let actor_id = ResourceId::new(raw.actor_id).map_err(wire_error)?;
@@ -1050,10 +1055,10 @@ impl Workspace {
         validate_wire_bytes(input)?;
         let raw: RawWorkspaceWire = serde_json::from_str(input)?;
         let mut attachments = BTreeMap::new();
-        if raw.attachments.len() > MAX_ATTACHMENTS {
+        if raw.attachments.0.len() > MAX_ATTACHMENTS {
             return Err(wire_error(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
         }
-        for (key, raw_attachment) in raw.attachments {
+        for (key, raw_attachment) in raw.attachments.0 {
             let attachment = Attachment::from_wire(raw_attachment)?;
             let expected = attachment.id().to_string();
             if key != expected {
@@ -1226,6 +1231,36 @@ struct RawWorkspaceConfigWire {
     generation: Option<WorkspaceGeneration>,
 }
 
+#[derive(Default)]
+struct BoundedWireAttachments(BTreeMap<String, RawAttachmentWire>);
+
+impl<'de> Deserialize<'de> for BoundedWireAttachments {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        struct WireAttachmentsVisitor;
+        impl<'de> Visitor<'de> for WireAttachmentsVisitor {
+            type Value = BoundedWireAttachments;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded attachment map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where A: MapAccess<'de> {
+                let mut attachments = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if attachments.len() >= MAX_ATTACHMENTS {
+                        return Err(serde::de::Error::custom(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
+                    }
+                    if attachments.contains_key(&key) {
+                        return Err(serde::de::Error::custom(WorkspaceError::DuplicateAttachment));
+                    }
+                    attachments.insert(key, map.next_value::<RawAttachmentWire>()?);
+                }
+                Ok(BoundedWireAttachments(attachments))
+            }
+        }
+        deserializer.deserialize_map(WireAttachmentsVisitor)
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawWorkspaceWire {
@@ -1233,7 +1268,7 @@ struct RawWorkspaceWire {
     config: RawWorkspaceConfigWire,
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
-    attachments: BTreeMap<String, RawAttachmentWire>,
+    attachments: BoundedWireAttachments,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

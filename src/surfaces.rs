@@ -36,6 +36,10 @@ pub const MAX_SURFACE_PROVENANCE_ID_BYTES: usize = 128;
 pub const MAX_SURFACE_PROVENANCE_VERSION_BYTES: usize = 64;
 /// Maximum bytes in an observation timestamp.
 pub const MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES: usize = 64;
+/// Maximum bridge grants held by one trusted registry.
+pub const MAX_BRIDGE_GRANTS: usize = 128;
+/// Maximum serialized trusted bridge grant registry.
+pub const MAX_BRIDGE_GRANT_PAYLOAD_BYTES: usize = 32 * 1024;
 
 /// A stable identity for one surface boundary.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -306,43 +310,93 @@ pub struct BridgeGrantRegistry {
     pub grants: BTreeMap<String, BridgeCapabilityGrant>,
 }
 
+impl BridgeCapabilityGrant {
+    fn validate(&self, path: &str) -> Result<(), SurfaceContractError> {
+        validate_identifier_with_max(
+            &format!("{path}.token"),
+            &self.token,
+            MAX_SURFACE_PROVENANCE_ID_BYTES,
+        )?;
+        validate_origin(&format!("{path}.origin"), &self.origin)?;
+        let mut capabilities = BTreeSet::new();
+        for capability in &self.capabilities {
+            if !capabilities.insert(*capability) {
+                return Err(SurfaceContractError::new(
+                    format!("{path}.capabilities"),
+                    "grant capabilities must not be duplicated",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl BridgeGrantRegistry {
     pub fn validate(&self) -> Result<(), SurfaceContractError> {
+        if self.grants.len() > MAX_BRIDGE_GRANTS {
+            return Err(SurfaceContractError::new(
+                "grants",
+                "bridge grants exceed the registry bound",
+            ));
+        }
         for (token, grant) in &self.grants {
-            validate_identifier_with_max(
-                "bridgeGrant.token",
-                token,
-                MAX_SURFACE_PROVENANCE_ID_BYTES,
-            )?;
             if token != &grant.token {
                 return Err(SurfaceContractError::new(
                     "bridgeGrant.token",
                     "grant registry key must match grant token",
                 ));
             }
-            validate_origin("bridgeGrant.origin", &grant.origin)?;
-            let mut capabilities = BTreeSet::new();
-            for capability in &grant.capabilities {
-                if !capabilities.insert(*capability) {
-                    return Err(SurfaceContractError::new(
-                        "bridgeGrant.capabilities",
-                        "grant capabilities must not be duplicated",
-                    ));
-                }
-            }
+            grant.validate("bridgeGrant")?;
+        }
+        let payload = serde_json::to_vec(self).map_err(|error| {
+            SurfaceContractError::new(
+                "grants",
+                format!("failed to serialize bridge grant registry: {error}"),
+            )
+        })?;
+        if payload.len() > MAX_BRIDGE_GRANT_PAYLOAD_BYTES {
+            return Err(SurfaceContractError::new(
+                "grants",
+                "bridge grant registry payload exceeds the contract bound",
+            ));
         }
         Ok(())
     }
 
+    pub fn from_json(input: &str) -> Result<Self, SurfaceContractError> {
+        if input.len() > MAX_BRIDGE_GRANT_PAYLOAD_BYTES {
+            return Err(SurfaceContractError::new(
+                "$",
+                "bridge grant registry payload exceeds the contract bound",
+            ));
+        }
+        let registry: Self = serde_json::from_str(input).map_err(|error| {
+            SurfaceContractError::new("$", format!("invalid bridge grant registry: {error}"))
+        })?;
+        registry.validate()?;
+        Ok(registry)
+    }
+
     pub fn insert(&mut self, grant: BridgeCapabilityGrant) -> Result<(), SurfaceContractError> {
-        validate_identifier_with_max(
-            "bridgeGrant.token",
-            &grant.token,
-            MAX_SURFACE_PROVENANCE_ID_BYTES,
-        )?;
-        validate_origin("bridgeGrant.origin", &grant.origin)?;
-        self.grants.insert(grant.token.clone(), grant);
-        self.validate()
+        grant.validate("bridgeGrant")?;
+        if self.grants.contains_key(&grant.token) {
+            return Err(SurfaceContractError::new(
+                "bridgeGrant.token",
+                "bridge grant token is already registered",
+            ));
+        }
+        if self.grants.len() >= MAX_BRIDGE_GRANTS {
+            return Err(SurfaceContractError::new(
+                "grants",
+                "bridge grants exceed the registry bound",
+            ));
+        }
+        let mut candidate = self.clone();
+        candidate.grants.insert(grant.token.clone(), grant.clone());
+        candidate.validate()?;
+        let token = grant.token.clone();
+        self.grants.insert(token, grant);
+        Ok(())
     }
 }
 
@@ -708,6 +762,21 @@ impl Surface {
             return Err(SurfaceContractError::new(
                 "evidence",
                 "memory evidence is advisory and cannot authorize executable actions",
+            ));
+        }
+        let has_explicit_action_evidence = self.evidence.iter().any(|evidence| {
+            matches!(
+                evidence.provenance.source_class,
+                ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Bridge
+            ) && !matches!(
+                evidence.source,
+                SurfaceEvidenceSource::Visual | SurfaceEvidenceSource::Memory
+            )
+        });
+        if executable_requested && !has_explicit_action_evidence {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
         let structural_evidence = self
@@ -1349,13 +1418,27 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
         }
         (host, port)
     };
-    if host.is_empty()
-        || host.chars().any(|character| {
-            !character.is_ascii_alphanumeric()
-                && !matches!(character, '.' | '-' | ':')
-        })
-    {
-        return Err(SurfaceContractError::new(path, "origin host contains invalid characters"));
+    let valid_host = if host.contains(':') {
+        !host.is_empty()
+            && host.chars().all(|character| {
+                character.is_ascii_hexdigit() || matches!(character, ':' | '.')
+            })
+    } else {
+        !host.is_empty()
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || character == '-'
+                    })
+                    && label.as_bytes()[0].is_ascii_alphanumeric()
+                    && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            })
+    };
+    if !valid_host {
+        return Err(SurfaceContractError::new(
+            path,
+            "origin host contains malformed labels",
+        ));
     }
     if let Some(port) = port {
         if port.is_empty()
@@ -1645,5 +1728,31 @@ mod tests {
         assert!(value.validate().is_err());
         value.evidence[0].provenance.observed_at = "2026-02-31T00:00:00Z".into();
         assert!(value.validate().is_err());
+    }
+    #[test]
+    fn visual_only_evidence_cannot_authorize_coordinate_input() {
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::Visual;
+        value.evidence[0].provenance.source_class = ProvenanceSourceClass::Visual;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn bridge_registry_bounds_and_duplicate_insert_are_atomic() {
+        let mut registry = BridgeGrantRegistry::default();
+        let grant = BridgeCapabilityGrant {
+            token: "grant-1".into(),
+            origin: "https://example.test".into(),
+            capabilities: vec![SurfaceCapability::ReadStructure],
+        };
+        registry.insert(grant.clone()).unwrap();
+        assert!(registry.insert(grant).is_err());
+        assert_eq!(registry.grants.len(), 1);
+        let oversized = format!(r#"{{"grants":{{"x":"{}"}}}}"#, "x".repeat(MAX_BRIDGE_GRANT_PAYLOAD_BYTES));
+        assert!(BridgeGrantRegistry::from_json(&oversized).is_err());
     }
 }

@@ -175,7 +175,11 @@ pub struct WorkspaceIdentity {
 impl WorkspaceIdentity {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
-        serde_json::from_str(input)
+        let raw: RawWorkspaceIdentityWire = serde_json::from_str(input)?;
+        let id = WorkspaceId::new(raw.id).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let aliases = raw.aliases.into_iter().map(WorkspaceAlias::new).collect::<Result<Vec<_>, _>>()
+            .map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        Self::new(id, aliases).map_err(|e| serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))
     }
     pub fn new(id: WorkspaceId, aliases: impl IntoIterator<Item = WorkspaceAlias>) -> Result<Self, WorkspaceError> {
         let mut normalized = BTreeSet::new();
@@ -204,6 +208,13 @@ impl WorkspaceIdentity {
 
     pub fn id(&self) -> &WorkspaceId { &self.id }
     pub fn aliases(&self) -> &BTreeSet<WorkspaceAlias> { &self.aliases }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceIdentityWire {
+    id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 
 #[derive(Deserialize)]

@@ -1934,6 +1934,8 @@ pub struct ObservationBoundarySummary {
     #[serde(default)]
     pub webgl_canvases: usize,
     #[serde(default)]
+    pub webgpu_canvases: usize,
+    #[serde(default)]
     pub svg_elements: usize,
     #[serde(default)]
     pub media_elements: usize,

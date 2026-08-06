@@ -5,8 +5,8 @@
 //! and preserves explicit uncertainty, coverage, and resource limits.
 
 use crate::extraction::{
-    EvidenceCoverage, EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource,
-    ExtractionEvidence, ExtractionEvidenceLimits, ExtractionScope,
+    EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
+    ExtractionEvidenceLimits, ExtractionScope,
 };
 use crate::surfaces::SurfaceSet;
 use serde::{Deserialize, Serialize};

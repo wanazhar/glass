@@ -642,7 +642,7 @@ fn build_surface_set(
     } else {
         CoverageLevel::Strong
     };
-    let provenance = |source: SurfaceEvidenceSource| SurfaceProvenance {
+    let provenance = || SurfaceProvenance {
         schema_version: SURFACE_SCHEMA_VERSION,
         source_class: ProvenanceSourceClass::LiveWebIr,
         source_id: format!("page:{}", revision.0),
@@ -661,12 +661,13 @@ fn build_surface_set(
     let evidence = |source: SurfaceEvidenceSource, detail: String, level| SurfaceEvidence {
         source,
         quality: level,
-        provenance: provenance(source),
+        provenance: provenance(),
         detail: Some(detail),
     };
     let available = |source: EvidenceSource| requested.contains(&source) && !missing.contains(&source);
     let mut surfaces = Vec::new();
-    let mut add = |id: String,
+    let add = |surfaces: &mut Vec<Surface>,
+                   id: String,
                    parent: Option<SurfaceId>,
                    kind: SurfaceKind,
                    evidence_values: Vec<SurfaceEvidence>,
@@ -713,6 +714,7 @@ fn build_surface_set(
     let root_id = SurfaceId::new("document")
         .map_err(|error| ExtractionContractError::new("surfaceSet.surfaces", error.to_string()))?;
     add(
+        &mut surfaces,
         "document".into(),
         None,
         SurfaceKind::Document,
@@ -750,6 +752,7 @@ fn build_surface_set(
                 break;
             }
             add(
+                &mut surfaces,
                 format!("{prefix}_{index}"),
                 Some(root_id.clone()),
                 kind.clone(),
@@ -837,9 +840,10 @@ fn build_surface_set(
                 break;
             }
             add(
+                &mut surfaces,
                 format!("{prefix}_{index}"),
                 Some(root_id.clone()),
-                kind,
+                kind.clone(),
                 vec![evidence(
                     SurfaceEvidenceSource::CanvasDetection,
                     format!("observed {prefix} graphics boundary"),
@@ -857,6 +861,7 @@ fn build_surface_set(
     }
     if context.boundaries.truncated && surfaces.len() < 256 {
         add(
+            &mut surfaces,
             "opaque_boundary".into(),
             Some(root_id),
             SurfaceKind::Opaque,

@@ -84,6 +84,13 @@ impl TaskExecutionPlan {
                 "unsupported Task Protocol schema version",
             ));
         }
+        if self.risk == TaskRiskClass::UnknownRisk {
+            return Err(TaskCompilationError::new(
+                "risk",
+                "unknown risk cannot be represented by a fail-closed execution plan",
+            ));
+        }
+
         self.scope.validate().map_err(TaskCompilationError::from)?;
         self.scope
             .validate_for_task(self.task)
@@ -105,6 +112,23 @@ impl TaskExecutionPlan {
             postcondition
                 .validate_at(index)
                 .map_err(TaskCompilationError::from)?;
+            if postcondition.kind == crate::task_protocol::TaskPostconditionKind::RecordsExtracted
+                && let Some(expected) = postcondition.expected.as_deref()
+            {
+                let minimum = expected.parse::<u32>().map_err(|_| {
+                    TaskCompilationError::new(
+                        format!("postconditions[{index}].expected"),
+                        "recordsExtracted expected must be a non-negative integer",
+                    )
+                })?;
+                if minimum > self.limits.max_items {
+                    return Err(TaskCompilationError::new(
+                        format!("postconditions[{index}].expected"),
+                        "recordsExtracted expected exceeds plan maxItems",
+                    ));
+                }
+            }
+
         }
         if self.task == TaskKind::FormSubmit && self.postconditions.is_empty() {
             return Err(TaskCompilationError::new(
@@ -404,10 +428,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn task(kind: TaskKind, risk: TaskRiskClass) -> GlassTask {
-        let input_name = if kind == TaskKind::FormSubmit {
-            "submit"
-        } else {
-            "email"
+        let inputs = match kind {
+            TaskKind::FormFill => BTreeMap::from([("email".into(), "a@example.test".into())]),
+            TaskKind::FormSubmit => BTreeMap::from([("submit".into(), "Submit".into())]),
+            TaskKind::NavigationFollow => {
+                BTreeMap::from([("url".into(), "https://example.test/next".into())])
+            }
+            TaskKind::NavigationSelectTab => BTreeMap::from([("tab".into(), "Payment".into())]),
+            TaskKind::NavigationOpenMenu => BTreeMap::from([("menu".into(), "Products".into())]),
+            TaskKind::FieldRead => BTreeMap::from([("field".into(), "Email".into())]),
+            TaskKind::PaginationNext | TaskKind::PaginationCollect => {
+                BTreeMap::from([("next".into(), "Next".into())])
+            }
+            _ => BTreeMap::new(),
         };
         let postcondition_kind = match kind {
             TaskKind::FormSubmit | TaskKind::NavigationFollow => {
@@ -438,7 +471,7 @@ mod tests {
                 region_name: Some("Checkout".into()),
                 ..TaskScope::default()
             },
-            inputs: BTreeMap::from([(String::from(input_name), String::from("a@example.test"))]),
+            inputs,
             limits: TaskLimits::default(),
             risk,
             ambiguity: TaskAmbiguityPolicy::Fail,
@@ -496,5 +529,57 @@ mod tests {
         .unwrap();
         plan.risk = TaskRiskClass::ReadOnly;
         assert_eq!(plan.validate().unwrap_err().path, "risk");
+    }
+    #[test]
+    fn compilation_is_deterministic_for_identical_authored_tasks() {
+        let authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        let first = compile_task(&authored)
+            .unwrap()
+            .to_canonical_json()
+            .unwrap();
+        let second = compile_task(&authored)
+            .unwrap()
+            .to_canonical_json()
+            .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn compiler_rejects_incompatible_scope_kind() {
+        let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        authored.scope.entity_kind = Some(crate::web_ir::DraftEntityKind::Table);
+        let error = compile_task(&authored).unwrap_err();
+        assert_eq!(error.path, "scope.entityKind");
+    }
+
+    #[test]
+    fn compiler_rejects_unsupported_postcondition() {
+        let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        authored.postconditions = vec![TaskPostcondition {
+            kind: TaskPostconditionKind::EntityState,
+            expected: None,
+        }];
+        let error = compile_task(&authored).unwrap_err();
+        assert_eq!(error.path, "postconditions[0].kind");
+    }
+
+
+    #[test]
+    fn compiler_rejects_unknown_risk_before_plan_emission() {
+        let error = compile_task(&task(TaskKind::FormFill, TaskRiskClass::UnknownRisk))
+            .unwrap_err();
+        assert_eq!(error.path, "risk");
+    }
+
+    #[test]
+    fn plan_rejects_records_postcondition_beyond_item_limit() {
+        let mut plan =
+            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        plan.limits.max_items = 1;
+        plan.postconditions[0].expected = Some("2".into());
+        assert_eq!(
+            plan.validate().unwrap_err().path,
+            "postconditions[0].expected"
+        );
     }
 }

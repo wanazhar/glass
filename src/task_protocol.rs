@@ -152,6 +152,32 @@ impl TaskPostcondition {
                 "expected value exceeds its bound or contains a control character",
             ));
         }
+        match self.kind {
+            TaskPostconditionKind::RegionPresent => {
+                let Some(expected) = self.expected.as_deref() else {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "regionPresent requires the expected semantic region name",
+                    ));
+                };
+                validate_text(
+                    &format!("postconditions[{index}].expected"),
+                    expected,
+                    MAX_EXPECTATION_BYTES,
+                )?;
+            }
+            TaskPostconditionKind::PageKind => {
+                if let Some(expected) = self.expected.as_deref() {
+                    validate_text(
+                        &format!("postconditions[{index}].expected"),
+                        expected,
+                        MAX_EXPECTATION_BYTES,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+
         Ok(())
     }
 }
@@ -185,7 +211,15 @@ impl GlassTask {
     }
 
     /// Validate the authored task without browser access or mutation.
+
     pub fn validate(&self) -> Result<(), TaskProtocolError> {
+        if self.risk == TaskRiskClass::UnknownRisk {
+            return Err(TaskProtocolError::new(
+                "risk",
+                "unknown risk cannot be compiled; declare a bounded risk class",
+            ));
+        }
+
         if self.schema_version != TASK_PROTOCOL_SCHEMA_VERSION {
             return Err(TaskProtocolError::new(
                 "schemaVersion",
@@ -210,6 +244,8 @@ impl GlassTask {
                 ));
             }
         }
+        validate_input_contract(self.task, &self.inputs)?;
+
         if self.postconditions.len() > MAX_POSTCONDITIONS {
             return Err(TaskProtocolError::new(
                 "postconditions",
@@ -253,22 +289,7 @@ impl GlassTask {
                 "form.fill requires at least one bounded input",
             ));
         }
-        if matches!(
-            self.task,
-            TaskKind::FormInspect
-                | TaskKind::FormFill
-                | TaskKind::FormValidate
-                | TaskKind::FormSubmit
-                | TaskKind::FieldRead
-                | TaskKind::NavigationSelectTab
-                | TaskKind::PaginationNext
-                | TaskKind::NavigationOpenMenu
-                | TaskKind::PaginationCollect
-                | TaskKind::TableExtract
-                | TaskKind::CollectionExtract
-                | TaskKind::RegionExtract
-        ) && self.scope.region_name.is_none()
-        {
+        if self.scope.region_name.is_none() {
             return Err(TaskProtocolError::new(
                 "scope.regionName",
                 "browser-backed task requires a semantic region scope",
@@ -428,6 +449,7 @@ pub(crate) fn postcondition_allowed_for(task: TaskKind, kind: TaskPostconditionK
         TaskKind::NavigationSelectTab | TaskKind::NavigationOpenMenu => {
             matches!(kind, RegionPresent | PageKind)
         }
+
         TaskKind::TableExtract | TaskKind::CollectionExtract | TaskKind::RegionExtract => {
             matches!(kind, RecordsExtracted | RegionPresent | PageKind)
         }
@@ -445,6 +467,41 @@ pub(crate) fn postcondition_allowed_for(task: TaskKind, kind: TaskPostconditionK
         }
     }
 }
+fn validate_input_contract(
+    task: TaskKind,
+    inputs: &BTreeMap<String, String>,
+) -> Result<(), TaskProtocolError> {
+    let expected = match task {
+        TaskKind::FormFill => return Ok(()),
+        TaskKind::FormSubmit => &["submit"][..],
+        TaskKind::NavigationFollow => &["url"][..],
+        TaskKind::NavigationSelectTab => &["tab"][..],
+        TaskKind::NavigationOpenMenu => &["menu"][..],
+        TaskKind::FieldRead => &["field"][..],
+        TaskKind::PaginationNext | TaskKind::PaginationCollect => &["next"][..],
+        TaskKind::FormInspect
+        | TaskKind::FormValidate
+        | TaskKind::TableExtract
+        | TaskKind::CollectionExtract
+        | TaskKind::RegionExtract
+        | TaskKind::DialogInspect
+        | TaskKind::DialogConfirm
+        | TaskKind::DialogCancel => &[][..],
+    };
+    if expected.len() == 1 && !inputs.contains_key(expected[0]) {
+        return Ok(());
+    }
+
+    let names = inputs.keys().map(String::as_str).collect::<Vec<_>>();
+    if names.as_slice() != expected {
+        return Err(TaskProtocolError::new(
+            "inputs",
+            "input names are incompatible with the task family",
+        ));
+    }
+    Ok(())
+}
+
 
 fn validate_text(path: &str, value: &str, max_bytes: usize) -> Result<(), TaskProtocolError> {
     if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
@@ -624,5 +681,30 @@ mod tests {
             expected: None,
         });
         task.validate().unwrap();
+    }
+
+    #[test]
+    fn unknown_risk_is_rejected_fail_closed() {
+        let mut invalid = task();
+        invalid.risk = TaskRiskClass::UnknownRisk;
+        assert_eq!(invalid.validate().unwrap_err().path, "risk");
+    }
+
+    #[test]
+    fn task_families_reject_ignored_input_names() {
+        let mut invalid = task();
+        invalid.task = TaskKind::FormInspect;
+        invalid.inputs = BTreeMap::from([(String::from("ignored"), String::from("value"))]);
+        assert_eq!(invalid.validate().unwrap_err().path, "inputs");
+    }
+
+    #[test]
+    fn region_postconditions_require_a_verifiable_name() {
+        let mut invalid = task();
+        invalid.postconditions = vec![TaskPostcondition {
+            kind: TaskPostconditionKind::RegionPresent,
+            expected: None,
+        }];
+        assert_eq!(invalid.validate().unwrap_err().path, "postconditions[0].expected");
     }
 }

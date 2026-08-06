@@ -1119,14 +1119,32 @@ impl Workspace {
         WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation, storage: self.config.storage }
     }
 
-    /// Validate that a durable resource belongs to this workspace incarnation.
+    /// Validate that a resource belongs to this workspace incarnation.
     pub fn validate_reference(&self, reference: &ResourceReference) -> Result<(), ScopeError> {
+        if matches!(reference.resource(), ResourceKind::Workspace) {
+            let expected = self.scope();
+            let actual = reference.scope();
+            if expected.workspace_id() != actual.workspace_id() {
+                return Err(ScopeError::WorkspaceMismatch { expected: expected.workspace_id().clone(), actual: actual.workspace_id().clone() });
+            }
+            if expected.storage() != actual.storage() {
+                return Err(ScopeError::StorageMismatch { expected: expected.storage(), actual: actual.storage() });
+            }
+            if expected.generation() != actual.generation() {
+                return Err(ScopeError::GenerationMismatch { expected: expected.generation(), actual: actual.generation() });
+            }
+            return Ok(());
+        }
         self.scope().validate(reference.scope())
     }
 
-    /// Return the browser resource reference for this workspace.
+    /// Return a workspace reference carrying ephemeral generation identity.
     pub fn resource_reference(&self) -> ResourceReference {
-        ResourceReference::workspace(self.identity.id().clone())
+        let scope = match self.config.storage {
+            WorkspaceStorage::Durable => WorkspaceScope::workspace(self.identity.id().clone()),
+            WorkspaceStorage::Ephemeral => WorkspaceScope::ephemeral(self.identity.id().clone(), self.config.generation.expect("validated ephemeral generation")),
+        };
+        ResourceReference::new(scope, ResourceKind::Workspace).expect("workspace scope is valid")
     }
 
     pub fn transition(&mut self, next: WorkspaceLifecycle) -> Result<(), LifecycleError> {
@@ -1518,19 +1536,7 @@ impl WorkspaceStore {
     fn lock_path_for(&self, id: &WorkspaceId) -> PathBuf {
         self.root.join("workspaces").join(format!("{id}{WORKSPACE_LOCK_SUFFIX}"))
     }
-    pub fn create(
-        &self,
-        id: WorkspaceId,
-        aliases: impl IntoIterator<Item = WorkspaceAlias>,
-        config: WorkspaceConfig,
-    ) -> Result<Workspace, WorkspaceStoreError> {
-        let identity = WorkspaceIdentity::new(id.clone(), aliases)?;
-        let workspace = Workspace::new(identity, config)?;
-        if self.path_for(&id).exists() { return Err(WorkspaceStoreError::AlreadyExists(id)); }
-        self.save(&workspace)?;
-        Ok(workspace)
-    }
-    pub fn open(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+    fn read_unlocked(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
         let path = self.path_for(id);
         let bytes = fs::read(&path).map_err(|error| if error.kind() == io::ErrorKind::NotFound {
             WorkspaceStoreError::NotFound(id.clone())
@@ -1543,34 +1549,62 @@ impl WorkspaceStore {
         }
         Ok(workspace)
     }
-    pub fn save(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
+
+    fn write_unlocked(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
         let id = workspace.identity().id();
-        let _lock = self.lock_workspace(id)?;
         let bytes = serde_json::to_vec(workspace).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
         if bytes.len() > MAX_WIRE_BYTES { return Err(WorkspaceStoreError::Corrupt("snapshot exceeds wire limit".into())); }
         atomic_write(&self.path_for(id), &bytes)
     }
-    pub fn update<F>(&self, id: &WorkspaceId, operation: F) -> Result<Workspace, WorkspaceStoreError>
-    where F: FnOnce(&mut Workspace) -> Result<(), WorkspaceStoreError> {
-        let mut workspace = self.open(id)?;
-        operation(&mut workspace)?;
-        self.save(&workspace)?;
+
+    pub fn create(
+        &self,
+        id: WorkspaceId,
+        aliases: impl IntoIterator<Item = WorkspaceAlias>,
+        config: WorkspaceConfig,
+    ) -> Result<Workspace, WorkspaceStoreError> {
+        let identity = WorkspaceIdentity::new(id.clone(), aliases)?;
+        let workspace = Workspace::new(identity, config)?;
+        let _lock = self.lock_workspace(&id)?;
+        if self.path_for(&id).exists() { return Err(WorkspaceStoreError::AlreadyExists(id)); }
+        self.write_unlocked(&workspace)?;
         Ok(workspace)
     }
+
+    pub fn open(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
+        let _lock = self.lock_workspace(id)?;
+        self.read_unlocked(id)
+    }
+
+    pub fn save(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
+        let id = workspace.identity().id();
+        let _lock = self.lock_workspace(id)?;
+        self.write_unlocked(workspace)
+    }
+
+    pub fn update<F>(&self, id: &WorkspaceId, operation: F) -> Result<Workspace, WorkspaceStoreError>
+    where F: FnOnce(&mut Workspace) -> Result<(), WorkspaceStoreError> {
+        let _lock = self.lock_workspace(id)?;
+        let mut workspace = self.read_unlocked(id)?;
+        operation(&mut workspace)?;
+        self.write_unlocked(&workspace)?;
+        Ok(workspace)
+    }
+
     pub fn list(&self) -> Result<Vec<WorkspaceId>, WorkspaceStoreError> {
         let mut ids = Vec::new();
         for entry in fs::read_dir(self.root.join("workspaces")).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
             if path.extension().and_then(|value| value.to_str()) != Some("json") { continue; }
-            if let Some(name) = path.file_stem().and_then(|value| value.to_str()) {
-                if let Ok(id) = WorkspaceId::new(name) { ids.push(id); }
-            }
+            let Some(name) = path.file_stem().and_then(|value| value.to_str()) else { continue };
+            let Ok(id) = WorkspaceId::new(name) else { continue };
+            if self.open(&id).is_ok() { ids.push(id); }
         }
         ids.sort();
         Ok(ids)
     }
+
     pub fn clone_workspace(&self, source: &WorkspaceId, target: WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
-        if self.path_for(&target).exists() { return Err(WorkspaceStoreError::AlreadyExists(target)); }
         let source_workspace = self.open(source)?;
         let config = match source_workspace.config().storage {
             WorkspaceStorage::Durable => WorkspaceConfig::durable_named(ProfileId::new(target.as_str()).map_err(WorkspaceStoreError::InvalidName)?),
@@ -1578,6 +1612,7 @@ impl WorkspaceStore {
         };
         self.create(target, std::iter::empty(), config)
     }
+
     pub fn suspend(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
         self.update(id, |workspace| { workspace.transition(WorkspaceLifecycle::Suspended)?; Ok(()) })
     }
@@ -1588,12 +1623,12 @@ impl WorkspaceStore {
         self.update(id, |workspace| { workspace.reset()?; Ok(()) })
     }
     pub fn delete(&self, id: &WorkspaceId) -> Result<(), WorkspaceStoreError> {
-        let mut workspace = self.open(id)?;
+        let _lock = self.lock_workspace(id)?;
+        let mut workspace = self.read_unlocked(id)?;
         if workspace.lifecycle() != WorkspaceLifecycle::Closed {
             if workspace.lifecycle() != WorkspaceLifecycle::Closing { workspace.transition(WorkspaceLifecycle::Closing)?; }
             workspace.transition(WorkspaceLifecycle::Closed)?;
         }
-        let _lock = self.lock_workspace(id)?;
         fs::remove_file(self.path_for(id)).map_err(io_error)
     }
     pub fn lock_workspace(&self, id: &WorkspaceId) -> Result<File, WorkspaceStoreError> {
@@ -1613,12 +1648,22 @@ fn io_error(error: io::Error) -> WorkspaceStoreError { WorkspaceStoreError::Io(e
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceStoreError> {
     let parent = path.parent().ok_or_else(|| WorkspaceStoreError::Io("workspace path has no parent".into()))?;
     fs::create_dir_all(parent).map_err(io_error)?;
-    let tmp = parent.join(format!(".{}.tmp-{}", path.file_name().and_then(|name| name.to_str()).unwrap_or("workspace"), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)));
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("workspace");
+    let temp_prefix = format!(".{file_name}.tmp-");
+    for entry in fs::read_dir(parent).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        if name.to_str().is_some_and(|name| name.starts_with(&temp_prefix)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let tmp = parent.join(format!("{temp_prefix}{}", NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)));
     let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp).map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
     drop(file);
-    fs::rename(&tmp, path).map_err(|error| { let _ = fs::remove_file(&tmp); io_error(error) })
+    fs::rename(&tmp, path).map_err(|error| { let _ = fs::remove_file(&tmp); io_error(error) })?;
+    File::open(parent).and_then(|directory| directory.sync_all()).map_err(io_error)
 }
 
 
@@ -1754,6 +1799,46 @@ mod persistence_tests {
         let grant = workspace.acquire_lease(attachment.id(), Revision(0)).unwrap();
         store.save(&workspace).unwrap();
         assert_eq!(store.open(&id).unwrap().lease().state, MutationLeaseState::Held { lease_id: grant.lease_id, holder: attachment.id().clone() });
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coordinator_profile_lock_uses_canonical_profile_manager_path() {
+        let root = test_root("profile-contention");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let workspace_id = WorkspaceId::new("owner").unwrap();
+        let profile_id = ProfileId::new("shared").unwrap();
+        let _guard = store.lock_profile(&workspace_id, &profile_id).unwrap();
+        let path = root.join("profiles").join("shared.lock");
+        let file = OpenOptions::new().read(true).write(true).open(path).unwrap();
+        assert!(file.try_lock_exclusive().is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn list_ignores_invalid_snapshots_and_recovers_stale_temps() {
+        let root = test_root("recovery");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("stable").unwrap();
+        store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("stable").unwrap())).unwrap();
+        let workspaces = root.join("workspaces");
+        fs::write(workspaces.join("invalid.json"), b"not-json").unwrap();
+        fs::write(workspaces.join(".stable.json.tmp-stale"), b"partial").unwrap();
+        let loaded = store.open(&id).unwrap();
+        store.save(&loaded).unwrap();
+        assert!(!workspaces.join(".stable.json.tmp-stale").exists());
+        assert_eq!(store.list().unwrap(), vec![id]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ephemeral_workspace_reference_carries_generation_scope() {
+        let root = test_root("generation");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("temporary").unwrap();
+        let workspace = store.create(id, [], WorkspaceConfig::ephemeral_private(None)).unwrap();
+        let reference = workspace.resource_reference();
+        assert_eq!(reference.scope().generation(), workspace.scope().generation());
+        assert_eq!(reference.to_string().parse::<ResourceReference>().unwrap(), reference);
         let _ = fs::remove_dir_all(root);
     }
 

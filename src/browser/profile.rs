@@ -152,8 +152,8 @@ impl ProfileManager {
     pub fn lock_profile(&self, profile: &str, workspace: &str) -> Result<ProfileLock, Box<dyn std::error::Error>> {
         Self::validate_name(profile)?;
         Self::validate_name(workspace)?;
-        let profile_dir = self.create_profile(profile)?;
-        let lock_path = profile_dir.join(".glass-workspace.lock");
+        self.create_profile(profile)?;
+        let lock_path = self.profiles_dir.join(format!("{profile}.lock"));
         let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
         file.try_lock_exclusive().map_err(|error| {
             format!("profile {profile} is already owned by another workspace: {error}")

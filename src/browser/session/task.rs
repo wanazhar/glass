@@ -55,7 +55,7 @@ impl BrowserSession {
     /// observation. The runtime always re-observes before mutation, resolves
     /// targets from that observation, and passes the resulting revision into
     /// the guarded action APIs.
-    pub async fn execute_form_task(
+    async fn execute_form_task_unchecked(
         &self,
         task: &GlassTask,
         expected_revision: u64,
@@ -965,17 +965,7 @@ impl BrowserSession {
                         ));
                     }
                 };
-                let after_scoped_regions =
-                    scoped_regions_for_observation(&after, task).unwrap_or_default();
-                let verified = postconditions_hold(
-                    task,
-                    &after,
-                    &after_scoped_regions,
-                    observation.revision,
-                    None,
-                    None,
-                );
-                let succeeded = verified && form.filled == form.total;
+                let succeeded = form.filled == form.total;
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::FillInputs,
@@ -984,7 +974,7 @@ impl BrowserSession {
                     } else {
                         "indeterminate"
                     },
-                    (!verified).then(|| "postcondition did not hold after mutation".into()),
+                    (!succeeded).then(|| "form fill did not complete".into()),
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
@@ -1060,30 +1050,20 @@ impl BrowserSession {
                         ));
                     }
                 };
-                let after_scoped_regions =
-                    scoped_regions_for_observation(&after, task).unwrap_or_default();
-                let verified = outcome.is_ok()
-                    && postconditions_hold(
-                        task,
-                        &after,
-                        &after_scoped_regions,
-                        observation.revision,
-                        None,
-                        None,
-                    );
+                let succeeded = outcome.is_ok();
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::SubmitForm,
-                    if verified {
+                    if succeeded {
                         "succeeded"
                     } else {
                         "indeterminate"
                     },
-                    (!verified).then(|| "submit outcome was not verified".into()),
+                    (!succeeded).then(|| "submit action failed".into()),
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
-                    status: if verified {
+                    status: if succeeded {
                         "succeeded"
                     } else {
                         "indeterminate"
@@ -1094,7 +1074,7 @@ impl BrowserSession {
                     source_revision: observation.revision,
                     current_revision: after.revision,
                     steps,
-                    retry: if verified {
+                    retry: if succeeded {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
                     } else {
                         retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
@@ -1112,7 +1092,7 @@ impl BrowserSession {
 
 impl BrowserSession {
     /// Execute a bounded navigation task against one caller-observed revision.
-    pub async fn execute_navigation_task(
+    async fn execute_navigation_task_unchecked(
         &self,
         task: &GlassTask,
         expected_revision: u64,
@@ -1245,35 +1225,12 @@ impl BrowserSession {
 }
 
 impl BrowserSession {
-    /// Execute any currently supported browser-backed Task Protocol family.
-    pub async fn execute_task(
+    async fn finalize_task_result(
         &self,
         task: &GlassTask,
         expected_revision: u64,
-        confirmed: bool,
+        mut result: TaskExecutionResult,
     ) -> BrowserResult<TaskExecutionResult> {
-        let plan = compile_task(task).map_err(|error| error.to_string())?;
-        if task.revision != TaskRevisionPolicy::Exact {
-            return Ok(preflight_result(
-                task,
-                &plan,
-                expected_revision,
-                "non-exact revision policies are not supported by the browser executor",
-            ));
-        }
-        if let Some(detail) = unsupported_postcondition(task) {
-            return Ok(preflight_result(task, &plan, expected_revision, detail));
-        }
-
-        let mut result = match task.task {
-            TaskKind::NavigationFollow => {
-                Box::pin(self.execute_navigation_task(task, expected_revision, confirmed)).await?
-            }
-            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
-                Box::pin(self.execute_dialog_task(task, expected_revision, confirmed)).await?
-            }
-            _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await?,
-        };
         if result.status == "succeeded" && !task.postconditions.is_empty() {
             let observation = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
                 Ok(observation) => observation,
@@ -1321,8 +1278,74 @@ impl BrowserSession {
 }
 
 impl BrowserSession {
+    /// Execute a validated form task and enforce authored postconditions.
+    pub async fn execute_form_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let result = self
+            .execute_form_task_unchecked(task, expected_revision, confirmed)
+            .await?;
+        self.finalize_task_result(task, expected_revision, result)
+            .await
+    }
+}
+
+impl BrowserSession {
+    /// Execute any currently supported browser-backed Task Protocol family.
+    pub async fn execute_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if task.revision != TaskRevisionPolicy::Exact {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "non-exact revision policies are not supported by the browser executor",
+            ));
+        }
+        if let Some(detail) = unsupported_postcondition(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
+
+        let result = match task.task {
+            TaskKind::NavigationFollow => {
+                Box::pin(self.execute_navigation_task(task, expected_revision, confirmed)).await?
+            }
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+                Box::pin(self.execute_dialog_task(task, expected_revision, confirmed)).await?
+            }
+            _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await?,
+        };
+        Ok(result)
+    }
+}
+
+impl BrowserSession {
+    /// Execute a bounded navigation task and enforce authored postconditions.
+    pub async fn execute_navigation_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let result = self
+            .execute_navigation_task_unchecked(task, expected_revision, confirmed)
+            .await?;
+        self.finalize_task_result(task, expected_revision, result)
+            .await
+    }
+}
+
+impl BrowserSession {
     /// Inspect or resolve one pending JavaScript dialog through the Task Protocol.
-    pub async fn execute_dialog_task(
+    async fn execute_dialog_task_unchecked(
         &self,
         task: &GlassTask,
         expected_revision: u64,
@@ -1454,6 +1477,22 @@ impl BrowserSession {
             dialog: None,
             alerts: Vec::new(),
         })
+    }
+}
+
+impl BrowserSession {
+    /// Execute a dialog task and enforce authored postconditions.
+    pub async fn execute_dialog_task(
+        &self,
+        task: &GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<TaskExecutionResult> {
+        let result = self
+            .execute_dialog_task_unchecked(task, expected_revision, confirmed)
+            .await?;
+        self.finalize_task_result(task, expected_revision, result)
+            .await
     }
 }
 

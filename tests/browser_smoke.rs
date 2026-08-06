@@ -2914,7 +2914,10 @@ async fn browser_session_executes_scoped_form_tasks() {
         risk: TaskRiskClass::ReadOnly,
         ambiguity: TaskAmbiguityPolicy::Fail,
         revision: Default::default(),
-        postconditions: Vec::new(),
+        postconditions: vec![TaskPostcondition {
+            kind: TaskPostconditionKind::DialogClosed,
+            expected: None,
+        }],
     };
     let inspected_dialog = session
         .execute_dialog_task(&inspect_dialog_task, dialog_opened.current_revision, false)
@@ -2924,6 +2927,7 @@ async fn browser_session_executes_scoped_form_tasks() {
         inspected_dialog.dialog.as_ref().unwrap().message,
         "Confirm order?"
     );
+    assert_eq!(inspected_dialog.status, "indeterminate");
     let dialog_task = GlassTask {
         schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
         task: TaskKind::DialogConfirm,

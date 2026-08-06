@@ -308,6 +308,10 @@ confirmation-required preflight result until the caller explicitly retries
 with `confirmed: true`. These revision and confirmation guards apply to every
 supported Task Protocol family, not only form tasks.
 
+The Rust family-specific execution methods enforce the same authored
+postcondition checks as `executeTask`; callers do not need to route through the
+canonical dispatcher to retain verification and recovery semantics.
+
 In local-daemon mode, read-only task families (`form.inspect`,
 `form.validate`, `field.read`, table/collection/region extraction, and
 `dialog.inspect`) do not require a mutation lease. Browser-changing families

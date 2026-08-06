@@ -388,6 +388,7 @@ pub fn extract_page_context(
     context: &PageContext,
     request: &ExtractionRequest,
 ) -> Result<ExtractionEvidence, ExtractionContractError> {
+    validate_observation_boundaries(context)?;
     request.validate()?;
     let region_root = match &request.scope {
         ExtractionScope::Document => None,
@@ -686,6 +687,16 @@ fn build_surface_set(
             ExtractionContractError::new("surfaceSet.surfaces", error.to_string())
         })?;
         let nesting_depth = u16::from(parent.is_some());
+        let diagnostics = match &kind {
+            SurfaceKind::EmbeddedDocument | SurfaceKind::Pdf | SurfaceKind::BrowserNative => {
+                vec![SurfaceDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    code: "semanticUnavailable".into(),
+                    message: "surface boundary detected, but semantic content was not observed; semantic compilation is unavailable".into(),
+                }]
+            }
+            _ => Vec::new(),
+        };
         surfaces.push(Surface {
             schema_version: SURFACE_SCHEMA_VERSION,
             surface_id,
@@ -697,7 +708,7 @@ fn build_surface_set(
             coverage,
             evidence: evidence_values,
             revision,
-            diagnostics: Vec::new(),
+            diagnostics,
         });
         Ok::<(), ExtractionContractError>(())
     };
@@ -918,6 +929,53 @@ fn build_surface_set(
     set.validate()
         .map_err(|error| ExtractionContractError::new("surfaceSet", error.to_string()))?;
     Ok(Some(set))
+}
+
+fn validate_observation_boundaries(context: &PageContext) -> Result<(), ExtractionContractError> {
+    let boundaries = &context.boundaries;
+    if boundaries.scan_limit > 0 && boundaries.scanned_elements > boundaries.scan_limit {
+        return Err(ExtractionContractError::new(
+            "boundaries.scannedElements",
+            "observed element count exceeds the browser boundary scan limit",
+        ));
+    }
+    if boundaries.scanned_elements > 0 {
+        let counters = [
+            ("shadowRoots", boundaries.shadow_roots),
+            ("childFrames", boundaries.child_frames),
+            ("canvases", boundaries.canvases),
+            ("svgElements", boundaries.svg_elements),
+            ("mediaElements", boundaries.media_elements),
+            ("embeddedDocuments", boundaries.embedded_documents),
+            ("pdfDocuments", boundaries.pdf_documents),
+        ];
+        if let Some((name, _count)) = counters
+            .into_iter()
+            .find(|(_, count)| *count > boundaries.scanned_elements)
+        {
+            return Err(ExtractionContractError::new(
+                format!("boundaries.{name}"),
+                "surface count exceeds the observed element count",
+            ));
+        }
+    }
+    if boundaries.pdf_documents > boundaries.embedded_documents {
+        return Err(ExtractionContractError::new(
+            "boundaries.pdfDocuments",
+            "PDF surface count cannot exceed embedded document count",
+        ));
+    }
+    let classified_canvases = boundaries
+        .canvas_2d
+        .saturating_add(boundaries.webgl_canvases)
+        .saturating_add(boundaries.webgpu_canvases);
+    if classified_canvases > boundaries.canvases {
+        return Err(ExtractionContractError::new(
+            "boundaries.canvasClassification",
+            "graphics subtype counts cannot exceed the observed canvas count",
+        ));
+    }
+    Ok(())
 }
 
 struct EvidenceCollector {
@@ -1755,6 +1813,16 @@ mod tests {
                 .iter()
                 .any(|surface| surface.kind == SurfaceKind::BrowserNative)
         );
+        let embedded = surfaces
+            .surfaces
+            .iter()
+            .find(|surface| surface.kind == SurfaceKind::EmbeddedDocument)
+            .expect("embedded boundary");
+        assert_eq!(embedded.understanding, UnderstandingLevel::Structural);
+        assert!(embedded.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "semanticUnavailable"
+                && diagnostic.severity == DiagnosticSeverity::Warning
+        }));
         let opaque = surfaces
             .surfaces
             .iter()
@@ -1786,6 +1854,20 @@ mod tests {
         let next_ir = crate::web_ir::reconcile_evidence(&next).unwrap();
         assert!(ir.diff(&next_ir).unwrap().surface_set_changed);
         assert!(ir.to_canonical_json().unwrap().contains("surfaceSet"));
+    }
+
+    #[test]
+    fn extraction_rejects_inconsistent_surface_boundary_counts() {
+        let mut context = page_context();
+        context.boundaries.canvases = 1;
+        context.boundaries.webgl_canvases = 2;
+        let error = extract_page_context(&context, &request()).unwrap_err();
+        assert_eq!(error.path, "boundaries.canvasClassification");
+
+        context.boundaries.webgl_canvases = 0;
+        context.boundaries.pdf_documents = 1;
+        let error = extract_page_context(&context, &request()).unwrap_err();
+        assert_eq!(error.path, "boundaries.pdfDocuments");
     }
 
     #[test]

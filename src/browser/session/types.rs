@@ -422,9 +422,15 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.localName === 'audio' || element.localName === 'video') summary.media_elements += 1;
         if (element.localName === 'object' || element.localName === 'embed') {
             summary.embedded_documents += 1;
-            const type = (element.getAttribute('type') || '').toLowerCase();
-            const resource = (element.getAttribute('data') || element.getAttribute('src') || '').toLowerCase();
-            if (type === 'application/pdf' || resource.split(/[?#]/, 1)[0].endsWith('.pdf')) {
+            const type = (element.getAttribute('type') || '')
+                .split(';', 1)[0]
+                .trim()
+                .toLowerCase();
+            const resource = (element.getAttribute('data') || element.getAttribute('src') || '')
+                .trim()
+                .toLowerCase();
+            const resourcePath = resource.split(/[?#]/, 1)[0];
+            if (type === 'application/pdf' || resourcePath.endsWith('.pdf')) {
                 summary.pdf_documents += 1;
             }
         }

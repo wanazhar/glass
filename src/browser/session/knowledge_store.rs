@@ -5,11 +5,10 @@
 //! each later knowledge-assisted operation.
 
 use super::knowledge::{
-    KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
-};
-use super::{
     KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeLookupContext,
-    KnowledgeRecord, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KnowledgeRecord, KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery,
+    KnowledgeRetrievalReport, KnowledgeScopeSelector, KnowledgeStoreSnapshot,
+    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -236,6 +235,113 @@ impl KnowledgeStore {
     /// Return the validated records for inspection or export.
     pub fn records(&self) -> &[KnowledgeRecord] {
         &self.snapshot.records
+    }
+
+    /// Export only records in the exact origin/profile/workspace scope.
+    ///
+    /// The returned snapshot remains validated and contains only bounded
+    /// semantic records; revision-local handles and sensitive payload fields
+    /// cannot enter the store through record validation.
+    pub fn export_scoped(
+        &self,
+        selector: &KnowledgeScopeSelector,
+    ) -> Result<KnowledgeStoreSnapshot, KnowledgeStoreError> {
+        selector.validate()?;
+        let snapshot = KnowledgeStoreSnapshot {
+            schema_version: self.snapshot.schema_version,
+            records: self
+                .snapshot
+                .records
+                .iter()
+                .filter(|record| selector.matches(&record.scope))
+                .cloned()
+                .collect(),
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    /// Remove one record only when its complete privacy scope matches.
+    pub fn remove_scoped(
+        &mut self,
+        record_id: &str,
+        selector: &KnowledgeScopeSelector,
+    ) -> Result<KnowledgeStoreChange, KnowledgeStoreError> {
+        selector.validate()?;
+        let record_id = record_id.to_owned();
+        self.mutate(|snapshot| {
+            let record = snapshot
+                .records
+                .iter()
+                .find(|record| record.record_id == record_id)
+                .ok_or_else(|| KnowledgeStoreError::NotFound(record_id.clone()))?;
+            if !selector.matches(&record.scope) {
+                return Err(KnowledgeStoreError::ScopeMismatch(record_id.clone()));
+            }
+            snapshot
+                .records
+                .retain(|record| record.record_id != record_id);
+            Ok(())
+        })?;
+        Ok(KnowledgeStoreChange {
+            record_id,
+            retained: false,
+            removed: true,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
+    }
+
+    /// Forget every record in one exact origin/profile/workspace scope.
+    pub fn purge_scoped(
+        &mut self,
+        selector: &KnowledgeScopeSelector,
+    ) -> Result<KnowledgePurgeResult, KnowledgeStoreError> {
+        selector.validate()?;
+        let mut removed_record_ids = Vec::new();
+        self.mutate(|snapshot| {
+            snapshot.records.retain(|record| {
+                if selector.matches(&record.scope) {
+                    removed_record_ids.push(record.record_id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            Ok(())
+        })?;
+        Ok(KnowledgePurgeResult {
+            removed_record_ids,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
+    }
+
+    /// Prune stale, contradicted, or quarantined records in one exact scope.
+    pub fn prune_scoped(
+        &mut self,
+        selector: &KnowledgeScopeSelector,
+    ) -> Result<KnowledgePurgeResult, KnowledgeStoreError> {
+        selector.validate()?;
+        let mut removed_record_ids = Vec::new();
+        self.mutate(|snapshot| {
+            snapshot.records.retain(|record| {
+                let removable = selector.matches(&record.scope)
+                    && matches!(
+                        record.confidence,
+                        KnowledgeConfidence::Stale
+                            | KnowledgeConfidence::Contradicted
+                            | KnowledgeConfidence::Quarantined
+                    );
+                if removable {
+                    removed_record_ids.push(record.record_id.clone());
+                }
+                !removable
+            });
+            Ok(())
+        })?;
+        Ok(KnowledgePurgeResult {
+            removed_record_ids,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
     }
 
     /// Return bounded serialized-size and lifecycle counts.
@@ -488,9 +594,9 @@ fn validate_snapshot_size(
         .map_err(KnowledgeStoreError::InvalidContract)?
         .len();
     if bytes > max_bytes {
-        return Err(KnowledgeStoreError::Capacity(
-            "snapshot exceeds the configured store byte limit".into(),
-        ));
+        return Err(KnowledgeStoreError::Capacity(format!(
+            "snapshot is {bytes} bytes, exceeding the {max_bytes}-byte limit"
+        )));
     }
     Ok(())
 }
@@ -600,6 +706,7 @@ pub enum KnowledgeStoreError {
     InvalidConfiguration(String),
     Capacity(String),
     NotFound(String),
+    ScopeMismatch(String),
 }
 
 impl std::fmt::Display for KnowledgeStoreError {
@@ -614,6 +721,12 @@ impl std::fmt::Display for KnowledgeStoreError {
             Self::Capacity(reason) => write!(formatter, "knowledge store capacity: {reason}"),
             Self::NotFound(record_id) => {
                 write!(formatter, "knowledge record not found: {record_id}")
+            }
+            Self::ScopeMismatch(record_id) => {
+                write!(
+                    formatter,
+                    "knowledge record is outside the requested scope: {record_id}"
+                )
             }
         }
     }
@@ -646,7 +759,7 @@ mod tests {
     use super::*;
     use crate::browser::session::{
         KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
-        KnowledgeScope, KnowledgeSource,
+        KnowledgeScope, KnowledgeScopeSelector, KnowledgeSource,
     };
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -839,5 +952,108 @@ mod tests {
         assert!(file_name.starts_with("workspace-"));
         assert!(!file_name.contains(".."));
         assert!(!path.to_string_lossy().contains("../escape"));
+    }
+    #[test]
+    fn scoped_management_exports_and_prunes_only_matching_profile() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("anonymous", KnowledgeConfidence::Stale, "01"))
+            .unwrap();
+        let mut profile_record = record("profile", KnowledgeConfidence::Stale, "02");
+        profile_record.scope.profile_scope = KnowledgeProfileScope::ProfileBound;
+        profile_record.scope.profile_key = Some("alice".into());
+        store.upsert(profile_record).unwrap();
+
+        let anonymous = KnowledgeScopeSelector::new(
+            "https://example.test".into(),
+            KnowledgeProfileScope::Anonymous,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let exported = store.export_scoped(&anonymous).unwrap();
+        assert_eq!(
+            exported
+                .records
+                .iter()
+                .map(|record| record.record_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["anonymous"]
+        );
+        let removed = store.prune_scoped(&anonymous).unwrap();
+        assert_eq!(removed.removed_record_ids, vec!["anonymous"]);
+        assert!(store.get("profile").is_some());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    #[test]
+    fn scoped_removal_rejects_cross_profile_access() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("anonymous", KnowledgeConfidence::Observed, "01"))
+            .unwrap();
+        let profile = KnowledgeScopeSelector::new(
+            "https://example.test".into(),
+            KnowledgeProfileScope::ProfileBound,
+            Some("alice".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.remove_scoped("anonymous", &profile),
+            Err(KnowledgeStoreError::ScopeMismatch(id)) if id == "anonymous"
+        ));
+        assert!(store.get("anonymous").is_some());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    #[test]
+    fn scope_selector_rejects_unbounded_or_sensitive_dimensions() {
+        assert!(
+            KnowledgeScopeSelector::new(
+                "https://example.test/path".into(),
+                KnowledgeProfileScope::Anonymous,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            KnowledgeScopeSelector::new(
+                "https://example.test".into(),
+                KnowledgeProfileScope::ProfileBound,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            KnowledgeScopeSelector::new(
+                "https://example.test".into(),
+                KnowledgeProfileScope::Anonymous,
+                None,
+                None,
+                Some(1),
+            )
+            .is_err()
+        );
+        assert!(
+            KnowledgeScopeSelector::new(
+                "https://example.test".into(),
+                KnowledgeProfileScope::ProfileBound,
+                Some("session-token".into()),
+                None,
+                None,
+            )
+            .is_err()
+        );
     }
 }

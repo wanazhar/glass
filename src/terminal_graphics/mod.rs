@@ -196,6 +196,25 @@ impl RenderedFrame {
     }
 }
 
+/// Why a Kitty-capable terminal had to use the semantic renderer for a frame.
+///
+/// This is intentionally metadata-only: it does not decode or retain browser
+/// pixels and lets callers explain degraded presentation deterministically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsFallbackReason {
+    UnsupportedEncoding,
+    InvalidRawRgbaPayload,
+}
+
+impl GraphicsFallbackReason {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::UnsupportedEncoding => "unsupported-encoding",
+            Self::InvalidRawRgbaPayload => "invalid-rgba-payload",
+        }
+    }
+}
+
 /// Bounded diagnostics exposed to the TUI status line and diagnostic tools.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GraphicsDiagnostics {
@@ -209,12 +228,15 @@ pub struct GraphicsDiagnostics {
     pub pending_bytes: usize,
     pub geometry_revision: u64,
     pub cleanup_count: u64,
+    pub fallback_count: u64,
+    pub last_fallback: Option<GraphicsFallbackReason>,
 }
 
 #[derive(Debug, Clone)]
 struct PayloadFrame {
     frame: BrowserFrame,
     bytes: Vec<u8>,
+    fallback: Option<GraphicsFallbackReason>,
 }
 
 /// Terminal-side adapter around the presentation latest-frame mailbox.
@@ -232,6 +254,8 @@ pub struct TerminalGraphics {
     geometry_revision: u64,
     browser_revision: u64,
     cleanup_count: u64,
+    fallback_count: u64,
+    last_fallback: Option<GraphicsFallbackReason>,
     cleaned: bool,
     ownership: VecDeque<FrameOwnershipRecord>,
 }
@@ -251,6 +275,8 @@ impl TerminalGraphics {
             geometry_revision: 0,
             browser_revision: 0,
             cleanup_count: 0,
+            fallback_count: 0,
+            last_fallback: None,
             cleaned: false,
             ownership: VecDeque::new(),
         })
@@ -376,13 +402,16 @@ impl TerminalGraphics {
         if let Some(geometry) = self.geometry.as_ref() {
             geometry.check_snapshot(frame.browser_revision, frame.geometry_revision)?;
         }
+        let fallback = self.fallback_reason(&frame, payload);
         let outcome = self.mailbox.submit(frame.clone())?;
         match outcome {
             crate::presentation::SubmitOutcome::Current => {
                 self.current_payload = Some(PayloadFrame {
                     frame: frame.clone(),
                     bytes: payload.to_vec(),
+                    fallback,
                 });
+                self.note_fallback(fallback);
                 self.record(frame, FrameOwnershipEvent::Presented);
                 Ok(SubmitResult::Presented)
             }
@@ -390,7 +419,9 @@ impl TerminalGraphics {
                 self.pending_payload = Some(PayloadFrame {
                     frame: frame.clone(),
                     bytes: payload.to_vec(),
+                    fallback,
                 });
+                self.note_fallback(fallback);
                 self.record(frame, FrameOwnershipEvent::Queued);
                 Ok(SubmitResult::Queued)
             }
@@ -406,7 +437,9 @@ impl TerminalGraphics {
                 self.pending_payload = Some(PayloadFrame {
                     frame: frame.clone(),
                     bytes: payload.to_vec(),
+                    fallback,
                 });
+                self.note_fallback(fallback);
                 self.record(frame, FrameOwnershipEvent::Queued);
                 Ok(SubmitResult::Replaced)
             }
@@ -419,6 +452,39 @@ impl TerminalGraphics {
                 );
                 Ok(SubmitResult::Stale)
             }
+        }
+    }
+    fn fallback_reason(
+        &self,
+        frame: &BrowserFrame,
+        payload: &[u8],
+    ) -> Option<GraphicsFallbackReason> {
+        if self.mode != GraphicsMode::Kitty {
+            return None;
+        }
+        match frame.encoding {
+            crate::presentation::FrameEncoding::Png => None,
+            crate::presentation::FrameEncoding::RawRgba => {
+                let expected = frame
+                    .viewport
+                    .width
+                    .checked_mul(frame.viewport.height)
+                    .and_then(|size| size.checked_mul(4));
+                (expected != Some(payload.len() as u32))
+                    .then_some(GraphicsFallbackReason::InvalidRawRgbaPayload)
+            }
+            crate::presentation::FrameEncoding::Jpeg
+            | crate::presentation::FrameEncoding::Webp
+            | crate::presentation::FrameEncoding::Av1 => {
+                Some(GraphicsFallbackReason::UnsupportedEncoding)
+            }
+        }
+    }
+
+    fn note_fallback(&mut self, fallback: Option<GraphicsFallbackReason>) {
+        if let Some(reason) = fallback {
+            self.fallback_count = self.fallback_count.saturating_add(1);
+            self.last_fallback = Some(reason);
         }
     }
 
@@ -466,6 +532,15 @@ impl TerminalGraphics {
                 bytes: semantic.into_bytes(),
             });
         }
+        if current.fallback.is_some() {
+            return Ok(RenderedFrame {
+                mode: GraphicsMode::Semantic,
+                generation: Some(current.frame.generation),
+                pane: self.pane,
+                bytes: semantic.into_bytes(),
+            });
+        }
+
         let (format, extra) = match current.frame.encoding {
             crate::presentation::FrameEncoding::Png => (100u8, String::new()),
             crate::presentation::FrameEncoding::RawRgba => {
@@ -598,18 +673,32 @@ impl TerminalGraphics {
                 .map_or(0, |frame| frame.bytes.len()),
             geometry_revision: self.geometry_revision,
             cleanup_count: self.cleanup_count,
+            fallback_count: self.fallback_count,
+            last_fallback: self.last_fallback,
         }
+    }
+
+    /// Return the reason the currently displayed frame uses semantic output.
+    pub fn current_fallback(&self) -> Option<GraphicsFallbackReason> {
+        self.current_payload
+            .as_ref()
+            .and_then(|frame| frame.fallback)
     }
     pub fn diagnostics_label(&self) -> String {
         let diagnostics = self.diagnostics();
+        let fallback = diagnostics
+            .last_fallback
+            .map_or("none", GraphicsFallbackReason::label);
         format!(
-            "{} a:{} p:{} q:{} d:{} s:{} b:{}/{} g:{}",
+            "{} a:{} p:{} q:{} d:{} s:{} fb:{}:{} b:{}/{} g:{}",
             diagnostics.mode.label(),
             diagnostics.accepted_frames,
             diagnostics.presented_frames,
             diagnostics.replaced_frames,
             diagnostics.dropped_frames,
             diagnostics.stale_frames,
+            diagnostics.fallback_count,
+            fallback,
             diagnostics.current_bytes,
             diagnostics.pending_bytes,
             diagnostics.geometry_revision,
@@ -790,6 +879,71 @@ mod tests {
         assert!(command.contains("s=2,v=1"));
         assert!(command.contains("x=2,y=3,w=40,h=20"));
     }
+    #[test]
+    fn unsupported_encoding_reports_semantic_fallback() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(0, 0, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        let mut unsupported = frame(1, 1);
+        unsupported.encoding = FrameEncoding::Webp;
+        assert_eq!(
+            graphics.submit(unsupported, b"encoded").unwrap(),
+            SubmitResult::Presented
+        );
+        let rendered = graphics.render_current("semantic fallback").unwrap();
+        assert_eq!(rendered.mode, GraphicsMode::Semantic);
+        assert_eq!(rendered.as_text(), Some("semantic fallback"));
+        assert_eq!(
+            graphics.current_fallback(),
+            Some(GraphicsFallbackReason::UnsupportedEncoding)
+        );
+        let diagnostics = graphics.diagnostics();
+        assert_eq!(diagnostics.fallback_count, 1);
+        assert_eq!(
+            diagnostics.last_fallback,
+            Some(GraphicsFallbackReason::UnsupportedEncoding)
+        );
+        assert!(
+            graphics
+                .diagnostics_label()
+                .contains("fb:1:unsupported-encoding")
+        );
+    }
+
+    #[test]
+    fn invalid_raw_rgba_reports_degraded_output_without_error() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(0, 0, 40, 20),
+                PixelSize::new(2, 1),
+                PixelSize::new(2, 1),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        let mut rgba = frame(1, 1);
+        rgba.viewport = PixelSize::new(2, 1);
+        rgba.content = PixelSize::new(2, 1);
+        rgba.encoding = FrameEncoding::RawRgba;
+        graphics.submit(rgba, &[0; 7]).unwrap();
+        let rendered = graphics.render_current("invalid rgba").unwrap();
+        assert_eq!(rendered.mode, GraphicsMode::Semantic);
+        assert_eq!(rendered.as_text(), Some("invalid rgba"));
+        assert_eq!(
+            graphics.current_fallback(),
+            Some(GraphicsFallbackReason::InvalidRawRgbaPayload)
+        );
+        assert_eq!(graphics.diagnostics().fallback_count, 1);
+    }
+
     #[test]
     fn zero_pane_releases_frame_and_preserves_revision_monotonicity() {
         let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();

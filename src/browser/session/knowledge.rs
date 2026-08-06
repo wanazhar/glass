@@ -345,6 +345,93 @@ pub enum KnowledgeConfidence {
     Quarantined,
 }
 
+/// Scope dimensions required for profile/origin/workspace-safe management
+/// operations. A selector never includes path, page data, or browser handles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeScopeSelector {
+    pub origin: String,
+    pub profile_scope: KnowledgeProfileScope,
+    pub profile_key: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_generation: Option<u64>,
+}
+
+impl KnowledgeScopeSelector {
+    pub fn new(
+        origin: String,
+        profile_scope: KnowledgeProfileScope,
+        profile_key: Option<String>,
+        workspace_id: Option<String>,
+        workspace_generation: Option<u64>,
+    ) -> Result<Self, KnowledgeValidationError> {
+        let selector = Self {
+            origin,
+            profile_scope,
+            profile_key,
+            workspace_id,
+            workspace_generation,
+        };
+        selector.validate()?;
+        Ok(selector)
+    }
+
+    /// Validate the selector before it can inspect or mutate persisted data.
+    pub fn validate(&self) -> Result<(), KnowledgeValidationError> {
+        validate_text("selector.origin", &self.origin, 2048, false)?;
+        validate_public_text("selector.origin", &self.origin)?;
+        let url = Url::parse(&self.origin).map_err(|error| {
+            KnowledgeValidationError::new("selector.origin", format!("invalid origin: {error}"))
+        })?;
+        if url.origin().ascii_serialization() != self.origin {
+            return Err(KnowledgeValidationError::new(
+                "selector.origin",
+                "must be an exact serialized URL origin",
+            ));
+        }
+        if let Some(profile_key) = self.profile_key.as_deref() {
+            validate_text(
+                "selector.profileKey",
+                profile_key,
+                MAX_SCOPE_VALUE_BYTES,
+                false,
+            )?;
+            validate_public_text("selector.profileKey", profile_key)?;
+        }
+        match self.profile_scope {
+            KnowledgeProfileScope::ProfileBound if self.profile_key.is_none() => {
+                return Err(KnowledgeValidationError::new(
+                    "selector.profileKey",
+                    "is required for profileBound access",
+                ));
+            }
+            KnowledgeProfileScope::Anonymous if self.profile_key.is_some() => {
+                return Err(KnowledgeValidationError::new(
+                    "selector.profileKey",
+                    "must be absent for anonymous access",
+                ));
+            }
+            _ => {}
+        }
+        validate_workspace_scope(
+            "selector.workspaceId",
+            self.workspace_id.as_deref(),
+            self.workspace_generation,
+        )?;
+        if let Some(workspace_id) = self.workspace_id.as_deref() {
+            validate_public_text("selector.workspaceId", workspace_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn matches(&self, scope: &KnowledgeScope) -> bool {
+        self.origin == scope.origin
+            && self.profile_scope == scope.profile_scope
+            && self.profile_key == scope.profile_key
+            && self.workspace_id == scope.workspace_id
+            && self.workspace_generation == scope.workspace_generation
+    }
+}
+
 /// Scope dimensions that prevent knowledge from crossing incompatible sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

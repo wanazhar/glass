@@ -41,8 +41,40 @@ impl<'a> CdpSessionBackend<'a> {
     pub fn new(session: &'a BrowserSession) -> Result<Self, BrowserBackendError> {
         Ok(Self {
             session,
-            profile: CdpBrowserBackend::profile_for(DEFAULT_GLASS_VERSION)?,
+            profile: CdpBrowserBackend::navigation_profile(DEFAULT_GLASS_VERSION)?,
         })
+    }
+}
+
+impl CdpBrowserBackend {
+    /// Return the borrowed adapter's deliberately narrow capability profile.
+    ///
+    /// A borrowed session is retained by its owner and this adapter only
+    /// exposes navigation. Advertising the owned adapter's broader profile
+    /// here would let the dispatcher attempt operations that cannot be
+    /// fulfilled by this lifecycle boundary.
+    fn navigation_profile(glass_version: &str) -> Result<BackendProfile, BrowserBackendError> {
+        let mut profile = Self::profile_for(glass_version)?;
+        for capability in BrowserCapability::ALL {
+            if capability != BrowserCapability::Navigation {
+                profile.capabilities.insert(
+                    capability,
+                    crate::browser_backend::CapabilityDescriptor {
+                        level: SupportLevel::Unavailable,
+                        portability: crate::browser_backend::Portability::NonPortable,
+                        dependencies: Vec::new(),
+                        limitations: vec!["not exposed by the borrowed CDP session adapter".into()],
+                    },
+                );
+            }
+        }
+        profile.identity.certification.tested_capabilities = vec![BrowserCapability::Navigation];
+        profile.identity.certification.limitations = vec![
+            "borrowed adapter exposes navigation only; lifecycle remains with the session owner"
+                .into(),
+        ];
+        profile.validate()?;
+        Ok(profile)
     }
 }
 
@@ -618,6 +650,28 @@ mod tests {
             io::Error::other("x".repeat(crate::browser_backend::MAX_DIAGNOSTIC_BYTES + 100));
         let translated = translate_error("action", &oversized);
         assert!(translated.validate().is_ok());
+    }
+
+    #[test]
+    fn borrowed_adapter_profile_is_narrow_and_fails_closed() {
+        let profile = CdpBrowserBackend::navigation_profile("test").expect("valid profile");
+        assert_eq!(
+            profile.capability(BrowserCapability::Navigation).level,
+            SupportLevel::Available
+        );
+        for capability in BrowserCapability::ALL {
+            if capability != BrowserCapability::Navigation {
+                assert_eq!(
+                    profile.capability(capability).level,
+                    SupportLevel::Unavailable,
+                    "borrowed adapter must not advertise {capability:?}"
+                );
+            }
+        }
+        assert_eq!(
+            profile.identity.certification.tested_capabilities,
+            vec![BrowserCapability::Navigation]
+        );
     }
 
     #[test]

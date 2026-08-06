@@ -86,6 +86,8 @@ pub use session::KnowledgeRecordBuildOptions;
 pub use session::KnowledgeRecordKind;
 /// Scope dimensions preventing knowledge leakage across sessions.
 pub use session::KnowledgeScope;
+/// Exact origin/profile/workspace selector for safe knowledge management.
+pub use session::KnowledgeScopeSelector;
 /// Assessment signal category for remembered knowledge.
 pub use session::KnowledgeSignalKind;
 /// Provenance for a persisted browser knowledge record.

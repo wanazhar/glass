@@ -2369,6 +2369,9 @@ impl<'a> BrowserBackendDispatcher<'a> {
         let backend = self.backend;
         Box::pin(async move {
             validate_request(&request)?;
+            if request.operation() != operation {
+                return Err(unsupported_operation_request(operation));
+            }
             backend.profile().validate()?;
             backend
                 .profile()
@@ -2397,9 +2400,51 @@ fn validate_request(request: &BackendRequest) -> Result<(), BrowserBackendError>
     }
 }
 impl BackendRequest {
+    /// Return the semantic operation represented by this request.
+    pub const fn operation(&self) -> BackendOperation {
+        match self {
+            Self::Initialize => BackendOperation::Initialize,
+            Self::Close => BackendOperation::Close,
+            Self::Navigate(_) => BackendOperation::Navigate,
+            Self::Contexts(_) => BackendOperation::Contexts,
+            Self::Evidence(_) => BackendOperation::Evidence,
+            Self::Action(_) => BackendOperation::Action,
+            Self::Effects(_) => BackendOperation::Effects,
+            Self::Script(_) => BackendOperation::Script,
+            Self::Capture(_) => BackendOperation::Capture,
+            Self::Storage(_) => BackendOperation::Storage,
+            Self::Prompt(_) => BackendOperation::Prompt,
+            Self::Download(_) => BackendOperation::Download,
+        }
+    }
+
     /// Validate a request before any backend-specific dispatch.
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         validate_request(self)
+    }
+}
+
+fn unsupported_operation_request(operation: BackendOperation) -> BrowserBackendError {
+    BrowserBackendError::UnsupportedOperation {
+        operation: backend_operation_name(operation).into(),
+        reason: "request variant does not match the semantic operation".into(),
+    }
+}
+
+fn backend_operation_name(operation: BackendOperation) -> &'static str {
+    match operation {
+        BackendOperation::Initialize => "initialize",
+        BackendOperation::Close => "close",
+        BackendOperation::Navigate => "navigate",
+        BackendOperation::Contexts => "contexts",
+        BackendOperation::Evidence => "evidence",
+        BackendOperation::Action => "action",
+        BackendOperation::Effects => "effects",
+        BackendOperation::Script => "script",
+        BackendOperation::Capture => "capture",
+        BackendOperation::Storage => "storage",
+        BackendOperation::Prompt => "prompt",
+        BackendOperation::Download => "download",
     }
 }
 
@@ -2477,6 +2522,23 @@ mod tests {
             })
         }
     }
+    struct WrongResponseBackend {
+        profile: BackendProfile,
+    }
+
+    impl BrowserBackend for WrongResponseBackend {
+        fn profile(&self) -> &BackendProfile {
+            &self.profile
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _operation: BackendOperation,
+            _request: BackendRequest,
+        ) -> BackendFuture<'a, BackendResponse> {
+            Box::pin(async { Ok(BackendResponse::Unit) })
+        }
+    }
 
     #[tokio::test]
     async fn lifecycle_dispatch_uses_explicit_operations() {
@@ -2486,6 +2548,68 @@ mod tests {
         let dispatcher = BrowserBackendDispatcher::new(&backend);
         dispatcher.initialize().await.unwrap();
         dispatcher.close().await.unwrap();
+    }
+    #[tokio::test]
+    async fn dispatcher_rejects_operation_request_mismatch_before_dispatch() {
+        let backend = LifecycleBackend {
+            profile: profile("lifecycle", CertificationLevel::Partial),
+        };
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        let result = dispatcher
+            .call(
+                BackendOperation::Navigate,
+                BackendRequest::Contexts(ContextRequest {
+                    include_background: false,
+                }),
+                Ok::<BackendResponse, BrowserBackendError>,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(BrowserBackendError::UnsupportedOperation { operation, .. })
+                if operation == "navigate"
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_rejects_protocol_shock_response_variant() {
+        let backend = WrongResponseBackend {
+            profile: profile("shock", CertificationLevel::Partial),
+        };
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        let result = dispatcher
+            .navigate(NavigationRequest {
+                url: "https://example.test".into(),
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(BrowserBackendError::UnsupportedOperation { operation, reason })
+                if operation == "navigate"
+                    && reason.contains("wrong semantic response variant")
+        ));
+    }
+    #[tokio::test]
+    async fn dispatcher_reports_omitted_capability_without_dispatching() {
+        let mut profile = profile("partial", CertificationLevel::Partial);
+        profile.capabilities.remove(&BrowserCapability::Capture);
+        let backend = LifecycleBackend { profile };
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        let result = dispatcher
+            .capture(CaptureRequest {
+                context_id: "ctx-1".into(),
+                format: CaptureFormat::Png,
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(BrowserBackendError::CapabilityUnavailable {
+                capability: BrowserCapability::Capture,
+                actual: SupportLevel::Unavailable,
+                declared: false,
+                ..
+            })
+        ));
     }
 
     #[test]

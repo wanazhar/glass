@@ -8,7 +8,7 @@ use super::{
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
-use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind};
+use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy};
 use serde::Serialize;
 use serde_json::json;
 use std::future::Future;
@@ -62,6 +62,12 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if let Some(detail) = unsupported_revision_policy(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
+        if let Some(detail) = unsupported_postcondition(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
         if !matches!(
             task.task,
             TaskKind::FormInspect
@@ -281,7 +287,23 @@ impl BrowserSession {
                         task.limits.timeout_ms,
                     )
                     .await;
-                    let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                    let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                        Ok(after) => after,
+                        Err(error) => {
+                            let current_revision = self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            return Ok(mutation_failure_result(
+                                task,
+                                &plan,
+                                (source_revision, current_revision),
+                                steps,
+                                TaskPlanOperation::CollectPages,
+                                "pagination-collection",
+                                format!("post-action observation failed: {error}"),
+                            ));
+                        }
+                    };
                     let after = Box::pin(wait_for_semantic_page_change(
                         self,
                         &current,
@@ -866,8 +888,14 @@ impl BrowserSession {
                 };
                 let after_scoped_regions =
                     scoped_regions_for_observation(&after, task).unwrap_or_default();
-                let verified =
-                    postconditions_hold(task, &after, &after_scoped_regions, observation.revision);
+                let verified = postconditions_hold(
+                    task,
+                    &after,
+                    &after_scoped_regions,
+                    observation.revision,
+                    None,
+                    None,
+                );
                 let succeeded = verified && form.filled == form.total;
                 steps.push(step(
                     &plan,
@@ -961,6 +989,8 @@ impl BrowserSession {
                         &after,
                         &after_scoped_regions,
                         observation.revision,
+                        None,
+                        None,
                     );
                 steps.push(step(
                     &plan,
@@ -1010,6 +1040,12 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if let Some(detail) = unsupported_revision_policy(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
+        if let Some(detail) = unsupported_postcondition(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
         if task.task != TaskKind::NavigationFollow {
             return Ok(preflight_result(
                 task,
@@ -1137,15 +1173,50 @@ impl BrowserSession {
         expected_revision: u64,
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
-        match task.task {
+        let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if task.revision != TaskRevisionPolicy::Exact {
+            return Ok(preflight_result(
+                task,
+                &plan,
+                expected_revision,
+                "non-exact revision policies are not supported by the browser executor",
+            ));
+        }
+        if let Some(detail) = unsupported_postcondition(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
+
+        let mut result = match task.task {
             TaskKind::NavigationFollow => {
-                Box::pin(self.execute_navigation_task(task, expected_revision, confirmed)).await
+                Box::pin(self.execute_navigation_task(task, expected_revision, confirmed)).await?
             }
             TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
-                Box::pin(self.execute_dialog_task(task, expected_revision, confirmed)).await
+                Box::pin(self.execute_dialog_task(task, expected_revision, confirmed)).await?
             }
-            _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await,
+            _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await?,
+        };
+        if result.status == "succeeded" && !task.postconditions.is_empty() {
+            let observation = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+            let regions = scoped_regions_for_observation(&observation, task).unwrap_or_default();
+            if !postconditions_hold(
+                task,
+                &observation,
+                &regions,
+                expected_revision,
+                result.extraction.as_ref(),
+                result.dialog.as_ref(),
+            ) {
+                result.status = "indeterminate".into();
+                result.phase = "postcondition-verification".into();
+                result.retry =
+                    retry_guidance(RetryClassification::SafeAfterReconcile, "inspect_page");
+                if let Some(last) = result.steps.last_mut() {
+                    last.status = "indeterminate".into();
+                    last.detail = Some("authored postcondition did not hold".into());
+                }
+            }
         }
+        Ok(result)
     }
 }
 
@@ -1158,6 +1229,12 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = compile_task(task).map_err(|error| error.to_string())?;
+        if let Some(detail) = unsupported_revision_policy(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
+        if let Some(detail) = unsupported_postcondition(task) {
+            return Ok(preflight_result(task, &plan, expected_revision, detail));
+        }
         if !matches!(
             task.task,
             TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
@@ -1732,11 +1809,29 @@ where
         .map(|region| region.label.clone())
         .collect()
 }
+fn unsupported_postcondition(task: &GlassTask) -> Option<&'static str> {
+    if task
+        .postconditions
+        .iter()
+        .any(|postcondition| postcondition.kind == TaskPostconditionKind::EntityState)
+    {
+        return Some("entityState postconditions are not supported by the browser executor");
+    }
+    None
+}
+
+fn unsupported_revision_policy(task: &GlassTask) -> Option<&'static str> {
+    (task.revision != TaskRevisionPolicy::Exact)
+        .then_some("non-exact revision policies are not supported by the browser executor")
+}
+
 fn postconditions_hold(
     task: &GlassTask,
     observation: &InspectPageResult,
     regions: &[&SemanticRegion],
     source_revision: u64,
+    extraction: Option<&StructuredExtractionResult>,
+    dialog: Option<&PendingDialog>,
 ) -> bool {
     task.postconditions
         .iter()
@@ -1758,11 +1853,23 @@ fn postconditions_hold(
                     format!("{:?}", observation.page.kind).eq_ignore_ascii_case(expected)
                 })
             }
-            TaskPostconditionKind::DialogClosed
-            | TaskPostconditionKind::EntityState
-            | TaskPostconditionKind::RecordsExtracted => false,
+            TaskPostconditionKind::DialogClosed => dialog.is_none(),
+            TaskPostconditionKind::RecordsExtracted => extraction.is_some_and(|result| {
+                postcondition.expected.as_ref().is_none_or(|expected| {
+                    expected
+                        .parse::<usize>()
+                        .ok()
+                        .is_some_and(|minimum| result.records.len() >= minimum)
+                })
+            }),
+            TaskPostconditionKind::EntityState => false,
         })
-        && !regions.is_empty()
+        && (task.postconditions.iter().all(|postcondition| {
+            !matches!(
+                postcondition.kind,
+                TaskPostconditionKind::RegionPresent | TaskPostconditionKind::EntityState
+            )
+        }) || !regions.is_empty())
 }
 
 async fn bounded<T, F>(future: F, timeout_ms: u64) -> BrowserResult<T>
@@ -1854,6 +1961,7 @@ mod tests {
             task: TaskKind::FormFill,
             scope: TaskScope {
                 region_name: Some("Checkout".into()),
+
                 ..TaskScope::default()
             },
             inputs: BTreeMap::from([(String::from("Email"), String::from("a@example.test"))]),
@@ -1863,6 +1971,29 @@ mod tests {
             revision: Default::default(),
             postconditions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unsupported_revision_policy_fails_closed_before_dispatch() {
+        let mut authored = task();
+        authored.revision = TaskRevisionPolicy::Compatible;
+        assert_eq!(
+            unsupported_revision_policy(&authored),
+            Some("non-exact revision policies are not supported by the browser executor")
+        );
+    }
+
+    #[test]
+    fn entity_state_postcondition_fails_closed() {
+        let mut authored = task();
+        authored.postconditions = vec![crate::task_protocol::TaskPostcondition {
+            kind: TaskPostconditionKind::EntityState,
+            expected: Some("ready".into()),
+        }];
+        assert_eq!(
+            unsupported_postcondition(&authored),
+            Some("entityState postconditions are not supported by the browser executor")
+        );
     }
 
     #[test]

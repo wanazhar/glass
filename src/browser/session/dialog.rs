@@ -36,7 +36,7 @@ impl BrowserSession {
             .with_current_route(async {
                 self.require_expected_revision(Some(expected_revision))?;
                 self.cdp.handle_javascript_dialog(true).await?;
-                Ok(())
+                Ok::<(), Box<dyn std::error::Error>>(())
             })
             .await?;
         self.invalidate_observation().await;
@@ -54,7 +54,7 @@ impl BrowserSession {
             .with_current_route(async {
                 self.require_expected_revision(Some(expected_revision))?;
                 self.cdp.handle_javascript_dialog(false).await?;
-                Ok(())
+                Ok::<(), Box<dyn std::error::Error>>(())
             })
             .await?;
         self.invalidate_observation().await;

@@ -66,11 +66,38 @@ fn workspace_disconnect_revokes_lease_and_closing_rejects_mutations() {
         scope,
     ).unwrap();
     workspace.attach(attachment.clone()).unwrap();
-    let grant = workspace.acquire_lease(&attachment.id, Revision(0)).unwrap();
+    let grant = workspace.acquire_lease(attachment.id(), Revision(0)).unwrap();
     assert_eq!(grant.revision, Revision(1));
-    workspace.disconnect(&attachment.id).unwrap();
+    workspace.disconnect(attachment.id()).unwrap();
     assert_eq!(workspace.lease().state, MutationLeaseState::Available);
     assert_eq!(workspace.lease().revision, Revision(2));
     workspace.transition(WorkspaceLifecycle::Closing).unwrap();
-    assert!(matches!(workspace.acquire_lease(&attachment.id, Revision(2)), Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))));
+    assert!(matches!(workspace.acquire_lease(attachment.id(), Revision(2)), Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))));
+}
+
+#[test]
+fn ephemeral_generations_are_unique() {
+    let first = WorkspaceConfig::ephemeral_private(None).generation;
+    let second = WorkspaceConfig::ephemeral_private(None).generation;
+    assert!(first.is_some());
+    assert!(second.is_some());
+    assert_ne!(first, second);
+}
+
+#[test]
+fn duplicate_attachments_and_unbounded_references_are_rejected() {
+    let identity = WorkspaceIdentity::new(WorkspaceId::new("dupes").unwrap(), []).unwrap();
+    let mut workspace = Workspace::new(identity, WorkspaceConfig::ephemeral_private(None)).unwrap();
+    let attachment = Attachment::new(
+        AttachmentId::new("human").unwrap(),
+        ResourceId::new("actor").unwrap(),
+        ActorRole::Human,
+        AttachmentCapabilities::mutating(),
+        workspace.scope(),
+    ).unwrap();
+    workspace.attach(attachment.clone()).unwrap();
+    assert!(matches!(workspace.attach(attachment), Err(WorkspaceError::DuplicateAttachment)));
+    let oversized = format!("glass://workspace/w/browser/{}", "x".repeat(MAX_REFERENCE_URI_BYTES));
+    assert!(oversized.parse::<ResourceReference>().is_err());
+    assert!("glass://workspace/w/generation/0/browser/b".parse::<ResourceReference>().is_err());
 }

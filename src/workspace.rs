@@ -8,24 +8,47 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub const MAX_ID_BYTES: usize = 64;
 pub const MAX_ALIAS_BYTES: usize = 64;
 pub const MAX_ALIASES: usize = 16;
 pub const MAX_ATTACHMENTS: usize = 256;
-
+pub const MAX_REFERENCE_URI_BYTES: usize = 512;
+pub const MAX_REFERENCE_SEGMENTS: usize = 8;
 /// Ephemeral workspaces carry a non-zero generation so a later workspace
 /// incarnation cannot accidentally consume an old resource reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
-pub struct WorkspaceGeneration(pub u64);
+pub struct WorkspaceGeneration(u64);
 
 impl WorkspaceGeneration {
     pub fn new(value: u64) -> Result<Self, WorkspaceError> {
-        if value == 0 {
-            return Err(WorkspaceError::InvalidGeneration);
-        }
+        if value == 0 { return Err(WorkspaceError::InvalidGeneration); }
         Ok(Self(value))
+    }
+
+    /// Allocate a process-unique generation. It never returns zero or reuses
+    /// a prior generation while this process is alive.
+    pub fn allocate() -> Self {
+        loop {
+            let current = NEXT_GENERATION.load(Ordering::Relaxed);
+            let next = current.checked_add(1).expect("workspace generation exhausted");
+            if NEXT_GENERATION.compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                return Self(current);
+            }
+        }
+    }
+
+    pub fn value(self) -> u64 { self.0 }
+}
+
+impl<'de> Deserialize<'de> for WorkspaceGeneration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        Self::new(u64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -115,13 +138,12 @@ bounded_name!(ProfileId, "profile id", MAX_ID_BYTES);
 bounded_name!(ResourceId, "resource id", MAX_ID_BYTES);
 bounded_name!(AttachmentId, "attachment id", MAX_ID_BYTES);
 bounded_name!(LeaseId, "lease id", MAX_ID_BYTES);
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceIdentity {
-    pub id: WorkspaceId,
+    id: WorkspaceId,
     #[serde(default)]
-    pub aliases: BTreeSet<WorkspaceAlias>,
+    aliases: BTreeSet<WorkspaceAlias>,
 }
 
 impl WorkspaceIdentity {
@@ -140,12 +162,18 @@ impl WorkspaceIdentity {
     }
 
     pub fn add_alias(&mut self, alias: WorkspaceAlias) -> Result<(), WorkspaceError> {
-        if !self.aliases.contains(&alias) && self.aliases.len() >= MAX_ALIASES {
+        if self.aliases.contains(&alias) {
+            return Err(WorkspaceError::DuplicateAlias);
+        }
+        if self.aliases.len() >= MAX_ALIASES {
             return Err(WorkspaceError::TooManyAliases { maximum: MAX_ALIASES });
         }
         self.aliases.insert(alias);
         Ok(())
     }
+
+    pub fn id(&self) -> &WorkspaceId { &self.id }
+    pub fn aliases(&self) -> &BTreeSet<WorkspaceAlias> { &self.aliases }
 }
 
 #[derive(Deserialize)]
@@ -222,7 +250,7 @@ impl WorkspaceConfig {
     }
 
     pub fn ephemeral_private(profile_id: Option<ProfileId>) -> Self {
-        Self { profile_mode: ProfileMode::Isolated, privacy_mode: PrivacyMode::Private, storage: WorkspaceStorage::Ephemeral, profile_id, generation: Some(WorkspaceGeneration(1)) }
+        Self { profile_mode: ProfileMode::Isolated, privacy_mode: PrivacyMode::Private, storage: WorkspaceStorage::Ephemeral, profile_id, generation: Some(WorkspaceGeneration::allocate()) }
     }
 
     pub fn validate(&self) -> Result<(), WorkspaceError> {
@@ -244,11 +272,11 @@ impl WorkspaceConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceScope {
-    pub workspace_id: WorkspaceId,
+    workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<ProfileId>,
+    profile_id: Option<ProfileId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<WorkspaceGeneration>,
+    generation: Option<WorkspaceGeneration>,
 }
 
 impl WorkspaceScope {
@@ -257,6 +285,9 @@ impl WorkspaceScope {
     pub fn with_generation(mut self, generation: WorkspaceGeneration) -> Self { self.generation = Some(generation); self }
     fn with_generation_opt(mut self, generation: Option<WorkspaceGeneration>) -> Self { self.generation = generation; self }
     fn with_profile(mut self, profile_id: ProfileId) -> Self { self.profile_id = Some(profile_id); self }
+    pub fn workspace_id(&self) -> &WorkspaceId { &self.workspace_id }
+    pub fn profile_id(&self) -> Option<&ProfileId> { self.profile_id.as_ref() }
+    pub fn generation(&self) -> Option<WorkspaceGeneration> { self.generation }
     pub fn contains(&self, other: &Self) -> bool {
         self.workspace_id == other.workspace_id && self.profile_id == other.profile_id && self.generation == other.generation
     }
@@ -294,8 +325,8 @@ pub enum ResourceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceReference {
-    pub scope: WorkspaceScope,
-    pub resource: ResourceKind,
+    scope: WorkspaceScope,
+    resource: ResourceKind,
 }
 
 pub type ResourceRef = ResourceReference;
@@ -358,6 +389,7 @@ impl ResourceReference {
 
     pub fn validate_scope(&self, scope: &WorkspaceScope) -> Result<(), ScopeError> { self.scope.validate(scope) }
     pub fn scope(&self) -> &WorkspaceScope { &self.scope }
+    pub fn resource(&self) -> &ResourceKind { &self.resource }
 
     fn kind_name(&self) -> &'static str {
         match self.resource {
@@ -404,11 +436,13 @@ impl fmt::Display for ResourceReference {
 
 impl FromStr for ResourceReference {
     type Err = ReferenceError;
-
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() > MAX_REFERENCE_URI_BYTES {
+            return Err(ReferenceError::InvalidPath);
+        }
         let rest = value.strip_prefix("glass://").ok_or(ReferenceError::InvalidScheme)?;
         let pieces: Vec<_> = rest.split('/').collect();
-        if pieces.len() < 2 || pieces[0] != "workspace" {
+        if pieces.len() < 2 || pieces.len() > MAX_REFERENCE_SEGMENTS || pieces[0] != "workspace" {
             return Err(ReferenceError::InvalidPath);
         }
         let workspace = WorkspaceId::new(pieces[1]).map_err(ReferenceError::InvalidName)?;
@@ -507,11 +541,11 @@ impl Default for AttachmentCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
-    pub id: AttachmentId,
-    pub actor_id: ResourceId,
-    pub role: ActorRole,
-    pub capabilities: AttachmentCapabilities,
-    pub scope: WorkspaceScope,
+    id: AttachmentId,
+    actor_id: ResourceId,
+    role: ActorRole,
+    capabilities: AttachmentCapabilities,
+    scope: WorkspaceScope,
 }
 
 impl Attachment {
@@ -521,6 +555,11 @@ impl Attachment {
         }
         Ok(Self { id, actor_id, role, capabilities, scope })
     }
+    pub fn id(&self) -> &AttachmentId { &self.id }
+    pub fn actor_id(&self) -> &ResourceId { &self.actor_id }
+    pub fn role(&self) -> ActorRole { self.role }
+    pub fn capabilities(&self) -> &AttachmentCapabilities { &self.capabilities }
+    pub fn scope(&self) -> &WorkspaceScope { &self.scope }
 
     pub fn can_mutate(&self) -> bool { self.role != ActorRole::Observer && self.capabilities.contains(AttachmentCapability::Mutate) }
     pub fn can_takeover(&self) -> bool { self.can_mutate() && self.capabilities.contains(AttachmentCapability::Takeover) }
@@ -649,7 +688,7 @@ pub struct Workspace {
     pub config: WorkspaceConfig,
     pub lifecycle: WorkspaceLifecycle,
     #[serde(default)]
-    pub attachments: BTreeMap<AttachmentId, Attachment>,
+    attachments: BTreeMap<AttachmentId, Attachment>,
     #[serde(skip)]
     lease_authority: MutationLeaseAuthority,
 }
@@ -661,8 +700,7 @@ impl Workspace {
     }
 
     pub fn scope(&self) -> WorkspaceScope {
-        let scope = WorkspaceScope { workspace_id: self.identity.id.clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation };
-        scope
+        WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation }
     }
 
     pub fn transition(&mut self, next: WorkspaceLifecycle) -> Result<(), LifecycleError> {
@@ -676,13 +714,15 @@ impl Workspace {
     pub fn attach(&mut self, attachment: Attachment) -> Result<(), WorkspaceError> {
         self.ensure_mutable()?;
         self.scope().validate(&attachment.scope).map_err(WorkspaceError::Scope)?;
-        if !self.attachments.contains_key(&attachment.id) && self.attachments.len() >= MAX_ATTACHMENTS {
+        if self.attachments.contains_key(&attachment.id) {
+            return Err(WorkspaceError::DuplicateAttachment);
+        }
+        if self.attachments.len() >= MAX_ATTACHMENTS {
             return Err(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS });
         }
         self.attachments.insert(attachment.id.clone(), attachment);
         Ok(())
     }
-
     /// Detaching an attachment revokes its lease but never closes the workspace.
     pub fn disconnect(&mut self, attachment_id: &AttachmentId) -> Result<(), WorkspaceError> {
         self.attachments.remove(attachment_id).ok_or(WorkspaceError::UnknownAttachment)?;
@@ -732,7 +772,7 @@ impl<'de> Deserialize<'de> for Workspace {
             return Err(serde::de::Error::custom(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
         }
         let scope = WorkspaceScope {
-            workspace_id: raw.identity.id.clone(),
+            workspace_id: raw.identity.id().clone(),
             profile_id: raw.config.profile_id.clone(),
             generation: raw.config.generation,
         };
@@ -764,6 +804,7 @@ pub enum WorkspaceError {
     InvalidGeneration,
     InvalidConfiguration,
     DuplicateAlias,
+    DuplicateAttachment,
     TooManyAliases { maximum: usize },
     TooManyAttachments { maximum: usize },
     UnknownAttachment,
@@ -826,6 +867,7 @@ display_error!(WorkspaceError, {
     Self::InvalidGeneration => "invalid workspace generation",
     Self::InvalidConfiguration => "invalid workspace profile/privacy/storage configuration",
     Self::DuplicateAlias => "workspace contains a duplicate alias",
+    Self::DuplicateAttachment => "workspace already has this attachment",
     Self::TooManyAliases { .. } => "workspace has too many aliases",
     Self::TooManyAttachments { .. } => "workspace has too many attachments",
     Self::UnknownAttachment => "attachment is not connected to the workspace",
@@ -892,7 +934,7 @@ mod tests {
         let scope = workspace.scope();
         let attachment = Attachment::new(AttachmentId::new("human").unwrap(), ResourceId::new("actor").unwrap(), ActorRole::Human, AttachmentCapabilities::mutating(), scope).unwrap();
         workspace.attach(attachment.clone()).unwrap();
-        workspace.disconnect(&attachment.id).unwrap();
+        workspace.disconnect(attachment.id()).unwrap();
         assert_eq!(workspace.lifecycle, WorkspaceLifecycle::Active);
         workspace.transition(WorkspaceLifecycle::Closing).unwrap();
         assert!(matches!(workspace.attach(attachment), Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))));

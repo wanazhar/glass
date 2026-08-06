@@ -5,10 +5,12 @@
 //! may use to connect those handles.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet};
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use std::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -30,14 +32,23 @@ impl WorkspaceGeneration {
         Ok(Self(value))
     }
 
-    /// Allocate a process-unique generation. It never returns zero or reuses
-    /// a prior generation while this process is alive.
+    /// Allocate a generation that includes wall-clock and process entropy.
+    /// The atomic sequence prevents collisions within one process; the time
+    /// and PID components keep independent process incarnations distinct.
     pub fn allocate() -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock predates Unix epoch")
+            .as_nanos() as u64;
+        let process = u64::from(std::process::id()).rotate_left(29);
         loop {
-            let current = NEXT_GENERATION.load(Ordering::Relaxed);
-            let next = current.checked_add(1).expect("workspace generation exhausted");
-            if NEXT_GENERATION.compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                return Self(current);
+            let sequence = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+            let value = timestamp
+                .wrapping_add(process)
+                .wrapping_add(sequence)
+                .max(1);
+            if value != 0 {
+                return Self(value);
             }
         }
     }
@@ -181,14 +192,41 @@ impl WorkspaceIdentity {
 struct RawWorkspaceIdentity {
     id: WorkspaceId,
     #[serde(default)]
-    aliases: Vec<WorkspaceAlias>,
+    aliases: BoundedAliases,
+}
+#[derive(Default)]
+struct BoundedAliases(Vec<WorkspaceAlias>);
+
+impl<'de> Deserialize<'de> for BoundedAliases {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        struct AliasesVisitor;
+        impl<'de> Visitor<'de> for AliasesVisitor {
+            type Value = BoundedAliases;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded workspace alias array")
+            }
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where A: SeqAccess<'de> {
+                let mut aliases = Vec::new();
+                while let Some(alias) = sequence.next_element::<WorkspaceAlias>()? {
+                    if aliases.len() >= MAX_ALIASES {
+                        return Err(serde::de::Error::custom(WorkspaceError::TooManyAliases { maximum: MAX_ALIASES }));
+                    }
+                    aliases.push(alias);
+                }
+                Ok(BoundedAliases(aliases))
+            }
+        }
+        deserializer.deserialize_seq(AliasesVisitor)
+    }
 }
 
 impl<'de> Deserialize<'de> for WorkspaceIdentity {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
         let raw = RawWorkspaceIdentity::deserialize(deserializer)?;
-        Self::new(raw.id, raw.aliases).map_err(serde::de::Error::custom)
+        Self::new(raw.id, raw.aliases.0).map_err(serde::de::Error::custom)
     }
 }
 
@@ -373,6 +411,14 @@ impl ResourceReference {
         Self { scope: WorkspaceScope::workspace(workspace_id), resource: ResourceKind::Workspace }
     }
     pub fn profile(scope: WorkspaceScope, profile_id: ProfileId) -> Result<Self, ReferenceError> {
+        if let Some(existing) = scope.profile_id.as_ref()
+            && existing != &profile_id
+        {
+            return Err(ReferenceError::Scope(ScopeError::ProfileMismatch {
+                expected: scope.profile_id,
+                actual: Some(profile_id),
+            }));
+        }
         Self::new(
             WorkspaceScope { workspace_id: scope.workspace_id, profile_id: Some(profile_id.clone()), generation: scope.generation },
             ResourceKind::Profile(profile_id),
@@ -684,9 +730,9 @@ impl MutationLeaseAuthority {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Workspace {
-    pub identity: WorkspaceIdentity,
-    pub config: WorkspaceConfig,
-    pub lifecycle: WorkspaceLifecycle,
+    identity: WorkspaceIdentity,
+    config: WorkspaceConfig,
+    lifecycle: WorkspaceLifecycle,
     #[serde(default)]
     attachments: BTreeMap<AttachmentId, Attachment>,
     #[serde(skip)]
@@ -698,6 +744,9 @@ impl Workspace {
         config.validate()?;
         Ok(Self { identity, config, lifecycle: WorkspaceLifecycle::Active, attachments: BTreeMap::new(), lease_authority: MutationLeaseAuthority::default() })
     }
+    pub fn identity(&self) -> &WorkspaceIdentity { &self.identity }
+    pub fn config(&self) -> &WorkspaceConfig { &self.config }
+    pub fn lifecycle(&self) -> WorkspaceLifecycle { self.lifecycle }
 
     pub fn scope(&self) -> WorkspaceScope {
         WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation }
@@ -754,6 +803,37 @@ impl Workspace {
     }
 }
 
+#[derive(Default)]
+struct BoundedAttachments(BTreeMap<AttachmentId, Attachment>);
+
+impl<'de> Deserialize<'de> for BoundedAttachments {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        struct AttachmentsVisitor;
+        impl<'de> Visitor<'de> for AttachmentsVisitor {
+            type Value = BoundedAttachments;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded attachment map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where A: MapAccess<'de> {
+                let mut attachments = BTreeMap::new();
+                while let Some(id) = map.next_key::<AttachmentId>()? {
+                    if attachments.len() >= MAX_ATTACHMENTS {
+                        return Err(serde::de::Error::custom(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
+                    }
+                    if attachments.contains_key(&id) {
+                        return Err(serde::de::Error::custom(WorkspaceError::DuplicateAttachment));
+                    }
+                    let attachment = map.next_value::<Attachment>()?;
+                    attachments.insert(id, attachment);
+                }
+                Ok(BoundedAttachments(attachments))
+            }
+        }
+        deserializer.deserialize_map(AttachmentsVisitor)
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawWorkspace {
@@ -761,14 +841,13 @@ struct RawWorkspace {
     config: WorkspaceConfig,
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
-    attachments: BTreeMap<AttachmentId, Attachment>,
+    attachments: BoundedAttachments,
 }
-
 impl<'de> Deserialize<'de> for Workspace {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
         let raw = RawWorkspace::deserialize(deserializer)?;
-        if raw.attachments.len() > MAX_ATTACHMENTS {
+        if raw.attachments.0.len() > MAX_ATTACHMENTS {
             return Err(serde::de::Error::custom(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
         }
         let scope = WorkspaceScope {
@@ -776,7 +855,7 @@ impl<'de> Deserialize<'de> for Workspace {
             profile_id: raw.config.profile_id.clone(),
             generation: raw.config.generation,
         };
-        for (key, attachment) in &raw.attachments {
+        for (key, attachment) in &raw.attachments.0 {
             if key != &attachment.id || attachment.scope != scope {
                 return Err(serde::de::Error::custom(WorkspaceError::Scope(ScopeError::WorkspaceMismatch {
                     expected: scope.workspace_id.clone(),
@@ -793,7 +872,7 @@ impl<'de> Deserialize<'de> for Workspace {
         }
         let mut workspace = Workspace::new(raw.identity, raw.config).map_err(serde::de::Error::custom)?;
         workspace.lifecycle = raw.lifecycle;
-        workspace.attachments = raw.attachments;
+        workspace.attachments = raw.attachments.0;
         Ok(workspace)
     }
 }
@@ -935,7 +1014,7 @@ mod tests {
         let attachment = Attachment::new(AttachmentId::new("human").unwrap(), ResourceId::new("actor").unwrap(), ActorRole::Human, AttachmentCapabilities::mutating(), scope).unwrap();
         workspace.attach(attachment.clone()).unwrap();
         workspace.disconnect(attachment.id()).unwrap();
-        assert_eq!(workspace.lifecycle, WorkspaceLifecycle::Active);
+        assert_eq!(workspace.lifecycle(), WorkspaceLifecycle::Active);
         workspace.transition(WorkspaceLifecycle::Closing).unwrap();
         assert!(matches!(workspace.attach(attachment), Err(WorkspaceError::Lifecycle(LifecycleError::NotMutable { .. }))));
         workspace.transition(WorkspaceLifecycle::Closed).unwrap();

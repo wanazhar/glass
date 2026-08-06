@@ -101,3 +101,12 @@ fn duplicate_attachments_and_unbounded_references_are_rejected() {
     assert!(oversized.parse::<ResourceReference>().is_err());
     assert!("glass://workspace/w/generation/0/browser/b".parse::<ResourceReference>().is_err());
 }
+
+#[test]
+fn profile_reference_cannot_overwrite_scope() {
+    let scope = WorkspaceScope::profile(
+        WorkspaceId::new("scoped").unwrap(),
+        ProfileId::new("profile-a").unwrap(),
+    );
+    assert!(ResourceReference::profile(scope, ProfileId::new("profile-b").unwrap()).is_err());
+}

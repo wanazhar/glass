@@ -99,11 +99,17 @@ pub use intent::{
 pub use intercept::{InterceptGuard, RequestPattern};
 pub use knowledge::{
     KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeAssessmentSignal,
-    KnowledgeAssessmentStatus, KnowledgeConfidence, KnowledgeInvalidation, KnowledgeLifecycleEvent,
-    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeObservationMode,
-    KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeRecord,
-    KnowledgeRecordBuildOptions, KnowledgeRecordKind, KnowledgeScope, KnowledgeSignalKind,
-    KnowledgeSource, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KnowledgeAssessmentStatus, KnowledgeBackendCapability, KnowledgeBackendKind,
+    KnowledgeBackendProvenance, KnowledgeConfidence, KnowledgeCurrentValidation,
+    KnowledgeCurrentValidationStatus, KnowledgeEvidenceQuality, KnowledgeInvalidation,
+    KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
+    KnowledgeMemoryInfluence, KnowledgeObservationMode, KnowledgeObservationReport,
+    KnowledgePortability, KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordBuildOptions,
+    KnowledgeRecordKind, KnowledgeRetrievalExplanation, KnowledgeRetrievalSignal,
+    KnowledgeRetrievalSignalKind, KnowledgeScope, KnowledgeSignalKind, KnowledgeSource,
+    KnowledgeStoreSnapshot, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
+    KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
+    MAX_KNOWLEDGE_RECORDS,
 };
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgePurgeResult, KnowledgeStore, KnowledgeStoreChange,

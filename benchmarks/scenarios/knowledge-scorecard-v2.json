@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "fresh-matching-page-family-with-provenance",
+      "record": {
+        "schemaVersion": 1,
+        "recordId": "knowledge-docs-v2",
+        "kind": "pageFamily",
+        "scope": {
+          "origin": "https://example.test",
+          "pathPattern": "/docs/*",
+          "profileScope": "anonymous",
+          "locale": "en-US",
+          "browserFamily": "chromium",
+          "browserVersionRange": ">=120",
+          "glassSchemaVersion": 1,
+          "policyPreset": "balanced"
+        },
+        "source": {
+          "firstSeenAt": "2026-07-27T00:00:00Z",
+          "lastVerifiedAt": "2026-07-27T00:00:00Z",
+          "glassVersion": "0.2.0",
+          "verificationCount": 2,
+          "surface": {
+            "kind": "document",
+            "understanding": "strong",
+            "coverage": "semantic"
+          },
+          "backend": {
+            "backend": "cdp",
+            "profile": "production",
+            "capabilities": ["semanticExtraction", "verification"]
+          }
+        },
+        "confidence": "observed",
+        "invalidation": {
+          "maxAgeSeconds": 604800,
+          "requiredLandmarks": ["documentation", "main", "search"]
+        },
+        "data": {
+          "pageKind": "documentation",
+          "regionKinds": ["main", "search"]
+        },
+        "portability": "surfacePortable",
+        "retrieval": {
+          "currentValidation": {
+            "status": "validated",
+            "evidenceQuality": "strong",
+            "currentRevision": 1,
+            "validatedAt": "2026-07-27T00:00:00Z"
+          }
+        }
+      },
+      "context": {
+        "origin": "https://example.test",
+        "path": "/docs/getting-started",
+        "profileScope": "anonymous",
+        "browserFamily": "chromium",
+        "browserVersion": "120.0",
+        "glassSchemaVersion": 1,
+        "policyPreset": "balanced",
+        "locale": "en-US",
+        "landmarks": ["documentation", "main", "search"],
+        "surfaceKind": "document",
+        "backendKind": "cdp",
+        "backendCapabilities": ["semanticExtraction", "verification"],
+        "now": "2026-07-27T00:00:01Z"
+      },
+      "expectedStatus": "eligible"
+    }
+  ]
+}

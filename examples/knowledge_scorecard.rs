@@ -1,7 +1,8 @@
 //! Validate persistent-knowledge scope, freshness, and quarantine outcomes.
 
 use glass::browser::session::{
-    KnowledgeAssessmentStatus, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecord,
+    KnowledgeAssessmentStatus, KnowledgeBackendCapability, KnowledgeBackendKind,
+    KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecord, KnowledgeSurfaceKind,
 };
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -41,6 +42,12 @@ struct Context {
     glass_schema_version: u32,
     #[serde(rename = "policyPreset")]
     policy_preset: String,
+    #[serde(rename = "surfaceKind")]
+    surface_kind: KnowledgeSurfaceKind,
+    #[serde(rename = "backendKind")]
+    backend_kind: KnowledgeBackendKind,
+    #[serde(rename = "backendCapabilities")]
+    backend_capabilities: Vec<KnowledgeBackendCapability>,
     landmarks: Vec<String>,
     now: String,
 }
@@ -60,13 +67,16 @@ impl Context {
             policy_preset: self.policy_preset,
             landmarks: self.landmarks,
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339(&self.now)?.timestamp(),
+            surface_kind: Some(self.surface_kind),
+            backend_kind: Some(self.backend_kind),
+            backend_capabilities: self.backend_capabilities,
         })
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let corpus: Corpus =
-        serde_json::from_str(include_str!("../benchmarks/scenarios/knowledge-v1.json"))?;
+        serde_json::from_str(include_str!("../benchmarks/scenarios/knowledge-scorecard-v2.json"))?;
     assert_eq!(corpus.schema_version, 1);
     let mut names = BTreeSet::new();
     let mut ids = BTreeSet::new();

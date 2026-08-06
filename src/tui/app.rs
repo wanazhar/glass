@@ -45,9 +45,9 @@ use crate::browser::session::{
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
-use crate::presentation::{CaptureScale, PixelSize, TargetResourceIdentity};
+use crate::presentation::{BrowserFrame, CaptureScale, PixelSize, TargetResourceIdentity};
 use crate::terminal_graphics::{
-    PaneArea, TerminalEnvironment, TerminalGraphics, negotiate,
+    PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics, negotiate,
 };
 const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
@@ -562,6 +562,13 @@ impl App {
         stdout.flush()
     }
 
+    fn submit_graphics_frame(
+        &mut self,
+        frame: BrowserFrame,
+        payload: &[u8],
+    ) -> BrowserResult<SubmitResult> {
+        Ok(self.graphics.submit(frame, payload)?)
+    }
     fn render_graphics(&mut self) -> BrowserResult<()> {
         let rendered = self.graphics.render_current(&self.page_content)?;
         if rendered.mode == crate::terminal_graphics::GraphicsMode::Kitty {

@@ -734,8 +734,13 @@ mod tests {
         assert!(records.iter().any(|record| {
             record.generation == 3 && record.event == FrameOwnershipEvent::Queued
         }));
-    }
+        assert!(graphics.present_pending().unwrap());
+        assert_eq!(graphics.diagnostics().current_bytes, 5);
+        assert!(graphics.ownership().any(|record| {
+            record.generation == 3 && record.event == FrameOwnershipEvent::Presented
+        }));
 
+    }
     #[test]
     fn raw_rgba_render_uses_encoding_and_image_placement() {
         let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();

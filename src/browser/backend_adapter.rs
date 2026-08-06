@@ -29,6 +29,60 @@ pub struct CdpBrowserBackend {
     session: Mutex<Option<BrowserSession>>,
     profile: BackendProfile,
 }
+/// Borrowed adapter used by existing session call chains that retain ownership
+/// of the session for tracing and shutdown. It currently exposes navigation,
+/// whose typed contract has no timeout/revision fields.
+pub struct CdpSessionBackend<'a> {
+    session: &'a BrowserSession,
+    profile: BackendProfile,
+}
+
+impl<'a> CdpSessionBackend<'a> {
+    pub fn new(session: &'a BrowserSession) -> Result<Self, BrowserBackendError> {
+        Ok(Self {
+            session,
+            profile: CdpBrowserBackend::profile_for(DEFAULT_GLASS_VERSION)?,
+        })
+    }
+}
+
+impl BrowserBackend for CdpSessionBackend<'_> {
+    fn profile(&self) -> &BackendProfile {
+        &self.profile
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        operation: BackendOperation,
+        request: BackendRequest,
+    ) -> BackendFuture<'a, BackendResponse> {
+        Box::pin(async move {
+            let result = async {
+                request.validate()?;
+                self.profile.require_operation(operation, SupportLevel::Available)?;
+                match (operation, request) {
+                    (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
+                        let page = self
+                            .session
+                            .navigate(&request.url)
+                            .await
+                            .map_err(|error| translate_error("navigate", error.as_ref()))?;
+                        Ok(BackendResponse::Navigation(NavigationResult {
+                            url: page.url,
+                            revision: self.session.page_revision.load(Ordering::Relaxed),
+                        }))
+                    }
+                    (operation, _) => Err(unsupported(
+                        operation_name(operation),
+                        "borrowed session adapter only exposes navigation",
+                    )),
+                }
+            }
+            .await;
+            validate_dispatch_result(result)
+        })
+    }
+}
 
 impl CdpBrowserBackend {
     /// Wrap an existing session using the current Glass version for
@@ -128,7 +182,7 @@ impl CdpBrowserBackend {
         operation: &str,
     ) -> Result<(), BrowserBackendError> {
         let active = session.topology.lock().await.active_target_id.clone();
-        if active.as_deref() == Some(context_id) {
+        if context_is_active(active.as_deref(), context_id) {
             return Ok(());
         }
         session
@@ -438,6 +492,9 @@ fn targets_to_contexts(targets: Vec<PageTargetInfo>, include_background: bool) -
         .collect()
 }
 
+fn context_is_active(active_context_id: Option<&str>, requested_context_id: &str) -> bool {
+    active_context_id == Some(requested_context_id)
+}
 fn operation_name(operation: BackendOperation) -> &'static str {
     match operation {
         BackendOperation::Initialize => "initialize",
@@ -497,6 +554,19 @@ fn bounded_error(mut reason: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn active_context_keeps_revisioned_action_request_on_current_route() {
+        assert!(context_is_active(Some("tab-1"), "tab-1"));
+        assert!(!context_is_active(Some("tab-1"), "tab-2"));
+        let request = ActionRequest {
+            context_id: "tab-1".into(),
+            action: SemanticAction::Click {
+                target: "ref=r1:b1".into(),
+            },
+        };
+        assert!(request.validate().is_ok());
+    }
+
     use crate::browser_backend::BackendContract;
     use std::io;
 

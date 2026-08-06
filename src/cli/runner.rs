@@ -20,6 +20,8 @@ use crate::browser::session::{
     default_knowledge_store_path, diff_workflows, format_workflow_yaml, preview_workflow,
     record_semantic_events,
 };
+use crate::browser::CdpSessionBackend;
+use crate::browser_backend::{BrowserBackendDispatcher, NavigationRequest};
 use crate::capabilities::GlassCapabilityManifest;
 use crate::protocol::{
     GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_EXECUTE_OPERATION,
@@ -1306,6 +1308,15 @@ async fn run_command(
                         )
                         .await?,
                 )?;
+            } else if *timeout_ms == 20_000 {
+                // The typed adapter contract currently carries URL only;
+                // retain the direct deadline path for custom timeouts.
+                let backend = CdpSessionBackend::new(session)?;
+                let dispatcher = BrowserBackendDispatcher::new(&backend);
+                dispatcher
+                    .navigate(NavigationRequest { url: url.clone() })
+                    .await?;
+                print_json(&session.page_info().await?)?;
             } else {
                 let page = session
                     .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))

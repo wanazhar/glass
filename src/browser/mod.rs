@@ -14,6 +14,7 @@ pub mod profile;
 pub mod session;
 /// Typed CDP adapter implementing the transport-neutral browser backend boundary.
 pub mod backend_adapter;
+pub(crate) use backend_adapter::CdpSessionBackend;
 
 // Re-export key session types to the browser module level.
 

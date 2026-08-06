@@ -10,6 +10,35 @@ are [scenario contract](tasks/reliability-026-001.md),
 and [capability/replay work](tasks/reliability-026-004.md). Issue #27 is now
 active; its first foundation phase is [stable runtime platform](tasks/platform-027-001.md).
 
+## Active plan: Glass v0.3.1 issue #31
+
+Status: Active local development — no push, tag, crates.io publication, or
+GitHub Release is part of this plan.
+
+The authoritative [issue #31](https://github.com/wanazhar/glass/issues/31)
+defines four mandatory pillars—semantic memory, multi-surface understanding,
+runtime survivability beyond CDP, and the Ratatui-native Browser Workspace—
+plus the cross-cutting Glass Experience Layer. The delivery analysis,
+integration inventory, and dependency order are in
+[analysis/release-031.md](analysis/release-031.md).
+
+Foundation wave:
+
+1. [memory-031-001](tasks/memory-031-001.md) — surface/backend-aware
+   knowledge provenance and explainability.
+2. [surface-031-001](tasks/surface-031-001.md) — bounded multi-surface
+   contract.
+3. [backend-031-001](tasks/backend-031-001.md) — transport-neutral Browser
+   Capability Interface.
+4. [presentation-031-001](tasks/presentation-031-001.md) — bounded latest-frame
+   presentation contract.
+5. [workspace-031-001](tasks/workspace-031-001.md) — addressable workspace and
+   mutation-lease contract.
+
+These tasks are intentionally disjoint and do not edit shared exports or
+dispatch files. Integration tasks begin only after committed implementation
+and independent review.
+
 ## Active plan: best-in-class agent browser
 
 

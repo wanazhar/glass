@@ -110,13 +110,22 @@ impl KnowledgeLookupContext {
                 KnowledgeValidationError::new("observation.regions.kind", error.to_string())
             })?);
         }
-        let current_revision = options.current_revision.unwrap_or(observation.revision);
-        if current_revision == 0 {
+        if observation.revision == 0 {
             return Err(KnowledgeValidationError::new(
-                "currentRevision",
+                "observation.revision",
                 "must be positive",
             ));
         }
+        if options
+            .current_revision
+            .is_some_and(|revision| revision != observation.revision)
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentRevision",
+                "must match the fresh observation revision",
+            ));
+        }
+        let current_revision = observation.revision;
         validate_backend_capabilities("backendCapabilities", &options.backend_capabilities)?;
         Ok(Self {
             origin,
@@ -149,6 +158,7 @@ impl KnowledgeLookupContext {
         backend_kind: KnowledgeBackendKind,
         backend_capabilities: Vec<KnowledgeBackendCapability>,
     ) -> Result<Self, KnowledgeValidationError> {
+        validate_backend_capabilities("backendCapabilities", &backend_capabilities)?;
         let mut context = Self::from_observation(observation, options)?;
         context.surface_kind = Some(surface_kind);
         context.backend_kind = Some(backend_kind);
@@ -289,8 +299,6 @@ pub enum KnowledgeProfileScope {
     Authenticated,
     ProfileBound,
 }
-
-/// Bounded provenance for the surface that produced a knowledge record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeSurfaceProvenance {
@@ -312,6 +320,8 @@ pub enum KnowledgeSurfaceKind {
     Canvas2d,
     Webgl,
     Webgpu,
+    EmbeddedDocument,
+    Pdf,
     EmbeddedPdf,
     Media,
     Terminal,
@@ -1840,6 +1850,11 @@ mod tests {
             backend_kind: Some(KnowledgeBackendKind::Visual),
             backend_capabilities: vec![KnowledgeBackendCapability::Capture],
         };
+        let mut mismatch = options.clone();
+        mismatch.current_revision = Some(observation.revision.saturating_sub(1));
+        let error = KnowledgeLookupContext::from_observation(&observation, mismatch)
+            .unwrap_err();
+        assert_eq!(error.path, "currentRevision");
         let context = KnowledgeLookupContext::from_observation(&observation, options).unwrap();
         assert_eq!(context.surface_kind, Some(KnowledgeSurfaceKind::Svg));
         assert_eq!(context.backend_kind, Some(KnowledgeBackendKind::Visual));

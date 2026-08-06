@@ -92,7 +92,7 @@
       "additionalProperties": false,
       "required": ["kind", "understanding", "coverage"],
       "properties": {
-        "kind": {"enum": ["document", "accessibility", "shadowDocument", "svg", "canvas2d", "webgl", "webgpu", "embeddedPdf", "media", "terminal", "remoteApplication", "browserNative", "extensionDefined", "unknown", "opaque"]},
+        "kind": {"enum": ["document", "accessibility", "shadowDocument", "frameDocument", "svg", "canvas2d", "webgl", "webgpu", "embeddedDocument", "embeddedPdf", "pdf", "media", "terminal", "remoteApplication", "browserNative", "extensionDefined", "unknown", "opaque"]},
         "understanding": {"enum": ["opaque", "inferred", "partial", "strong", "taskCompilable"]},
         "coverage": {"enum": ["none", "structural", "semantic", "interaction", "complete"]}
       }

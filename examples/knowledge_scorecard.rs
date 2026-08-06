@@ -53,7 +53,10 @@ struct Context {
 }
 
 impl Context {
-    fn into_lookup(self) -> Result<KnowledgeLookupContext, chrono::ParseError> {
+    fn into_lookup(
+        self,
+        observation_revision: u64,
+    ) -> Result<KnowledgeLookupContext, chrono::ParseError> {
         Ok(KnowledgeLookupContext {
             origin: self.origin,
             path: self.path,
@@ -67,6 +70,7 @@ impl Context {
             policy_preset: self.policy_preset,
             landmarks: self.landmarks,
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339(&self.now)?.timestamp(),
+            current_revision: observation_revision,
             surface_kind: Some(self.surface_kind),
             backend_kind: Some(self.backend_kind),
             backend_capabilities: self.backend_capabilities,
@@ -96,7 +100,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fixture.name
             );
         }
-        let assessment = fixture.record.assess(&fixture.context.into_lookup()?);
+        let current_revision = fixture
+            .record
+            .retrieval
+            .current_validation
+            .current_revision
+            .unwrap_or(1);
+        let assessment = fixture
+            .record
+            .assess(&fixture.context.into_lookup(current_revision)?);
         assert_eq!(
             assessment.status, fixture.expected_status,
             "{}",

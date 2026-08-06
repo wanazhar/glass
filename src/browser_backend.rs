@@ -240,6 +240,12 @@ where
 {
     deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX_CONTEXTS>(std::marker::PhantomData))
 }
+fn deserialize_bounded_contexts<'de, D>(deserializer: D) -> Result<Vec<BrowsingContext>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_bounded_vec::<D, BrowsingContext>(deserializer)
+}
 fn deserialize_bounded_dependencies<'de, D>(deserializer: D) -> Result<Vec<CapabilityDependency>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -392,10 +398,11 @@ impl<'de> DeserializeSeed<'de> for JsonSeed {
         if self.depth > MAX_JSON_DEPTH {
             return Err(serde::de::Error::custom("JSON exceeds the bounded depth"));
         }
-        deserializer.deserialize_any(JsonVisitor {
+        let value = deserializer.deserialize_any(JsonVisitor {
             budget: self.budget,
             depth: self.depth,
-        })
+        })?;
+        Ok(value)
     }
 }
 struct BoundedStringSeed;
@@ -411,9 +418,26 @@ impl<'de> DeserializeSeed<'de> for BoundedStringSeed {
     }
 }
 
-struct BoundedStringVecVisitor<const LIMIT: usize>;
+struct BoundedLimitedStringSeed<const BYTE_LIMIT: usize>;
 
-impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringVecVisitor<LIMIT> {
+impl<'de, const BYTE_LIMIT: usize> DeserializeSeed<'de>
+    for BoundedLimitedStringSeed<BYTE_LIMIT>
+{
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(BoundedStringVisitor::<BYTE_LIMIT, true>)
+    }
+}
+
+struct BoundedStringVecVisitor<const LIMIT: usize, const BYTE_LIMIT: usize>;
+
+impl<'de, const LIMIT: usize, const BYTE_LIMIT: usize> Visitor<'de>
+    for BoundedStringVecVisitor<LIMIT, BYTE_LIMIT>
+{
     type Value = Vec<String>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -426,13 +450,20 @@ impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringVecVisitor<LIMIT> {
     {
         let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(LIMIT));
         while values.len() < LIMIT {
-            let Some(value) = access.next_element_seed(BoundedStringSeed)? else {
+            let Some(value) =
+                access.next_element_seed(BoundedLimitedStringSeed::<BYTE_LIMIT>)?
+            else {
                 return Ok(values);
             };
             values.push(value);
         }
-        if access.next_element_seed(BoundedStringSeed)?.is_some() {
-            return Err(serde::de::Error::custom("string sequence exceeds the bounded entry count"));
+        if access
+            .next_element_seed(BoundedLimitedStringSeed::<BYTE_LIMIT>)?
+            .is_some()
+        {
+            return Err(serde::de::Error::custom(
+                "string sequence exceeds the bounded entry count",
+            ));
         }
         Ok(values)
     }
@@ -444,13 +475,21 @@ fn deserialize_bounded_string_vec<'de, D, const LIMIT: usize>(
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_seq(BoundedStringVecVisitor::<LIMIT>)
+    deserializer.deserialize_seq(BoundedStringVecVisitor::<LIMIT, MAX_TEXT_BYTES>)
 }
+
 fn deserialize_bounded_string_vec_16<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     deserialize_bounded_string_vec::<D, 16>(deserializer)
+}
+
+fn deserialize_bounded_limitation_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedStringVecVisitor::<16, MAX_LIMITATION_BYTES>)
 }
 
 fn deserialize_bounded_string_vec_64<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -663,7 +702,6 @@ where
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("a bounded map")
     }
-
     fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
@@ -699,7 +737,14 @@ fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>
 where
     D: serde::Deserializer<'de>,
 {
-    deserialize_bounded_string_vec::<D, MAX_BACKEND_CANDIDATES>(deserializer)
+    deserializer.deserialize_seq(BoundedStringVecVisitor::<MAX_BACKEND_CANDIDATES, MAX_BACKEND_ID_BYTES>)
+}
+
+fn deserialize_bounded_download_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedStringVecVisitor::<MAX_DOWNLOADS, MAX_BACKEND_ID_BYTES>)
 }
 fn deserialize_bounded_capability_map<'de, D>(
     deserializer: D,
@@ -788,7 +833,11 @@ pub struct CapabilityDependency {
 }
 impl CapabilityDependency {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
-        validate_text("capability dependency reason", &self.reason, MAX_LIMITATION_BYTES)
+        validate_text(
+            "capability dependency reason",
+            &self.reason,
+            MAX_LIMITATION_BYTES,
+        )
     }
 }
 
@@ -801,7 +850,7 @@ pub struct CapabilityDescriptor {
     pub portability: Portability,
     #[serde(default, deserialize_with = "deserialize_bounded_dependencies")]
     pub dependencies: Vec<CapabilityDependency>,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
+    #[serde(default, deserialize_with = "deserialize_bounded_limitation_vec")]
     pub limitations: Vec<String>,
 }
 
@@ -930,7 +979,7 @@ pub struct CertificationProfile {
     pub glass_version: String,
     #[serde(default, deserialize_with = "deserialize_bounded_capability_list")]
     pub tested_capabilities: Vec<BrowserCapability>,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
+    #[serde(default, deserialize_with = "deserialize_bounded_limitation_vec")]
     pub limitations: Vec<String>,
 }
 
@@ -1861,11 +1910,12 @@ impl BackendContract for DownloadResult {
         Ok(())
     }
 }
-
 /// Semantic operation names used for capability-gated dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BackendOperation {
+    Initialize,
+    Close,
     Navigate,
     Contexts,
     Evidence,
@@ -1877,10 +1927,10 @@ pub enum BackendOperation {
     Prompt,
     Download,
 }
-
 impl BackendOperation {
     pub const fn capability(self) -> BrowserCapability {
         match self {
+            Self::Initialize | Self::Close => BrowserCapability::Contexts,
             Self::Navigate => BrowserCapability::Navigation,
             Self::Contexts => BrowserCapability::Contexts,
             Self::Evidence => BrowserCapability::Evidence,
@@ -1932,7 +1982,7 @@ pub struct DownloadRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DownloadResult {
-    #[serde(deserialize_with = "deserialize_bounded_string_vec_64")]
+    #[serde(deserialize_with = "deserialize_bounded_download_ids")]
     pub download_ids: Vec<String>,
 }
 
@@ -1955,13 +2005,12 @@ pub enum BackendRequest {
     Prompt(PromptRequest),
     Download(DownloadRequest),
 }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BackendResponse {
     Unit,
     Navigation(NavigationResult),
-    Contexts(Vec<BrowsingContext>),
+    Contexts(#[serde(deserialize_with = "deserialize_bounded_contexts")] Vec<BrowsingContext>),
     Evidence(EvidenceResult),
     Action(ActionResult),
     Effects(EffectsResult),
@@ -2018,7 +2067,7 @@ impl<'a> BrowserBackendDispatcher<'a> {
     }
 
     pub fn initialize(&self) -> BackendFuture<'a, ()> {
-        self.call(BackendOperation::Contexts, BackendRequest::Initialize, |response| {
+        self.call(BackendOperation::Initialize, BackendRequest::Initialize, |response| {
             matches!(response, BackendResponse::Unit)
                 .then_some(())
                 .ok_or_else(|| unsupported_response("initialize"))
@@ -2026,7 +2075,7 @@ impl<'a> BrowserBackendDispatcher<'a> {
     }
 
     pub fn close(&self) -> BackendFuture<'a, ()> {
-        self.call(BackendOperation::Contexts, BackendRequest::Close, |response| {
+        self.call(BackendOperation::Close, BackendRequest::Close, |response| {
             matches!(response, BackendResponse::Unit)
                 .then_some(())
                 .ok_or_else(|| unsupported_response("close"))
@@ -2190,6 +2239,41 @@ mod tests {
             capabilities,
         }
     }
+    struct LifecycleBackend {
+        profile: BackendProfile,
+    }
+
+    impl BrowserBackend for LifecycleBackend {
+        fn profile(&self) -> &BackendProfile {
+            &self.profile
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            operation: BackendOperation,
+            request: BackendRequest,
+        ) -> BackendFuture<'a, BackendResponse> {
+            Box::pin(async move {
+                assert!(matches!(
+                    (operation, request),
+                    (BackendOperation::Initialize, BackendRequest::Initialize)
+                        | (BackendOperation::Close, BackendRequest::Close)
+                ));
+                Ok(BackendResponse::Unit)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dispatch_uses_explicit_operations() {
+        let backend = LifecycleBackend {
+            profile: profile("lifecycle", CertificationLevel::Partial),
+        };
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        dispatcher.initialize().await.unwrap();
+        dispatcher.close().await.unwrap();
+    }
+
 
     #[test]
     fn profile_serialization_is_stable_and_camel_case() {
@@ -2299,6 +2383,13 @@ mod tests {
             "reason": "\\u0078".repeat(MAX_LIMITATION_BYTES + 1)
         });
         assert!(serde_json::from_value::<CapabilityDependency>(oversized_reason).is_err());
+        let contexts = (0..=MAX_CONTEXTS)
+            .map(|index| json!({ "contextId": format!("ctx-{index}"), "url": "https://example.test", "active": true }))
+            .collect::<Vec<_>>();
+        assert!(serde_json::from_value::<BackendResponse>(json!({
+            "contexts": contexts
+        }))
+        .is_err());
     }
 
     #[test]

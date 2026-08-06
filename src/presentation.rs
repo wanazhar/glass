@@ -531,20 +531,42 @@ fn fit_image_rect(
     ))
 }
 /// A target and its presentation resource identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TargetResourceIdentity {
-    #[serde(deserialize_with = "deserialize_bounded_identity")]
     pub target_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TargetResourceIdentityWire {
+    #[serde(deserialize_with = "deserialize_bounded_identity")]
+    target_id: String,
     #[serde(
         default,
-        skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_optional_bounded_identity"
     )]
-    pub resource_id: Option<String>,
+    resource_id: Option<String>,
 }
 
 impl TargetResourceIdentity {
+    pub fn new(
+        target_id: impl Into<String>,
+        resource_id: Option<String>,
+    ) -> Result<Self, PresentationContractError> {
+        let identity = Self {
+            target_id: target_id.into(),
+            resource_id,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    fn from_wire(wire: TargetResourceIdentityWire) -> Result<Self, PresentationContractError> {
+        Self::new(wire.target_id, wire.resource_id)
+    }
+
     pub fn validate(&self) -> Result<(), PresentationContractError> {
         validate_identity("targetId", &self.target_id)?;
         if let Some(resource_id) = &self.resource_id {
@@ -651,7 +673,7 @@ pub struct BrowserFrame {
 struct BrowserFrameWire {
     schema_version: u32,
     generation: u64,
-    identity: TargetResourceIdentity,
+    identity: TargetResourceIdentityWire,
     acquired_at_ms: u64,
     viewport: PixelSize,
     content: PixelSize,
@@ -692,7 +714,7 @@ impl BrowserFrame {
         let frame = Self {
             schema_version: wire.schema_version,
             generation: wire.generation,
-            identity: wire.identity,
+            identity: TargetResourceIdentity::from_wire(wire.identity)?,
             acquired_at_ms: wire.acquired_at_ms,
             viewport: wire.viewport,
             content: wire.content,
@@ -1500,6 +1522,15 @@ mod tests {
             r#"{"targetFrameRate":60,"captureScale":1.0}"#
         )
         .is_ok());
+        let escaped_identity = frame(1, 1)
+            .to_json()
+            .unwrap()
+            .replacen(
+                "\"target-1\"",
+                &format!("\"{}\"", "\\u0078".repeat(MAX_IDENTITY_BYTES + 1)),
+                1,
+            );
+        assert!(BrowserFrame::from_json(&escaped_identity).is_err());
         let mut invalid_frame = serde_json::to_value(frame(1, 1)).unwrap();
         invalid_frame["viewport"]["width"] = serde_json::json!(0);
         assert!(BrowserFrame::from_json(&invalid_frame.to_string()).is_err());

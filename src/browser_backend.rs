@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -455,6 +455,12 @@ pub fn select_backend(
         return Err(BrowserBackendError::SelectionFailed {
             reason: "no backend profiles were provided".into(),
         });
+    }
+    let mut seen_backend_ids = BTreeSet::new();
+    for profile in profiles {
+        if !seen_backend_ids.insert(profile.identity.backend_id.as_str()) {
+            return Err(invalid("backend profiles", "duplicate backend id"));
+        }
     }
 
     let mut considered_backend_ids = profiles

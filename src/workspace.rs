@@ -843,6 +843,17 @@ pub struct OwnershipBoundary {
 }
 
 impl OwnershipBoundary {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        let raw: RawOwnershipBoundaryWire = serde_json::from_str(input)?;
+        let scope = WorkspaceScope::from_wire(raw.scope)?;
+        let owner = match raw.owner {
+            RawOwnershipOwnerWire::Workspace(id) => OwnershipOwner::Workspace(WorkspaceId::new(id).map_err(wire_error)?),
+            RawOwnershipOwnerWire::Attachment(id) => OwnershipOwner::Attachment(AttachmentId::new(id).map_err(wire_error)?),
+            RawOwnershipOwnerWire::External(id) => OwnershipOwner::External(ResourceId::new(id).map_err(wire_error)?),
+        };
+        Self::new(scope, raw.domain, owner).map_err(wire_error)
+    }
     pub fn new(scope: WorkspaceScope, domain: OwnershipDomain, owner: OwnershipOwner) -> Result<Self, OwnershipError> {
         let valid = match (&domain, &owner) {
             (OwnershipDomain::Workspace, OwnershipOwner::Workspace(id)) => id == scope.workspace_id(),
@@ -867,7 +878,21 @@ struct RawOwnershipBoundary {
     domain: OwnershipDomain,
     owner: OwnershipOwner,
 }
+#[derive(Deserialize)]
+#[serde(tag = "type", content = "id", rename_all = "camelCase")]
+enum RawOwnershipOwnerWire {
+    Workspace(String),
+    Attachment(String),
+    External(String),
+}
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOwnershipBoundaryWire {
+    scope: RawWorkspaceScopeWire,
+    domain: OwnershipDomain,
+    owner: RawOwnershipOwnerWire,
+}
 impl<'de> Deserialize<'de> for OwnershipBoundary {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {

@@ -192,6 +192,12 @@ impl KnowledgeStore {
         context: &KnowledgeLookupContext,
         query: &KnowledgeRetrievalQuery,
     ) -> KnowledgeRetrievalReport {
+        if !query.is_bounded() {
+            return KnowledgeRetrievalReport {
+                embeddings_used: false,
+                ..KnowledgeRetrievalReport::default()
+            };
+        }
         let limit = query.max_results.clamp(1, 16);
         let mut candidates = self
             .snapshot

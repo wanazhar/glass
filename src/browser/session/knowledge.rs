@@ -29,6 +29,8 @@ const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_OBJECT_ENTRIES: usize = 64;
 const MAX_JSON_ARRAY_ENTRIES: usize = 64;
 const MAX_JSON_STRING_BYTES: usize = 4096;
+const MAX_RETRIEVAL_QUERY_VALUES: usize = 32;
+const MAX_RETRIEVAL_QUERY_VALUE_BYTES: usize = 256;
 const MAX_WORKSPACE_ID_BYTES: usize = 128;
 /// Current browser/session dimensions used to assess one stored record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,6 +590,27 @@ pub struct KnowledgeRetrievalQuery {
     pub entity_roles: Vec<String>,
     pub landmarks: Vec<String>,
     pub max_results: usize,
+}
+
+impl KnowledgeRetrievalQuery {
+    pub fn is_bounded(&self) -> bool {
+        self.max_results <= 16
+            && self
+                .page_kind
+                .as_deref()
+                .is_none_or(|value| value.len() <= MAX_RETRIEVAL_QUERY_VALUE_BYTES)
+            && self
+                .task_kind
+                .as_deref()
+                .is_none_or(|value| value.len() <= MAX_RETRIEVAL_QUERY_VALUE_BYTES)
+            && self.entity_roles.len() <= MAX_RETRIEVAL_QUERY_VALUES
+            && self.landmarks.len() <= MAX_RETRIEVAL_QUERY_VALUES
+            && self
+                .entity_roles
+                .iter()
+                .chain(self.landmarks.iter())
+                .all(|value| value.len() <= MAX_RETRIEVAL_QUERY_VALUE_BYTES)
+    }
 }
 
 /// Typed reason a historical record was not eligible for an advisory match.
@@ -2538,6 +2561,16 @@ mod tests {
         assert_eq!(
             extension.retrieve_candidate(&extension_context, &query).rejection,
             Some(KnowledgeRejectionReason::ExtensionMismatch)
+        );
+    }
+
+    #[test]
+    fn stale_lifecycle_confidence_is_not_assessed_as_eligible() {
+        let mut historical = record();
+        historical.confidence = KnowledgeConfidence::Stale;
+        assert_eq!(
+            historical.assess(&retrieval_context()).status,
+            KnowledgeAssessmentStatus::Stale
         );
     }
 

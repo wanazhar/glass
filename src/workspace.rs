@@ -343,6 +343,13 @@ impl WorkspaceConfig {
         }
         Ok(())
     }
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        let raw: RawWorkspaceConfigWire = serde_json::from_str(input)?;
+        let profile_id = raw.profile_id.map(ProfileId::new).transpose().map_err(wire_error)?;
+        let config = Self { profile_mode: raw.profile_mode, privacy_mode: raw.privacy_mode, storage: raw.storage, profile_id, generation: raw.generation };
+        config.validate().map(|()| config).map_err(wire_error)
+    }
 }
 
 #[derive(Deserialize)]
@@ -921,6 +928,34 @@ pub struct LeaseGrant {
 pub struct LeaseSnapshot {
     pub state: MutationLeaseState,
     pub revision: Revision,
+}
+impl LeaseSnapshot {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        let raw: RawLeaseSnapshotWire = serde_json::from_str(input)?;
+        let state = match raw.state {
+            RawLeaseStateWire::Available => MutationLeaseState::Available,
+            RawLeaseStateWire::Held { lease_id, holder } => MutationLeaseState::Held {
+                lease_id: LeaseId::new(lease_id).map_err(wire_error)?,
+                holder: AttachmentId::new(holder).map_err(wire_error)?,
+            },
+        };
+        Ok(Self { state, revision: raw.revision })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLeaseSnapshotWire {
+    state: RawLeaseStateWire,
+    revision: Revision,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum RawLeaseStateWire {
+    Available,
+    Held { lease_id: String, holder: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

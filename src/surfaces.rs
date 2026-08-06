@@ -756,6 +756,7 @@ impl Surface {
                     | SurfaceCapability::Input
                     | SurfaceCapability::KeyboardInput
                     | SurfaceCapability::PointerInput
+                    | SurfaceCapability::Bridge
             )
         });
         if executable_requested
@@ -876,6 +877,7 @@ impl Surface {
                 "task-compilable understanding requires strong structural and semantic evidence",
             ));
         }
+        let bridge_capability_requested = self.capabilities.contains(&SurfaceCapability::Bridge);
         let actionability_requested = self.understanding == UnderstandingLevel::TaskCompilable
             || self.capabilities.iter().any(|capability| {
                 matches!(
@@ -885,8 +887,15 @@ impl Surface {
                         | SurfaceCapability::Input
                         | SurfaceCapability::KeyboardInput
                         | SurfaceCapability::PointerInput
+                        | SurfaceCapability::Bridge
                 )
             });
+        if bridge_capability_requested && !has_bridge_evidence {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "bridge invocation requires validated bridge evidence and an independent registry grant",
+            ));
+        }
         if has_bridge_evidence {
             for evidence in self.evidence.iter().filter(|evidence| {
                 matches!(
@@ -2091,6 +2100,18 @@ mod tests {
         );
         value.evidence[0].source = SurfaceEvidenceSource::Visual;
         value.evidence[0].provenance.source_class = ProvenanceSourceClass::Visual;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn bridge_invocation_requires_trusted_grant_evidence() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Opaque,
+            vec![SurfaceCapability::Bridge],
+        );
+        assert!(value.validate().is_err());
+        value.evidence[0].source = SurfaceEvidenceSource::Bridge;
         assert!(value.validate().is_err());
     }
 

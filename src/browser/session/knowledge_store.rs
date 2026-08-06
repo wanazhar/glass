@@ -560,8 +560,10 @@ impl From<KnowledgeValidationError> for KnowledgeStoreError {
 mod tests {
     use super::*;
     use super::super::knowledge::{
-        KnowledgeBackendProvenance, KnowledgeMemoryInfluence, KnowledgePortability,
-        KnowledgeRetrievalExplanation, KnowledgeSurfaceProvenance,
+        KnowledgeBackendKind, KnowledgeBackendProvenance, KnowledgeBackendCapability,
+        KnowledgeCurrentValidation, KnowledgeEvidenceQuality, KnowledgeMemoryInfluence,
+        KnowledgePortability, KnowledgeRetrievalExplanation, KnowledgeSurfaceCoverage,
+        KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
     };
     use crate::browser::session::{
         KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
@@ -602,15 +604,34 @@ mod tests {
                 last_verified_at: format!("2026-07-27T00:00:{verified_at:0>2}Z"),
                 glass_version: "0.2.0".into(),
                 verification_count: 1,
-                surface: KnowledgeSurfaceProvenance::default(),
-                backend: KnowledgeBackendProvenance::default(),
+                surface: KnowledgeSurfaceProvenance {
+                    kind: KnowledgeSurfaceKind::Document,
+                    understanding: KnowledgeUnderstandingLevel::Strong,
+                    coverage: KnowledgeSurfaceCoverage::Semantic,
+                },
+                backend: KnowledgeBackendProvenance {
+                    backend: KnowledgeBackendKind::Cdp,
+                    profile: "production".into(),
+                    capabilities: vec![
+                        KnowledgeBackendCapability::SemanticExtraction,
+                        KnowledgeBackendCapability::Verification,
+                    ],
+                },
             },
             confidence,
             invalidation: KnowledgeInvalidation::default(),
             data: json!({"pageKind": "documentation"}),
-            portability: KnowledgePortability::default(),
-            memory_influence: KnowledgeMemoryInfluence::default(),
-            retrieval: KnowledgeRetrievalExplanation::default(),
+            portability: KnowledgePortability::SurfacePortable,
+            memory_influence: KnowledgeMemoryInfluence::None,
+            retrieval: KnowledgeRetrievalExplanation {
+                signals: Vec::new(),
+                current_validation: KnowledgeCurrentValidation {
+                    status: super::super::knowledge::KnowledgeCurrentValidationStatus::Validated,
+                    evidence_quality: KnowledgeEvidenceQuality::Strong,
+                    current_revision: Some(1),
+                    validated_at: Some("2026-07-27T00:00:00Z".into()),
+                },
+            },
             history: Vec::new(),
         }
     }
@@ -684,6 +705,9 @@ mod tests {
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:02Z")
                 .unwrap()
                 .timestamp(),
+            surface_kind: None,
+            backend_kind: None,
+            backend_capabilities: Vec::new(),
         };
         let assessments = store.assess(&context);
         assert_eq!(assessments.len(), 1);

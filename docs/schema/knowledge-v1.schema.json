@@ -132,7 +132,7 @@
       "properties": {
         "status": {"enum": ["notValidated", "validated", "rejected", "stale", "contradicted"]},
         "evidenceQuality": {"enum": ["none", "weak", "partial", "strong"]},
-        "currentRevision": {"type": "integer", "minimum": 0},
+        "currentRevision": {"type": "integer", "minimum": 1},
         "validatedAt": {"type": "string", "minLength": 1, "maxLength": 64}
       }
     }

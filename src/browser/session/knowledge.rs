@@ -43,6 +43,11 @@ pub struct KnowledgeLookupContext {
     pub policy_preset: String,
     pub landmarks: Vec<String>,
     pub now_epoch_seconds: i64,
+    /// Current source dimensions are optional for callers that only need
+    /// scope assessment; portability checks fail closed when absent.
+    pub surface_kind: Option<KnowledgeSurfaceKind>,
+    pub backend_kind: Option<KnowledgeBackendKind>,
+    pub backend_capabilities: Vec<KnowledgeBackendCapability>,
 }
 
 /// Explicit session inputs used to construct a lookup context from an
@@ -112,6 +117,9 @@ impl KnowledgeLookupContext {
                 .map(|landmark| landmark.trim_matches('"').to_string())
                 .collect(),
             now_epoch_seconds: options.now_epoch_seconds,
+            surface_kind: None,
+            backend_kind: None,
+            backend_capabilities: Vec::new(),
         })
     }
 }
@@ -251,7 +259,7 @@ pub enum KnowledgeProfileScope {
 
 /// Bounded provenance for the surface that produced a knowledge record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeSurfaceProvenance {
     pub kind: KnowledgeSurfaceKind,
     pub understanding: KnowledgeUnderstandingLevel,
@@ -314,7 +322,7 @@ impl Default for KnowledgeSurfaceProvenance {
 
 /// Backend identity and capability provenance for a learned record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeBackendProvenance {
     pub backend: KnowledgeBackendKind,
     pub profile: String,
@@ -396,7 +404,7 @@ pub enum KnowledgeRetrievalSignalKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeRetrievalSignal {
     pub kind: KnowledgeRetrievalSignalKind,
     pub detail: String,
@@ -425,7 +433,7 @@ pub enum KnowledgeEvidenceQuality {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeCurrentValidation {
     pub status: KnowledgeCurrentValidationStatus,
     pub evidence_quality: KnowledgeEvidenceQuality,
@@ -447,7 +455,7 @@ impl Default for KnowledgeCurrentValidation {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeRetrievalExplanation {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<KnowledgeRetrievalSignal>,
@@ -457,15 +465,15 @@ pub struct KnowledgeRetrievalExplanation {
 
 /// Provenance and verification counters for a knowledge record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeSource {
     pub first_seen_at: String,
     pub last_verified_at: String,
     pub glass_version: String,
     pub verification_count: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_legacy_surface")]
     pub surface: KnowledgeSurfaceProvenance,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_legacy_backend")]
     pub backend: KnowledgeBackendProvenance,
 }
 
@@ -492,6 +500,26 @@ impl Default for KnowledgeMemoryInfluence {
         Self::None
     }
 }
+fn is_legacy_surface(value: &KnowledgeSurfaceProvenance) -> bool {
+    *value == KnowledgeSurfaceProvenance::default()
+}
+
+fn is_legacy_backend(value: &KnowledgeBackendProvenance) -> bool {
+    *value == KnowledgeBackendProvenance::default()
+}
+
+fn is_nonportable(value: &KnowledgePortability) -> bool {
+    *value == KnowledgePortability::NonPortable
+}
+
+fn is_no_memory_influence(value: &KnowledgeMemoryInfluence) -> bool {
+    *value == KnowledgeMemoryInfluence::None
+}
+
+fn is_empty_retrieval(value: &KnowledgeRetrievalExplanation) -> bool {
+    value.signals.is_empty()
+        && value.current_validation == KnowledgeCurrentValidation::default()
+}
 
 /// Conditions that make remembered knowledge stale or unusable.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,7 +544,7 @@ pub struct KnowledgeLifecycleEvent {
 /// A versioned knowledge record. `data` is deliberately opaque to this layer,
 /// but its shape, size, and sensitive field names are strictly bounded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeRecord {
     pub schema_version: u32,
     pub record_id: String,
@@ -526,11 +554,14 @@ pub struct KnowledgeRecord {
     pub confidence: KnowledgeConfidence,
     pub invalidation: KnowledgeInvalidation,
     pub data: Value,
-    #[serde(default)]
+    #[serde(
+        default,
+        skip_serializing_if = "is_nonportable"
+    )]
     pub portability: KnowledgePortability,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_no_memory_influence")]
     pub memory_influence: KnowledgeMemoryInfluence,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_empty_retrieval")]
     pub retrieval: KnowledgeRetrievalExplanation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<KnowledgeLifecycleEvent>,
@@ -740,6 +771,51 @@ impl KnowledgeRecord {
         };
         record.validate()?;
         Ok(record)
+    }
+    /// Attach explicit source provenance and portability to a freshly built
+    /// record. Legacy defaults remain non-portable and non-authorizing.
+    pub fn with_provenance(
+        mut self,
+        surface: KnowledgeSurfaceProvenance,
+        backend: KnowledgeBackendProvenance,
+        portability: KnowledgePortability,
+    ) -> Result<Self, KnowledgeValidationError> {
+        self.source.surface = surface;
+        self.source.backend = backend;
+        self.portability = portability;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Attach a current Web IR evidence witness explicitly. A timestamp or
+    /// boolean freshness flag without a positive revision is rejected.
+    pub fn with_current_validation(
+        mut self,
+        current_revision: u64,
+        evidence_quality: KnowledgeEvidenceQuality,
+        validated_at: String,
+    ) -> Result<Self, KnowledgeValidationError> {
+        if current_revision == 0 {
+            return Err(KnowledgeValidationError::new(
+                "currentRevision",
+                "must be positive",
+            ));
+        }
+        if evidence_quality == KnowledgeEvidenceQuality::None {
+            return Err(KnowledgeValidationError::new(
+                "evidenceQuality",
+                "must identify a current evidence quality",
+            ));
+        }
+        validate_timestamp("validatedAt", &validated_at)?;
+        self.retrieval.current_validation = KnowledgeCurrentValidation {
+            status: KnowledgeCurrentValidationStatus::Validated,
+            evidence_quality,
+            current_revision: Some(current_revision),
+            validated_at: Some(validated_at),
+        };
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validate one record against the stable contract and all payload bounds.
@@ -952,15 +1028,37 @@ impl KnowledgeRecord {
         if provenance_conflict {
             conflicts.push("surface or backend provenance is unknown".into());
         }
-        let portability_conflict = matches!(
-            self.portability,
-            KnowledgePortability::BackendCapabilityDependent
-                | KnowledgePortability::BackendSpecific
-                | KnowledgePortability::BrowserSpecific
-                | KnowledgePortability::NonPortable
-        );
+        let surface_conflict = self.portability == KnowledgePortability::SurfacePortable
+            && context.surface_kind != Some(self.source.surface.kind);
+        let backend_conflict = match self.portability {
+            KnowledgePortability::BackendCapabilityDependent => {
+                context.backend_kind != Some(self.source.backend.backend)
+                    || self
+                        .source
+                        .backend
+                        .capabilities
+                        .iter()
+                        .any(|capability| !context.backend_capabilities.contains(capability))
+            }
+            KnowledgePortability::BackendSpecific | KnowledgePortability::BrowserSpecific => {
+                context.backend_kind != Some(self.source.backend.backend)
+            }
+            _ => false,
+        };
+        let portability_conflict = self.portability == KnowledgePortability::NonPortable
+            || surface_conflict
+            || backend_conflict;
         if portability_conflict {
-            conflicts.push("record portability is incompatible with this context".into());
+            conflicts.push(
+                if surface_conflict {
+                    "record surface provenance is incompatible with this context"
+                } else if backend_conflict {
+                    "record backend provenance is incompatible with this context"
+                } else {
+                    "record portability is incompatible with this context"
+                }
+                .into(),
+            );
         }
         let scope_conflict = conflicts.iter().any(|conflict| {
             matches!(
@@ -979,6 +1077,8 @@ impl KnowledgeRecord {
             KnowledgeAssessmentStatus::Contradicted
         } else if self.confidence == KnowledgeConfidence::Quarantined {
             KnowledgeAssessmentStatus::Quarantined
+        } else if self.confidence == KnowledgeConfidence::Stale {
+            KnowledgeAssessmentStatus::Stale
         } else if scope_conflict {
             KnowledgeAssessmentStatus::OutOfScope
         } else if current_validation_conflict
@@ -1005,8 +1105,45 @@ impl KnowledgeRecord {
         }
     }
 
+    /// Apply a lifecycle transition after a current Web IR witness has been
+    /// recorded. A boolean freshness flag alone never creates validation.
+    pub fn transition_with_validation(
+        &mut self,
+        next: KnowledgeConfidence,
+        reason: String,
+        observed_at: String,
+        current_revision: u64,
+        evidence_quality: KnowledgeEvidenceQuality,
+    ) -> Result<(), KnowledgeValidationError> {
+        if current_revision == 0 {
+            return Err(KnowledgeValidationError::new(
+                "currentRevision",
+                "must be positive",
+            ));
+        }
+        if evidence_quality == KnowledgeEvidenceQuality::None {
+            return Err(KnowledgeValidationError::new(
+                "evidenceQuality",
+                "must identify a current evidence quality",
+            ));
+        }
+        let previous = self.retrieval.current_validation.clone();
+        self.retrieval.current_validation = KnowledgeCurrentValidation {
+            status: KnowledgeCurrentValidationStatus::Validated,
+            evidence_quality,
+            current_revision: Some(current_revision),
+            validated_at: Some(observed_at.clone()),
+        };
+        let result = self.transition(next, reason, observed_at, true);
+        if result.is_err() {
+            self.retrieval.current_validation = previous;
+        }
+        result
+    }
+
     /// Apply a lifecycle transition. Promotion to `verified` and recovery from
-    /// contradiction/quarantine require fresh verification evidence.
+    /// contradiction/quarantine require fresh verification evidence and a
+    /// separately recorded current validation witness.
     pub fn transition(
         &mut self,
         next: KnowledgeConfidence,
@@ -1021,7 +1158,6 @@ impl KnowledgeRecord {
             if fresh_verification {
                 self.source.last_verified_at = observed_at.clone();
                 self.source.verification_count = self.source.verification_count.saturating_add(1);
-                self.mark_current_validation(&observed_at);
                 self.validate()?;
             }
             return Ok(());
@@ -1037,6 +1173,15 @@ impl KnowledgeRecord {
             return Err(KnowledgeValidationError::new(
                 "freshVerification",
                 "this lifecycle transition requires fresh browser verification",
+            ));
+        }
+        if next == KnowledgeConfidence::Verified
+            && self.retrieval.current_validation.status
+                != KnowledgeCurrentValidationStatus::Validated
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentValidation",
+                "verified promotion requires a current Web IR witness",
             ));
         }
         if self.history.len() >= MAX_HISTORY {
@@ -1055,18 +1200,25 @@ impl KnowledgeRecord {
         if fresh_verification {
             self.source.last_verified_at = observed_at.clone();
             self.source.verification_count = self.source.verification_count.saturating_add(1);
-            self.mark_current_validation(&observed_at);
+        }
+        if next == KnowledgeConfidence::Stale {
+            self.invalidate_current_validation(KnowledgeCurrentValidationStatus::Stale);
+        } else if matches!(
+            next,
+            KnowledgeConfidence::Contradicted | KnowledgeConfidence::Quarantined
+        ) {
+            self.invalidate_current_validation(KnowledgeCurrentValidationStatus::Contradicted);
         }
         self.history.push(event);
         self.validate()
     }
 
-    fn mark_current_validation(&mut self, validated_at: &str) {
+    fn invalidate_current_validation(&mut self, status: KnowledgeCurrentValidationStatus) {
         self.retrieval.current_validation = KnowledgeCurrentValidation {
-            status: KnowledgeCurrentValidationStatus::Validated,
-            evidence_quality: KnowledgeEvidenceQuality::Strong,
+            status,
+            evidence_quality: KnowledgeEvidenceQuality::None,
             current_revision: None,
-            validated_at: Some(validated_at.to_owned()),
+            validated_at: None,
         };
     }
 }
@@ -1339,6 +1491,10 @@ fn validate_retrieval(
             MAX_SCOPE_VALUE_BYTES,
             false,
         )?;
+        validate_public_text(
+            &format!("retrieval.signals[{index}].detail"),
+            &signal.detail,
+        )?;
         if signal.score_millis.is_some_and(|score| score > 1_000) {
             return Err(KnowledgeValidationError::new(
                 format!("retrieval.signals[{index}].scoreMillis"),
@@ -1353,6 +1509,15 @@ fn validate_retrieval(
                 return Err(KnowledgeValidationError::new(
                     "retrieval.currentValidation.evidenceQuality",
                     "validated evidence requires a quality",
+                ));
+            }
+            if current
+                .current_revision
+                .is_none_or(|revision| revision == 0)
+            {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation.currentRevision",
+                    "validated evidence requires a positive current revision witness",
                 ));
             }
             let timestamp = current.validated_at.as_deref().ok_or_else(|| {
@@ -1378,10 +1543,16 @@ fn validate_retrieval(
             }
         }
         _ => {
-            if current.validated_at.is_some() {
+            if current.current_revision.is_some() || current.validated_at.is_some() {
                 return Err(KnowledgeValidationError::new(
-                    "retrieval.currentValidation.validatedAt",
-                    "only validated evidence may include a validation timestamp",
+                    "retrieval.currentValidation",
+                    "invalidated evidence cannot retain a revision or timestamp",
+                ));
+            }
+            if current.evidence_quality != KnowledgeEvidenceQuality::None {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation.evidenceQuality",
+                    "invalidated evidence must have none quality",
                 ));
             }
         }
@@ -1725,6 +1896,12 @@ mod tests {
             tenant_key: None,
             browser_family: "chromium".into(),
             browser_version: Some(">=120".into()),
+            surface_kind: Some(KnowledgeSurfaceKind::Document),
+            backend_kind: Some(KnowledgeBackendKind::Cdp),
+            backend_capabilities: vec![
+                KnowledgeBackendCapability::SemanticExtraction,
+                KnowledgeBackendCapability::Verification,
+            ],
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
             landmarks: vec!["documentation".into(), "main".into(), "search".into()],
@@ -1766,6 +1943,59 @@ mod tests {
             assessment
                 .conflicts
                 .contains(&"surface or backend provenance is unknown".to_string())
+        );
+    }
+    #[test]
+    fn surface_portability_requires_current_surface_witness() {
+        let mut context = lookup_context();
+        context.surface_kind = Some(KnowledgeSurfaceKind::Svg);
+        let assessment = record().assess(&context);
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Stale);
+        assert!(
+            assessment
+                .conflicts
+                .contains(&"record surface provenance is incompatible with this context".into())
+        );
+    }
+
+    #[test]
+    fn lifecycle_invalidation_clears_current_validation() {
+        let mut value = record();
+        value
+            .transition(
+                KnowledgeConfidence::Stale,
+                "drift detected".into(),
+                "2026-07-27T00:00:01Z".into(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            value.retrieval.current_validation.status,
+            KnowledgeCurrentValidationStatus::Stale
+        );
+        assert_eq!(value.assess(&lookup_context()).status, KnowledgeAssessmentStatus::Stale);
+    }
+
+    #[test]
+    fn validation_requires_revision_witness_and_retrieval_is_redacted() {
+        let mut value = record();
+        value.retrieval.current_validation.current_revision = None;
+        let error = value.validate().unwrap_err();
+        assert_eq!(error.path, "retrieval.currentValidation.currentRevision");
+
+        let mut signal_value = record();
+        signal_value.retrieval.signals.push(KnowledgeRetrievalSignal {
+            kind: KnowledgeRetrievalSignalKind::SemanticSimilarity,
+            detail: "token from page".into(),
+            score_millis: None,
+        });
+        let error = signal_value.validate().unwrap_err();
+        assert_eq!(error.path, "retrieval.signals[0].detail");
+        assert!(
+            serde_json::from_value::<KnowledgeRetrievalSignal>(
+                json!({"kind":"freshness","detail":"ok","extra":"reject"})
+            )
+            .is_err()
         );
     }
 
@@ -1966,6 +2196,8 @@ mod tests {
             migrated.retrieval.current_validation.status,
             KnowledgeCurrentValidationStatus::NotValidated
         );
+        let expected: Value = serde_json::from_str(legacy).unwrap();
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), expected);
     }
 
     #[test]
@@ -1983,6 +2215,30 @@ mod tests {
         influenced.retrieval.current_validation = KnowledgeCurrentValidation::default();
         let error = influenced.validate().unwrap_err();
         assert_eq!(error.path, "memoryInfluence");
+    }
+    #[test]
+    fn boolean_freshness_cannot_promote_without_witness() {
+        let mut value = record();
+        value.retrieval.current_validation = KnowledgeCurrentValidation::default();
+        let error = value
+            .transition(
+                KnowledgeConfidence::Verified,
+                "boolean is insufficient".into(),
+                "2026-07-27T00:00:01Z".into(),
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(error.path, "currentValidation");
+        value
+            .transition_with_validation(
+                KnowledgeConfidence::Verified,
+                "revision witness".into(),
+                "2026-07-27T00:00:01Z".into(),
+                43,
+                KnowledgeEvidenceQuality::Strong,
+            )
+            .unwrap();
+        assert_eq!(value.confidence, KnowledgeConfidence::Verified);
     }
 
     #[test]

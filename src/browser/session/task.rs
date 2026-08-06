@@ -2178,6 +2178,7 @@ fn semantic_region_matches_entity(
         WebIrEntityKind::Tab => region.targets.iter().any(|target| target.role == "tab"),
         WebIrEntityKind::Row | WebIrEntityKind::Cell | WebIrEntityKind::CollectionItem => true,
         WebIrEntityKind::Text => true,
+        WebIrEntityKind::Frame | WebIrEntityKind::ShadowRoot | WebIrEntityKind::Probe => false,
     }
 }
 fn form_values_match(values: &super::PageContext, fields: &[(String, String, String)]) -> bool {

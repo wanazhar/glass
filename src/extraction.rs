@@ -1,10 +1,10 @@
-//! Experimental bounded evidence-extraction contracts.
+//! Stable bounded evidence-extraction contract and browser-observation adapter.
 //!
-//! This module defines the request boundary for the native extraction engine
-//! planned by issue #30. It does not perform browser work. Inputs are strict
-//! authored contracts; observed evidence will use a separate tolerant model.
-use crate::browser::dom::{CompactAxNode, DomNode};
-use crate::browser::session::PageContext;
+//! Authored requests are strict and resource-bounded. Observed evidence is
+//! source-labelled, explicit about omissions, and safe to reconcile into
+//! Glass Web IR without dispatching browser actions.
+use crate::browser::dom::{CompactAxNode, CompactInteractiveElement, DomNode};
+use crate::browser::session::{PageContext, find_region_node};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
@@ -359,20 +359,35 @@ pub struct ExtractionEvidenceLimits {
 
 /// Extract bounded, redacted facts from an existing page observation.
 ///
-/// This adapter is deliberately side-effect free. It consumes only the
-/// already-collected `PageContext`; browser acquisition remains owned by the
-/// session observation layer.
+/// This adapter is side-effect free. It consumes only the already-collected
+/// `PageContext`; browser acquisition remains owned by the session layer.
 pub fn extract_page_context(
     context: &PageContext,
     request: &ExtractionRequest,
 ) -> Result<ExtractionEvidence, ExtractionContractError> {
     request.validate()?;
-    if !matches!(request.scope, ExtractionScope::Document) {
-        return Err(ExtractionContractError::new(
-            "scope",
-            "region and frame extraction require a scoped page observation",
-        ));
-    }
+    let region_root = match &request.scope {
+        ExtractionScope::Document => None,
+        ExtractionScope::Region { region_id } if region_id == "region_main" => None,
+        ExtractionScope::Region { region_id } => {
+            Some(find_region_node(context, region_id).ok_or_else(|| {
+                ExtractionContractError::new(
+                    "scope.regionId",
+                    format!(
+                        "region {region_id:?} is not present at revision {}",
+                        context.accessibility.revision
+                    ),
+                )
+            })?)
+        }
+        ExtractionScope::Frame { frame_id } if frame_id == &context.page.frame_id => None,
+        ExtractionScope::Frame { frame_id } => {
+            return Err(ExtractionContractError::new(
+                "scope.frameId",
+                format!("frame {frame_id:?} is not the active observed frame"),
+            ));
+        }
+    };
 
     let mut collector = EvidenceCollector::new(request.budgets);
     let mut missing_sources = BTreeSet::new();
@@ -391,15 +406,20 @@ pub fn extract_page_context(
             EvidenceSource::Accessibility => {
                 if incomplete_accessibility {
                     missing_sources.insert(*source);
+                } else if let Some(root) = region_root {
+                    collect_accessibility(root, &mut collector, 0, None);
                 } else {
                     for root in &context.accessibility.roots {
-                        if collector.is_full() {
+                        if collector.node_budget_exhausted() {
                             collector.mark_omitted();
                             break;
                         }
                         collect_accessibility(root, &mut collector, 0, None);
                     }
                 }
+            }
+            EvidenceSource::Dom | EvidenceSource::Layout if region_root.is_some() => {
+                missing_sources.insert(*source);
             }
             EvidenceSource::Dom => {
                 if let Some(root) = context.dom.as_ref() {
@@ -413,34 +433,41 @@ pub fn extract_page_context(
                     missing_sources.insert(*source);
                 } else {
                     for control in &context.accessibility.interactive {
-                        if collector.is_full() {
+                        if collector.node_budget_exhausted() {
                             collector.mark_omitted();
                             break;
                         }
-                        if control.input_type.is_some() || is_form_control_role(&control.role) {
-                            let parent_role = control
-                                .ancestor_path
-                                .last()
-                                .and_then(|value| value.split(':').next())
-                                .and_then(safe_parent_role);
-                            collector.push(EvidenceFact {
-                                source: *source,
-                                kind: "control".into(),
-                                quality: EvidenceQuality::Strong,
-                                role: Some(control.role.clone()),
-                                name: Some(control.name.clone()),
-                                input_type: control.input_type.clone(),
-                                required: Some(control.required),
-                                read_only: Some(control.read_only),
-                                empty: Some(control.empty),
-                                geometry_present: None,
-                                relationship_hint: custom_form_control_hint(
-                                    &control.role,
-                                    parent_role.as_deref(),
-                                ),
-                                parent_role,
-                            });
+                        if !control_in_region(control, region_root)
+                            || (control.input_type.is_none()
+                                && !is_form_control_role(&control.role))
+                        {
+                            continue;
                         }
+                        if !collector.allow_node(0) {
+                            break;
+                        }
+                        let parent_role = control
+                            .ancestor_path
+                            .last()
+                            .and_then(|value| value.split(':').next())
+                            .and_then(safe_parent_role);
+                        collector.push(EvidenceFact {
+                            source: *source,
+                            kind: "control".into(),
+                            quality: EvidenceQuality::Strong,
+                            role: Some(control.role.clone()),
+                            name: Some(control.name.clone()),
+                            input_type: control.input_type.clone(),
+                            required: Some(control.required),
+                            read_only: Some(control.read_only),
+                            empty: Some(control.empty),
+                            geometry_present: None,
+                            relationship_hint: custom_form_control_hint(
+                                &control.role,
+                                parent_role.as_deref(),
+                            ),
+                            parent_role,
+                        });
                     }
                 }
             }
@@ -451,8 +478,73 @@ pub fn extract_page_context(
                     missing_sources.insert(*source);
                 }
             }
-            _ => {
-                missing_sources.insert(*source);
+            EvidenceSource::Navigation
+            | EvidenceSource::Tables
+            | EvidenceSource::Collections
+            | EvidenceSource::Dialogs => {
+                if incomplete_accessibility {
+                    missing_sources.insert(*source);
+                } else if let Some(root) = region_root {
+                    collect_semantic_source(root, *source, &mut collector, 0, None);
+                } else {
+                    for root in &context.accessibility.roots {
+                        if collector.node_budget_exhausted() {
+                            collector.mark_omitted();
+                            break;
+                        }
+                        collect_semantic_source(root, *source, &mut collector, 0, None);
+                    }
+                }
+            }
+            EvidenceSource::Frames => {
+                let count = if matches!(request.scope, ExtractionScope::Frame { .. }) {
+                    1
+                } else {
+                    context.boundaries.child_frames
+                };
+                if count == 0 {
+                    missing_sources.insert(*source);
+                } else {
+                    push_boundary_fact(
+                        &mut collector,
+                        *source,
+                        "frame",
+                        format!("{count} observed frame scope(s)"),
+                    );
+                }
+            }
+            EvidenceSource::ShadowDom => {
+                if context.boundaries.shadow_roots == 0 {
+                    missing_sources.insert(*source);
+                } else {
+                    push_boundary_fact(
+                        &mut collector,
+                        *source,
+                        "shadowroot",
+                        format!(
+                            "{} observed shadow root(s)",
+                            context.boundaries.shadow_roots
+                        ),
+                    );
+                }
+            }
+            EvidenceSource::BoundedProbe => {
+                if let Some(viewport) = context.boundaries.viewport {
+                    push_boundary_fact(
+                        &mut collector,
+                        *source,
+                        "viewport",
+                        format!(
+                            "{}x{} viewport in {}x{} document",
+                            viewport.width,
+                            viewport.height,
+                            viewport.document_width,
+                            viewport.document_height
+                        ),
+                    );
+                } else {
+                    missing_sources.insert(*source);
+                }
             }
         }
     }
@@ -488,6 +580,7 @@ struct EvidenceCollector {
     budgets: ExtractionBudgets,
     deadline: Instant,
     facts: Vec<EvidenceFact>,
+    inspected_nodes: u32,
     omitted_facts: u32,
     text_bytes: u32,
     truncated: bool,
@@ -500,6 +593,7 @@ impl EvidenceCollector {
             deadline: Instant::now() + Duration::from_millis(budgets.max_duration_ms),
             budgets,
             facts: Vec::new(),
+            inspected_nodes: 0,
             omitted_facts: 0,
             text_bytes: 0,
             truncated: false,
@@ -516,21 +610,21 @@ impl EvidenceCollector {
         self.mark_omitted();
     }
 
-    fn allow_depth(&mut self, depth: u16) -> bool {
+    fn allow_node(&mut self, depth: u16) -> bool {
         if self.deadline_reached() {
             self.mark_timeout();
             return false;
         }
-        if depth >= self.budgets.max_depth {
+        if depth >= self.budgets.max_depth || self.node_budget_exhausted() {
             self.mark_omitted();
-            false
-        } else {
-            true
+            return false;
         }
+        self.inspected_nodes = self.inspected_nodes.saturating_add(1);
+        true
     }
 
-    fn is_full(&self) -> bool {
-        self.facts.len() as u32 >= self.budgets.max_nodes
+    fn node_budget_exhausted(&self) -> bool {
+        self.inspected_nodes >= self.budgets.max_nodes
     }
 
     fn mark_omitted(&mut self) {
@@ -541,10 +635,6 @@ impl EvidenceCollector {
     fn push(&mut self, mut fact: EvidenceFact) {
         if self.deadline_reached() {
             self.mark_timeout();
-            return;
-        }
-        if self.is_full() {
-            self.mark_omitted();
             return;
         }
         fact.role = self.bound_text(fact.role.take());
@@ -562,6 +652,10 @@ impl EvidenceCollector {
             return None;
         }
         let bounded = truncate_utf8(&value, remaining);
+        if bounded.is_empty() {
+            self.truncated |= !value.is_empty();
+            return None;
+        }
 
         self.text_bytes = self.text_bytes.saturating_add(bounded.len() as u32);
         if bounded.len() < value.len() {
@@ -727,13 +821,113 @@ fn is_region_role(role: &str) -> bool {
     )
 }
 
+fn control_in_region(
+    control: &CompactInteractiveElement,
+    region_root: Option<&CompactAxNode>,
+) -> bool {
+    let Some(region_root) = region_root else {
+        return true;
+    };
+    control.ancestor_path.iter().any(|ancestor| {
+        let (role, name) = ancestor.split_once(':').unwrap_or((ancestor, ""));
+        role.eq_ignore_ascii_case(&region_root.role)
+            && (region_root.name.is_empty() || name.eq_ignore_ascii_case(&region_root.name))
+    })
+}
+
+fn semantic_source_matches(source: EvidenceSource, role: &str) -> bool {
+    match source {
+        EvidenceSource::Navigation => {
+            matches!(role, "navigation" | "link" | "tab" | "menu" | "menuitem")
+        }
+        EvidenceSource::Tables => matches!(
+            role,
+            "table" | "grid" | "row" | "cell" | "gridcell" | "columnheader" | "rowheader"
+        ),
+        EvidenceSource::Collections => {
+            matches!(role, "list" | "listitem" | "feed" | "article")
+        }
+        EvidenceSource::Dialogs => {
+            matches!(role, "dialog" | "alertdialog" | "alert" | "status")
+        }
+        _ => false,
+    }
+}
+
+fn collect_semantic_source(
+    node: &CompactAxNode,
+    source: EvidenceSource,
+    collector: &mut EvidenceCollector,
+    depth: u16,
+    parent_role: Option<&str>,
+) {
+    if !collector.allow_node(depth) {
+        return;
+    }
+    if semantic_source_matches(source, &node.role) {
+        collector.push(EvidenceFact {
+            source,
+            kind: "semantic".into(),
+            quality: EvidenceQuality::Confirmed,
+            role: Some(node.role.clone()),
+            name: Some(node.name.clone()),
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: None,
+            parent_role: parent_role.map(str::to_owned),
+            relationship_hint: None,
+        });
+    }
+    let next_parent_role = safe_parent_role(&node.role).or_else(|| parent_role.map(str::to_owned));
+    for child in &node.children {
+        if collector.node_budget_exhausted() {
+            collector.mark_omitted();
+            break;
+        }
+        collect_semantic_source(
+            child,
+            source,
+            collector,
+            depth.saturating_add(1),
+            next_parent_role.as_deref(),
+        );
+    }
+}
+
+fn push_boundary_fact(
+    collector: &mut EvidenceCollector,
+    source: EvidenceSource,
+    role: &str,
+    name: String,
+) {
+    if !collector.allow_node(0) {
+        return;
+    }
+    collector.push(EvidenceFact {
+        source,
+        kind: "boundary".into(),
+        quality: EvidenceQuality::Strong,
+        role: Some(role.into()),
+        name: Some(name),
+        input_type: None,
+        required: None,
+        read_only: None,
+        empty: None,
+        geometry_present: None,
+        parent_role: None,
+        relationship_hint: None,
+    });
+}
+
 fn collect_accessibility(
     node: &CompactAxNode,
     collector: &mut EvidenceCollector,
     depth: u16,
     parent_role: Option<&str>,
 ) {
-    if !collector.allow_depth(depth) {
+    if !collector.allow_node(depth) {
         return;
     }
     collector.push(EvidenceFact {
@@ -756,7 +950,7 @@ fn collect_accessibility(
         parent_role
     };
     for child in &node.children {
-        if collector.is_full() {
+        if collector.node_budget_exhausted() {
             collector.mark_omitted();
             break;
         }
@@ -765,7 +959,7 @@ fn collect_accessibility(
 }
 
 fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
-    if !collector.allow_depth(depth) {
+    if !collector.allow_node(depth) {
         return;
     }
     collector.push(EvidenceFact {
@@ -783,7 +977,7 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
         relationship_hint: None,
     });
     for child in &node.children {
-        if collector.is_full() {
+        if collector.node_budget_exhausted() {
             collector.mark_omitted();
             break;
         }
@@ -797,7 +991,7 @@ fn collect_layout(
     source: EvidenceSource,
     depth: u16,
 ) {
-    if !collector.allow_depth(depth) {
+    if !collector.allow_node(depth) {
         return;
     }
     collector.push(EvidenceFact {
@@ -815,7 +1009,7 @@ fn collect_layout(
         relationship_hint: None,
     });
     for child in &node.children {
-        if collector.is_full() {
+        if collector.node_budget_exhausted() {
             collector.mark_omitted();
             break;
         }
@@ -1092,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn extraction_collects_supported_sources_and_reports_missing_sources() {
+    fn extraction_collects_supported_sources_without_confusing_absence_and_missing_evidence() {
         let mut request = request();
         request.sources = vec![
             EvidenceSource::Accessibility,
@@ -1110,17 +1304,7 @@ mod tests {
             evidence.facts.first().map(|fact| fact.quality),
             Some(EvidenceQuality::Confirmed)
         );
-        assert!(
-            evidence
-                .coverage
-                .reasons
-                .iter()
-                .any(|reason| reason == "missingSource:Navigation")
-        );
-        assert_eq!(
-            evidence.limits.missing_sources,
-            vec![EvidenceSource::Navigation]
-        );
+        assert!(evidence.limits.missing_sources.is_empty());
         assert!(
             !serde_json::to_string(&evidence)
                 .unwrap()
@@ -1208,13 +1392,104 @@ mod tests {
     }
 
     #[test]
-    fn extraction_rejects_unbound_scopes_until_scoped_observation_exists() {
-        let mut request = request();
-        request.scope = ExtractionScope::Region {
-            region_id: "region-main".into(),
+    fn extraction_supports_observed_region_and_active_frame_scopes() {
+        let mut region_request = request();
+        region_request.scope = ExtractionScope::Region {
+            region_id: "region_form_1".into(),
         };
-        let error = extract_page_context(&page_context(), &request).unwrap_err();
-        assert_eq!(error.path, "scope");
+        let region = extract_page_context(&page_context(), &region_request).unwrap();
+        assert!(!region.facts.is_empty());
+        assert_eq!(region.scope, region_request.scope);
+
+        let mut frame_request = request();
+        frame_request.scope = ExtractionScope::Frame {
+            frame_id: "frame-1".into(),
+        };
+        assert!(extract_page_context(&page_context(), &frame_request).is_ok());
+        frame_request.scope = ExtractionScope::Frame {
+            frame_id: "other-frame".into(),
+        };
+        assert_eq!(
+            extract_page_context(&page_context(), &frame_request)
+                .unwrap_err()
+                .path,
+            "scope.frameId"
+        );
+    }
+
+    #[test]
+    fn extraction_covers_semantic_boundary_and_probe_sources() {
+        use crate::browser::session::ViewportState;
+
+        let mut context = page_context();
+        context.accessibility.roots[0].children.extend([
+            CompactAxNode {
+                role: "navigation".into(),
+                name: "Primary".into(),
+                children: vec![CompactAxNode {
+                    role: "link".into(),
+                    name: "Home".into(),
+                    children: Vec::new(),
+                    interactive: true,
+                }],
+                interactive: false,
+            },
+            CompactAxNode {
+                role: "table".into(),
+                name: "Orders".into(),
+                children: vec![CompactAxNode {
+                    role: "row".into(),
+                    name: "Order 1".into(),
+                    children: Vec::new(),
+                    interactive: false,
+                }],
+                interactive: false,
+            },
+            CompactAxNode {
+                role: "list".into(),
+                name: "Results".into(),
+                children: vec![CompactAxNode {
+                    role: "listitem".into(),
+                    name: "Result 1".into(),
+                    children: Vec::new(),
+                    interactive: false,
+                }],
+                interactive: false,
+            },
+            CompactAxNode {
+                role: "dialog".into(),
+                name: "Confirm".into(),
+                children: Vec::new(),
+                interactive: false,
+            },
+        ]);
+        context.boundaries.child_frames = 1;
+        context.boundaries.shadow_roots = 1;
+        context.boundaries.viewport = Some(ViewportState {
+            width: 800.0,
+            height: 600.0,
+            document_width: 1200.0,
+            document_height: 1800.0,
+            ..ViewportState::default()
+        });
+        let mut request = request();
+        request.sources = vec![
+            EvidenceSource::Navigation,
+            EvidenceSource::Tables,
+            EvidenceSource::Collections,
+            EvidenceSource::Dialogs,
+            EvidenceSource::Frames,
+            EvidenceSource::ShadowDom,
+            EvidenceSource::BoundedProbe,
+        ];
+        let evidence = extract_page_context(&context, &request).unwrap();
+        assert!(evidence.limits.missing_sources.is_empty());
+        for source in request.sources {
+            assert!(
+                evidence.facts.iter().any(|fact| fact.source == source),
+                "missing facts for {source:?}"
+            );
+        }
     }
     #[test]
     fn extraction_reports_opaque_boundaries_without_claiming_completeness() {
@@ -1303,7 +1578,7 @@ mod tests {
         let mut collector = EvidenceCollector::new(ExtractionBudgets::default());
         collector.deadline = Instant::now() - Duration::from_millis(1);
 
-        assert!(!collector.allow_depth(0));
+        assert!(!collector.allow_node(0));
         assert!(collector.timed_out);
         assert!(collector.truncated);
         assert_eq!(collector.omitted_facts, 1);

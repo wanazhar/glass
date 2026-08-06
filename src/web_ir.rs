@@ -6,7 +6,7 @@
 
 use crate::extraction::{
     EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
-    ExtractionEvidenceLimits,
+    ExtractionEvidenceLimits, ExtractionScope,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,6 +41,9 @@ pub enum WebIrEntityKind {
     CollectionItem,
     Dialog,
     PaginationControl,
+    Frame,
+    ShadowRoot,
+    Probe,
     Text,
     UnknownInteractive,
     OpaqueRegion,
@@ -105,6 +108,7 @@ pub enum WebIrSensitivity {
 pub enum WebIrScopeKind {
     #[default]
     Document,
+    Region,
     Frame,
     ShadowRoot,
 }
@@ -344,6 +348,9 @@ impl WebIrEntityKind {
             "collectionItem" => Self::CollectionItem,
             "dialog" => Self::Dialog,
             "paginationControl" => Self::PaginationControl,
+            "frame" => Self::Frame,
+            "shadowRoot" => Self::ShadowRoot,
+            "probe" => Self::Probe,
             "text" => Self::Text,
             "unknownInteractive" => Self::UnknownInteractive,
             "opaqueRegion" => Self::OpaqueRegion,
@@ -950,7 +957,18 @@ pub fn reconcile_evidence(
             diagnostics.insert(format!("unsupportedFact:{}", fact.kind));
             continue;
         };
-        let fact_details = entity_details_for_fact(kind, &fact);
+        let mut fact_details = entity_details_for_fact(kind, &fact);
+        match &evidence.scope {
+            ExtractionScope::Document => {}
+            ExtractionScope::Region { region_id } => {
+                fact_details.scope = WebIrScopeKind::Region;
+                fact_details.scope_id = Some(region_id.clone());
+            }
+            ExtractionScope::Frame { frame_id } => {
+                fact_details.scope = WebIrScopeKind::Frame;
+                fact_details.scope_id = Some(frame_id.clone());
+            }
+        }
         let key = canonical_key(kind, fact.role.as_deref(), fact.name.as_deref());
         let existing = indexes.get(&key).and_then(|candidates| {
             candidates
@@ -1011,13 +1029,22 @@ pub fn reconcile_evidence(
             quality: EvidenceQuality::Opaque,
             evidence_sources: Vec::new(),
         });
-        entity_details.insert(
-            id,
-            WebIrEntityDetails {
-                truncated: true,
-                ..WebIrEntityDetails::default()
-            },
-        );
+        let mut details = WebIrEntityDetails {
+            truncated: true,
+            ..WebIrEntityDetails::default()
+        };
+        match &evidence.scope {
+            ExtractionScope::Document => {}
+            ExtractionScope::Region { region_id } => {
+                details.scope = WebIrScopeKind::Region;
+                details.scope_id = Some(region_id.clone());
+            }
+            ExtractionScope::Frame { frame_id } => {
+                details.scope = WebIrScopeKind::Frame;
+                details.scope_id = Some(frame_id.clone());
+            }
+        }
+        entity_details.insert(id, details);
     }
 
     let mut relationships = entities
@@ -1309,9 +1336,12 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
         | WebIrEntityKind::Tab
         | WebIrEntityKind::UnknownInteractive => vec![WebIrAction::Click],
         WebIrEntityKind::Link => vec![WebIrAction::Click, WebIrAction::Navigate],
-        WebIrEntityKind::Table | WebIrEntityKind::Collection | WebIrEntityKind::CollectionItem => {
-            vec![WebIrAction::Read, WebIrAction::Extract]
-        }
+        WebIrEntityKind::Table
+        | WebIrEntityKind::Collection
+        | WebIrEntityKind::CollectionItem
+        | WebIrEntityKind::Frame
+        | WebIrEntityKind::ShadowRoot
+        | WebIrEntityKind::Probe => vec![WebIrAction::Read, WebIrAction::Extract],
         WebIrEntityKind::Dialog => vec![
             WebIrAction::Read,
             WebIrAction::Close,
@@ -1412,6 +1442,7 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
             "DIALOG" => Some(WebIrEntityKind::Dialog),
             "NAV" => Some(WebIrEntityKind::Region),
             "ARTICLE" => Some(WebIrEntityKind::CollectionItem),
+            "IFRAME" | "FRAME" => Some(WebIrEntityKind::Frame),
             _ => None,
         };
     }
@@ -1432,6 +1463,9 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
         "list" => Some(WebIrEntityKind::Collection),
         "listitem" => Some(WebIrEntityKind::CollectionItem),
         "heading" | "text" => Some(WebIrEntityKind::Text),
+        "iframe" | "frame" => Some(WebIrEntityKind::Frame),
+        "shadowroot" => Some(WebIrEntityKind::ShadowRoot),
+        "viewport" => Some(WebIrEntityKind::Probe),
         _ if fact.kind == "control" => Some(WebIrEntityKind::UnknownInteractive),
         _ => None,
     }
@@ -1480,6 +1514,9 @@ fn kind_name(kind: WebIrEntityKind) -> &'static str {
         WebIrEntityKind::CollectionItem => "collectionItem",
         WebIrEntityKind::Dialog => "dialog",
         WebIrEntityKind::PaginationControl => "paginationControl",
+        WebIrEntityKind::Frame => "frame",
+        WebIrEntityKind::ShadowRoot => "shadowRoot",
+        WebIrEntityKind::Probe => "probe",
         WebIrEntityKind::Text => "text",
         WebIrEntityKind::UnknownInteractive => "unknownInteractive",
         WebIrEntityKind::OpaqueRegion => "opaqueRegion",

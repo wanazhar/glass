@@ -1494,7 +1494,10 @@ fn count_interactive(node: &CompactAxNode) -> usize {
     usize::from(node.interactive) + node.children.iter().map(count_interactive).sum::<usize>()
 }
 
-fn find_region_node<'a>(context: &'a PageContext, region_id: &str) -> Option<&'a CompactAxNode> {
+pub(crate) fn find_region_node<'a>(
+    context: &'a PageContext,
+    region_id: &str,
+) -> Option<&'a CompactAxNode> {
     if region_id == "region_main" {
         return context.accessibility.roots.first();
     }

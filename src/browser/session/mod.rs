@@ -110,6 +110,7 @@ pub use knowledge_store::{
     KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreStats, default_knowledge_store_path,
 };
 pub use retry::{RetryPolicy, RetryPredicate};
+pub(crate) use semantic::find_region_node;
 pub use semantic::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticChangeKind,
     SemanticChangeSet, SemanticConfidence, SemanticContinuity, SemanticExpansionHandle,

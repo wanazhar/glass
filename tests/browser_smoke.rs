@@ -11,8 +11,9 @@ use glass::reliability::{
 };
 use glass::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use glass::{
-    GlassTask, TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits,
-    TaskPostcondition, TaskPostconditionKind, TaskRiskClass, TaskScope,
+    EvidenceSource, ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassTask,
+    TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition,
+    TaskPostconditionKind, TaskRiskClass, TaskScope, WebIrEntityKind,
 };
 use serde_json::{Value, json};
 use std::{
@@ -2613,6 +2614,74 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     session.close().await.unwrap();
     fixture.close().await;
     cross_origin.close().await;
+}
+
+#[tokio::test]
+async fn browser_session_extracts_live_page_into_stable_web_ir() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping live Web IR smoke test; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let fixture = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "web-ir-live-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture.url).await.unwrap();
+    let request = ExtractionRequest {
+        schema_version: 1,
+        scope: ExtractionScope::Document,
+        sources: vec![
+            EvidenceSource::Accessibility,
+            EvidenceSource::Dom,
+            EvidenceSource::Forms,
+            EvidenceSource::Layout,
+            EvidenceSource::Navigation,
+            EvidenceSource::Tables,
+            EvidenceSource::Collections,
+            EvidenceSource::Dialogs,
+            EvidenceSource::Frames,
+            EvidenceSource::ShadowDom,
+            EvidenceSource::BoundedProbe,
+        ],
+        budgets: ExtractionBudgets::default(),
+    };
+    let ir = session.extract_web_ir(&request).await.unwrap();
+    ir.validate().unwrap();
+    assert_eq!(ir.revision, ir.document.revision);
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Form)
+    );
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Field)
+    );
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Link)
+    );
+    assert!(!ir.to_canonical_json().unwrap().contains("secret-value"));
+    session.close().await.unwrap();
+    fixture.close().await;
 }
 
 #[tokio::test]

@@ -5,6 +5,8 @@
 //! form-value overlays.
 
 use super::*;
+use crate::extraction::{ExtractionEvidence, ExtractionRequest, extract_page_context};
+use crate::web_ir::{GlassWebIrV1, reconcile_evidence};
 
 impl BrowserSession {
     /// Return the visible text content of the current page.
@@ -219,6 +221,69 @@ impl BrowserSession {
         };
         self.observe_internal(false, false, false, false, ranking)
             .await
+    }
+
+    /// Collect fresh, bounded, source-labelled evidence from the active page.
+    ///
+    /// The request is validated before browser work. DOM and form-value
+    /// acquisition are enabled only when their evidence sources are requested.
+    pub async fn extract_evidence(
+        &self,
+        request: &ExtractionRequest,
+    ) -> BrowserResult<ExtractionEvidence> {
+        request.validate()?;
+        let started = Instant::now();
+        let include_dom = request.sources.iter().any(|source| {
+            matches!(
+                source,
+                crate::extraction::EvidenceSource::Dom | crate::extraction::EvidenceSource::Layout
+            )
+        });
+        let include_form_values = request
+            .sources
+            .contains(&crate::extraction::EvidenceSource::Forms);
+        let acquisition_budget = Duration::from_millis(request.budgets.max_duration_ms);
+        let context = tokio::time::timeout(
+            acquisition_budget,
+            self.observe_internal(
+                include_dom,
+                false,
+                false,
+                include_form_values,
+                CompactRanking::Relevance,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "extraction observation exceeded the {} ms time budget",
+                request.budgets.max_duration_ms
+            )
+        })??;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let Some(remaining_ms) = request.budgets.max_duration_ms.checked_sub(elapsed_ms) else {
+            return Err(format!(
+                "extraction observation exhausted the {} ms time budget",
+                request.budgets.max_duration_ms
+            )
+            .into());
+        };
+        if remaining_ms == 0 {
+            return Err(format!(
+                "extraction observation exhausted the {} ms time budget",
+                request.budgets.max_duration_ms
+            )
+            .into());
+        }
+        let mut bounded_request = request.clone();
+        bounded_request.budgets.max_duration_ms = remaining_ms;
+        Ok(extract_page_context(&context, &bounded_request)?)
+    }
+
+    /// Extract and reconcile the active page into stable Glass Web IR v1.
+    pub async fn extract_web_ir(&self, request: &ExtractionRequest) -> BrowserResult<GlassWebIrV1> {
+        let evidence = self.extract_evidence(request).await?;
+        Ok(reconcile_evidence(&evidence)?)
     }
 
     async fn observe_internal(

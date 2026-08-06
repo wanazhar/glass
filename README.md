@@ -125,8 +125,10 @@ for a disposable browser profile.
 
 The bounded extraction contract and stable Glass Web IR v1 data model are
 available from the Rust crate root (`ExtractionRequest`, `ExtractionEvidence`,
-and `GlassWebIrV1`). Browser-free reconciliation, validation, diff, and
-continuity APIs are stable; live browser extraction remains under development.
+and `GlassWebIrV1`). `BrowserSession::extract_evidence` and
+`BrowserSession::extract_web_ir` acquire fresh, budgeted live-page evidence;
+browser-free reconciliation, validation, diff, and continuity remain available
+for offline callers.
 
 Example MCP configuration:
 

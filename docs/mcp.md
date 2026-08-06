@@ -297,10 +297,11 @@ tasks. The task payload is authored once and dispatched through the same
 typed protocol validation used by `validateTask` and `compileTask`.
 
 `expectedRevision` is required and must come from the caller's preceding
-semantic observation. Glass re-observes before execution and returns a guarded
-preflight result without dispatching browser actions when the revision is
-stale or changes during preflight.
-
+semantic observation. Every browser-backed task checks that revision before
+dispatch. Families that inspect semantic page state re-observe before mutation
+and return a guarded preflight result when the revision is stale or changes
+during preflight; navigation and dialog families apply their bounded
+current-revision and pending-dialog guards.
 `confirmed` defaults to `false`. If the compiled task is
 confirmation-gated by its risk or ambiguity policy, execution returns a
 confirmation-required preflight result until the caller explicitly retries

@@ -576,12 +576,6 @@ impl ResourceReference {
             return Err(ReferenceError::InvalidGeneration);
         }
         match &resource {
-            ResourceKind::Workspace if scope.profile_id.is_some() => {
-                return Err(ReferenceError::Scope(ScopeError::ProfileMismatch {
-                    expected: None,
-                    actual: scope.profile_id,
-                }));
-            }
             ResourceKind::Profile(profile_id) if scope.profile_id.as_ref() != Some(profile_id) => {
                 return Err(ReferenceError::Scope(ScopeError::ProfileMismatch {
                     expected: scope.profile_id,
@@ -647,7 +641,13 @@ impl fmt::Display for ResourceReference {
             write!(formatter, "/generation/{generation}")?;
         }
         match &self.resource {
-            ResourceKind::Workspace => Ok(()),
+            ResourceKind::Workspace => {
+                if let Some(profile_id) = &self.scope.profile_id {
+                    write!(formatter, "/profile/{profile_id}/workspace")
+                } else {
+                    Ok(())
+                }
+            }
             ResourceKind::Profile(profile_id) => write!(formatter, "/profile/{profile_id}"),
             resource => {
                 if let Some(profile_id) = &self.scope.profile_id {
@@ -700,6 +700,10 @@ impl FromStr for ResourceReference {
                     workspace_scope.with_profile(profile_id.clone()),
                     ResourceKind::Profile(profile_id),
                 );
+            }
+            if tail.len() == 3 && tail[2] == "workspace" {
+                let profile_id = ProfileId::new(tail[1]).map_err(ReferenceError::InvalidName)?;
+                return Self::new(workspace_scope.with_profile(profile_id), ResourceKind::Workspace);
             }
             if tail.len() != 4 {
                 return Err(ReferenceError::InvalidPath);
@@ -1131,30 +1135,12 @@ impl Workspace {
 
     /// Validate that a resource belongs to this workspace incarnation.
     pub fn validate_reference(&self, reference: &ResourceReference) -> Result<(), ScopeError> {
-        if matches!(reference.resource(), ResourceKind::Workspace) {
-            let expected = self.scope();
-            let actual = reference.scope();
-            if expected.workspace_id() != actual.workspace_id() {
-                return Err(ScopeError::WorkspaceMismatch { expected: expected.workspace_id().clone(), actual: actual.workspace_id().clone() });
-            }
-            if expected.storage() != actual.storage() {
-                return Err(ScopeError::StorageMismatch { expected: expected.storage(), actual: actual.storage() });
-            }
-            if expected.generation() != actual.generation() {
-                return Err(ScopeError::GenerationMismatch { expected: expected.generation(), actual: actual.generation() });
-            }
-            return Ok(());
-        }
         self.scope().validate(reference.scope())
     }
 
-    /// Return a workspace reference carrying ephemeral generation identity.
+    /// Return a workspace reference carrying profile and ephemeral generation scope.
     pub fn resource_reference(&self) -> ResourceReference {
-        let scope = match self.config.storage {
-            WorkspaceStorage::Durable => WorkspaceScope::workspace(self.identity.id().clone()),
-            WorkspaceStorage::Ephemeral => WorkspaceScope::ephemeral(self.identity.id().clone(), self.config.generation.expect("validated ephemeral generation")),
-        };
-        ResourceReference::new(scope, ResourceKind::Workspace).expect("workspace scope is valid")
+        ResourceReference::new(self.scope(), ResourceKind::Workspace).expect("validated workspace scope")
     }
 
     pub fn transition(&mut self, next: WorkspaceLifecycle) -> Result<(), LifecycleError> {
@@ -1530,6 +1516,18 @@ impl From<LifecycleError> for WorkspaceStoreError {
     fn from(error: LifecycleError) -> Self { Self::Lifecycle(error) }
 }
 
+/// A loaded workspace together with its profile ownership guard. The guard
+/// remains held for the session lifetime, preventing another runtime from
+/// deleting or reusing the profile.
+#[derive(Debug)]
+pub struct WorkspaceSession {
+    workspace: Workspace,
+    profile_lock: Option<WorkspaceProfileLock>,
+}
+impl WorkspaceSession {
+    pub fn workspace(&self) -> &Workspace { &self.workspace }
+    pub fn into_workspace(self) -> Workspace { self.workspace }
+}
 impl WorkspaceStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, WorkspaceStoreError> {
         let root = root.into();
@@ -1542,6 +1540,7 @@ impl WorkspaceStore {
         std::env::var_os("GLASS_CONFIG_HOME").map(PathBuf::from).or_else(dirs::config_dir)
             .unwrap_or_else(|| PathBuf::from(".")).join("glass")
     }
+
     pub fn open_default() -> Result<Self, WorkspaceStoreError> { Self::new(Self::default_path()) }
     pub fn path_for(&self, id: &WorkspaceId) -> PathBuf {
         self.root.join("workspaces").join(format!("{id}{WORKSPACE_FILE_SUFFIX}"))
@@ -1589,6 +1588,23 @@ impl WorkspaceStore {
     pub fn open(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
         let _lock = self.lock_workspace(id)?;
         self.read_unlocked(id)
+    }
+    pub fn open_owned(&self, id: &WorkspaceId) -> Result<WorkspaceSession, WorkspaceStoreError> {
+        let workspace = self.open(id)?;
+        let profile_lock = workspace.config().profile_id.as_ref()
+            .map(|profile_id| self.lock_profile(id, profile_id))
+            .transpose()?;
+        Ok(WorkspaceSession { workspace, profile_lock })
+    }
+
+    pub fn create_owned(
+        &self,
+        id: WorkspaceId,
+        aliases: impl IntoIterator<Item = WorkspaceAlias>,
+        config: WorkspaceConfig,
+    ) -> Result<WorkspaceSession, WorkspaceStoreError> {
+        self.create(id.clone(), aliases, config)?;
+        self.open_owned(&id)
     }
 
     pub fn save(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
@@ -1806,6 +1822,9 @@ mod persistence_tests {
         assert_eq!(loaded.attachments().len(), 1);
         let foreign = ResourceReference::target(WorkspaceScope::profile(WorkspaceId::new("other").unwrap(), ProfileId::new("other").unwrap()), ResourceId::new("tab").unwrap()).unwrap();
         assert!(loaded.validate_reference(&foreign).is_err());
+        let own_reference = loaded.resource_reference();
+        assert_eq!(own_reference.to_string().parse::<ResourceReference>().unwrap(), own_reference);
+        assert!(loaded.validate_reference(&own_reference).is_ok());
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -1814,11 +1833,25 @@ mod persistence_tests {
         let store = WorkspaceStore::new(&root).unwrap();
         let id = WorkspaceId::new("leased").unwrap();
         let mut workspace = store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("leased").unwrap())).unwrap();
+
         let attachment = Attachment::new(AttachmentId::new("human").unwrap(), ResourceId::new("actor").unwrap(), ActorRole::Human, AttachmentCapabilities::mutating(), workspace.scope()).unwrap();
         workspace.attach(attachment.clone()).unwrap();
         let grant = workspace.acquire_lease(attachment.id(), Revision(0)).unwrap();
         store.save(&workspace).unwrap();
         assert_eq!(store.open(&id).unwrap().lease().state, MutationLeaseState::Held { lease_id: grant.lease_id, holder: attachment.id().clone() });
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn owned_session_retains_profile_lock_until_drop() {
+        let root = test_root("owned-session");
+        let first = WorkspaceStore::new(&root).unwrap();
+        let second = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("owned").unwrap();
+        let profile = ProfileId::new("owned").unwrap();
+        let session = first.create_owned(id.clone(), [], WorkspaceConfig::durable_named(profile.clone())).unwrap();
+        assert!(matches!(second.lock_profile(&id, &profile), Err(WorkspaceStoreError::ProfileLocked(_))));
+        drop(session);
+        let _released = second.lock_profile(&id, &profile).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 

@@ -6,9 +6,9 @@
 //! serializes frame bytes. The [`LatestFrameMailbox`] is the sole frame
 //! retention primitive and is bounded to a current frame plus one pending frame.
 
+use serde::de::{Deserializer, Error as DeError, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-
 /// Schema version for presentation metadata and metrics envelopes.
 pub const PRESENTATION_CONTRACT_SCHEMA_VERSION: u32 = 1;
 /// Maximum UTF-8 bytes in a target or resource identity.
@@ -31,6 +31,7 @@ pub const MAX_CAPTURE_SCALE: f32 = 1.0;
 pub enum PresentationContractError {
     Invalid { field: String, reason: String },
     StaleRevision { expected: u64, actual: u64 },
+    StaleGeometryRevision { expected: u64, actual: u64 },
     TargetMismatch,
     OutsidePane,
 }
@@ -50,6 +51,9 @@ impl Display for PresentationContractError {
             Self::Invalid { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::StaleRevision { expected, actual } => {
                 write!(f, "stale presentation revision: expected {expected}, got {actual}")
+            }
+            Self::StaleGeometryRevision { expected, actual } => {
+                write!(f, "stale geometry revision: expected {expected}, got {actual}")
             }
             Self::TargetMismatch => write!(f, "frame target does not match mailbox target"),
             Self::OutsidePane => write!(f, "point is outside the presentation pane"),
@@ -252,23 +256,61 @@ impl PresentationConfig {
     }
 }
 
-/// Browser viewport and pane placement tied to one browser revision.
+/// Browser viewport and pane placement tied to browser and geometry revisions.
+/// `displayed_image` models letterboxing/clipping inside the pane; input outside
+/// that rectangle is rejected instead of being mapped to browser content.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewportGeometry {
     pub pane: PaneGeometry,
+    pub displayed_image: PixelRect,
     pub viewport: PixelSize,
     pub content: PixelSize,
     pub capture_scale: CaptureScale,
     pub browser_revision: u64,
+    pub geometry_revision: u64,
 }
 
 impl ViewportGeometry {
+    pub fn new(
+        pane: PaneGeometry,
+        viewport: PixelSize,
+        content: PixelSize,
+        capture_scale: CaptureScale,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Self, PresentationContractError> {
+        let geometry = Self {
+            displayed_image: fit_image_rect(&pane, viewport)?,
+            pane,
+            viewport,
+            content,
+            capture_scale,
+            browser_revision,
+            geometry_revision,
+        };
+        geometry.validate()?;
+        Ok(geometry)
+    }
+
     pub fn validate(&self) -> Result<(), PresentationContractError> {
         self.pane.validate()?;
         self.viewport.validate("viewport")?;
         self.content.validate("content")?;
         CaptureScale::new(self.capture_scale.0)?;
+        self.displayed_image.validate("displayedImage")?;
+        let pane = self.pane.rect();
+        let image = self.displayed_image;
+        if image.x < pane.x
+            || image.y < pane.y
+            || image.x.saturating_add(image.width) > pane.x.saturating_add(pane.width)
+            || image.y.saturating_add(image.height) > pane.y.saturating_add(pane.height)
+        {
+            return Err(PresentationContractError::invalid(
+                "displayedImage",
+                "displayed image must fit within pane",
+            ));
+        }
         Ok(())
     }
 
@@ -282,24 +324,48 @@ impl ViewportGeometry {
         Ok(())
     }
 
-    /// Convert an absolute pane pixel coordinate to a browser viewport pixel.
-    /// The revision must be supplied by the caller; stale snapshots are rejected.
+    pub fn check_geometry_revision(
+        &self,
+        revision: u64,
+    ) -> Result<(), PresentationContractError> {
+        if revision != self.geometry_revision {
+            return Err(PresentationContractError::StaleGeometryRevision {
+                expected: self.geometry_revision,
+                actual: revision,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn check_snapshot(
+        &self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<(), PresentationContractError> {
+        self.check_revision(browser_revision)?;
+        self.check_geometry_revision(geometry_revision)
+    }
+
+    /// Convert a pane pixel coordinate to a browser viewport pixel. Both
+    /// revisions are required so resize/mode/scale snapshots cannot dispatch
+    /// input against a stale displayed image.
     pub fn pane_to_viewport(
         &self,
         point: PixelPoint,
-        revision: u64,
+        browser_revision: u64,
+        geometry_revision: u64,
     ) -> Result<PixelPoint, PresentationContractError> {
         self.validate()?;
-        self.check_revision(revision)?;
-        let pane = self.pane.rect();
-        if !pane.contains(point) {
+        self.check_snapshot(browser_revision, geometry_revision)?;
+        let image = self.displayed_image;
+        if !image.contains(point) {
             return Err(PresentationContractError::OutsidePane);
         }
-        let local_x = point.x - pane.x;
-        let local_y = point.y - pane.y;
+        let local_x = point.x - image.x;
+        let local_y = point.y - image.y;
         Ok(PixelPoint {
-            x: ((local_x as u64 * self.viewport.width as u64) / pane.width as u64) as u32,
-            y: ((local_y as u64 * self.viewport.height as u64) / pane.height as u64) as u32,
+            x: ((local_x as u64 * self.viewport.width as u64) / image.width as u64) as u32,
+            y: ((local_y as u64 * self.viewport.height as u64) / image.height as u64) as u32,
         })
     }
 
@@ -307,28 +373,60 @@ impl ViewportGeometry {
     pub fn viewport_to_capture(
         &self,
         point: PixelPoint,
-        revision: u64,
+        browser_revision: u64,
+        geometry_revision: u64,
     ) -> Result<PixelPoint, PresentationContractError> {
         self.validate()?;
-        self.check_revision(revision)?;
+        self.check_snapshot(browser_revision, geometry_revision)?;
         if point.x >= self.viewport.width || point.y >= self.viewport.height {
             return Err(PresentationContractError::OutsidePane);
         }
+        let scaled = self.capture_scale.apply(self.viewport)?;
         Ok(PixelPoint {
-            x: ((point.x as f32 * self.capture_scale.0).floor() as u32)
-                .min(self.viewport.width.saturating_sub(1)),
-            y: ((point.y as f32 * self.capture_scale.0).floor() as u32)
-                .min(self.viewport.height.saturating_sub(1)),
+            x: (((point.x as u64 * scaled.width as u64) / self.viewport.width as u64)
+                .min(scaled.width.saturating_sub(1) as u64)) as u32,
+            y: (((point.y as u64 * scaled.height as u64) / self.viewport.height as u64)
+                .min(scaled.height.saturating_sub(1) as u64)) as u32,
         })
     }
+}
+
+fn fit_image_rect(
+    pane: &PaneGeometry,
+    viewport: PixelSize,
+) -> Result<PixelRect, PresentationContractError> {
+    pane.validate()?;
+    viewport.validate("viewport")?;
+    let pane_width = pane.size.width as u64;
+    let pane_height = pane.size.height as u64;
+    let viewport_width = viewport.width as u64;
+    let viewport_height = viewport.height as u64;
+    let (width, height) = if pane_width * viewport_height <= pane_height * viewport_width {
+        let width = pane.size.width;
+        (width, ((pane_width * viewport_height) / viewport_width) as u32)
+    } else {
+        let height = pane.size.height;
+        (((pane_height * viewport_width) / viewport_height) as u32, height)
+    };
+    Ok(PixelRect::new(
+        pane.origin.x + (pane.size.width - width) / 2,
+        pane.origin.y + (pane.size.height - height) / 2,
+        width.max(1),
+        height.max(1),
+    ))
 }
 
 /// A target and its presentation resource identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TargetResourceIdentity {
+    #[serde(deserialize_with = "deserialize_bounded_identity")]
     pub target_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_bounded_identity"
+    )]
     pub resource_id: Option<String>,
 }
 
@@ -358,7 +456,10 @@ pub enum FrameEncoding {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum FrameDamage {
     Full,
-    Rectangles { rects: Vec<PixelRect> },
+    Rectangles {
+        #[serde(deserialize_with = "deserialize_bounded_rectangles")]
+        rects: Vec<PixelRect>,
+    },
 }
 
 impl FrameDamage {
@@ -403,6 +504,7 @@ pub struct BrowserFrame {
     pub keyframe: bool,
     pub damage: FrameDamage,
     pub browser_revision: u64,
+    pub geometry_revision: u64,
     pub dropped: FrameDropCounts,
 }
 
@@ -439,6 +541,7 @@ impl BrowserFrame {
     pub fn revision_token(&self) -> RevisionToken {
         RevisionToken {
             browser_revision: self.browser_revision,
+            geometry_revision: self.geometry_revision,
             frame_generation: self.generation,
         }
     }
@@ -459,6 +562,7 @@ impl BrowserFrame {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RevisionToken {
     pub browser_revision: u64,
+    pub geometry_revision: u64,
     pub frame_generation: u64,
 }
 
@@ -471,6 +575,19 @@ impl RevisionToken {
             return Err(PresentationContractError::StaleRevision {
                 expected: self.browser_revision,
                 actual: other.browser_revision,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn require_same_geometry_revision(
+        self,
+        other: Self,
+    ) -> Result<(), PresentationContractError> {
+        if self.geometry_revision != other.geometry_revision {
+            return Err(PresentationContractError::StaleGeometryRevision {
+                expected: self.geometry_revision,
+                actual: other.geometry_revision,
             });
         }
         Ok(())
@@ -551,8 +668,12 @@ impl LatestFrameMailbox {
         }
         let revision_is_stale = self.current.as_ref().is_some_and(|current| {
             frame.browser_revision < current.browser_revision
+                || (frame.browser_revision == current.browser_revision
+                    && frame.geometry_revision < current.geometry_revision)
         }) || self.pending.as_ref().is_some_and(|pending| {
             frame.browser_revision < pending.browser_revision
+                || (frame.browser_revision == pending.browser_revision
+                    && frame.geometry_revision < pending.geometry_revision)
         });
         if revision_is_stale
             || self
@@ -571,6 +692,7 @@ impl LatestFrameMailbox {
         self.counters.accepted = self.counters.accepted.saturating_add(1);
         if self.current.is_none() {
             self.current = Some(frame);
+            self.counters.presented = self.counters.presented.saturating_add(1);
             return Ok(SubmitOutcome::Current);
         }
         if self.pending.is_some() {
@@ -604,25 +726,58 @@ impl LatestFrameMailbox {
         self.current.is_none() && self.pending.is_none()
     }
 
-    /// Mark the current frame presented and promote the newest pending frame.
-    pub fn promote_pending(&mut self) -> Option<BrowserFrame> {
-        let Some(next) = self.pending.take() else {
-            return None;
+    /// Promote the pending frame only if both the browser and geometry
+    /// revisions still describe the displayed snapshot.
+    pub fn promote_pending(
+        &mut self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Option<BrowserFrame>, PresentationContractError> {
+        let Some(next) = self.pending.as_ref() else {
+            return Ok(None);
         };
+        if next.browser_revision != browser_revision {
+            return Err(PresentationContractError::StaleRevision {
+                expected: next.browser_revision,
+                actual: browser_revision,
+            });
+        }
+        if next.geometry_revision != geometry_revision {
+            return Err(PresentationContractError::StaleGeometryRevision {
+                expected: next.geometry_revision,
+                actual: geometry_revision,
+            });
+        }
+        let next = self.pending.take().expect("pending frame checked above");
         let previous = self.current.replace(next);
         self.counters.presented = self.counters.presented.saturating_add(1);
-        previous
+        Ok(previous)
     }
- 
-    /// Explicitly release all metadata and reset the mailbox. No bytes are
-    /// present in this contract, so cleanup is deterministic and allocation-free.
+
+    pub fn identity(&self) -> Option<&TargetResourceIdentity> {
+        self.identity.as_ref()
+    }
+
+    /// Rebind after an explicit target lifecycle transition. Existing frames
+    /// and counters are discarded; the new identity remains bounded.
+    pub fn rebind(
+        &mut self,
+        identity: TargetResourceIdentity,
+    ) -> Result<(), PresentationContractError> {
+        identity.validate()?;
+        self.clear();
+        self.identity = Some(identity);
+        self.counters = MailboxCounters::default();
+        Ok(())
+    }
+
+    /// Explicitly release all frame metadata. The target identity is retained
+    /// so shutdown/cleanup observers can finish lifecycle bookkeeping.
     pub fn clear(&mut self) {
         self.current = None;
         self.pending = None;
-        self.identity = None;
     }
 }
-
 /// Why a frame's ownership changed. These events are metadata-only cleanup
 /// signals; they do not imply persistence of the frame payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +807,7 @@ pub enum FrameOwnershipEvent {
 pub struct FrameOwnershipRecord {
     pub generation: u64,
     pub browser_revision: u64,
+    pub geometry_revision: u64,
     pub event: FrameOwnershipEvent,
 }
 
@@ -752,6 +908,120 @@ impl PresentationMetrics {
     }
 }
 
+struct BoundedIdentityVisitor;
+
+impl<'de> Visitor<'de> for BoundedIdentityVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a non-empty bounded identity string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        validate_identity("identity", value).map_err(|error| E::custom(error.to_string()))?;
+        Ok(value.to_owned())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        validate_identity("identity", value).map_err(|error| E::custom(error.to_string()))?;
+        Ok(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        validate_identity("identity", &value).map_err(|error| E::custom(error.to_string()))?;
+        Ok(value)
+    }
+}
+
+fn deserialize_bounded_identity<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedIdentityVisitor)
+}
+
+struct OptionalIdentityVisitor;
+
+impl<'de> Visitor<'de> for OptionalIdentityVisitor {
+    type Value = Option<String>;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("null or a bounded identity string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        Ok(None)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_bounded_identity(deserializer).map(Some)
+    }
+}
+
+fn deserialize_optional_bounded_identity<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_option(OptionalIdentityVisitor)
+}
+
+struct BoundedRectanglesVisitor;
+
+impl<'de> Visitor<'de> for BoundedRectanglesVisitor {
+    type Value = Vec<PixelRect>;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an array of at most 64 pixel rectangles")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut rects = Vec::with_capacity(MAX_DAMAGE_RECTS);
+        while let Some(rect) = sequence.next_element::<PixelRect>()? {
+            if rects.len() >= MAX_DAMAGE_RECTS {
+                return Err(A::Error::custom(format!(
+                    "damage.rects may contain at most {MAX_DAMAGE_RECTS} rectangles"
+                )));
+            }
+            rects.push(rect);
+        }
+        Ok(rects)
+    }
+}
+
+fn deserialize_bounded_rectangles<'de, D>(deserializer: D) -> Result<Vec<PixelRect>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedRectanglesVisitor)
+}
+
 fn validate_identity(field: &str, value: &str) -> Result<(), PresentationContractError> {
     if value.is_empty() || value.len() > MAX_IDENTITY_BYTES {
         return Err(PresentationContractError::invalid(
@@ -761,7 +1031,6 @@ fn validate_identity(field: &str, value: &str) -> Result<(), PresentationContrac
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +1055,7 @@ mod tests {
             keyframe: generation == 1,
             damage: FrameDamage::Full,
             browser_revision: revision,
+            geometry_revision: revision,
             dropped: FrameDropCounts::default(),
         }
     }
@@ -800,7 +1070,13 @@ mod tests {
         assert_eq!(mailbox.pending().unwrap().generation, 3);
         assert_eq!(mailbox.counters().replaced_pending, 1);
         assert_eq!(mailbox.counters().dropped, 1);
-        mailbox.promote_pending();
+        assert_eq!(mailbox.counters().presented, 1);
+        assert!(matches!(
+            mailbox.promote_pending(1, 2),
+            Err(PresentationContractError::StaleGeometryRevision { .. })
+        ));
+        assert_eq!(mailbox.pending().unwrap().generation, 3);
+        assert_eq!(mailbox.promote_pending(1, 1).unwrap().unwrap().generation, 1);
         assert_eq!(mailbox.current().unwrap().generation, 3);
         assert_eq!(mailbox.len(), 1);
     }
@@ -815,28 +1091,53 @@ mod tests {
         assert_eq!(mailbox.submit(wrong), Err(PresentationContractError::TargetMismatch));
         assert_eq!(mailbox.counters().stale_rejected, 1);
     }
+    #[test]
+    fn mailbox_clear_retains_identity_and_rebind_resets_state() {
+        let mut mailbox = LatestFrameMailbox::new(identity()).unwrap();
+        mailbox.submit(frame(1, 1)).unwrap();
+        mailbox.clear();
+        assert_eq!(mailbox.identity(), Some(&identity()));
+        assert!(mailbox.is_empty());
+        let next_identity = TargetResourceIdentity {
+            target_id: "target-2".into(),
+            resource_id: None,
+        };
+        mailbox.rebind(next_identity.clone()).unwrap();
+        assert_eq!(mailbox.identity(), Some(&next_identity));
+        assert_eq!(mailbox.counters(), MailboxCounters::default());
+    }
 
     #[test]
-    fn geometry_converts_and_rejects_stale_snapshot() {
-        let geometry = ViewportGeometry {
-            pane: PaneGeometry {
+    fn geometry_converts_letterbox_and_rejects_stale_snapshot() {
+        let geometry = ViewportGeometry::new(
+            PaneGeometry {
                 origin: PixelPoint { x: 10, y: 20 },
                 size: PixelSize::new(200, 100),
             },
-            viewport: PixelSize::new(100, 50),
-            content: PixelSize::new(100, 50),
-            capture_scale: CaptureScale::FULL,
-            browser_revision: 7,
-        };
+            PixelSize::new(100, 100),
+            PixelSize::new(100, 100),
+            CaptureScale::FULL,
+            7,
+            3,
+        )
+        .unwrap();
         assert_eq!(
             geometry
-                .pane_to_viewport(PixelPoint { x: 110, y: 70 }, 7)
+                .pane_to_viewport(PixelPoint { x: 110, y: 70 }, 7, 3)
                 .unwrap(),
-            PixelPoint { x: 50, y: 25 }
+            PixelPoint { x: 50, y: 50 }
         );
         assert!(matches!(
-            geometry.pane_to_viewport(PixelPoint { x: 110, y: 70 }, 6),
+            geometry.pane_to_viewport(PixelPoint { x: 110, y: 70 }, 6, 3),
             Err(PresentationContractError::StaleRevision { .. })
+        ));
+        assert!(matches!(
+            geometry.pane_to_viewport(PixelPoint { x: 110, y: 70 }, 7, 2),
+            Err(PresentationContractError::StaleGeometryRevision { .. })
+        ));
+        assert!(matches!(
+            geometry.pane_to_viewport(PixelPoint { x: 11, y: 21 }, 7, 3),
+            Err(PresentationContractError::OutsidePane)
         ));
     }
 
@@ -884,5 +1185,18 @@ mod tests {
         let mut long = frame(1, 1);
         long.identity.target_id = "x".repeat(MAX_IDENTITY_BYTES + 1);
         assert!(long.to_json().is_err());
+        let mut oversized_json = serde_json::to_value(frame(1, 1)).unwrap();
+        oversized_json["identity"]["targetId"] =
+            serde_json::Value::String("x".repeat(MAX_IDENTITY_BYTES + 1));
+        assert!(BrowserFrame::from_json(&oversized_json.to_string()).is_err());
+        oversized_json["identity"]["targetId"] = serde_json::json!("target-1");
+        oversized_json["damage"] = serde_json::json!({
+            "rectangles": {
+                "rects": (0..=MAX_DAMAGE_RECTS)
+                    .map(|_| serde_json::json!({"x": 0, "y": 0, "width": 1, "height": 1}))
+                    .collect::<Vec<_>>()
+            }
+        });
+        assert!(BrowserFrame::from_json(&oversized_json.to_string()).is_err());
     }
 }

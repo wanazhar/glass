@@ -2,11 +2,11 @@
   "schema_version": 1,
   "type": "glass_feature_parity",
   "release_baseline": {
-    "version": "0.2.7",
-    "tag": "v0.2.7",
-    "source_commit": "1d880d582c324251f2c367fbb2e6f14ce5ce21f2"
+    "version": "0.2.8",
+    "tag": "v0.2.8",
+    "source_commit": "ee65c34f858f6d4fe857466fad9094ea1b9cc7aa"
   },
-  "next_release": "0.2.8",
+  "next_release": "0.2.9",
   "targets": [
     {
       "id": "linux-x86_64",

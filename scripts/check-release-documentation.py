@@ -9,25 +9,25 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.2.8 | Release candidate; publication pending |",
+        "| 0.2.9 | Current release |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
-    "CHANGELOG.md": ["## [0.2.8] - 2026-08-01", "## [Unreleased] — 0.2.9"],
+    "CHANGELOG.md": ["## [0.2.9] - 2026-08-06", "## [Unreleased] — 0.3.0"],
     "docs/plan/README.md": [
-        "[`ir-030-081`](tasks/ir-030-081.md)",
-        "[`ir-030-089`](tasks/ir-030-089.md)",
-        "0.2.8` changes",
-        "remain unreleased.",
+        "[ir-030-081](tasks/ir-030-081.md)",
+        "[ir-030-089](tasks/ir-030-089.md)",
+        "0.2.9 implementation is committed locally",
+        "prepared for",
     ],
     "docs/release-checklist.md": [
-        "release candidate is `glass-browser` version `0.2.8`",
-        "The next development version is `0.2.9`",
+        "release candidate is `glass-browser` version `0.2.9`",
+        "The next development version is `0.3.0`",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
-        "published 0.2.7 baseline",
-        "0.2.8 work stream",
+        "published 0.2.8 baseline",
+        "0.2.9 work stream",
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [

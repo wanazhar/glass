@@ -3,7 +3,9 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.9
+## [Unreleased] — 0.3.0
+
+## [0.2.9] - 2026-08-06
 - Generalized the browser-backed `executeTask` MCP contract across all
   validated Task Protocol families and documented family-specific revision
   guards.

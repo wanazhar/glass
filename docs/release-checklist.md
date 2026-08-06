@@ -4,8 +4,8 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release candidate is `glass-browser` version `0.2.8`; publication is
-pending. The next development version is `0.2.9`. Linux x86-64, Linux arm64,
+The release candidate is `glass-browser` version `0.2.9`; publication is
+pending. The next development version is `0.3.0`. Linux x86-64, Linux arm64,
 macOS x86-64, and macOS arm64 remain declared targets; only Linux ARM64
 evidence is currently recorded. Other declared targets require their own
 native validation. Windows is unsupported.
@@ -35,7 +35,7 @@ live browser coverage.
 
 ## Prepare
 
-- [x] Confirm release version `0.2.8`; release date `2026-08-01`.
+- [x] Confirm release version `0.2.9`; release date `2026-08-06`.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
 - [x] Record the 0.2.0 release date in the changelog.
@@ -105,13 +105,13 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Run the full 0.2.6 release validation suite and package dry runs.
 - [x] Push the release commit and tag after explicit approval.
 - [x] Update issue #30 with final verified 0.2.6 release evidence.
-- [x] Run the full 0.2.7 release validation suite and package dry runs.
-- [x] Create the signed annotated `v0.2.7` tag after publication approval.
+- [x] Run the full 0.2.8 release validation suite and package dry runs.
+- [x] Create the signed annotated `v0.2.8` tag after publication approval.
 - [x] Publish `glass-browser` from the tagged commit after explicit approval.
-- [x] Create and verify the matching published GitHub Release for `v0.2.7`.
-- [ ] Run the full 0.2.8 release validation suite and package dry runs.
-- [ ] Create the signed annotated `v0.2.8` tag after publication approval.
+- [x] Create and verify the matching published GitHub Release for `v0.2.8`.
+- [ ] Run the full 0.2.9 release validation suite and package dry runs.
+- [ ] Create the signed annotated `v0.2.9` tag after publication approval.
 - [ ] Publish `glass-browser` from the tagged commit after explicit approval.
-- [ ] Create and verify the matching published GitHub Release for `v0.2.8`.
+- [ ] Create and verify the matching published GitHub Release for `v0.2.9`.
 
 A release is not complete while any required checkbox is open.

@@ -62,12 +62,10 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — post-0.2.8 runtime hardening and native structured
-extraction follow-up. [`ir-030-081`](tasks/ir-030-081.md) through
-[`ir-030-089`](tasks/ir-030-089.md) are complete. The `0.2.8` changes
-remain unreleased.
-Bounded execution, pagination recovery, MCP task-surface documentation, and
-extraction output budget fixes continue in the unreleased `0.2.9` line.
+Status: In progress — 0.2.9 release preparation and runtime hardening. The
+`ir-030-081` through `ir-030-089` structured-extraction tasks are complete.
+The 0.2.9 implementation is committed locally and is being prepared for
+publication.
 
 Completed:
 

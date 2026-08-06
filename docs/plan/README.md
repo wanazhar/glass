@@ -39,6 +39,23 @@ These tasks are intentionally disjoint and do not edit shared exports or
 dispatch files. Integration tasks begin only after committed implementation
 and independent review.
 
+Integration wave (after foundation review):
+
+- [surface-031-002](tasks/surface-031-002.md) — integrate surfaces into Web
+  IR extraction.
+- [backend-031-002](tasks/backend-031-002.md) — route the CDP implementation
+  through the Browser Capability Interface.
+- [presentation-031-002](tasks/presentation-031-002.md) — add terminal graphics,
+  bounded frame presentation, and semantic fallback.
+- [workspace-031-002](tasks/workspace-031-002.md) — connect workspace identity
+  to profiles, sessions, memory, and attachments.
+- [memory-031-002](tasks/memory-031-002.md) — connect retrieval and provenance
+  to compiler advisories.
+- [experience-031-001](tasks/experience-031-001.md) — expose the shared
+  Experience Layer across CLI, TUI, and MCP.
+- [integration-031-001](tasks/integration-031-001.md) — run the integrated
+  four-pillar conformance demonstration.
+
 ## Active plan: best-in-class agent browser
 
 

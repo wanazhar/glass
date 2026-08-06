@@ -1630,10 +1630,13 @@ fn scoped_regions_for_observation<'a>(
 }
 
 fn pagination_next_is_usable(regions: &[&SemanticRegion], next_name: &str) -> bool {
-    regions.iter().flat_map(|region| region.targets.iter()).any(|target| {
-        target.name.eq_ignore_ascii_case(next_name)
-            && matches!(target.role.as_str(), "button" | "link" | "tab")
-    })
+    regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .any(|target| {
+            target.name.eq_ignore_ascii_case(next_name)
+                && matches!(target.role.as_str(), "button" | "link" | "tab")
+        })
 }
 
 fn resolved_fields(

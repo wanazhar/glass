@@ -6,7 +6,7 @@
 //! this boundary.
 
 use serde::{Deserialize, Serialize};
-use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,6 +29,7 @@ pub const MAX_STORAGE_ENTRIES: usize = 128;
 pub const MAX_DOWNLOADS: usize = 64;
 pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_JSON_BYTES: usize = 64 * 1024;
+pub const MAX_JSON_DEPTH: usize = 16;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 
 fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBackendError> {
@@ -222,6 +223,23 @@ impl<'de> Visitor<'de> for BoundedBytesVisitor {
         }
         Ok(value)
     }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(MAX_CAPTURE_BYTES));
+        while values.len() < MAX_CAPTURE_BYTES {
+            let Some(value) = access.next_element::<u8>()? else {
+                return Ok(values);
+            };
+            values.push(value);
+        }
+        if access.next_element::<u8>()?.is_some() {
+            return Err(serde::de::Error::custom("capture exceeds the bounded payload size"));
+        }
+        Ok(values)
+    }
 }
 
 fn deserialize_bounded_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
@@ -231,11 +249,184 @@ where
     deserializer.deserialize_bytes(BoundedBytesVisitor)
 }
 
+struct JsonStringSeed;
+
+impl<'de> DeserializeSeed<'de> for JsonStringSeed {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_bounded_string(deserializer)
+    }
+}
+
+struct JsonSeed {
+    budget: std::rc::Rc<std::cell::Cell<usize>>,
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for JsonSeed {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if self.depth > MAX_JSON_DEPTH {
+            return Err(serde::de::Error::custom("JSON exceeds the bounded depth"));
+        }
+        deserializer.deserialize_any(JsonVisitor {
+            budget: self.budget,
+            depth: self.depth,
+        })
+    }
+}
+
+struct JsonVisitor {
+    budget: std::rc::Rc<std::cell::Cell<usize>>,
+    depth: usize,
+}
+
+impl JsonVisitor {
+    fn charge<E: serde::de::Error>(&self, amount: usize) -> Result<(), E> {
+        let next = self
+            .budget
+            .get()
+            .checked_add(amount)
+            .ok_or_else(|| E::custom("JSON size overflow"))?;
+        if next > MAX_JSON_BYTES {
+            return Err(E::custom("JSON exceeds the bounded payload size"));
+        }
+        self.budget.set(next);
+        Ok(())
+    }
+}
+
+impl<'de> Visitor<'de> for JsonVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded JSON")
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.charge(4)?;
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.charge(if value { 4 } else { 5 })?;
+        Ok(serde_json::Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.charge(8)?;
+        Ok(serde_json::json!(value))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.charge(8)?;
+        Ok(serde_json::json!(value))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.charge(8)?;
+        Ok(serde_json::json!(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value.is_empty() || value.len() > MAX_TEXT_BYTES {
+            return Err(E::custom("JSON string is empty or exceeds its bound"));
+        }
+        self.charge(value.len())?;
+        Ok(serde_json::Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(&value)
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        self.charge(2)?;
+        let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(MAX_CONTEXTS));
+        while values.len() < MAX_CONTEXTS {
+            let Some(value) = access.next_element_seed(JsonSeed {
+                budget: self.budget.clone(),
+                depth: self.depth + 1,
+            })? else {
+                return Ok(serde_json::Value::Array(values));
+            };
+            values.push(value);
+        }
+        if access.next_element_seed(JsonSeed {
+            budget: self.budget.clone(),
+            depth: self.depth + 1,
+        })?.is_some() {
+            return Err(serde::de::Error::custom("JSON array exceeds the bounded entry count"));
+        }
+        Ok(serde_json::Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        self.charge(2)?;
+        let mut values = serde_json::Map::new();
+        while values.len() < MAX_STORAGE_ENTRIES {
+            let Some((key, value)) = access.next_entry_seed(
+                JsonStringSeed,
+                JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
+            )? else {
+                return Ok(serde_json::Value::Object(values));
+            };
+            values.insert(key, value);
+        }
+        if access.next_entry_seed(
+            JsonStringSeed,
+            JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
+        )?.is_some() {
+            return Err(serde::de::Error::custom("JSON object exceeds the bounded entry count"));
+        }
+        Ok(serde_json::Value::Object(values))
+    }
+}
+
 fn deserialize_bounded_json<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_json::Value::deserialize(deserializer)?;
+    let value = JsonSeed {
+        budget: std::rc::Rc::new(std::cell::Cell::new(0)),
+        depth: 0,
+    }
+    .deserialize(deserializer)?;
     validate_json("script result", &value)
         .map_err(|error| serde::de::Error::custom(error.to_string()))?;
     Ok(value)
@@ -603,21 +794,8 @@ impl BackendProfile {
                 ));
             }
         }
-        for (capability, descriptor) in &self.capabilities {
-            for dependency in &descriptor.dependencies {
-                let Some(dependency_descriptor) = self.capabilities.get(&dependency.capability) else {
-                    return Err(invalid(
-                        "capability dependencies",
-                        &format!("{capability:?} depends on an undeclared capability"),
-                    ));
-                };
-                if !dependency_descriptor.level.satisfies(dependency.minimum) {
-                    return Err(invalid(
-                        "capability dependencies",
-                        &format!("{capability:?} dependency is below its required support level"),
-                    ));
-                }
-            }
+        for capability in self.capabilities.keys() {
+            validate_dependency_closure(self, *capability, &mut BTreeSet::new())?;
         }
         if self.identity.certification.level == CertificationLevel::Unsupported
             && self.capabilities.values().any(|descriptor| descriptor.level != SupportLevel::Unavailable)
@@ -653,6 +831,34 @@ impl BackendProfile {
             declared: self.capabilities.contains_key(&capability),
         })
     }
+}
+fn validate_dependency_closure(
+    profile: &BackendProfile,
+    capability: BrowserCapability,
+    visiting: &mut BTreeSet<BrowserCapability>,
+) -> Result<(), BrowserBackendError> {
+    if !visiting.insert(capability) {
+        return Err(invalid("capability dependencies", "dependency cycle detected"));
+    }
+    let descriptor = profile
+        .capabilities
+        .get(&capability)
+        .ok_or_else(|| invalid("capability dependencies", "dependency is undeclared"))?;
+    for dependency in &descriptor.dependencies {
+        let dependency_descriptor = profile
+            .capabilities
+            .get(&dependency.capability)
+            .ok_or_else(|| invalid("capability dependencies", "dependency is undeclared"))?;
+        if !dependency_descriptor.level.satisfies(dependency.minimum) {
+            return Err(invalid(
+                "capability dependencies",
+                "dependency is below its required support level",
+            ));
+        }
+        validate_dependency_closure(profile, dependency.capability, visiting)?;
+    }
+    visiting.remove(&capability);
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1235,6 +1441,31 @@ pub struct PromptRequest {
 pub trait BackendContract {
     fn validate(&self) -> Result<(), BrowserBackendError>;
 }
+fn validate_backend_error(
+    result: Result<(), BrowserBackendError>,
+) -> Result<(), BrowserBackendError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            error.validate()?;
+            Err(error)
+        }
+    }
+}
+fn validate_backend_result<T: BackendContract>(
+    result: Result<T, BrowserBackendError>,
+) -> Result<T, BrowserBackendError> {
+    match result {
+        Ok(value) => {
+            value.validate()?;
+            Ok(value)
+        }
+        Err(error) => {
+            error.validate()?;
+            Err(error)
+        }
+    }
+}
 
 impl BackendContract for NavigationRequest {
     fn validate(&self) -> Result<(), BrowserBackendError> {
@@ -1490,18 +1721,30 @@ pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BrowserBac
 /// weaker operation.  Adapters may use any transport internally.
 pub trait BrowserBackend: Send + Sync {
     fn profile(&self) -> &BackendProfile;
-    fn initialize<'a>(&'a self) -> BackendFuture<'a, ()>;
-    fn close<'a>(&'a self) -> BackendFuture<'a, ()>;
-    fn navigate<'a>(&'a self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult>;
-    fn contexts<'a>(&'a self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>>;
-    fn evidence<'a>(&'a self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult>;
-    fn action<'a>(&'a self, request: ActionRequest) -> BackendFuture<'a, ActionResult>;
-    fn effects<'a>(&'a self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult>;
-    fn script<'a>(&'a self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult>;
-    fn capture<'a>(&'a self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult>;
-    fn storage<'a>(&'a self, request: StorageRequest) -> BackendFuture<'a, StorageResult>;
-    fn prompt<'a>(&'a self, request: PromptRequest) -> BackendFuture<'a, PromptResult>;
-    fn download<'a>(&'a self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult>;
+    #[doc(hidden)]
+    fn initialize_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
+    #[doc(hidden)]
+    fn close_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
+    #[doc(hidden)]
+    fn navigate_raw<'a>(&'a self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult>;
+    #[doc(hidden)]
+    fn contexts_raw<'a>(&'a self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>>;
+    #[doc(hidden)]
+    fn evidence_raw<'a>(&'a self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult>;
+    #[doc(hidden)]
+    fn action_raw<'a>(&'a self, request: ActionRequest) -> BackendFuture<'a, ActionResult>;
+    #[doc(hidden)]
+    fn effects_raw<'a>(&'a self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult>;
+    #[doc(hidden)]
+    fn script_raw<'a>(&'a self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult>;
+    #[doc(hidden)]
+    fn capture_raw<'a>(&'a self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult>;
+    #[doc(hidden)]
+    fn storage_raw<'a>(&'a self, request: StorageRequest) -> BackendFuture<'a, StorageResult>;
+    #[doc(hidden)]
+    fn prompt_raw<'a>(&'a self, request: PromptRequest) -> BackendFuture<'a, PromptResult>;
+    #[doc(hidden)]
+    fn download_raw<'a>(&'a self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult>;
     fn require_operation(
         &self,
         operation: BackendOperation,
@@ -1524,11 +1767,12 @@ impl<'a> BrowserBackendDispatcher<'a> {
     pub fn new(backend: &'a dyn BrowserBackend) -> Self {
         Self { backend }
     }
+
     pub fn initialize(&self) -> BackendFuture<'a, ()> {
         let backend = self.backend;
         Box::pin(async move {
             backend.profile().validate()?;
-            backend.initialize().await
+            validate_backend_error(backend.initialize_raw().await)
         })
     }
 
@@ -1536,13 +1780,13 @@ impl<'a> BrowserBackendDispatcher<'a> {
         let backend = self.backend;
         Box::pin(async move {
             backend.profile().validate()?;
-            backend.close().await
+            validate_backend_error(backend.close_raw().await)
         })
     }
 
     pub fn navigate(&self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult> {
         self.call(BackendOperation::Navigate, request, |backend, request| {
-            backend.navigate(request)
+            backend.navigate_raw(request)
         })
     }
 
@@ -1552,60 +1796,57 @@ impl<'a> BrowserBackendDispatcher<'a> {
             request.validate()?;
             backend.profile().validate()?;
             backend.require_operation(BackendOperation::Contexts, SupportLevel::Available)?;
-            let result = backend.contexts(request).await?;
-            result.validate()?;
-            Ok(result)
+            validate_backend_result(backend.contexts_raw(request).await)
         })
     }
 
     pub fn evidence(&self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult> {
         self.call(BackendOperation::Evidence, request, |backend, request| {
-            backend.evidence(request)
+            backend.evidence_raw(request)
         })
     }
 
     pub fn action(&self, request: ActionRequest) -> BackendFuture<'a, ActionResult> {
         self.call(BackendOperation::Action, request, |backend, request| {
-            backend.action(request)
+            backend.action_raw(request)
         })
     }
 
     pub fn effects(&self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult> {
         self.call(BackendOperation::Effects, request, |backend, request| {
-            backend.effects(request)
+            backend.effects_raw(request)
         })
     }
 
     pub fn script(&self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult> {
         self.call(BackendOperation::Script, request, |backend, request| {
-            backend.script(request)
+            backend.script_raw(request)
         })
     }
 
     pub fn capture(&self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult> {
         self.call(BackendOperation::Capture, request, |backend, request| {
-            backend.capture(request)
+            backend.capture_raw(request)
         })
     }
 
     pub fn storage(&self, request: StorageRequest) -> BackendFuture<'a, StorageResult> {
         self.call(BackendOperation::Storage, request, |backend, request| {
-            backend.storage(request)
+            backend.storage_raw(request)
         })
     }
 
     pub fn prompt(&self, request: PromptRequest) -> BackendFuture<'a, PromptResult> {
         self.call(BackendOperation::Prompt, request, |backend, request| {
-            backend.prompt(request)
+            backend.prompt_raw(request)
         })
     }
 
     pub fn download(&self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult> {
         self.call(BackendOperation::Download, request, |backend, request| {
-            backend.download(request)
+            backend.download_raw(request)
         })
     }
-
     fn call<T, R>(
         &self,
         operation: BackendOperation,
@@ -1621,9 +1862,7 @@ impl<'a> BrowserBackendDispatcher<'a> {
             request.validate()?;
             backend.profile().validate()?;
             backend.require_operation(operation, SupportLevel::Available)?;
-            let result = call(backend, request).await?;
-            result.validate()?;
-            Ok(result)
+            validate_backend_result(call(backend, request).await)
         })
     }
 }
@@ -1679,6 +1918,22 @@ mod tests {
         assert_eq!(value["identity"]["certification"]["level"], json!("productionCertified"));
         assert_eq!(value["capabilities"]["navigation"]["level"], json!("available"));
         assert!(serde_json::from_value::<BackendProfile>(value).is_ok());
+    }
+
+    #[test]
+    fn capture_and_bounded_json_round_trip() {
+        let capture = CaptureResult {
+            format: CaptureFormat::Png,
+            bytes: vec![0, 1, 2, 255],
+        };
+        let encoded = serde_json::to_value(&capture).unwrap();
+        assert_eq!(serde_json::from_value::<CaptureResult>(encoded).unwrap(), capture);
+
+        let script = ScriptResult {
+            value: json!({"ok": true, "items": [1, 2, 3]}),
+        };
+        let encoded = serde_json::to_value(&script).unwrap();
+        assert_eq!(serde_json::from_value::<ScriptResult>(encoded).unwrap(), script);
     }
 
     #[test]

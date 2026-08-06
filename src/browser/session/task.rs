@@ -1139,17 +1139,12 @@ impl BrowserSession {
     ) -> BrowserResult<TaskExecutionResult> {
         match task.task {
             TaskKind::NavigationFollow => {
-                self.execute_navigation_task(task, expected_revision, confirmed)
-                    .await
+                Box::pin(self.execute_navigation_task(task, expected_revision, confirmed)).await
             }
             TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
-                self.execute_dialog_task(task, expected_revision, confirmed)
-                    .await
+                Box::pin(self.execute_dialog_task(task, expected_revision, confirmed)).await
             }
-            _ => {
-                self.execute_form_task(task, expected_revision, confirmed)
-                    .await
-            }
+            _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await,
         }
     }
 }

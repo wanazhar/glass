@@ -295,11 +295,33 @@ impl GlassWebIrDraft {
             ));
         }
         let mut ids = BTreeSet::new();
+        let mut opaque_regions = 0_u32;
         for entity in &self.entities {
-            if entity.id.is_empty() || entity.id.len() > 128 || !ids.insert(entity.id.as_str()) {
+            if entity.id.is_empty()
+                || entity.id.len() > 128
+                || entity.id.chars().any(char::is_whitespace)
+                || entity.id.chars().any(char::is_control)
+                || !ids.insert(entity.id.as_str())
+            {
                 return Err(WebIrValidationError::new(
                     "entities.id",
-                    "entity IDs must be unique and bounded",
+                    "entity IDs must be unique, bounded, and non-whitespace",
+                ));
+            }
+            if entity.kind == DraftEntityKind::OpaqueRegion {
+                opaque_regions = opaque_regions.saturating_add(1);
+                if entity.quality != EvidenceQuality::Opaque
+                    || !entity.evidence_sources.is_empty()
+                {
+                    return Err(WebIrValidationError::new(
+                        "entities.opaqueRegion",
+                        "opaque regions must not claim source provenance or non-opaque quality",
+                    ));
+                }
+            } else if entity.quality == EvidenceQuality::Opaque {
+                return Err(WebIrValidationError::new(
+                    "entities.quality",
+                    "opaque quality is reserved for opaque regions",
                 ));
             }
             if entity.evidence_sources.is_empty()
@@ -312,6 +334,13 @@ impl GlassWebIrDraft {
                 ));
             }
         }
+        if opaque_regions != self.coverage.opaque_regions {
+            return Err(WebIrValidationError::new(
+                "coverage.opaqueRegions",
+                "coverage opaque region count must match opaque region entities",
+            ));
+        }
+        let mut relationship_keys = BTreeSet::new();
         if self.relationships.len() > MAX_DRAFT_RELATIONSHIPS {
             return Err(WebIrValidationError::new(
                 "relationships",
@@ -322,10 +351,11 @@ impl GlassWebIrDraft {
             if relationship.from == relationship.to
                 || !ids.contains(relationship.from.as_str())
                 || !ids.contains(relationship.to.as_str())
+                || !relationship_keys.insert(relationship_key(relationship))
             {
                 return Err(WebIrValidationError::new(
                     "relationships",
-                    "relationships must reference two distinct known entities",
+                    "relationships must be unique and reference two distinct known entities",
                 ));
             }
         }
@@ -600,10 +630,43 @@ impl GlassWebIrDraft {
         }
     }
 
-    /// Serialize a validated draft deterministically.
+    /// Serialize a validated draft deterministically, independent of vector
+    /// ordering supplied by callers.
     pub fn to_canonical_json(&self) -> Result<String, WebIrValidationError> {
         self.validate()?;
-        serde_json::to_string(self)
+        let mut canonical = self.clone();
+        canonical.entities.sort_by(|left, right| {
+            (
+                left.id != "page",
+                left.id.as_str(),
+                kind_name(left.kind),
+                left.role.as_deref().unwrap_or_default(),
+                left.name.as_deref().unwrap_or_default(),
+            )
+                .cmp(&(
+                    right.id != "page",
+                    right.id.as_str(),
+                    kind_name(right.kind),
+                    right.role.as_deref().unwrap_or_default(),
+                    right.name.as_deref().unwrap_or_default(),
+                ))
+        });
+        for entity in &mut canonical.entities {
+            entity.evidence_sources.sort();
+            entity.evidence_sources.dedup();
+        }
+        canonical.relationships.sort_by_key(relationship_key);
+        canonical.relationships.dedup();
+        canonical.relationship_hint_diagnostics.sort_by_key(|diagnostic| {
+            (
+                diagnostic.fact_index,
+                diagnostic.source,
+                diagnostic.parent_role.to_ascii_lowercase(),
+                diagnostic.hint,
+                diagnostic.status,
+            )
+        });
+        serde_json::to_string(&canonical)
             .map_err(|error| WebIrValidationError::new("$", error.to_string()))
     }
 }
@@ -1534,4 +1597,39 @@ mod tests {
         let error = draft.validate().unwrap_err();
         assert_eq!(error.path, "relationships");
     }
+    #[test]
+    fn canonical_json_is_independent_of_graph_vector_order() {
+        let draft = reconcile_evidence(&evidence()).unwrap();
+        let expected = draft.to_canonical_json().unwrap();
+        let mut shuffled = draft.clone();
+        shuffled.entities.reverse();
+        shuffled.relationships.reverse();
+        for entity in &mut shuffled.entities {
+            entity.evidence_sources.reverse();
+        }
+        assert_eq!(shuffled.to_canonical_json().unwrap(), expected);
+    }
+
+    #[test]
+    fn validation_rejects_inconsistent_opaque_coverage_and_duplicates() {
+        let mut missing_opaque = reconcile_evidence(&evidence()).unwrap();
+        missing_opaque.coverage.opaque_regions = 1;
+        let error = missing_opaque.validate().unwrap_err();
+        assert_eq!(error.path, "coverage.opaqueRegions");
+
+        let mut opaque = evidence();
+        opaque.coverage.opaque_regions = 1;
+        let mut draft = reconcile_evidence(&opaque).unwrap();
+        draft.entities.iter_mut().find(|entity| {
+            entity.kind == DraftEntityKind::OpaqueRegion
+        }).unwrap().quality = EvidenceQuality::Strong;
+        let error = draft.validate().unwrap_err();
+        assert_eq!(error.path, "entities.opaqueRegion");
+
+        let mut duplicate = reconcile_evidence(&evidence()).unwrap();
+        duplicate.relationships.push(duplicate.relationships[0].clone());
+        let error = duplicate.validate().unwrap_err();
+        assert_eq!(error.path, "relationships");
+    }
+
 }

@@ -20,7 +20,7 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
-    io,
+    io::{self, Write},
     path::PathBuf,
     sync::{
         Arc,
@@ -45,7 +45,10 @@ use crate::browser::session::{
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
-
+use crate::presentation::{CaptureScale, PixelSize, TargetResourceIdentity};
+use crate::terminal_graphics::{
+    PaneArea, TerminalEnvironment, TerminalGraphics, negotiate,
+};
 const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
 const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 8;
@@ -57,7 +60,6 @@ const TUI_INPUT_MAX_BYTES: usize = 4 * 1024;
 const BUSY_TICK: Duration = Duration::from_millis(120);
 const INPUT_POLL: Duration = Duration::from_millis(50);
 const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub struct App {
     url: String,
     title: String,
@@ -77,6 +79,7 @@ pub struct App {
     browser_state: BrowserState,
     busy: Option<BusyState>,
     next_operation_id: u64,
+    graphics: TerminalGraphics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +111,13 @@ impl App {
         let mut activity = VecDeque::new();
         activity.push_back("Glass started.".to_string());
         activity.push_back("Connecting to Chrome…".to_string());
+        let environment = TerminalEnvironment::from_process();
+        let graphics = TerminalGraphics::new(
+            negotiate(environment.as_borrowed()),
+            TargetResourceIdentity::new("tui", Some("terminal".to_string()))
+                .expect("static TUI graphics identity is valid"),
+        )
+        .expect("static TUI graphics state is valid");
         Self {
             url: String::new(),
             title: "Glass — Browser Agent".to_string(),
@@ -127,6 +137,7 @@ impl App {
             browser_state: BrowserState::Connecting,
             busy: None,
             next_operation_id: 1,
+            graphics,
         }
     }
 
@@ -501,6 +512,52 @@ impl App {
         self.page_content = bounded_text(&content.into(), TUI_PAGE_MAX_BYTES);
         self.page_scroll = 0;
     }
+    fn sync_graphics_geometry(&mut self, area: Rect) -> BrowserResult<bool> {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let content = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(chunks[1]);
+        let pane = content[1];
+        if pane.width == 0 || pane.height == 0 {
+            return Ok(false);
+        }
+        let changed = self.graphics.resize(
+            PaneArea::new(pane.x, pane.y, pane.width, pane.height),
+            PixelSize::new(pane.width as u32, pane.height as u32),
+            PixelSize::new(pane.width as u32, pane.height as u32),
+            CaptureScale::FULL,
+            0,
+        )?;
+        if changed {
+            self.add_activity(format!(
+                "Graphics pane resized to {}x{} ({}).",
+                pane.width,
+                pane.height,
+                self.graphics.mode().label()
+            ));
+        }
+        Ok(changed)
+    }
+
+    fn graphics_shutdown(&mut self) -> io::Result<()> {
+        let cleanup = self.graphics.shutdown();
+        if cleanup.is_empty() {
+            return Ok(());
+        }
+        let mut stdout = io::stdout();
+        stdout.write_all(&cleanup)?;
+        stdout.flush()
+    }
+
 }
 
 #[derive(Debug)]
@@ -1830,9 +1887,10 @@ fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            " {}   {}   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
+            " {}   {} ({})   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
             app.status,
             app.capability_summary,
+            app.graphics.diagnostics_label(),
             app.input.chars().count()
         ))
         .style(Style::default().fg(Color::DarkGray)),
@@ -1979,12 +2037,14 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     let _ = shutdown_tx.send(true);
     let _ = browser_commands.try_send(BrowserCommand::Shutdown);
     drop(browser_commands);
+    let graphics_result = app.graphics_shutdown();
     let input_result = input_worker.stop();
     let cursor_result = terminal.show_cursor();
     let terminal_result = terminal_guard.restore();
     let worker_result = local.run_until(finish_browser_worker(browser_worker)).await;
 
     loop_result?;
+    graphics_result?;
     input_result?;
     cursor_result?;
     terminal_result?;
@@ -2006,6 +2066,8 @@ async fn run_tui_loop(
 
     while !app.should_quit {
         if redraw {
+            let area = terminal.size()?;
+            app.sync_graphics_geometry(area)?;
             terminal.draw(|frame| draw(frame, app))?;
         }
 
@@ -2185,6 +2247,20 @@ mod tests {
 
         assert!(app.page_content.len() <= TUI_PAGE_MAX_BYTES);
         assert!(app.page_content.contains("[truncated]"));
+    }
+
+    #[test]
+    fn graphics_geometry_tracks_resize_and_releases_on_shutdown() {
+        let mut app = App::new();
+        assert!(app.sync_graphics_geometry(Rect::new(0, 0, 100, 30)).unwrap());
+        let first_revision = app.graphics.geometry_revision();
+        assert!(first_revision > 0);
+        assert!(!app.sync_graphics_geometry(Rect::new(0, 0, 100, 30)).unwrap());
+        assert!(app.sync_graphics_geometry(Rect::new(0, 0, 120, 30)).unwrap());
+        assert!(app.graphics.geometry_revision() > first_revision);
+        app.graphics_shutdown().unwrap();
+        assert_eq!(app.graphics.diagnostics().current_bytes, 0);
+        assert_eq!(app.graphics.diagnostics().pending_bytes, 0);
     }
 
     #[tokio::test]

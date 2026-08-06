@@ -1,11 +1,11 @@
 # Release evidence
 
-The 0.2.9 release candidate follows the crates-only distribution boundary.
-The published `glass-browser` 0.2.8 release has a source-only GitHub Release
+The 0.2.9 release follows the crates-only distribution boundary.
+The published `glass-browser` 0.2.9 release has a source-only GitHub Release
 with generated notes. The project does not publish native GitHub release
 binaries, installers, or updater infrastructure.
 
-The 0.2.9 release candidate retains bounded MCP response-cost measurements in
+The 0.2.9 release retains bounded MCP response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
 ## Evidence layers
@@ -49,6 +49,21 @@ convert source inventory or cross-compilation into a support claim for another
 OS. The current recorded result is in
 [Recorded platform evidence](local-platform.md).
 
+## 0.2.9 release validation
+
+The tagged checkout `9d13ea0` passed the release workflow
+(`31096629636`) before publication:
+
+- Web IR corpus validation passed with 8 fixtures and 11 categories.
+- `cargo test --all-targets --locked`, formatting, clippy, documentation,
+  release build, package, advisory, audit, and fuzz checks passed.
+- `cargo package --locked --no-verify` packaged 210 files.
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture`:
+  16 passed in the recorded Linux ARM64 environment.
+- `glass-browser 0.2.9` is available from crates.io.
+- GitHub Release `v0.2.9` is published, non-draft, non-prerelease, and
+  contains no native binary assets.
+
 ## 0.2.7 release validation
 
 The tagged checkout passed the complete pre-publication validation suite:
@@ -81,9 +96,6 @@ Publication verification:
 The native evidence remains limited to the recorded Linux ARM64 environment;
 other declared targets are not certified by this release.
 
-## Publication boundary
-
-The `glass-browser` `0.2.8` crate is the current published release, and
-`v0.2.8` has a matching published GitHub Release entry. The 0.2.9 changes are
-development-only and have not been published. No native binary assets are
-expected.
+The `glass-browser` `0.2.9` crate is the current published release, and
+`v0.2.9` has a matching published GitHub Release entry. No native binary
+assets are expected.

@@ -62,10 +62,9 @@ commit boundaries are recorded in
 
 ### Active plan: Glass Semantic Execution Engine issue #30
 
-Status: In progress — 0.2.9 release preparation and runtime hardening. The
-`ir-030-081` through `ir-030-089` structured-extraction tasks are complete.
-The 0.2.9 implementation is committed locally and is being prepared for
-publication.
+Status: Complete — 0.2.9 published on crates.io; follow-up work continues in
+the 0.3.0 development line. The `ir-030-081` through `ir-030-089`
+structured-extraction tasks and the 0.2.9 runtime hardening are complete.
 
 Completed:
 

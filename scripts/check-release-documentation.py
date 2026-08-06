@@ -17,17 +17,17 @@ REQUIRED_MARKERS = {
     "docs/plan/README.md": [
         "[ir-030-081](tasks/ir-030-081.md)",
         "[ir-030-089](tasks/ir-030-089.md)",
-        "0.2.9 implementation is committed locally",
-        "prepared for",
+        "0.2.9 published on crates.io",
+        "follow-up work continues in",
     ],
     "docs/release-checklist.md": [
-        "release candidate is `glass-browser` version `0.2.9`",
+        "current release is `glass-browser` version `0.2.9`",
         "The next development version is `0.3.0`",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
-        "published 0.2.8 baseline",
-        "0.2.9 work stream",
+        "published 0.2.9 baseline",
+        "0.3.0 work stream",
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [

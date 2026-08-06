@@ -71,6 +71,14 @@ revision-bound release suite before publication:
 - A clean registry install reported `glass 0.3.0`; its CLI/MCP smoke passed
   with 85 advertised MCP tools.
 
+GitHub Actions run
+[`31118833163`](https://github.com/wanazhar/glass/actions/runs/31118833163)
+did not reach repository code: the hosted runner failed during `Set up job`
+while resolving action downloads with `Service Unavailable`. The approved
+direct `cargo publish --locked` and `gh release create` paths completed the
+same crates-only publication boundary, and the published package and release
+records were verified independently.
+
 ## 0.2.9 release validation
 
 The tagged checkout `9d13ea0` passed the release workflow

@@ -64,9 +64,10 @@ commit boundaries are recorded in
 
 Status: In progress — post-0.2.8 runtime hardening and native structured
 extraction follow-up. [`ir-030-081`](tasks/ir-030-081.md) through
-[`ir-030-089`](tasks/ir-030-089.md) are complete; bounded execution,
-pagination recovery, MCP task-surface documentation, and extraction output
-budget fixes continue in the unreleased `0.2.9` line.
+[`ir-030-089`](tasks/ir-030-089.md) are complete. The `0.2.8` changes
+remain unreleased.
+Bounded execution, pagination recovery, MCP task-surface documentation, and
+extraction output budget fixes continue in the unreleased `0.2.9` line.
 
 Completed:
 

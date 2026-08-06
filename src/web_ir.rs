@@ -351,11 +351,16 @@ impl GlassWebIrDraft {
             if relationship.from == relationship.to
                 || !ids.contains(relationship.from.as_str())
                 || !ids.contains(relationship.to.as_str())
-                || !relationship_keys.insert(relationship_key(relationship))
             {
                 return Err(WebIrValidationError::new(
                     "relationships",
-                    "relationships must be unique and reference two distinct known entities",
+                    "relationships must reference two distinct known entities",
+                ));
+            }
+            if !relationship_keys.insert(relationship_key(relationship)) {
+                return Err(WebIrValidationError::new(
+                    "relationships",
+                    "relationships must be unique",
                 ));
             }
         }

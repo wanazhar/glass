@@ -49,6 +49,7 @@ const MAX_HEADER_BYTES: usize = 8 * 1024;
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
+const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -3967,6 +3968,19 @@ fn error_response(id: Option<Value>, code: i32, message: impl Into<String>) -> J
     error_response_with_data(id, code, message, Value::Null)
 }
 
+fn bounded_error_message(message: String) -> String {
+    if message.len() <= MAX_ERROR_MESSAGE_BYTES {
+        return message;
+    }
+    let mut bounded = message;
+    let mut end = MAX_ERROR_MESSAGE_BYTES;
+    while !bounded.is_char_boundary(end) {
+        end -= 1;
+    }
+    bounded.truncate(end);
+    bounded
+}
+
 fn bounded_error_details(details: Value) -> Value {
     if details.is_null() {
         return details;
@@ -3990,7 +4004,7 @@ fn error_response_with_data(
     message: impl Into<String>,
     details: Value,
 ) -> JsonRpcResponse {
-    let message = message.into();
+    let message = bounded_error_message(message.into());
     let details = bounded_error_details(details);
     let canonical_code = match code {
         -32600 => "protocol.invalidRequest",
@@ -4260,6 +4274,28 @@ mod tests {
             "inspect_page"
         );
         assert_eq!(error.data.as_ref().unwrap()["mutationPossible"], false);
+    }
+
+    #[test]
+    fn mcp_error_messages_are_bounded_before_transport_encoding() {
+        let response = error_response(
+            Some(json!("request-1")),
+            -32601,
+            "x".repeat(MAX_ERROR_MESSAGE_BYTES + 1),
+        );
+        let error = response.error.unwrap();
+        assert_eq!(error.message.len(), MAX_ERROR_MESSAGE_BYTES);
+        assert_eq!(
+            error.data.unwrap()["message"].as_str().unwrap().len(),
+            MAX_ERROR_MESSAGE_BYTES
+        );
+
+        let response = error_response(
+            Some(json!("request-1")),
+            -32601,
+            "é".repeat(MAX_ERROR_MESSAGE_BYTES),
+        );
+        assert!(response.error.unwrap().message.len() <= MAX_ERROR_MESSAGE_BYTES);
     }
 
     #[test]

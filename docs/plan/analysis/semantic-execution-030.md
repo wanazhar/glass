@@ -53,3 +53,56 @@ report is reproducible from the checked-in corpus.
 3. Draft form-focused Web IR and reconciliation.
 4. Revision identity and deterministic diffs.
 5. Form Task Protocol and compiler dry-run.
+
+## `0.3.0` stabilization contract
+
+The sidecar boundary above describes the first incremental delivery, not the
+`0.3.0` release gate. The final release promotes the architecture only when all
+of these conditions hold:
+
+1. `GlassWebIrV1` is the stable, bounded observed contract. Draft aliases and
+   experimental capability statuses are removed in one clean cutover.
+2. Live extraction produces the IR from one consistent `PageContext`. Every
+   requested source is either represented or listed as missing; region, frame,
+   shadow, and opaque boundaries fail closed.
+3. `compile_task_against_ir` accepts a validated `GlassTask` and compatible
+   `GlassWebIrV1`. Its output records the source revision, selected entities,
+   preconditions, postconditions, risk, confirmation requirement, revalidation
+   policy, and bounded diagnostics.
+4. Browser-backed task execution compiles against the same live IR used for
+   preflight. The compiler never calls CDP; the executor continues to use the
+   guarded session action and workflow boundaries.
+5. Exact revisions execute only when unchanged. Compatible revisions require
+   unique evidence-backed continuity. Re-extraction is explicit and bounded;
+   ambiguous, disappeared, or risky rebound targets fail closed.
+6. Rust, CLI JSON, MCP, and daemon clients share the canonical protocol
+   operations and result types. Large diagnostic detail is projected or stored
+   by reference instead of being dumped by default.
+7. Golden fixtures cover evidence to IR, task plus IR to compiled workflow,
+   typed failures, revision transitions, and cross-interface serialization.
+8. Release evidence measures extraction and compilation latency, serialized
+   bytes, estimated agent-visible tokens, and the pre-Web-IR comparison. Static
+   fixture inventory alone is not runtime evidence.
+
+### Stable ownership
+
+| Boundary | Owner | Stable input | Stable output |
+| --- | --- | --- | --- |
+| Live extraction | `src/extraction.rs` | consistent bounded `PageContext` and `ExtractionRequest` | `ExtractionEvidence` |
+| Semantic reconciliation | `src/web_ir.rs` | validated extraction evidence | `GlassWebIrV1` |
+| Task compilation | `src/task_compiler.rs` | `GlassTask` plus `GlassWebIrV1` | `CompiledTaskWorkflow` |
+| Guarded execution | `src/browser/session/task.rs` | compiled workflow plus approved values | `TaskExecutionResult` |
+| Protocol transport | `src/protocol.rs` | canonical typed requests | canonical typed results |
+
+The stable public contracts contain no CSS selectors, XPath, raw DOM, CDP node
+IDs, or framework-specific identifiers. Revision-local semantic entity IDs are
+allowed and are never interpreted as browser authority without fresh
+evidence-backed resolution.
+
+### Clean cutover rule
+
+The `0.3.0` release does not retain public `Draft*` aliases, parallel task
+compilers, or separate live and offline semantics. Offline validation remains,
+but it validates the same stable contract used by live extraction and
+execution. Low-level browser primitives remain available as explicit debugging
+escape hatches.

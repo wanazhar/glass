@@ -344,48 +344,56 @@ where
     deserializer.deserialize_bytes(BoundedBytesVisitor)
 }
 
-struct JsonStringSeed;
-
-fn deserialize_json_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct JsonStringVisitor;
-    impl<'de> Visitor<'de> for JsonStringVisitor {
-        type Value = String;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a bounded JSON string")
-        }
-
-        fn visit_borrowed_str<E>(self, value: &'de str) -> Result<String, E>
-        where
-            E: serde::de::Error,
-        {
-            self.visit_str(value)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<String, E>
-        where
-            E: serde::de::Error,
-        {
-            if value.len() > MAX_TEXT_BYTES {
-                return Err(E::custom("JSON string exceeds its bound"));
-            }
-            Ok(value.to_owned())
-        }
-    }
-    deserializer.deserialize_str(JsonStringVisitor)
+struct JsonKeySeed {
+    budget: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
-impl<'de> DeserializeSeed<'de> for JsonStringSeed {
+impl<'de> DeserializeSeed<'de> for JsonKeySeed {
     type Value = String;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_json_string(deserializer)
+        struct JsonKeyVisitor {
+            budget: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+
+        impl<'de> Visitor<'de> for JsonKeyVisitor {
+            type Value = String;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded JSON object key")
+            }
+
+            fn visit_borrowed_str<E>(self, value: &'de str) -> Result<String, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_str(value)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<String, E>
+            where
+                E: serde::de::Error,
+            {
+                if value.len() > MAX_TEXT_BYTES {
+                    return Err(E::custom("JSON string exceeds its bound"));
+                }
+                let next = self
+                    .budget
+                    .get()
+                    .checked_add(value.len())
+                    .ok_or_else(|| E::custom("JSON size overflow"))?;
+                if next > MAX_JSON_BYTES {
+                    return Err(E::custom("JSON exceeds the bounded payload size"));
+                }
+                self.budget.set(next);
+                Ok(value.to_owned())
+            }
+        }
+
+        deserializer.deserialize_str(JsonKeyVisitor { budget: self.budget })
     }
 }
 
@@ -671,7 +679,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
         let mut pairs = 0;
         while pairs < MAX_STORAGE_ENTRIES {
             let Some((key, value)) = access.next_entry_seed(
-                JsonStringSeed,
+                JsonKeySeed { budget: self.budget.clone() },
                 JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
             )? else {
                 return Ok(serde_json::Value::Object(values));
@@ -680,7 +688,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
             values.insert(key, value);
         }
         if access.next_entry_seed(
-            JsonStringSeed,
+            JsonKeySeed { budget: self.budget.clone() },
             JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
         )?.is_some() {
             return Err(serde::de::Error::custom("JSON object exceeds the bounded entry count"));
@@ -2474,6 +2482,17 @@ mod tests {
             "entries": { "k".repeat(MAX_BACKEND_ID_BYTES + 1): "value" }
         });
         assert!(serde_json::from_value::<StorageResult>(oversized_key).is_err());
+        let mut oversized_key_object = serde_json::Map::new();
+        for index in 0..5 {
+            oversized_key_object.insert(
+                format!("{index}{}", "k".repeat(MAX_TEXT_BYTES - 1)),
+                json!(true),
+            );
+        }
+        assert!(serde_json::from_value::<ScriptResult>(json!({
+            "value": serde_json::Value::Object(oversized_key_object)
+        }))
+        .is_err());
     }
     #[test]
     fn selection_result_deserialization_validates_schema_and_candidate_ids() {

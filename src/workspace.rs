@@ -113,6 +113,9 @@ fn validate_wire_bytes(input: &str) -> Result<(), serde_json::Error> {
     }
     Ok(())
 }
+fn wire_error(error: impl ToString) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}
 
 macro_rules! bounded_name {
     ($name:ident, $label:literal, $max:expr) => {
@@ -393,6 +396,13 @@ impl WorkspaceScope {
     pub fn profile_id(&self) -> Option<&ProfileId> { self.profile_id.as_ref() }
     pub fn generation(&self) -> Option<WorkspaceGeneration> { self.generation }
     pub fn storage(&self) -> WorkspaceStorage { self.storage }
+    fn from_wire(raw: RawWorkspaceScopeWire) -> Result<Self, serde_json::Error> {
+        let workspace_id = WorkspaceId::new(raw.workspace_id).map_err(wire_error)?;
+        let profile_id = raw.profile_id.map(ProfileId::new).transpose().map_err(wire_error)?;
+        let generation = raw.generation.map(WorkspaceGeneration::new).transpose().map_err(wire_error)?;
+        let scope = Self { workspace_id, profile_id, generation, storage: raw.storage.unwrap_or(if generation.is_some() { WorkspaceStorage::Ephemeral } else { WorkspaceStorage::Durable }) };
+        scope.validate_invariants().map(|()| scope).map_err(wire_error)
+    }
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
         let raw: RawWorkspaceScopeWire = serde_json::from_str(input)?;
@@ -497,6 +507,28 @@ struct RawResourceReference {
     resource: ResourceKind,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "type", content = "id", rename_all = "camelCase")]
+enum RawResourceKindWire {
+    Workspace,
+    Browser(String),
+    Target(String),
+    Run(String),
+    Revision(Revision),
+    Entity(String),
+    Memory(String),
+    Workflow(String),
+    Replay(String),
+    Profile(String),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawResourceReferenceWire {
+    scope: RawWorkspaceScopeWire,
+    resource: RawResourceKindWire,
+}
+
 impl<'de> Deserialize<'de> for ResourceReference {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
@@ -508,7 +540,21 @@ impl<'de> Deserialize<'de> for ResourceReference {
 impl ResourceReference {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
-        serde_json::from_str(input)
+        let raw: RawResourceReferenceWire = serde_json::from_str(input)?;
+        let scope = WorkspaceScope::from_wire(raw.scope)?;
+        let resource = match raw.resource {
+            RawResourceKindWire::Workspace => ResourceKind::Workspace,
+            RawResourceKindWire::Browser(id) => ResourceKind::Browser(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Target(id) => ResourceKind::Target(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Run(id) => ResourceKind::Run(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Revision(revision) => ResourceKind::Revision(revision),
+            RawResourceKindWire::Entity(id) => ResourceKind::Entity(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Memory(id) => ResourceKind::Memory(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Workflow(id) => ResourceKind::Workflow(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Replay(id) => ResourceKind::Replay(ResourceId::new(id).map_err(wire_error)?),
+            RawResourceKindWire::Profile(id) => ResourceKind::Profile(ProfileId::new(id).map_err(wire_error)?),
+        };
+        Self::new(scope, resource).map_err(wire_error)
     }
     pub fn new(scope: WorkspaceScope, resource: ResourceKind) -> Result<Self, ReferenceError> {
         scope.validate_invariants().map_err(ReferenceError::Scope)?;

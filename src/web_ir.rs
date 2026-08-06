@@ -662,6 +662,8 @@ impl GlassWebIrDraft {
         }
         canonical.relationships.sort_by_key(relationship_key);
         canonical.relationships.dedup();
+        canonical.diagnostics.sort();
+        canonical.coverage.reasons.sort();
         canonical.relationship_hint_diagnostics.sort_by_key(|diagnostic| {
             (
                 diagnostic.fact_index,
@@ -1604,11 +1606,15 @@ mod tests {
     }
     #[test]
     fn canonical_json_is_independent_of_graph_vector_order() {
-        let draft = reconcile_evidence(&evidence()).unwrap();
+        let mut draft = reconcile_evidence(&evidence()).unwrap();
+        draft.diagnostics = vec!["unsupported:z".into(), "unsupported:a".into()];
+        draft.coverage.reasons = vec!["shadowBoundary".into(), "frameBoundary".into()];
         let expected = draft.to_canonical_json().unwrap();
         let mut shuffled = draft.clone();
         shuffled.entities.reverse();
         shuffled.relationships.reverse();
+        shuffled.diagnostics.reverse();
+        shuffled.coverage.reasons.reverse();
         for entity in &mut shuffled.entities {
             entity.evidence_sources.reverse();
         }

@@ -4,13 +4,13 @@
 //! protocol into the existing session API. CDP types stay below this module;
 //! callers only observe `browser_backend` contracts and stable errors.
 
-use super::session::{BrowserSession, PageTargetInfo};
+use super::session::{BrowserSession, PageTargetInfo, SemanticObservationLevel};
 use crate::browser_backend::{
-    ActionRequest, ActionResult, BackendFuture, BackendOperation, BackendProfile, BackendRequest,
-    BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability, BrowsingContext,
-    CaptureFormat, CaptureResult, EvidenceResult, EvidenceLevel, NavigationResult, PromptDecision,
-    PromptResult, ScriptResult, SemanticAction, StorageOperation, StorageResult, StorageScope,
-    SupportLevel,
+    ActionRequest, ActionResult, BackendContract, BackendFuture, BackendOperation, BackendProfile,
+    BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
+    BrowsingContext, CaptureFormat, CaptureResult, EvidenceLevel, EvidenceResult, NavigationResult,
+    PromptDecision, PromptResult, ScriptResult, SemanticAction, StorageOperation, StorageResult,
+    StorageScope, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -125,12 +125,17 @@ impl CdpBrowserBackend {
     async fn select_context(
         session: &BrowserSession,
         context_id: &str,
+        operation: &str,
     ) -> Result<(), BrowserBackendError> {
+        let active = session.topology.lock().await.active_target_id.clone();
+        if active.as_deref() == Some(context_id) {
+            return Ok(());
+        }
         session
             .select_target(context_id)
             .await
             .map(|_| ())
-            .map_err(|error| translate_error("contexts", error.as_ref()))
+            .map_err(|error| translate_error(operation, error.as_ref()))
     }
 
     async fn session_error(
@@ -160,10 +165,12 @@ impl BrowserBackend for CdpBrowserBackend {
         request: BackendRequest,
     ) -> BackendFuture<'a, BackendResponse> {
         Box::pin(async move {
-            // Keep direct trait callers safe as well as callers that use the
-            // mandatory BrowserBackendDispatcher gate.
-            self.profile.require_operation(operation, SupportLevel::Available)?;
-            match (operation, request) {
+            let result = async {
+                request.validate()?;
+                // Keep direct trait callers safe as well as callers that use the
+                // mandatory BrowserBackendDispatcher gate.
+                self.profile.require_operation(operation, SupportLevel::Available)?;
+                match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
                     let _guard = self.session_error(operation).await?;
                     Ok(BackendResponse::Unit)
@@ -210,35 +217,35 @@ impl BrowserBackend for CdpBrowserBackend {
                 (BackendOperation::Evidence, BackendRequest::Evidence(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
+                    Self::select_context(session, &request.context_id, "evidence").await?;
                     if matches!(request.level, EvidenceLevel::Screenshot) {
                         return Err(unsupported("evidence", "screenshot evidence uses capture"));
                     }
-                    let inspected = session
-                        .inspect_page()
+                    let observed = session
+                        .semantic_observe(SemanticObservationLevel::Structured)
                         .await
                         .map_err(|error| translate_error("evidence", error.as_ref()))?;
-                    let visible_text = inspected.page.evidence.join("\n");
+                    let visible_text = observed.text.unwrap_or_default();
                     Ok(BackendResponse::Evidence(EvidenceResult {
                         context_id: request.context_id,
-                        revision: inspected.revision,
-                        url: inspected.page.url,
-                        title: inspected.page.title,
+                        revision: observed.revision,
+                        url: observed.page.url,
+                        title: observed.page.title,
                         visible_text,
-                        complete: inspected.alerts.is_empty(),
+                        complete: !observed.limits.truncated && !observed.limits.text_truncated,
                     }))
                 }
                 (BackendOperation::Action, BackendRequest::Action(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
+                    Self::select_context(session, &request.context_id, "action").await?;
                     let outcome = execute_action(session, &request).await?;
                     Ok(BackendResponse::Action(outcome))
                 }
                 (BackendOperation::Script, BackendRequest::Script(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
+                    Self::select_context(session, &request.context_id, "script").await?;
                     let value = session
                         .evaluate(&request.source)
                         .await
@@ -248,9 +255,12 @@ impl BrowserBackend for CdpBrowserBackend {
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
+                    Self::select_context(session, &request.context_id, "capture").await?;
                     if request.format != CaptureFormat::Png {
-                        return Err(unsupported("capture", "the CDP session adapter currently exposes PNG capture only"));
+                        return Err(unsupported(
+                            "capture",
+                            "the CDP session adapter currently exposes PNG capture only",
+                        ));
                     }
                     let bytes = session
                         .screenshot_png()
@@ -264,14 +274,15 @@ impl BrowserBackend for CdpBrowserBackend {
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
-                    let entries = storage_operation(session, &request.scope, &request.operation).await?;
+                    Self::select_context(session, &request.context_id, "storage").await?;
+                    let entries =
+                        storage_operation(session, &request.scope, &request.operation).await?;
                     Ok(BackendResponse::Storage(StorageResult { entries }))
                 }
                 (BackendOperation::Prompt, BackendRequest::Prompt(request)) => {
                     let guard = self.session_error(operation).await?;
                     let session = guard.as_ref().expect("session checked above");
-                    Self::select_context(session, &request.context_id).await?;
+                    Self::select_context(session, &request.context_id, "prompt").await?;
                     match request.decision {
                         PromptDecision::Accept => session
                             .accept_dialog()
@@ -288,9 +299,22 @@ impl BrowserBackend for CdpBrowserBackend {
                     operation_name(operation),
                     "request variant does not match the operation",
                 )),
+                }
             }
+            .await;
+            validate_dispatch_result(result)
         })
+
     }
+}
+fn validate_dispatch_result(
+    result: Result<BackendResponse, BrowserBackendError>,
+) -> Result<BackendResponse, BrowserBackendError> {
+    match &result {
+        Ok(response) => response.validate()?,
+        Err(error) => error.validate()?,
+    }
+    result
 }
 
 async fn execute_action(
@@ -329,13 +353,10 @@ async fn storage_operation(
 ) -> Result<BTreeMap<String, String>, BrowserBackendError> {
     match (scope, operation) {
         (StorageScope::Cookies, StorageOperation::Read) => read_storage(session, scope).await,
-        (StorageScope::Cookies, StorageOperation::Clear) => {
-            session
-                .clear_cookies()
-                .await
-                .map_err(|error| translate_error("storage", error.as_ref()))?;
-            Ok(BTreeMap::new())
-        }
+        (StorageScope::Cookies, StorageOperation::Clear) => Err(unsupported(
+            "storage",
+            "cookie clear is global in CDP and is not exposed as a context-scoped operation",
+        )),
         (StorageScope::Cookies, StorageOperation::Write { .. }) => Err(unsupported(
             "storage",
             "cookie writes require cookie metadata outside the semantic map",

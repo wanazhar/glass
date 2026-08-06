@@ -2237,6 +2237,12 @@ fn validate_request(request: &BackendRequest) -> Result<(), BrowserBackendError>
         BackendRequest::Download(value) => value.validate(),
     }
 }
+impl BackendRequest {
+    /// Validate a request before any backend-specific dispatch.
+    pub fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_request(self)
+    }
+}
 
 fn unsupported_response(operation: &str) -> BrowserBackendError {
     BrowserBackendError::UnsupportedOperation {

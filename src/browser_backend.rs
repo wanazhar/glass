@@ -132,6 +132,17 @@ where
     }
     Ok(value)
 }
+
+fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Vec::<String>::deserialize(deserializer)?;
+    if value.len() > MAX_BACKEND_CANDIDATES {
+        return Err(serde::de::Error::custom("candidate list exceeds the bounded entry count"));
+    }
+    Ok(value)
+}
 /// Semantic operations that a backend may expose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -617,7 +628,7 @@ pub struct BackendSelectionResult {
     pub schema_version: u32,
     pub selected: BackendProfile,
     pub reason: SelectionReason,
-    #[serde(deserialize_with = "deserialize_bounded_vec")]
+    #[serde(deserialize_with = "deserialize_bounded_candidates")]
     pub considered_backend_ids: Vec<String>,
 }
 

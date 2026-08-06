@@ -105,11 +105,12 @@ pub use knowledge::{
     KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
     KnowledgeMemoryInfluence, KnowledgeObservationMode, KnowledgeObservationReport,
     KnowledgePortability, KnowledgeProfileScope, KnowledgeRecord, KnowledgeRecordBuildOptions,
-    KnowledgeRecordKind, KnowledgeRetrievalExplanation, KnowledgeRetrievalSignal,
-    KnowledgeRetrievalSignalKind, KnowledgeScope, KnowledgeSignalKind, KnowledgeSource,
-    KnowledgeStoreSnapshot, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
-    KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
-    MAX_KNOWLEDGE_RECORDS,
+    KnowledgeRecordKind, KnowledgeRejectionReason, KnowledgeRetrievalCandidate,
+    KnowledgeRetrievalExplanation, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
+    KnowledgeRetrievalSignal, KnowledgeRetrievalSignalKind, KnowledgeScope,
+    KnowledgeSignalKind, KnowledgeSource, KnowledgeStoreSnapshot, KnowledgeSurfaceCoverage,
+    KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
+    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgePurgeResult, KnowledgeStore, KnowledgeStoreChange,

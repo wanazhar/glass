@@ -43,6 +43,16 @@
 
 /// Browser control modules and the reusable [`browser::BrowserSession`] API.
 pub mod browser;
+/// Transport-neutral backend capability contract.
+pub mod browser_backend;
+/// Browser-neutral terminal frame presentation contracts.
+pub mod presentation;
+/// Bounded, evidenced browser surface contracts.
+pub mod surfaces;
+/// Bounded terminal graphics adapters.
+pub mod terminal_graphics;
+/// Bounded workspace identity and lifecycle contracts.
+pub mod workspace;
 /// Versioned Glass protocol and capability negotiation.
 pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.

@@ -295,7 +295,10 @@ impl TerminalGraphics {
         self.pane = pane;
         self.geometry = Some(ViewportGeometry::new(
             PaneGeometry {
-                origin: crate::presentation::PixelPoint::new(pane.x as u32, pane.y as u32),
+                origin: crate::presentation::PixelPoint {
+                    x: pane.x as u32,
+                    y: pane.y as u32,
+                },
                 size: PixelSize::new(pane.width as u32, pane.height as u32),
             },
             viewport,

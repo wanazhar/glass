@@ -13,7 +13,7 @@ pub mod profile;
 /// Central browser session orchestrating all CDP operations.
 pub mod session;
 /// Typed CDP adapter implementing the transport-neutral browser backend boundary.
-pub(crate) mod backend_adapter;
+pub mod backend_adapter;
 
 // Re-export key session types to the browser module level.
 

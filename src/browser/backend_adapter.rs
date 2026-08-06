@@ -165,7 +165,7 @@ impl BrowserBackend for CdpBrowserBackend {
             self.profile.require_operation(operation, SupportLevel::Available)?;
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
-                    self.session_error(operation).await?;
+                    let _guard = self.session_error(operation).await?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Close, BackendRequest::Close) => {
@@ -476,6 +476,7 @@ fn bounded_error(mut reason: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser_backend::BackendContract;
     use std::io;
 
     #[test]

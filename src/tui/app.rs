@@ -2067,7 +2067,7 @@ async fn run_tui_loop(
     while !app.should_quit {
         if redraw {
             let area = terminal.size()?;
-            app.sync_graphics_geometry(area)?;
+            app.sync_graphics_geometry(area.into())?;
             terminal.draw(|frame| draw(frame, app))?;
         }
 

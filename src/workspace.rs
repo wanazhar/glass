@@ -1458,7 +1458,7 @@ pub type WorkspaceCoordinator = WorkspaceStore;
 
 #[derive(Debug)]
 pub struct WorkspaceProfileLock {
-    file: File,
+    _file: File,
     pub workspace_id: WorkspaceId,
     pub profile_id: ProfileId,
 }
@@ -1605,7 +1605,7 @@ impl WorkspaceStore {
         let path = self.root.join("profiles").join(format!("{profile_id}.lock"));
         let file = OpenOptions::new().create(true).read(true).write(true).open(path).map_err(io_error)?;
         file.try_lock_exclusive().map_err(|_| WorkspaceStoreError::ProfileLocked(profile_id.clone()))?;
-        Ok(WorkspaceProfileLock { file, workspace_id: workspace_id.clone(), profile_id: profile_id.clone() })
+        Ok(WorkspaceProfileLock { _file: file, workspace_id: workspace_id.clone(), profile_id: profile_id.clone() })
     }
 }
 

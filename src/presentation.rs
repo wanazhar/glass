@@ -1478,7 +1478,6 @@ mod tests {
     fn serde_limits_reject_unknown_fields_and_oversized_damage() {
         let encoded = frame(1, 1).to_json().unwrap();
         assert_eq!(BrowserFrame::from_json(&encoded).unwrap(), frame(1, 1));
-        let mut value = serde_json::to_value(frame(1, 1)).unwrap();
         let mut oversized = frame(1, 1);
         oversized.damage = FrameDamage::Rectangles {
             rects: (0..=MAX_DAMAGE_RECTS)

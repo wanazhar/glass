@@ -181,12 +181,6 @@ impl<'de, const LIMIT: usize, const REQUIRED: bool> Visitor<'de>
     }
 }
 
-fn deserialize_bounded_string_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserializer.deserialize_option(BoundedOptionVisitor::<MAX_TEXT_BYTES, true>)
-}
 
 fn deserialize_version_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -483,21 +477,6 @@ impl<'de, const LIMIT: usize, const BYTE_LIMIT: usize> Visitor<'de>
     }
 }
 
-fn deserialize_bounded_string_vec<'de, D, const LIMIT: usize>(
-    deserializer: D,
-) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserializer.deserialize_seq(BoundedStringVecVisitor::<LIMIT, MAX_TEXT_BYTES>)
-}
-
-fn deserialize_bounded_string_vec_16<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserialize_bounded_string_vec::<D, 16>(deserializer)
-}
 
 fn deserialize_bounded_limitation_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -506,12 +485,6 @@ where
     deserializer.deserialize_seq(BoundedStringVecVisitor::<16, MAX_LIMITATION_BYTES>)
 }
 
-fn deserialize_bounded_string_vec_64<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserialize_bounded_string_vec::<D, 64>(deserializer)
-}
 
 struct BoundedStringMapVisitor<const LIMIT: usize, const KEY_BYTES: usize>;
 
@@ -743,16 +716,6 @@ where
     }
 }
 
-fn deserialize_bounded_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    K: Ord + Deserialize<'de>,
-    V: Deserialize<'de>,
-{
-    deserializer.deserialize_map(BoundedMapVisitor::<K, V, MAX_STORAGE_ENTRIES>(
-        std::marker::PhantomData,
-    ))
-}
 
 fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -1807,17 +1770,6 @@ pub struct PromptRequest {
 /// deserializing backend responses.
 pub trait BackendContract {
     fn validate(&self) -> Result<(), BrowserBackendError>;
-}
-fn validate_backend_error(
-    result: Result<(), BrowserBackendError>,
-) -> Result<(), BrowserBackendError> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            error.validate()?;
-            Err(error)
-        }
-    }
 }
 fn validate_backend_result<T: BackendContract>(
     result: Result<T, BrowserBackendError>,

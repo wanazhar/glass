@@ -3,7 +3,9 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.3.0
+## [Unreleased]
+
+## [0.3.0] - 2026-08-06
 - Promoted bounded extraction reconciliation to stable Glass Web IR v1 with
   strict entity-detail invariants, canonical serialization, revision diffs,
   and fail-closed continuity classification.

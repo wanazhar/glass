@@ -1,11 +1,11 @@
 # Release evidence
 
-The 0.2.9 release follows the crates-only distribution boundary.
-The published `glass-browser` 0.2.9 release has a source-only GitHub Release
-with generated notes. The project does not publish native GitHub release
-binaries, installers, or updater infrastructure.
+The 0.3.0 release follows the crates-only distribution boundary.
+The `glass-browser` 0.3.0 release has a source-only GitHub Release with
+generated notes. The project does not publish native GitHub release binaries,
+installers, or updater infrastructure.
 
-The 0.2.9 release retains bounded MCP response-cost measurements in
+The 0.3.0 release retains bounded MCP response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
 ## Evidence layers
@@ -48,6 +48,22 @@ Record the target environment and browser details with the result. Do not
 convert source inventory or cross-compilation into a support claim for another
 OS. The current recorded result is in
 [Recorded platform evidence](local-platform.md).
+
+## 0.3.0 release validation
+
+The tagged checkout passed the complete revision-bound release suite before
+publication:
+
+- Stable Glass Web IR v1 and Task Protocol v1 conformance passed across Rust,
+  CLI, MCP, daemon, capability, and golden protocol surfaces.
+- Web IR corpus validation passed with 8 fixtures, 8 scenarios, and 11
+  categories.
+- All-target tests, formatting, Clippy, rustdoc, release build, package,
+  publish dry-run, dependency-policy, vulnerability, and fuzz checks passed.
+- Semantic-contract fuzzing completed 512 runs without failure.
+- The recorded Linux ARM64 browser suite passed all 17 scenarios.
+- The live semantic fixture reduced estimated agent task context by 71%.
+- `cargo package --locked --no-verify` packaged 211 files.
 
 ## 0.2.9 release validation
 
@@ -96,6 +112,5 @@ Publication verification:
 The native evidence remains limited to the recorded Linux ARM64 environment;
 other declared targets are not certified by this release.
 
-The `glass-browser` `0.2.9` crate is the current published release, and
-`v0.2.9` has a matching published GitHub Release entry. No native binary
-assets are expected.
+The `glass-browser` `0.3.0` crate is the current release, and `v0.3.0` has a
+matching published GitHub Release entry. No native binary assets are expected.

@@ -73,15 +73,15 @@ def main() -> None:
         fail("type must be glass_feature_parity")
 
     baseline = matrix.get("release_baseline", {})
-    if baseline.get("version") != "0.2.9":
-        fail("release baseline must be 0.2.9")
-    if baseline.get("tag") != "v0.2.9":
-        fail("release baseline tag must be v0.2.9")
+    if baseline.get("version") != "0.3.0":
+        fail("release baseline must be 0.3.0")
+    if baseline.get("tag") != "v0.3.0":
+        fail("release baseline tag must be v0.3.0")
     source_commit = baseline.get("source_commit", "")
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
         fail("release baseline source_commit must be a full lowercase commit SHA")
-    if matrix.get("next_release") != "0.3.0":
-        fail("next_release must be 0.3.0")
+    if matrix.get("next_release") != "0.3.1":
+        fail("next_release must be 0.3.1")
 
     targets = matrix.get("targets")
     if not isinstance(targets, list) or {target.get("id") for target in targets} != set(EXPECTED_TARGETS):
@@ -143,9 +143,9 @@ def main() -> None:
         fail("Cargo.toml version is neither the published baseline nor the next release")
 
     required_text = {
-        "README.md": "| 0.2.9 | Current release |",
-        "CHANGELOG.md": "## [0.2.9] - 2026-08-06",
-        "docs/release-checklist.md": "current release is `glass-browser` version `0.2.9`",
+        "README.md": "| 0.3.0 | Current release |",
+        "CHANGELOG.md": "## [0.3.0] - 2026-08-06",
+        "docs/release-checklist.md": "current release is `glass-browser` version `0.3.0`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.7 published; source-only GitHub Release",
     }
     for relative_path, expected in required_text.items():

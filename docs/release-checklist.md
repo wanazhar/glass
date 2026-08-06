@@ -4,10 +4,10 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current release is `glass-browser` version `0.2.9`; publication is complete.
-The next development version is `0.3.0`. Linux x86-64, Linux arm64, macOS
-x86-64, and macOS arm64 remain declared targets; only Linux ARM64 evidence is
-currently recorded. Other declared targets require their own native validation.
+The current release is `glass-browser` version `0.3.0`. Linux x86-64, Linux
+arm64, macOS x86-64, and macOS arm64 remain declared targets; only Linux ARM64
+evidence is currently recorded. Other declared targets require their own native
+validation.
 Windows is unsupported.
 
 Every version tag must have a matching, published, non-draft GitHub Release
@@ -35,7 +35,7 @@ scenarios, measured payload reduction, migration guidance, and a release audit.
 
 ## Prepare
 
-- [x] Confirm release version `0.2.9`; release date `2026-08-06`.
+- [x] Confirm release version `0.3.0`; release date `2026-08-06`.
 - [x] Check the package name, description, license, README, and repository
       metadata in `Cargo.toml`.
 - [x] Record the 0.2.0 release date in the changelog.
@@ -127,8 +127,8 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Run the complete formatting, test, Clippy, rustdoc, corpus, package,
       publish-dry-run, dependency-policy, vulnerability, and fuzz gates against
       the final candidate.
-- [ ] Obtain explicit publication approval.
-- [ ] Create and push the signed annotated `v0.3.0` tag.
+- [x] Obtain explicit publication approval.
+- [x] Create and push the signed annotated `v0.3.0` tag.
 - [ ] Verify crates.io publication and the source-only GitHub Release.
 
 A release is not complete while any required checkbox is open.

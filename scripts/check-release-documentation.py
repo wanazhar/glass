@@ -9,25 +9,25 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.2.9 | Current release |",
+        "| 0.3.0 | Current release |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
-    "CHANGELOG.md": ["## [0.2.9] - 2026-08-06", "## [Unreleased] — 0.3.0"],
+    "CHANGELOG.md": ["## [0.3.0] - 2026-08-06", "## [Unreleased]"],
     "docs/plan/README.md": [
         "[ir-030-081](tasks/ir-030-081.md)",
         "[ir-030-089](tasks/ir-030-089.md)",
-        "0.2.9 published on crates.io",
-        "follow-up work continues in",
+        "0.3.0 release candidate satisfies the epic exit",
+        "Publication and the matching source-only GitHub Release",
     ],
     "docs/release-checklist.md": [
-        "current release is `glass-browser` version `0.2.9`",
-        "The next development version is `0.3.0`",
+        "current release is `glass-browser` version `0.3.0`",
+        "only Linux ARM64",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
-        "published 0.2.9 baseline",
-        "0.3.0 work stream",
+        "0.3.0 release baseline",
+        "runtime verification",
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [

@@ -99,7 +99,8 @@ pub use task_protocol::{
 };
 
 pub use task_compiler::{
-    TASK_PLAN_SCHEMA_VERSION, TaskCompilationError, TaskExecutionPlan, TaskPlanOperation,
+    TASK_COMPILER_VERSION, TASK_PLAN_SCHEMA_VERSION, TaskCompilationError,
+    TaskEvidenceRequirements, TaskExecutionPlan, TaskPlanOperation, TaskPlanPrecondition,
     TaskPlanStep, compile_task,
 };
 

@@ -152,10 +152,10 @@ A tool may request one bounded failure-trace content item with
 | `compileTask` | Validate a semantic Task Protocol v1 task and return a browser-free execution plan. |
 | `validateTask` | Validate a semantic Task Protocol v1 task without compiling or starting Chrome. |
 | `executeTask` | Execute any validated, revision-guarded Task Protocol v1 task in the current browser session. |
-| `inspectWebIr` | Return bounded summary metadata for a validated browser-free Web IR draft. |
-| `validateWebIr` | Validate a browser-free Web IR draft without starting Chrome. |
-| `diffWebIr` | Return bounded revision-change counts for two validated Web IR drafts. |
-| `continuityWebIr` | Classify one entity across two validated Web IR drafts. |
+| `inspectWebIr` | Return bounded summary metadata for validated browser-free Web IR. |
+| `validateWebIr` | Validate browser-free Web IR without starting Chrome. |
+| `diffWebIr` | Return bounded revision-change counts for two validated Web IR revisions. |
+| `continuityWebIr` | Classify one entity across two validated Web IR revisions. |
 | `wait` | Wait for one typed condition. |
 | `diagnostics` | Return bounded redacted console and network data. |
 | `acceptDialog`, `dismissDialog` | Resolve the open JavaScript dialog. |
@@ -303,21 +303,24 @@ including form, navigation, dialog, pagination, extraction, and field-read
 tasks. The task payload is authored once and dispatched through the same
 typed protocol validation used by `validateTask` and `compileTask`.
 
-`expectedRevision` is required and must come from the caller's preceding
-semantic observation. Every browser-backed task checks that revision before
-dispatch. Families that inspect semantic page state re-observe before mutation
-and return a guarded preflight result when the revision is stale or changes
-during preflight; navigation and dialog families apply their bounded
-current-revision and pending-dialog guards.
-`confirmed` defaults to `false`. If the compiled task is
-confirmation-gated by its risk or ambiguity policy, execution returns a
-confirmation-required preflight result until the caller explicitly retries
-with `confirmed: true`. These revision and confirmation guards apply to every
-supported Task Protocol family, not only form tasks.
+`expectedRevision` is required and comes from the caller's preceding semantic
+observation. Under `exact`, the freshly compiled Web IR revision must match.
+Under `compatible`, unchanged revisions execute normally and read-only tasks
+may recompile against a newer unique source revision; mutating drift fails
+closed because the executor has no prior IR continuity proof. Under `reextract`,
+the caller explicitly permits one bounded fresh compilation; every mutating
+re-extraction is confirmation-gated. A source revision regression always fails.
+The executor then guards dispatch against the compiled revision, not the stale
+caller revision.
 
-The Rust family-specific execution methods enforce the same authored
-postcondition checks as `executeTask`; callers do not need to route through the
-canonical dispatcher to retain verification and recovery semantics.
+`confirmed` defaults to `false`. Risk, explicit ambiguity handling, destructive
+operations, or mutating re-extraction can gate the compiled operation. Execution
+returns a confirmation-required preflight result until the caller explicitly
+retries with `confirmed: true`.
+
+All Rust family-specific execution methods use the same live compiler,
+revision guards, generated or authored postconditions, verification, and
+recovery semantics as `executeTask`.
 
 In local-daemon mode, read-only task families (`form.inspect`,
 `form.validate`, `field.read`, table/collection/region extraction, and
@@ -325,9 +328,9 @@ In local-daemon mode, read-only task families (`form.inspect`,
 such as form fill/submit, navigation, pagination, and dialog confirmation or
 cancellation still require one.
 
-### Inspect and validate a Web IR draft without starting Chrome
+### Inspect and validate Glass Web IR v1 without starting Chrome
 
-`inspectWebIr` and `validateWebIr` consume a bounded draft JSON object and never
+`inspectWebIr` and `validateWebIr` consume a bounded stable Web IR v1 document and never
 start Chrome, acquire a mutation lease, or dispatch browser actions. Both tools
 validate graph invariants first. `validateWebIr` returns only schema and revision
 metadata:
@@ -363,14 +366,15 @@ relationships, or page content:
 }
 ```
 
-Invalid drafts return `isError: true` with a bounded `webIrValidation` object
-containing `path` and `reason`. These tools are intended for offline inspection
-and protocol conformance; they do not turn a draft into browser authority.
+Invalid documents return `isError: true` with a bounded `webIrValidation`
+object containing `path` and `reason`. These tools are intended for offline
+inspection and protocol conformance; validation does not turn an IR document
+into browser authority.
 
 The server dispatches these tools through the typed canonical `webIr.*`
-protocol operations; MCP-only response options are not forwarded into drafts.
+protocol operations; MCP-only response options are not forwarded into Web IR.
 
-`diffWebIr` validates both drafts and returns only bounded change counts and
+`diffWebIr` validates both revisions and returns only bounded change counts and
 revision metadata:
 
 ```json
@@ -390,7 +394,7 @@ revision metadata:
 }
 ```
 
-`continuityWebIr` validates both drafts and classifies one source entity as
+`continuityWebIr` validates both revisions and classifies one source entity as
 `unchanged`, `changed`, `rebound`, `removed`, or `ambiguous`. It returns the
 revision-local `currentId` only when a unique current entity is identified.
 Both tools are browser-free, require no mutation lease, and omit entity
@@ -398,18 +402,11 @@ payloads, relationships, and page content from successful responses.
 
 ### Compile a task without starting Chrome
 
-`compileTask` validates authored intent and returns a typed plan. It does not
-start Chrome, acquire a mutation lease, resolve targets, or execute browser
-actions. Input values are consumed only during validation and are not included
-in the returned plan.
-
-The MCP dispatch path constructs the canonical request and invokes the typed
-protocol helper; MCP-only response options are not part of the task payload.
-
-The canonical Glass operation is `task.compile`; MCP retains JSON-RPC framing
-and the `compileTask` tool name.
-
-Example request:
+`compileTask` requires both an authored Task Protocol v1 object and the stable
+Glass Web IR v1 document that supplies its evidence. Compilation validates both
+contracts, resolves only compatible semantic entities, and emits a deterministic
+guarded plan. It does not start Chrome, acquire a mutation lease, or execute a
+browser action.
 
 ```json
 {
@@ -421,77 +418,82 @@ Example request:
     "arguments": {
       "task": {
         "schemaVersion": 1,
-        "task": "form.fill",
-        "scope": {
-          "regionName": "Shipping address",
-          "entityKind": "form"
+        "task": "navigation.follow",
+        "scope": {"entityKind": "page"},
+        "inputs": {"url": "https://example.test/next"},
+        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+        "risk": "readOnly"
+      },
+      "ir": {
+        "schemaVersion": 1,
+        "revision": 7,
+        "document": {"revision": 7},
+        "entities": [
+          {"id": "page", "kind": "page", "quality": "confirmed", "evidenceSources": []},
+          {
+            "id": "next",
+            "kind": "link",
+            "role": "link",
+            "name": "Next",
+            "quality": "confirmed",
+            "evidenceSources": ["accessibility"]
+          }
+        ],
+        "relationships": [
+          {"from": "page", "to": "next", "kind": "contains"}
+        ],
+        "entityDetails": {
+          "next": {
+            "state": {},
+            "supportedActions": ["click", "navigate"],
+            "scope": "document",
+            "sensitivity": "public",
+            "semanticStabilityKey": "link|next",
+            "truncated": false
+          }
         },
-        "inputs": {
-          "city": "Kuching"
+        "coverage": {
+          "structural": "strong",
+          "semantic": "strong",
+          "interactiveEntitiesObserved": 1,
+          "opaqueRegions": 0,
+          "reasons": []
         },
         "limits": {
-          "maxActions": 16,
-          "timeoutMs": 15000,
-          "maxItems": 128
-        },
-        "risk": "localMutation",
-        "ambiguity": "fail",
-        "revision": "exact",
-        "postconditions": [
-          {"kind": "validationClear"}
-        ]
+          "truncated": false,
+          "omittedFacts": 0,
+          "textBytes": 4,
+          "missingSources": []
+        }
       }
     }
   }
 }
 ```
 
-The successful MCP content item contains JSON shaped like:
+The returned `plan` records compiler and source schema versions, source
+revision, task fingerprint, selected entity IDs, evidence requirements,
+preconditions, bounded steps, risk, confirmation, revision policy, and generated
+postconditions. The complete canonical request and result are checked in at
+[`tests/fixtures/protocol-golden-v1.json`](../tests/fixtures/protocol-golden-v1.json).
+Input values are represented only by bounded input names in the plan.
 
-```json
-{
-  "plan": {
-    "schemaVersion": 1,
-    "taskSchemaVersion": 1,
-    "task": "form.fill",
-    "scope": {"regionName": "Shipping address", "entityKind": "form"},
-    "limits": {"maxActions": 16, "timeoutMs": 15000, "maxItems": 128},
-    "ambiguity": "fail",
-    "revision": "exact",
-    "risk": "localMutation",
-    "confirmationRequired": false,
-    "steps": [
-      {"ordinal": 1, "operation": "observeScope"},
-      {"ordinal": 2, "operation": "fillInputs", "inputNames": ["city"]}
-    ],
-    "postconditions": [{"kind": "validationClear"}]
-  }
-}
-```
-
-The plan is not an action result. A later execution layer must reconcile the
-plan against a current Web IR revision and apply its policy and confirmation
-gates.
-
-Keep sensitive input values in the local client boundary and send them only
-when the task requires them. Glass does not serialize those values into the
-compiled plan or its canonical response; clients should still avoid retaining
-raw request bodies longer than necessary.
-
-For a valid JSON task that fails Task Protocol validation, the tool returns
-`isError: true` without starting Chrome. The first text content item is a
-bounded JSON error:
+Ambiguity policy `fail`, inadequate quality, missing evidence sources, opacity,
+unsupported actions, and malformed IR all return a bounded `taskCompilation`
+error without browser work. For example:
 
 ```json
 {
   "kind": "taskCompilation",
   "path": "inputs",
   "reason": "form.fill requires at least one bounded input"
+}
 ```
 
-The `path` identifies the authored field that must be corrected; `reason` is
-safe to display to the caller. Structural argument errors, such as a missing
-`task` object, remain ordinary MCP tool errors.
+The `path` identifies the field that failed validation. Structural argument
+errors, including a missing `task` or `ir` object, remain ordinary MCP tool
+errors. The canonical Glass operation is `task.compile`; MCP retains JSON-RPC
+framing and the `compileTask` tool name.
 
 All arguments use JSON. Targets use the same locator forms as the CLI.
 `includeDom` and `includeScreenshot` default to false. A semantic

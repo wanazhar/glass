@@ -81,11 +81,12 @@ glass navigate https://example.com
 glass --incognito --headed navigate https://example.com
 ```
 
-Compile a bounded Task Protocol plan without starting Chrome:
+Compile a bounded Task Protocol plan against stable Glass Web IR v1 without
+starting Chrome:
 
 ```console
-glass task compile task.json
-glass task compile task.json --explain
+glass task compile task.json web-ir.json
+glass task compile task.json web-ir.json --explain
 ```
 
 Validate authored Task Protocol JSON without compiling or starting Chrome:
@@ -212,7 +213,7 @@ After publication, add the crate as `glass`:
 
 ```toml
 [dependencies]
-glass = { package = "glass-browser", version = "0.2" }
+glass = { package = "glass-browser", version = "0.3" }
 ```
 
 The library provides `BrowserSession`, session options, policies, observations,
@@ -220,7 +221,7 @@ revision-safe actions, target and frame management, storage, downloads,
 screenshots, PDFs, semantic observations, and the MCP server.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) remain experimental repository clients for the 0.2.5
+client](clients/python) remain experimental repository clients for the 0.3.0
 development line. They are not published as npm or PyPI packages, do not
 include a browser runtime, and do not change the primary Cargo installation
 path.

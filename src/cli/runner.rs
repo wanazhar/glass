@@ -855,10 +855,11 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
         }
         TaskCommand::Compile {
             input,
+            ir,
             output,
             explain,
         } => {
-            let request = read_task_request(input, TASK_COMPILE_OPERATION)?;
+            let request = read_task_compile_request(input, ir)?;
             let task = request.decode_task_compile()?.task;
             let result = crate::protocol::compile_task_result(&request)?;
             if let Some(output) = output {
@@ -889,6 +890,23 @@ fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest
         mutation_lease: None,
         operation: operation.into(),
         payload: serde_json::json!({"task": task}),
+        deadline_ms: None,
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+fn read_task_compile_request(task_path: &Path, ir_path: &Path) -> BrowserResult<GlassRequest> {
+    let task: Value = serde_json::from_str(&std::fs::read_to_string(task_path)?)?;
+    let ir: Value = serde_json::from_str(&std::fs::read_to_string(ir_path)?)?;
+    let request = GlassRequest {
+        protocol_version: GLASS_PROTOCOL_VERSION,
+        request_id: "cli-task-compile".into(),
+        correlation_id: None,
+        session_id: None,
+        mutation_lease: None,
+        operation: TASK_COMPILE_OPERATION.into(),
+        payload: serde_json::json!({"task": task, "ir": ir}),
         deadline_ms: None,
     };
     request.validate()?;
@@ -937,8 +955,8 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             after,
             summary,
         } => {
-            let before = read_web_ir_draft(before)?;
-            let after = read_web_ir_draft(after)?;
+            let before = read_web_ir(before)?;
+            let after = read_web_ir(after)?;
             let diff = before.diff(&after)?;
             if *summary {
                 print_json(&crate::protocol::WebIrDiffResult::from_diff(&diff))?;
@@ -956,7 +974,7 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
             print_json(&result)?;
         }
         IrCommand::Canonical { input } => {
-            let draft = read_web_ir_draft(input)?;
+            let draft = read_web_ir(input)?;
             println!("{}", draft.to_canonical_json()?);
         }
     }
@@ -1005,11 +1023,11 @@ fn read_web_ir_continuity_request(
     Ok(request)
 }
 
-fn read_web_ir_draft(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
+fn read_web_ir(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
     let source = std::fs::read_to_string(path)?;
-    let draft: crate::web_ir::GlassWebIrV1 = serde_json::from_str(&source)?;
-    draft.validate()?;
-    Ok(draft)
+    let ir: crate::web_ir::GlassWebIrV1 = serde_json::from_str(&source)?;
+    ir.validate()?;
+    Ok(ir)
 }
 
 fn explain_task(
@@ -2013,20 +2031,22 @@ mod tests {
             r#"{
                 "schemaVersion": 1,
                 "task": "form.fill",
-                "scope": {"regionName": "Shipping address"},
-                "inputs": {"city": "Kuching-secret"},
+                "scope": {"regionName": "Checkout"},
+                "inputs": {"email": "Kuching-secret"},
                 "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
                 "risk": "localMutation"
             }"#,
         )
         .unwrap();
-        let plan = crate::task_compiler::compile_task(&task).unwrap();
+        let plan =
+            crate::task_compiler::compile_task(&task, &crate::task_compiler::test_compiler_ir())
+                .unwrap();
 
         let explanation = explain_task(&task, &plan).unwrap();
 
         assert!(explanation.contains("task: form.fill"));
-        assert!(explanation.contains("scope: {\"regionName\":\"Shipping address\"}"));
-        assert!(explanation.contains("inputNames=[\"city\"]"));
+        assert!(explanation.contains("scope: {\"regionName\":\"Checkout\"}"));
+        assert!(explanation.contains("inputNames=[\"email\"]"));
         assert!(!explanation.contains("Kuching-secret"));
     }
     #[test]
@@ -2035,12 +2055,21 @@ mod tests {
             "glass-cli-task-protocol-{}.json",
             std::process::id()
         ));
+        let ir_path = std::env::temp_dir().join(format!(
+            "glass-cli-task-protocol-ir-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &ir_path,
+            serde_json::to_vec(&crate::task_compiler::test_compiler_ir()).unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             &path,
             r#"{
                 "schemaVersion": 1,
                 "task": "region.extract",
-                "scope": {"regionName": "Checkout"},
+                "scope": {"regionName": "Checkout", "entityKind": "region"},
                 "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
                 "risk": "readOnly"
             }"#,
@@ -2051,7 +2080,7 @@ mod tests {
         assert_eq!(validate.operation, TASK_VALIDATE_OPERATION);
         assert!(crate::protocol::validate_task_result(&validate).is_ok());
 
-        let compile = read_task_request(&path, TASK_COMPILE_OPERATION).unwrap();
+        let compile = read_task_compile_request(&path, &ir_path).unwrap();
         assert_eq!(compile.operation, TASK_COMPILE_OPERATION);
         assert!(crate::protocol::compile_task_result(&compile).is_ok());
 
@@ -2072,13 +2101,14 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let invalid = read_task_request(&path, TASK_COMPILE_OPERATION).unwrap();
+        let invalid = read_task_compile_request(&path, &ir_path).unwrap();
         assert!(matches!(
             crate::protocol::compile_task_result(&invalid),
             Err(crate::protocol::ProtocolError::TaskCompilation(_))
         ));
 
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(ir_path).unwrap();
     }
     #[test]
     fn cli_web_ir_requests_use_canonical_protocol_helpers() {
@@ -2107,7 +2137,7 @@ mod tests {
         let inspect = read_web_ir_request(&path, WEB_IR_INSPECT_OPERATION).unwrap();
         assert_eq!(inspect.operation, WEB_IR_INSPECT_OPERATION);
         assert!(crate::protocol::web_ir_inspect_result(&inspect).is_ok());
-        let before = read_web_ir_draft(&path).unwrap();
+        let before = read_web_ir(&path).unwrap();
         let diff = before.diff(&before).unwrap();
         let summary = crate::protocol::WebIrDiffResult::from_diff(&diff);
         assert_eq!(summary.from_revision, diff.from_revision);

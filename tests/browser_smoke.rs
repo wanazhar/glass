@@ -13,7 +13,7 @@ use glass::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario}
 use glass::{
     EvidenceSource, ExtractionBudgets, ExtractionRequest, ExtractionScope, GlassTask,
     TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition,
-    TaskPostconditionKind, TaskRiskClass, TaskScope, WebIrEntityKind,
+    TaskPostconditionKind, TaskRiskClass, TaskScope, WebIrEntityKind, compile_task,
 };
 use serde_json::{Value, json};
 use std::{
@@ -2661,7 +2661,9 @@ async fn browser_session_extracts_live_page_into_stable_web_ir() {
         ],
         budgets: ExtractionBudgets::default(),
     };
+    let extraction_started = std::time::Instant::now();
     let ir = session.extract_web_ir(&request).await.unwrap();
+    let extraction_micros = extraction_started.elapsed().as_micros();
     ir.validate().unwrap();
     assert_eq!(ir.revision, ir.document.revision);
     assert!(
@@ -2680,6 +2682,70 @@ async fn browser_session_extracts_live_page_into_stable_web_ir() {
             .any(|entity| entity.kind == WebIrEntityKind::Link)
     );
     assert!(!ir.to_canonical_json().unwrap().contains("secret-value"));
+    let observation_bytes = serde_json::to_vec(&session.inspect_page().await.unwrap())
+        .unwrap()
+        .len();
+    let task_json = [
+        json!({
+            "schemaVersion": 1,
+            "task": "form.inspect",
+            "scope": {"regionName": "Checkout", "entityKind": "form"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        }),
+        json!({
+            "schemaVersion": 1,
+            "task": "table.extract",
+            "scope": {"regionName": "Orders", "entityKind": "table", "entityName": "Orders"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        }),
+        json!({
+            "schemaVersion": 1,
+            "task": "region.extract",
+            "scope": {"regionName": "Results"},
+            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+            "risk": "readOnly"
+        }),
+    ];
+    let tasks = task_json
+        .iter()
+        .map(|value| GlassTask::from_json(&value.to_string()).unwrap())
+        .collect::<Vec<_>>();
+    let compilation_started = std::time::Instant::now();
+    let plans = tasks
+        .iter()
+        .map(|task| compile_task(task, &ir).unwrap())
+        .collect::<Vec<_>>();
+    let compilation_micros = compilation_started.elapsed().as_micros();
+    let pre_web_ir_bytes = observation_bytes * tasks.len();
+    let compiled_agent_bytes = tasks
+        .iter()
+        .zip(&plans)
+        .map(|(task, plan)| {
+            task.to_canonical_json().unwrap().len() + plan.to_canonical_json().unwrap().len()
+        })
+        .sum::<usize>();
+    assert!(
+        compiled_agent_bytes < pre_web_ir_bytes,
+        "compiled task payloads ({compiled_agent_bytes}) must remain smaller than repeated pre-Web-IR semantic observations ({pre_web_ir_bytes})"
+    );
+    eprintln!(
+        "{}",
+        json!({
+            "semanticExecutionBenchmark": {
+                "taskCount": tasks.len(),
+                "extractionMicros": extraction_micros,
+                "compilationMicros": compilation_micros,
+                "irBytes": ir.to_canonical_json().unwrap().len(),
+                "preWebIrAgentBytes": pre_web_ir_bytes,
+                "compiledAgentBytes": compiled_agent_bytes,
+                "estimatedTokenReductionPercent": 100usize.saturating_sub(
+                    compiled_agent_bytes.saturating_mul(100) / pre_web_ir_bytes
+                )
+            }
+        })
+    );
     session.close().await.unwrap();
     fixture.close().await;
 }
@@ -3281,14 +3347,14 @@ async fn browser_session_executes_scoped_form_tasks() {
     invalid_submit
         .inputs
         .insert(String::from("submit"), String::from("Email"));
-    let invalid_submit_result = session
+    let invalid_submit_error = session
         .execute_form_task(&invalid_submit, retry_observation.revision, true)
         .await
-        .unwrap();
-    assert_eq!(invalid_submit_result.status, "preflight-failed");
-    assert_eq!(
-        invalid_submit_result.steps[1].detail.as_deref(),
-        Some("form.submit target is not a semantic submit control")
+        .unwrap_err();
+    assert!(
+        invalid_submit_error
+            .to_string()
+            .contains("submit target must resolve to exactly one source Web IR action")
     );
 
     let submitted = session

@@ -27,11 +27,11 @@ a crates.io dry run, publishes the crate when needed, and creates the matching
 GitHub Release with generated notes. Existing crate or release records are
 detected idempotently; native binary artifacts are never uploaded.
 
-Issue #30 / 0.2.9 exit acceptance additionally requires the canonical
-`task.execute` and structured-extraction fixtures, lease-bound public request
-envelopes, observable MCP/CLI `responseMode`, and deterministic Web IR corpus
-baseline validation. These are source-checkout contracts; they do not claim
-live browser coverage.
+Issue #30 / 0.3.0 exit acceptance additionally requires stable Glass Web IR
+and Task Protocol v1 contracts, deterministic compilation, mandatory guarded
+runtime compilation, revision and confirmation gates, generated verification,
+cross-interface conformance, malformed-input and fuzz coverage, live browser
+scenarios, measured payload reduction, migration guidance, and a release audit.
 
 ## Prepare
 
@@ -113,5 +113,22 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Create the signed annotated `v0.2.9` tag after publication approval.
 - [x] Publish `glass-browser` from the tagged commit after explicit approval.
 - [x] Create and verify the matching published GitHub Release for `v0.2.9`.
+
+## 0.3.0 candidate
+
+- [x] Synchronize Rust, TypeScript, and Python package metadata at `0.3.0`.
+- [x] Promote Web IR and Task Protocol v1 without public draft aliases.
+- [x] Route every browser-backed Task Protocol family through the shared
+      compiler, revision checks, policy confirmation, and verification runtime.
+- [x] Cover Rust, CLI, MCP, daemon, capability, and golden protocol surfaces.
+- [x] Add strict malformed-input and semantic-contract fuzz coverage.
+- [x] Exercise the 17-scenario Linux ARM64 browser suite, including live Web IR
+      extraction, compilation, runtime safety, and fixture payload metrics.
+- [x] Run the complete formatting, test, Clippy, rustdoc, corpus, package,
+      publish-dry-run, dependency-policy, vulnerability, and fuzz gates against
+      the final candidate.
+- [ ] Obtain explicit publication approval.
+- [ ] Create and push the signed annotated `v0.3.0` tag.
+- [ ] Verify crates.io publication and the source-only GitHub Release.
 
 A release is not complete while any required checkbox is open.

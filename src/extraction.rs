@@ -417,6 +417,13 @@ pub fn extract_page_context(
                         collect_accessibility(root, &mut collector, 0, None);
                     }
                 }
+                if !incomplete_accessibility {
+                    for control in &context.accessibility.interactive {
+                        if control_in_region(control, region_root) {
+                            collect_accessibility_control(control, &mut collector);
+                        }
+                    }
+                }
             }
             EvidenceSource::Dom | EvidenceSource::Layout if region_root.is_some() => {
                 missing_sources.insert(*source);
@@ -502,9 +509,7 @@ pub fn extract_page_context(
                 } else {
                     context.boundaries.child_frames
                 };
-                if count == 0 {
-                    missing_sources.insert(*source);
-                } else {
+                if count > 0 {
                     push_boundary_fact(
                         &mut collector,
                         *source,
@@ -514,9 +519,7 @@ pub fn extract_page_context(
                 }
             }
             EvidenceSource::ShadowDom => {
-                if context.boundaries.shadow_roots == 0 {
-                    missing_sources.insert(*source);
-                } else {
+                if context.boundaries.shadow_roots > 0 {
                     push_boundary_fact(
                         &mut collector,
                         *source,
@@ -930,20 +933,22 @@ fn collect_accessibility(
     if !collector.allow_node(depth) {
         return;
     }
-    collector.push(EvidenceFact {
-        source: EvidenceSource::Accessibility,
-        kind: "node".into(),
-        quality: EvidenceQuality::Confirmed,
-        role: Some(node.role.clone()),
-        name: Some(node.name.clone()),
-        input_type: None,
-        required: None,
-        read_only: None,
-        empty: None,
-        geometry_present: None,
-        parent_role: parent_role.map(str::to_owned),
-        relationship_hint: None,
-    });
+    if !node.interactive {
+        collector.push(EvidenceFact {
+            source: EvidenceSource::Accessibility,
+            kind: "node".into(),
+            quality: EvidenceQuality::Confirmed,
+            role: Some(node.role.clone()),
+            name: Some(node.name.clone()),
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: None,
+            parent_role: parent_role.map(str::to_owned),
+            relationship_hint: None,
+        });
+    }
     let next_parent_role = if is_region_role(&node.role) {
         Some(node.role.as_str())
     } else {
@@ -956,6 +961,41 @@ fn collect_accessibility(
         }
         collect_accessibility(child, collector, depth.saturating_add(1), next_parent_role);
     }
+}
+
+fn collect_accessibility_control(
+    control: &CompactInteractiveElement,
+    collector: &mut EvidenceCollector,
+) {
+    if matches!(
+        control.role.to_ascii_lowercase().as_str(),
+        "rootwebarea" | "webarea" | "document"
+    ) {
+        return;
+    }
+    let parent_role = control
+        .ancestor_path
+        .last()
+        .map(|value| {
+            value
+                .split_once(':')
+                .map_or(value.as_str(), |(role, _)| role)
+        })
+        .and_then(safe_parent_role);
+    collector.push(EvidenceFact {
+        source: EvidenceSource::Accessibility,
+        kind: "control".into(),
+        quality: EvidenceQuality::Confirmed,
+        role: Some(control.role.clone()),
+        name: Some(control.name.clone()),
+        input_type: control.input_type.clone(),
+        required: Some(control.required),
+        read_only: Some(control.read_only),
+        empty: Some(control.empty),
+        geometry_present: None,
+        parent_role,
+        relationship_hint: None,
+    });
 }
 
 fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
@@ -1305,6 +1345,12 @@ mod tests {
             Some(EvidenceQuality::Confirmed)
         );
         assert!(evidence.limits.missing_sources.is_empty());
+        assert!(evidence.facts.iter().any(|fact| {
+            fact.source == EvidenceSource::Accessibility
+                && fact.role.as_deref() == Some("textbox")
+                && fact.name.as_deref() == Some("Full name")
+                && fact.input_type.as_deref() == Some("text")
+        }));
         assert!(
             !serde_json::to_string(&evidence)
                 .unwrap()
@@ -1490,6 +1536,17 @@ mod tests {
                 "missing facts for {source:?}"
             );
         }
+    }
+    #[test]
+    fn observed_absence_of_frames_and_shadow_roots_is_not_missing_evidence() {
+        let context = page_context();
+        let mut request = request();
+        request.sources = vec![EvidenceSource::Frames, EvidenceSource::ShadowDom];
+
+        let evidence = extract_page_context(&context, &request).unwrap();
+
+        assert!(evidence.facts.is_empty());
+        assert!(evidence.limits.missing_sources.is_empty());
     }
     #[test]
     fn extraction_reports_opaque_boundaries_without_claiming_completeness() {

@@ -26,21 +26,21 @@ rather than the `browser.` prefix:
 | `diffWebIr` | `webIr.diff` |
 | `continuityWebIr` | `webIr.continuity` |
 
-`inspectWebIr` and `validateWebIr` carry one validated draft graph. Inspection
-returns bounded graph metadata; validation returns bounded validity metadata.
-Revision tools carry two validated draft graphs and return bounded summaries or
-one continuity classification. Entity payloads and page content are not
-returned by the MCP projection.
+`inspectWebIr` and `validateWebIr` carry one validated Glass Web IR v1
+document. Inspection returns bounded graph metadata; validation returns bounded
+validity metadata. Revision tools carry two validated Web IR documents and
+return bounded summaries or one continuity classification. Entity payloads and
+page content are not returned by the MCP projection.
 
 MCP dispatch constructs these canonical requests and invokes typed protocol
 helpers; MCP-only response options are excluded from canonical payloads.
 
 Browser-free Task Protocol tools also use canonical operation names:
 
-| MCP tool | Glass operation |
-|---|---|
-| `compileTask` | `task.compile` |
-| `validateTask` | `task.validate` |
+| MCP tool | Glass operation | Canonical payload |
+|---|---|---|
+| `compileTask` | `task.compile` | `task` plus the source `ir` |
+| `validateTask` | `task.validate` | `task` |
 
 The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
 covers read, leased mutation, workflow, browser-free Web IR inspection and
@@ -56,9 +56,9 @@ The CLI and SDKs use the same operation names and payload fields. MCP keeps
 JSON-RPC success and error framing. The operation payload remains bounded and
 versioned.
 
-CLI `task validate` and `task compile` use these same typed helpers while
-preserving their existing bounded output projections; the CLI does not start
-Chrome for either operation.
+CLI `task validate` and `task compile` use these same typed helpers.
+`task compile TASK.json WEB-IR.json` requires the stable source IR and binds the
+plan to its revision and semantic entity IDs; neither command starts Chrome.
 
 CLI `ir validate`, `ir inspect`, and `ir continuity` use the corresponding
 typed Web IR helpers. The detailed CLI `ir diff` projection remains the

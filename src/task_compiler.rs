@@ -1,14 +1,20 @@
-//! Browser-free compilation from authored tasks to bounded execution plans.
+//! Deterministic compilation from authored tasks and stable Glass Web IR v1.
 //!
-//! The compiler emits intent-level operations only. A later runtime may resolve
-//! those operations against a validated Web IR revision and apply policy gates.
+//! Compilation is browser-free: it binds intent to bounded semantic entities,
+//! emits explicit evidence and revision guards, and never carries input values.
 
+use crate::extraction::{EvidenceQuality, EvidenceSource};
 use crate::task_protocol::{
     GlassTask, MAX_INPUT_NAME_BYTES, MAX_INPUTS, MAX_POSTCONDITIONS, TASK_PROTOCOL_SCHEMA_VERSION,
-    TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition, TaskProtocolError,
-    TaskRevisionPolicy, TaskRiskClass, TaskScope, postcondition_allowed_for,
+    TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition, TaskPostconditionKind,
+    TaskProtocolError, TaskRevisionPolicy, TaskRiskClass, TaskScope, postcondition_allowed_for,
+};
+use crate::web_ir::{
+    GlassWebIrV1, WEB_IR_SCHEMA_VERSION, WebIrAction, WebIrEntity, WebIrEntityDetails,
+    WebIrEntityKind,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -39,6 +45,42 @@ pub enum TaskPlanOperation {
     CollectPages,
 }
 
+/// Version of the compiler logic recorded in every execution plan.
+pub const TASK_COMPILER_VERSION: u32 = 1;
+
+/// Evidence floor required before a compiled operation may execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskEvidenceRequirements {
+    pub minimum_quality: EvidenceQuality,
+    pub required_sources: Vec<EvidenceSource>,
+    pub require_complete: bool,
+}
+
+/// One inspectable runtime guard emitted by compilation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TaskPlanPrecondition {
+    RevisionEquals {
+        revision: u64,
+    },
+    EntityPresent {
+        entity_id: String,
+    },
+    EntityEnabled {
+        entity_id: String,
+    },
+    ActionSupported {
+        entity_id: String,
+        action: WebIrAction,
+    },
+}
+
 /// One stable, typed step in an execution plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +89,8 @@ pub struct TaskPlanStep {
     pub operation: TaskPlanOperation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<String>,
     #[serde(default)]
     pub requires_confirmation: bool,
 }
@@ -57,6 +101,10 @@ pub struct TaskPlanStep {
 pub struct TaskExecutionPlan {
     pub schema_version: u32,
     pub task_schema_version: u32,
+    pub compiler_version: u32,
+    pub source_ir_schema_version: u32,
+    pub source_ir_revision: u64,
+    pub task_fingerprint: String,
     pub task: TaskKind,
     pub scope: TaskScope,
     pub limits: TaskLimits,
@@ -64,6 +112,9 @@ pub struct TaskExecutionPlan {
     pub ambiguity: TaskAmbiguityPolicy,
     pub revision: TaskRevisionPolicy,
     pub confirmation_required: bool,
+    pub selected_entity_ids: Vec<String>,
+    pub evidence_requirements: TaskEvidenceRequirements,
+    pub preconditions: Vec<TaskPlanPrecondition>,
     pub steps: Vec<TaskPlanStep>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub postconditions: Vec<TaskPostcondition>,
@@ -84,6 +135,64 @@ impl TaskExecutionPlan {
                 "unsupported Task Protocol schema version",
             ));
         }
+        if self.compiler_version != TASK_COMPILER_VERSION {
+            return Err(TaskCompilationError::new(
+                "compilerVersion",
+                "unsupported task compiler version",
+            ));
+        }
+        if self.source_ir_schema_version != WEB_IR_SCHEMA_VERSION {
+            return Err(TaskCompilationError::new(
+                "sourceIrSchemaVersion",
+                "unsupported source Glass Web IR schema version",
+            ));
+        }
+        if self.task_fingerprint.len() != 64
+            || !self
+                .task_fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(TaskCompilationError::new(
+                "taskFingerprint",
+                "task fingerprint must be a lowercase SHA-256 digest",
+            ));
+        }
+        let selected = self
+            .selected_entity_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if selected.is_empty() || selected.len() != self.selected_entity_ids.len() {
+            return Err(TaskCompilationError::new(
+                "selectedEntityIds",
+                "selected entity IDs must be non-empty and unique",
+            ));
+        }
+        if self.evidence_requirements.required_sources.is_empty()
+            || self
+                .evidence_requirements
+                .required_sources
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TaskCompilationError::new(
+                "evidenceRequirements.requiredSources",
+                "required evidence sources must be non-empty, sorted, and unique",
+            ));
+        }
+        if !self.preconditions.iter().any(|precondition| {
+            matches!(
+                precondition,
+                TaskPlanPrecondition::RevisionEquals { revision }
+                    if *revision == self.source_ir_revision
+            )
+        }) {
+            return Err(TaskCompilationError::new(
+                "preconditions",
+                "plan must guard its source Web IR revision",
+            ));
+        }
         if self.risk == TaskRiskClass::UnknownRisk {
             return Err(TaskCompilationError::new(
                 "risk",
@@ -96,6 +205,12 @@ impl TaskExecutionPlan {
             .validate_for_task(self.task)
             .map_err(TaskCompilationError::from)?;
         self.limits.validate().map_err(TaskCompilationError::from)?;
+        if self.postconditions.is_empty() {
+            return Err(TaskCompilationError::new(
+                "postconditions",
+                "compiled execution plans require at least one verification postcondition",
+            ));
+        }
         if self.postconditions.len() > MAX_POSTCONDITIONS {
             return Err(TaskCompilationError::new(
                 "postconditions",
@@ -168,7 +283,9 @@ impl TaskExecutionPlan {
                 "declared risk is below the minimum risk required by the task operation",
             ));
         }
-        if confirmation_required_for(self.risk, self.ambiguity) && !self.confirmation_required {
+        if confirmation_required_for(self.risk, self.ambiguity, self.revision)
+            && !self.confirmation_required
+        {
             return Err(TaskCompilationError::new(
                 "confirmationRequired",
                 "plan metadata must require confirmation for this task",
@@ -194,6 +311,24 @@ impl TaskExecutionPlan {
                 return Err(TaskCompilationError::new(
                     format!("steps[{index}].requiresConfirmation"),
                     "a confirmation-gated step requires plan confirmation metadata",
+                ));
+            }
+            if step.operation == TaskPlanOperation::ObserveScope && !step.entity_ids.is_empty() {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].entityIds"),
+                    "scope observation cannot carry resolved entity IDs",
+                ));
+            }
+            if step.operation != TaskPlanOperation::ObserveScope
+                && (step.entity_ids.is_empty()
+                    || step
+                        .entity_ids
+                        .iter()
+                        .any(|entity_id| !selected.contains(entity_id.as_str())))
+            {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].entityIds"),
+                    "task operations require selected source entity IDs",
                 ));
             }
             if self.confirmation_required
@@ -265,19 +400,125 @@ impl TaskExecutionPlan {
 }
 
 /// Compile an authored task without browser access or side effects.
-pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilationError> {
+pub fn compile_task(
+    task: &GlassTask,
+    ir: &GlassWebIrV1,
+) -> Result<TaskExecutionPlan, TaskCompilationError> {
     task.validate().map_err(TaskCompilationError::from)?;
+    ir.validate()
+        .map_err(|error| TaskCompilationError::new(format!("ir.{}", error.path), error.reason))?;
     let effective_risk = max_risk(task.risk, minimum_risk_for_task(task.task));
-    let confirmation_required = confirmation_required_for(effective_risk, task.ambiguity);
-    let operations = vec![
-        TaskPlanOperation::ObserveScope,
-        operation_for_task(task.task),
-    ];
+    let confirmation_required =
+        confirmation_required_for(effective_risk, task.ambiguity, task.revision);
+    let require_complete = effective_risk != TaskRiskClass::ReadOnly;
+    let minimum_quality = EvidenceQuality::Strong;
+    let mut required_sources = if matches!(
+        task.task,
+        TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
+    ) {
+        vec![EvidenceSource::Dialogs]
+    } else {
+        vec![EvidenceSource::Accessibility]
+    };
+    if matches!(
+        task.task,
+        TaskKind::FormFill | TaskKind::FormValidate | TaskKind::FormSubmit
+    ) {
+        required_sources.push(EvidenceSource::Forms);
+    }
+    required_sources.sort();
+    required_sources.dedup();
+    if require_complete && ir.limits.truncated {
+        return Err(TaskCompilationError::new(
+            "ir.limits.truncated",
+            "mutating tasks require complete bounded source evidence",
+        ));
+    }
+    for source in &required_sources {
+        if ir.limits.missing_sources.contains(source) {
+            return Err(TaskCompilationError::new(
+                "ir.limits.missingSources",
+                format!("required {source:?} evidence is unavailable"),
+            ));
+        }
+    }
+
+    let selected = select_entities(task, ir)?;
+    for entity in &selected {
+        if !quality_satisfies(entity.quality, minimum_quality) {
+            return Err(TaskCompilationError::new(
+                "ir.entities",
+                format!(
+                    "entity {:?} does not satisfy the {:?} evidence floor",
+                    entity.id, minimum_quality
+                ),
+            ));
+        }
+    }
+    let available_sources = ir
+        .entities
+        .iter()
+        .flat_map(|entity| entity.evidence_sources.iter().copied())
+        .collect::<BTreeSet<_>>();
+    for source in &required_sources {
+        if !available_sources.contains(source) {
+            return Err(TaskCompilationError::new(
+                "ir.entities.evidenceSources",
+                format!("source Web IR lacks required {source:?} evidence"),
+            ));
+        }
+    }
+
+    let mut selected_entity_ids = selected
+        .iter()
+        .map(|entity| entity.id.clone())
+        .collect::<Vec<_>>();
+    selected_entity_ids.sort();
+    selected_entity_ids.dedup();
+    let action = action_for_task(task.task);
+    let mut preconditions = vec![TaskPlanPrecondition::RevisionEquals {
+        revision: ir.revision,
+    }];
+    let mut action_supported = false;
+    for entity_id in &selected_entity_ids {
+        preconditions.push(TaskPlanPrecondition::EntityPresent {
+            entity_id: entity_id.clone(),
+        });
+        let details = ir.entity_details.get(entity_id).ok_or_else(|| {
+            TaskCompilationError::new(
+                format!("ir.entityDetails.{entity_id}"),
+                "selected entity is missing required execution details",
+            )
+        })?;
+        if require_complete {
+            preconditions.push(TaskPlanPrecondition::EntityEnabled {
+                entity_id: entity_id.clone(),
+            });
+        }
+        if let Some(supported_action) = supported_action_for_task(task.task, details) {
+            action_supported = true;
+            preconditions.push(TaskPlanPrecondition::ActionSupported {
+                entity_id: entity_id.clone(),
+                action: supported_action,
+            });
+        }
+    }
+    if !action_supported {
+        return Err(TaskCompilationError::new(
+            "ir.entityDetails.supportedActions",
+            format!("selected entities do not support {action:?}"),
+        ));
+    }
+
     let input_names = if task.task == TaskKind::FormSubmit {
         vec!["submit".to_string()]
     } else {
         task.inputs.keys().cloned().collect::<Vec<_>>()
     };
+    let operations = [
+        TaskPlanOperation::ObserveScope,
+        operation_for_task(task.task),
+    ];
     let steps = operations
         .into_iter()
         .enumerate()
@@ -292,13 +533,23 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
             } else {
                 Vec::new()
             },
+            entity_ids: if operation == TaskPlanOperation::ObserveScope {
+                Vec::new()
+            } else {
+                selected_entity_ids.clone()
+            },
             requires_confirmation: confirmation_required
                 && operation != TaskPlanOperation::ObserveScope,
         })
         .collect();
+    let task_fingerprint = task_fingerprint(task, ir, &selected_entity_ids)?;
     let plan = TaskExecutionPlan {
         schema_version: TASK_PLAN_SCHEMA_VERSION,
         task_schema_version: task.schema_version,
+        compiler_version: TASK_COMPILER_VERSION,
+        source_ir_schema_version: ir.schema_version,
+        source_ir_revision: ir.revision,
+        task_fingerprint,
         task: task.task,
         scope: task.scope.clone(),
         limits: task.limits,
@@ -306,11 +557,278 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
         ambiguity: task.ambiguity,
         revision: task.revision,
         confirmation_required,
+        selected_entity_ids,
+        evidence_requirements: TaskEvidenceRequirements {
+            minimum_quality,
+            required_sources,
+            require_complete,
+        },
+        preconditions,
         steps,
-        postconditions: task.postconditions.clone(),
+        postconditions: effective_postconditions(task),
     };
     plan.validate()?;
     Ok(plan)
+}
+
+pub(crate) fn effective_postconditions(task: &GlassTask) -> Vec<TaskPostcondition> {
+    if !task.postconditions.is_empty() {
+        return task.postconditions.clone();
+    }
+    let kind = match task.task {
+        TaskKind::FormValidate => TaskPostconditionKind::ValidationClear,
+        TaskKind::FormSubmit | TaskKind::NavigationFollow | TaskKind::PaginationNext => {
+            TaskPostconditionKind::NavigationOccurred
+        }
+        TaskKind::TableExtract
+        | TaskKind::CollectionExtract
+        | TaskKind::RegionExtract
+        | TaskKind::PaginationCollect => TaskPostconditionKind::RecordsExtracted,
+        TaskKind::DialogConfirm | TaskKind::DialogCancel => TaskPostconditionKind::DialogClosed,
+        TaskKind::FormInspect
+        | TaskKind::FormFill
+        | TaskKind::NavigationSelectTab
+        | TaskKind::NavigationOpenMenu
+        | TaskKind::FieldRead
+        | TaskKind::DialogInspect => TaskPostconditionKind::PageKind,
+    };
+    vec![TaskPostcondition {
+        kind,
+        expected: None,
+    }]
+}
+
+fn select_entities<'a>(
+    task: &GlassTask,
+    ir: &'a GlassWebIrV1,
+) -> Result<Vec<&'a WebIrEntity>, TaskCompilationError> {
+    let selector = task
+        .scope
+        .entity_name
+        .as_deref()
+        .or_else(|| task_selector_name(task));
+    let mut candidates = ir
+        .entities
+        .iter()
+        .filter(|entity| {
+            task.scope.entity_kind.map_or_else(
+                || entity_kind_matches_task(entity, task.task),
+                |kind| entity.kind == kind,
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Some(selector) = selector {
+        candidates.retain(|entity| {
+            entity
+                .name
+                .as_deref()
+                .is_some_and(|name| normalized_name(name) == normalized_name(selector))
+        });
+    }
+    candidates.sort_by_key(|entity| entity.id.as_str());
+    if candidates.is_empty() {
+        return Err(TaskCompilationError::new(
+            "scope",
+            "no compatible entity exists in the source Glass Web IR",
+        ));
+    }
+    if candidates.len() > 1 && task.ambiguity == TaskAmbiguityPolicy::Fail {
+        let mut candidate_ids = candidates
+            .iter()
+            .take(8)
+            .map(|entity| entity.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if candidates.len() > 8 {
+            candidate_ids.push_str(", …");
+        }
+        return Err(TaskCompilationError::new(
+            "scope",
+            format!(
+                "multiple compatible entities exist and ambiguity policy is fail: {candidate_ids}"
+            ),
+        ));
+    }
+    let mut selected = candidates;
+
+    if task.task == TaskKind::FormFill {
+        for input_name in task.inputs.keys() {
+            let fields = ir
+                .entities
+                .iter()
+                .filter(|entity| {
+                    entity.kind == WebIrEntityKind::Field
+                        && entity.name.as_deref().is_some_and(|name| {
+                            normalized_name(name) == normalized_name(input_name)
+                        })
+                })
+                .collect::<Vec<_>>();
+            if fields.len() != 1 {
+                return Err(TaskCompilationError::new(
+                    format!("inputs.{input_name}"),
+                    "form input must resolve to exactly one source Web IR field",
+                ));
+            }
+            selected.push(fields[0]);
+        }
+    }
+    if task.task == TaskKind::FormSubmit {
+        let submit_name = &task.inputs["submit"];
+        let submitters = ir
+            .entities
+            .iter()
+            .filter(|entity| {
+                matches!(
+                    entity.kind,
+                    WebIrEntityKind::Action | WebIrEntityKind::UnknownInteractive
+                ) && entity
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| normalized_name(name) == normalized_name(submit_name))
+            })
+            .collect::<Vec<_>>();
+        if submitters.len() != 1 {
+            return Err(TaskCompilationError::new(
+                "inputs.submit",
+                "submit target must resolve to exactly one source Web IR action",
+            ));
+        }
+        selected.push(submitters[0]);
+    }
+    selected.sort_by_key(|entity| entity.id.as_str());
+    selected.dedup_by_key(|entity| entity.id.as_str());
+    Ok(selected)
+}
+
+fn entity_kind_matches_task(entity: &WebIrEntity, task: TaskKind) -> bool {
+    match task {
+        TaskKind::FormInspect
+        | TaskKind::FormFill
+        | TaskKind::FormValidate
+        | TaskKind::FormSubmit => entity.kind == WebIrEntityKind::Form,
+        TaskKind::NavigationFollow => entity.kind == WebIrEntityKind::Page,
+        TaskKind::NavigationSelectTab => {
+            entity.kind == WebIrEntityKind::Tab || entity.role.as_deref() == Some("tab")
+        }
+        TaskKind::NavigationOpenMenu => matches!(
+            entity.kind,
+            WebIrEntityKind::NavigationItem
+                | WebIrEntityKind::Action
+                | WebIrEntityKind::UnknownInteractive
+        ),
+        TaskKind::TableExtract => entity.kind == WebIrEntityKind::Table,
+        TaskKind::CollectionExtract => entity.kind == WebIrEntityKind::Collection,
+        TaskKind::RegionExtract => matches!(
+            entity.kind,
+            WebIrEntityKind::Region
+                | WebIrEntityKind::Form
+                | WebIrEntityKind::Table
+                | WebIrEntityKind::Collection
+                | WebIrEntityKind::Dialog
+        ),
+        TaskKind::FieldRead => entity.kind == WebIrEntityKind::Field,
+        TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+            entity.kind == WebIrEntityKind::Dialog
+        }
+        TaskKind::PaginationNext | TaskKind::PaginationCollect => {
+            matches!(
+                entity.kind,
+                WebIrEntityKind::PaginationControl
+                    | WebIrEntityKind::Action
+                    | WebIrEntityKind::NavigationItem
+                    | WebIrEntityKind::UnknownInteractive
+            )
+        }
+    }
+}
+
+fn task_selector_name(task: &GlassTask) -> Option<&str> {
+    match task.task {
+        TaskKind::NavigationSelectTab => task.inputs.get("tab").map(String::as_str),
+        TaskKind::NavigationOpenMenu => task.inputs.get("menu").map(String::as_str),
+        TaskKind::FieldRead => task.inputs.get("field").map(String::as_str),
+        TaskKind::PaginationNext | TaskKind::PaginationCollect => {
+            task.inputs.get("next").map(String::as_str)
+        }
+        TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => None,
+        TaskKind::NavigationFollow => None,
+        _ => task.scope.region_name.as_deref(),
+    }
+}
+
+fn normalized_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn quality_satisfies(actual: EvidenceQuality, minimum: EvidenceQuality) -> bool {
+    fn rank(quality: EvidenceQuality) -> u8 {
+        match quality {
+            EvidenceQuality::Opaque => 0,
+            EvidenceQuality::Conflicted => 1,
+            EvidenceQuality::Inferred => 2,
+            EvidenceQuality::Partial => 3,
+            EvidenceQuality::Strong => 4,
+            EvidenceQuality::Confirmed => 5,
+        }
+    }
+    rank(actual) >= rank(minimum)
+}
+
+fn action_for_task(task: TaskKind) -> WebIrAction {
+    match task {
+        TaskKind::FormInspect | TaskKind::FormValidate | TaskKind::FieldRead => WebIrAction::Read,
+        TaskKind::FormFill => WebIrAction::Type,
+        TaskKind::FormSubmit => WebIrAction::Submit,
+        TaskKind::NavigationFollow => WebIrAction::Navigate,
+        TaskKind::NavigationSelectTab => WebIrAction::Select,
+        TaskKind::NavigationOpenMenu => WebIrAction::Click,
+        TaskKind::TableExtract
+        | TaskKind::CollectionExtract
+        | TaskKind::RegionExtract
+        | TaskKind::PaginationCollect => WebIrAction::Extract,
+        TaskKind::DialogInspect => WebIrAction::Read,
+        TaskKind::DialogConfirm => WebIrAction::Confirm,
+        TaskKind::DialogCancel => WebIrAction::Cancel,
+        TaskKind::PaginationNext => WebIrAction::Paginate,
+    }
+}
+
+fn supported_action_for_task(task: TaskKind, details: &WebIrEntityDetails) -> Option<WebIrAction> {
+    let preferred = action_for_task(task);
+    if details.supported_actions.contains(&preferred) {
+        return Some(preferred);
+    }
+    (task == TaskKind::PaginationNext && details.supported_actions.contains(&WebIrAction::Click))
+        .then_some(WebIrAction::Click)
+}
+
+fn task_fingerprint(
+    task: &GlassTask,
+    ir: &GlassWebIrV1,
+    selected_entity_ids: &[String],
+) -> Result<String, TaskCompilationError> {
+    let input_names = task.inputs.keys().collect::<Vec<_>>();
+    let material = serde_json::to_vec(&serde_json::json!({
+        "compilerVersion": TASK_COMPILER_VERSION,
+        "taskSchemaVersion": task.schema_version,
+        "task": task.task,
+        "scope": task.scope,
+        "inputNames": input_names,
+        "limits": task.limits,
+        "risk": task.risk,
+        "ambiguity": task.ambiguity,
+        "revision": task.revision,
+        "postconditions": task.postconditions,
+        "sourceIrSchemaVersion": ir.schema_version,
+        "sourceIrRevision": ir.revision,
+        "selectedEntityIds": selected_entity_ids,
+    }))
+    .map_err(|error| TaskCompilationError::new("taskFingerprint", error.to_string()))?;
+    Ok(format!("{:x}", Sha256::digest(material)))
 }
 
 fn operation_for_task(task: TaskKind) -> TaskPlanOperation {
@@ -377,7 +895,11 @@ fn max_risk(left: TaskRiskClass, right: TaskRiskClass) -> TaskRiskClass {
     }
 }
 
-fn confirmation_required_for(risk: TaskRiskClass, ambiguity: TaskAmbiguityPolicy) -> bool {
+fn confirmation_required_for(
+    risk: TaskRiskClass,
+    ambiguity: TaskAmbiguityPolicy,
+    revision: TaskRevisionPolicy,
+) -> bool {
     matches!(
         risk,
         TaskRiskClass::RemoteIrreversible
@@ -385,6 +907,7 @@ fn confirmation_required_for(risk: TaskRiskClass, ambiguity: TaskAmbiguityPolicy
             | TaskRiskClass::DataDisclosure
             | TaskRiskClass::UnknownRisk
     ) || matches!(ambiguity, TaskAmbiguityPolicy::RequireConfirmation)
+        || (revision == TaskRevisionPolicy::Reextract && risk != TaskRiskClass::ReadOnly)
 }
 
 /// Path-aware compiler or plan validation failure.
@@ -420,6 +943,74 @@ impl Display for TaskCompilationError {
 
 impl Error for TaskCompilationError {}
 
+#[cfg(test)]
+pub(crate) fn test_compiler_ir() -> GlassWebIrV1 {
+    use crate::extraction::{
+        EvidenceCoverage, EvidenceFact, ExtractionEvidence, ExtractionEvidenceLimits,
+        ExtractionScope,
+    };
+    let facts = [
+        (EvidenceSource::Accessibility, "form", "Checkout"),
+        (EvidenceSource::Accessibility, "textbox", "Email"),
+        (EvidenceSource::Forms, "textbox", "Email"),
+        (EvidenceSource::Accessibility, "button", "Submit"),
+        (EvidenceSource::Forms, "button", "Submit"),
+        (EvidenceSource::Accessibility, "tab", "Payment"),
+        (EvidenceSource::Accessibility, "menuitem", "Products"),
+        (EvidenceSource::Accessibility, "table", "Checkout"),
+        (EvidenceSource::Accessibility, "list", "Checkout"),
+        (EvidenceSource::Accessibility, "main", "Checkout"),
+        (EvidenceSource::Dialogs, "dialog", "Checkout"),
+        (EvidenceSource::Accessibility, "link", "Next"),
+        (EvidenceSource::Accessibility, "button", "Next"),
+    ]
+    .into_iter()
+    .map(|(source, role, name)| EvidenceFact {
+        source,
+        kind: if source == EvidenceSource::Forms {
+            "control"
+        } else {
+            "node"
+        }
+        .into(),
+        quality: if source == EvidenceSource::Forms {
+            EvidenceQuality::Strong
+        } else {
+            EvidenceQuality::Confirmed
+        },
+        role: Some(role.into()),
+        name: Some(name.into()),
+        input_type: (role == "textbox").then(|| "email".into()),
+        required: (role == "textbox").then_some(true),
+        read_only: (role == "textbox").then_some(false),
+        empty: (role == "textbox").then_some(true),
+        geometry_present: None,
+        parent_role: None,
+        relationship_hint: None,
+    })
+    .collect();
+    crate::web_ir::reconcile_evidence(&ExtractionEvidence {
+        schema_version: crate::extraction::EXTRACTION_CONTRACT_SCHEMA_VERSION,
+        revision: 7,
+        scope: ExtractionScope::Document,
+        sources: vec![EvidenceSource::Accessibility, EvidenceSource::Forms],
+        facts,
+        limits: ExtractionEvidenceLimits {
+            truncated: false,
+            omitted_facts: 0,
+            text_bytes: 256,
+            missing_sources: Vec::new(),
+        },
+        coverage: EvidenceCoverage {
+            structural: EvidenceQuality::Strong,
+            semantic: EvidenceQuality::Strong,
+            interactive_entities_observed: 5,
+            opaque_regions: 0,
+            reasons: Vec::new(),
+        },
+    })
+    .unwrap()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +1059,7 @@ mod tests {
             task: kind,
             scope: TaskScope {
                 region_name: Some("Checkout".into()),
+                entity_kind: (kind == TaskKind::RegionExtract).then_some(WebIrEntityKind::Region),
                 ..TaskScope::default()
             },
             inputs,
@@ -484,7 +1076,11 @@ mod tests {
 
     #[test]
     fn compiler_emits_stable_semantic_operations_without_values() {
-        let plan = compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation)).unwrap();
+        let plan = compile_task(
+            &task(TaskKind::FormFill, TaskRiskClass::LocalMutation),
+            &test_compiler_ir(),
+        )
+        .unwrap();
         assert_eq!(
             plan.steps
                 .iter()
@@ -495,36 +1091,76 @@ mod tests {
                 TaskPlanOperation::FillInputs
             ]
         );
+
         assert_eq!(plan.steps[1].input_names, vec!["email"]);
         assert!(!plan.to_canonical_json().unwrap().contains("a@example.test"));
     }
 
     #[test]
     fn submit_requires_submit_input_and_confirmation() {
-        let plan = compile_task(&task(TaskKind::FormSubmit, TaskRiskClass::ReadOnly)).unwrap();
+        let plan = compile_task(
+            &task(TaskKind::FormSubmit, TaskRiskClass::ReadOnly),
+            &test_compiler_ir(),
+        )
+        .unwrap();
         assert_eq!(plan.steps[1].input_names, vec!["submit"]);
         assert_eq!(plan.risk, TaskRiskClass::RemoteIrreversible);
         assert!(plan.confirmation_required);
     }
 
     #[test]
+    fn navigation_compiles_against_the_document_execution_boundary() {
+        let authored = task(TaskKind::NavigationFollow, TaskRiskClass::ReadOnly);
+
+        let plan = compile_task(&authored, &test_compiler_ir()).unwrap();
+
+        assert_eq!(plan.selected_entity_ids, ["page"]);
+        assert!(plan.preconditions.iter().any(|precondition| matches!(
+            precondition,
+            TaskPlanPrecondition::ActionSupported {
+                entity_id,
+                action: WebIrAction::Navigate,
+            } if entity_id == "page"
+        )));
+    }
+
+    #[test]
+    fn compiler_generates_verification_postconditions_from_task_intent() {
+        let mut authored = task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly);
+        authored.postconditions.clear();
+
+        let plan = compile_task(&authored, &test_compiler_ir()).unwrap();
+
+        assert_eq!(
+            plan.postconditions,
+            vec![TaskPostcondition {
+                kind: TaskPostconditionKind::RecordsExtracted,
+                expected: None,
+            }]
+        );
+    }
+
+    #[test]
     fn plan_rejects_extra_operations_and_preserves_revision_policy() {
-        let mut plan =
-            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        let mut plan = compile_task(
+            &task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly),
+            &test_compiler_ir(),
+        )
+        .unwrap();
         plan.steps.push(plan.steps[1].clone());
         assert_eq!(plan.validate().unwrap_err().path, "steps");
         let mut authored = task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly);
         authored.revision = TaskRevisionPolicy::Compatible;
-        let plan = compile_task(&authored).unwrap();
+        let plan = compile_task(&authored, &test_compiler_ir()).unwrap();
         assert_eq!(plan.revision, TaskRevisionPolicy::Compatible);
     }
 
     #[test]
     fn plan_validation_rejects_downgraded_risk() {
-        let mut plan = compile_task(&task(
-            TaskKind::FormSubmit,
-            TaskRiskClass::RemoteIrreversible,
-        ))
+        let mut plan = compile_task(
+            &task(TaskKind::FormSubmit, TaskRiskClass::RemoteIrreversible),
+            &test_compiler_ir(),
+        )
         .unwrap();
         plan.risk = TaskRiskClass::ReadOnly;
         assert_eq!(plan.validate().unwrap_err().path, "risk");
@@ -532,11 +1168,11 @@ mod tests {
     #[test]
     fn compilation_is_deterministic_for_identical_authored_tasks() {
         let authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
-        let first = compile_task(&authored)
+        let first = compile_task(&authored, &test_compiler_ir())
             .unwrap()
             .to_canonical_json()
             .unwrap();
-        let second = compile_task(&authored)
+        let second = compile_task(&authored, &test_compiler_ir())
             .unwrap()
             .to_canonical_json()
             .unwrap();
@@ -547,7 +1183,7 @@ mod tests {
     fn compiler_rejects_incompatible_scope_kind() {
         let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
         authored.scope.entity_kind = Some(crate::web_ir::WebIrEntityKind::Table);
-        let error = compile_task(&authored).unwrap_err();
+        let error = compile_task(&authored, &test_compiler_ir()).unwrap_err();
         assert_eq!(error.path, "scope.entityKind");
     }
 
@@ -558,21 +1194,118 @@ mod tests {
             kind: TaskPostconditionKind::EntityState,
             expected: None,
         }];
-        let error = compile_task(&authored).unwrap_err();
+        let error = compile_task(&authored, &test_compiler_ir()).unwrap_err();
         assert_eq!(error.path, "postconditions[0].kind");
     }
 
     #[test]
     fn compiler_rejects_unknown_risk_before_plan_emission() {
-        let error =
-            compile_task(&task(TaskKind::FormFill, TaskRiskClass::UnknownRisk)).unwrap_err();
+        let error = compile_task(
+            &task(TaskKind::FormFill, TaskRiskClass::UnknownRisk),
+            &test_compiler_ir(),
+        )
+        .unwrap_err();
         assert_eq!(error.path, "risk");
     }
 
     #[test]
+    fn compiler_rejects_selected_entities_without_execution_details() {
+        let mut ir = test_compiler_ir();
+        let form_id = ir
+            .entities
+            .iter()
+            .find(|entity| entity.kind == crate::web_ir::WebIrEntityKind::Form)
+            .unwrap()
+            .id
+            .clone();
+        ir.entity_details.remove(&form_id);
+
+        let error =
+            compile_task(&task(TaskKind::FormInspect, TaskRiskClass::ReadOnly), &ir).unwrap_err();
+
+        assert_eq!(error.path, format!("ir.entityDetails.{form_id}"));
+    }
+
+    #[test]
+    fn compiler_requires_explicit_confirmation_for_ambiguous_entities() {
+        let mut ir = test_compiler_ir();
+        let form = ir
+            .entities
+            .iter()
+            .find(|entity| entity.kind == crate::web_ir::WebIrEntityKind::Form)
+            .unwrap()
+            .clone();
+        let mut duplicate = form.clone();
+        duplicate.id = "entity_form_duplicate".into();
+        let mut duplicate_details = ir.entity_details[&form.id].clone();
+        duplicate_details.semantic_stability_key = Some("form|duplicate|checkout".into());
+        ir.entities.push(duplicate.clone());
+        ir.entity_details
+            .insert(duplicate.id.clone(), duplicate_details);
+        ir.validate().unwrap();
+
+        let authored = task(TaskKind::FormInspect, TaskRiskClass::ReadOnly);
+        let error = compile_task(&authored, &ir).unwrap_err();
+        assert_eq!(error.path, "scope");
+
+        let mut confirmed = authored;
+        confirmed.ambiguity = TaskAmbiguityPolicy::RequireConfirmation;
+        let plan = compile_task(&confirmed, &ir).unwrap();
+        assert!(plan.confirmation_required);
+        assert_eq!(plan.selected_entity_ids.len(), 2);
+    }
+
+    #[test]
+    fn compiler_does_not_fall_back_when_named_target_is_absent() {
+        let mut authored = task(TaskKind::NavigationOpenMenu, TaskRiskClass::LocalMutation);
+        authored.inputs.insert("menu".into(), "Missing menu".into());
+
+        let error = compile_task(&authored, &test_compiler_ir()).unwrap_err();
+
+        assert_eq!(error.path, "scope");
+        assert_eq!(
+            error.reason,
+            "no compatible entity exists in the source Glass Web IR"
+        );
+    }
+
+    #[test]
+    fn pagination_next_accepts_a_named_clickable_control() {
+        let mut ir = test_compiler_ir();
+        let control = ir
+            .entities
+            .iter_mut()
+            .find(|entity| {
+                entity.role.as_deref() == Some("button") && entity.name.as_deref() == Some("Next")
+            })
+            .unwrap();
+        control.kind = WebIrEntityKind::Action;
+        control.name = Some("No-op next".into());
+        let details = ir.entity_details.get_mut(&control.id).unwrap();
+        details.supported_actions = vec![WebIrAction::Click];
+        details.semantic_stability_key = Some("action|button|no-op next".into());
+        ir.validate().unwrap();
+        let mut authored = task(TaskKind::PaginationNext, TaskRiskClass::LocalMutation);
+        authored.inputs.insert("next".into(), "No-op next".into());
+
+        let plan = compile_task(&authored, &ir).unwrap();
+
+        assert!(plan.preconditions.iter().any(|precondition| matches!(
+            precondition,
+            TaskPlanPrecondition::ActionSupported {
+                action: WebIrAction::Click,
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn plan_rejects_records_postcondition_beyond_item_limit() {
-        let mut plan =
-            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
+        let mut plan = compile_task(
+            &task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly),
+            &test_compiler_ir(),
+        )
+        .unwrap();
         plan.limits.max_items = 1;
         plan.postconditions[0].expected = Some("2".into());
         assert_eq!(

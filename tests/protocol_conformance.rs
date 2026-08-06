@@ -74,19 +74,16 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
     assert_eq!(cli_manifest["capabilities"]["webIr"], true);
     assert_eq!(
         cli_manifest["capabilityStatuses"]["taskProtocol"],
-        "availableUncertified"
+        "available"
     );
-    assert_eq!(
-        cli_manifest["capabilityStatuses"]["webIr"],
-        "availableUncertified"
-    );
+    assert_eq!(cli_manifest["capabilityStatuses"]["webIr"], "available");
     assert_eq!(
         mcp_response["result"]["glassAgreement"]["capabilities"]["taskProtocol"]["status"],
-        "availableUncertified"
+        "available"
     );
     assert_eq!(
         mcp_response["result"]["glassAgreement"]["capabilities"]["webIr"]["status"],
-        "availableUncertified"
+        "available"
     );
     assert_eq!(
         mcp_response["result"]["glassAgreement"]["agreedSchemas"]["task"],

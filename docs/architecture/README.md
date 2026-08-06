@@ -4,9 +4,10 @@ Status: Accepted
 
 ## Purpose and boundary
 
-Glass is a single Rust binary that gives local automation clients direct
-control of Chrome through raw CDP. It owns the client and session lifecycle;
-Chrome remains the browser process. Glass does not generate workflows.
+Glass is a single Rust binary that gives local automation clients a semantic
+execution layer over direct Chrome control through raw CDP. It owns the client
+and session lifecycle, bounded extraction, Web IR reconciliation, deterministic
+task compilation, and guarded execution; Chrome remains the browser process.
 
 ## Product constraints
 
@@ -21,13 +22,20 @@ Chrome remains the browser process. Glass does not generate workflows.
 
 ```text
 CLI ─────┐
-MCP ─────┼──> BrowserSession ──> CdpClient ──> Chrome
-TUI ─────┘          │
-                     ├──> Profile/Chrome lifecycle
-                     └──> compact PageSnapshot
+MCP ─────┼──> Task Protocol ──> Web IR compiler ──> guarded task executor ──┐
+TUI ─────┘                                                                  │
+CLI ─────┐                                                                  ▼
+MCP ─────┼───────────────────────────────> BrowserSession ──> CdpClient ──> Chrome
+TUI ─────┘                                        │
+                                                  ├──> Profile/Chrome lifecycle
+                                                  └──> bounded PageContext
 ```
 
-`BrowserSession` owns browser semantics. Frontends do not issue raw CDP commands. `CdpClient` owns WebSocket request routing and lightweight event delivery. Chrome lifecycle owns only processes started by Glass.
+`BrowserSession` owns browser semantics. Frontends do not issue raw CDP
+commands. High-level tasks must pass through the browser-free Web IR compiler
+before the guarded executor dispatches an existing browser operation.
+`CdpClient` owns WebSocket request routing and lightweight event delivery.
+Chrome lifecycle owns only processes started by Glass.
 
 ## Main concepts
 
@@ -38,6 +46,9 @@ TUI ─────┘          │
 | compact observation | URL, title, bounded text, and accessible interactive controls; no full DOM or screenshot. |
 | deep DOM | An explicitly requested full DOM tree intended for debugging or narrow inspection. |
 | snapshot revision | A monotonically changing page-state generation used to reject stale element references. |
+| Glass Web IR v1 | Stable, bounded semantic entities, relationships, evidence quality, coverage, and limits reconciled from one page revision. |
+| Task Protocol v1 | Strict high-level intent contract with semantic scope, risk, ambiguity, revision, postcondition, and resource policies. |
+| compiled task plan | Deterministic, value-free operations and preconditions bound to one validated Web IR revision. |
 
 ## Cross-module decisions
 
@@ -50,10 +61,16 @@ TUI ─────┘          │
   `observe` operations return compact context unless `includeDom`/`--deep-dom`
   or `includeScreenshot`/`--screenshot` is requested; `getDOM`/`dom` is an
   explicit deep-inspection operation.
+- Live task execution extracts one fresh Web IR, compiles the task without CDP,
+  enforces revision and confirmation preconditions, dispatches only through the
+  guarded browser runtime, and verifies bounded postconditions.
+- Browser-free CLI, MCP, protocol, and Rust helpers use the same stable Web IR,
+  Task Protocol, and compiler contracts as live execution.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
 
 ## Module index
 
 - [Browser data plane](browser.md)
 - [Automation contracts](automation.md)
+- [Semantic execution](../semantic-execution.md)
 - [Terminal UI](tui.md)

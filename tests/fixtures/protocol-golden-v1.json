@@ -286,10 +286,66 @@
       "payload": {
         "task": {
           "schemaVersion": 1,
-          "task": "region.extract",
-          "scope": {"regionName": "Checkout"},
+          "task": "navigation.follow",
+          "scope": {"entityKind": "page"},
+          "inputs": {"url": "https://example.test/next"},
           "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
           "risk": "readOnly"
+        },
+        "ir": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "document": {"revision": 7},
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": ["accessibility"]
+            },
+            {
+              "id": "entity_link_next",
+              "kind": "link",
+              "role": "link",
+              "name": "Next",
+              "quality": "confirmed",
+              "evidenceSources": ["accessibility"]
+            }
+          ],
+          "relationships": [
+            {"from": "page", "to": "entity_link_next", "kind": "contains"}
+          ],
+          "entityDetails": {
+            "page": {
+              "state": {},
+              "supportedActions": ["read", "navigate"],
+              "scope": "document",
+              "sensitivity": "public",
+              "semanticStabilityKey": "page",
+              "truncated": false
+            },
+            "entity_link_next": {
+              "state": {},
+              "supportedActions": ["click", "navigate"],
+              "scope": "document",
+              "sensitivity": "public",
+              "semanticStabilityKey": "link|link|next",
+              "truncated": false
+            }
+          },
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
         }
       }
     },
@@ -318,6 +374,43 @@
           "scope": {"regionName": "Checkout"},
           "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
           "risk": "readOnly"
+        },
+        "ir": {
+          "schemaVersion": 1,
+          "revision": 7,
+          "document": {"revision": 7},
+          "entities": [
+            {
+              "id": "page",
+              "kind": "page",
+              "quality": "confirmed",
+              "evidenceSources": ["accessibility"]
+            }
+          ],
+          "relationships": [],
+          "entityDetails": {
+            "page": {
+              "state": {},
+              "supportedActions": ["read", "navigate"],
+              "scope": "document",
+              "sensitivity": "public",
+              "semanticStabilityKey": "page",
+              "truncated": false
+            }
+          },
+          "coverage": {
+            "structural": "strong",
+            "semantic": "strong",
+            "interactiveEntitiesObserved": 0,
+            "opaqueRegions": 0,
+            "reasons": []
+          },
+          "limits": {
+            "truncated": false,
+            "omittedFacts": 0,
+            "textBytes": 0,
+            "missingSources": []
+          }
         }
       }
     },
@@ -544,16 +637,40 @@
         "plan": {
           "schemaVersion": 1,
           "taskSchemaVersion": 1,
-          "task": "region.extract",
-          "scope": {"regionName": "Checkout"},
+          "compilerVersion": 1,
+          "sourceIrSchemaVersion": 1,
+          "sourceIrRevision": 7,
+          "taskFingerprint": "e5e76e0298e2f36738b5f984c4284323210a35569748581ed2eaa56c46b32065",
+          "task": "navigation.follow",
+          "scope": {"entityKind": "page"},
           "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
-          "risk": "readOnly",
+          "risk": "localMutation",
           "ambiguity": "fail",
           "revision": "exact",
           "confirmationRequired": false,
+          "selectedEntityIds": ["page"],
+          "evidenceRequirements": {
+            "minimumQuality": "strong",
+            "requiredSources": ["accessibility"],
+            "requireComplete": true
+          },
+          "preconditions": [
+            {"kind": "revisionEquals", "revision": 7},
+            {"kind": "entityPresent", "entityId": "page"},
+            {"kind": "entityEnabled", "entityId": "page"},
+            {"kind": "actionSupported", "entityId": "page", "action": "navigate"}
+          ],
           "steps": [
             {"ordinal": 1, "operation": "observeScope", "requiresConfirmation": false},
-            {"ordinal": 2, "operation": "extractRegion", "requiresConfirmation": false}
+            {
+              "ordinal": 2,
+              "operation": "followNavigation",
+              "entityIds": ["page"],
+              "requiresConfirmation": false
+            }
+          ],
+          "postconditions": [
+            {"kind": "navigationOccurred"}
           ]
         }
       }

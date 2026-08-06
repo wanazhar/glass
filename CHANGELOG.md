@@ -4,6 +4,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.3.0
+- Promoted bounded extraction reconciliation to stable Glass Web IR v1 with
+  strict entity-detail invariants, canonical serialization, revision diffs,
+  and fail-closed continuity classification.
+- Added deterministic Task Protocol v1 compilation against validated Web IR,
+  producing value-free guarded plans with evidence, risk, ambiguity,
+  confirmation, revision, postcondition, and resource metadata.
+- Routed every browser-backed task family through fresh Web IR extraction and
+  compilation before dispatch, with compatible-revision handling, generated
+  verification postconditions, and typed recovery.
+- Standardized browser-free Web IR inspection, validation, diff, continuity,
+  and task compilation across Rust, CLI, MCP, protocol, daemon, capability,
+  and golden-conformance surfaces.
+- Completed bounded accessibility, DOM, forms, navigation, dialogs, tables,
+  collections, frame, shadow-root, and opaque-region evidence collection with
+  explicit missing-source, truncation, coverage, and deadline semantics.
 
 ## [0.2.9] - 2026-08-06
 - Generalized the browser-backed `executeTask` MCP contract across all

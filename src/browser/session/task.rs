@@ -7,9 +7,18 @@ use super::{
     StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
     parse_revisioned_reference,
 };
+use crate::extraction::{
+    EvidenceCoverage, EvidenceFact, EvidenceQuality, EvidenceSource, ExtractionBudgets,
+    ExtractionEvidence, ExtractionEvidenceLimits, ExtractionRequest, ExtractionScope,
+    MAX_EXTRACTION_DURATION_MS,
+};
 use crate::protocol::{RetryClassification, RetryGuidance};
-use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
-use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy};
+use crate::task_compiler::{
+    TaskExecutionPlan, TaskPlanOperation, compile_task, effective_postconditions,
+};
+use crate::task_protocol::{
+    GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy, TaskRiskClass,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{Error as IoError, ErrorKind};
@@ -49,6 +58,77 @@ pub struct TaskStepResult {
 }
 
 impl BrowserSession {
+    async fn compile_live_task(&self, task: &GlassTask) -> BrowserResult<TaskExecutionPlan> {
+        if matches!(
+            task.task,
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
+        ) && self.pending_dialog().await.is_some()
+        {
+            let revision = self
+                .page_revision
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let evidence = ExtractionEvidence {
+                schema_version: crate::extraction::EXTRACTION_CONTRACT_SCHEMA_VERSION,
+                revision,
+                scope: ExtractionScope::Document,
+                sources: vec![EvidenceSource::Dialogs],
+                facts: vec![EvidenceFact {
+                    source: EvidenceSource::Dialogs,
+                    kind: "semantic".into(),
+                    quality: EvidenceQuality::Confirmed,
+                    role: Some("dialog".into()),
+                    name: Some("Pending dialog".into()),
+                    input_type: None,
+                    required: None,
+                    read_only: None,
+                    empty: None,
+                    geometry_present: None,
+                    parent_role: None,
+                    relationship_hint: None,
+                }],
+                limits: ExtractionEvidenceLimits {
+                    truncated: false,
+                    omitted_facts: 0,
+                    text_bytes: 14,
+                    missing_sources: Vec::new(),
+                },
+                coverage: EvidenceCoverage {
+                    structural: EvidenceQuality::Strong,
+                    semantic: EvidenceQuality::Confirmed,
+                    interactive_entities_observed: 1,
+                    opaque_regions: 0,
+                    reasons: Vec::new(),
+                },
+            };
+            let ir = crate::web_ir::reconcile_evidence(&evidence)?;
+            return compile_task(task, &ir).map_err(|error| error.to_string().into());
+        }
+        let budgets = ExtractionBudgets {
+            max_duration_ms: task.limits.timeout_ms.clamp(1, MAX_EXTRACTION_DURATION_MS),
+            ..ExtractionBudgets::default()
+        };
+        let request = ExtractionRequest {
+            schema_version: crate::extraction::EXTRACTION_CONTRACT_SCHEMA_VERSION,
+            scope: ExtractionScope::Document,
+            sources: vec![
+                EvidenceSource::Accessibility,
+                EvidenceSource::Dom,
+                EvidenceSource::Forms,
+                EvidenceSource::Layout,
+                EvidenceSource::Navigation,
+                EvidenceSource::Tables,
+                EvidenceSource::Collections,
+                EvidenceSource::Dialogs,
+                EvidenceSource::Frames,
+                EvidenceSource::ShadowDom,
+                EvidenceSource::BoundedProbe,
+            ],
+            budgets,
+        };
+        let ir = self.extract_web_ir(&request).await?;
+        compile_task(task, &ir).map_err(|error| error.to_string().into())
+    }
+
     /// Execute a validated form task against one caller-observed revision.
     ///
     /// `expected_revision` is supplied by the caller's preceding semantic
@@ -61,10 +141,7 @@ impl BrowserSession {
         expected_revision: u64,
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
-        let plan = compile_task(task).map_err(|error| error.to_string())?;
-        if let Some(detail) = unsupported_revision_policy(task) {
-            return Ok(preflight_result(task, &plan, expected_revision, detail));
-        }
+        let plan = self.compile_live_task(task).await?;
         if let Some(detail) = unsupported_postcondition(task) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
@@ -90,6 +167,10 @@ impl BrowserSession {
                 "unsupported task family; browser execution currently supports form, field, table, collection, region extraction, navigation menu, and pagination tasks",
             ));
         }
+        if let Some(detail) = compiled_revision_mismatch(&plan, expected_revision) {
+            return Ok(preflight_result(task, &plan, expected_revision, &detail));
+        }
+        let expected_revision = plan.source_ir_revision;
         if plan.confirmation_required && !confirmed {
             return Ok(preflight_result(
                 task,
@@ -1284,10 +1365,7 @@ impl BrowserSession {
         expected_revision: u64,
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
-        let plan = compile_task(task).map_err(|error| error.to_string())?;
-        if let Some(detail) = unsupported_revision_policy(task) {
-            return Ok(preflight_result(task, &plan, expected_revision, detail));
-        }
+        let plan = self.compile_live_task(task).await?;
         if let Some(detail) = unsupported_postcondition(task) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
@@ -1299,6 +1377,10 @@ impl BrowserSession {
                 "navigation execution only supports navigation.follow tasks",
             ));
         }
+        if let Some(detail) = compiled_revision_mismatch(&plan, expected_revision) {
+            return Ok(preflight_result(task, &plan, expected_revision, &detail));
+        }
+        let expected_revision = plan.source_ir_revision;
         if plan.confirmation_required && !confirmed {
             return Ok(preflight_result(
                 task,
@@ -1414,10 +1496,9 @@ impl BrowserSession {
     async fn finalize_task_result(
         &self,
         task: &GlassTask,
-        _expected_revision: u64,
         mut result: TaskExecutionResult,
     ) -> BrowserResult<TaskExecutionResult> {
-        if result.status == "succeeded" && !task.postconditions.is_empty() {
+        if result.status == "succeeded" {
             let observation = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
                 Ok(observation) => observation,
                 Err(error) => {
@@ -1473,7 +1554,7 @@ impl BrowserSession {
                     retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run");
                 if let Some(last) = result.steps.last_mut() {
                     last.status = "indeterminate".into();
-                    last.detail = Some("authored postcondition did not hold".into());
+                    last.detail = Some("compiled postcondition did not hold".into());
                 }
             }
         }
@@ -1492,8 +1573,7 @@ impl BrowserSession {
         let result = self
             .execute_form_task_unchecked(task, expected_revision, confirmed)
             .await?;
-        self.finalize_task_result(task, expected_revision, result)
-            .await
+        self.finalize_task_result(task, result).await
     }
 }
 
@@ -1505,18 +1585,7 @@ impl BrowserSession {
         expected_revision: u64,
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
-        let plan = compile_task(task).map_err(|error| error.to_string())?;
-        if task.revision != TaskRevisionPolicy::Exact {
-            return Ok(preflight_result(
-                task,
-                &plan,
-                expected_revision,
-                "non-exact revision policies are not supported by the browser executor",
-            ));
-        }
-        if let Some(detail) = unsupported_postcondition(task) {
-            return Ok(preflight_result(task, &plan, expected_revision, detail));
-        }
+        task.validate()?;
 
         let result = match task.task {
             TaskKind::NavigationFollow => {
@@ -1542,8 +1611,7 @@ impl BrowserSession {
         let result = self
             .execute_navigation_task_unchecked(task, expected_revision, confirmed)
             .await?;
-        self.finalize_task_result(task, expected_revision, result)
-            .await
+        self.finalize_task_result(task, result).await
     }
 }
 
@@ -1555,10 +1623,7 @@ impl BrowserSession {
         expected_revision: u64,
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
-        let plan = compile_task(task).map_err(|error| error.to_string())?;
-        if let Some(detail) = unsupported_revision_policy(task) {
-            return Ok(preflight_result(task, &plan, expected_revision, detail));
-        }
+        let plan = self.compile_live_task(task).await?;
         if let Some(detail) = unsupported_postcondition(task) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
@@ -1573,6 +1638,10 @@ impl BrowserSession {
                 "dialog execution only supports dialog.inspect, dialog.confirm, and dialog.cancel tasks",
             ));
         }
+        if let Some(detail) = compiled_revision_mismatch(&plan, expected_revision) {
+            return Ok(preflight_result(task, &plan, expected_revision, &detail));
+        }
+        let expected_revision = plan.source_ir_revision;
         if plan.confirmation_required && !confirmed {
             return Ok(preflight_result(
                 task,
@@ -1695,8 +1764,7 @@ impl BrowserSession {
         let result = self
             .execute_dialog_task_unchecked(task, expected_revision, confirmed)
             .await?;
-        self.finalize_task_result(task, expected_revision, result)
-            .await
+        self.finalize_task_result(task, result).await
     }
 }
 
@@ -1957,6 +2025,23 @@ fn retry_guidance(classification: RetryClassification, operation: &str) -> Retry
         classification,
         recommended_operation: operation.into(),
     }
+}
+
+fn compiled_revision_mismatch(plan: &TaskExecutionPlan, caller_revision: u64) -> Option<String> {
+    let regression = plan.source_ir_revision < caller_revision;
+    let incompatible_drift = match plan.revision {
+        TaskRevisionPolicy::Exact => plan.source_ir_revision != caller_revision,
+        TaskRevisionPolicy::Compatible => {
+            plan.source_ir_revision != caller_revision && plan.risk != TaskRiskClass::ReadOnly
+        }
+        TaskRevisionPolicy::Reextract => false,
+    };
+    (regression || incompatible_drift).then(|| {
+        format!(
+            "compiled Web IR revision {} is not safe for caller-observed revision {} under {:?} policy; no browser action was dispatched",
+            plan.source_ir_revision, caller_revision, plan.revision
+        )
+    })
 }
 
 fn preflight_result(
@@ -2396,11 +2481,6 @@ fn unsupported_postcondition(task: &GlassTask) -> Option<&'static str> {
     None
 }
 
-fn unsupported_revision_policy(task: &GlassTask) -> Option<&'static str> {
-    (task.revision != TaskRevisionPolicy::Exact)
-        .then_some("non-exact revision policies are not supported by the browser executor")
-}
-
 fn postconditions_hold(
     task: &GlassTask,
     observation: &InspectPageResult,
@@ -2409,7 +2489,7 @@ fn postconditions_hold(
     extraction: Option<&StructuredExtractionResult>,
     dialog: Option<&PendingDialog>,
 ) -> bool {
-    task.postconditions
+    effective_postconditions(task)
         .iter()
         .all(|postcondition| match postcondition.kind {
             TaskPostconditionKind::ValidationClear => {
@@ -2550,16 +2630,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_revision_policy_fails_closed_before_dispatch() {
-        let mut authored = task();
-        authored.revision = TaskRevisionPolicy::Compatible;
-        assert_eq!(
-            unsupported_revision_policy(&authored),
-            Some("non-exact revision policies are not supported by the browser executor")
-        );
-    }
-
-    #[test]
     fn entity_state_postcondition_fails_closed() {
         let mut authored = task();
         authored.postconditions = vec![crate::task_protocol::TaskPostcondition {
@@ -2610,7 +2680,7 @@ mod tests {
     #[test]
     fn form_fill_failure_returns_recovery_result() {
         let task = task();
-        let plan = compile_task(&task).unwrap();
+        let plan = compile_task(&task, &crate::task_compiler::test_compiler_ir()).unwrap();
         let result = form_fill_failure_result(
             &task,
             &plan,
@@ -2638,7 +2708,7 @@ mod tests {
         let mut task = task();
         task.task = TaskKind::DialogConfirm;
         task.inputs.clear();
-        let plan = compile_task(&task).unwrap();
+        let plan = compile_task(&task, &crate::task_compiler::test_compiler_ir()).unwrap();
         let result = mutation_failure_result(
             &task,
             &plan,
@@ -2660,7 +2730,7 @@ mod tests {
     #[test]
     fn mutation_failure_returns_bounded_recovery_result() {
         let task = task();
-        let plan = compile_task(&task).unwrap();
+        let plan = compile_task(&task, &crate::task_compiler::test_compiler_ir()).unwrap();
         let result = mutation_failure_result(
             &task,
             &plan,
@@ -2688,7 +2758,7 @@ mod tests {
     #[test]
     fn postcondition_observation_failure_preserves_recovery_guidance() {
         let task = task();
-        let plan = compile_task(&task).unwrap();
+        let plan = compile_task(&task, &crate::task_compiler::test_compiler_ir()).unwrap();
         let initial = mutation_failure_result(
             &task,
             &plan,
@@ -2752,5 +2822,55 @@ mod tests {
             "https://example.test/account",
             "https://example.test/settings"
         ));
+    }
+
+    #[test]
+    fn compiled_revision_policies_fail_closed_or_reconcile_explicitly() {
+        let exact =
+            crate::task_compiler::compile_task(&task(), &crate::task_compiler::test_compiler_ir())
+                .unwrap();
+        assert!(compiled_revision_mismatch(&exact, exact.source_ir_revision).is_none());
+        assert!(compiled_revision_mismatch(&exact, exact.source_ir_revision + 1).is_some());
+
+        let mut compatible_read = task();
+        compatible_read.task = TaskKind::RegionExtract;
+        compatible_read.scope.entity_kind = Some(crate::web_ir::WebIrEntityKind::Region);
+        compatible_read.inputs.clear();
+        compatible_read.risk = TaskRiskClass::ReadOnly;
+        compatible_read.revision = TaskRevisionPolicy::Compatible;
+        let compatible_read = crate::task_compiler::compile_task(
+            &compatible_read,
+            &crate::task_compiler::test_compiler_ir(),
+        )
+        .unwrap();
+        assert!(
+            compiled_revision_mismatch(&compatible_read, compatible_read.source_ir_revision - 1)
+                .is_none()
+        );
+
+        let mut compatible_mutation = task();
+        compatible_mutation.revision = TaskRevisionPolicy::Compatible;
+        let compatible_mutation = crate::task_compiler::compile_task(
+            &compatible_mutation,
+            &crate::task_compiler::test_compiler_ir(),
+        )
+        .unwrap();
+        assert!(
+            compiled_revision_mismatch(
+                &compatible_mutation,
+                compatible_mutation.source_ir_revision - 1
+            )
+            .is_some()
+        );
+
+        let mut reextract = task();
+        reextract.revision = TaskRevisionPolicy::Reextract;
+        let reextract = crate::task_compiler::compile_task(
+            &reextract,
+            &crate::task_compiler::test_compiler_ir(),
+        )
+        .unwrap();
+        assert!(reextract.confirmation_required);
+        assert!(compiled_revision_mismatch(&reextract, reextract.source_ir_revision - 1).is_none());
     }
 }

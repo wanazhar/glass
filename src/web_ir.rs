@@ -184,7 +184,7 @@ pub struct WebIrEntity {
     pub evidence_sources: Vec<EvidenceSource>,
 }
 
-/// One relationship between canonical draft entities.
+/// One relationship between canonical Web IR entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebIrRelationship {
@@ -193,7 +193,7 @@ pub struct WebIrRelationship {
     pub kind: WebIrRelationshipKind,
 }
 
-/// Kind of change represented by a draft Web IR diff.
+/// Kind of change represented by a Web IR revision diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WebIrChangeKind {
@@ -202,7 +202,7 @@ pub enum WebIrChangeKind {
     Changed,
 }
 
-/// One entity change between two validated draft revisions.
+/// One entity change between two validated Web IR revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebIrEntityChange {
@@ -214,7 +214,7 @@ pub struct WebIrEntityChange {
     pub after: Option<WebIrEntity>,
 }
 
-/// One relationship addition or removal between two validated draft revisions.
+/// One relationship addition or removal between two validated Web IR revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebIrRelationshipChange {
@@ -222,7 +222,7 @@ pub struct WebIrRelationshipChange {
     pub kind: WebIrChangeKind,
 }
 
-/// Deterministic changes between two validated draft Web IR revisions.
+/// Deterministic changes between two validated Web IR revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlassWebIrDiff {
@@ -239,7 +239,7 @@ pub struct GlassWebIrDiff {
     pub relationship_hint_diagnostics_changed: bool,
 }
 
-/// Continuity classification for one entity across draft revisions.
+/// Continuity classification for one entity across Web IR revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WebIrEntityContinuityStatus {
@@ -330,7 +330,7 @@ pub struct WebIrFixtureExpectation {
 }
 
 impl WebIrEntityKind {
-    /// Parse the stable fixture vocabulary into a draft entity kind.
+    /// Parse the stable fixture vocabulary into a Web IR entity kind.
     pub fn from_contract_name(name: &str) -> Option<Self> {
         Some(match name {
             "page" => Self::Page,
@@ -360,7 +360,7 @@ impl WebIrEntityKind {
 }
 
 impl WebIrRelationshipKind {
-    /// Parse the stable fixture vocabulary into a draft relationship kind.
+    /// Parse the stable fixture vocabulary into a Web IR relationship kind.
     pub fn from_contract_name(name: &str) -> Option<Self> {
         Some(match name {
             "contains" => Self::Contains,
@@ -384,7 +384,7 @@ impl WebIrRelationshipKind {
 }
 
 impl GlassWebIrV1 {
-    /// Validate graph invariants before exposing a draft to another layer.
+    /// Validate graph invariants before exposing Web IR to another layer.
     pub fn validate(&self) -> Result<(), WebIrValidationError> {
         if self.schema_version != WEB_IR_SCHEMA_VERSION {
             return Err(WebIrValidationError::new(
@@ -582,7 +582,7 @@ impl GlassWebIrV1 {
         Ok(())
     }
 
-    /// Validate that the draft satisfies a representative fixture minimum.
+    /// Validate that the Web IR satisfies a representative fixture minimum.
     pub fn validate_against(
         &self,
         expectation: &WebIrFixtureExpectation,
@@ -658,9 +658,9 @@ impl GlassWebIrV1 {
 
     /// Validate that `next` is a compatible revision for transition analysis.
     ///
-    /// Forward revisions are accepted. An exact same-revision draft is also
-    /// accepted for deterministic self-comparisons; same-revision content
-    /// drift and revision regressions fail closed.
+    /// Forward revisions are accepted. An exact same-revision document is also
+    /// accepted for deterministic self-comparisons; same-revision content drift
+    /// and revision regressions fail closed.
     pub fn validate_revision_transition(&self, next: &Self) -> Result<(), WebIrValidationError> {
         self.validate()?;
         next.validate()?;
@@ -673,13 +673,13 @@ impl GlassWebIrV1 {
         if next.revision == self.revision && self != next {
             return Err(WebIrValidationError::new(
                 "revision",
-                "same-revision drafts must have identical content",
+                "same-revision Web IR documents must have identical content",
             ));
         }
         Ok(())
     }
 
-    /// Compute deterministic changes between two validated draft revisions.
+    /// Compute deterministic changes between two validated Web IR revisions.
     pub fn diff(&self, next: &Self) -> Result<GlassWebIrDiff, WebIrValidationError> {
         self.validate_revision_transition(next)?;
 
@@ -850,7 +850,7 @@ impl GlassWebIrV1 {
         }
     }
 
-    /// Serialize a validated draft deterministically, independent of vector
+    /// Serialize validated Web IR deterministically, independent of vector
     /// ordering supplied by callers.
     pub fn to_canonical_json(&self) -> Result<String, WebIrValidationError> {
         self.validate()?;
@@ -924,18 +924,24 @@ pub fn reconcile_evidence(
         .collect::<Vec<_>>();
     facts.sort_by_key(|(_, fact)| fact_sort_key(fact));
 
+    let observed_sources = evidence
+        .sources
+        .iter()
+        .copied()
+        .filter(|source| !evidence.limits.missing_sources.contains(source))
+        .collect::<Vec<_>>();
     let mut entities = vec![WebIrEntity {
         id: "page".into(),
         kind: WebIrEntityKind::Page,
         role: None,
         name: None,
         quality: EvidenceQuality::Confirmed,
-        evidence_sources: Vec::new(),
+        evidence_sources: observed_sources,
     }];
     let mut entity_details = BTreeMap::from([(
         "page".to_string(),
         WebIrEntityDetails {
-            supported_actions: vec![WebIrAction::Read],
+            supported_actions: vec![WebIrAction::Read, WebIrAction::Navigate],
             semantic_stability_key: Some("page".into()),
             ..WebIrEntityDetails::default()
         },
@@ -1311,14 +1317,12 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
         .unwrap_or_default()
         .to_ascii_lowercase();
     let mut supported_actions = match kind {
-        WebIrEntityKind::Page
-        | WebIrEntityKind::Text
-        | WebIrEntityKind::Row
-        | WebIrEntityKind::Cell => {
+        WebIrEntityKind::Page => vec![WebIrAction::Read, WebIrAction::Navigate],
+        WebIrEntityKind::Text | WebIrEntityKind::Row | WebIrEntityKind::Cell => {
             vec![WebIrAction::Read]
         }
         WebIrEntityKind::Region => vec![WebIrAction::Read, WebIrAction::Extract],
-        WebIrEntityKind::Form => vec![WebIrAction::Read, WebIrAction::Submit],
+        WebIrEntityKind::Form => vec![WebIrAction::Read, WebIrAction::Extract, WebIrAction::Submit],
         WebIrEntityKind::Field => {
             let mut actions = vec![WebIrAction::Read];
             if fact.read_only != Some(true) {
@@ -1333,8 +1337,8 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
         }
         WebIrEntityKind::Action
         | WebIrEntityKind::NavigationItem
-        | WebIrEntityKind::Tab
         | WebIrEntityKind::UnknownInteractive => vec![WebIrAction::Click],
+        WebIrEntityKind::Tab => vec![WebIrAction::Click, WebIrAction::Select],
         WebIrEntityKind::Link => vec![WebIrAction::Click, WebIrAction::Navigate],
         WebIrEntityKind::Table
         | WebIrEntityKind::Collection
@@ -1348,9 +1352,11 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
             WebIrAction::Confirm,
             WebIrAction::Cancel,
         ],
-        WebIrEntityKind::PaginationControl => {
-            vec![WebIrAction::Click, WebIrAction::Paginate]
-        }
+        WebIrEntityKind::PaginationControl => vec![
+            WebIrAction::Click,
+            WebIrAction::Extract,
+            WebIrAction::Paginate,
+        ],
         WebIrEntityKind::OpaqueRegion => Vec::new(),
     };
     supported_actions.sort();
@@ -1424,6 +1430,20 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let name = fact
+        .name
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(role.as_str(), "button" | "link")
+        && matches!(
+            name.as_str(),
+            "next" | "next page" | "previous" | "previous page"
+        )
+    {
+        return Some(WebIrEntityKind::PaginationControl);
+    }
     if fact.source == EvidenceSource::Dom {
         return match fact
             .name
@@ -1452,10 +1472,12 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
             Some(WebIrEntityKind::Region)
         }
         "dialog" | "alertdialog" => Some(WebIrEntityKind::Dialog),
+        "button" => Some(WebIrEntityKind::Action),
+        "menuitem" => Some(WebIrEntityKind::NavigationItem),
+        "tab" => Some(WebIrEntityKind::Tab),
         "textbox" | "combobox" | "checkbox" | "radio" | "spinbutton" | "listbox" => {
             Some(WebIrEntityKind::Field)
         }
-        "button" | "menuitem" | "tab" => Some(WebIrEntityKind::Action),
         "link" => Some(WebIrEntityKind::Link),
         "table" => Some(WebIrEntityKind::Table),
         "row" => Some(WebIrEntityKind::Row),
@@ -2129,11 +2151,12 @@ mod tests {
             .unwrap()
             .name = Some("Changed at the same revision".into());
 
-        let error = source.validate_revision_transition(&drifted).unwrap_err();
-        assert_eq!(error.path, "revision");
         assert_eq!(
-            error.reason,
-            "same-revision drafts must have identical content"
+            source
+                .validate_revision_transition(&drifted)
+                .unwrap_err()
+                .reason,
+            "same-revision Web IR documents must have identical content"
         );
     }
 

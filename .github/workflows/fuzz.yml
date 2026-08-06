@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [mcp_frame, cdp_message, ax_dom, locator, url_policy]
+        target: [mcp_frame, cdp_message, ax_dom, locator, url_policy, semantic_contracts]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

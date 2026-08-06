@@ -42,3 +42,9 @@ name = "url_policy"
 path = "fuzz_targets/url_policy.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "semantic_contracts"
+path = "fuzz_targets/semantic_contracts.rs"
+test = false
+doc = false

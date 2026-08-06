@@ -262,6 +262,7 @@ enum ToolInvocation<'a> {
     },
     CompileTask {
         task: crate::task_protocol::GlassTask,
+        ir: crate::web_ir::GlassWebIrV1,
     },
     ExecuteTask {
         task: crate::task_protocol::GlassTask,
@@ -1606,9 +1607,11 @@ async fn call_tool(
         let result = crate::protocol::validate_task_result(&canonical)?;
         return serialized_result(&result);
     }
-    if let ToolInvocation::CompileTask { task } = &invocation {
-        let canonical =
-            canonical_payload_request(request, json!({"task": serde_json::to_value(task)?}))?;
+    if let ToolInvocation::CompileTask { task, ir } = &invocation {
+        let canonical = canonical_payload_request(
+            request,
+            json!({"task": serde_json::to_value(task)?, "ir": serde_json::to_value(ir)?}),
+        )?;
         let result = crate::protocol::compile_task_result(&canonical)?;
         return serialized_result(&result);
     }
@@ -2520,22 +2523,22 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             let before = arguments
                 .get("before")
                 .cloned()
-                .ok_or("diffWebIr requires a before draft object")?;
+                .ok_or("diffWebIr requires a before Web IR object")?;
             let after = arguments
                 .get("after")
                 .cloned()
-                .ok_or("diffWebIr requires an after draft object")?;
+                .ok_or("diffWebIr requires an after Web IR object")?;
             Ok(ToolInvocation::DiffWebIr { before, after })
         }
         "continuityWebIr" => {
             let before = arguments
                 .get("before")
                 .cloned()
-                .ok_or("continuityWebIr requires a before draft object")?;
+                .ok_or("continuityWebIr requires a before Web IR object")?;
             let after = arguments
                 .get("after")
                 .cloned()
-                .ok_or("continuityWebIr requires an after draft object")?;
+                .ok_or("continuityWebIr requires an after Web IR object")?;
             let entity_id = required_string(arguments, "entityId")?;
             Ok(ToolInvocation::ContinuityWebIr {
                 before,
@@ -2548,8 +2551,13 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .get("task")
                 .cloned()
                 .ok_or("compileTask requires a task object")?;
+            let ir = arguments
+                .get("ir")
+                .cloned()
+                .ok_or("compileTask requires a Glass Web IR object")?;
             Ok(ToolInvocation::CompileTask {
                 task: serde_json::from_value(task)?,
+                ir: serde_json::from_value(ir)?,
             })
         }
         "executeTask" => {
@@ -2871,17 +2879,17 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "diffWebIr",
-            description: "Return bounded revision-change counts for two validated Web IR drafts without starting Chrome.",
+            description: "Return bounded revision-change counts for two validated Web IR documents without starting Chrome.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "before": {
                         "type": "object",
-                        "description": "Earlier bounded Glass Web IR draft JSON."
+                        "description": "Earlier bounded Glass Web IR v1 JSON."
                     },
                     "after": {
                         "type": "object",
-                        "description": "Later bounded Glass Web IR draft JSON."
+                        "description": "Later bounded Glass Web IR v1 JSON."
                     }
                 },
                 "required": ["before", "after"],
@@ -2890,21 +2898,21 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "continuityWebIr",
-            description: "Classify one entity across two validated Web IR drafts without starting Chrome.",
+            description: "Classify one entity across two validated Web IR revisions without starting Chrome.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "before": {
                         "type": "object",
-                        "description": "Earlier bounded Glass Web IR draft JSON."
+                        "description": "Earlier bounded Glass Web IR v1 JSON."
                     },
                     "after": {
                         "type": "object",
-                        "description": "Later bounded Glass Web IR draft JSON."
+                        "description": "Later bounded Glass Web IR v1 JSON."
                     },
                     "entityId": {
                         "type": "string",
-                        "description": "Revision-local entity ID from the before draft."
+                        "description": "Revision-local entity ID from the earlier Web IR."
                     }
                 },
                 "required": ["before", "after", "entityId"],
@@ -2928,16 +2936,20 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "compileTask",
-            description: "Compile a validated semantic Task Protocol task into a browser-free execution plan.",
+            description: "Compile a validated Task Protocol task against stable Glass Web IR v1.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "object",
                         "description": "Strict Task Protocol v1 authored task."
+                    },
+                    "ir": {
+                        "type": "object",
+                        "description": "Validated stable Glass Web IR v1 source document."
                     }
                 },
-                "required": ["task"],
+                "required": ["task", "ir"],
                 "additionalProperties": false
             }),
         },
@@ -4188,7 +4200,7 @@ mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 
-    fn valid_web_ir_draft() -> Value {
+    fn valid_web_ir_fixture() -> Value {
         json!({
             "schemaVersion": 1,
             "revision": 7,
@@ -4350,8 +4362,8 @@ mod tests {
                 "params": {
                     "name": name,
                     "arguments": {
-                        "before": valid_web_ir_draft(),
-                        "after": valid_web_ir_draft(),
+                        "before": valid_web_ir_fixture(),
+                        "after": valid_web_ir_fixture(),
                         "entityId": "field-1"
                     }
                 }
@@ -4373,7 +4385,7 @@ mod tests {
                 "method": "tools/call",
                 "params": {
                     "name": name,
-                    "arguments": {"ir": valid_web_ir_draft()}
+                    "arguments": {"ir": valid_web_ir_fixture()}
                 }
             }))
             .unwrap();
@@ -4402,6 +4414,10 @@ mod tests {
             if operation == crate::protocol::TASK_EXECUTE_OPERATION {
                 arguments["expectedRevision"] = json!(7);
                 arguments["confirmed"] = json!(false);
+            }
+            if operation == crate::protocol::TASK_COMPILE_OPERATION {
+                arguments["ir"] =
+                    serde_json::to_value(crate::task_compiler::test_compiler_ir()).unwrap();
             }
             let request: JsonRpcRequest = serde_json::from_value(json!({
                 "jsonrpc": "2.0",
@@ -4464,7 +4480,7 @@ mod tests {
 
     #[test]
     fn canonical_web_ir_request_excludes_mcp_transport_options() {
-        let draft = valid_web_ir_draft();
+        let draft = valid_web_ir_fixture();
         let request: JsonRpcRequest = serde_json::from_value(json!({
             "jsonrpc": "2.0",
             "id": "inspect",
@@ -4901,7 +4917,7 @@ mod tests {
             "method": "tools/call",
             "params": {
                 "name": "inspectWebIr",
-                "arguments": {"ir": valid_web_ir_draft()}
+                "arguments": {"ir": valid_web_ir_fixture()}
             }
         }))
         .unwrap();
@@ -4942,13 +4958,18 @@ mod tests {
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
         for name in ["validateTask", "compileTask"] {
+            let mut arguments = json!({"task": task.clone()});
+            if name == "compileTask" {
+                arguments["ir"] =
+                    serde_json::to_value(crate::task_compiler::test_compiler_ir()).unwrap();
+            }
             let request: JsonRpcRequest = serde_json::from_value(json!({
                 "jsonrpc": "2.0",
                 "id": name,
                 "method": "tools/call",
                 "params": {
                     "name": name,
-                    "arguments": {"task": task.clone()}
+                    "arguments": arguments
                 }
             }))
             .unwrap();
@@ -4985,7 +5006,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_web_ir_tool_returns_typed_invalid_draft_without_starting_chrome() {
-        let mut draft = valid_web_ir_draft();
+        let mut draft = valid_web_ir_fixture();
         draft["relationships"][0]["to"] = json!("missing");
         let request: JsonRpcRequest = serde_json::from_value(json!({
             "jsonrpc": "2.0",
@@ -5025,7 +5046,7 @@ mod tests {
 
     #[tokio::test]
     async fn diff_web_ir_tool_returns_bounded_summary_without_starting_chrome() {
-        let mut after = valid_web_ir_draft();
+        let mut after = valid_web_ir_fixture();
         after["revision"] = json!(8);
         after["document"]["revision"] = json!(8);
         after["entities"][1]["name"] = json!("Email address");
@@ -5036,7 +5057,7 @@ mod tests {
             "params": {
                 "name": "diffWebIr",
                 "arguments": {
-                    "before": valid_web_ir_draft(),
+                    "before": valid_web_ir_fixture(),
                     "after": after
                 }
             }
@@ -5068,7 +5089,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuity_web_ir_tool_classifies_entity_without_starting_chrome() {
-        let mut after = valid_web_ir_draft();
+        let mut after = valid_web_ir_fixture();
         after["revision"] = json!(8);
         after["document"]["revision"] = json!(8);
         after["entities"][1]["name"] = json!("Email address");
@@ -5079,7 +5100,7 @@ mod tests {
             "params": {
                 "name": "continuityWebIr",
                 "arguments": {
-                    "before": valid_web_ir_draft(),
+                    "before": valid_web_ir_fixture(),
                     "after": after,
                     "entityId": "field-1"
                 }
@@ -5121,10 +5142,11 @@ mod tests {
                     "task": {
                         "schemaVersion": 1,
                         "task": "region.extract",
-                        "scope": {"regionName": "Checkout"},
+                        "scope": {"regionName": "Checkout", "entityKind": "region"},
                         "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
                         "risk": "readOnly"
-                    }
+                    },
+                    "ir": crate::task_compiler::test_compiler_ir()
                 }
             }
         }))
@@ -5252,7 +5274,8 @@ mod tests {
                         "scope": {"regionName": "Checkout"},
                         "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
                         "risk": "localMutation"
-                    }
+                    },
+                    "ir": crate::task_compiler::test_compiler_ir()
                 }
             }
         }))

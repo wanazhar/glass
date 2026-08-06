@@ -37,14 +37,16 @@ pub const TASK_EXECUTE_OPERATION: &str = "task.execute";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskCompilePayload {
     pub task: crate::task_protocol::GlassTask,
+    pub ir: crate::web_ir::GlassWebIrV1,
 }
 
 impl TaskCompilePayload {
-    /// Validate the authored task before compiler dispatch.
+    /// Validate the authored task and source IR before compiler dispatch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.task
             .validate()
-            .map_err(|error| ProtocolError::TaskCompilation(error.into()))
+            .map_err(|error| ProtocolError::TaskCompilation(error.into()))?;
+        self.ir.validate().map_err(ProtocolError::WebIrValidation)
     }
 }
 
@@ -102,7 +104,7 @@ pub struct WebIrDiffPayload {
 }
 
 impl WebIrDiffPayload {
-    /// Validate both draft graphs before diff dispatch.
+    /// Validate both Web IR revisions before diff dispatch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.before
             .validate()
@@ -127,7 +129,7 @@ pub struct WebIrContinuityPayload {
 }
 
 impl WebIrContinuityPayload {
-    /// Validate both draft graphs and the bounded source entity ID.
+    /// Validate both Web IR revisions and the bounded source entity ID.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.before
             .validate()
@@ -479,7 +481,8 @@ pub fn compile_task_request(
     request: &GlassRequest,
 ) -> Result<crate::task_compiler::TaskExecutionPlan, ProtocolError> {
     let payload = request.decode_task_compile()?;
-    crate::task_compiler::compile_task(&payload.task).map_err(ProtocolError::TaskCompilation)
+    crate::task_compiler::compile_task(&payload.task, &payload.ir)
+        .map_err(ProtocolError::TaskCompilation)
 }
 
 /// Decode and compile a `task.compile` request into a typed response payload.
@@ -817,7 +820,7 @@ mod tests {
         }
     }
 
-    fn web_ir_draft(revision: u64, name: &str) -> crate::web_ir::GlassWebIrV1 {
+    fn web_ir_fixture(revision: u64, name: &str) -> crate::web_ir::GlassWebIrV1 {
         serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "revision": revision,
@@ -922,8 +925,8 @@ mod tests {
 
     #[test]
     fn web_ir_revision_operations_round_trip_with_bounded_results() {
-        let before = web_ir_draft(7, "Email");
-        let after = web_ir_draft(8, "Email address");
+        let before = web_ir_fixture(7, "Email");
+        let after = web_ir_fixture(8, "Email address");
         let diff_request = GlassRequest {
             protocol_version: GLASS_PROTOCOL_VERSION,
             request_id: "diff-1".into(),
@@ -980,7 +983,7 @@ mod tests {
 
     #[test]
     fn web_ir_inspect_and_validate_operations_round_trip() {
-        let draft = web_ir_draft(7, "Email");
+        let draft = web_ir_fixture(7, "Email");
         let validate_request = GlassRequest {
             protocol_version: GLASS_PROTOCOL_VERSION,
             request_id: "validate-1".into(),
@@ -1131,7 +1134,7 @@ mod tests {
         let task = serde_json::json!({
             "schemaVersion": 1,
             "task": "region.extract",
-            "scope": {"regionName": "Checkout"},
+            "scope": {"regionName": "Checkout", "entityKind": "region"},
             "limits": {"maxActions": 8, "timeoutMs": 5000, "maxItems": 32},
             "risk": "readOnly"
         });
@@ -1142,7 +1145,10 @@ mod tests {
             session_id: None,
             mutation_lease: None,
             operation: TASK_COMPILE_OPERATION.into(),
-            payload: serde_json::json!({"task": task}),
+            payload: serde_json::json!({
+                "task": task,
+                "ir": crate::task_compiler::test_compiler_ir()
+            }),
             deadline_ms: None,
         };
         let plan = compile_task_request(&request).unwrap();
@@ -1184,7 +1190,8 @@ mod tests {
                     "inputs": {"field": "Email"},
                     "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 1},
                     "risk": "readOnly"
-                }
+                },
+                "ir": crate::task_compiler::test_compiler_ir()
             }),
             deadline_ms: None,
         };

@@ -418,6 +418,24 @@ impl TaskScope {
         Ok(())
     }
     pub(crate) fn validate_for_task(&self, task: TaskKind) -> Result<(), TaskProtocolError> {
+        if task == TaskKind::RegionExtract {
+            if let Some(actual) = self.entity_kind
+                && !matches!(
+                    actual,
+                    WebIrEntityKind::Region
+                        | WebIrEntityKind::Form
+                        | WebIrEntityKind::Table
+                        | WebIrEntityKind::Collection
+                        | WebIrEntityKind::Dialog
+                )
+            {
+                return Err(TaskProtocolError::new(
+                    "scope.entityKind",
+                    "entity kind is incompatible with region extraction",
+                ));
+            }
+            return Ok(());
+        }
         let expected_kind = match task {
             TaskKind::FormInspect
             | TaskKind::FormFill
@@ -435,7 +453,7 @@ impl TaskScope {
             TaskKind::PaginationNext | TaskKind::PaginationCollect => {
                 WebIrEntityKind::PaginationControl
             }
-            TaskKind::NavigationFollow => WebIrEntityKind::Link,
+            TaskKind::NavigationFollow => WebIrEntityKind::Page,
         };
         if let Some(actual) = self.entity_kind
             && actual != expected_kind
@@ -645,7 +663,7 @@ mod tests {
         let mut task = task();
         task.postconditions.clear();
         task.task = TaskKind::NavigationFollow;
-        task.scope.entity_kind = Some(WebIrEntityKind::Link);
+        task.scope.entity_kind = Some(WebIrEntityKind::Page);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.url");
         task.inputs
@@ -680,6 +698,27 @@ mod tests {
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());
         task.validate().unwrap();
+    }
+
+    #[test]
+    fn region_extract_accepts_structural_region_kinds() {
+        for entity_kind in [
+            WebIrEntityKind::Region,
+            WebIrEntityKind::Form,
+            WebIrEntityKind::Table,
+            WebIrEntityKind::Collection,
+            WebIrEntityKind::Dialog,
+        ] {
+            let mut authored = task();
+            authored.task = TaskKind::RegionExtract;
+            authored.scope.entity_kind = Some(entity_kind);
+            authored.inputs.clear();
+            authored.postconditions = vec![TaskPostcondition {
+                kind: TaskPostconditionKind::RecordsExtracted,
+                expected: Some("0".into()),
+            }];
+            authored.validate().unwrap();
+        }
     }
 
     #[test]
@@ -729,7 +768,7 @@ mod tests {
         let mut navigation = task();
         navigation.task = TaskKind::NavigationFollow;
         navigation.scope.region_name = None;
-        navigation.scope.entity_kind = Some(WebIrEntityKind::Link);
+        navigation.scope.entity_kind = Some(WebIrEntityKind::Page);
         navigation.inputs = BTreeMap::from([(
             String::from("url"),
             String::from("https://example.test/next"),

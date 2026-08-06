@@ -246,9 +246,6 @@ impl GlassCapabilityManifest {
                             GlassCapabilityStatus::DisabledByPolicy
                         }
                     }
-                    "taskProtocol" | "webIr" if *enabled => {
-                        GlassCapabilityStatus::AvailableUncertified
-                    }
                     "rawCdp" | "persistentKnowledge" if !enabled => {
                         GlassCapabilityStatus::DisabledByPolicy
                     }
@@ -497,11 +494,11 @@ mod tests {
         assert!(manifest.capabilities["webIr"]);
         assert_eq!(
             manifest.capability_statuses["taskProtocol"],
-            GlassCapabilityStatus::AvailableUncertified
+            GlassCapabilityStatus::Available
         );
         assert_eq!(
             manifest.capability_statuses["webIr"],
-            GlassCapabilityStatus::AvailableUncertified
+            GlassCapabilityStatus::Available
         );
         assert_eq!(
             manifest.capability_statuses["extensions"],
@@ -568,11 +565,11 @@ mod tests {
         );
         assert_eq!(
             agreement.capabilities["taskProtocol"].status,
-            GlassCapabilityStatus::AvailableUncertified
+            GlassCapabilityStatus::Available
         );
         assert_eq!(
             agreement.capabilities["webIr"].status,
-            GlassCapabilityStatus::AvailableUncertified
+            GlassCapabilityStatus::Available
         );
         assert_eq!(manifest.schemas["workflow"], vec![1]);
     }

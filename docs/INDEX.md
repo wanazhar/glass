@@ -33,6 +33,9 @@ unreleased development build.
   status meanings, safety expectations, and future capability guidance.
 - [Semantic observations](semantic-observation.md) — bounded page and region
   state, levels, expansion, revisions, diffs, and privacy boundaries.
+- [Semantic execution](semantic-execution.md) — stable Web IR and Task
+  contracts, deterministic compilation, guarded execution, limits, failures,
+  and migration.
 - [Intent resolution](intent-resolution.md) — bounded candidate resolution,
   confidence policies, guarded execution, semantic workflow steps, and TUI
   review.

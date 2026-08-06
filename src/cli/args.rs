@@ -501,7 +501,7 @@ pub enum Commands {
         action: TaskCommand,
     },
 
-    /// Inspect or diff browser-free Web IR draft JSON.
+    /// Inspect or diff browser-free Glass Web IR v1 JSON.
     Ir {
         #[command(subcommand)]
         action: IrCommand,
@@ -712,6 +712,8 @@ pub enum TaskCommand {
     Compile {
         /// JSON file containing the authored task.
         input: PathBuf,
+        /// Stable Glass Web IR v1 JSON used as compilation evidence.
+        ir: PathBuf,
         /// Optional output file for the canonical execution plan.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -735,11 +737,11 @@ pub enum TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum IrCommand {
-    /// Validate one Web IR draft without starting Chrome.
+    /// Validate one Glass Web IR v1 document without starting Chrome.
     Validate { input: PathBuf },
-    /// Print a bounded summary of one validated Web IR draft.
+    /// Print a bounded summary of one validated Glass Web IR v1 document.
     Inspect { input: PathBuf },
-    /// Compute a deterministic diff between two validated Web IR drafts.
+    /// Compute a deterministic diff between two validated Web IR revisions.
     Diff {
         before: PathBuf,
         after: PathBuf,
@@ -747,13 +749,13 @@ pub enum IrCommand {
         #[arg(long)]
         summary: bool,
     },
-    /// Classify one entity's continuity across two validated Web IR drafts.
+    /// Classify one entity's continuity across two validated Web IR revisions.
     Continuity {
         before: PathBuf,
         after: PathBuf,
         entity_id: String,
     },
-    /// Print one validated Web IR draft in canonical JSON form.
+    /// Print one validated Glass Web IR v1 document in canonical JSON form.
     Canonical { input: PathBuf },
 }
 
@@ -1392,6 +1394,7 @@ mod tests {
             "task",
             "compile",
             "task.json",
+            "web-ir.json",
             "--output",
             "plan.json",
             "--explain",
@@ -1403,10 +1406,12 @@ mod tests {
             Some(Commands::Task {
                 action: TaskCommand::Compile {
                     input,
+                    ir,
                     output: Some(output),
                     explain
                 }
             }) if input.as_os_str() == "task.json"
+                && ir.as_os_str() == "web-ir.json"
                 && output.as_os_str() == "plan.json"
                 && explain
         ));

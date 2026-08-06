@@ -151,3 +151,9 @@ fn legacy_generation_scope_migrates_to_ephemeral_storage() {
     assert_eq!(reference.to_string(), "glass://workspace/legacy/generation/9/browser/browser");
     assert_eq!(reference.to_string().parse::<ResourceReference>().unwrap(), reference);
 }
+
+#[test]
+fn escaped_oversized_identity_is_rejected() {
+    let escaped = format!("\"{}\"", "\\u0061".repeat(MAX_ID_BYTES + 1));
+    assert!(serde_json::from_str::<WorkspaceId>(&escaped).is_err());
+}

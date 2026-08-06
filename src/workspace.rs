@@ -132,8 +132,29 @@ macro_rules! bounded_name {
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where D: Deserializer<'de> {
-                let value = String::deserialize(deserializer)?;
-                Self::new(value).map_err(serde::de::Error::custom)
+                struct NameVisitor;
+                impl<'de> Visitor<'de> for NameVisitor {
+                    type Value = $name;
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a bounded ASCII identifier")
+                    }
+                    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+                    where E: serde::de::Error {
+                        Self::Value::new(value).map_err(E::custom)
+                    }
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where E: serde::de::Error {
+                        Self::Value::new(value).map_err(E::custom)
+                    }
+                    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+                    where E: serde::de::Error {
+                        if value.len() > $max {
+                            return Err(E::custom(WorkspaceError::InvalidName { label: $label, reason: "is too long" }));
+                        }
+                        Self::Value::new(value).map_err(E::custom)
+                    }
+                }
+                deserializer.deserialize_str(NameVisitor)
             }
         }
 
@@ -663,7 +684,7 @@ impl Default for AttachmentCapabilities {
     fn default() -> Self { Self(BTreeSet::from([AttachmentCapability::Observe])) }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     id: AttachmentId,
@@ -688,6 +709,25 @@ impl Attachment {
 
     pub fn can_mutate(&self) -> bool { self.role != ActorRole::Observer && self.capabilities.contains(AttachmentCapability::Mutate) }
     pub fn can_takeover(&self) -> bool { self.can_mutate() && self.capabilities.contains(AttachmentCapability::Takeover) }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAttachment {
+    id: AttachmentId,
+    actor_id: ResourceId,
+    role: ActorRole,
+    capabilities: AttachmentCapabilities,
+    scope: WorkspaceScope,
+}
+
+impl<'de> Deserialize<'de> for Attachment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let raw = RawAttachment::deserialize(deserializer)?;
+        Self::new(raw.id, raw.actor_id, raw.role, raw.capabilities, raw.scope)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

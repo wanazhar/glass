@@ -158,6 +158,8 @@ pub enum SurfaceCapability {
     SemanticAction,
     CoordinateAction,
     Input,
+    KeyboardInput,
+    PointerInput,
     Capture,
     Extraction,
     Bridge,
@@ -752,6 +754,8 @@ impl Surface {
                 SurfaceCapability::SemanticAction
                     | SurfaceCapability::CoordinateAction
                     | SurfaceCapability::Input
+                    | SurfaceCapability::KeyboardInput
+                    | SurfaceCapability::PointerInput
             )
         });
         if executable_requested
@@ -782,15 +786,21 @@ impl Surface {
                 "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
-        let coordinate_action_requested = self.capabilities.contains(&SurfaceCapability::CoordinateAction);
-        let input_requested = self.capabilities.contains(&SurfaceCapability::Input);
-        if coordinate_action_requested || input_requested {
+        let pointer_input_requested = self
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability, SurfaceCapability::CoordinateAction | SurfaceCapability::PointerInput));
+        let keyboard_input_requested = self
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability, SurfaceCapability::Input | SurfaceCapability::KeyboardInput));
+        if pointer_input_requested || keyboard_input_requested {
             let has_strong_action_evidence = self.evidence.iter().any(|evidence| {
                 evidence.quality >= CoverageLevel::Strong
                     && action_evidence_source(
                         &self.kind,
                         evidence.source,
-                        coordinate_action_requested,
+                        pointer_input_requested,
                     )
                     && matches!(
                         evidence.provenance.source_class,
@@ -861,7 +871,16 @@ impl Surface {
             ));
         }
         let actionability_requested = self.understanding == UnderstandingLevel::TaskCompilable
-            || self.capabilities.contains(&SurfaceCapability::SemanticAction);
+            || self.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    SurfaceCapability::SemanticAction
+                        | SurfaceCapability::CoordinateAction
+                        | SurfaceCapability::Input
+                        | SurfaceCapability::KeyboardInput
+                        | SurfaceCapability::PointerInput
+                )
+            });
         if has_bridge_evidence {
             for evidence in self.evidence.iter().filter(|evidence| {
                 matches!(
@@ -972,7 +991,10 @@ impl Surface {
                 SurfaceCapability::SemanticAction | SurfaceCapability::Verification => {
                     UnderstandingLevel::Semantic
                 }
-                SurfaceCapability::CoordinateAction | SurfaceCapability::Input => {
+                SurfaceCapability::Input
+                | SurfaceCapability::KeyboardInput
+                | SurfaceCapability::PointerInput
+                | SurfaceCapability::CoordinateAction => {
                     UnderstandingLevel::CoordinateOnly
                 }
                 SurfaceCapability::Capture
@@ -985,8 +1007,13 @@ impl Surface {
                     "capability is incompatible with the declared understanding level",
                 ));
             }
-            if matches!(capability, SurfaceCapability::CoordinateAction | SurfaceCapability::Input)
-                && self.coverage.interaction < InteractionCoverage::CoordinateOnly
+            if matches!(
+                capability,
+                SurfaceCapability::CoordinateAction
+                    | SurfaceCapability::Input
+                    | SurfaceCapability::KeyboardInput
+                    | SurfaceCapability::PointerInput
+            ) && self.coverage.interaction < InteractionCoverage::CoordinateOnly
             {
                 return Err(SurfaceContractError::new(
                     "coverage.interaction",
@@ -1025,6 +1052,8 @@ impl Surface {
                     SurfaceCapability::CoordinateAction
                         | SurfaceCapability::SemanticAction
                         | SurfaceCapability::Input
+                        | SurfaceCapability::KeyboardInput
+                        | SurfaceCapability::PointerInput
                         | SurfaceCapability::Verification
                 )
             })
@@ -1250,8 +1279,9 @@ fn action_evidence_source(
                 | SurfaceEvidenceSource::CanvasDetection
                 | SurfaceEvidenceSource::Bridge
                 | SurfaceEvidenceSource::Extension
-        ) || (matches!(kind, SurfaceKind::RemoteApplication)
-            && source == SurfaceEvidenceSource::RemoteStream)
+        ) || (matches!(kind, SurfaceKind::Svg) && source == SurfaceEvidenceSource::Svg)
+            || (matches!(kind, SurfaceKind::RemoteApplication)
+                && source == SurfaceEvidenceSource::RemoteStream)
             || (matches!(kind, SurfaceKind::Terminal)
                 && source == SurfaceEvidenceSource::TerminalProtocol)
             || (matches!(kind, SurfaceKind::BrowserNative)
@@ -1262,6 +1292,14 @@ fn action_evidence_source(
             source,
             SurfaceEvidenceSource::Layout
                 | SurfaceEvidenceSource::CanvasDetection
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Svg => matches!(
+            source,
+            SurfaceEvidenceSource::Svg
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
                 | SurfaceEvidenceSource::Bridge
                 | SurfaceEvidenceSource::Extension
         ),
@@ -1294,45 +1332,117 @@ fn action_evidence_source(
 }
 
 fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
-    source_supports_semantics(kind, source)
+    if matches!(
+        source,
+        SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+    ) {
+        return !matches!(kind, SurfaceKind::Unknown | SurfaceKind::Opaque);
+    }
+    match kind {
+        SurfaceKind::Document => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::Accessibility => source == SurfaceEvidenceSource::Accessibility,
+        SurfaceKind::ShadowDocument => matches!(
+            source,
+            SurfaceEvidenceSource::ShadowDom
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::FrameDocument => matches!(
+            source,
+            SurfaceEvidenceSource::Frame
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Svg => matches!(
+            source,
+            SurfaceEvidenceSource::Svg
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::EmbeddedDocument => matches!(
+            source,
+            SurfaceEvidenceSource::EmbeddedDocument
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Pdf => matches!(
+            source,
+            SurfaceEvidenceSource::Pdf | SurfaceEvidenceSource::EmbeddedDocument
+        ),
+        SurfaceKind::Media => matches!(
+            source,
+            SurfaceEvidenceSource::MediaMetadata
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Terminal => matches!(
+            source,
+            SurfaceEvidenceSource::TerminalProtocol
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::RemoteApplication => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::BrowserNative => matches!(
+            source,
+            SurfaceEvidenceSource::BrowserNative
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::ExtensionDefined { .. } => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::Unknown | SurfaceKind::Opaque => false,
+    }
 }
 
 fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     if matches!(
         source,
-        SurfaceEvidenceSource::CanvasDetection
-            | SurfaceEvidenceSource::Layout
-            | SurfaceEvidenceSource::Frame
-            | SurfaceEvidenceSource::ShadowDom
-            | SurfaceEvidenceSource::RemoteStream
-            | SurfaceEvidenceSource::Visual
+        SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
     ) {
-        return false;
+        return !matches!(kind, SurfaceKind::Unknown | SurfaceKind::Opaque);
     }
     match kind {
-        SurfaceKind::Canvas2d
-        | SurfaceKind::Webgl
-        | SurfaceKind::Webgpu
-        | SurfaceKind::RemoteApplication => matches!(
+        SurfaceKind::Document => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::Accessibility => source == SurfaceEvidenceSource::Accessibility,
+        SurfaceKind::ShadowDocument => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::FrameDocument => matches!(source, SurfaceEvidenceSource::Dom | SurfaceEvidenceSource::Accessibility),
+        SurfaceKind::Svg => matches!(
             source,
-            SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            SurfaceEvidenceSource::Svg
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
         ),
+        SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::EmbeddedDocument => matches!(
+            source,
+            SurfaceEvidenceSource::EmbeddedDocument
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Pdf => source == SurfaceEvidenceSource::Pdf,
+        SurfaceKind::Media => matches!(
+            source,
+            SurfaceEvidenceSource::MediaMetadata
+                | SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+        ),
+        SurfaceKind::Terminal => source == SurfaceEvidenceSource::TerminalProtocol,
+        SurfaceKind::BrowserNative => source == SurfaceEvidenceSource::BrowserNative,
+        SurfaceKind::RemoteApplication => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
         SurfaceKind::ExtensionDefined { .. } => {
             matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
         }
-        _ => matches!(
-            source,
-            SurfaceEvidenceSource::Dom
-                | SurfaceEvidenceSource::Accessibility
-                | SurfaceEvidenceSource::Svg
-                | SurfaceEvidenceSource::EmbeddedDocument
-                | SurfaceEvidenceSource::Pdf
-                | SurfaceEvidenceSource::MediaMetadata
-                | SurfaceEvidenceSource::TerminalProtocol
-                | SurfaceEvidenceSource::BrowserNative
-                | SurfaceEvidenceSource::Bridge
-                | SurfaceEvidenceSource::Extension
-        ),
+        SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
 }
 
@@ -1928,4 +2038,23 @@ mod tests {
         let oversized = format!(r#"{{"grants":{{"x":"{}"}}}}"#, "x".repeat(MAX_BRIDGE_GRANT_PAYLOAD_BYTES));
         assert!(BridgeGrantRegistry::from_json(&oversized).is_err());
     }
+    #[test]
+    fn evidence_sources_are_rejected_when_bound_to_another_surface_kind() {
+        let mut document = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        document.evidence[0].source = SurfaceEvidenceSource::TerminalProtocol;
+        assert!(document.validate().is_err());
+
+        let mut semantic_document = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        semantic_document.evidence[0].source = SurfaceEvidenceSource::MediaMetadata;
+        assert!(semantic_document.validate().is_err());
+    }
+
 }

@@ -780,6 +780,28 @@ impl Surface {
                 "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
+        if self.capabilities.contains(&SurfaceCapability::CoordinateAction) {
+            let has_strong_geometry = self.evidence.iter().any(|evidence| {
+                evidence.quality >= CoverageLevel::Strong
+                    && matches!(
+                        evidence.source,
+                        SurfaceEvidenceSource::Layout
+                            | SurfaceEvidenceSource::CanvasDetection
+                            | SurfaceEvidenceSource::Bridge
+                            | SurfaceEvidenceSource::Extension
+                    )
+                    && matches!(
+                        evidence.provenance.source_class,
+                        ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Bridge
+                    )
+            });
+            if !has_strong_geometry {
+                return Err(SurfaceContractError::new(
+                    "evidence",
+                    "coordinate actions require strong bounded live geometry or a trusted bridge grant",
+                ));
+            }
+        }
         let structural_evidence = self
             .evidence
             .iter()
@@ -1751,6 +1773,22 @@ mod tests {
         value.evidence[0].provenance.observed_at = "2026-02-31T00:00:00Z".into();
         assert!(value.validate().is_err());
     }
+    #[test]
+    fn coordinate_actions_require_strong_geometry() {
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::CoordinateAction],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
+        value.evidence[0].quality = CoverageLevel::Opaque;
+        assert!(value.validate().is_err());
+        value.evidence[0].quality = CoverageLevel::Partial;
+        assert!(value.validate().is_err());
+        value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_ok());
+    }
+
     #[test]
     fn visual_only_evidence_cannot_authorize_coordinate_input() {
         let mut value = surface(

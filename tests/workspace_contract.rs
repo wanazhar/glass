@@ -153,7 +153,7 @@ fn legacy_generation_scope_migrates_to_ephemeral_storage() {
 }
 
 #[test]
-fn escaped_oversized_identity_is_rejected() {
-    let escaped = format!("\"{}\"", "\\u0061".repeat(MAX_ID_BYTES + 1));
-    assert!(serde_json::from_str::<WorkspaceId>(&escaped).is_err());
+fn escaped_oversized_identity_is_rejected_before_decode() {
+    let escaped = format!("\"{}\"", "\\u0061".repeat(MAX_WIRE_BYTES));
+    assert!(WorkspaceId::from_json(&escaped).is_err());
 }

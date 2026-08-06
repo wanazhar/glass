@@ -22,6 +22,7 @@ pub const MAX_ALIASES: usize = 16;
 pub const MAX_ATTACHMENTS: usize = 256;
 pub const MAX_REFERENCE_URI_BYTES: usize = 512;
 pub const MAX_REFERENCE_SEGMENTS: usize = 8;
+pub const MAX_WIRE_BYTES: usize = 64 * 1024;
 /// Ephemeral workspaces carry a non-zero generation so a later workspace
 /// incarnation cannot accidentally consume an old resource reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -103,6 +104,16 @@ fn normalize_name(value: &str, label: &'static str, max: usize) -> Result<String
     Ok(normalized)
 }
 
+fn validate_wire_bytes(input: &str) -> Result<(), serde_json::Error> {
+    if input.len() > MAX_WIRE_BYTES {
+        return Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "workspace wire payload exceeds bound",
+        )));
+    }
+    Ok(())
+}
+
 macro_rules! bounded_name {
     ($name:ident, $label:literal, $max:expr) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -111,6 +122,10 @@ macro_rules! bounded_name {
         impl $name {
             pub fn new(value: impl AsRef<str>) -> Result<Self, WorkspaceError> {
                 Ok(Self(normalize_name(value.as_ref(), $label, $max)?))
+            }
+            pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+                validate_wire_bytes(input)?;
+                serde_json::from_str(input)
             }
 
             pub fn as_str(&self) -> &str { &self.0 }
@@ -371,6 +386,10 @@ pub struct WorkspaceScope {
     storage: WorkspaceStorage,
 }
 impl WorkspaceScope {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        serde_json::from_str(input)
+    }
     pub fn workspace(workspace_id: WorkspaceId) -> Self { Self { workspace_id, profile_id: None, generation: None, storage: WorkspaceStorage::Durable } }
     pub fn profile(workspace_id: WorkspaceId, profile_id: ProfileId) -> Self { Self { workspace_id, profile_id: Some(profile_id), generation: None, storage: WorkspaceStorage::Durable } }
     pub fn ephemeral(workspace_id: WorkspaceId, generation: WorkspaceGeneration) -> Self { Self { workspace_id, profile_id: None, generation: Some(generation), storage: WorkspaceStorage::Ephemeral } }
@@ -481,6 +500,10 @@ impl<'de> Deserialize<'de> for ResourceReference {
 }
 
 impl ResourceReference {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        serde_json::from_str(input)
+    }
     pub fn new(scope: WorkspaceScope, resource: ResourceKind) -> Result<Self, ReferenceError> {
         scope.validate_invariants().map_err(ReferenceError::Scope)?;
         if scope.storage == WorkspaceStorage::Ephemeral && scope.generation.is_none() {
@@ -893,6 +916,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
+        validate_wire_bytes(input)?;
+        serde_json::from_str(input)
+    }
     pub fn new(identity: WorkspaceIdentity, config: WorkspaceConfig) -> Result<Self, WorkspaceError> {
         config.validate()?;
         Ok(Self { identity, config, lifecycle: WorkspaceLifecycle::Active, attachments: BTreeMap::new(), lease_authority: MutationLeaseAuthority::default() })

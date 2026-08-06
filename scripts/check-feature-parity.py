@@ -143,9 +143,9 @@ def main() -> None:
         fail("Cargo.toml version is neither the published baseline nor the next release")
 
     required_text = {
-        "README.md": "| 0.2.7 | Current published release |",
-        "CHANGELOG.md": "## [Unreleased] — 0.2.8",
-        "docs/release-checklist.md": "next crates.io release, `0.2.8`",
+        "README.md": "| 0.2.8 | Release candidate; publication pending |",
+        "CHANGELOG.md": "## [0.2.8] - 2026-08-01",
+        "docs/release-checklist.md": "release candidate is `glass-browser` version `0.2.8`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.7 published; source-only GitHub Release",
     }
     for relative_path, expected in required_text.items():

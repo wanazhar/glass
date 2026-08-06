@@ -3,7 +3,9 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.8
+## [Unreleased] — 0.2.9
+
+## [0.2.8] - 2026-08-01
 - Added explicit typed structured-extraction kinds, field-level semantic
   provenance, entity references, and observed output-limit metadata.
 - Added bounded `recordItems` for semantic table and repeated-collection

@@ -8,8 +8,12 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
-    "README.md": ["| 0.2.7 | Current published release |", "docs/feature-parity.md", "docs/release-evidence.md"],
-    "CHANGELOG.md": ["## [0.2.7] - 2026-08-05", "## [Unreleased] — 0.2.8"],
+    "README.md": [
+        "| 0.2.8 | Release candidate; publication pending |",
+        "docs/feature-parity.md",
+        "docs/release-evidence.md",
+    ],
+    "CHANGELOG.md": ["## [0.2.8] - 2026-08-01", "## [Unreleased] — 0.2.9"],
     "docs/plan/README.md": [
         "[`ir-030-081`](tasks/ir-030-081.md)",
         "[`ir-030-089`](tasks/ir-030-089.md)",
@@ -17,8 +21,8 @@ REQUIRED_MARKERS = {
         "remain unreleased.",
     ],
     "docs/release-checklist.md": [
-        "current published release is `glass-browser` version `0.2.7`",
-        "next crates.io release, `0.2.8`",
+        "release candidate is `glass-browser` version `0.2.8`",
+        "The next development version is `0.2.9`",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [

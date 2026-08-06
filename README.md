@@ -18,7 +18,7 @@ Install the executable with Cargo, then use the safe observe → guarded action
 | macOS x86-64 | Declared target; native runtime certification pending |
 | macOS arm64 | Declared target; native runtime certification pending |
 | Windows | Unsupported |
-| 0.2.8 | In development |
+| 0.2.8 | Release candidate; publication pending |
 | 0.2.7 | Current published release |
 | 0.2.6 | Previous published release |
 | Chrome and Chromium | Supported browser families |

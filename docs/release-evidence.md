@@ -1,12 +1,11 @@
 # Release evidence
 
-The 0.2.8 development path follows the crates-only distribution boundary.
+The 0.2.8 release candidate follows the crates-only distribution boundary.
 The published `glass-browser` 0.2.7 release has a source-only GitHub Release
 with generated notes. The project does not publish native GitHub release
 binaries, installers, or updater infrastructure.
 
-The published 0.2.7 release and 0.2.8 development work retain bounded MCP
-response-cost measurements in
+The 0.2.8 release candidate retains bounded MCP response-cost measurements in
 [`benchmarks/response-cost-v1.json`](../benchmarks/response-cost-v1.json).
 
 ## Evidence layers

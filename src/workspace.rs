@@ -8,6 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use std::fmt;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,25 +34,24 @@ impl WorkspaceGeneration {
         Ok(Self(value))
     }
 
-    /// Allocate a generation that includes wall-clock and process entropy.
-    /// The atomic sequence prevents collisions within one process; the time
-    /// and PID components keep independent process incarnations distinct.
+    /// Allocate an unforgeable nonce when the local OS random source exists;
+    /// the timestamp/PID/sequence path remains a bounded fallback.
     pub fn allocate() -> Self {
+        let mut random = [0_u8; 8];
+        if File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut random))
+            .is_ok()
+        {
+            let value = u64::from_le_bytes(random);
+            if value != 0 { return Self(value); }
+        }
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock predates Unix epoch")
             .as_nanos() as u64;
         let process = u64::from(std::process::id()).rotate_left(29);
-        loop {
-            let sequence = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-            let value = timestamp
-                .wrapping_add(process)
-                .wrapping_add(sequence)
-                .max(1);
-            if value != 0 {
-                return Self(value);
-            }
-        }
+        let sequence = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        Self(timestamp.wrapping_add(process).wrapping_add(sequence).max(1))
     }
 
     pub fn value(self) -> u64 { self.0 }
@@ -270,7 +271,11 @@ pub enum WorkspaceStorage {
     Ephemeral,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl Default for WorkspaceStorage {
+    fn default() -> Self { Self::Durable }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfig {
     pub profile_mode: ProfileMode,
@@ -306,6 +311,32 @@ impl WorkspaceConfig {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkspaceConfig {
+    profile_mode: ProfileMode,
+    privacy_mode: PrivacyMode,
+    storage: WorkspaceStorage,
+    #[serde(default)]
+    profile_id: Option<ProfileId>,
+    #[serde(default)]
+    generation: Option<WorkspaceGeneration>,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let raw = RawWorkspaceConfig::deserialize(deserializer)?;
+        let config = Self {
+            profile_mode: raw.profile_mode,
+            privacy_mode: raw.privacy_mode,
+            storage: raw.storage,
+            profile_id: raw.profile_id,
+            generation: raw.generation,
+        };
+        config.validate().map(|()| config).map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,19 +346,26 @@ pub struct WorkspaceScope {
     profile_id: Option<ProfileId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     generation: Option<WorkspaceGeneration>,
+    #[serde(default)]
+    storage: WorkspaceStorage,
 }
-
 impl WorkspaceScope {
-    pub fn workspace(workspace_id: WorkspaceId) -> Self { Self { workspace_id, profile_id: None, generation: None } }
-    pub fn profile(workspace_id: WorkspaceId, profile_id: ProfileId) -> Self { Self { workspace_id, profile_id: Some(profile_id), generation: None } }
-    pub fn with_generation(mut self, generation: WorkspaceGeneration) -> Self { self.generation = Some(generation); self }
-    fn with_generation_opt(mut self, generation: Option<WorkspaceGeneration>) -> Self { self.generation = generation; self }
+    pub fn workspace(workspace_id: WorkspaceId) -> Self { Self { workspace_id, profile_id: None, generation: None, storage: WorkspaceStorage::Durable } }
+    pub fn profile(workspace_id: WorkspaceId, profile_id: ProfileId) -> Self { Self { workspace_id, profile_id: Some(profile_id), generation: None, storage: WorkspaceStorage::Durable } }
+    pub fn ephemeral(workspace_id: WorkspaceId, generation: WorkspaceGeneration) -> Self { Self { workspace_id, profile_id: None, generation: Some(generation), storage: WorkspaceStorage::Ephemeral } }
+    pub fn with_generation(mut self, generation: WorkspaceGeneration) -> Self { self.generation = Some(generation); self.storage = WorkspaceStorage::Ephemeral; self }
+    fn with_generation_opt(mut self, generation: Option<WorkspaceGeneration>) -> Self {
+        self.generation = generation;
+        self.storage = if generation.is_some() { WorkspaceStorage::Ephemeral } else { WorkspaceStorage::Durable };
+        self
+    }
     fn with_profile(mut self, profile_id: ProfileId) -> Self { self.profile_id = Some(profile_id); self }
     pub fn workspace_id(&self) -> &WorkspaceId { &self.workspace_id }
     pub fn profile_id(&self) -> Option<&ProfileId> { self.profile_id.as_ref() }
     pub fn generation(&self) -> Option<WorkspaceGeneration> { self.generation }
+    pub fn storage(&self) -> WorkspaceStorage { self.storage }
     pub fn contains(&self, other: &Self) -> bool {
-        self.workspace_id == other.workspace_id && self.profile_id == other.profile_id && self.generation == other.generation
+        self.workspace_id == other.workspace_id && self.profile_id == other.profile_id && self.generation == other.generation && self.storage == other.storage
     }
 
     pub fn validate(&self, other: &Self) -> Result<(), ScopeError> {
@@ -339,6 +377,9 @@ impl WorkspaceScope {
         }
         if self.generation != other.generation {
             return Err(ScopeError::GenerationMismatch { expected: self.generation, actual: other.generation });
+        }
+        if self.storage != other.storage {
+            return Err(ScopeError::StorageMismatch { expected: self.storage, actual: other.storage });
         }
         Ok(())
     }
@@ -386,6 +427,9 @@ impl<'de> Deserialize<'de> for ResourceReference {
 
 impl ResourceReference {
     pub fn new(scope: WorkspaceScope, resource: ResourceKind) -> Result<Self, ReferenceError> {
+        if scope.storage == WorkspaceStorage::Ephemeral && scope.generation.is_none() {
+            return Err(ReferenceError::MissingGeneration);
+        }
         if scope.generation.map_or(false, |generation| generation.0 == 0) {
             return Err(ReferenceError::InvalidGeneration);
         }
@@ -420,7 +464,7 @@ impl ResourceReference {
             }));
         }
         Self::new(
-            WorkspaceScope { workspace_id: scope.workspace_id, profile_id: Some(profile_id.clone()), generation: scope.generation },
+            WorkspaceScope { workspace_id: scope.workspace_id, profile_id: Some(profile_id.clone()), generation: scope.generation, storage: scope.storage },
             ResourceKind::Profile(profile_id),
         )
     }
@@ -626,8 +670,24 @@ pub enum OwnershipDomain { Workspace, Browser, Presentation, ExternalAttachment 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnershipBoundary {
+    pub scope: WorkspaceScope,
     pub domain: OwnershipDomain,
     pub owner: OwnershipOwner,
+}
+
+impl OwnershipBoundary {
+    pub fn new(scope: WorkspaceScope, domain: OwnershipDomain, owner: OwnershipOwner) -> Result<Self, OwnershipError> {
+        let valid = match (&domain, &owner) {
+            (OwnershipDomain::Workspace, OwnershipOwner::Workspace(id)) => id == scope.workspace_id(),
+            (OwnershipDomain::Browser | OwnershipDomain::Presentation, OwnershipOwner::Attachment(_)) => true,
+            (OwnershipDomain::ExternalAttachment, OwnershipOwner::External(_)) => true,
+            _ => false,
+        };
+        if !valid {
+            return Err(OwnershipError::DomainOwnerMismatch);
+        }
+        Ok(Self { scope, domain, owner })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,7 +809,7 @@ impl Workspace {
     pub fn lifecycle(&self) -> WorkspaceLifecycle { self.lifecycle }
 
     pub fn scope(&self) -> WorkspaceScope {
-        WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation }
+        WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation, storage: self.config.storage }
     }
 
     pub fn transition(&mut self, next: WorkspaceLifecycle) -> Result<(), LifecycleError> {
@@ -854,6 +914,7 @@ impl<'de> Deserialize<'de> for Workspace {
             workspace_id: raw.identity.id().clone(),
             profile_id: raw.config.profile_id.clone(),
             generation: raw.config.generation,
+            storage: raw.config.storage,
         };
         for (key, attachment) in &raw.attachments.0 {
             if key != &attachment.id || attachment.scope != scope {
@@ -898,6 +959,7 @@ pub enum ReferenceError {
     UnknownResource,
     InvalidRevision,
     InvalidGeneration,
+    MissingGeneration,
     InvalidName(WorkspaceError),
     Scope(ScopeError),
 }
@@ -907,6 +969,7 @@ pub enum ScopeError {
     WorkspaceMismatch { expected: WorkspaceId, actual: WorkspaceId },
     ProfileMismatch { expected: Option<ProfileId>, actual: Option<ProfileId> },
     GenerationMismatch { expected: Option<WorkspaceGeneration>, actual: Option<WorkspaceGeneration> },
+    StorageMismatch { expected: WorkspaceStorage, actual: WorkspaceStorage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -960,13 +1023,15 @@ display_error!(ReferenceError, {
     Self::UnknownResource => "unknown glass resource kind",
     Self::InvalidRevision => "invalid resource revision",
     Self::InvalidGeneration => "invalid resource generation",
+    Self::MissingGeneration => "ephemeral references require a generation",
     Self::InvalidName(_) => "invalid resource identifier",
     Self::Scope(_) => "resource reference scope is invalid"
 });
 display_error!(ScopeError, {
     Self::WorkspaceMismatch { .. } => "resource belongs to another workspace",
     Self::ProfileMismatch { .. } => "resource belongs to another profile",
-    Self::GenerationMismatch { .. } => "resource belongs to another workspace generation"
+    Self::GenerationMismatch { .. } => "resource belongs to another workspace generation",
+    Self::StorageMismatch { .. } => "resource belongs to another workspace storage mode"
 });
 display_error!(StaleRevisionError, { Self { .. } => "revision is stale" });
 display_error!(LifecycleError, {
@@ -986,6 +1051,17 @@ display_error!(LeaseError, {
     Self::RevisionOverflow(_) => "mutation lease revision overflow"
 });
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnershipError {
+    DomainOwnerMismatch,
+}
+impl fmt::Display for OwnershipError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ownership domain and owner do not match")
+    }
+}
+
+impl std::error::Error for OwnershipError {}
 #[cfg(test)]
 mod tests {
     use super::*;

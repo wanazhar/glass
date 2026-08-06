@@ -1524,6 +1524,21 @@ impl<'a> BrowserBackendDispatcher<'a> {
     pub fn new(backend: &'a dyn BrowserBackend) -> Self {
         Self { backend }
     }
+    pub fn initialize(&self) -> BackendFuture<'a, ()> {
+        let backend = self.backend;
+        Box::pin(async move {
+            backend.profile().validate()?;
+            backend.initialize().await
+        })
+    }
+
+    pub fn close(&self) -> BackendFuture<'a, ()> {
+        let backend = self.backend;
+        Box::pin(async move {
+            backend.profile().validate()?;
+            backend.close().await
+        })
+    }
 
     pub fn navigate(&self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult> {
         self.call(BackendOperation::Navigate, request, |backend, request| {

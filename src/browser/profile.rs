@@ -151,7 +151,12 @@ impl ProfileManager {
     fn acquire_profile_lock(&self, profile: &str) -> Result<File, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&self.profiles_dir)?;
         let lock_path = self.profiles_dir.join(format!("{profile}.lock"));
-        let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
         file.try_lock_exclusive().map_err(|error| -> Box<dyn std::error::Error> { format!("profile {profile} is already owned: {error}").into() })?;
         Ok(file)
     }
@@ -161,8 +166,8 @@ impl ProfileManager {
     pub fn lock_profile(&self, profile: &str, workspace: &str) -> Result<ProfileLock, Box<dyn std::error::Error>> {
         Self::validate_name(profile)?;
         Self::validate_name(workspace)?;
-        self.create_profile(profile)?;
         let file = self.acquire_profile_lock(profile)?;
+        self.create_profile(profile)?;
         Ok(ProfileLock { _file: file, profile: profile.to_owned(), workspace: workspace.to_owned() })
     }
 

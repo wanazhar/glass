@@ -19,7 +19,7 @@ fn test_session(cdp: CdpClient) -> BrowserSession {
         disposable_profile: None,
         launched_incognito_context_id: None,
         profile: "test".to_string(),
-        profile_lock: None,
+        _profile_lock: None,
         interaction_mode: InteractionMode::Fast,
         user_agent_original: Mutex::new(None),
         polite_last_request: Mutex::new(None),

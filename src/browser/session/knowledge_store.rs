@@ -8,6 +8,9 @@ use super::{
     KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeLookupContext,
     KnowledgeRecord, KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
+use super::knowledge::{
+    KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
+};
 use fs2::FileExt;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -160,6 +163,42 @@ impl KnowledgeStore {
             .iter()
             .map(|record| record.assess(context))
             .collect()
+    }
+
+    /// Retrieve bounded exact/graph-compatible advisory records. Selection is
+    /// deterministic and never exposes a revision-local executable target.
+    pub fn retrieve(
+        &self,
+        context: &KnowledgeLookupContext,
+        query: &KnowledgeRetrievalQuery,
+    ) -> KnowledgeRetrievalReport {
+        let limit = query.max_results.clamp(1, 16);
+        let mut candidates = self
+            .snapshot
+            .records
+            .iter()
+            .map(|record| record.retrieve_candidate(context, query))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            let left_score = retrieval_score(left);
+            let right_score = retrieval_score(right);
+            right_score
+                .cmp(&left_score)
+                .then_with(|| left.record_id.cmp(&right.record_id))
+        });
+        let mut selected_record_ids = Vec::new();
+        for candidate in candidates.iter_mut().filter(|candidate| candidate.rejection.is_none()) {
+            if selected_record_ids.len() >= limit {
+                break;
+            }
+            candidate.selected = true;
+            selected_record_ids.push(candidate.record_id.clone());
+        }
+        KnowledgeRetrievalReport {
+            candidates,
+            selected_record_ids,
+            embeddings_used: false,
+        }
     }
 
     /// Return the validated records for inspection or export.
@@ -478,6 +517,14 @@ fn confidence_rank(confidence: KnowledgeConfidence) -> u8 {
         KnowledgeConfidence::Observed => 4,
         KnowledgeConfidence::Verified => 5,
     }
+}
+fn retrieval_score(candidate: &KnowledgeRetrievalCandidate) -> u16 {
+    candidate
+        .signals
+        .iter()
+        .filter_map(|signal| signal.score_millis)
+        .max()
+        .unwrap_or_default()
 }
 
 struct StoreLock {

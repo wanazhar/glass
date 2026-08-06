@@ -548,6 +548,66 @@ pub struct KnowledgeRetrievalExplanation {
     pub current_validation: KnowledgeCurrentValidation,
 }
 
+/// Bounded deterministic retrieval query. Query fields are semantic and never
+/// contain revision-local entity references or raw page values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KnowledgeRetrievalQuery {
+    pub page_kind: Option<String>,
+    pub task_kind: Option<String>,
+    pub entity_roles: Vec<String>,
+    pub landmarks: Vec<String>,
+    pub max_results: usize,
+}
+
+/// Typed reason a historical record was not eligible for an advisory match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeRejectionReason {
+    OutOfScope,
+    Stale,
+    BackendIncompatible,
+    SurfaceIncompatible,
+    ExtensionMismatch,
+    OpaqueProvenance,
+    Contradicted,
+    CurrentValidationMissing,
+    NoExactOrGraphMatch,
+}
+
+/// One retrieval result with bounded provenance explaining selection or
+/// rejection. A selected result is still advisory and never an executable
+/// target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeRetrievalCandidate {
+    pub record_id: String,
+    pub selected: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<KnowledgeRetrievalSignal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<KnowledgeRejectionReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+/// Deterministic, bounded exact/graph retrieval output. Embeddings are
+/// intentionally absent: this report never performs semantic-model work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeRetrievalReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<KnowledgeRetrievalCandidate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_record_ids: Vec<String>,
+    pub embeddings_used: bool,
+}
+
+impl KnowledgeRetrievalReport {
+    pub fn selected(&self) -> impl Iterator<Item = &KnowledgeRetrievalCandidate> {
+        self.candidates.iter().filter(|candidate| candidate.selected)
+    }
+}
+
 /// Provenance and verification counters for a knowledge record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1126,7 +1186,8 @@ impl KnowledgeRecord {
         } else if current_revision_conflict {
             conflicts.push("current Web IR revision does not match".into());
         }
-        let extension_conflict = self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined
+        let extension_conflict = (self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined
+            || context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined))
             && self.source.surface.extension_id.as_ref() != context.current_extension_id.as_ref();
         if extension_conflict {
             conflicts.push("extension provenance does not match".into());
@@ -1212,6 +1273,127 @@ impl KnowledgeRecord {
             conflicts,
             missing_landmarks,
             age_seconds,
+        }
+    }
+
+    /// Evaluate one record for bounded exact/graph retrieval. This deliberately
+    /// operates only on compact semantic fields and current scope evidence.
+    pub fn retrieve_candidate(
+        &self,
+        context: &KnowledgeLookupContext,
+        query: &KnowledgeRetrievalQuery,
+    ) -> KnowledgeRetrievalCandidate {
+        let assessment = self.assess(context);
+        if assessment.status != KnowledgeAssessmentStatus::Eligible {
+            return KnowledgeRetrievalCandidate {
+                record_id: self.record_id.clone(),
+                selected: false,
+                signals: Vec::new(),
+                rejection: Some(rejection_reason(&assessment)),
+                explanation: Some(assessment.conflicts.join("; ")),
+            };
+        }
+
+        let mut signals = vec![
+            KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::OriginMatch,
+                detail: "current origin matches".into(),
+                score_millis: Some(300),
+            },
+            KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::Freshness,
+                detail: "record passed current freshness validation".into(),
+                score_millis: Some(200),
+            },
+        ];
+        if context.surface_kind == Some(self.source.surface.kind) {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::SurfaceMatch,
+                detail: "surface provenance matches".into(),
+                score_millis: Some(350),
+            });
+        }
+        if context.backend_kind == Some(self.source.backend.backend) {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::BackendMatch,
+                detail: "backend provenance matches".into(),
+                score_millis: Some(350),
+            });
+        }
+        let page_kind = self.data.get("pageKind").and_then(Value::as_str);
+        let page_kind_mismatch = self.kind == KnowledgeRecordKind::PageFamily
+            && query.page_kind.as_deref().is_some_and(|expected| {
+                page_kind.is_some_and(|actual| {
+                    normalized_knowledge_value(actual) != normalized_knowledge_value(expected)
+                })
+            });
+        if page_kind_mismatch {
+            return KnowledgeRetrievalCandidate {
+                record_id: self.record_id.clone(),
+                selected: false,
+                signals: Vec::new(),
+                rejection: Some(KnowledgeRejectionReason::Contradicted),
+                explanation: Some("current page family contradicts live Web IR".into()),
+            };
+        }
+        if query.page_kind.as_deref().is_some_and(|expected| {
+            page_kind.is_some_and(|actual| {
+                normalized_knowledge_value(actual) == normalized_knowledge_value(expected)
+            })
+        }) {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::ExactPageFamilyMatch,
+                detail: "current page family matches".into(),
+                score_millis: Some(1_000),
+            });
+        }
+
+        if query
+            .landmarks
+            .iter()
+            .any(|landmark| self.invalidation.required_landmarks.iter().any(|required| {
+                normalized_knowledge_value(required) == normalized_knowledge_value(landmark)
+            }))
+        {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::GraphDistance,
+                detail: "current landmark is connected to the record".into(),
+                score_millis: Some(600),
+            });
+        }
+        if let Some(role) = self.data.get("role").and_then(Value::as_str)
+            && query.entity_roles.iter().any(|expected| {
+                normalized_knowledge_value(role) == normalized_knowledge_value(expected)
+            })
+        {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::ExactFingerprintMatch,
+                detail: "current entity role matches remembered fingerprint".into(),
+                score_millis: Some(900),
+            });
+        }
+        if self.kind == KnowledgeRecordKind::WorkflowEntryPoint && query.task_kind.is_some() {
+            signals.push(KnowledgeRetrievalSignal {
+                kind: KnowledgeRetrievalSignalKind::GraphDistance,
+                detail: "workflow entry is graph-compatible with the task".into(),
+                score_millis: Some(450),
+            });
+        }
+        if signals.is_empty() {
+            return KnowledgeRetrievalCandidate {
+                record_id: self.record_id.clone(),
+                selected: false,
+                signals,
+                rejection: Some(KnowledgeRejectionReason::NoExactOrGraphMatch),
+                explanation: Some("no exact or graph-compatible semantic match".into()),
+            };
+        }
+        KnowledgeRetrievalCandidate {
+            record_id: self.record_id.clone(),
+            selected: false,
+            signals,
+            rejection: None,
+            explanation: None,
         }
     }
 
@@ -1343,6 +1525,38 @@ impl KnowledgeRecord {
             current_revision: None,
             validated_at: None,
         };
+    }
+}
+fn normalized_knowledge_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn rejection_reason(assessment: &KnowledgeAssessment) -> KnowledgeRejectionReason {
+    match assessment.status {
+        KnowledgeAssessmentStatus::Contradicted => KnowledgeRejectionReason::Contradicted,
+        KnowledgeAssessmentStatus::Quarantined => KnowledgeRejectionReason::OpaqueProvenance,
+        KnowledgeAssessmentStatus::OutOfScope => KnowledgeRejectionReason::OutOfScope,
+        KnowledgeAssessmentStatus::Stale => {
+            let joined = assessment.conflicts.join(" ").to_ascii_lowercase();
+            if joined.contains("unknown") || joined.contains("opaque") {
+                KnowledgeRejectionReason::OpaqueProvenance
+            } else if joined.contains("extension") {
+                KnowledgeRejectionReason::ExtensionMismatch
+            } else if joined.contains("backend") {
+                KnowledgeRejectionReason::BackendIncompatible
+            } else if joined.contains("surface provenance") || joined.contains("portability") {
+                KnowledgeRejectionReason::SurfaceIncompatible
+            } else if joined.contains("current web ir") {
+                KnowledgeRejectionReason::CurrentValidationMissing
+            } else {
+                KnowledgeRejectionReason::Stale
+            }
+        }
+        KnowledgeAssessmentStatus::Eligible => KnowledgeRejectionReason::NoExactOrGraphMatch,
     }
 }
 
@@ -2005,6 +2219,84 @@ mod tests {
             },
             history: Vec::new(),
         }
+    }
+
+    fn retrieval_context() -> KnowledgeLookupContext {
+        KnowledgeLookupContext {
+            origin: "https://example.test".into(),
+            path: "/docs/intro".into(),
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: Some("en-US".into()),
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: Some("120.0".into()),
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            landmarks: vec!["main".into(), "search".into()],
+            now_epoch_seconds: 1_785_542_400,
+            current_revision: 42,
+            surface_kind: Some(KnowledgeSurfaceKind::Document),
+            backend_kind: Some(KnowledgeBackendKind::Cdp),
+            backend_capabilities: vec![
+                KnowledgeBackendCapability::SemanticExtraction,
+                KnowledgeBackendCapability::Verification,
+            ],
+            current_extension_id: None,
+        }
+    }
+
+    #[test]
+    fn exact_retrieval_is_bounded_and_explains_no_embedding_use() {
+        let record = record();
+        let candidate = record.retrieve_candidate(
+            &retrieval_context(),
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("documentation".into()),
+                landmarks: vec!["main".into()],
+                max_results: 1,
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+        assert!(candidate.rejection.is_none());
+        assert!(candidate.signals.iter().any(|signal| {
+            signal.kind == KnowledgeRetrievalSignalKind::ExactPageFamilyMatch
+        }));
+        assert!(candidate.signals.iter().any(|signal| {
+            signal.kind == KnowledgeRetrievalSignalKind::BackendMatch
+        }));
+    }
+
+    #[test]
+    fn contradictory_current_page_family_wins_over_historical_match() {
+        let candidate = record().retrieve_candidate(
+            &retrieval_context(),
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("checkout".into()),
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+        assert_eq!(candidate.rejection, Some(KnowledgeRejectionReason::Contradicted));
+    }
+
+    #[test]
+    fn incompatible_backend_is_rejected_with_typed_provenance() {
+        let mut historical = record();
+        historical.portability = KnowledgePortability::BackendSpecific;
+        let mut context = retrieval_context();
+        context.backend_kind = Some(KnowledgeBackendKind::WebdriverBidi);
+        let candidate = historical.retrieve_candidate(
+            &context,
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("documentation".into()),
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+        assert_eq!(
+            candidate.rejection,
+            Some(KnowledgeRejectionReason::BackendIncompatible)
+        );
+        assert!(candidate.explanation.is_some());
     }
 
     #[test]

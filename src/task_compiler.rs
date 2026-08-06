@@ -19,6 +19,10 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use crate::browser::session::{
+    KnowledgeLookupContext, KnowledgeMemoryInfluence, KnowledgeRetrievalQuery,
+    KnowledgeRetrievalReport, KnowledgeStore,
+};
 /// Version of the deterministic execution-plan contract.
 pub const TASK_PLAN_SCHEMA_VERSION: u32 = 1;
 
@@ -55,6 +59,31 @@ pub struct TaskEvidenceRequirements {
     pub minimum_quality: EvidenceQuality,
     pub required_sources: Vec<EvidenceSource>,
     pub require_complete: bool,
+}
+
+/// Memory output is deliberately separated from executable plan fields. It
+/// explains advisory ranking and never supplies a target or postcondition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskMemoryAdvisory {
+    pub retrieval: KnowledgeRetrievalReport,
+    pub influence: KnowledgeMemoryInfluence,
+}
+
+/// Optional memory inputs for compilation. With the default value, compiler
+/// output is byte-for-byte deterministic and independent of the store.
+pub struct TaskCompilationOptions<'a> {
+    pub knowledge_store: Option<&'a KnowledgeStore>,
+    pub knowledge_context: Option<&'a KnowledgeLookupContext>,
+}
+
+impl<'a> Default for TaskCompilationOptions<'a> {
+    fn default() -> Self {
+        Self {
+            knowledge_store: None,
+            knowledge_context: None,
+        }
+    }
 }
 
 /// One inspectable runtime guard emitted by compilation.
@@ -116,6 +145,8 @@ pub struct TaskExecutionPlan {
     pub evidence_requirements: TaskEvidenceRequirements,
     pub preconditions: Vec<TaskPlanPrecondition>,
     pub steps: Vec<TaskPlanStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_advisory: Option<TaskMemoryAdvisory>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub postconditions: Vec<TaskPostcondition>,
 }
@@ -404,6 +435,18 @@ pub fn compile_task(
     task: &GlassTask,
     ir: &GlassWebIrV1,
 ) -> Result<TaskExecutionPlan, TaskCompilationError> {
+    compile_task_with_options(task, ir, TaskCompilationOptions::default())
+}
+
+/// Compile a task while optionally consulting bounded historical knowledge.
+/// Historical records can only produce advisory provenance; entity selection,
+/// executable preconditions, and postconditions always come from live IR.
+pub fn compile_task_with_options(
+    task: &GlassTask,
+    ir: &GlassWebIrV1,
+    options: TaskCompilationOptions<'_>,
+) -> Result<TaskExecutionPlan, TaskCompilationError> {
+
     task.validate().map_err(TaskCompilationError::from)?;
     ir.validate()
         .map_err(|error| TaskCompilationError::new(format!("ir.{}", error.path), error.reason))?;
@@ -542,6 +585,34 @@ pub fn compile_task(
                 && operation != TaskPlanOperation::ObserveScope,
         })
         .collect();
+    let memory_advisory = match (options.knowledge_store, options.knowledge_context) {
+        (Some(store), Some(context)) => {
+            let mut query = KnowledgeRetrievalQuery {
+                page_kind: ir.document.kind.clone(),
+                task_kind: Some(format!("{:?}", task.task)),
+                max_results: 8,
+                ..KnowledgeRetrievalQuery::default()
+            };
+            query.entity_roles = selected
+                .iter()
+                .filter_map(|entity| entity.role.clone())
+                .collect();
+            query.landmarks = selected
+                .iter()
+                .map(|entity| format!("{:?}", entity.kind))
+                .collect();
+            let retrieval = store.retrieve(context, &query);
+            Some(TaskMemoryAdvisory {
+                influence: if retrieval.selected_record_ids.is_empty() {
+                    KnowledgeMemoryInfluence::None
+                } else {
+                    KnowledgeMemoryInfluence::RankingOnly
+                },
+                retrieval,
+            })
+        }
+        _ => None,
+    };
     let task_fingerprint = task_fingerprint(task, ir, &selected_entity_ids)?;
     let plan = TaskExecutionPlan {
         schema_version: TASK_PLAN_SCHEMA_VERSION,
@@ -565,10 +636,29 @@ pub fn compile_task(
         },
         preconditions,
         steps,
+        memory_advisory,
         postconditions: effective_postconditions(task),
     };
     plan.validate()?;
     Ok(plan)
+}
+
+/// Convenience entry point for an explicitly enabled knowledge-assisted
+/// compilation.
+pub fn compile_task_with_knowledge(
+    task: &GlassTask,
+    ir: &GlassWebIrV1,
+    knowledge_store: &KnowledgeStore,
+    knowledge_context: &KnowledgeLookupContext,
+) -> Result<TaskExecutionPlan, TaskCompilationError> {
+    compile_task_with_options(
+        task,
+        ir,
+        TaskCompilationOptions {
+            knowledge_store: Some(knowledge_store),
+            knowledge_context: Some(knowledge_context),
+        },
+    )
 }
 
 pub(crate) fn effective_postconditions(task: &GlassTask) -> Vec<TaskPostcondition> {
@@ -1008,6 +1098,7 @@ pub(crate) fn test_compiler_ir() -> GlassWebIrV1 {
             opaque_regions: 0,
             reasons: Vec::new(),
         },
+        surface_set: None,
     })
     .unwrap()
 }

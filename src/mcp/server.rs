@@ -48,6 +48,7 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -3966,6 +3967,23 @@ fn error_response(id: Option<Value>, code: i32, message: impl Into<String>) -> J
     error_response_with_data(id, code, message, Value::Null)
 }
 
+fn bounded_error_details(details: Value) -> Value {
+    if details.is_null() {
+        return details;
+    }
+    let original_bytes = serde_json::to_vec(&details)
+        .map(|serialized| serialized.len())
+        .unwrap_or(MAX_ERROR_DETAILS_BYTES + 1);
+    if original_bytes <= MAX_ERROR_DETAILS_BYTES {
+        return details;
+    }
+    json!({
+        "truncated": true,
+        "originalBytes": original_bytes,
+        "maxBytes": MAX_ERROR_DETAILS_BYTES
+    })
+}
+
 fn error_response_with_data(
     id: Option<Value>,
     code: i32,
@@ -3973,6 +3991,7 @@ fn error_response_with_data(
     details: Value,
 ) -> JsonRpcResponse {
     let message = message.into();
+    let details = bounded_error_details(details);
     let canonical_code = match code {
         -32600 => "protocol.invalidRequest",
         -32601 => "protocol.methodNotFound",
@@ -4241,6 +4260,20 @@ mod tests {
             "inspect_page"
         );
         assert_eq!(error.data.as_ref().unwrap()["mutationPossible"], false);
+    }
+
+    #[test]
+    fn mcp_error_details_are_bounded_before_transport_encoding() {
+        let response = error_response_with_data(
+            Some(json!("request-1")),
+            -32602,
+            "invalid tool arguments",
+            json!({"diagnostic": "x".repeat(MAX_ERROR_DETAILS_BYTES)}),
+        );
+        let details = &response.error.unwrap().data.unwrap()["details"];
+        assert!(details["originalBytes"].as_u64().unwrap() > MAX_ERROR_DETAILS_BYTES as u64);
+        assert_eq!(details["maxBytes"], MAX_ERROR_DETAILS_BYTES);
+        assert!(serde_json::to_vec(details).unwrap().len() < MAX_ERROR_DETAILS_BYTES);
     }
 
     #[test]

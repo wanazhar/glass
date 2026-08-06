@@ -2636,6 +2636,7 @@ mod tests {
 
         let mut task = task();
         task.task = TaskKind::DialogConfirm;
+        task.inputs.clear();
         let plan = compile_task(&task).unwrap();
         let result = mutation_failure_result(
             &task,

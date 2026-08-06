@@ -152,7 +152,7 @@ impl ProfileManager {
         std::fs::create_dir_all(&self.profiles_dir)?;
         let lock_path = self.profiles_dir.join(format!("{profile}.lock"));
         let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
-        file.try_lock_exclusive().map_err(|error| format!("profile {profile} is already owned: {error}").into())?;
+        file.try_lock_exclusive().map_err(|error| -> Box<dyn std::error::Error> { format!("profile {profile} is already owned: {error}").into() })?;
         Ok(file)
     }
 
@@ -249,6 +249,16 @@ mod tests {
         assert!(manager.delete_profile("work").is_err());
         let _ = std::fs::remove_dir_all(profiles_dir);
     }
+    #[test]
+    fn profile_lock_rejects_second_owner() {
+        let profiles_dir = test_directory();
+        let first = ProfileManager::with_profiles_dir(profiles_dir.clone());
+        let second = ProfileManager::with_profiles_dir(profiles_dir.clone());
+        let _owner = first.lock_profile("work", "first").unwrap();
+        assert!(second.lock_profile("work", "second").is_err());
+        let _ = std::fs::remove_dir_all(profiles_dir);
+    }
+
 
     #[test]
     fn create_profile_migrates_legacy_chrome_data() {

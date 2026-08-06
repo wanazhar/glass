@@ -1086,8 +1086,9 @@ pub struct Workspace {
     attachments: BTreeMap<AttachmentId, Attachment>,
     #[serde(rename = "lease", serialize_with = "serialize_lease_authority")]
     lease_authority: MutationLeaseAuthority,
+    #[serde(skip)]
+    persisted_fingerprint: Option<Vec<u8>>,
 }
-
 impl Workspace {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
@@ -1118,11 +1119,11 @@ impl Workspace {
         }
         workspace.attachments = attachments;
         validate_lease_holder(&workspace.lease(), &workspace.attachments).map_err(wire_error)?;
+        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
         Ok(workspace)
     }
     pub fn new(identity: WorkspaceIdentity, config: WorkspaceConfig) -> Result<Self, WorkspaceError> {
-        config.validate()?;
-        Ok(Self { identity, config, lifecycle: WorkspaceLifecycle::Active, attachments: BTreeMap::new(), lease_authority: MutationLeaseAuthority::default() })
+        Ok(Self { identity, config, lifecycle: WorkspaceLifecycle::Active, attachments: BTreeMap::new(), lease_authority: MutationLeaseAuthority::default(), persisted_fingerprint: None })
     }
     pub fn identity(&self) -> &WorkspaceIdentity { &self.identity }
     pub fn config(&self) -> &WorkspaceConfig { &self.config }
@@ -1490,6 +1491,7 @@ pub enum WorkspaceStoreError {
     WorkspaceMismatch { expected: WorkspaceId, actual: WorkspaceId },
     Lifecycle(LifecycleError),
     Workspace(WorkspaceError),
+    StaleSnapshot(WorkspaceId),
 }
 
 impl fmt::Display for WorkspaceStoreError {
@@ -1505,8 +1507,9 @@ impl fmt::Display for WorkspaceStoreError {
             Self::WorkspaceMismatch { expected, actual } => write!(formatter, "workspace snapshot belongs to {actual}, expected {expected}"),
             Self::Lifecycle(error) => error.fmt(formatter),
             Self::Workspace(error) => error.fmt(formatter),
-        }
+            Self::StaleSnapshot(id) => write!(formatter, "workspace snapshot is stale: {id}"),
     }
+}
 }
 impl std::error::Error for WorkspaceStoreError {}
 impl From<WorkspaceError> for WorkspaceStoreError {
@@ -1516,12 +1519,13 @@ impl From<LifecycleError> for WorkspaceStoreError {
     fn from(error: LifecycleError) -> Self { Self::Lifecycle(error) }
 }
 
-/// A loaded workspace together with its profile ownership guard. The guard
-/// remains held for the session lifetime, preventing another runtime from
-/// deleting or reusing the profile.
+/// A loaded workspace together with its workspace/profile ownership guards.
+/// Guards remain held for the session lifetime, preventing another runtime
+/// from mutating or deleting the active workspace/profile.
 #[derive(Debug)]
 pub struct WorkspaceSession {
     workspace: Workspace,
+    workspace_lock: File,
     profile_lock: Option<WorkspaceProfileLock>,
 }
 impl WorkspaceSession {
@@ -1577,10 +1581,11 @@ impl WorkspaceStore {
     ) -> Result<Workspace, WorkspaceStoreError> {
         let identity = WorkspaceIdentity::new(id.clone(), aliases)?;
         let profile_lock = config.profile_id.as_ref().map(|profile_id| self.lock_profile(&id, profile_id)).transpose()?;
-        let workspace = Workspace::new(identity, config)?;
+        let mut workspace = Workspace::new(identity, config)?;
         let _lock = self.lock_workspace(&id)?;
         if self.path_for(&id).exists() { return Err(WorkspaceStoreError::AlreadyExists(id)); }
         self.write_unlocked(&workspace)?;
+        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
         drop(profile_lock);
         Ok(workspace)
     }
@@ -1590,11 +1595,12 @@ impl WorkspaceStore {
         self.read_unlocked(id)
     }
     pub fn open_owned(&self, id: &WorkspaceId) -> Result<WorkspaceSession, WorkspaceStoreError> {
-        let workspace = self.open(id)?;
+        let workspace_lock = self.lock_workspace(id)?;
+        let workspace = self.read_unlocked(id)?;
         let profile_lock = workspace.config().profile_id.as_ref()
             .map(|profile_id| self.lock_profile(id, profile_id))
             .transpose()?;
-        Ok(WorkspaceSession { workspace, profile_lock })
+        Ok(WorkspaceSession { workspace, workspace_lock, profile_lock })
     }
 
     pub fn create_owned(
@@ -1606,10 +1612,18 @@ impl WorkspaceStore {
         self.create(id.clone(), aliases, config)?;
         self.open_owned(&id)
     }
-
     pub fn save(&self, workspace: &Workspace) -> Result<(), WorkspaceStoreError> {
         let id = workspace.identity().id();
         let _lock = self.lock_workspace(id)?;
+        if let Some(expected) = &workspace.persisted_fingerprint {
+            let current_bytes = fs::read(self.path_for(id)).map_err(io_error)?;
+            let current = Workspace::from_json(std::str::from_utf8(&current_bytes).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?)
+                .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+            let canonical_current = serde_json::to_vec(&current).map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+            if &canonical_current != expected {
+                return Err(WorkspaceStoreError::StaleSnapshot(id.clone()));
+            }
+        }
         self.write_unlocked(workspace)
     }
 
@@ -1657,11 +1671,16 @@ impl WorkspaceStore {
     pub fn delete(&self, id: &WorkspaceId) -> Result<(), WorkspaceStoreError> {
         let _lock = self.lock_workspace(id)?;
         let mut workspace = self.read_unlocked(id)?;
+        let profile_lock = workspace.config().profile_id.as_ref()
+            .map(|profile_id| self.lock_profile(id, profile_id))
+            .transpose()?;
         if workspace.lifecycle() != WorkspaceLifecycle::Closed {
             if workspace.lifecycle() != WorkspaceLifecycle::Closing { workspace.transition(WorkspaceLifecycle::Closing)?; }
             workspace.transition(WorkspaceLifecycle::Closed)?;
         }
-        fs::remove_file(self.path_for(id)).map_err(io_error)
+        fs::remove_file(self.path_for(id)).map_err(io_error)?;
+        drop(profile_lock);
+        Ok(())
     }
     pub fn lock_workspace(&self, id: &WorkspaceId) -> Result<File, WorkspaceStoreError> {
         let file = OpenOptions::new().create(true).read(true).write(true).open(self.lock_path_for(id)).map_err(io_error)?;
@@ -1849,11 +1868,27 @@ mod persistence_tests {
         let id = WorkspaceId::new("owned").unwrap();
         let profile = ProfileId::new("owned").unwrap();
         let session = first.create_owned(id.clone(), [], WorkspaceConfig::durable_named(profile.clone())).unwrap();
+        assert!(matches!(first.delete(&id), Err(WorkspaceStoreError::WorkspaceLocked(_))));
         assert!(matches!(second.lock_profile(&id, &profile), Err(WorkspaceStoreError::ProfileLocked(_))));
         drop(session);
         let _released = second.lock_profile(&id, &profile).unwrap();
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn stale_workspace_save_is_rejected_after_concurrent_update() {
+        let root = test_root("stale-save");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("stale").unwrap();
+        store.create(id.clone(), [], WorkspaceConfig::durable_named(ProfileId::new("stale").unwrap())).unwrap();
+        let mut first = store.open(&id).unwrap();
+        let mut second = store.open(&id).unwrap();
+        first.transition(WorkspaceLifecycle::Suspended).unwrap();
+        store.save(&first).unwrap();
+        second.transition(WorkspaceLifecycle::Suspended).unwrap();
+        assert!(matches!(store.save(&second), Err(WorkspaceStoreError::StaleSnapshot(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
 
     #[test]
     fn coordinator_profile_lock_uses_canonical_profile_manager_path() {

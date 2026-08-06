@@ -58,7 +58,7 @@ use super::dom::{
 };
 use super::mouse::{MouseEngine, Point};
 use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
-use super::profile::ProfileManager;
+use super::profile::{ProfileLock, ProfileManager};
 
 mod classification;
 pub use classification::{
@@ -115,6 +115,7 @@ pub use knowledge::{
 pub use knowledge_store::{
     DEFAULT_KNOWLEDGE_STORE_BYTES, KnowledgePurgeResult, KnowledgeStore, KnowledgeStoreChange,
     KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreStats, default_knowledge_store_path,
+    default_knowledge_store_path_for_workspace,
 };
 pub use retry::{RetryPolicy, RetryPredicate};
 pub(crate) use semantic::find_region_node;
@@ -195,6 +196,7 @@ pub struct BrowserSession {
     pub(crate) disposable_profile: Option<DisposableProfileDir>,
     pub(crate) launched_incognito_context_id: Option<String>,
     pub(crate) profile: String,
+    pub(crate) profile_lock: Option<ProfileLock>,
     pub(crate) interaction_mode: InteractionMode,
     pub(crate) user_agent_original: Mutex<Option<String>>,
     pub(crate) polite_last_request: Mutex<Option<tokio::time::Instant>>,
@@ -649,6 +651,7 @@ impl BrowserSession {
         }
         let resolver_rules = policy.prepare_hardened_session(options.attach).await?;
         let profile_manager = ProfileManager::new();
+        let mut profile_lock = None;
         let mut disposable_profile = None;
         let mut chrome = None;
         let launch_endpoint_started = Instant::now();
@@ -688,6 +691,7 @@ impl BrowserSession {
                 disposable_profile = Some(directory);
                 path
             } else {
+                profile_lock = Some(profile_manager.lock_profile(&options.profile, &options.profile)?);
                 profile_manager.ensure_profile_dir(&options.profile)?
             };
             chrome = Some(
@@ -918,6 +922,7 @@ impl BrowserSession {
             disposable_profile,
             launched_incognito_context_id,
             profile: options.profile.clone(),
+            profile_lock,
             interaction_mode: options.interaction_mode,
             user_agent_original: Mutex::new(None),
             polite_last_request: Mutex::new(None),

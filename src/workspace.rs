@@ -402,7 +402,7 @@ struct RawWorkspaceScope {
     #[serde(default)]
     generation: Option<WorkspaceGeneration>,
     #[serde(default)]
-    storage: WorkspaceStorage,
+    storage: Option<WorkspaceStorage>,
 }
 
 impl<'de> Deserialize<'de> for WorkspaceScope {
@@ -413,7 +413,7 @@ impl<'de> Deserialize<'de> for WorkspaceScope {
             workspace_id: raw.workspace_id,
             profile_id: raw.profile_id,
             generation: raw.generation,
-            storage: raw.storage,
+            storage: raw.storage.unwrap_or(if raw.generation.is_some() { WorkspaceStorage::Ephemeral } else { WorkspaceStorage::Durable }),
         };
         scope.validate_invariants().map(|()| scope).map_err(serde::de::Error::custom)
     }
@@ -704,9 +704,9 @@ pub enum OwnershipDomain { Workspace, Browser, Presentation, ExternalAttachment 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnershipBoundary {
-    pub scope: WorkspaceScope,
-    pub domain: OwnershipDomain,
-    pub owner: OwnershipOwner,
+    scope: WorkspaceScope,
+    domain: OwnershipDomain,
+    owner: OwnershipOwner,
 }
 
 impl OwnershipBoundary {
@@ -722,6 +722,9 @@ impl OwnershipBoundary {
         }
         Ok(Self { scope, domain, owner })
     }
+    pub fn scope(&self) -> &WorkspaceScope { &self.scope }
+    pub fn domain(&self) -> OwnershipDomain { self.domain }
+    pub fn owner(&self) -> &OwnershipOwner { &self.owner }
 }
 
 #[derive(Deserialize)]

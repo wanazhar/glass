@@ -139,3 +139,15 @@ fn ownership_deserialization_preserves_domain_checks() {
     });
     assert!(serde_json::from_value::<OwnershipBoundary>(invalid).is_err());
 }
+
+#[test]
+fn legacy_generation_scope_migrates_to_ephemeral_storage() {
+    let scope: WorkspaceScope = serde_json::from_value(serde_json::json!({
+        "workspaceId": "legacy",
+        "generation": 9
+    })).unwrap();
+    assert_eq!(scope.storage(), WorkspaceStorage::Ephemeral);
+    let reference = ResourceReference::browser(scope, ResourceId::new("browser").unwrap()).unwrap();
+    assert_eq!(reference.to_string(), "glass://workspace/legacy/generation/9/browser/browser");
+    assert_eq!(reference.to_string().parse::<ResourceReference>().unwrap(), reference);
+}

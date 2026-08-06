@@ -375,6 +375,7 @@ pub fn extract_page_context(
 
     let mut collector = EvidenceCollector::new(request.budgets);
     let mut missing_sources = BTreeSet::new();
+    let inconsistent_observation = observation_has_mutation_race(context);
     let incomplete_accessibility = context.incomplete.iter().any(|reason| {
         matches!(
             reason,
@@ -390,6 +391,10 @@ pub fn extract_page_context(
                     missing_sources.insert(*source);
                 } else {
                     for root in &context.accessibility.roots {
+                        if collector.is_full() {
+                            collector.mark_omitted();
+                            break;
+                        }
                         collect_accessibility(root, &mut collector, 0, None);
                     }
                 }
@@ -402,33 +407,38 @@ pub fn extract_page_context(
                 }
             }
             EvidenceSource::Forms => {
-                for control in &context.accessibility.interactive {
-                    if control.input_type.is_some() || is_form_control_role(&control.role) {
-                        collector.push(EvidenceFact {
-                            source: *source,
-                            kind: "control".into(),
-                            quality: EvidenceQuality::Strong,
-                            role: Some(control.role.clone()),
-                            name: Some(control.name.clone()),
-                            input_type: control.input_type.clone(),
-                            required: Some(control.required),
-                            read_only: Some(control.read_only),
-                            empty: Some(control.empty),
-                            geometry_present: None,
-                            parent_role: control
+                if incomplete_accessibility {
+                    missing_sources.insert(*source);
+                } else {
+                    for control in &context.accessibility.interactive {
+                        if collector.is_full() {
+                            collector.mark_omitted();
+                            break;
+                        }
+                        if control.input_type.is_some() || is_form_control_role(&control.role) {
+                            let parent_role = control
                                 .ancestor_path
                                 .last()
                                 .and_then(|value| value.split(':').next())
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_owned),
-                            relationship_hint: custom_form_control_hint(
-                                &control.role,
-                                control
-                                    .ancestor_path
-                                    .last()
-                                    .and_then(|value| value.split(':').next()),
-                            ),
-                        });
+                                .and_then(safe_parent_role);
+                            collector.push(EvidenceFact {
+                                source: *source,
+                                kind: "control".into(),
+                                quality: EvidenceQuality::Strong,
+                                role: Some(control.role.clone()),
+                                name: Some(control.name.clone()),
+                                input_type: control.input_type.clone(),
+                                required: Some(control.required),
+                                read_only: Some(control.read_only),
+                                empty: Some(control.empty),
+                                geometry_present: None,
+                                relationship_hint: custom_form_control_hint(
+                                    &control.role,
+                                    parent_role.as_deref(),
+                                ),
+                                parent_role,
+                            });
+                        }
                     }
                 }
             }
@@ -451,6 +461,7 @@ pub fn extract_page_context(
         &request.sources,
         &missing_sources,
         collector.truncated,
+        inconsistent_observation,
     );
     let mut evidence = ExtractionEvidence {
         schema_version: EXTRACTION_CONTRACT_SCHEMA_VERSION,
@@ -491,22 +502,30 @@ impl EvidenceCollector {
 
     fn allow_depth(&mut self, depth: u16) -> bool {
         if depth >= self.budgets.max_depth {
-            self.omitted_facts = self.omitted_facts.saturating_add(1);
-            self.truncated = true;
+            self.mark_omitted();
             false
         } else {
             true
         }
     }
 
+    fn is_full(&self) -> bool {
+        self.facts.len() as u32 >= self.budgets.max_nodes
+    }
+
+    fn mark_omitted(&mut self) {
+        self.omitted_facts = self.omitted_facts.saturating_add(1);
+        self.truncated = true;
+    }
+
     fn push(&mut self, mut fact: EvidenceFact) {
-        if self.facts.len() as u32 >= self.budgets.max_nodes {
-            self.omitted_facts = self.omitted_facts.saturating_add(1);
-            self.truncated = true;
+        if self.is_full() {
+            self.mark_omitted();
             return;
         }
         fact.role = self.bound_text(fact.role.take());
         fact.name = self.bound_text(fact.name.take());
+        fact.parent_role = self.bound_text(fact.parent_role.take());
         fact.input_type = self.bound_text(fact.input_type.take());
         self.facts.push(fact);
     }
@@ -527,28 +546,44 @@ impl EvidenceCollector {
         Some(bounded)
     }
 }
+fn observation_has_mutation_race(context: &PageContext) -> bool {
+    !context.consistency.consistent
+        || context.consistency.start_revision != context.consistency.end_revision
+        || context.consistency.start_mutation_revision
+            != context.consistency.end_mutation_revision
+}
+
 fn evidence_coverage(
     context: &PageContext,
     sources: &[EvidenceSource],
     missing_sources: &BTreeSet<EvidenceSource>,
     truncated: bool,
+    inconsistent_observation: bool,
 ) -> EvidenceCoverage {
     let requested = |source| sources.contains(&source);
     let available = |source| requested(source) && !missing_sources.contains(&source);
-    let structural = if available(EvidenceSource::Dom) && !truncated {
+    let mut structural = if available(EvidenceSource::Dom) && !truncated {
         EvidenceQuality::Strong
     } else if available(EvidenceSource::Dom) || available(EvidenceSource::Accessibility) {
         EvidenceQuality::Partial
     } else {
         EvidenceQuality::Opaque
     };
-    let semantic = if available(EvidenceSource::Accessibility) && !truncated {
+    let mut semantic = if available(EvidenceSource::Accessibility) && !truncated {
         EvidenceQuality::Strong
     } else if requested(EvidenceSource::Accessibility) {
         EvidenceQuality::Partial
     } else {
         EvidenceQuality::Opaque
     };
+    if inconsistent_observation {
+        if structural != EvidenceQuality::Opaque {
+            structural = EvidenceQuality::Partial;
+        }
+        if semantic != EvidenceQuality::Opaque {
+            semantic = EvidenceQuality::Partial;
+        }
+    }
     let opaque_regions = (context.boundaries.child_frames
         + context.boundaries.shadow_roots
         + context.boundaries.canvases) as u32;
@@ -558,6 +593,9 @@ fn evidence_coverage(
         .collect::<Vec<_>>();
     if truncated {
         reasons.push("budgetTruncated".into());
+    }
+    if inconsistent_observation {
+        reasons.push("mutationRace".into());
     }
     if context.boundaries.child_frames > 0 {
         reasons.push("frameBoundary".into());
@@ -572,10 +610,58 @@ fn evidence_coverage(
     EvidenceCoverage {
         structural,
         semantic,
+
         interactive_entities_observed: context.accessibility.interactive.len() as u32,
         opaque_regions,
         reasons,
     }
+}
+fn safe_parent_role(value: &str) -> Option<String> {
+    let role = value.trim();
+    if role.is_empty() || role.len() > 64 {
+        return None;
+    }
+    let known_role = matches!(
+        role.to_ascii_lowercase().as_str(),
+        "alert"
+            | "article"
+            | "banner"
+            | "button"
+            | "cell"
+            | "checkbox"
+            | "columnheader"
+            | "combobox"
+            | "complementary"
+            | "dialog"
+            | "document"
+            | "form"
+            | "grid"
+            | "heading"
+            | "img"
+            | "link"
+            | "list"
+            | "listbox"
+            | "main"
+            | "menu"
+            | "menuitem"
+            | "navigation"
+            | "option"
+            | "radio"
+            | "region"
+            | "row"
+            | "rowheader"
+            | "search"
+            | "slider"
+            | "spinbutton"
+            | "status"
+            | "switch"
+            | "tab"
+            | "table"
+            | "textbox"
+            | "toolbar"
+            | "tree"
+    );
+    known_role.then(|| role.to_owned())
 }
 
 fn is_form_control_role(role: &str) -> bool {
@@ -643,6 +729,10 @@ fn collect_accessibility(
         parent_role
     };
     for child in &node.children {
+        if collector.is_full() {
+            collector.mark_omitted();
+            break;
+        }
         collect_accessibility(child, collector, depth.saturating_add(1), next_parent_role);
     }
 }
@@ -666,6 +756,10 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
         relationship_hint: None,
     });
     for child in &node.children {
+        if collector.is_full() {
+            collector.mark_omitted();
+            break;
+        }
         collect_dom(child, collector, depth.saturating_add(1));
     }
 }
@@ -694,6 +788,10 @@ fn collect_layout(
         relationship_hint: None,
     });
     for child in &node.children {
+        if collector.is_full() {
+            collector.mark_omitted();
+            break;
+        }
         collect_layout(child, collector, source, depth.saturating_add(1));
     }
 }
@@ -702,6 +800,7 @@ fn trim_to_output_budget(
     evidence: &mut ExtractionEvidence,
     max_output_bytes: u32,
 ) -> Result<(), ExtractionContractError> {
+    let mut removed_fact = false;
     while serde_json::to_vec(evidence)
         .map_err(|error| ExtractionContractError::new("$", error.to_string()))?
         .len()
@@ -713,10 +812,59 @@ fn trim_to_output_budget(
                 "output budget is too small for extraction metadata",
             ));
         }
+        if !removed_fact {
+            evidence.coverage.structural = downgrade_coverage(evidence.coverage.structural);
+            evidence.coverage.semantic = downgrade_coverage(evidence.coverage.semantic);
+            if !evidence
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "budgetTruncated")
+            {
+                evidence.coverage.reasons.push("budgetTruncated".into());
+                evidence.coverage.reasons.truncate(16);
+            }
+        }
+        removed_fact = true;
         evidence.limits.omitted_facts = evidence.limits.omitted_facts.saturating_add(1);
         evidence.limits.truncated = true;
+        evidence.limits.text_bytes = evidence
+            .facts
+            .iter()
+            .map(fact_text_bytes)
+            .sum::<u32>();
+    }
+    evidence.limits.text_bytes = evidence
+        .facts
+        .iter()
+        .map(fact_text_bytes)
+        .sum::<u32>();
+    if removed_fact {
+        evidence.coverage.structural = downgrade_coverage(evidence.coverage.structural);
+        evidence.coverage.semantic = downgrade_coverage(evidence.coverage.semantic);
     }
     Ok(())
+}
+
+fn downgrade_coverage(quality: EvidenceQuality) -> EvidenceQuality {
+    if quality == EvidenceQuality::Opaque {
+        EvidenceQuality::Opaque
+    } else {
+        EvidenceQuality::Partial
+    }
+}
+
+fn fact_text_bytes(fact: &EvidenceFact) -> u32 {
+    [
+        fact.role.as_deref(),
+        fact.name.as_deref(),
+        fact.parent_role.as_deref(),
+        fact.input_type.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.len() as u32)
+    .sum()
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
@@ -1063,5 +1211,102 @@ mod tests {
                 .any(|reason| reason == "frameBoundary")
         );
         assert_ne!(evidence.coverage.semantic, EvidenceQuality::Opaque);
+    }
+    #[test]
+    fn extraction_output_budget_truncation_updates_coverage_and_text_bytes() {
+        let context = page_context();
+        let mut request = request();
+        request.sources = vec![EvidenceSource::Accessibility, EvidenceSource::Dom];
+        let complete = extract_page_context(&context, &request).unwrap();
+        let complete_size = serde_json::to_vec(&complete).unwrap().len();
+        request.budgets.max_output_bytes = (complete_size - 1) as u32;
+
+        let bounded = extract_page_context(&context, &request).unwrap();
+        assert!(bounded.limits.truncated);
+        assert!(bounded.limits.omitted_facts > 0);
+        assert_eq!(
+            bounded.limits.text_bytes,
+            bounded
+                .facts
+                .iter()
+                .map(fact_text_bytes)
+                .sum::<u32>()
+        );
+        assert_eq!(bounded.coverage.structural, EvidenceQuality::Partial);
+        assert!(bounded
+            .coverage
+            .reasons
+            .iter()
+            .any(|reason| reason == "budgetTruncated"));
+    }
+
+    #[test]
+    fn extraction_distinguishes_absent_forms_from_missing_accessibility() {
+        let mut request = request();
+        request.sources = vec![EvidenceSource::Forms];
+
+        let mut absent_context = page_context();
+        absent_context.accessibility.interactive.clear();
+        let absent = extract_page_context(&absent_context, &request).unwrap();
+        assert!(absent.facts.is_empty());
+        assert!(absent.limits.missing_sources.is_empty());
+
+        let mut missing_context = absent_context;
+        missing_context.incomplete.push(
+            crate::browser::session::ObservationIncompleteReason::AccessibilityNode,
+        );
+        let missing = extract_page_context(&missing_context, &request).unwrap();
+        assert!(missing.facts.is_empty());
+        assert_eq!(missing.limits.missing_sources, vec![EvidenceSource::Forms]);
+        assert!(missing
+            .coverage
+            .reasons
+            .iter()
+            .any(|reason| reason == "missingSource:Forms"));
+    }
+
+    #[test]
+    fn extraction_marks_mutation_races_as_partial_coverage() {
+        let mut context = page_context();
+        context.consistency.consistent = false;
+        let evidence = extract_page_context(&context, &request()).unwrap();
+        assert_eq!(evidence.coverage.structural, EvidenceQuality::Partial);
+        assert_eq!(evidence.coverage.semantic, EvidenceQuality::Partial);
+        assert!(evidence
+            .coverage
+            .reasons
+            .iter()
+            .any(|reason| reason == "mutationRace"));
+    }
+
+    #[test]
+    fn extraction_is_non_mutating_and_preserves_fact_source_provenance() {
+        let context = page_context();
+        let before = serde_json::to_vec(&context).unwrap();
+        let mut request = request();
+        request.sources = vec![
+            EvidenceSource::Accessibility,
+            EvidenceSource::Dom,
+            EvidenceSource::Forms,
+            EvidenceSource::Layout,
+        ];
+        let evidence = extract_page_context(&context, &request).unwrap();
+        assert_eq!(serde_json::to_vec(&context).unwrap(), before);
+        assert!(evidence
+            .facts
+            .iter()
+            .all(|fact| request.sources.contains(&fact.source)));
+        assert!(evidence
+            .facts
+            .iter()
+            .any(|fact| fact.source == EvidenceSource::Dom));
+        assert!(evidence
+            .facts
+            .iter()
+            .any(|fact| fact.source == EvidenceSource::Forms));
+        assert!(evidence
+            .facts
+            .iter()
+            .any(|fact| fact.source == EvidenceSource::Layout));
     }
 }

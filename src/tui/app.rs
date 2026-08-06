@@ -528,14 +528,18 @@ impl App {
             .split(chunks[1]);
         let pane = content[1];
         if pane.width == 0 || pane.height == 0 {
-            return Ok(false);
+            let changed = self.graphics.clear_pane()?;
+            if changed {
+                self.add_activity("Graphics pane is empty; released terminal frame.");
+            }
+            return Ok(changed);
         }
         let changed = self.graphics.resize(
             PaneArea::new(pane.x, pane.y, pane.width, pane.height),
             PixelSize::new(pane.width as u32, pane.height as u32),
             PixelSize::new(pane.width as u32, pane.height as u32),
             CaptureScale::FULL,
-            0,
+            self.graphics.browser_revision(),
         )?;
         if changed {
             self.add_activity(format!(
@@ -558,6 +562,16 @@ impl App {
         stdout.flush()
     }
 
+    fn render_graphics(&mut self) -> BrowserResult<()> {
+        let rendered = self.graphics.render_current(&self.page_content)?;
+        if rendered.mode == crate::terminal_graphics::GraphicsMode::Kitty {
+            let mut stdout = io::stdout();
+            stdout.write_all(&rendered.bytes)?;
+            stdout.flush()?;
+        }
+        self.graphics.present_pending()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -2069,6 +2083,7 @@ async fn run_tui_loop(
             let area = terminal.size()?;
             app.sync_graphics_geometry(area.into())?;
             terminal.draw(|frame| draw(frame, app))?;
+            app.render_graphics()?;
         }
 
         redraw = tokio::select! {

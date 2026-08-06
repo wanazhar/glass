@@ -102,6 +102,13 @@ impl TerminalEnvironmentOwned {
 /// Capability negotiation is intentionally conservative: an explicit Kitty
 /// window marker or a known compatible terminal is required for pixel output.
 pub fn negotiate(env: TerminalEnvironment<'_>) -> GraphicsMode {
+    let term = env.term.unwrap_or_default().to_ascii_lowercase();
+    if matches!(term.as_str(), "dumb" | "unknown") {
+        return GraphicsMode::Semantic;
+    }
+    if term == "xterm-kitty" {
+        return GraphicsMode::Kitty;
+    }
     if env.kitty_window_id.is_some_and(|value| !value.is_empty()) {
         return GraphicsMode::Kitty;
     }
@@ -265,6 +272,9 @@ impl TerminalGraphics {
         self.geometry.as_ref()
     }
 
+    pub const fn browser_revision(&self) -> u64 {
+        self.browser_revision
+    }
     /// Update pane geometry and release frames acquired for the old pane.
     /// Geometry revisions are monotonic and old frames cannot be presented
     /// after this operation.
@@ -276,6 +286,14 @@ impl TerminalGraphics {
         capture_scale: CaptureScale,
         browser_revision: u64,
     ) -> Result<bool, GraphicsError> {
+        if browser_revision < self.browser_revision {
+            return Err(GraphicsError::Presentation(
+                PresentationContractError::StaleRevision {
+                    expected: self.browser_revision,
+                    actual: browser_revision,
+                },
+            ));
+        }
         if pane.is_empty() {
             return Err(GraphicsError::Invalid("pane must be non-empty".into()));
         }
@@ -307,6 +325,25 @@ impl TerminalGraphics {
             browser_revision,
             self.geometry_revision,
         )?);
+        self.cleaned = false;
+        Ok(true)
+    }
+    /// Release all frames when Ratatui reports a zero-sized pane. This is an
+    /// explicit empty-pane state rather than an invalid geometry error.
+    pub fn clear_pane(&mut self) -> Result<bool, GraphicsError> {
+        let changed = self.geometry.is_some()
+            || !self.mailbox.is_empty()
+            || !self.pane.is_empty();
+        if !changed {
+            return Ok(false);
+        }
+        self.clear_payloads(FrameCleanupReason::Resize);
+        let identity = self
+            .mailbox
+            .identity()
+            .cloned()
+            .ok_or_else(|| GraphicsError::Invalid("graphics mailbox has no identity".into()))?;
+        self.mailbox.rebind(identity)?;
         self.cleaned = false;
         Ok(true)
     }
@@ -349,16 +386,19 @@ impl TerminalGraphics {
                 Ok(SubmitResult::Queued)
             }
             crate::presentation::SubmitOutcome::ReplacedPending => {
+                if let Some(previous) = self.pending_payload.take() {
+                    self.record(
+                        previous.frame,
+                        FrameOwnershipEvent::Released {
+                            reason: FrameCleanupReason::Replaced,
+                        },
+                    );
+                }
                 self.pending_payload = Some(PayloadFrame {
                     frame: frame.clone(),
                     bytes: payload.to_vec(),
                 });
-                self.record(
-                    frame,
-                    FrameOwnershipEvent::Released {
-                        reason: FrameCleanupReason::Replaced,
-                    },
-                );
+                self.record(frame, FrameOwnershipEvent::Queued);
                 Ok(SubmitResult::Replaced)
             }
             crate::presentation::SubmitOutcome::DroppedStale => {
@@ -387,7 +427,9 @@ impl TerminalGraphics {
         let next = self.pending_payload.take().ok_or_else(|| {
             GraphicsError::Invalid("frame metadata and payload mailbox diverged".into())
         })?;
+        let next_frame = next.frame.clone();
         self.current_payload = Some(next);
+        self.record(next_frame, FrameOwnershipEvent::Presented);
         self.record(
             previous,
             FrameOwnershipEvent::Released {
@@ -415,15 +457,49 @@ impl TerminalGraphics {
                 bytes: semantic.into_bytes(),
             });
         }
+        let (format, extra) = match current.frame.encoding {
+            crate::presentation::FrameEncoding::Png => (100u8, String::new()),
+            crate::presentation::FrameEncoding::RawRgba => {
+                let expected = current
+                    .frame
+                    .viewport
+                    .width
+                    .checked_mul(current.frame.viewport.height)
+                    .and_then(|size| size.checked_mul(4));
+                if expected != Some(current.bytes.len() as u32) {
+                    return Ok(RenderedFrame {
+                        mode: GraphicsMode::Semantic,
+                        generation: Some(current.frame.generation),
+                        pane: self.pane,
+                        bytes: semantic.into_bytes(),
+                    });
+                }
+                (
+                    32u8,
+                    format!(
+                        "s={},v={},",
+                        current.frame.viewport.width, current.frame.viewport.height
+                    ),
+                )
+            }
+            crate::presentation::FrameEncoding::Jpeg
+            | crate::presentation::FrameEncoding::Webp
+            | crate::presentation::FrameEncoding::Av1 => {
+                return Ok(RenderedFrame {
+                    mode: GraphicsMode::Semantic,
+                    generation: Some(current.frame.generation),
+                    pane: self.pane,
+                    bytes: semantic.into_bytes(),
+                });
+            }
+        };
+        let (x, y, width, height) = self.kitty_placement();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&current.bytes);
-        let mut output = Vec::with_capacity(KITTY_INTRO.len() + encoded.len() + KITTY_END.len() + 80);
+        let mut output =
+            Vec::with_capacity(KITTY_INTRO.len() + encoded.len() + KITTY_END.len() + 96);
         output.extend_from_slice(KITTY_INTRO);
         output.extend_from_slice(
-            format!(
-                "a=p,x={},y={},w={},h={},f=100,m=0;",
-                self.pane.x, self.pane.y, self.pane.width, self.pane.height
-            )
-            .as_bytes(),
+            format!("a=p,x={x},y={y},w={width},h={height},f={format},{extra}m=0;").as_bytes(),
         );
         output.extend_from_slice(encoded.as_bytes());
         output.extend_from_slice(KITTY_END);
@@ -439,6 +515,34 @@ impl TerminalGraphics {
             pane: self.pane,
             bytes: output,
         })
+    }
+
+    fn kitty_placement(&self) -> (u16, u16, u16, u16) {
+        let Some(geometry) = self.geometry.as_ref() else {
+            return (self.pane.x, self.pane.y, self.pane.width, self.pane.height);
+        };
+        let pane = geometry.pane;
+        let image = geometry.displayed_image;
+        let local_x = image.x.saturating_sub(pane.origin.x) as u64;
+        let local_y = image.y.saturating_sub(pane.origin.y) as u64;
+        let x = self.pane.x as u64
+            + local_x.saturating_mul(self.pane.width as u64) / pane.size.width as u64;
+        let y = self.pane.y as u64
+            + local_y.saturating_mul(self.pane.height as u64) / pane.size.height as u64;
+        let width = (image.width as u64)
+            .saturating_mul(self.pane.width as u64)
+            .div_ceil(pane.size.width as u64)
+            .max(1);
+        let height = (image.height as u64)
+            .saturating_mul(self.pane.height as u64)
+            .div_ceil(pane.size.height as u64)
+            .max(1);
+        (
+            x.min(u16::MAX as u64) as u16,
+            y.min(u16::MAX as u64) as u16,
+            width.min(self.pane.width as u64) as u16,
+            height.min(self.pane.height as u64) as u16,
+        )
     }
 
     /// Return a no-artifact cleanup command. It is idempotent and semantic mode
@@ -588,7 +692,15 @@ mod tests {
             GraphicsMode::Kitty
         );
         assert_eq!(
+            negotiate(TerminalEnvironment::new(Some("xterm-kitty"), None, None)),
+            GraphicsMode::Kitty
+        );
+        assert_eq!(
             negotiate(TerminalEnvironment::new(Some("xterm"), Some("unknown"), None)),
+            GraphicsMode::Semantic
+        );
+        assert_eq!(
+            negotiate(TerminalEnvironment::new(Some("dumb"), Some("kitty"), Some("1"))),
             GraphicsMode::Semantic
         );
     }
@@ -611,6 +723,85 @@ mod tests {
         let diagnostics = graphics.diagnostics();
         assert_eq!(diagnostics.pending_bytes, 5);
         assert_eq!(diagnostics.replaced_frames, 1);
+        let records = graphics.ownership().collect::<Vec<_>>();
+        assert!(records.iter().any(|record| {
+            record.generation == 2
+                && record.event
+                    == FrameOwnershipEvent::Released {
+                        reason: FrameCleanupReason::Replaced,
+                    }
+        }));
+        assert!(records.iter().any(|record| {
+            record.generation == 3 && record.event == FrameOwnershipEvent::Queued
+        }));
+    }
+
+    #[test]
+    fn raw_rgba_render_uses_encoding_and_image_placement() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(2, 3, 40, 20),
+                PixelSize::new(2, 1),
+                PixelSize::new(2, 1),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        let mut rgba = frame(1, 1);
+        rgba.viewport = PixelSize::new(2, 1);
+        rgba.content = PixelSize::new(2, 1);
+        rgba.encoding = FrameEncoding::RawRgba;
+        graphics.submit(rgba, &[0; 8]).unwrap();
+        let rendered = graphics.render_current("fallback").unwrap();
+        let command = std::str::from_utf8(&rendered.bytes).unwrap();
+        assert!(command.contains("f=32"));
+        assert!(command.contains("s=2,v=1"));
+        assert!(command.contains("x=2,y=3,w=40,h=20"));
+    }
+    #[test]
+    fn zero_pane_releases_frame_and_preserves_revision_monotonicity() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(0, 0, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                3,
+            )
+            .unwrap();
+        graphics.submit(frame(1, 1), b"frame").unwrap();
+        assert!(graphics.clear_pane().unwrap());
+        assert!(graphics.geometry().is_none());
+        assert_eq!(graphics.diagnostics().current_bytes, 0);
+        assert_eq!(graphics.diagnostics().accepted_frames, 0);
+        let error = graphics
+            .resize(
+                PaneArea::new(0, 0, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                2,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphicsError::Presentation(PresentationContractError::StaleRevision {
+                expected: 3,
+                actual: 2
+            })
+        ));
+        graphics
+            .resize(
+                PaneArea::new(0, 0, 50, 20),
+                PixelSize::new(800, 480),
+                PixelSize::new(800, 480),
+                CaptureScale::FULL,
+                3,
+            )
+            .unwrap();
+        assert!(graphics.geometry_revision() > 1);
     }
 
     #[test]

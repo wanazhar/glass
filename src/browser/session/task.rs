@@ -1230,12 +1230,12 @@ impl BrowserSession {
             ));
         }
         let action = match task.task {
-            TaskKind::DialogConfirm => self.accept_dialog().await,
-            TaskKind::DialogCancel => self.dismiss_dialog().await,
+            TaskKind::DialogConfirm => self.accept_dialog_with_revision(expected_revision).await,
+            TaskKind::DialogCancel => self.dismiss_dialog_with_revision(expected_revision).await,
             _ => unreachable!(),
         };
         let still_pending = self.pending_dialog().await.is_some();
-        let succeeded = action.is_ok() && !still_pending;
+        let succeeded = dialog_action_succeeded(&action, still_pending);
         let operation = if task.task == TaskKind::DialogConfirm {
             TaskPlanOperation::ConfirmDialog
         } else {
@@ -1279,6 +1279,11 @@ impl BrowserSession {
         })
     }
 }
+
+fn dialog_action_succeeded(action: &BrowserResult<()>, still_pending: bool) -> bool {
+    action.is_ok() && !still_pending
+}
+
 fn step(
     plan: &TaskExecutionPlan,
     operation: TaskPlanOperation,
@@ -1912,6 +1917,32 @@ mod tests {
             result.retry.classification,
             RetryClassification::UnsafeUntilReconciled
         );
+    }
+
+    #[test]
+    fn stale_dialog_action_is_indeterminate_without_dialog_payload() {
+        let action: BrowserResult<()> = Err("stale revision".into());
+        assert!(!dialog_action_succeeded(&action, true));
+
+        let mut task = task();
+        task.task = TaskKind::DialogConfirm;
+        let plan = compile_task(&task).unwrap();
+        let result = mutation_failure_result(
+            &task,
+            &plan,
+            (7, 8),
+            Vec::new(),
+            TaskPlanOperation::ConfirmDialog,
+            "dialog-verification",
+            "dialog outcome was not verified",
+        );
+        assert_eq!(result.status, "indeterminate");
+        assert!(result.mutation_possible);
+        assert_eq!(result.current_revision, 8);
+        assert!(result.dialog.is_none());
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("secret dialog message"));
+        assert!(!serialized.contains("\"dialog\""));
     }
 
     #[test]

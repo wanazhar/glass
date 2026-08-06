@@ -25,6 +25,42 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Accept the currently pending JavaScript dialog only when the supplied
+    /// observation revision is still current.
+    ///
+    /// This guarded boundary is used by Task Protocol mutations. The
+    /// compatibility-preserving [`accept_dialog`](Self::accept_dialog) method
+    /// intentionally remains unguarded.
+    pub async fn accept_dialog_with_revision(&self, expected_revision: u64) -> BrowserResult<()> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                self.cdp.handle_javascript_dialog(true).await?;
+                Ok(())
+            })
+            .await?;
+        self.invalidate_observation().await;
+        Ok(())
+    }
+
+    /// Dismiss the currently pending JavaScript dialog only when the supplied
+    /// observation revision is still current.
+    ///
+    /// This guarded boundary is used by Task Protocol mutations. The
+    /// compatibility-preserving [`dismiss_dialog`](Self::dismiss_dialog)
+    /// method intentionally remains unguarded.
+    pub async fn dismiss_dialog_with_revision(&self, expected_revision: u64) -> BrowserResult<()> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                self.cdp.handle_javascript_dialog(false).await?;
+                Ok(())
+            })
+            .await?;
+        self.invalidate_observation().await;
+        Ok(())
+    }
+
     /// Dismiss (cancel) the currently pending JavaScript dialog.
     ///
     /// Invalidates the observation cache after handling.

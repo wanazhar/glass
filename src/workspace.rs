@@ -786,6 +786,12 @@ impl Attachment {
 
     pub fn can_mutate(&self) -> bool { self.role != ActorRole::Observer && self.capabilities.contains(AttachmentCapability::Mutate) }
     pub fn can_takeover(&self) -> bool { self.can_mutate() && self.capabilities.contains(AttachmentCapability::Takeover) }
+    fn from_wire(raw: RawAttachmentWire) -> Result<Self, serde_json::Error> {
+        let id = AttachmentId::new(raw.id).map_err(wire_error)?;
+        let actor_id = ResourceId::new(raw.actor_id).map_err(wire_error)?;
+        let scope = WorkspaceScope::from_wire(raw.scope)?;
+        Self::new(id, actor_id, raw.role, raw.capabilities, scope).map_err(wire_error)
+    }
 }
 
 #[derive(Deserialize)]
@@ -798,6 +804,16 @@ struct RawAttachment {
     scope: WorkspaceScope,
 }
 
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAttachmentWire {
+    id: String,
+    actor_id: String,
+    role: ActorRole,
+    capabilities: AttachmentCapabilities,
+    scope: RawWorkspaceScopeWire,
+}
 impl<'de> Deserialize<'de> for Attachment {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
@@ -973,14 +989,30 @@ impl Workspace {
     pub fn from_json(input: &str) -> Result<Self, serde_json::Error> {
         validate_wire_bytes(input)?;
         let raw: RawWorkspaceWire = serde_json::from_str(input)?;
-        if !raw.attachments.is_null() && raw.attachments.as_object().map_or(true, |map| !map.is_empty()) {
-            return Err(wire_error("workspace attachment wire loading requires a scoped attachment loader"));
+        let mut attachments = BTreeMap::new();
+        if raw.attachments.len() > MAX_ATTACHMENTS {
+            return Err(wire_error(WorkspaceError::TooManyAttachments { maximum: MAX_ATTACHMENTS }));
+        }
+        for (key, raw_attachment) in raw.attachments {
+            let attachment = Attachment::from_wire(raw_attachment)?;
+            let expected = attachment.id().to_string();
+            if key != expected {
+                return Err(wire_error("attachment map key does not match attachment id"));
+            }
+            attachments.insert(attachment.id().clone(), attachment);
         }
         let identity = WorkspaceIdentity::from_wire(raw.identity)?;
         let profile_id = raw.config.profile_id.map(ProfileId::new).transpose().map_err(wire_error)?;
         let config = WorkspaceConfig { profile_mode: raw.config.profile_mode, privacy_mode: raw.config.privacy_mode, storage: raw.config.storage, profile_id, generation: raw.config.generation };
         let mut workspace = Self::new(identity, config).map_err(wire_error)?;
         workspace.lifecycle = raw.lifecycle;
+        let scope = WorkspaceScope { workspace_id: workspace.identity.id().clone(), profile_id: workspace.config.profile_id.clone(), generation: workspace.config.generation, storage: workspace.config.storage };
+        for attachment in attachments.values() {
+            if attachment.scope() != &scope {
+                return Err(wire_error("attachment scope does not match workspace scope"));
+            }
+        }
+        workspace.attachments = attachments;
         Ok(workspace)
     }
     pub fn new(identity: WorkspaceIdentity, config: WorkspaceConfig) -> Result<Self, WorkspaceError> {
@@ -990,6 +1022,7 @@ impl Workspace {
     pub fn identity(&self) -> &WorkspaceIdentity { &self.identity }
     pub fn config(&self) -> &WorkspaceConfig { &self.config }
     pub fn lifecycle(&self) -> WorkspaceLifecycle { self.lifecycle }
+    pub fn attachments(&self) -> &BTreeMap<AttachmentId, Attachment> { &self.attachments }
 
     pub fn scope(&self) -> WorkspaceScope {
         WorkspaceScope { workspace_id: self.identity.id().clone(), profile_id: self.config.profile_id.clone(), generation: self.config.generation, storage: self.config.storage }
@@ -1140,7 +1173,7 @@ struct RawWorkspaceWire {
     config: RawWorkspaceConfigWire,
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
-    attachments: serde_json::Value,
+    attachments: BTreeMap<String, RawAttachmentWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -160,3 +160,28 @@ fn direct_identity_deserialization_requires_capped_loader() {
     assert!(serde_json::from_str::<WorkspaceId>("\"valid-id\"").is_err());
     assert_eq!(WorkspaceId::from_json("\"valid-id\"").unwrap().as_str(), "valid-id");
 }
+
+#[test]
+fn capped_snapshot_loads_scoped_attachments() {
+    let identity = WorkspaceIdentity::new(WorkspaceId::new("snap").unwrap(), []).unwrap();
+    let config = WorkspaceConfig::ephemeral_private(None);
+    let mut workspace = Workspace::new(identity, config).unwrap();
+    let attachment = Attachment::new(
+        AttachmentId::new("att").unwrap(),
+        ResourceId::new("actor").unwrap(),
+        ActorRole::Human,
+        AttachmentCapabilities::mutating(),
+        workspace.scope(),
+    ).unwrap();
+    workspace.attach(attachment).unwrap();
+    let encoded = serde_json::to_string(&workspace).unwrap();
+    let loaded = Workspace::from_json(&encoded).unwrap();
+    assert_eq!(loaded.attachments().len(), 1);
+    assert_eq!(loaded.scope(), workspace.scope());
+}
+
+#[test]
+fn capped_snapshot_rejects_mismatched_attachment_key() {
+    let json = r#"{"identity":{"id":"snap","aliases":[]},"config":{"profileMode":"isolated","privacyMode":"private","storage":"ephemeral","generation":7},"lifecycle":"active","attachments":{"wrong":{"id":"real","actorId":"actor","role":"human","capabilities":["observe"],"scope":{"workspaceId":"snap","storage":"ephemeral","generation":7}}}}"#;
+    assert!(Workspace::from_json(json).is_err());
+}

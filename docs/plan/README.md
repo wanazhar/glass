@@ -62,9 +62,9 @@ commit boundaries are recorded in
 
 ### Completed plan: Glass Semantic Execution Engine issue #30
 
-Status: Complete — the 0.3.0 release candidate satisfies the epic exit
-contract. Publication and the matching source-only GitHub Release complete the
-delivery record.
+Status: Complete — `glass-browser 0.3.0` is published on crates.io and
+`v0.3.0` has the matching source-only GitHub Release. The epic exit contract
+and release delivery record are complete.
 
 Completed:
 

@@ -51,8 +51,9 @@ OS. The current recorded result is in
 
 ## 0.3.0 release validation
 
-The tagged checkout passed the complete revision-bound release suite before
-publication:
+The signed tag `v0.3.0` targets checkout
+`2efcb3d1649d84b415d63bf25f9bb5dd713f2dfb`. It passed the complete
+revision-bound release suite before publication:
 
 - Stable Glass Web IR v1 and Task Protocol v1 conformance passed across Rust,
   CLI, MCP, daemon, capability, and golden protocol surfaces.
@@ -64,6 +65,11 @@ publication:
 - The recorded Linux ARM64 browser suite passed all 17 scenarios.
 - The live semantic fixture reduced estimated agent task context by 71%.
 - `cargo package --locked --no-verify` packaged 211 files.
+- `cargo publish --locked` published `glass-browser 0.3.0` to crates.io.
+- GitHub Release `v0.3.0` is published, non-draft, non-prerelease, marked
+  `Latest`, and contains no native binary assets.
+- A clean registry install reported `glass 0.3.0`; its CLI/MCP smoke passed
+  with 85 advertised MCP tools.
 
 ## 0.2.9 release validation
 

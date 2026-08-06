@@ -17,8 +17,8 @@ REQUIRED_MARKERS = {
     "docs/plan/README.md": [
         "[ir-030-081](tasks/ir-030-081.md)",
         "[ir-030-089](tasks/ir-030-089.md)",
-        "0.3.0 release candidate satisfies the epic exit",
-        "Publication and the matching source-only GitHub Release",
+        "`glass-browser 0.3.0` is published on crates.io",
+        "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
         "current release is `glass-browser` version `0.3.0`",
@@ -34,6 +34,8 @@ REQUIRED_MARKERS = {
         "`feature-parity.json`",
         "cargo publish --locked --dry-run",
         "no native binary assets are expected",
+        "`glass-browser 0.3.0` to crates.io",
+        "85 advertised MCP tools",
     ],
     "docs/plan/analysis/release-audit-028.md": [
         "`0.2.0` publication boundary has been crossed",

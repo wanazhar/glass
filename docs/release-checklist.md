@@ -114,7 +114,7 @@ The browser and package checks are evidence for the tested environment only.
 - [x] Publish `glass-browser` from the tagged commit after explicit approval.
 - [x] Create and verify the matching published GitHub Release for `v0.2.9`.
 
-## 0.3.0 candidate
+## 0.3.0 release
 
 - [x] Synchronize Rust, TypeScript, and Python package metadata at `0.3.0`.
 - [x] Promote Web IR and Task Protocol v1 without public draft aliases.
@@ -129,6 +129,6 @@ The browser and package checks are evidence for the tested environment only.
       the final candidate.
 - [x] Obtain explicit publication approval.
 - [x] Create and push the signed annotated `v0.3.0` tag.
-- [ ] Verify crates.io publication and the source-only GitHub Release.
+- [x] Verify crates.io publication and the source-only GitHub Release.
 
 A release is not complete while any required checkbox is open.

@@ -136,6 +136,7 @@ impl ProfileManager {
     /// browser directory and JSON metadata left by older Glass releases.
     pub fn delete_profile(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
         Self::validate_name(name)?;
+        let _ownership = self.acquire_profile_lock(name)?;
 
         remove_dir_if_exists(&self.profile_dir(name))?;
         remove_dir_if_exists(&self.legacy_chrome_data_dir(name))?;
@@ -147,17 +148,21 @@ impl ProfileManager {
         info!(%name, "deleted persisted Chrome profile data");
         Ok(())
     }
+    fn acquire_profile_lock(&self, profile: &str) -> Result<File, Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(&self.profiles_dir)?;
+        let lock_path = self.profiles_dir.join(format!("{profile}.lock"));
+        let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
+        file.try_lock_exclusive().map_err(|error| format!("profile {profile} is already owned: {error}").into())?;
+        Ok(file)
+    }
+
     /// Acquire an exclusive process lock tying this profile to one workspace.
     /// The guard must remain alive for the duration of browser ownership.
     pub fn lock_profile(&self, profile: &str, workspace: &str) -> Result<ProfileLock, Box<dyn std::error::Error>> {
         Self::validate_name(profile)?;
         Self::validate_name(workspace)?;
         self.create_profile(profile)?;
-        let lock_path = self.profiles_dir.join(format!("{profile}.lock"));
-        let file = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
-        file.try_lock_exclusive().map_err(|error| {
-            format!("profile {profile} is already owned by another workspace: {error}")
-        })?;
+        let file = self.acquire_profile_lock(profile)?;
         Ok(ProfileLock { _file: file, profile: profile.to_owned(), workspace: workspace.to_owned() })
     }
 
@@ -230,9 +235,18 @@ mod tests {
         manager.delete_profile("work").unwrap();
 
         assert!(!profile_dir.exists());
+
         assert!(!manager.legacy_chrome_data_dir("work").exists());
         assert!(!manager.legacy_metadata_path("work").exists());
         assert!(manager.list_profiles().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(profiles_dir);
+    }
+    #[test]
+    fn delete_profile_rejects_an_active_workspace_owner() {
+        let profiles_dir = test_directory();
+        let manager = ProfileManager::with_profiles_dir(profiles_dir.clone());
+        let _owner = manager.lock_profile("work", "workspace").unwrap();
+        assert!(manager.delete_profile("work").is_err());
         let _ = std::fs::remove_dir_all(profiles_dir);
     }
 

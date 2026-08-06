@@ -68,9 +68,11 @@ fn validate_json(field: &str, value: &serde_json::Value) -> Result<(), BrowserBa
     }
     Ok(())
 }
-struct BoundedStringVisitor;
+struct BoundedStringVisitor<const LIMIT: usize, const REQUIRED: bool>;
 
-impl<'de> Visitor<'de> for BoundedStringVisitor {
+impl<'de, const LIMIT: usize, const REQUIRED: bool> Visitor<'de>
+    for BoundedStringVisitor<LIMIT, REQUIRED>
+{
     type Value = String;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,10 +90,10 @@ impl<'de> Visitor<'de> for BoundedStringVisitor {
     where
         E: serde::de::Error,
     {
-        if value.is_empty() {
+        if REQUIRED && value.is_empty() {
             return Err(E::custom("string must not be empty"));
         }
-        if value.len() > MAX_TEXT_BYTES {
+        if value.len() > LIMIT {
             return Err(E::custom("string exceeds the bounded payload size"));
         }
         Ok(value.to_owned())
@@ -101,10 +103,10 @@ impl<'de> Visitor<'de> for BoundedStringVisitor {
     where
         E: serde::de::Error,
     {
-        if value.is_empty() {
+        if REQUIRED && value.is_empty() {
             return Err(E::custom("string must not be empty"));
         }
-        if value.len() > MAX_TEXT_BYTES {
+        if value.len() > LIMIT {
             return Err(E::custom("string exceeds the bounded payload size"));
         }
         Ok(value)
@@ -115,12 +117,41 @@ fn deserialize_bounded_string<'de, D>(deserializer: D) -> Result<String, D::Erro
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_str(BoundedStringVisitor)
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_TEXT_BYTES, true>)
+}
+fn deserialize_backend_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_BACKEND_ID_BYTES, true>)
 }
 
-struct BoundedOptionVisitor;
+fn deserialize_version<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_VERSION_BYTES, true>)
+}
 
-impl<'de> Visitor<'de> for BoundedOptionVisitor {
+fn deserialize_browser_family<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_BROWSER_FAMILY_BYTES, true>)
+}
+
+fn deserialize_limitation<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_LIMITATION_BYTES, true>)
+}
+
+struct BoundedOptionVisitor<const LIMIT: usize, const REQUIRED: bool>;
+
+impl<'de, const LIMIT: usize, const REQUIRED: bool> Visitor<'de>
+    for BoundedOptionVisitor<LIMIT, REQUIRED>
+{
     type Value = Option<String>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,7 +169,9 @@ impl<'de> Visitor<'de> for BoundedOptionVisitor {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_bounded_string(deserializer).map(Some)
+        deserializer
+            .deserialize_str(BoundedStringVisitor::<LIMIT, REQUIRED>)
+            .map(Some)
     }
 }
 
@@ -146,7 +179,27 @@ fn deserialize_bounded_string_option<'de, D>(deserializer: D) -> Result<Option<S
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_option(BoundedOptionVisitor)
+    deserializer.deserialize_option(BoundedOptionVisitor::<MAX_TEXT_BYTES, true>)
+}
+
+fn deserialize_version_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_option(BoundedOptionVisitor::<MAX_VERSION_BYTES, true>)
+}
+fn deserialize_backend_id_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_option(BoundedOptionVisitor::<MAX_BACKEND_ID_BYTES, true>)
+}
+
+fn deserialize_browser_family_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_option(BoundedOptionVisitor::<MAX_BROWSER_FAMILY_BYTES, true>)
 }
 
 
@@ -186,6 +239,36 @@ where
     T: Deserialize<'de>,
 {
     deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX_CONTEXTS>(std::marker::PhantomData))
+}
+fn deserialize_bounded_dependencies<'de, D>(deserializer: D) -> Result<Vec<CapabilityDependency>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedVecVisitor::<CapabilityDependency, MAX_DEPENDENCIES>(
+        std::marker::PhantomData,
+    ))
+}
+
+fn deserialize_bounded_capability_list<'de, D>(
+    deserializer: D,
+) -> Result<Vec<BrowserCapability>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedVecVisitor::<BrowserCapability, MAX_CAPABILITIES>(
+        std::marker::PhantomData,
+    ))
+}
+
+fn deserialize_bounded_requirements<'de, D>(
+    deserializer: D,
+) -> Result<Vec<CapabilityRequirement>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedVecVisitor::<CapabilityRequirement, MAX_SELECTION_REQUIREMENTS>(
+        std::marker::PhantomData,
+    ))
 }
 
 struct BoundedBytesVisitor;
@@ -700,7 +783,7 @@ pub enum Portability {
 pub struct CapabilityDependency {
     pub capability: BrowserCapability,
     pub minimum: SupportLevel,
-    #[serde(deserialize_with = "deserialize_bounded_string")]
+    #[serde(deserialize_with = "deserialize_limitation")]
     pub reason: String,
 }
 impl CapabilityDependency {
@@ -716,7 +799,7 @@ impl CapabilityDependency {
 pub struct CapabilityDescriptor {
     pub level: SupportLevel,
     pub portability: Portability,
-    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    #[serde(default, deserialize_with = "deserialize_bounded_dependencies")]
     pub dependencies: Vec<CapabilityDependency>,
     #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
     pub limitations: Vec<String>,
@@ -780,13 +863,13 @@ impl CertificationLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserVersionRange {
+    #[serde(deserialize_with = "deserialize_browser_family")]
     pub family: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_version_option")]
     pub minimum: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_version_option")]
     pub maximum: Option<String>,
 }
-
 impl BrowserVersionRange {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         validate_text("browser family", &self.family, MAX_BROWSER_FAMILY_BYTES)?;
@@ -843,8 +926,9 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CertificationProfile {
     pub level: CertificationLevel,
+    #[serde(deserialize_with = "deserialize_version")]
     pub glass_version: String,
-    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    #[serde(default, deserialize_with = "deserialize_bounded_capability_list")]
     pub tested_capabilities: Vec<BrowserCapability>,
     #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
     pub limitations: Vec<String>,
@@ -883,7 +967,9 @@ impl CertificationProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackendIdentity {
+    #[serde(deserialize_with = "deserialize_backend_id")]
     pub backend_id: String,
+    #[serde(deserialize_with = "deserialize_version")]
     pub version: String,
     pub browser: BrowserVersionRange,
     pub certification: CertificationProfile,
@@ -1034,16 +1120,17 @@ pub struct CapabilityRequirement {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackendSelectionRequest {
     pub schema_version: u32,
+    #[serde(deserialize_with = "deserialize_version")]
     pub glass_version: String,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_backend_id_option")]
     pub preferred_backend_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    #[serde(default, deserialize_with = "deserialize_bounded_requirements")]
     pub required_capabilities: Vec<CapabilityRequirement>,
     #[serde(default = "default_minimum_certification")]
     pub minimum_certification: CertificationLevel,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_browser_family_option")]
     pub browser_family: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_version_option")]
     pub browser_version: Option<String>,
 }
 
@@ -1089,16 +1176,17 @@ impl BackendSelectionRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BackendSelectionRequestWire {
     schema_version: u32,
+    #[serde(deserialize_with = "deserialize_version")]
     glass_version: String,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_backend_id_option")]
     preferred_backend_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    #[serde(default, deserialize_with = "deserialize_bounded_requirements")]
     required_capabilities: Vec<CapabilityRequirement>,
     #[serde(default = "default_minimum_certification")]
     minimum_certification: CertificationLevel,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_browser_family_option")]
     browser_family: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    #[serde(default, deserialize_with = "deserialize_version_option")]
     browser_version: Option<String>,
 }
 
@@ -1850,35 +1938,76 @@ pub struct DownloadResult {
 
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BrowserBackendError>> + Send + 'a>>;
 
-/// Private transport primitive; callers must use [`BrowserBackendDispatcher`].
-pub(crate) trait BrowserBackend: Send + Sync {
-    fn profile(&self) -> &BackendProfile;
-    fn initialize_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
-    fn close_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
-    fn navigate_raw<'a>(&'a self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult>;
-    fn contexts_raw<'a>(&'a self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>>;
-    fn evidence_raw<'a>(&'a self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult>;
-    fn action_raw<'a>(&'a self, request: ActionRequest) -> BackendFuture<'a, ActionResult>;
-    fn effects_raw<'a>(&'a self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult>;
-    fn script_raw<'a>(&'a self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult>;
-    fn capture_raw<'a>(&'a self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult>;
-    fn storage_raw<'a>(&'a self, request: StorageRequest) -> BackendFuture<'a, StorageResult>;
-    fn prompt_raw<'a>(&'a self, request: PromptRequest) -> BackendFuture<'a, PromptResult>;
-    fn download_raw<'a>(&'a self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult>;
-    fn require_operation(
-        &self,
-        operation: BackendOperation,
-        minimum: SupportLevel,
-    ) -> Result<(), BrowserBackendError> {
-        self.profile().require_operation(operation, minimum)
+/// Requests and responses used by the public backend extension point.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackendRequest {
+    Initialize,
+    Close,
+    Navigate(NavigationRequest),
+    Contexts(ContextRequest),
+    Evidence(EvidenceRequest),
+    Action(ActionRequest),
+    Effects(EffectsRequest),
+    Script(ScriptRequest),
+    Capture(CaptureRequest),
+    Storage(StorageRequest),
+    Prompt(PromptRequest),
+    Download(DownloadRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackendResponse {
+    Unit,
+    Navigation(NavigationResult),
+    Contexts(Vec<BrowsingContext>),
+    Evidence(EvidenceResult),
+    Action(ActionResult),
+    Effects(EffectsResult),
+    Script(ScriptResult),
+    Capture(CaptureResult),
+    Storage(StorageResult),
+    Prompt(PromptResult),
+    Download(DownloadResult),
+}
+impl BackendContract for () {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        Ok(())
     }
 }
+
+impl BackendContract for BackendResponse {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        match self {
+            Self::Unit => Ok(()),
+            Self::Navigation(value) => value.validate(),
+            Self::Contexts(value) => value.validate(),
+            Self::Evidence(value) => value.validate(),
+            Self::Action(value) => value.validate(),
+            Self::Effects(value) => value.validate(),
+            Self::Script(value) => value.validate(),
+            Self::Capture(value) => value.validate(),
+            Self::Storage(value) => value.validate(),
+            Self::Prompt(value) => value.validate(),
+            Self::Download(value) => value.validate(),
+        }
+    }
+}
+
+/// Public backend extension boundary.  Implementors expose one dispatch
+/// method; semantic callers must use [`BrowserBackendDispatcher`], which
+/// validates requests, profile dependency closure, responses, and errors.
+pub trait BrowserBackend: Send + Sync {
+    fn profile(&self) -> &BackendProfile;
+    fn dispatch<'a>(
+        &'a self,
+        operation: BackendOperation,
+        request: BackendRequest,
+    ) -> BackendFuture<'a, BackendResponse>;
+}
+
 /// Mandatory validation and capability gate for backend calls.
-///
-/// Adapters implement [`BrowserBackend`] as the transport-facing primitive;
-/// callers should retain this dispatcher rather than invoking those primitives
-/// directly.  Every method validates inputs, checks the complete profile
-/// dependency closure, and validates the backend result before returning it.
 pub struct BrowserBackendDispatcher<'a> {
     backend: &'a dyn BrowserBackend,
 }
@@ -1889,101 +2018,133 @@ impl<'a> BrowserBackendDispatcher<'a> {
     }
 
     pub fn initialize(&self) -> BackendFuture<'a, ()> {
-        let backend = self.backend;
-        Box::pin(async move {
-            backend.profile().validate()?;
-            validate_backend_error(backend.initialize_raw().await)
+        self.call(BackendOperation::Contexts, BackendRequest::Initialize, |response| {
+            matches!(response, BackendResponse::Unit)
+                .then_some(())
+                .ok_or_else(|| unsupported_response("initialize"))
         })
     }
 
     pub fn close(&self) -> BackendFuture<'a, ()> {
-        let backend = self.backend;
-        Box::pin(async move {
-            backend.profile().validate()?;
-            validate_backend_error(backend.close_raw().await)
+        self.call(BackendOperation::Contexts, BackendRequest::Close, |response| {
+            matches!(response, BackendResponse::Unit)
+                .then_some(())
+                .ok_or_else(|| unsupported_response("close"))
         })
     }
 
     pub fn navigate(&self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult> {
-        self.call(BackendOperation::Navigate, request, |backend, request| {
-            backend.navigate_raw(request)
+        self.call(BackendOperation::Navigate, BackendRequest::Navigate(request), |response| match response {
+            BackendResponse::Navigation(value) => Ok(value),
+            _ => Err(unsupported_response("navigate")),
         })
     }
 
     pub fn contexts(&self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>> {
-        let backend = self.backend;
-        Box::pin(async move {
-            request.validate()?;
-            backend.profile().validate()?;
-            backend.require_operation(BackendOperation::Contexts, SupportLevel::Available)?;
-            validate_backend_result(backend.contexts_raw(request).await)
+        self.call(BackendOperation::Contexts, BackendRequest::Contexts(request), |response| match response {
+            BackendResponse::Contexts(value) => Ok(value),
+            _ => Err(unsupported_response("contexts")),
         })
     }
 
     pub fn evidence(&self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult> {
-        self.call(BackendOperation::Evidence, request, |backend, request| {
-            backend.evidence_raw(request)
+        self.call(BackendOperation::Evidence, BackendRequest::Evidence(request), |response| match response {
+            BackendResponse::Evidence(value) => Ok(value),
+            _ => Err(unsupported_response("evidence")),
         })
     }
 
     pub fn action(&self, request: ActionRequest) -> BackendFuture<'a, ActionResult> {
-        self.call(BackendOperation::Action, request, |backend, request| {
-            backend.action_raw(request)
+        self.call(BackendOperation::Action, BackendRequest::Action(request), |response| match response {
+            BackendResponse::Action(value) => Ok(value),
+            _ => Err(unsupported_response("action")),
         })
     }
 
     pub fn effects(&self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult> {
-        self.call(BackendOperation::Effects, request, |backend, request| {
-            backend.effects_raw(request)
+        self.call(BackendOperation::Effects, BackendRequest::Effects(request), |response| match response {
+            BackendResponse::Effects(value) => Ok(value),
+            _ => Err(unsupported_response("effects")),
         })
     }
 
     pub fn script(&self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult> {
-        self.call(BackendOperation::Script, request, |backend, request| {
-            backend.script_raw(request)
+        self.call(BackendOperation::Script, BackendRequest::Script(request), |response| match response {
+            BackendResponse::Script(value) => Ok(value),
+            _ => Err(unsupported_response("script")),
         })
     }
 
     pub fn capture(&self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult> {
-        self.call(BackendOperation::Capture, request, |backend, request| {
-            backend.capture_raw(request)
+        self.call(BackendOperation::Capture, BackendRequest::Capture(request), |response| match response {
+            BackendResponse::Capture(value) => Ok(value),
+            _ => Err(unsupported_response("capture")),
         })
     }
 
     pub fn storage(&self, request: StorageRequest) -> BackendFuture<'a, StorageResult> {
-        self.call(BackendOperation::Storage, request, |backend, request| {
-            backend.storage_raw(request)
+        self.call(BackendOperation::Storage, BackendRequest::Storage(request), |response| match response {
+            BackendResponse::Storage(value) => Ok(value),
+            _ => Err(unsupported_response("storage")),
         })
     }
 
     pub fn prompt(&self, request: PromptRequest) -> BackendFuture<'a, PromptResult> {
-        self.call(BackendOperation::Prompt, request, |backend, request| {
-            backend.prompt_raw(request)
+        self.call(BackendOperation::Prompt, BackendRequest::Prompt(request), |response| match response {
+            BackendResponse::Prompt(value) => Ok(value),
+            _ => Err(unsupported_response("prompt")),
         })
     }
 
     pub fn download(&self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult> {
-        self.call(BackendOperation::Download, request, |backend, request| {
-            backend.download_raw(request)
+        self.call(BackendOperation::Download, BackendRequest::Download(request), |response| match response {
+            BackendResponse::Download(value) => Ok(value),
+            _ => Err(unsupported_response("download")),
         })
     }
-    fn call<T, R>(
+
+    fn call<T>(
         &self,
         operation: BackendOperation,
-        request: T,
-        call: impl FnOnce(&'a dyn BrowserBackend, T) -> BackendFuture<'a, R> + Send + 'a,
-    ) -> BackendFuture<'a, R>
+        request: BackendRequest,
+        decode: impl FnOnce(BackendResponse) -> Result<T, BrowserBackendError> + Send + 'a,
+    ) -> BackendFuture<'a, T>
     where
         T: BackendContract + Send + 'a,
-        R: BackendContract + Send + 'a,
     {
         let backend = self.backend;
         Box::pin(async move {
-            request.validate()?;
+            validate_request(&request)?;
             backend.profile().validate()?;
-            backend.require_operation(operation, SupportLevel::Available)?;
-            validate_backend_result(call(backend, request).await)
+            backend.profile().require_operation(operation, SupportLevel::Available)?;
+            let response = validate_backend_result(backend.dispatch(operation, request).await)?;
+            let result = decode(response)?;
+            result.validate()?;
+            Ok(result)
         })
+    }
+}
+
+fn validate_request(request: &BackendRequest) -> Result<(), BrowserBackendError> {
+    match request {
+        BackendRequest::Initialize | BackendRequest::Close => Ok(()),
+        BackendRequest::Navigate(value) => value.validate(),
+        BackendRequest::Contexts(value) => value.validate(),
+        BackendRequest::Evidence(value) => value.validate(),
+        BackendRequest::Action(value) => value.validate(),
+        BackendRequest::Effects(value) => value.validate(),
+        BackendRequest::Script(value) => value.validate(),
+        BackendRequest::Capture(value) => value.validate(),
+        BackendRequest::Storage(value) => value.validate(),
+        BackendRequest::Prompt(value) => value.validate(),
+        BackendRequest::Download(value) => value.validate(),
+    }
+}
+
+fn unsupported_response(operation: &str) -> BrowserBackendError {
+    BrowserBackendError::UnsupportedOperation {
+        operation: operation.into(),
+        reason: "backend returned the wrong semantic response variant".into(),
     }
 }
 
@@ -2132,6 +2293,12 @@ mod tests {
         let value = json!({ "url": "x".repeat(MAX_TEXT_BYTES + 1) });
         assert!(serde_json::from_value::<NavigationRequest>(value).is_err());
         assert!(serde_json::from_value::<NavigationRequest>(json!({ "url": "" })).is_err());
+        let oversized_reason = json!({
+            "capability": "evidence",
+            "minimum": "available",
+            "reason": "\\u0078".repeat(MAX_LIMITATION_BYTES + 1)
+        });
+        assert!(serde_json::from_value::<CapabilityDependency>(oversized_reason).is_err());
     }
 
     #[test]

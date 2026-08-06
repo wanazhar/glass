@@ -356,15 +356,6 @@ impl BrowserSession {
             });
             record.insert(field.name.clone(), value);
         }
-        let serialized = serde_json::to_vec(&record)?;
-        let serialized_bytes = serialized.len();
-        if serialized_bytes > request.max_bytes {
-            return Err(format!(
-                "extraction exceeds maxBytes ({} > {})",
-                serialized_bytes, request.max_bytes
-            )
-            .into());
-        }
         let source_route = observation.route.clone();
         let continuation = next_index.map(|next_index| StructuredExtractionContinuation {
             next_index,
@@ -373,7 +364,7 @@ impl BrowserSession {
             region_id: request.region_id.clone(),
             contract_hash: contract_hash.clone(),
         });
-        Ok(StructuredExtractionResult {
+        let result = StructuredExtractionResult {
             source_revision: observation.revision,
             source_route,
             records: vec![record.into()],
@@ -390,10 +381,11 @@ impl BrowserSession {
                 max_items: request.max_items,
                 max_bytes: request.max_bytes,
                 observed_items,
-                serialized_bytes,
+                serialized_bytes: 0,
                 truncated,
             },
-        })
+        };
+        finalize_extraction_result(result, request.max_bytes)
     }
 
     /// Reconcile a run ID conservatively when the original session is gone.
@@ -414,6 +406,35 @@ impl BrowserSession {
                 recommended_operation: "inspect_page".into(),
             },
         })
+    }
+}
+
+fn finalize_extraction_result(
+    mut result: StructuredExtractionResult,
+    max_bytes: usize,
+) -> BrowserResult<StructuredExtractionResult> {
+    let serialized_bytes = serialized_extraction_result_bytes(&mut result)?;
+    if serialized_bytes > max_bytes {
+        return Err(format!(
+            "extraction exceeds maxBytes ({} > {})",
+            serialized_bytes, max_bytes
+        )
+        .into());
+    }
+    Ok(result)
+}
+
+fn serialized_extraction_result_bytes(
+    result: &mut StructuredExtractionResult,
+) -> BrowserResult<usize> {
+    let mut serialized_bytes = 0;
+    loop {
+        result.limits.serialized_bytes = serialized_bytes;
+        let next_bytes = serde_json::to_vec(result)?.len();
+        if next_bytes == serialized_bytes {
+            return Ok(serialized_bytes);
+        }
+        serialized_bytes = next_bytes;
     }
 }
 
@@ -841,7 +862,7 @@ mod tests {
             provenance_entity_ids(&value),
             vec!["r7:b1".to_string(), "r7:b2".to_string()]
         );
-        let result = StructuredExtractionResult {
+        let mut result = StructuredExtractionResult {
             source_revision: 7,
             source_route: SemanticRouteIdentity {
                 target_id: "target".into(),
@@ -849,12 +870,20 @@ mod tests {
                 url: "https://example.test".into(),
             },
             records: vec![value],
-            record_items: vec![StructuredExtractionRecord {
-                field: "items".into(),
-                index: 0,
-                value: serde_json::json!({"reference": "r7:b1"}),
-                entity_ids: vec!["r7:b1".into()],
-            }],
+            record_items: vec![
+                StructuredExtractionRecord {
+                    field: "items".into(),
+                    index: 0,
+                    value: serde_json::json!({"reference": "r7:b1"}),
+                    entity_ids: vec!["r7:b1".into()],
+                },
+                StructuredExtractionRecord {
+                    field: "rows".into(),
+                    index: 1,
+                    value: serde_json::json!({"reference": "r7:b2"}),
+                    entity_ids: vec!["r7:b2".into()],
+                },
+            ],
             truncated: true,
             provenance: vec!["$.targets".into()],
             field_provenance: vec![StructuredExtractionProvenance {
@@ -878,16 +907,41 @@ mod tests {
                 max_items: 2,
                 max_bytes: 1024,
                 observed_items: 3,
-                serialized_bytes: 128,
+                serialized_bytes: 0,
                 truncated: true,
             },
         };
+        let serialized_bytes = serialized_extraction_result_bytes(&mut result).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&result).unwrap().len(),
+            serialized_bytes,
+            "serializedBytes must equal the complete extraction response size"
+        );
+        assert!(
+            serialized_bytes > serde_json::to_vec(&result.records).unwrap().len(),
+            "collection metadata must be included in serializedBytes"
+        );
+        let mut at_boundary = result.clone();
+        at_boundary.limits.serialized_bytes = 0;
+        let at_boundary = finalize_extraction_result(at_boundary, serialized_bytes).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&at_boundary).unwrap().len(),
+            serialized_bytes
+        );
+        let mut below_boundary = result.clone();
+        below_boundary.limits.serialized_bytes = 0;
+        let error = finalize_extraction_result(below_boundary, serialized_bytes - 1)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("maxBytes"));
         let serialized = serde_json::to_value(result).unwrap();
         assert_eq!(serialized["continuation"]["nextIndex"], 2);
         assert_eq!(serialized["sourceRevision"], 7);
         assert_eq!(serialized["recordItems"][0]["field"], "items");
         assert_eq!(serialized["recordItems"][0]["index"], 0);
         assert_eq!(serialized["recordItems"][0]["entityIds"][0], "r7:b1");
+        assert_eq!(serialized["recordItems"][1]["field"], "rows");
+        assert_eq!(serialized["recordItems"][1]["index"], 1);
         assert_eq!(
             serialized["fieldProvenance"][0]["regionId"],
             "region_results"

@@ -5,7 +5,7 @@
 //! current evidence and validate the complete contract before using it.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
 /// Schema version for the multi-surface contract.
@@ -251,6 +251,14 @@ impl SurfaceCoverage {
                 "coordinate-only understanding requires coordinate interaction coverage",
             ));
         }
+        if self.interaction == InteractionCoverage::TaskCompilable
+            && level < UnderstandingLevel::Semantic
+        {
+            return Err(SurfaceContractError::new(
+                "coverage.interaction",
+                "task-compilable interaction requires semantic understanding",
+            ));
+        }
         if level == UnderstandingLevel::TaskCompilable
             && self.interaction != InteractionCoverage::TaskCompilable
         {
@@ -281,6 +289,62 @@ pub enum BridgeTrustLevel {
     OriginValidated,
     CapabilityGranted,
 }
+/// An independently issued bridge capability grant.  A surface payload may
+/// carry only the opaque token; the registry is supplied by the trusted host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BridgeCapabilityGrant {
+    pub token: String,
+    pub origin: String,
+    pub capabilities: Vec<SurfaceCapability>,
+}
+
+/// Host-side registry of independently validated bridge grants.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BridgeGrantRegistry {
+    pub grants: BTreeMap<String, BridgeCapabilityGrant>,
+}
+
+impl BridgeGrantRegistry {
+    pub fn validate(&self) -> Result<(), SurfaceContractError> {
+        for (token, grant) in &self.grants {
+            validate_identifier_with_max(
+                "bridgeGrant.token",
+                token,
+                MAX_SURFACE_PROVENANCE_ID_BYTES,
+            )?;
+            if token != &grant.token {
+                return Err(SurfaceContractError::new(
+                    "bridgeGrant.token",
+                    "grant registry key must match grant token",
+                ));
+            }
+            validate_origin("bridgeGrant.origin", &grant.origin)?;
+            let mut capabilities = BTreeSet::new();
+            for capability in &grant.capabilities {
+                if !capabilities.insert(*capability) {
+                    return Err(SurfaceContractError::new(
+                        "bridgeGrant.capabilities",
+                        "grant capabilities must not be duplicated",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn insert(&mut self, grant: BridgeCapabilityGrant) -> Result<(), SurfaceContractError> {
+        validate_identifier_with_max(
+            "bridgeGrant.token",
+            &grant.token,
+            MAX_SURFACE_PROVENANCE_ID_BYTES,
+        )?;
+        validate_origin("bridgeGrant.origin", &grant.origin)?;
+        self.grants.insert(grant.token.clone(), grant);
+        self.validate()
+    }
+}
 
 /// Revision-bound, machine-readable evidence provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +365,8 @@ pub struct SurfaceProvenance {
     pub bridge_origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_trust: Option<BridgeTrustLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_token: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bridge_capabilities: Vec<SurfaceCapability>,
     pub source_revision: SurfaceRevision,
@@ -371,13 +437,20 @@ impl SurfaceProvenance {
                         "bridge evidence requires validated origin, trust, and bridgeVersion",
                     ));
                 }
-                if matches!(source, SurfaceEvidenceSource::Extension)
-                    && self.adapter_version.is_none()
+                if self.bridge_trust == Some(BridgeTrustLevel::CapabilityGranted)
+                    && self.grant_token.is_none()
                 {
                     return Err(SurfaceContractError::new(
                         path,
-                        "extension evidence requires adapterVersion",
+                        "capability-granted bridge evidence requires an independent grant token",
                     ));
+                }
+                if let Some(token) = &self.grant_token {
+                    validate_identifier_with_max(
+                        &format!("{path}.grantToken"),
+                        token,
+                        MAX_SURFACE_PROVENANCE_ID_BYTES,
+                    )?;
                 }
                 validate_origin(
                     &format!("{path}.bridgeOrigin"),
@@ -557,6 +630,14 @@ pub struct Surface {
 
 impl Surface {
     pub fn validate(&self) -> Result<(), SurfaceContractError> {
+        self.validate_with_grants(&BridgeGrantRegistry::default())
+    }
+
+    pub fn validate_with_grants(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<(), SurfaceContractError> {
+        grants.validate()?;
         if self.schema_version != SURFACE_SCHEMA_VERSION {
             return Err(SurfaceContractError::new(
                 "schemaVersion",
@@ -593,7 +674,7 @@ impl Surface {
         for (index, evidence) in self.evidence.iter().enumerate() {
             evidence.validate(&format!("evidence[{index}]"), revision)?;
         }
-        self.validate_evidence_requirements()?;
+        self.validate_evidence_requirements(grants)?;
         if self.diagnostics.len() > MAX_SURFACE_DIAGNOSTICS {
             return Err(SurfaceContractError::new(
                 "diagnostics",
@@ -606,7 +687,29 @@ impl Surface {
         Ok(())
     }
 
-    fn validate_evidence_requirements(&self) -> Result<(), SurfaceContractError> {
+    fn validate_evidence_requirements(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<(), SurfaceContractError> {
+        let executable_requested = self.capabilities.iter().any(|capability| {
+            matches!(
+                capability,
+                SurfaceCapability::SemanticAction
+                    | SurfaceCapability::CoordinateAction
+                    | SurfaceCapability::Input
+            )
+        });
+        if executable_requested
+            && self
+                .evidence
+                .iter()
+                .all(|evidence| evidence.source == SurfaceEvidenceSource::Memory)
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "memory evidence is advisory and cannot authorize executable actions",
+            ));
+        }
         let structural_evidence = self
             .evidence
             .iter()
@@ -663,25 +766,61 @@ impl Surface {
         }
         let actionability_requested = self.understanding == UnderstandingLevel::TaskCompilable
             || self.capabilities.contains(&SurfaceCapability::SemanticAction);
-        if actionability_requested && has_bridge_evidence {
-            let required: &[SurfaceCapability] =
-                if self.understanding == UnderstandingLevel::TaskCompilable {
-                    &[SurfaceCapability::SemanticAction, SurfaceCapability::Verification]
-                } else {
-                    &[SurfaceCapability::SemanticAction]
+        if has_bridge_evidence {
+            for evidence in self.evidence.iter().filter(|evidence| {
+                matches!(
+                    evidence.source,
+                    SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+                )
+            }) {
+                let Some(token) = evidence.provenance.grant_token.as_deref() else {
+                    return Err(SurfaceContractError::new(
+                        "evidence",
+                        "bridge evidence requires an independent registry grant",
+                    ));
                 };
+                let Some(grant) = grants.grants.get(token) else {
+                    return Err(SurfaceContractError::new(
+                        "evidence",
+                        "bridge grant token is not present in the trusted registry",
+                    ));
+                };
+                if evidence.provenance.bridge_origin.as_deref() != Some(grant.origin.as_str())
+                    || !self
+                        .capabilities
+                        .iter()
+                        .all(|capability| grant.capabilities.contains(capability))
+                    || !evidence
+                        .provenance
+                        .bridge_capabilities
+                        .iter()
+                        .all(|capability| grant.capabilities.contains(capability))
+                {
+                    return Err(SurfaceContractError::new(
+                        "evidence",
+                        "bridge evidence capabilities and origin do not match its registry grant",
+                    ));
+                }
+            }
+        }
+        if actionability_requested && has_bridge_evidence {
+            let required: &[SurfaceCapability] = self.capabilities.as_slice();
             if !self.evidence.iter().any(|evidence| {
                 matches!(
                     evidence.source,
                     SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
                 ) && evidence.provenance.bridge_trust == Some(BridgeTrustLevel::CapabilityGranted)
-                    && required
-                        .iter()
-                        .all(|capability| evidence.provenance.bridge_capabilities.contains(capability))
+                    && evidence.provenance.grant_token.as_ref().is_some_and(|token| {
+                        grants.grants.get(token).is_some_and(|grant| {
+                            required
+                                .iter()
+                                .all(|capability| grant.capabilities.contains(capability))
+                        })
+                    })
             }) {
                 return Err(SurfaceContractError::new(
                     "evidence",
-                    "bridge-derived semantic action requires a validated capability grant",
+                    "bridge-derived semantic action requires a validated registry capability grant",
                 ));
             }
         }
@@ -804,6 +943,13 @@ impl Surface {
 
     /// Parse and validate one surface from strict JSON.
     pub fn from_json(input: &str) -> Result<Self, SurfaceContractError> {
+        Self::from_json_with_grants(input, &BridgeGrantRegistry::default())
+    }
+
+    pub fn from_json_with_grants(
+        input: &str,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<Self, SurfaceContractError> {
         if input.len() > MAX_SURFACE_PAYLOAD_BYTES {
             return Err(SurfaceContractError::new(
                 "$",
@@ -813,13 +959,20 @@ impl Surface {
         let surface: Self = serde_json::from_str(input).map_err(|error| {
             SurfaceContractError::new("$", format!("invalid surface: {error}"))
         })?;
-        surface.validate()?;
+        surface.validate_with_grants(grants)?;
         Ok(surface)
     }
 
     /// Serialize a validated surface using the stable serde representation.
     pub fn to_canonical_json(&self) -> Result<String, SurfaceContractError> {
-        self.validate()?;
+        self.to_canonical_json_with_grants(&BridgeGrantRegistry::default())
+    }
+
+    pub fn to_canonical_json_with_grants(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<String, SurfaceContractError> {
+        self.validate_with_grants(grants)?;
         let output = serde_json::to_string(self).map_err(|error| {
             SurfaceContractError::new("$", format!("failed to serialize surface: {error}"))
         })?;
@@ -844,6 +997,14 @@ pub struct SurfaceSet {
 
 impl SurfaceSet {
     pub fn validate(&self) -> Result<(), SurfaceContractError> {
+        self.validate_with_grants(&BridgeGrantRegistry::default())
+    }
+
+    pub fn validate_with_grants(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<(), SurfaceContractError> {
+        grants.validate()?;
         if self.schema_version != SURFACE_SCHEMA_VERSION {
             return Err(SurfaceContractError::new(
                 "schemaVersion",
@@ -864,7 +1025,9 @@ impl SurfaceSet {
         }
         let mut ids = BTreeSet::new();
         for (index, surface) in self.surfaces.iter().enumerate() {
-            surface.validate().map_err(|error| error.at(&format!("surfaces[{index}]")))?;
+            surface
+                .validate_with_grants(grants)
+                .map_err(|error| error.at(&format!("surfaces[{index}]")))?;
             if !ids.insert(surface.surface_id.clone()) {
                 return Err(SurfaceContractError::new(
                     format!("surfaces[{index}].surfaceId"),
@@ -905,6 +1068,13 @@ impl SurfaceSet {
     }
 
     pub fn from_json(input: &str) -> Result<Self, SurfaceContractError> {
+        Self::from_json_with_grants(input, &BridgeGrantRegistry::default())
+    }
+
+    pub fn from_json_with_grants(
+        input: &str,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<Self, SurfaceContractError> {
         if input.len() > MAX_SURFACE_PAYLOAD_BYTES {
             return Err(SurfaceContractError::new(
                 "$",
@@ -914,12 +1084,19 @@ impl SurfaceSet {
         let set: Self = serde_json::from_str(input).map_err(|error| {
             SurfaceContractError::new("$", format!("invalid surface set: {error}"))
         })?;
-        set.validate()?;
+        set.validate_with_grants(grants)?;
         Ok(set)
     }
 
     pub fn to_canonical_json(&self) -> Result<String, SurfaceContractError> {
-        self.validate()?;
+        self.to_canonical_json_with_grants(&BridgeGrantRegistry::default())
+    }
+
+    pub fn to_canonical_json_with_grants(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<String, SurfaceContractError> {
+        self.validate_with_grants(grants)?;
         let output = serde_json::to_string(self).map_err(|error| {
             SurfaceContractError::new("$", format!("failed to serialize surface set: {error}"))
         })?;
@@ -1087,7 +1264,9 @@ fn validate_canonical_timestamp(
             .as_bytes()
             .iter()
             .enumerate()
-            .any(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16 | 19) == false && !byte.is_ascii_digit())
+            .any(|(index, byte)| {
+                !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
+            })
     {
         return Err(SurfaceContractError::new(
             path,
@@ -1099,20 +1278,30 @@ fn validate_canonical_timestamp(
             .iter()
             .fold(0u32, |total, byte| total * 10 + u32::from(byte - b'0'))
     };
+    let year = number(0, 4);
     let month = number(5, 7);
     let day = number(8, 10);
     let hour = number(11, 13);
     let minute = number(14, 16);
     let second = number(17, 19);
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if !(1970..=9999).contains(&year)
+        || day == 0
+        || day > days_in_month
         || hour > 23
         || minute > 59
-        || second > 60
+        || second > 59
     {
         return Err(SurfaceContractError::new(
             path,
-            "timestamp contains an invalid UTC date or time",
+            "timestamp contains an invalid canonical UTC date or time",
         ));
     }
     Ok(())
@@ -1130,6 +1319,7 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
         ));
     };
     if authority.is_empty()
+        || authority.contains('@')
         || authority.chars().any(|character| {
             character.is_whitespace() || matches!(character, '/' | '?' | '#')
         })
@@ -1138,6 +1328,42 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
             path,
             "bridge origin must contain only an origin authority",
         ));
+    }
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return Err(SurfaceContractError::new(path, "invalid bracketed origin host"));
+        };
+        let host = &rest[..end];
+        let suffix = &rest[end + 1..];
+        let port = suffix.strip_prefix(':');
+        if !suffix.is_empty() && port.is_none() {
+            return Err(SurfaceContractError::new(path, "invalid origin authority suffix"));
+        }
+        (host, port)
+    } else {
+        let mut parts = authority.split(':');
+        let host = parts.next().unwrap_or_default();
+        let port = parts.next();
+        if parts.next().is_some() {
+            return Err(SurfaceContractError::new(path, "origin host must use a valid port"));
+        }
+        (host, port)
+    };
+    if host.is_empty()
+        || host.chars().any(|character| {
+            !character.is_ascii_alphanumeric()
+                && !matches!(character, '.' | '-' | ':')
+        })
+    {
+        return Err(SurfaceContractError::new(path, "origin host contains invalid characters"));
+    }
+    if let Some(port) = port {
+        if port.is_empty()
+            || !port.chars().all(|character| character.is_ascii_digit())
+            || port.parse::<u16>().is_err()
+        {
+            return Err(SurfaceContractError::new(path, "origin port must be 1-65535"));
+        }
     }
     Ok(())
 }
@@ -1184,6 +1410,7 @@ mod tests {
                     bridge_version: Some("1".into()),
                     bridge_origin: Some("https://example.test".into()),
                     bridge_trust: Some(BridgeTrustLevel::CapabilityGranted),
+                    grant_token: Some("grant-chart".into()),
                     bridge_capabilities: vec![SurfaceCapability::ReadStructure],
                     source_revision: SurfaceRevision(1),
                     observed_at: "2026-08-06T00:00:00Z".into(),
@@ -1200,6 +1427,7 @@ mod tests {
                     bridge_version: None,
                     bridge_origin: None,
                     bridge_trust: None,
+                    grant_token: None,
                     bridge_capabilities: vec![],
                     backend: Some("cdp".into()),
                     backend_version: Some("1".into()),
@@ -1238,9 +1466,21 @@ mod tests {
     #[test]
     fn round_trip_and_extension_namespace() {
         let extension = ExtensionIdentifier::new("vendor.example", "chart.series").unwrap();
-        let value = surface(SurfaceKind::ExtensionDefined { extension }, UnderstandingLevel::Semantic, vec![SurfaceCapability::ReadStructure]);
-        let encoded = value.to_canonical_json().unwrap();
-        assert_eq!(Surface::from_json(&encoded).unwrap(), value);
+        let value = surface(
+            SurfaceKind::ExtensionDefined { extension },
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        let mut grants = BridgeGrantRegistry::default();
+        grants
+            .insert(BridgeCapabilityGrant {
+                token: "grant-chart".into(),
+                origin: "https://example.test".into(),
+                capabilities: vec![SurfaceCapability::ReadStructure],
+            })
+            .unwrap();
+        let encoded = value.to_canonical_json_with_grants(&grants).unwrap();
+        assert_eq!(Surface::from_json_with_grants(&encoded, &grants).unwrap(), value);
         assert!(encoded.contains("extensionDefined"));
     }
 
@@ -1281,6 +1521,16 @@ mod tests {
     #[test]
     fn task_compilable_requires_guard_capabilities() {
         let value = surface(SurfaceKind::Document, UnderstandingLevel::TaskCompilable, vec![SurfaceCapability::ReadStructure]);
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn task_interaction_requires_semantic_understanding() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        value.coverage.interaction = InteractionCoverage::TaskCompilable;
         assert!(value.validate().is_err());
     }
     #[test]
@@ -1341,9 +1591,9 @@ mod tests {
     #[test]
     fn memory_evidence_is_advisory_only() {
         let mut value = surface(
-            SurfaceKind::Document,
-            UnderstandingLevel::Semantic,
-            vec![SurfaceCapability::ReadStructure],
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
         );
         value.evidence[0].source = SurfaceEvidenceSource::Memory;
         value.evidence[0].provenance.source_class = ProvenanceSourceClass::Memory;
@@ -1363,9 +1613,25 @@ mod tests {
             .provenance
             .bridge_capabilities
             .push(SurfaceCapability::SemanticAction);
-        assert!(value.validate().is_ok());
-        value.evidence[0].provenance.bridge_origin = Some("not-an-origin".into());
         assert!(value.validate().is_err());
+        let mut grants = BridgeGrantRegistry::default();
+        grants
+            .insert(BridgeCapabilityGrant {
+                token: "grant-chart".into(),
+                origin: "https://example.test".into(),
+                capabilities: vec![
+                    SurfaceCapability::ReadStructure,
+                    SurfaceCapability::SemanticAction,
+                ],
+            })
+            .unwrap();
+        assert!(value.validate_with_grants(&grants).is_ok());
+        value.evidence[0].provenance.bridge_origin = Some("not-an-origin".into());
+        assert!(value.validate_with_grants(&grants).is_err());
+        value.evidence[0].provenance.bridge_origin = Some("https://example.test:bad".into());
+        assert!(value.validate_with_grants(&grants).is_err());
+        value.evidence[0].provenance.bridge_origin = Some("https://user@example.test".into());
+        assert!(value.validate_with_grants(&grants).is_err());
     }
 
     #[test]
@@ -1376,6 +1642,8 @@ mod tests {
             vec![SurfaceCapability::ReadStructure],
         );
         value.evidence[0].provenance.observed_at = "yesterday".into();
+        assert!(value.validate().is_err());
+        value.evidence[0].provenance.observed_at = "2026-02-31T00:00:00Z".into();
         assert!(value.validate().is_err());
     }
 }

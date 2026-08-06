@@ -973,7 +973,7 @@ fn read_web_ir_request(path: &Path, operation: &str) -> BrowserResult<GlassReque
         session_id: None,
         mutation_lease: None,
         operation: operation.into(),
-        payload: serde_json::json!({"draft": draft}),
+        payload: serde_json::json!({"ir": draft}),
         deadline_ms: None,
     };
     request.validate()?;
@@ -1005,9 +1005,9 @@ fn read_web_ir_continuity_request(
     Ok(request)
 }
 
-fn read_web_ir_draft(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrDraft> {
+fn read_web_ir_draft(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
     let source = std::fs::read_to_string(path)?;
-    let draft: crate::web_ir::GlassWebIrDraft = serde_json::from_str(&source)?;
+    let draft: crate::web_ir::GlassWebIrV1 = serde_json::from_str(&source)?;
     draft.validate()?;
     Ok(draft)
 }
@@ -2090,7 +2090,7 @@ mod tests {
             .unwrap()
             .iter()
             .find(|request| request["operation"] == WEB_IR_INSPECT_OPERATION)
-            .and_then(|request| request["payload"]["draft"].as_object())
+            .and_then(|request| request["payload"]["ir"].as_object())
             .cloned()
             .map(Value::Object)
             .unwrap();
@@ -2123,7 +2123,7 @@ mod tests {
         let result = crate::protocol::web_ir_continuity_result(&continuity).unwrap();
         assert_eq!(
             result.status,
-            crate::web_ir::DraftEntityContinuityStatus::Unchanged
+            crate::web_ir::WebIrEntityContinuityStatus::Unchanged
         );
 
         std::fs::remove_file(path).unwrap();

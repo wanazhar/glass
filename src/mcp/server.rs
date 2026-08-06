@@ -246,10 +246,10 @@ enum ToolInvocation<'a> {
     ObserveBootstrap,
     InspectPage,
     InspectWebIr {
-        draft: Value,
+        ir: Value,
     },
     ValidateWebIr {
-        draft: Value,
+        ir: Value,
     },
     DiffWebIr {
         before: Value,
@@ -1566,13 +1566,13 @@ async fn call_tool(
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
-    if let ToolInvocation::ValidateWebIr { draft } = &invocation {
-        let canonical = canonical_payload_request(request, json!({"draft": draft.clone()}))?;
+    if let ToolInvocation::ValidateWebIr { ir } = &invocation {
+        let canonical = canonical_payload_request(request, json!({"ir": ir.clone()}))?;
         let result = crate::protocol::web_ir_validate_result(&canonical)?;
         return serialized_result(&result);
     }
-    if let ToolInvocation::InspectWebIr { draft } = &invocation {
-        let canonical = canonical_payload_request(request, json!({"draft": draft.clone()}))?;
+    if let ToolInvocation::InspectWebIr { ir } = &invocation {
+        let canonical = canonical_payload_request(request, json!({"ir": ir.clone()}))?;
         let result = crate::protocol::web_ir_inspect_result(&canonical)?;
         return serialized_result(&result);
     }
@@ -2503,18 +2503,18 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "observeBootstrap" => Ok(ToolInvocation::ObserveBootstrap),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
         "inspectWebIr" => {
-            let draft = arguments
-                .get("draft")
+            let ir = arguments
+                .get("ir")
                 .cloned()
-                .ok_or("inspectWebIr requires a draft object")?;
-            Ok(ToolInvocation::InspectWebIr { draft })
+                .ok_or("inspectWebIr requires a Glass Web IR object")?;
+            Ok(ToolInvocation::InspectWebIr { ir })
         }
         "validateWebIr" => {
-            let draft = arguments
-                .get("draft")
+            let ir = arguments
+                .get("ir")
                 .cloned()
-                .ok_or("validateWebIr requires a draft object")?;
-            Ok(ToolInvocation::ValidateWebIr { draft })
+                .ok_or("validateWebIr requires a Glass Web IR object")?;
+            Ok(ToolInvocation::ValidateWebIr { ir })
         }
         "diffWebIr" => {
             let before = arguments
@@ -2841,31 +2841,31 @@ fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "inspectWebIr",
-            description: "Inspect a validated browser-free Web IR draft without starting Chrome.",
+            description: "Inspect a validated browser-free Glass Web IR v1 without starting Chrome.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "draft": {
+                    "ir": {
                         "type": "object",
-                        "description": "Bounded Glass Web IR draft JSON."
+                        "description": "Bounded Glass Web IR v1 JSON."
                     }
                 },
-                "required": ["draft"],
+                "required": ["ir"],
                 "additionalProperties": false
             }),
         },
         Tool {
             name: "validateWebIr",
-            description: "Validate a browser-free Web IR draft without starting Chrome.",
+            description: "Validate a browser-free Glass Web IR v1 without starting Chrome.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "draft": {
+                    "ir": {
                         "type": "object",
-                        "description": "Bounded Glass Web IR draft JSON."
+                        "description": "Bounded Glass Web IR v1 JSON."
                     }
                 },
-                "required": ["draft"],
+                "required": ["ir"],
                 "additionalProperties": false
             }),
         },
@@ -4192,6 +4192,7 @@ mod tests {
         json!({
             "schemaVersion": 1,
             "revision": 7,
+            "document": {"revision": 7},
             "entities": [
                 {
                     "id": "page",
@@ -4372,13 +4373,13 @@ mod tests {
                 "method": "tools/call",
                 "params": {
                     "name": name,
-                    "arguments": {"draft": valid_web_ir_draft()}
+                    "arguments": {"ir": valid_web_ir_draft()}
                 }
             }))
             .unwrap();
             let canonical = canonical_tool_request(&request).unwrap();
             assert_eq!(canonical.operation, operation);
-            assert_eq!(canonical.payload["draft"]["schemaVersion"], 1);
+            assert_eq!(canonical.payload["ir"]["schemaVersion"], 1);
             canonical.validate().unwrap();
         }
     }
@@ -4471,21 +4472,21 @@ mod tests {
             "params": {
                 "name": "inspectWebIr",
                 "arguments": {
-                    "draft": draft.clone(),
+                    "ir": draft.clone(),
                     "responseMode": "reference",
                     "includeTrace": true
                 }
             }
         }))
         .unwrap();
-        let canonical = canonical_payload_request(&request, json!({"draft": draft})).unwrap();
+        let canonical = canonical_payload_request(&request, json!({"ir": draft})).unwrap();
         assert_eq!(
             canonical.operation,
             crate::protocol::WEB_IR_INSPECT_OPERATION
         );
         assert_eq!(
             canonical.payload,
-            json!({"draft": canonical.payload["draft"].clone()})
+            json!({"ir": canonical.payload["ir"].clone()})
         );
         canonical.decode_web_ir_inspect().unwrap();
     }
@@ -4900,7 +4901,7 @@ mod tests {
             "method": "tools/call",
             "params": {
                 "name": "inspectWebIr",
-                "arguments": {"draft": valid_web_ir_draft()}
+                "arguments": {"ir": valid_web_ir_draft()}
             }
         }))
         .unwrap();
@@ -4992,7 +4993,7 @@ mod tests {
             "method": "tools/call",
             "params": {
                 "name": "validateWebIr",
-                "arguments": {"draft": draft}
+                "arguments": {"ir": draft}
             }
         }))
         .unwrap();
@@ -5015,7 +5016,7 @@ mod tests {
             error,
             json!({
                 "kind": "webIrValidation",
-                "path": "relationships",
+                "path": "relationships[0]",
                 "reason": "relationships must reference two distinct known entities"
             })
         );
@@ -5026,6 +5027,7 @@ mod tests {
     async fn diff_web_ir_tool_returns_bounded_summary_without_starting_chrome() {
         let mut after = valid_web_ir_draft();
         after["revision"] = json!(8);
+        after["document"]["revision"] = json!(8);
         after["entities"][1]["name"] = json!("Email address");
         let request: JsonRpcRequest = serde_json::from_value(json!({
             "jsonrpc": "2.0",
@@ -5068,6 +5070,7 @@ mod tests {
     async fn continuity_web_ir_tool_classifies_entity_without_starting_chrome() {
         let mut after = valid_web_ir_draft();
         after["revision"] = json!(8);
+        after["document"]["revision"] = json!(8);
         after["entities"][1]["name"] = json!("Email address");
         let request: JsonRpcRequest = serde_json::from_value(json!({
             "jsonrpc": "2.0",
@@ -5100,7 +5103,7 @@ mod tests {
         assert_eq!(result.requested_id, "field-1");
         assert_eq!(
             result.status,
-            crate::web_ir::DraftEntityContinuityStatus::Changed
+            crate::web_ir::WebIrEntityContinuityStatus::Changed
         );
         assert_eq!(result.current_id.as_deref(), Some("field-1"));
         assert!(session.is_none());

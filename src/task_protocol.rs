@@ -3,7 +3,7 @@
 //! This module defines the input boundary only. Validation is side-effect free;
 //! compilation and browser execution remain separate follow-on layers.
 
-use crate::web_ir::DraftEntityKind;
+use crate::web_ir::WebIrEntityKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -109,7 +109,7 @@ pub struct TaskScope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_kind: Option<DraftEntityKind>,
+    pub entity_kind: Option<WebIrEntityKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_name: Option<String>,
 }
@@ -422,20 +422,20 @@ impl TaskScope {
             TaskKind::FormInspect
             | TaskKind::FormFill
             | TaskKind::FormValidate
-            | TaskKind::FormSubmit => DraftEntityKind::Form,
-            TaskKind::FieldRead => DraftEntityKind::Field,
-            TaskKind::NavigationSelectTab => DraftEntityKind::Tab,
-            TaskKind::NavigationOpenMenu => DraftEntityKind::NavigationItem,
-            TaskKind::TableExtract => DraftEntityKind::Table,
-            TaskKind::CollectionExtract => DraftEntityKind::Collection,
-            TaskKind::RegionExtract => DraftEntityKind::Region,
+            | TaskKind::FormSubmit => WebIrEntityKind::Form,
+            TaskKind::FieldRead => WebIrEntityKind::Field,
+            TaskKind::NavigationSelectTab => WebIrEntityKind::Tab,
+            TaskKind::NavigationOpenMenu => WebIrEntityKind::NavigationItem,
+            TaskKind::TableExtract => WebIrEntityKind::Table,
+            TaskKind::CollectionExtract => WebIrEntityKind::Collection,
+            TaskKind::RegionExtract => WebIrEntityKind::Region,
             TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
-                DraftEntityKind::Dialog
+                WebIrEntityKind::Dialog
             }
             TaskKind::PaginationNext | TaskKind::PaginationCollect => {
-                DraftEntityKind::PaginationControl
+                WebIrEntityKind::PaginationControl
             }
-            TaskKind::NavigationFollow => DraftEntityKind::Link,
+            TaskKind::NavigationFollow => WebIrEntityKind::Link,
         };
         if let Some(actual) = self.entity_kind
             && actual != expected_kind
@@ -561,7 +561,7 @@ mod tests {
             task: TaskKind::FormFill,
             scope: TaskScope {
                 region_name: Some("Shipping address".into()),
-                entity_kind: Some(DraftEntityKind::Form),
+                entity_kind: Some(WebIrEntityKind::Form),
                 entity_name: None,
             },
             inputs: BTreeMap::from([(String::from("city"), String::from("Kuching"))]),
@@ -626,7 +626,7 @@ mod tests {
         let mut invalid = task();
         invalid.postconditions.clear();
         invalid.task = TaskKind::FieldRead;
-        invalid.scope.entity_kind = Some(DraftEntityKind::Field);
+        invalid.scope.entity_kind = Some(WebIrEntityKind::Field);
         assert_eq!(invalid.validate().unwrap_err().path, "inputs.field");
     }
 
@@ -635,7 +635,7 @@ mod tests {
         let mut invalid = task();
         invalid.postconditions.clear();
         invalid.task = TaskKind::FieldRead;
-        invalid.scope.entity_kind = Some(DraftEntityKind::Field);
+        invalid.scope.entity_kind = Some(WebIrEntityKind::Field);
         invalid.scope.region_name = None;
         assert_eq!(invalid.validate().unwrap_err().path, "scope.regionName");
     }
@@ -645,26 +645,26 @@ mod tests {
         let mut task = task();
         task.postconditions.clear();
         task.task = TaskKind::NavigationFollow;
-        task.scope.entity_kind = Some(DraftEntityKind::Link);
+        task.scope.entity_kind = Some(WebIrEntityKind::Link);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.url");
         task.inputs
             .insert("url".into(), "https://example.test/next".into());
         task.validate().unwrap();
         task.task = TaskKind::NavigationSelectTab;
-        task.scope.entity_kind = Some(DraftEntityKind::Tab);
+        task.scope.entity_kind = Some(WebIrEntityKind::Tab);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.tab");
         task.inputs.insert("tab".into(), "Payment".into());
         task.validate().unwrap();
         task.task = TaskKind::NavigationOpenMenu;
-        task.scope.entity_kind = Some(DraftEntityKind::NavigationItem);
+        task.scope.entity_kind = Some(WebIrEntityKind::NavigationItem);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.menu");
         task.inputs.insert("menu".into(), "Products".into());
         task.validate().unwrap();
         task.task = TaskKind::PaginationNext;
-        task.scope.entity_kind = Some(DraftEntityKind::PaginationControl);
+        task.scope.entity_kind = Some(WebIrEntityKind::PaginationControl);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());
@@ -675,7 +675,7 @@ mod tests {
         let mut task = task();
         task.postconditions.clear();
         task.task = TaskKind::PaginationCollect;
-        task.scope.entity_kind = Some(DraftEntityKind::PaginationControl);
+        task.scope.entity_kind = Some(WebIrEntityKind::PaginationControl);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());
@@ -729,7 +729,7 @@ mod tests {
         let mut navigation = task();
         navigation.task = TaskKind::NavigationFollow;
         navigation.scope.region_name = None;
-        navigation.scope.entity_kind = Some(DraftEntityKind::Link);
+        navigation.scope.entity_kind = Some(WebIrEntityKind::Link);
         navigation.inputs = BTreeMap::from([(
             String::from("url"),
             String::from("https://example.test/next"),
@@ -748,7 +748,7 @@ mod tests {
             let mut dialog = task();
             dialog.task = kind;
             dialog.scope.region_name = None;
-            dialog.scope.entity_kind = Some(DraftEntityKind::Dialog);
+            dialog.scope.entity_kind = Some(WebIrEntityKind::Dialog);
             dialog.inputs.clear();
             dialog.postconditions = vec![TaskPostcondition {
                 kind: TaskPostconditionKind::DialogClosed,

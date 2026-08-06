@@ -1,8 +1,8 @@
-//! Experimental draft Glass Web IR reconciliation.
+//! Stable, bounded Glass Web IR v1 reconciliation and validation.
 //!
-//! This module intentionally remains a sidecar to the existing semantic
-//! observation and intent paths. It turns bounded evidence into canonical draft
-//! entities without dispatching browser actions or inventing unsupported links.
+//! The module turns deterministic browser evidence into canonical semantic
+//! entities. It never dispatches browser actions, contains no CDP identifiers,
+//! and preserves explicit uncertainty, coverage, and resource limits.
 
 use crate::extraction::{
     EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
@@ -12,15 +12,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
-/// Version of the experimental draft Web IR contract.
-pub const WEB_IR_DRAFT_SCHEMA_VERSION: u32 = 1;
-const MAX_DRAFT_ENTITIES: usize = 4_096;
-const MAX_DRAFT_RELATIONSHIPS: usize = 8_192;
+/// Version of the stable Glass Web IR v1 contract.
+pub const WEB_IR_SCHEMA_VERSION: u32 = 1;
+const MAX_WEB_IR_ENTITIES: usize = 4_096;
+const MAX_WEB_IR_RELATIONSHIPS: usize = 8_192;
+const MAX_WEB_IR_BYTES: usize = 256 * 1024;
+const MAX_WEB_IR_DIAGNOSTICS: usize = 128;
+const MAX_WEB_IR_DIAGNOSTIC_BYTES: usize = 512;
+const MAX_WEB_IR_ENTITY_TEXT_BYTES: usize = 256;
+const MAX_WEB_IR_ACTIONS: usize = 16;
 
-/// Canonical entity kinds used by the draft graph.
+/// Canonical entity kinds used by Glass Web IR v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum DraftEntityKind {
+pub enum WebIrEntityKind {
     Page,
     Region,
     Form,
@@ -41,10 +46,10 @@ pub enum DraftEntityKind {
     OpaqueRegion,
 }
 
-/// Canonical relationship kinds used by the draft graph.
+/// Canonical relationship kinds used by Glass Web IR v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum DraftRelationshipKind {
+pub enum WebIrRelationshipKind {
     Contains,
     Labels,
     Owns,
@@ -62,12 +67,111 @@ pub enum DraftRelationshipKind {
     ScopedTo,
 }
 
+/// One deterministic action supported by a semantic entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WebIrAction {
+    Read,
+    Click,
+    Type,
+    Select,
+    Check,
+    Uncheck,
+    Submit,
+    Open,
+    Close,
+    Confirm,
+    Cancel,
+    Navigate,
+    Extract,
+    Paginate,
+}
+
+/// Semantic sensitivity carried independently from page values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WebIrSensitivity {
+    Public,
+    Personal,
+    Secret,
+    Financial,
+    #[default]
+    Unknown,
+}
+
+/// Browser scope containing an entity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WebIrScopeKind {
+    #[default]
+    Document,
+    Frame,
+    ShadowRoot,
+}
+
+/// State known for one semantic entity. `None` means no confirming evidence.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrEntityState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_testable: Option<bool>,
+}
+
+/// Bounded semantic metadata keyed by a revision-local entity ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrEntityDetails {
+    #[serde(default)]
+    pub state: WebIrEntityState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_actions: Vec<WebIrAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default)]
+    pub scope: WebIrScopeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
+    #[serde(default)]
+    pub sensitivity: WebIrSensitivity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_stability_key: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// Bounded document metadata associated with one IR revision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrDocument {
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_state: Option<String>,
+}
+
 /// One canonical entity reconciled from one or more evidence sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftEntity {
+pub struct WebIrEntity {
     pub id: String,
-    pub kind: DraftEntityKind,
+    pub kind: WebIrEntityKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,16 +183,16 @@ pub struct DraftEntity {
 /// One relationship between canonical draft entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftRelationship {
+pub struct WebIrRelationship {
     pub from: String,
     pub to: String,
-    pub kind: DraftRelationshipKind,
+    pub kind: WebIrRelationshipKind,
 }
 
 /// Kind of change represented by a draft Web IR diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum DraftChangeKind {
+pub enum WebIrChangeKind {
     Added,
     Removed,
     Changed,
@@ -97,21 +201,21 @@ pub enum DraftChangeKind {
 /// One entity change between two validated draft revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftEntityChange {
+pub struct WebIrEntityChange {
     pub id: String,
-    pub kind: DraftChangeKind,
+    pub kind: WebIrChangeKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub before: Option<DraftEntity>,
+    pub before: Option<WebIrEntity>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub after: Option<DraftEntity>,
+    pub after: Option<WebIrEntity>,
 }
 
 /// One relationship addition or removal between two validated draft revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftRelationshipChange {
-    pub relationship: DraftRelationship,
-    pub kind: DraftChangeKind,
+pub struct WebIrRelationshipChange {
+    pub relationship: WebIrRelationship,
+    pub kind: WebIrChangeKind,
 }
 
 /// Deterministic changes between two validated draft Web IR revisions.
@@ -122,9 +226,9 @@ pub struct GlassWebIrDiff {
     pub from_revision: u64,
     pub to_revision: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub entity_changes: Vec<DraftEntityChange>,
+    pub entity_changes: Vec<WebIrEntityChange>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub relationship_changes: Vec<DraftRelationshipChange>,
+    pub relationship_changes: Vec<WebIrRelationshipChange>,
     pub coverage_changed: bool,
     pub limits_changed: bool,
     pub diagnostics_changed: bool,
@@ -134,7 +238,7 @@ pub struct GlassWebIrDiff {
 /// Continuity classification for one entity across draft revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum DraftEntityContinuityStatus {
+pub enum WebIrEntityContinuityStatus {
     Unchanged,
     Changed,
     Rebound,
@@ -145,15 +249,15 @@ pub enum DraftEntityContinuityStatus {
 /// Explain whether a revision-local entity remains safe to use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftEntityContinuity {
+pub struct WebIrEntityContinuity {
     pub requested_id: String,
-    pub status: DraftEntityContinuityStatus,
+    pub status: WebIrEntityContinuityStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_id: Option<String>,
     pub reason: String,
 }
 
-impl DraftEntity {
+impl WebIrEntity {
     /// Return a bounded semantic key suitable only for revision comparison.
     pub fn semantic_identity_key(&self) -> Option<String> {
         if self.role.is_none() && self.name.is_none() {
@@ -185,7 +289,7 @@ pub enum RelationshipHintDiagnosticStatus {
 /// A redacted diagnostic for one validated relationship hint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DraftRelationshipHintDiagnostic {
+pub struct WebIrRelationshipHintDiagnostic {
     pub fact_index: usize,
     pub source: EvidenceSource,
     pub hint: EvidenceRelationshipHint,
@@ -193,31 +297,35 @@ pub struct DraftRelationshipHintDiagnostic {
     pub status: RelationshipHintDiagnosticStatus,
 }
 
-/// A bounded, experimental Web IR draft.
+/// The stable, bounded Glass Web IR v1 observed contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GlassWebIrDraft {
+pub struct GlassWebIrV1 {
     pub schema_version: u32,
     pub revision: u64,
-    pub entities: Vec<DraftEntity>,
-    pub relationships: Vec<DraftRelationship>,
+    #[serde(default)]
+    pub document: WebIrDocument,
+    pub entities: Vec<WebIrEntity>,
+    pub relationships: Vec<WebIrRelationship>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub entity_details: BTreeMap<String, WebIrEntityDetails>,
     pub coverage: crate::extraction::EvidenceCoverage,
     pub limits: ExtractionEvidenceLimits,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub relationship_hint_diagnostics: Vec<DraftRelationshipHintDiagnostic>,
+    pub relationship_hint_diagnostics: Vec<WebIrRelationshipHintDiagnostic>,
 }
 
 /// Minimum graph shape expected from one representative fixture.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DraftFixtureExpectation {
-    pub required_entity_counts: BTreeMap<DraftEntityKind, u32>,
-    pub required_relationship_counts: BTreeMap<DraftRelationshipKind, u32>,
+pub struct WebIrFixtureExpectation {
+    pub required_entity_counts: BTreeMap<WebIrEntityKind, u32>,
+    pub required_relationship_counts: BTreeMap<WebIrRelationshipKind, u32>,
     pub opaque_regions: u32,
 }
 
-impl DraftEntityKind {
+impl WebIrEntityKind {
     /// Parse the stable fixture vocabulary into a draft entity kind.
     pub fn from_contract_name(name: &str) -> Option<Self> {
         Some(match name {
@@ -244,7 +352,7 @@ impl DraftEntityKind {
     }
 }
 
-impl DraftRelationshipKind {
+impl WebIrRelationshipKind {
     /// Parse the stable fixture vocabulary into a draft relationship kind.
     pub fn from_contract_name(name: &str) -> Option<Self> {
         Some(match name {
@@ -268,100 +376,201 @@ impl DraftRelationshipKind {
     }
 }
 
-impl GlassWebIrDraft {
+impl GlassWebIrV1 {
     /// Validate graph invariants before exposing a draft to another layer.
     pub fn validate(&self) -> Result<(), WebIrValidationError> {
-        if self.schema_version != WEB_IR_DRAFT_SCHEMA_VERSION {
+        if self.schema_version != WEB_IR_SCHEMA_VERSION {
             return Err(WebIrValidationError::new(
                 "schemaVersion",
-                "unsupported draft Web IR schema version",
+                "unsupported Glass Web IR schema version",
             ));
         }
-        if self.entities.is_empty() || self.entities.len() > MAX_DRAFT_ENTITIES {
+        if self.document.revision != self.revision {
+            return Err(WebIrValidationError::new(
+                "document.revision",
+                "document revision must match the Web IR revision",
+            ));
+        }
+        validate_optional_text("document.url", self.document.url.as_deref(), 2_048)?;
+        validate_optional_text("document.title", self.document.title.as_deref(), 512)?;
+        validate_optional_text("document.kind", self.document.kind.as_deref(), 128)?;
+        validate_optional_text(
+            "document.readyState",
+            self.document.ready_state.as_deref(),
+            32,
+        )?;
+        if self
+            .document
+            .url
+            .as_deref()
+            .is_some_and(|url| url.contains('?') || url.contains('#'))
+        {
+            return Err(WebIrValidationError::new(
+                "document.url",
+                "document URL must omit query strings and fragments",
+            ));
+        }
+        if self.entities.is_empty() || self.entities.len() > MAX_WEB_IR_ENTITIES {
             return Err(WebIrValidationError::new(
                 "entities",
-                "entity count must be between 1 and the draft bound",
+                "entity count must be within the Glass Web IR bound",
             ));
         }
         let page_count = self
             .entities
             .iter()
-            .filter(|entity| entity.kind == DraftEntityKind::Page)
+            .filter(|entity| entity.kind == WebIrEntityKind::Page)
             .count();
         if page_count != 1 {
             return Err(WebIrValidationError::new(
                 "entities",
-                "drafts must contain exactly one page entity",
+                "Glass Web IR must contain exactly one page entity",
             ));
         }
         let mut ids = BTreeSet::new();
         let mut opaque_regions = 0_u32;
-        for entity in &self.entities {
-            if entity.id.is_empty()
-                || entity.id.len() > 128
-                || entity.id.chars().any(char::is_whitespace)
-                || entity.id.chars().any(char::is_control)
-                || !ids.insert(entity.id.as_str())
-            {
+        for (index, entity) in self.entities.iter().enumerate() {
+            validate_identifier(&format!("entities[{index}].id"), &entity.id)?;
+            if !ids.insert(entity.id.as_str()) {
                 return Err(WebIrValidationError::new(
-                    "entities.id",
-                    "entity IDs must be unique, bounded, and non-whitespace",
+                    format!("entities[{index}].id"),
+                    "entity IDs must be unique within one revision",
                 ));
             }
-            if entity.kind == DraftEntityKind::OpaqueRegion {
+            validate_optional_text(
+                &format!("entities[{index}].role"),
+                entity.role.as_deref(),
+                MAX_WEB_IR_ENTITY_TEXT_BYTES,
+            )?;
+            validate_optional_text(
+                &format!("entities[{index}].name"),
+                entity.name.as_deref(),
+                MAX_WEB_IR_ENTITY_TEXT_BYTES,
+            )?;
+            let unique_sources = entity
+                .evidence_sources
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if entity.evidence_sources.len() > 12
+                || unique_sources.len() != entity.evidence_sources.len()
+            {
+                return Err(WebIrValidationError::new(
+                    format!("entities[{index}].evidenceSources"),
+                    "evidence sources must be unique and bounded",
+                ));
+            }
+            if entity.kind == WebIrEntityKind::OpaqueRegion {
                 opaque_regions = opaque_regions.saturating_add(1);
                 if entity.quality != EvidenceQuality::Opaque || !entity.evidence_sources.is_empty()
                 {
                     return Err(WebIrValidationError::new(
-                        "entities.opaqueRegion",
-                        "opaque regions must not claim source provenance or non-opaque quality",
+                        format!("entities[{index}]"),
+                        "opaque regions cannot claim positive evidence or quality",
                     ));
                 }
             } else if entity.quality == EvidenceQuality::Opaque {
                 return Err(WebIrValidationError::new(
-                    "entities.quality",
+                    format!("entities[{index}].quality"),
                     "opaque quality is reserved for opaque regions",
                 ));
             }
             if entity.evidence_sources.is_empty()
-                && entity.kind != DraftEntityKind::Page
-                && entity.kind != DraftEntityKind::OpaqueRegion
+                && entity.kind != WebIrEntityKind::Page
+                && entity.kind != WebIrEntityKind::OpaqueRegion
             {
                 return Err(WebIrValidationError::new(
-                    "entities.evidenceSources",
-                    "non-page, non-opaque entities require source provenance",
+                    format!("entities[{index}].evidenceSources"),
+                    "positive entities require source provenance",
                 ));
             }
         }
         if opaque_regions != self.coverage.opaque_regions {
             return Err(WebIrValidationError::new(
                 "coverage.opaqueRegions",
-                "coverage opaque region count must match opaque region entities",
+                "coverage count must match opaque region entities",
+            ));
+        }
+        if self.entity_details.len() > self.entities.len() {
+            return Err(WebIrValidationError::new(
+                "entityDetails",
+                "entity details exceed the entity count",
+            ));
+        }
+        for (entity_id, details) in &self.entity_details {
+            if !ids.contains(entity_id.as_str()) {
+                return Err(WebIrValidationError::new(
+                    "entityDetails",
+                    "entity details must reference a known entity",
+                ));
+            }
+            validate_entity_details(entity_id, details, &ids)?;
+        }
+        if self.relationships.len() > MAX_WEB_IR_RELATIONSHIPS {
+            return Err(WebIrValidationError::new(
+                "relationships",
+                "relationship count exceeds the Glass Web IR bound",
             ));
         }
         let mut relationship_keys = BTreeSet::new();
-        if self.relationships.len() > MAX_DRAFT_RELATIONSHIPS {
-            return Err(WebIrValidationError::new(
-                "relationships",
-                "relationship count exceeds the draft bound",
-            ));
-        }
-        for relationship in &self.relationships {
+        for (index, relationship) in self.relationships.iter().enumerate() {
             if relationship.from == relationship.to
                 || !ids.contains(relationship.from.as_str())
                 || !ids.contains(relationship.to.as_str())
             {
                 return Err(WebIrValidationError::new(
-                    "relationships",
+                    format!("relationships[{index}]"),
                     "relationships must reference two distinct known entities",
                 ));
             }
             if !relationship_keys.insert(relationship_key(relationship)) {
                 return Err(WebIrValidationError::new(
-                    "relationships",
+                    format!("relationships[{index}]"),
                     "relationships must be unique",
                 ));
             }
+        }
+        validate_diagnostics("coverage.reasons", &self.coverage.reasons, 16, 128)?;
+        validate_diagnostics(
+            "diagnostics",
+            &self.diagnostics,
+            MAX_WEB_IR_DIAGNOSTICS,
+            MAX_WEB_IR_DIAGNOSTIC_BYTES,
+        )?;
+        if self.relationship_hint_diagnostics.len() > MAX_WEB_IR_ENTITIES {
+            return Err(WebIrValidationError::new(
+                "relationshipHintDiagnostics",
+                "relationship hint diagnostic count exceeds its bound",
+            ));
+        }
+        for (index, diagnostic) in self.relationship_hint_diagnostics.iter().enumerate() {
+            validate_bounded_text(
+                &format!("relationshipHintDiagnostics[{index}].parentRole"),
+                &diagnostic.parent_role,
+                64,
+            )?;
+        }
+        let unique_missing_sources = self
+            .limits
+            .missing_sources
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if self.limits.missing_sources.len() > 12
+            || unique_missing_sources.len() != self.limits.missing_sources.len()
+        {
+            return Err(WebIrValidationError::new(
+                "limits.missingSources",
+                "missing sources must be unique and bounded",
+            ));
+        }
+        let serialized = serde_json::to_vec(self)
+            .map_err(|error| WebIrValidationError::new("$", error.to_string()))?;
+        if serialized.len() > MAX_WEB_IR_BYTES {
+            return Err(WebIrValidationError::new(
+                "$",
+                "serialized Glass Web IR exceeds the 256 KiB bound",
+            ));
         }
         Ok(())
     }
@@ -369,7 +578,7 @@ impl GlassWebIrDraft {
     /// Validate that the draft satisfies a representative fixture minimum.
     pub fn validate_against(
         &self,
-        expectation: &DraftFixtureExpectation,
+        expectation: &WebIrFixtureExpectation,
     ) -> Result<(), WebIrValidationError> {
         self.validate()?;
         for (kind, minimum) in &expectation.required_entity_counts {
@@ -388,7 +597,7 @@ impl GlassWebIrDraft {
         let opaque_regions = self
             .entities
             .iter()
-            .filter(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .filter(|entity| entity.kind == WebIrEntityKind::OpaqueRegion)
             .count() as u32;
         if opaque_regions != expectation.opaque_regions {
             return Err(WebIrValidationError::new(
@@ -485,22 +694,22 @@ impl GlassWebIrDraft {
         let mut entity_changes = Vec::new();
         for id in entity_ids {
             match (before_entities.get(&id), after_entities.get(&id)) {
-                (None, Some(after)) => entity_changes.push(DraftEntityChange {
+                (None, Some(after)) => entity_changes.push(WebIrEntityChange {
                     id,
-                    kind: DraftChangeKind::Added,
+                    kind: WebIrChangeKind::Added,
                     before: None,
                     after: Some((*after).clone()),
                 }),
-                (Some(before), None) => entity_changes.push(DraftEntityChange {
+                (Some(before), None) => entity_changes.push(WebIrEntityChange {
                     id,
-                    kind: DraftChangeKind::Removed,
+                    kind: WebIrChangeKind::Removed,
                     before: Some((*before).clone()),
                     after: None,
                 }),
                 (Some(before), Some(after)) if before != after => {
-                    entity_changes.push(DraftEntityChange {
+                    entity_changes.push(WebIrEntityChange {
                         id,
-                        kind: DraftChangeKind::Changed,
+                        kind: WebIrChangeKind::Changed,
                         before: Some((*before).clone()),
                         after: Some((*after).clone()),
                     });
@@ -531,15 +740,15 @@ impl GlassWebIrDraft {
                 after_relationships.get(&key),
             ) {
                 (None, Some(relationship)) => {
-                    relationship_changes.push(DraftRelationshipChange {
+                    relationship_changes.push(WebIrRelationshipChange {
                         relationship: (*relationship).clone(),
-                        kind: DraftChangeKind::Added,
+                        kind: WebIrChangeKind::Added,
                     });
                 }
                 (Some(relationship), None) => {
-                    relationship_changes.push(DraftRelationshipChange {
+                    relationship_changes.push(WebIrRelationshipChange {
                         relationship: (*relationship).clone(),
-                        kind: DraftChangeKind::Removed,
+                        kind: WebIrChangeKind::Removed,
                     });
                 }
                 (Some(_), Some(_)) | (None, None) => {}
@@ -547,7 +756,7 @@ impl GlassWebIrDraft {
         }
 
         Ok(GlassWebIrDiff {
-            schema_version: WEB_IR_DRAFT_SCHEMA_VERSION,
+            schema_version: WEB_IR_SCHEMA_VERSION,
             from_revision: self.revision,
             to_revision: next.revision,
             entity_changes,
@@ -565,13 +774,13 @@ impl GlassWebIrDraft {
         &self,
         next: &Self,
         entity_id: &str,
-    ) -> Result<DraftEntityContinuity, WebIrValidationError> {
+    ) -> Result<WebIrEntityContinuity, WebIrValidationError> {
         self.validate_revision_transition(next)?;
         let requested_id = entity_id.to_owned();
         let Some(source) = self.entities.iter().find(|entity| entity.id == entity_id) else {
-            return Ok(DraftEntityContinuity {
+            return Ok(WebIrEntityContinuity {
                 requested_id,
-                status: DraftEntityContinuityStatus::Removed,
+                status: WebIrEntityContinuityStatus::Removed,
                 current_id: None,
                 reason: "entity was not present in the source revision".into(),
             });
@@ -579,19 +788,19 @@ impl GlassWebIrDraft {
 
         if let Some(current) = next.entities.iter().find(|entity| entity.id == entity_id) {
             let status = if source.semantic_identity_key() == current.semantic_identity_key() {
-                DraftEntityContinuityStatus::Unchanged
+                WebIrEntityContinuityStatus::Unchanged
             } else {
-                DraftEntityContinuityStatus::Changed
+                WebIrEntityContinuityStatus::Changed
             };
-            return Ok(DraftEntityContinuity {
+            return Ok(WebIrEntityContinuity {
                 requested_id,
                 status,
                 current_id: Some(current.id.clone()),
                 reason: match status {
-                    DraftEntityContinuityStatus::Unchanged => {
+                    WebIrEntityContinuityStatus::Unchanged => {
                         "semantic identity remains compatible".into()
                     }
-                    DraftEntityContinuityStatus::Changed => {
+                    WebIrEntityContinuityStatus::Changed => {
                         "same revision-local ID has changed semantic identity".into()
                     }
                     _ => unreachable!("status is selected above"),
@@ -600,9 +809,9 @@ impl GlassWebIrDraft {
         }
 
         let Some(identity_key) = source.semantic_identity_key() else {
-            return Ok(DraftEntityContinuity {
+            return Ok(WebIrEntityContinuity {
                 requested_id,
-                status: DraftEntityContinuityStatus::Removed,
+                status: WebIrEntityContinuityStatus::Removed,
                 current_id: None,
                 reason: "entity has no semantic identity for bounded rebinding".into(),
             });
@@ -613,21 +822,21 @@ impl GlassWebIrDraft {
             .filter(|entity| entity.semantic_identity_key().as_deref() == Some(&identity_key))
             .collect::<Vec<_>>();
         match candidates.as_slice() {
-            [] => Ok(DraftEntityContinuity {
+            [] => Ok(WebIrEntityContinuity {
                 requested_id,
-                status: DraftEntityContinuityStatus::Removed,
+                status: WebIrEntityContinuityStatus::Removed,
                 current_id: None,
                 reason: "no compatible semantic identity was observed".into(),
             }),
-            [candidate] => Ok(DraftEntityContinuity {
+            [candidate] => Ok(WebIrEntityContinuity {
                 requested_id,
-                status: DraftEntityContinuityStatus::Rebound,
+                status: WebIrEntityContinuityStatus::Rebound,
                 current_id: Some(candidate.id.clone()),
                 reason: "revision-local ID changed but semantic identity remained unique".into(),
             }),
-            _ => Ok(DraftEntityContinuity {
+            _ => Ok(WebIrEntityContinuity {
                 requested_id,
-                status: DraftEntityContinuityStatus::Ambiguous,
+                status: WebIrEntityContinuityStatus::Ambiguous,
                 current_id: None,
                 reason: "multiple compatible semantic identities were observed".into(),
             }),
@@ -679,10 +888,10 @@ impl GlassWebIrDraft {
     }
 }
 
-/// Reconcile bounded extraction facts into a canonical draft graph.
+/// Reconcile bounded extraction facts into the stable Glass Web IR v1 graph.
 pub fn reconcile_evidence(
     evidence: &ExtractionEvidence,
-) -> Result<GlassWebIrDraft, WebIrValidationError> {
+) -> Result<GlassWebIrV1, WebIrValidationError> {
     evidence
         .validate_relationship_hints()
         .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
@@ -691,7 +900,7 @@ pub fn reconcile_evidence(
         .iter()
         .enumerate()
         .filter_map(|(fact_index, fact)| {
-            Some(DraftRelationshipHintDiagnostic {
+            Some(WebIrRelationshipHintDiagnostic {
                 fact_index,
                 source: fact.source,
                 hint: fact.relationship_hint?,
@@ -708,14 +917,22 @@ pub fn reconcile_evidence(
         .collect::<Vec<_>>();
     facts.sort_by_key(|(_, fact)| fact_sort_key(fact));
 
-    let mut entities = vec![DraftEntity {
+    let mut entities = vec![WebIrEntity {
         id: "page".into(),
-        kind: DraftEntityKind::Page,
+        kind: WebIrEntityKind::Page,
         role: None,
         name: None,
         quality: EvidenceQuality::Confirmed,
         evidence_sources: Vec::new(),
     }];
+    let mut entity_details = BTreeMap::from([(
+        "page".to_string(),
+        WebIrEntityDetails {
+            supported_actions: vec![WebIrAction::Read],
+            semantic_stability_key: Some("page".into()),
+            ..WebIrEntityDetails::default()
+        },
+    )]);
     let mut indexes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut suffixes: BTreeMap<String, usize> = BTreeMap::new();
     let mut diagnostics = BTreeSet::new();
@@ -733,6 +950,7 @@ pub fn reconcile_evidence(
             diagnostics.insert(format!("unsupportedFact:{}", fact.kind));
             continue;
         };
+        let fact_details = entity_details_for_fact(kind, &fact);
         let key = canonical_key(kind, fact.role.as_deref(), fact.name.as_deref());
         let existing = indexes.get(&key).and_then(|candidates| {
             candidates
@@ -757,7 +975,7 @@ pub fn reconcile_evidence(
             };
             *suffix = suffix.saturating_add(1);
             let index = entities.len();
-            entities.push(DraftEntity {
+            entities.push(WebIrEntity {
                 id: id.clone(),
                 kind,
                 role: fact.role,
@@ -768,6 +986,10 @@ pub fn reconcile_evidence(
             indexes.entry(key).or_default().push(index);
             id
         };
+        entity_details
+            .entry(entity_id.clone())
+            .and_modify(|details| merge_entity_details(details, &fact_details))
+            .or_insert(fact_details);
         if let Some(parent_role) = fact.parent_role {
             parent_links.insert((
                 fact_index,
@@ -780,23 +1002,31 @@ pub fn reconcile_evidence(
     }
 
     for index in 0..evidence.coverage.opaque_regions {
-        entities.push(DraftEntity {
-            id: format!("opaque_region_{index}"),
-            kind: DraftEntityKind::OpaqueRegion,
+        let id = format!("opaque_region_{index}");
+        entities.push(WebIrEntity {
+            id: id.clone(),
+            kind: WebIrEntityKind::OpaqueRegion,
             role: None,
             name: None,
             quality: EvidenceQuality::Opaque,
             evidence_sources: Vec::new(),
         });
+        entity_details.insert(
+            id,
+            WebIrEntityDetails {
+                truncated: true,
+                ..WebIrEntityDetails::default()
+            },
+        );
     }
 
     let mut relationships = entities
         .iter()
-        .filter(|entity| entity.kind != DraftEntityKind::Page)
-        .map(|entity| DraftRelationship {
+        .filter(|entity| entity.kind != WebIrEntityKind::Page)
+        .map(|entity| WebIrRelationship {
             from: "page".into(),
             to: entity.id.clone(),
-            kind: DraftRelationshipKind::Contains,
+            kind: WebIrRelationshipKind::Contains,
         })
         .collect::<Vec<_>>();
     for (fact_index, parent_role, child_id, child_kind, relationship_hint) in parent_links {
@@ -840,7 +1070,7 @@ pub fn reconcile_evidence(
             }
             continue;
         }
-        relationships.push(DraftRelationship {
+        relationships.push(WebIrRelationship {
             from: parent_id,
             to: child_id,
             kind: relationship_kind(parent_kind, child_kind, relationship_hint),
@@ -861,11 +1091,35 @@ pub fn reconcile_evidence(
         )
     });
     relationships.dedup();
-    let draft = GlassWebIrDraft {
-        schema_version: WEB_IR_DRAFT_SCHEMA_VERSION,
+    let entity_kinds = entities
+        .iter()
+        .map(|entity| (entity.id.as_str(), entity.kind))
+        .collect::<BTreeMap<_, _>>();
+    for relationship in &relationships {
+        if matches!(
+            entity_kinds.get(relationship.from.as_str()),
+            Some(
+                WebIrEntityKind::Region
+                    | WebIrEntityKind::Form
+                    | WebIrEntityKind::Dialog
+                    | WebIrEntityKind::Table
+                    | WebIrEntityKind::Collection
+            )
+        ) && let Some(details) = entity_details.get_mut(&relationship.to)
+        {
+            details.region_id = Some(relationship.from.clone());
+        }
+    }
+    let draft = GlassWebIrV1 {
+        schema_version: WEB_IR_SCHEMA_VERSION,
         revision: evidence.revision,
+        document: WebIrDocument {
+            revision: evidence.revision,
+            ..WebIrDocument::default()
+        },
         entities,
         relationships,
+        entity_details,
         coverage: evidence.coverage.clone(),
         limits: evidence.limits.clone(),
         diagnostics: diagnostics.into_iter().collect(),
@@ -875,7 +1129,7 @@ pub fn reconcile_evidence(
     Ok(draft)
 }
 
-/// A machine-readable draft Web IR validation failure.
+/// A machine-readable Glass Web IR validation failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebIrValidationError {
@@ -900,7 +1154,241 @@ impl Display for WebIrValidationError {
 
 impl std::error::Error for WebIrValidationError {}
 
-fn canonical_kind(fact: &EvidenceFact) -> Option<DraftEntityKind> {
+fn validate_identifier(path: &str, value: &str) -> Result<(), WebIrValidationError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return Err(WebIrValidationError::new(
+            path,
+            "identifier must be non-empty, at most 128 bytes, and contain no whitespace",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bounded_text(
+    path: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), WebIrValidationError> {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+        return Err(WebIrValidationError::new(
+            path,
+            format!("value must be non-empty, at most {max_bytes} bytes, and contain no controls"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_text(
+    path: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), WebIrValidationError> {
+    if let Some(value) = value {
+        validate_bounded_text(path, value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_diagnostics(
+    path: &str,
+    values: &[String],
+    max_count: usize,
+    max_bytes: usize,
+) -> Result<(), WebIrValidationError> {
+    if values.len() > max_count {
+        return Err(WebIrValidationError::new(
+            path,
+            format!("diagnostic count exceeds {max_count}"),
+        ));
+    }
+    for (index, value) in values.iter().enumerate() {
+        validate_bounded_text(&format!("{path}[{index}]"), value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_entity_details(
+    entity_id: &str,
+    details: &WebIrEntityDetails,
+    ids: &BTreeSet<&str>,
+) -> Result<(), WebIrValidationError> {
+    if details.supported_actions.len() > MAX_WEB_IR_ACTIONS
+        || details
+            .supported_actions
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.supportedActions"),
+            "supported actions must be unique, sorted, and bounded",
+        ));
+    }
+    if details.state.disabled == Some(true)
+        && details
+            .supported_actions
+            .iter()
+            .any(|action| !matches!(action, WebIrAction::Read | WebIrAction::Extract))
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.supportedActions"),
+            "disabled entities cannot advertise executable actions",
+        ));
+    }
+    if details.state.read_only == Some(true)
+        && details.supported_actions.iter().any(|action| {
+            matches!(
+                action,
+                WebIrAction::Type | WebIrAction::Select | WebIrAction::Check | WebIrAction::Uncheck
+            )
+        })
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.supportedActions"),
+            "read-only entities cannot advertise value mutation",
+        ));
+    }
+    if let Some(region_id) = details.region_id.as_deref()
+        && !ids.contains(region_id)
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.regionId"),
+            "region membership must reference a known entity",
+        ));
+    }
+    if details.scope == WebIrScopeKind::Document && details.scope_id.is_some() {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.scopeId"),
+            "document-scoped entities cannot carry a frame or shadow scope ID",
+        ));
+    }
+    validate_optional_text(
+        &format!("entityDetails.{entity_id}.scopeId"),
+        details.scope_id.as_deref(),
+        128,
+    )?;
+    validate_optional_text(
+        &format!("entityDetails.{entity_id}.semanticStabilityKey"),
+        details.semantic_stability_key.as_deref(),
+        512,
+    )
+}
+
+fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrEntityDetails {
+    let role = fact
+        .role
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut supported_actions = match kind {
+        WebIrEntityKind::Page
+        | WebIrEntityKind::Text
+        | WebIrEntityKind::Row
+        | WebIrEntityKind::Cell => {
+            vec![WebIrAction::Read]
+        }
+        WebIrEntityKind::Region => vec![WebIrAction::Read, WebIrAction::Extract],
+        WebIrEntityKind::Form => vec![WebIrAction::Read, WebIrAction::Submit],
+        WebIrEntityKind::Field => {
+            let mut actions = vec![WebIrAction::Read];
+            if fact.read_only != Some(true) {
+                match role.as_str() {
+                    "checkbox" => actions.extend([WebIrAction::Check, WebIrAction::Uncheck]),
+                    "radio" => actions.push(WebIrAction::Check),
+                    "combobox" | "listbox" => actions.push(WebIrAction::Select),
+                    _ => actions.push(WebIrAction::Type),
+                }
+            }
+            actions
+        }
+        WebIrEntityKind::Action
+        | WebIrEntityKind::NavigationItem
+        | WebIrEntityKind::Tab
+        | WebIrEntityKind::UnknownInteractive => vec![WebIrAction::Click],
+        WebIrEntityKind::Link => vec![WebIrAction::Click, WebIrAction::Navigate],
+        WebIrEntityKind::Table | WebIrEntityKind::Collection | WebIrEntityKind::CollectionItem => {
+            vec![WebIrAction::Read, WebIrAction::Extract]
+        }
+        WebIrEntityKind::Dialog => vec![
+            WebIrAction::Read,
+            WebIrAction::Close,
+            WebIrAction::Confirm,
+            WebIrAction::Cancel,
+        ],
+        WebIrEntityKind::PaginationControl => {
+            vec![WebIrAction::Click, WebIrAction::Paginate]
+        }
+        WebIrEntityKind::OpaqueRegion => Vec::new(),
+    };
+    supported_actions.sort();
+    supported_actions.dedup();
+    let input_type = fact.input_type.as_deref().unwrap_or_default();
+    let name = fact
+        .name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let sensitivity = if input_type.eq_ignore_ascii_case("password") {
+        WebIrSensitivity::Secret
+    } else if input_type.eq_ignore_ascii_case("file") {
+        WebIrSensitivity::Personal
+    } else if name.contains("card") || name.contains("payment") {
+        WebIrSensitivity::Financial
+    } else {
+        WebIrSensitivity::Public
+    };
+    WebIrEntityDetails {
+        state: WebIrEntityState {
+            disabled: None,
+            read_only: fact.read_only,
+            required: fact.required,
+            checked: None,
+            empty: fact.empty,
+            visible: fact.geometry_present,
+            hit_testable: None,
+        },
+        supported_actions,
+        region_id: None,
+        scope: WebIrScopeKind::Document,
+        scope_id: None,
+        sensitivity,
+        semantic_stability_key: Some(canonical_key(
+            kind,
+            fact.role.as_deref(),
+            fact.name.as_deref(),
+        )),
+        truncated: false,
+    }
+}
+
+fn merge_entity_details(current: &mut WebIrEntityDetails, incoming: &WebIrEntityDetails) {
+    current.state.read_only = current.state.read_only.or(incoming.state.read_only);
+    current.state.required = current.state.required.or(incoming.state.required);
+    current.state.empty = current.state.empty.or(incoming.state.empty);
+    current.state.visible = current.state.visible.or(incoming.state.visible);
+    current
+        .supported_actions
+        .extend(incoming.supported_actions.iter().copied());
+    current.supported_actions.sort();
+    current.supported_actions.dedup();
+    current.sensitivity = match (current.sensitivity, incoming.sensitivity) {
+        (WebIrSensitivity::Secret, _) | (_, WebIrSensitivity::Secret) => WebIrSensitivity::Secret,
+        (WebIrSensitivity::Financial, _) | (_, WebIrSensitivity::Financial) => {
+            WebIrSensitivity::Financial
+        }
+        (WebIrSensitivity::Personal, _) | (_, WebIrSensitivity::Personal) => {
+            WebIrSensitivity::Personal
+        }
+        (WebIrSensitivity::Public, WebIrSensitivity::Public) => WebIrSensitivity::Public,
+        _ => WebIrSensitivity::Unknown,
+    };
+    current.truncated |= incoming.truncated;
+}
+
+fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
     let role = fact
         .role
         .as_deref()
@@ -914,42 +1402,42 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<DraftEntityKind> {
             .to_ascii_uppercase()
             .as_str()
         {
-            "FORM" => Some(DraftEntityKind::Form),
-            "INPUT" | "TEXTAREA" | "SELECT" => Some(DraftEntityKind::Field),
-            "BUTTON" => Some(DraftEntityKind::Action),
-            "A" => Some(DraftEntityKind::Link),
-            "TABLE" => Some(DraftEntityKind::Table),
-            "TR" => Some(DraftEntityKind::Row),
-            "TD" | "TH" => Some(DraftEntityKind::Cell),
-            "DIALOG" => Some(DraftEntityKind::Dialog),
-            "NAV" => Some(DraftEntityKind::Region),
-            "ARTICLE" => Some(DraftEntityKind::CollectionItem),
+            "FORM" => Some(WebIrEntityKind::Form),
+            "INPUT" | "TEXTAREA" | "SELECT" => Some(WebIrEntityKind::Field),
+            "BUTTON" => Some(WebIrEntityKind::Action),
+            "A" => Some(WebIrEntityKind::Link),
+            "TABLE" => Some(WebIrEntityKind::Table),
+            "TR" => Some(WebIrEntityKind::Row),
+            "TD" | "TH" => Some(WebIrEntityKind::Cell),
+            "DIALOG" => Some(WebIrEntityKind::Dialog),
+            "NAV" => Some(WebIrEntityKind::Region),
+            "ARTICLE" => Some(WebIrEntityKind::CollectionItem),
             _ => None,
         };
     }
     match role.as_str() {
-        "form" => Some(DraftEntityKind::Form),
+        "form" => Some(WebIrEntityKind::Form),
         "navigation" | "main" | "search" | "complementary" | "article" | "toolbar" => {
-            Some(DraftEntityKind::Region)
+            Some(WebIrEntityKind::Region)
         }
-        "dialog" | "alertdialog" => Some(DraftEntityKind::Dialog),
+        "dialog" | "alertdialog" => Some(WebIrEntityKind::Dialog),
         "textbox" | "combobox" | "checkbox" | "radio" | "spinbutton" | "listbox" => {
-            Some(DraftEntityKind::Field)
+            Some(WebIrEntityKind::Field)
         }
-        "button" | "menuitem" | "tab" => Some(DraftEntityKind::Action),
-        "link" => Some(DraftEntityKind::Link),
-        "table" => Some(DraftEntityKind::Table),
-        "row" => Some(DraftEntityKind::Row),
-        "cell" | "gridcell" => Some(DraftEntityKind::Cell),
-        "list" => Some(DraftEntityKind::Collection),
-        "listitem" => Some(DraftEntityKind::CollectionItem),
-        "heading" | "text" => Some(DraftEntityKind::Text),
-        _ if fact.kind == "control" => Some(DraftEntityKind::UnknownInteractive),
+        "button" | "menuitem" | "tab" => Some(WebIrEntityKind::Action),
+        "link" => Some(WebIrEntityKind::Link),
+        "table" => Some(WebIrEntityKind::Table),
+        "row" => Some(WebIrEntityKind::Row),
+        "cell" | "gridcell" => Some(WebIrEntityKind::Cell),
+        "list" => Some(WebIrEntityKind::Collection),
+        "listitem" => Some(WebIrEntityKind::CollectionItem),
+        "heading" | "text" => Some(WebIrEntityKind::Text),
+        _ if fact.kind == "control" => Some(WebIrEntityKind::UnknownInteractive),
         _ => None,
     }
 }
 
-fn canonical_key(kind: DraftEntityKind, role: Option<&str>, name: Option<&str>) -> String {
+fn canonical_key(kind: WebIrEntityKind, role: Option<&str>, name: Option<&str>) -> String {
     format!(
         "{}|{}|{}",
         kind_name(kind),
@@ -958,7 +1446,7 @@ fn canonical_key(kind: DraftEntityKind, role: Option<&str>, name: Option<&str>) 
     )
 }
 
-fn relationship_key(relationship: &DraftRelationship) -> (String, String, DraftRelationshipKind) {
+fn relationship_key(relationship: &WebIrRelationship) -> (String, String, WebIrRelationshipKind) {
     (
         relationship.from.clone(),
         relationship.to.clone(),
@@ -975,46 +1463,46 @@ fn fact_sort_key(fact: &EvidenceFact) -> (EvidenceSource, String, String, String
     )
 }
 
-fn kind_name(kind: DraftEntityKind) -> &'static str {
+fn kind_name(kind: WebIrEntityKind) -> &'static str {
     match kind {
-        DraftEntityKind::Page => "page",
-        DraftEntityKind::Region => "region",
-        DraftEntityKind::Form => "form",
-        DraftEntityKind::Field => "field",
-        DraftEntityKind::Action => "action",
-        DraftEntityKind::Link => "link",
-        DraftEntityKind::NavigationItem => "navigationItem",
-        DraftEntityKind::Tab => "tab",
-        DraftEntityKind::Table => "table",
-        DraftEntityKind::Row => "row",
-        DraftEntityKind::Cell => "cell",
-        DraftEntityKind::Collection => "collection",
-        DraftEntityKind::CollectionItem => "collectionItem",
-        DraftEntityKind::Dialog => "dialog",
-        DraftEntityKind::PaginationControl => "paginationControl",
-        DraftEntityKind::Text => "text",
-        DraftEntityKind::UnknownInteractive => "unknownInteractive",
-        DraftEntityKind::OpaqueRegion => "opaqueRegion",
+        WebIrEntityKind::Page => "page",
+        WebIrEntityKind::Region => "region",
+        WebIrEntityKind::Form => "form",
+        WebIrEntityKind::Field => "field",
+        WebIrEntityKind::Action => "action",
+        WebIrEntityKind::Link => "link",
+        WebIrEntityKind::NavigationItem => "navigationItem",
+        WebIrEntityKind::Tab => "tab",
+        WebIrEntityKind::Table => "table",
+        WebIrEntityKind::Row => "row",
+        WebIrEntityKind::Cell => "cell",
+        WebIrEntityKind::Collection => "collection",
+        WebIrEntityKind::CollectionItem => "collectionItem",
+        WebIrEntityKind::Dialog => "dialog",
+        WebIrEntityKind::PaginationControl => "paginationControl",
+        WebIrEntityKind::Text => "text",
+        WebIrEntityKind::UnknownInteractive => "unknownInteractive",
+        WebIrEntityKind::OpaqueRegion => "opaqueRegion",
     }
 }
 
-fn relationship_name(kind: DraftRelationshipKind) -> &'static str {
+fn relationship_name(kind: WebIrRelationshipKind) -> &'static str {
     match kind {
-        DraftRelationshipKind::Contains => "contains",
-        DraftRelationshipKind::Labels => "labels",
-        DraftRelationshipKind::Owns => "owns",
-        DraftRelationshipKind::Controls => "controls",
-        DraftRelationshipKind::NavigatesTo => "navigatesTo",
-        DraftRelationshipKind::Opens => "opens",
-        DraftRelationshipKind::Confirms => "confirms",
-        DraftRelationshipKind::Cancels => "cancels",
-        DraftRelationshipKind::Continues => "continues",
-        DraftRelationshipKind::Submits => "submits",
-        DraftRelationshipKind::HeaderFor => "headerFor",
-        DraftRelationshipKind::CellOf => "cellOf",
-        DraftRelationshipKind::Selects => "selects",
-        DraftRelationshipKind::RepeatsAs => "repeatsAs",
-        DraftRelationshipKind::ScopedTo => "scopedTo",
+        WebIrRelationshipKind::Contains => "contains",
+        WebIrRelationshipKind::Labels => "labels",
+        WebIrRelationshipKind::Owns => "owns",
+        WebIrRelationshipKind::Controls => "controls",
+        WebIrRelationshipKind::NavigatesTo => "navigatesTo",
+        WebIrRelationshipKind::Opens => "opens",
+        WebIrRelationshipKind::Confirms => "confirms",
+        WebIrRelationshipKind::Cancels => "cancels",
+        WebIrRelationshipKind::Continues => "continues",
+        WebIrRelationshipKind::Submits => "submits",
+        WebIrRelationshipKind::HeaderFor => "headerFor",
+        WebIrRelationshipKind::CellOf => "cellOf",
+        WebIrRelationshipKind::Selects => "selects",
+        WebIrRelationshipKind::RepeatsAs => "repeatsAs",
+        WebIrRelationshipKind::ScopedTo => "scopedTo",
     }
 }
 
@@ -1027,7 +1515,7 @@ fn hint_status_name(status: RelationshipHintDiagnosticStatus) -> &'static str {
 }
 
 fn set_hint_status(
-    diagnostics: &mut [DraftRelationshipHintDiagnostic],
+    diagnostics: &mut [WebIrRelationshipHintDiagnostic],
     fact_index: usize,
     status: RelationshipHintDiagnosticStatus,
 ) {
@@ -1039,45 +1527,45 @@ fn set_hint_status(
     }
 }
 
-fn parent_entity_kind(role: &str) -> Option<DraftEntityKind> {
+fn parent_entity_kind(role: &str) -> Option<WebIrEntityKind> {
     match role {
-        "form" => Some(DraftEntityKind::Form),
-        "dialog" | "alertdialog" => Some(DraftEntityKind::Dialog),
+        "form" => Some(WebIrEntityKind::Form),
+        "dialog" | "alertdialog" => Some(WebIrEntityKind::Dialog),
         "article" | "complementary" | "main" | "navigation" | "region" | "search" | "toolbar" => {
-            Some(DraftEntityKind::Region)
+            Some(WebIrEntityKind::Region)
         }
         _ => None,
     }
 }
 
 fn relationship_kind(
-    parent_kind: DraftEntityKind,
-    child_kind: DraftEntityKind,
+    parent_kind: WebIrEntityKind,
+    child_kind: WebIrEntityKind,
     explicit_hint: Option<EvidenceRelationshipHint>,
-) -> DraftRelationshipKind {
+) -> WebIrRelationshipKind {
     if let Some(hint) = explicit_hint {
         return match hint {
-            EvidenceRelationshipHint::Contains => DraftRelationshipKind::Contains,
-            EvidenceRelationshipHint::Labels => DraftRelationshipKind::Labels,
-            EvidenceRelationshipHint::Owns => DraftRelationshipKind::Owns,
-            EvidenceRelationshipHint::Controls => DraftRelationshipKind::Controls,
-            EvidenceRelationshipHint::NavigatesTo => DraftRelationshipKind::NavigatesTo,
-            EvidenceRelationshipHint::Opens => DraftRelationshipKind::Opens,
-            EvidenceRelationshipHint::Confirms => DraftRelationshipKind::Confirms,
-            EvidenceRelationshipHint::Cancels => DraftRelationshipKind::Cancels,
-            EvidenceRelationshipHint::Continues => DraftRelationshipKind::Continues,
-            EvidenceRelationshipHint::Submits => DraftRelationshipKind::Submits,
-            EvidenceRelationshipHint::HeaderFor => DraftRelationshipKind::HeaderFor,
-            EvidenceRelationshipHint::CellOf => DraftRelationshipKind::CellOf,
-            EvidenceRelationshipHint::Selects => DraftRelationshipKind::Selects,
-            EvidenceRelationshipHint::RepeatsAs => DraftRelationshipKind::RepeatsAs,
-            EvidenceRelationshipHint::ScopedTo => DraftRelationshipKind::ScopedTo,
+            EvidenceRelationshipHint::Contains => WebIrRelationshipKind::Contains,
+            EvidenceRelationshipHint::Labels => WebIrRelationshipKind::Labels,
+            EvidenceRelationshipHint::Owns => WebIrRelationshipKind::Owns,
+            EvidenceRelationshipHint::Controls => WebIrRelationshipKind::Controls,
+            EvidenceRelationshipHint::NavigatesTo => WebIrRelationshipKind::NavigatesTo,
+            EvidenceRelationshipHint::Opens => WebIrRelationshipKind::Opens,
+            EvidenceRelationshipHint::Confirms => WebIrRelationshipKind::Confirms,
+            EvidenceRelationshipHint::Cancels => WebIrRelationshipKind::Cancels,
+            EvidenceRelationshipHint::Continues => WebIrRelationshipKind::Continues,
+            EvidenceRelationshipHint::Submits => WebIrRelationshipKind::Submits,
+            EvidenceRelationshipHint::HeaderFor => WebIrRelationshipKind::HeaderFor,
+            EvidenceRelationshipHint::CellOf => WebIrRelationshipKind::CellOf,
+            EvidenceRelationshipHint::Selects => WebIrRelationshipKind::Selects,
+            EvidenceRelationshipHint::RepeatsAs => WebIrRelationshipKind::RepeatsAs,
+            EvidenceRelationshipHint::ScopedTo => WebIrRelationshipKind::ScopedTo,
         };
     }
-    if parent_kind == DraftEntityKind::Form && child_kind == DraftEntityKind::Field {
-        DraftRelationshipKind::Owns
+    if parent_kind == WebIrEntityKind::Form && child_kind == WebIrEntityKind::Field {
+        WebIrRelationshipKind::Owns
     } else {
-        DraftRelationshipKind::Contains
+        WebIrRelationshipKind::Contains
     }
 }
 
@@ -1226,11 +1714,11 @@ mod tests {
         let region_id = draft
             .entities
             .iter()
-            .find(|entity| entity.kind == DraftEntityKind::Region)
+            .find(|entity| entity.kind == WebIrEntityKind::Region)
             .map(|entity| entity.id.clone())
             .unwrap();
         assert!(draft.relationships.iter().any(|relationship| {
-            relationship.from == region_id && relationship.kind == DraftRelationshipKind::Contains
+            relationship.from == region_id && relationship.kind == WebIrRelationshipKind::Contains
         }));
     }
 
@@ -1256,19 +1744,19 @@ mod tests {
         let form_id = draft
             .entities
             .iter()
-            .find(|entity| entity.kind == DraftEntityKind::Form)
+            .find(|entity| entity.kind == WebIrEntityKind::Form)
             .map(|entity| entity.id.clone())
             .unwrap();
         let field_ids = draft
             .entities
             .iter()
-            .filter(|entity| entity.kind == DraftEntityKind::Field)
+            .filter(|entity| entity.kind == WebIrEntityKind::Field)
             .map(|entity| entity.id.as_str())
             .collect::<BTreeSet<_>>();
         assert!(draft.relationships.iter().any(|relationship| {
             relationship.from == form_id
                 && field_ids.contains(relationship.to.as_str())
-                && relationship.kind == DraftRelationshipKind::Owns
+                && relationship.kind == WebIrRelationshipKind::Owns
         }));
     }
 
@@ -1296,7 +1784,7 @@ mod tests {
             draft
                 .relationships
                 .iter()
-                .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+                .any(|relationship| relationship.kind == WebIrRelationshipKind::Controls)
         );
         assert_eq!(draft.relationship_hint_diagnostics.len(), 1);
         let diagnostic = &draft.relationship_hint_diagnostics[0];
@@ -1338,7 +1826,7 @@ mod tests {
             !draft
                 .relationships
                 .iter()
-                .any(|relationship| relationship.kind == DraftRelationshipKind::Controls)
+                .any(|relationship| relationship.kind == WebIrRelationshipKind::Controls)
         );
         let expected = BTreeMap::from([(RelationshipHintDiagnosticStatus::UnmatchedParent, 1)]);
         draft.validate_hint_diagnostics_against(&expected).unwrap();
@@ -1360,7 +1848,7 @@ mod tests {
         let opaque = draft
             .entities
             .iter()
-            .filter(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .filter(|entity| entity.kind == WebIrEntityKind::OpaqueRegion)
             .collect::<Vec<_>>();
         assert_eq!(opaque.len(), 2);
         assert!(opaque.iter().all(|entity| {
@@ -1373,21 +1861,21 @@ mod tests {
     #[test]
     fn fixture_expectation_validates_minimum_graph_shape() {
         let draft = reconcile_evidence(&evidence()).unwrap();
-        let mut expectation = DraftFixtureExpectation::default();
+        let mut expectation = WebIrFixtureExpectation::default();
         expectation
             .required_entity_counts
-            .insert(DraftEntityKind::Page, 1);
+            .insert(WebIrEntityKind::Page, 1);
         expectation
             .required_entity_counts
-            .insert(DraftEntityKind::Field, 2);
+            .insert(WebIrEntityKind::Field, 2);
         expectation
             .required_relationship_counts
-            .insert(DraftRelationshipKind::Contains, 2);
+            .insert(WebIrRelationshipKind::Contains, 2);
         draft.validate_against(&expectation).unwrap();
 
         expectation
             .required_entity_counts
-            .insert(DraftEntityKind::Dialog, 1);
+            .insert(WebIrEntityKind::Dialog, 1);
         let error = draft.validate_against(&expectation).unwrap_err();
         assert_eq!(error.path, "expectation.entities.dialog");
     }
@@ -1407,11 +1895,11 @@ mod tests {
             );
             assert!(relationships.iter().any(|value| value == "contains"));
             for entity in entities {
-                assert!(DraftEntityKind::from_contract_name(entity.as_str().unwrap()).is_some());
+                assert!(WebIrEntityKind::from_contract_name(entity.as_str().unwrap()).is_some());
             }
             for relationship in relationships {
                 assert!(
-                    DraftRelationshipKind::from_contract_name(relationship.as_str().unwrap())
+                    WebIrRelationshipKind::from_contract_name(relationship.as_str().unwrap())
                         .is_some()
                 );
             }
@@ -1462,16 +1950,16 @@ mod tests {
         assert!(
             diff.entity_changes
                 .iter()
-                .any(|change| change.kind == DraftChangeKind::Added)
+                .any(|change| change.kind == WebIrChangeKind::Added)
         );
         assert!(
             diff.entity_changes
                 .iter()
-                .any(|change| change.kind == DraftChangeKind::Changed)
+                .any(|change| change.kind == WebIrChangeKind::Changed)
         );
         assert!(diff.relationship_changes.iter().any(|change| {
-            change.kind == DraftChangeKind::Added
-                && change.relationship.kind == DraftRelationshipKind::Owns
+            change.kind == WebIrChangeKind::Added
+                && change.relationship.kind == WebIrRelationshipKind::Owns
         }));
         assert!(diff.coverage_changed);
         assert!(!diff.limits_changed);
@@ -1496,17 +1984,18 @@ mod tests {
         let target_id = source
             .entities
             .iter()
-            .find(|entity| entity.kind == DraftEntityKind::Field)
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
             .map(|entity| entity.id.clone())
             .unwrap();
 
         let unchanged = source
             .classify_entity_continuity(&source, &target_id)
             .unwrap();
-        assert_eq!(unchanged.status, DraftEntityContinuityStatus::Unchanged);
+        assert_eq!(unchanged.status, WebIrEntityContinuityStatus::Unchanged);
 
         let mut changed_draft = source.clone();
         changed_draft.revision = 10;
+        changed_draft.document.revision = 10;
         changed_draft
             .entities
             .iter_mut()
@@ -1516,13 +2005,13 @@ mod tests {
         let changed = source
             .classify_entity_continuity(&changed_draft, &target_id)
             .unwrap();
-        assert_eq!(changed.status, DraftEntityContinuityStatus::Changed);
+        assert_eq!(changed.status, WebIrEntityContinuityStatus::Changed);
 
         let target_key = source
             .entities
             .iter()
             .find(|entity| entity.id == target_id)
-            .and_then(DraftEntity::semantic_identity_key)
+            .and_then(WebIrEntity::semantic_identity_key)
             .unwrap();
         let removed_ids = source
             .entities
@@ -1532,12 +2021,16 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let mut rebound_draft = source.clone();
         rebound_draft.revision = 10;
+        rebound_draft.document.revision = 10;
         rebound_draft
             .entities
             .retain(|entity| !removed_ids.contains(&entity.id));
         rebound_draft.relationships.retain(|relationship| {
             !removed_ids.contains(&relationship.from) && !removed_ids.contains(&relationship.to)
         });
+        rebound_draft
+            .entity_details
+            .retain(|entity_id, _| !removed_ids.contains(entity_id));
         let mut rebound_entity = source
             .entities
             .iter()
@@ -1547,24 +2040,33 @@ mod tests {
         let rebound_id = "replacement-field".to_owned();
         rebound_entity.id = rebound_id.clone();
         rebound_draft.entities.push(rebound_entity.clone());
+        if let Some(details) = source.entity_details.get(&target_id) {
+            rebound_draft
+                .entity_details
+                .insert(rebound_id.clone(), details.clone());
+        }
         let rebound = source
             .classify_entity_continuity(&rebound_draft, &target_id)
             .unwrap();
-        assert_eq!(rebound.status, DraftEntityContinuityStatus::Rebound);
+        assert_eq!(rebound.status, WebIrEntityContinuityStatus::Rebound);
         assert_eq!(rebound.current_id.as_deref(), Some(rebound_id.as_str()));
 
         let mut removed_draft = source.clone();
         removed_draft.revision = 10;
+        removed_draft.document.revision = 10;
         removed_draft
             .entities
             .retain(|entity| !removed_ids.contains(&entity.id));
         removed_draft.relationships.retain(|relationship| {
             !removed_ids.contains(&relationship.from) && !removed_ids.contains(&relationship.to)
         });
+        removed_draft
+            .entity_details
+            .retain(|entity_id, _| !removed_ids.contains(entity_id));
         let removed = source
             .classify_entity_continuity(&removed_draft, &target_id)
             .unwrap();
-        assert_eq!(removed.status, DraftEntityContinuityStatus::Removed);
+        assert_eq!(removed.status, WebIrEntityContinuityStatus::Removed);
 
         let mut ambiguous_draft = removed_draft;
         let mut first = rebound_entity;
@@ -1575,7 +2077,7 @@ mod tests {
         let ambiguous = source
             .classify_entity_continuity(&ambiguous_draft, &target_id)
             .unwrap();
-        assert_eq!(ambiguous.status, DraftEntityContinuityStatus::Ambiguous);
+        assert_eq!(ambiguous.status, WebIrEntityContinuityStatus::Ambiguous);
         assert!(ambiguous.current_id.is_none());
     }
 
@@ -1586,7 +2088,7 @@ mod tests {
         drifted
             .entities
             .iter_mut()
-            .find(|entity| entity.kind == DraftEntityKind::Field)
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
             .unwrap()
             .name = Some("Changed at the same revision".into());
 
@@ -1603,7 +2105,7 @@ mod tests {
         let mut draft = reconcile_evidence(&evidence()).unwrap();
         draft.relationships[0].to = "missing".into();
         let error = draft.validate().unwrap_err();
-        assert_eq!(error.path, "relationships");
+        assert_eq!(error.path, "relationships[0]");
     }
     #[test]
     fn canonical_json_is_independent_of_graph_vector_order() {
@@ -1635,17 +2137,58 @@ mod tests {
         draft
             .entities
             .iter_mut()
-            .find(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .find(|entity| entity.kind == WebIrEntityKind::OpaqueRegion)
             .unwrap()
             .quality = EvidenceQuality::Strong;
         let error = draft.validate().unwrap_err();
-        assert_eq!(error.path, "entities.opaqueRegion");
+        assert_eq!(error.path, "entities[3]");
 
         let mut duplicate = reconcile_evidence(&evidence()).unwrap();
         duplicate
             .relationships
             .push(duplicate.relationships[0].clone());
         let error = duplicate.validate().unwrap_err();
-        assert_eq!(error.path, "relationships");
+        assert_eq!(error.path, "relationships[2]");
+    }
+    #[test]
+    fn stable_ir_populates_action_state_and_sensitivity_metadata() {
+        let draft = reconcile_evidence(&evidence()).unwrap();
+        let field = draft
+            .entities
+            .iter()
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
+            .unwrap();
+        let details = &draft.entity_details[&field.id];
+        assert!(details.supported_actions.contains(&WebIrAction::Read));
+        assert!(details.supported_actions.contains(&WebIrAction::Type));
+        assert_eq!(details.state.required, Some(true));
+        assert_eq!(details.sensitivity, WebIrSensitivity::Public);
+        assert!(details.semantic_stability_key.is_some());
+    }
+
+    #[test]
+    fn stable_ir_rejects_unbounded_diagnostics_and_executable_disabled_entities() {
+        let mut diagnostic = reconcile_evidence(&evidence()).unwrap();
+        diagnostic.diagnostics = vec!["x".repeat(MAX_WEB_IR_DIAGNOSTIC_BYTES + 1)];
+        assert_eq!(diagnostic.validate().unwrap_err().path, "diagnostics[0]");
+
+        let mut disabled = reconcile_evidence(&evidence()).unwrap();
+        let field_id = disabled
+            .entities
+            .iter()
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
+            .unwrap()
+            .id
+            .clone();
+        disabled
+            .entity_details
+            .get_mut(&field_id)
+            .unwrap()
+            .state
+            .disabled = Some(true);
+        assert_eq!(
+            disabled.validate().unwrap_err().path,
+            format!("entityDetails.{field_id}.supportedActions")
+        );
     }
 }

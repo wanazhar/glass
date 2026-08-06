@@ -890,11 +890,11 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_owned();
     }
-    value
-        .char_indices()
-        .take_while(|(index, _)| *index < max_bytes)
-        .map(|(_, character)| character)
-        .collect()
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 /// A machine-readable extraction contract error.
@@ -1191,7 +1191,7 @@ mod tests {
             crate::web_ir::RelationshipHintDiagnosticStatus::Emitted
         );
         assert!(draft.relationships.iter().any(
-            |relationship| relationship.kind == crate::web_ir::DraftRelationshipKind::Controls
+            |relationship| relationship.kind == crate::web_ir::WebIrRelationshipKind::Controls
         ));
     }
 
@@ -1362,5 +1362,12 @@ mod tests {
                 .iter()
                 .any(|fact| fact.source == EvidenceSource::Layout)
         );
+    }
+    #[test]
+    fn utf8_truncation_never_exceeds_the_byte_budget() {
+        assert_eq!(truncate_utf8("é", 1), "");
+        assert_eq!(truncate_utf8("aé", 2), "a");
+        assert_eq!(truncate_utf8("aé", 3), "aé");
+        assert!(truncate_utf8("🙂🙂", 7).len() <= 7);
     }
 }

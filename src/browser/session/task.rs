@@ -2150,34 +2150,34 @@ fn scoped_regions_for_observation<'a>(
 
 fn semantic_region_matches_entity(
     region: &SemanticRegion,
-    kind: crate::web_ir::DraftEntityKind,
+    kind: crate::web_ir::WebIrEntityKind,
 ) -> bool {
-    use crate::web_ir::DraftEntityKind;
+    use crate::web_ir::WebIrEntityKind;
     match kind {
-        DraftEntityKind::Page
-        | DraftEntityKind::Region
-        | DraftEntityKind::OpaqueRegion
-        | DraftEntityKind::UnknownInteractive => true,
-        DraftEntityKind::Form => region.kind == SemanticRegionKind::Form,
-        DraftEntityKind::Dialog => region.kind == SemanticRegionKind::Dialog,
-        DraftEntityKind::Table => region.kind == SemanticRegionKind::Table,
-        DraftEntityKind::Collection => region.kind == SemanticRegionKind::Collection,
-        DraftEntityKind::PaginationControl => region.kind == SemanticRegionKind::Pagination,
-        DraftEntityKind::Field => region.targets.iter().any(|target| {
+        WebIrEntityKind::Page
+        | WebIrEntityKind::Region
+        | WebIrEntityKind::OpaqueRegion
+        | WebIrEntityKind::UnknownInteractive => true,
+        WebIrEntityKind::Form => region.kind == SemanticRegionKind::Form,
+        WebIrEntityKind::Dialog => region.kind == SemanticRegionKind::Dialog,
+        WebIrEntityKind::Table => region.kind == SemanticRegionKind::Table,
+        WebIrEntityKind::Collection => region.kind == SemanticRegionKind::Collection,
+        WebIrEntityKind::PaginationControl => region.kind == SemanticRegionKind::Pagination,
+        WebIrEntityKind::Field => region.targets.iter().any(|target| {
             target.input_type.is_some()
                 || matches!(target.role.as_str(), "textbox" | "combobox" | "listbox")
         }),
-        DraftEntityKind::Action => region.targets.iter().any(|target| {
+        WebIrEntityKind::Action => region.targets.iter().any(|target| {
             matches!(
                 target.role.as_str(),
                 "button" | "checkbox" | "radio" | "switch" | "menuitem"
             )
         }),
-        DraftEntityKind::Link => region.targets.iter().any(|target| target.role == "link"),
-        DraftEntityKind::NavigationItem => region.kind == SemanticRegionKind::Navigation,
-        DraftEntityKind::Tab => region.targets.iter().any(|target| target.role == "tab"),
-        DraftEntityKind::Row | DraftEntityKind::Cell | DraftEntityKind::CollectionItem => true,
-        DraftEntityKind::Text => true,
+        WebIrEntityKind::Link => region.targets.iter().any(|target| target.role == "link"),
+        WebIrEntityKind::NavigationItem => region.kind == SemanticRegionKind::Navigation,
+        WebIrEntityKind::Tab => region.targets.iter().any(|target| target.role == "tab"),
+        WebIrEntityKind::Row | WebIrEntityKind::Cell | WebIrEntityKind::CollectionItem => true,
+        WebIrEntityKind::Text => true,
     }
 }
 fn form_values_match(values: &super::PageContext, fields: &[(String, String, String)]) -> bool {

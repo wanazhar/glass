@@ -19,7 +19,7 @@ use crate::reliability::{
     RELIABILITY_SCENARIO_SCHEMA_VERSION,
 };
 use crate::task_protocol::TASK_PROTOCOL_SCHEMA_VERSION;
-use crate::web_ir::WEB_IR_DRAFT_SCHEMA_VERSION;
+use crate::web_ir::WEB_IR_SCHEMA_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -401,7 +401,7 @@ fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
     BTreeMap::from([
         ("protocol".into(), vec![GLASS_PROTOCOL_VERSION]),
         ("task".into(), vec![TASK_PROTOCOL_SCHEMA_VERSION]),
-        ("webIr".into(), vec![WEB_IR_DRAFT_SCHEMA_VERSION]),
+        ("webIr".into(), vec![WEB_IR_SCHEMA_VERSION]),
         ("action".into(), vec![1]),
         (
             "observation".into(),

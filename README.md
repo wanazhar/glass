@@ -97,15 +97,15 @@ glass task validate task.json
 The canonical plan remains on stdout; `--explain` writes deterministic,
 redacted compilation metadata to stderr.
 
-Inspect or diff validated browser-free Web IR drafts:
+Inspect or diff validated browser-free Glass Web IR v1 documents:
 
 ```console
-glass ir validate draft.json
-glass ir inspect draft.json
+glass ir validate ir.json
+glass ir inspect ir.json
 glass ir diff before.json after.json
 glass ir diff before.json after.json --summary
 glass ir continuity before.json after.json field-1
-glass ir canonical draft.json
+glass ir canonical ir.json
 ```
 
 `ir diff` prints detailed local diagnostics by default; `--summary` emits the
@@ -123,10 +123,10 @@ for a disposable browser profile.
 | MCP | A long-lived stdio connection | `glass --mcp` |
 | Rust library | An embedded session runtime | crate `glass-browser`, import `glass` |
 
-Experimental extraction and Web IR contracts are available from the Rust crate
-root (`ExtractionRequest`, `ExtractionEvidence`, and `GlassWebIrDraft`). They
-are browser-free contract and reconciliation APIs; the native browser
-extraction runtime is not yet a stable public surface.
+The bounded extraction contract and stable Glass Web IR v1 data model are
+available from the Rust crate root (`ExtractionRequest`, `ExtractionEvidence`,
+and `GlassWebIrV1`). Browser-free reconciliation, validation, diff, and
+continuity APIs are stable; live browser extraction remains under development.
 
 Example MCP configuration:
 

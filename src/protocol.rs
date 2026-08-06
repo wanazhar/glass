@@ -82,16 +82,14 @@ impl TaskValidationPayload {
 /// Typed payload carried by a `webIr.validate` or `webIr.inspect` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WebIrDraftPayload {
-    pub draft: crate::web_ir::GlassWebIrDraft,
+pub struct WebIrPayload {
+    pub ir: crate::web_ir::GlassWebIrV1,
 }
 
-impl WebIrDraftPayload {
-    /// Validate the draft graph before browser-free dispatch.
+impl WebIrPayload {
+    /// Validate the stable IR graph before browser-free dispatch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        self.draft
-            .validate()
-            .map_err(ProtocolError::WebIrValidation)
+        self.ir.validate().map_err(ProtocolError::WebIrValidation)
     }
 }
 
@@ -99,8 +97,8 @@ impl WebIrDraftPayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebIrDiffPayload {
-    pub before: crate::web_ir::GlassWebIrDraft,
-    pub after: crate::web_ir::GlassWebIrDraft,
+    pub before: crate::web_ir::GlassWebIrV1,
+    pub after: crate::web_ir::GlassWebIrV1,
 }
 
 impl WebIrDiffPayload {
@@ -123,8 +121,8 @@ impl WebIrDiffPayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebIrContinuityPayload {
-    pub before: crate::web_ir::GlassWebIrDraft,
-    pub after: crate::web_ir::GlassWebIrDraft,
+    pub before: crate::web_ir::GlassWebIrV1,
+    pub after: crate::web_ir::GlassWebIrV1,
     pub entity_id: String,
 }
 
@@ -170,12 +168,12 @@ pub struct WebIrValidationResult {
 }
 
 impl WebIrValidationResult {
-    /// Build the validation result after a draft has passed graph validation.
-    pub fn from_draft(draft: &crate::web_ir::GlassWebIrDraft) -> Self {
+    /// Build the validation result after an IR has passed graph validation.
+    pub fn from_ir(ir: &crate::web_ir::GlassWebIrV1) -> Self {
         Self {
             valid: true,
-            schema_version: draft.schema_version,
-            revision: draft.revision,
+            schema_version: ir.schema_version,
+            revision: ir.revision,
         }
     }
 }
@@ -196,18 +194,18 @@ pub struct WebIrInspectionResult {
 }
 
 impl WebIrInspectionResult {
-    /// Build a bounded summary after a draft has passed graph validation.
-    pub fn from_draft(draft: &crate::web_ir::GlassWebIrDraft) -> Self {
+    /// Build a bounded summary after an IR has passed graph validation.
+    pub fn from_ir(ir: &crate::web_ir::GlassWebIrV1) -> Self {
         Self {
-            schema_version: draft.schema_version,
-            revision: draft.revision,
-            entity_count: draft.entities.len(),
-            relationship_count: draft.relationships.len(),
-            coverage: draft.coverage.clone(),
-            truncated: draft.limits.truncated,
-            opaque_regions: draft.coverage.opaque_regions,
-            diagnostic_count: draft.diagnostics.len(),
-            relationship_hint_diagnostic_count: draft.relationship_hint_diagnostics.len(),
+            schema_version: ir.schema_version,
+            revision: ir.revision,
+            entity_count: ir.entities.len(),
+            relationship_count: ir.relationships.len(),
+            coverage: ir.coverage.clone(),
+            truncated: ir.limits.truncated,
+            opaque_regions: ir.coverage.opaque_regions,
+            diagnostic_count: ir.diagnostics.len(),
+            relationship_hint_diagnostic_count: ir.relationship_hint_diagnostics.len(),
         }
     }
 }
@@ -240,27 +238,27 @@ impl WebIrDiffResult {
             entity_added_count: diff
                 .entity_changes
                 .iter()
-                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Added)
+                .filter(|change| change.kind == crate::web_ir::WebIrChangeKind::Added)
                 .count(),
             entity_removed_count: diff
                 .entity_changes
                 .iter()
-                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Removed)
+                .filter(|change| change.kind == crate::web_ir::WebIrChangeKind::Removed)
                 .count(),
             entity_changed_count: diff
                 .entity_changes
                 .iter()
-                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Changed)
+                .filter(|change| change.kind == crate::web_ir::WebIrChangeKind::Changed)
                 .count(),
             relationship_added_count: diff
                 .relationship_changes
                 .iter()
-                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Added)
+                .filter(|change| change.kind == crate::web_ir::WebIrChangeKind::Added)
                 .count(),
             relationship_removed_count: diff
                 .relationship_changes
                 .iter()
-                .filter(|change| change.kind == crate::web_ir::DraftChangeKind::Removed)
+                .filter(|change| change.kind == crate::web_ir::WebIrChangeKind::Removed)
                 .count(),
             coverage_changed: diff.coverage_changed,
             limits_changed: diff.limits_changed,
@@ -275,14 +273,14 @@ impl WebIrDiffResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebIrContinuityResult {
     pub requested_id: String,
-    pub status: crate::web_ir::DraftEntityContinuityStatus,
+    pub status: crate::web_ir::WebIrEntityContinuityStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_id: Option<String>,
     pub reason: String,
 }
 
-impl From<crate::web_ir::DraftEntityContinuity> for WebIrContinuityResult {
-    fn from(continuity: crate::web_ir::DraftEntityContinuity) -> Self {
+impl From<crate::web_ir::WebIrEntityContinuity> for WebIrContinuityResult {
+    fn from(continuity: crate::web_ir::WebIrEntityContinuity) -> Self {
         Self {
             requested_id: continuity.requested_id,
             status: continuity.status,
@@ -421,23 +419,23 @@ impl GlassRequest {
     }
 
     /// Decode and validate a typed `webIr.validate` payload.
-    pub fn decode_web_ir_validate(&self) -> Result<WebIrDraftPayload, ProtocolError> {
-        self.decode_web_ir_draft(WEB_IR_VALIDATE_OPERATION)
+    pub fn decode_web_ir_validate(&self) -> Result<WebIrPayload, ProtocolError> {
+        self.decode_web_ir(WEB_IR_VALIDATE_OPERATION)
     }
 
     /// Decode and validate a typed `webIr.inspect` payload.
-    pub fn decode_web_ir_inspect(&self) -> Result<WebIrDraftPayload, ProtocolError> {
-        self.decode_web_ir_draft(WEB_IR_INSPECT_OPERATION)
+    pub fn decode_web_ir_inspect(&self) -> Result<WebIrPayload, ProtocolError> {
+        self.decode_web_ir(WEB_IR_INSPECT_OPERATION)
     }
 
-    fn decode_web_ir_draft(&self, operation: &str) -> Result<WebIrDraftPayload, ProtocolError> {
+    fn decode_web_ir(&self, operation: &str) -> Result<WebIrPayload, ProtocolError> {
         self.validate()?;
         if self.operation != operation {
             return Err(ProtocolError::InvalidField(format!(
                 "expected operation {operation}"
             )));
         }
-        let payload: WebIrDraftPayload =
+        let payload: WebIrPayload =
             serde_json::from_value(self.payload.clone()).map_err(|error| {
                 ProtocolError::InvalidField(format!("{operation} payload: {error}"))
             })?;
@@ -501,20 +499,20 @@ pub fn validate_task_result(request: &GlassRequest) -> Result<TaskValidationResu
     })
 }
 
-/// Validate a Web IR draft from a canonical request.
+/// Validate a Glass Web IR from a canonical request.
 pub fn web_ir_validate_result(
     request: &GlassRequest,
 ) -> Result<WebIrValidationResult, ProtocolError> {
     let payload = request.decode_web_ir_validate()?;
-    Ok(WebIrValidationResult::from_draft(&payload.draft))
+    Ok(WebIrValidationResult::from_ir(&payload.ir))
 }
 
-/// Inspect a Web IR draft from a canonical request.
+/// Inspect a Glass Web IR from a canonical request.
 pub fn web_ir_inspect_result(
     request: &GlassRequest,
 ) -> Result<WebIrInspectionResult, ProtocolError> {
     let payload = request.decode_web_ir_inspect()?;
-    Ok(WebIrInspectionResult::from_draft(&payload.draft))
+    Ok(WebIrInspectionResult::from_ir(&payload.ir))
 }
 
 /// Compute a bounded Web IR diff from a canonical request.
@@ -819,10 +817,11 @@ mod tests {
         }
     }
 
-    fn web_ir_draft(revision: u64, name: &str) -> crate::web_ir::GlassWebIrDraft {
+    fn web_ir_draft(revision: u64, name: &str) -> crate::web_ir::GlassWebIrV1 {
         serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "revision": revision,
+            "document": {"revision": revision},
             "entities": [
                 {
                     "id": "page",
@@ -963,7 +962,7 @@ mod tests {
         let continuity = web_ir_continuity_result(&continuity_request).unwrap();
         assert_eq!(
             continuity.status,
-            crate::web_ir::DraftEntityContinuityStatus::Changed
+            crate::web_ir::WebIrEntityContinuityStatus::Changed
         );
         let response = GlassResponse {
             protocol_version: GLASS_PROTOCOL_VERSION,
@@ -989,15 +988,12 @@ mod tests {
             session_id: None,
             mutation_lease: None,
             operation: WEB_IR_VALIDATE_OPERATION.into(),
-            payload: serde_json::json!({"draft": draft.clone()}),
+            payload: serde_json::json!({"ir": draft.clone()}),
             deadline_ms: None,
         };
         let validation = web_ir_validate_result(&validate_request).unwrap();
         assert!(validation.valid);
-        assert_eq!(
-            validate_request.decode_web_ir_validate().unwrap().draft,
-            draft
-        );
+        assert_eq!(validate_request.decode_web_ir_validate().unwrap().ir, draft);
         let validation_response = GlassResponse {
             protocol_version: GLASS_PROTOCOL_VERSION,
             request_id: "validate-1".into(),
@@ -1016,7 +1012,7 @@ mod tests {
         let inspect_request = GlassRequest {
             operation: WEB_IR_INSPECT_OPERATION.into(),
             request_id: "inspect-1".into(),
-            payload: serde_json::json!({"draft": draft}),
+            payload: serde_json::json!({"ir": draft}),
             ..validate_request
         };
         let inspection = web_ir_inspect_result(&inspect_request).unwrap();

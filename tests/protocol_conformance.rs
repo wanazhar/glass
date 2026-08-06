@@ -261,7 +261,7 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
             "webIr.continuity" => {
                 assert_eq!(
                     response.decode_web_ir_continuity_result().unwrap().status,
-                    glass::web_ir::DraftEntityContinuityStatus::Changed
+                    glass::web_ir::WebIrEntityContinuityStatus::Changed
                 );
             }
             "webIr.diff" => {

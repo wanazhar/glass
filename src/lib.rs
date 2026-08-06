@@ -69,7 +69,7 @@ pub mod task_compiler;
 pub mod task_protocol;
 /// Ratatui terminal interface.
 pub mod tui;
-/// Experimental draft Web IR reconciliation and validation.
+/// Stable Glass Web IR v1 reconciliation and validation.
 pub mod web_ir;
 
 // Keep the most common embedding types on the crate root. Lower-level and
@@ -108,12 +108,12 @@ pub use protocol::{
     TaskCompileResult, TaskValidationPayload, TaskValidationResult, WEB_IR_CONTINUITY_OPERATION,
     WEB_IR_DIFF_OPERATION, WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION,
     WebIrContinuityPayload, WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult,
-    WebIrDraftPayload, WebIrInspectionResult, WebIrValidationResult, compile_task_request,
+    WebIrInspectionResult, WebIrPayload, WebIrValidationResult, compile_task_request,
     compile_task_result, validate_task_result, web_ir_continuity_result, web_ir_diff_result,
     web_ir_inspect_result, web_ir_validate_result,
 };
 
-/// Re-export the experimental bounded extraction contract for embedding callers.
+/// Re-export the bounded extraction contract for embedding callers.
 pub use extraction::{
     EXTRACTION_CONTRACT_SCHEMA_VERSION, EvidenceCoverage, EvidenceFact, EvidenceQuality,
     EvidenceRelationshipHint, EvidenceSource, ExtractionBudgets, ExtractionContractError,
@@ -122,11 +122,12 @@ pub use extraction::{
     MAX_EXTRACTION_OUTPUT_BYTES, MAX_EXTRACTION_TEXT_BYTES, extract_page_context,
 };
 
-/// Re-export the experimental Web IR draft types for embedding callers.
+/// Re-export the stable Glass Web IR v1 contract for embedding callers.
 pub use web_ir::{
-    DraftChangeKind, DraftEntity, DraftEntityChange, DraftEntityContinuity,
-    DraftEntityContinuityStatus, DraftEntityKind, DraftFixtureExpectation, DraftRelationship,
-    DraftRelationshipChange, DraftRelationshipHintDiagnostic, DraftRelationshipKind,
-    GlassWebIrDiff, GlassWebIrDraft, RelationshipHintDiagnosticStatus, WEB_IR_DRAFT_SCHEMA_VERSION,
+    GlassWebIrDiff, GlassWebIrV1, RelationshipHintDiagnosticStatus, WEB_IR_SCHEMA_VERSION,
+    WebIrAction, WebIrChangeKind, WebIrDocument, WebIrEntity, WebIrEntityChange,
+    WebIrEntityContinuity, WebIrEntityContinuityStatus, WebIrEntityDetails, WebIrEntityKind,
+    WebIrEntityState, WebIrFixtureExpectation, WebIrRelationship, WebIrRelationshipChange,
+    WebIrRelationshipHintDiagnostic, WebIrRelationshipKind, WebIrScopeKind, WebIrSensitivity,
     WebIrValidationError, reconcile_evidence,
 };

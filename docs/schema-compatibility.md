@@ -83,5 +83,5 @@ client must inspect the manifest and policy-sensitive capability flags.
 - [workflow v1](schema/workflow-v1.schema.json);
 - reliability scenario, fixture, and replay v1;
 - public read-only adapter inventory v1; and
-- browser-free Task Protocol v1 and draft Web IR v1 canonical contracts
+- browser-free Task Protocol v1 and stable Glass Web IR v1 canonical contracts
   described in [the protocol mapping](protocol.md).

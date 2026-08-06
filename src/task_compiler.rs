@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn compiler_rejects_incompatible_scope_kind() {
         let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
-        authored.scope.entity_kind = Some(crate::web_ir::DraftEntityKind::Table);
+        authored.scope.entity_kind = Some(crate::web_ir::WebIrEntityKind::Table);
         let error = compile_task(&authored).unwrap_err();
         assert_eq!(error.path, "scope.entityKind");
     }

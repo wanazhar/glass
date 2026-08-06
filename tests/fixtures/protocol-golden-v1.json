@@ -42,6 +42,7 @@
         "before": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [
             {
               "id": "page",
@@ -78,6 +79,7 @@
         "after": {
           "schemaVersion": 1,
           "revision": 8,
+          "document": {"revision": 8},
           "entities": [
             {
               "id": "page",
@@ -121,6 +123,7 @@
         "before": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [
             {
               "id": "page",
@@ -157,6 +160,7 @@
         "after": {
           "schemaVersion": 1,
           "revision": 8,
+          "document": {"revision": 8},
           "entities": [
             {
               "id": "page",
@@ -198,9 +202,10 @@
       "requestId": "web-ir-validate-1",
       "operation": "webIr.validate",
       "payload": {
-        "draft": {
+        "ir": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [
             {
               "id": "page",
@@ -231,9 +236,10 @@
       "requestId": "web-ir-inspect-1",
       "operation": "webIr.inspect",
       "payload": {
-        "draft": {
+        "ir": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [
             {
               "id": "page",
@@ -320,9 +326,10 @@
       "requestId": "web-ir-validate-invalid-1",
       "operation": "webIr.validate",
       "payload": {
-        "draft": {
+        "ir": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [],
           "relationships": [],
           "coverage": {
@@ -349,6 +356,7 @@
         "before": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [],
           "relationships": [],
           "coverage": {
@@ -368,6 +376,7 @@
         "after": {
           "schemaVersion": 1,
           "revision": 8,
+          "document": {"revision": 8},
           "entities": [],
           "relationships": [],
           "coverage": {
@@ -394,6 +403,7 @@
         "before": {
           "schemaVersion": 1,
           "revision": 7,
+          "document": {"revision": 7},
           "entities": [],
           "relationships": [],
           "coverage": {
@@ -413,6 +423,7 @@
         "after": {
           "schemaVersion": 1,
           "revision": 8,
+          "document": {"revision": 8},
           "entities": [],
           "relationships": [],
           "coverage": {

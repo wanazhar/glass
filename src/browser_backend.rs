@@ -251,6 +251,38 @@ where
 
 struct JsonStringSeed;
 
+fn deserialize_json_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct JsonStringVisitor;
+    impl<'de> Visitor<'de> for JsonStringVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded JSON string")
+        }
+
+        fn visit_borrowed_str<E>(self, value: &'de str) -> Result<String, E>
+        where
+            E: serde::de::Error,
+        {
+            self.visit_str(value)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<String, E>
+        where
+            E: serde::de::Error,
+        {
+            if value.len() > MAX_TEXT_BYTES {
+                return Err(E::custom("JSON string exceeds its bound"));
+            }
+            Ok(value.to_owned())
+        }
+    }
+    deserializer.deserialize_str(JsonStringVisitor)
+}
+
 impl<'de> DeserializeSeed<'de> for JsonStringSeed {
     type Value = String;
 
@@ -258,7 +290,7 @@ impl<'de> DeserializeSeed<'de> for JsonStringSeed {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_bounded_string(deserializer)
+        deserialize_json_string(deserializer)
     }
 }
 
@@ -282,6 +314,108 @@ impl<'de> DeserializeSeed<'de> for JsonSeed {
             depth: self.depth,
         })
     }
+}
+struct BoundedStringSeed;
+
+impl<'de> DeserializeSeed<'de> for BoundedStringSeed {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_bounded_string(deserializer)
+    }
+}
+
+struct BoundedStringVecVisitor<const LIMIT: usize>;
+
+impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringVecVisitor<LIMIT> {
+    type Value = Vec<String>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded string sequence")
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(LIMIT));
+        while values.len() < LIMIT {
+            let Some(value) = access.next_element_seed(BoundedStringSeed)? else {
+                return Ok(values);
+            };
+            values.push(value);
+        }
+        if access.next_element_seed(BoundedStringSeed)?.is_some() {
+            return Err(serde::de::Error::custom("string sequence exceeds the bounded entry count"));
+        }
+        Ok(values)
+    }
+}
+
+fn deserialize_bounded_string_vec<'de, D, const LIMIT: usize>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedStringVecVisitor::<LIMIT>)
+}
+fn deserialize_bounded_string_vec_16<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_bounded_string_vec::<D, 16>(deserializer)
+}
+
+fn deserialize_bounded_string_vec_64<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_bounded_string_vec::<D, 64>(deserializer)
+}
+
+struct BoundedStringMapVisitor<const LIMIT: usize>;
+
+impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringMapVisitor<LIMIT> {
+    type Value = BTreeMap<String, String>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded string map")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut values = BTreeMap::new();
+        let mut pairs = 0;
+        while pairs < LIMIT {
+            let Some((key, value)) =
+                access.next_entry_seed(BoundedStringSeed, BoundedStringSeed)?
+            else {
+                return Ok(values);
+            };
+            pairs += 1;
+            values.insert(key, value);
+        }
+        if access
+            .next_entry_seed(BoundedStringSeed, BoundedStringSeed)?
+            .is_some()
+        {
+            return Err(serde::de::Error::custom("string map exceeds the bounded entry count"));
+        }
+        Ok(values)
+    }
+}
+
+fn deserialize_bounded_string_map<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_map(BoundedStringMapVisitor::<MAX_STORAGE_ENTRIES>)
 }
 
 struct JsonVisitor {
@@ -355,8 +489,8 @@ impl<'de> Visitor<'de> for JsonVisitor {
     where
         E: serde::de::Error,
     {
-        if value.is_empty() || value.len() > MAX_TEXT_BYTES {
-            return Err(E::custom("JSON string is empty or exceeds its bound"));
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(E::custom("JSON string exceeds its bound"));
         }
         self.charge(value.len())?;
         Ok(serde_json::Value::String(value.to_owned()))
@@ -399,13 +533,15 @@ impl<'de> Visitor<'de> for JsonVisitor {
     {
         self.charge(2)?;
         let mut values = serde_json::Map::new();
-        while values.len() < MAX_STORAGE_ENTRIES {
+        let mut pairs = 0;
+        while pairs < MAX_STORAGE_ENTRIES {
             let Some((key, value)) = access.next_entry_seed(
                 JsonStringSeed,
                 JsonSeed { budget: self.budget.clone(), depth: self.depth + 1 },
             )? else {
                 return Ok(serde_json::Value::Object(values));
             };
+            pairs += 1;
             values.insert(key, value);
         }
         if access.next_entry_seed(
@@ -450,10 +586,12 @@ where
         A: MapAccess<'de>,
     {
         let mut values = BTreeMap::new();
-        while values.len() < LIMIT {
+        let mut pairs = 0;
+        while pairs < LIMIT {
             let Some((key, value)) = access.next_entry()? else {
                 return Ok(values);
             };
+            pairs += 1;
             values.insert(key, value);
         }
         if access.next_entry::<K, V>()?.is_some() {
@@ -478,9 +616,7 @@ fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_seq(BoundedVecVisitor::<String, MAX_BACKEND_CANDIDATES>(
-        std::marker::PhantomData,
-    ))
+    deserialize_bounded_string_vec::<D, MAX_BACKEND_CANDIDATES>(deserializer)
 }
 fn deserialize_bounded_capability_map<'de, D>(
     deserializer: D,
@@ -564,9 +700,9 @@ pub enum Portability {
 pub struct CapabilityDependency {
     pub capability: BrowserCapability,
     pub minimum: SupportLevel,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub reason: String,
 }
-
 impl CapabilityDependency {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         validate_text("capability dependency reason", &self.reason, MAX_LIMITATION_BYTES)
@@ -580,9 +716,9 @@ impl CapabilityDependency {
 pub struct CapabilityDescriptor {
     pub level: SupportLevel,
     pub portability: Portability,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
     pub dependencies: Vec<CapabilityDependency>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
     pub limitations: Vec<String>,
 }
 
@@ -710,7 +846,7 @@ pub struct CertificationProfile {
     pub glass_version: String,
     #[serde(default, deserialize_with = "deserialize_bounded_vec")]
     pub tested_capabilities: Vec<BrowserCapability>,
-    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    #[serde(default, deserialize_with = "deserialize_bounded_string_vec_16")]
     pub limitations: Vec<String>,
 }
 
@@ -1417,7 +1553,7 @@ pub struct StorageRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageResult {
-    #[serde(deserialize_with = "deserialize_bounded_map")]
+    #[serde(deserialize_with = "deserialize_bounded_string_map")]
     pub entries: BTreeMap<String, String>,
 }
 
@@ -1708,42 +1844,26 @@ pub struct DownloadRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DownloadResult {
-    #[serde(deserialize_with = "deserialize_bounded_vec")]
+    #[serde(deserialize_with = "deserialize_bounded_string_vec_64")]
     pub download_ids: Vec<String>,
 }
 
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BrowserBackendError>> + Send + 'a>>;
 
-/// Object-safe asynchronous semantic backend boundary.
-///
-/// Implementations MUST call [`BackendProfile::require`] before an operation;
-/// this prevents a missing optional capability from silently becoming a
-/// weaker operation.  Adapters may use any transport internally.
-pub trait BrowserBackend: Send + Sync {
+/// Private transport primitive; callers must use [`BrowserBackendDispatcher`].
+pub(crate) trait BrowserBackend: Send + Sync {
     fn profile(&self) -> &BackendProfile;
-    #[doc(hidden)]
     fn initialize_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
-    #[doc(hidden)]
     fn close_raw<'a>(&'a self) -> BackendFuture<'a, ()>;
-    #[doc(hidden)]
     fn navigate_raw<'a>(&'a self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult>;
-    #[doc(hidden)]
     fn contexts_raw<'a>(&'a self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>>;
-    #[doc(hidden)]
     fn evidence_raw<'a>(&'a self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult>;
-    #[doc(hidden)]
     fn action_raw<'a>(&'a self, request: ActionRequest) -> BackendFuture<'a, ActionResult>;
-    #[doc(hidden)]
     fn effects_raw<'a>(&'a self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult>;
-    #[doc(hidden)]
     fn script_raw<'a>(&'a self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult>;
-    #[doc(hidden)]
     fn capture_raw<'a>(&'a self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult>;
-    #[doc(hidden)]
     fn storage_raw<'a>(&'a self, request: StorageRequest) -> BackendFuture<'a, StorageResult>;
-    #[doc(hidden)]
     fn prompt_raw<'a>(&'a self, request: PromptRequest) -> BackendFuture<'a, PromptResult>;
-    #[doc(hidden)]
     fn download_raw<'a>(&'a self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult>;
     fn require_operation(
         &self,
@@ -1934,6 +2054,11 @@ mod tests {
         };
         let encoded = serde_json::to_value(&script).unwrap();
         assert_eq!(serde_json::from_value::<ScriptResult>(encoded).unwrap(), script);
+        let optional = ScriptResult {
+            value: json!({"": ""}),
+        };
+        let encoded = serde_json::to_value(&optional).unwrap();
+        assert_eq!(serde_json::from_value::<ScriptResult>(encoded).unwrap(), optional);
     }
 
     #[test]

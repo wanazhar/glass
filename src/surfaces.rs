@@ -1352,9 +1352,15 @@ fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -
         | SurfaceKind::Accessibility
         | SurfaceKind::ShadowDocument
         | SurfaceKind::FrameDocument
-        | SurfaceKind::Svg
         | SurfaceKind::EmbeddedDocument
         | SurfaceKind::Media => matches!(
+            source,
+            SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Svg => matches!(
             source,
             SurfaceEvidenceSource::Svg
                 | SurfaceEvidenceSource::Dom
@@ -2109,6 +2115,9 @@ mod tests {
             UnderstandingLevel::Structural,
             vec![SurfaceCapability::ReadStructure],
         );
+        document.evidence[0].source = SurfaceEvidenceSource::Svg;
+        assert!(document.validate().is_err());
+
         document.evidence[0].source = SurfaceEvidenceSource::TerminalProtocol;
         assert!(document.validate().is_err());
 

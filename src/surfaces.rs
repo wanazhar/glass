@@ -1374,12 +1374,10 @@ fn media_control_evidence_source(source: SurfaceEvidenceSource) -> bool {
         source,
         SurfaceEvidenceSource::Dom
             | SurfaceEvidenceSource::Accessibility
-            | SurfaceEvidenceSource::BrowserNative
             | SurfaceEvidenceSource::Bridge
             | SurfaceEvidenceSource::Extension
     )
 }
-
 
 fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     match kind {
@@ -1436,7 +1434,6 @@ fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -
         SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
 }
-
 fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     if matches!(
         source,
@@ -1539,7 +1536,6 @@ fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
             SurfaceEvidenceSource::MediaMetadata
                 | SurfaceEvidenceSource::Dom
                 | SurfaceEvidenceSource::Accessibility
-                | SurfaceEvidenceSource::BrowserNative
         ),
         SurfaceKind::Terminal => source == SurfaceEvidenceSource::TerminalProtocol,
         SurfaceKind::BrowserNative => source == SurfaceEvidenceSource::BrowserNative,
@@ -2139,6 +2135,9 @@ mod tests {
         );
         metadata_only.evidence[0].source = SurfaceEvidenceSource::MediaMetadata;
         assert!(metadata_only.validate().is_err());
+        metadata_only.evidence[0].source = SurfaceEvidenceSource::BrowserNative;
+        assert!(metadata_only.validate().is_err());
+
 
         let controls = surface(
             SurfaceKind::Media,

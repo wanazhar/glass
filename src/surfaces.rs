@@ -786,35 +786,41 @@ impl Surface {
                 "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
-        let pointer_input_requested = self
-            .capabilities
-            .iter()
-            .any(|capability| matches!(capability, SurfaceCapability::CoordinateAction | SurfaceCapability::PointerInput));
-        let keyboard_input_requested = self
-            .capabilities
-            .iter()
-            .any(|capability| matches!(capability, SurfaceCapability::Input | SurfaceCapability::KeyboardInput));
-        if pointer_input_requested || keyboard_input_requested {
-            let has_strong_action_evidence = self.evidence.iter().any(|evidence| {
+        let pointer_input_requested = self.capabilities.iter().any(|capability| {
+            matches!(
+                capability,
+                SurfaceCapability::CoordinateAction | SurfaceCapability::PointerInput
+            )
+        });
+        let keyboard_input_requested = self.capabilities.iter().any(|capability| {
+            matches!(
+                capability,
+                SurfaceCapability::Input | SurfaceCapability::KeyboardInput
+            )
+        });
+        if pointer_input_requested
+            && !self.evidence.iter().any(|evidence| {
                 evidence.quality >= CoverageLevel::Strong
-                    && action_evidence_source(
-                        &self.kind,
-                        evidence.source,
-                        pointer_input_requested,
-                    )
-                    && matches!(
-                        evidence.provenance.source_class,
-                        ProvenanceSourceClass::LiveWebIr
-                            | ProvenanceSourceClass::Backend
-                            | ProvenanceSourceClass::Bridge
-                    )
-            });
-            if !has_strong_action_evidence {
-                return Err(SurfaceContractError::new(
-                    "evidence",
-                    "coordinate or input actions require strong compatible live evidence or a trusted bridge grant",
-                ));
-            }
+                    && action_evidence_source(&self.kind, evidence.source, true)
+                    && trusted_action_provenance(evidence)
+            })
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "pointer input requires strong compatible geometry or trusted bridge evidence",
+            ));
+        }
+        if keyboard_input_requested
+            && !self.evidence.iter().any(|evidence| {
+                evidence.quality >= CoverageLevel::Strong
+                    && keyboard_evidence_source(&self.kind, evidence.source)
+                    && trusted_action_provenance(evidence)
+            })
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "keyboard input requires strong compatible DOM, accessibility, native, or trusted bridge evidence",
+            ));
         }
         let structural_evidence = self
             .evidence
@@ -1328,6 +1334,64 @@ fn action_evidence_source(
                 | SurfaceEvidenceSource::Bridge
                 | SurfaceEvidenceSource::Extension
         ),
+    }
+}
+
+fn trusted_action_provenance(evidence: &SurfaceEvidence) -> bool {
+    matches!(
+        evidence.provenance.source_class,
+        ProvenanceSourceClass::LiveWebIr
+            | ProvenanceSourceClass::Backend
+            | ProvenanceSourceClass::Bridge
+    )
+}
+
+fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
+    match kind {
+        SurfaceKind::Document
+        | SurfaceKind::Accessibility
+        | SurfaceKind::ShadowDocument
+        | SurfaceKind::FrameDocument
+        | SurfaceKind::Svg
+        | SurfaceKind::EmbeddedDocument
+        | SurfaceKind::Media => matches!(
+            source,
+            SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Pdf => matches!(
+            source,
+            SurfaceEvidenceSource::Pdf
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::RemoteApplication => matches!(
+            source,
+            SurfaceEvidenceSource::RemoteStream
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Terminal => matches!(
+            source,
+            SurfaceEvidenceSource::TerminalProtocol
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::BrowserNative => matches!(
+            source,
+            SurfaceEvidenceSource::BrowserNative
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::ExtensionDefined { .. } => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        SurfaceKind::Unknown | SurfaceKind::Opaque => false,
     }
 }
 
@@ -1961,11 +2025,10 @@ mod tests {
     #[test]
     fn input_only_requires_strong_geometry() {
         let mut value = surface(
-            SurfaceKind::Canvas2d,
+            SurfaceKind::Document,
             UnderstandingLevel::CoordinateOnly,
             vec![SurfaceCapability::Input],
         );
-        value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
         value.evidence[0].quality = CoverageLevel::Opaque;
         assert!(value.validate().is_err());
         value.evidence[0].quality = CoverageLevel::Strong;
@@ -2055,6 +2118,18 @@ mod tests {
         );
         semantic_document.evidence[0].source = SurfaceEvidenceSource::MediaMetadata;
         assert!(semantic_document.validate().is_err());
+    }
+
+    #[test]
+    fn mixed_pointer_and_keyboard_input_requires_both_evidence_modalities() {
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::CoordinateAction, SurfaceCapability::Input],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
+        value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_err());
     }
 
 }

@@ -4,6 +4,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.2.9
+- Generalized the browser-backed `executeTask` MCP contract across all
+  validated Task Protocol families and documented family-specific revision
+  guards.
+- Hardened bounded pagination collection to await semantic transitions and
+  fail closed when a successful click leaves a usable next control unchanged.
+- Made structured-extraction `serializedBytes` account for the complete
+  bounded response and enforce `maxBytes` against that payload.
 
 ## [0.2.8] - 2026-08-01
 - Added explicit typed structured-extraction kinds, field-level semantic

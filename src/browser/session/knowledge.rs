@@ -173,12 +173,34 @@ impl KnowledgeLookupContext {
         surface_kind: KnowledgeSurfaceKind,
         backend_kind: KnowledgeBackendKind,
         backend_capabilities: Vec<KnowledgeBackendCapability>,
+        current_extension_id: Option<String>,
     ) -> Result<Self, KnowledgeValidationError> {
         validate_backend_capabilities("backendCapabilities", &backend_capabilities)?;
         let mut context = Self::from_observation(observation, options)?;
         context.surface_kind = Some(surface_kind);
         context.backend_kind = Some(backend_kind);
         context.backend_capabilities = backend_capabilities;
+        context.current_extension_id = current_extension_id;
+        if context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined)
+            && context.current_extension_id.is_none()
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentExtensionId",
+                "extension-defined contexts require an extension identifier",
+            ));
+        }
+        if context.surface_kind != Some(KnowledgeSurfaceKind::ExtensionDefined)
+            && context.current_extension_id.is_some()
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentExtensionId",
+                "extension identifiers are only valid for extension-defined contexts",
+            ));
+        }
+        if let Some(extension_id) = &context.current_extension_id {
+            validate_text("currentExtensionId", extension_id, MAX_EXTENSION_ID_BYTES, false)?;
+            validate_public_text("currentExtensionId", extension_id)?;
+        }
         Ok(context)
     }
 }

@@ -96,7 +96,23 @@
         "extensionId": {"type": "string", "minLength": 1, "maxLength": 128},
         "understanding": {"enum": ["opaque", "inferred", "partial", "strong", "taskCompilable"]},
         "coverage": {"enum": ["none", "structural", "semantic", "interaction", "complete"]}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "extensionDefined"}},
+            "required": ["kind"]
+          },
+          "then": {"required": ["extensionId"]}
+        },
+        {
+          "if": {
+            "properties": {"kind": {"const": "extensionDefined"}},
+            "required": ["kind"]
+          },
+          "else": {"not": {"required": ["extensionId"]}}
+        }
+      ]
     },
     "backendProvenance": {
       "type": "object",

@@ -701,6 +701,7 @@ mod tests {
             browser_version: None,
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
+            current_revision: 1,
             landmarks: vec!["documentation".into()],
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:02Z")
                 .unwrap()

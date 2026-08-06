@@ -43,6 +43,7 @@ pub struct KnowledgeLookupContext {
     pub policy_preset: String,
     pub landmarks: Vec<String>,
     pub now_epoch_seconds: i64,
+    pub current_revision: u64,
     /// Current source dimensions are optional for callers that only need
     /// scope assessment; portability checks fail closed when absent.
     pub surface_kind: Option<KnowledgeSurfaceKind>,
@@ -63,6 +64,7 @@ pub struct KnowledgeLookupOptions {
     pub glass_schema_version: u32,
     pub policy_preset: String,
     pub now_epoch_seconds: i64,
+    pub current_revision: Option<u64>,
     pub surface_kind: Option<KnowledgeSurfaceKind>,
     pub backend_kind: Option<KnowledgeBackendKind>,
     pub backend_capabilities: Vec<KnowledgeBackendCapability>,
@@ -108,6 +110,14 @@ impl KnowledgeLookupContext {
                 KnowledgeValidationError::new("observation.regions.kind", error.to_string())
             })?);
         }
+        let current_revision = options.current_revision.unwrap_or(observation.revision);
+        if current_revision == 0 {
+            return Err(KnowledgeValidationError::new(
+                "currentRevision",
+                "must be positive",
+            ));
+        }
+        validate_backend_capabilities("backendCapabilities", &options.backend_capabilities)?;
         Ok(Self {
             origin,
             path,
@@ -127,6 +137,7 @@ impl KnowledgeLookupContext {
             surface_kind: options.surface_kind,
             backend_kind: options.backend_kind,
             backend_capabilities: options.backend_capabilities,
+            current_revision,
         })
     }
     /// Build a lookup context with the live surface/backend evidence used by
@@ -296,6 +307,7 @@ pub enum KnowledgeSurfaceKind {
     Document,
     Accessibility,
     ShadowDocument,
+    FrameDocument,
     Svg,
     Canvas2d,
     Webgl,
@@ -1056,8 +1068,12 @@ impl KnowledgeRecord {
 
         let current_validation_conflict = self.retrieval.current_validation.status
             != KnowledgeCurrentValidationStatus::Validated;
+        let current_revision_conflict = self.retrieval.current_validation.current_revision
+            != Some(context.current_revision);
         if current_validation_conflict {
             conflicts.push("record lacks current Web IR validation".into());
+        } else if current_revision_conflict {
+            conflicts.push("current Web IR revision does not match".into());
         }
         let provenance_conflict = matches!(
             self.source.surface.kind,
@@ -1115,11 +1131,10 @@ impl KnowledgeRecord {
             KnowledgeAssessmentStatus::Contradicted
         } else if self.confidence == KnowledgeConfidence::Quarantined {
             KnowledgeAssessmentStatus::Quarantined
-        } else if self.confidence == KnowledgeConfidence::Stale {
-            KnowledgeAssessmentStatus::Stale
         } else if scope_conflict {
             KnowledgeAssessmentStatus::OutOfScope
         } else if current_validation_conflict
+            || current_revision_conflict
             || provenance_conflict
             || portability_conflict
             || !missing_landmarks.is_empty()
@@ -1487,12 +1502,22 @@ fn validate_surface_provenance(
             "none coverage requires opaque understanding",
         ));
     }
-    if surface.kind == KnowledgeSurfaceKind::Opaque
-        && surface.understanding != KnowledgeUnderstandingLevel::Opaque
+    if matches!(
+        surface.kind,
+        KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
+    ) && surface.understanding != KnowledgeUnderstandingLevel::Opaque
     {
         return Err(KnowledgeValidationError::new(
             "source.surface.understanding",
-            "opaque surfaces cannot claim understanding",
+            "opaque or unknown surfaces cannot claim understanding",
+        ));
+    }
+    if surface.understanding == KnowledgeUnderstandingLevel::TaskCompilable
+        && surface.coverage != KnowledgeSurfaceCoverage::Complete
+    {
+        return Err(KnowledgeValidationError::new(
+            "source.surface.coverage",
+            "task-compilable understanding requires complete coverage",
         ));
     }
     Ok(())
@@ -1508,17 +1533,24 @@ fn validate_backend_provenance(
         false,
     )?;
     validate_public_text("source.backend.profile", &backend.profile)?;
-    if backend.capabilities.len() > MAX_BACKEND_CAPABILITIES {
+    validate_backend_capabilities("source.backend.capabilities", &backend.capabilities)
+}
+
+fn validate_backend_capabilities(
+    path: &str,
+    capabilities: &[KnowledgeBackendCapability],
+) -> Result<(), KnowledgeValidationError> {
+    if capabilities.len() > MAX_BACKEND_CAPABILITIES {
         return Err(KnowledgeValidationError::new(
-            "source.backend.capabilities",
+            path,
             format!("contains more than {MAX_BACKEND_CAPABILITIES} capabilities"),
         ));
     }
-    let mut capabilities = BTreeSet::new();
-    for (index, capability) in backend.capabilities.iter().enumerate() {
-        if !capabilities.insert(*capability) {
+    let mut unique = BTreeSet::new();
+    for (index, capability) in capabilities.iter().enumerate() {
+        if !unique.insert(*capability) {
             return Err(KnowledgeValidationError::new(
-                format!("source.backend.capabilities[{index}]"),
+                format!("{path}[{index}]"),
                 "capability is duplicated",
             ));
         }
@@ -1803,6 +1835,7 @@ mod tests {
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
             now_epoch_seconds: 0,
+            current_revision: None,
             surface_kind: Some(KnowledgeSurfaceKind::Svg),
             backend_kind: Some(KnowledgeBackendKind::Visual),
             backend_capabilities: vec![KnowledgeBackendCapability::Capture],
@@ -1992,6 +2025,7 @@ mod tests {
             ],
             glass_schema_version: 1,
             policy_preset: "balanced".into(),
+            current_revision: 42,
             landmarks: vec!["documentation".into(), "main".into(), "search".into()],
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:00Z")
                 .unwrap()
@@ -2005,6 +2039,33 @@ mod tests {
         assert_eq!(assessment.status, KnowledgeAssessmentStatus::Eligible);
         assert_eq!(assessment.missing_landmarks, Vec::<String>::new());
         assert!(assessment.conflicts.is_empty());
+    }
+    #[test]
+    fn assessment_rejects_current_revision_mismatch() {
+        let mut context = lookup_context();
+        context.current_revision = 43;
+        let assessment = record().assess(&context);
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Stale);
+        assert!(
+            assessment
+                .conflicts
+                .contains(&"current Web IR revision does not match".to_string())
+        );
+    }
+    #[test]
+    fn lookup_capabilities_are_bounded_and_unique() {
+        let oversized = vec![
+            KnowledgeBackendCapability::Navigation;
+            MAX_BACKEND_CAPABILITIES + 1
+        ];
+        let error = validate_backend_capabilities("backendCapabilities", &oversized).unwrap_err();
+        assert_eq!(error.path, "backendCapabilities");
+        let duplicate = vec![
+            KnowledgeBackendCapability::Navigation,
+            KnowledgeBackendCapability::Navigation,
+        ];
+        let error = validate_backend_capabilities("backendCapabilities", &duplicate).unwrap_err();
+        assert_eq!(error.path, "backendCapabilities[1]");
     }
     #[test]
     fn assessment_fails_closed_without_current_validation() {

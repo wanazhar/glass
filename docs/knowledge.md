@@ -26,6 +26,24 @@ Records do not contain CDP references, route handles, accessible names, raw DOM,
 screenshots, cookies, credentials, or form values. Glass bounds records and
 rejects sensitive field names.
 
+## Provenance and explainability
+
+Each record retains bounded provenance for its source surface (kind,
+understanding, and coverage) and backend (identity, profile, and capabilities).
+Portability is classified as `semanticPortable`, `surfacePortable`,
+`backendCapabilityDependent`, `backendSpecific`, `browserSpecific`, or
+`nonPortable`.
+
+Retrieval explanations contain bounded typed signals and a separate
+`currentValidation` status. Historical confidence does not replace current
+validation: memory remains advisory and cannot authorize a mutation. A
+non-`none` memory influence is accepted only with `validated` current evidence.
+
+Snapshots written before this metadata existed remain readable through
+serde-defaulted additive fields. Their surface is treated as opaque, backend
+identity as unknown, portability as `nonPortable`, influence as `none`, and
+current validation as `notValidated`; these defaults fail closed.
+
 ## Record lifecycle
 
 A record can be:

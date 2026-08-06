@@ -20,13 +20,14 @@ const MAX_ROLE_BYTES: usize = 64;
 const MAX_TIMESTAMP_BYTES: usize = 64;
 const MAX_LANDMARKS: usize = 32;
 const MAX_HISTORY: usize = 32;
+const MAX_RETRIEVAL_SIGNALS: usize = 16;
+const MAX_BACKEND_CAPABILITIES: usize = 32;
 const MAX_DATA_BYTES: usize = 16 * 1024;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_OBJECT_ENTRIES: usize = 64;
 const MAX_JSON_ARRAY_ENTRIES: usize = 64;
 const MAX_JSON_STRING_BYTES: usize = 4096;
-
 /// Current browser/session dimensions used to assess one stored record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeLookupContext {
@@ -248,6 +249,212 @@ pub enum KnowledgeProfileScope {
     ProfileBound,
 }
 
+/// Bounded provenance for the surface that produced a knowledge record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeSurfaceProvenance {
+    pub kind: KnowledgeSurfaceKind,
+    pub understanding: KnowledgeUnderstandingLevel,
+    pub coverage: KnowledgeSurfaceCoverage,
+}
+
+/// Surface kinds are deliberately transport-neutral and closed over the
+/// known foundation vocabulary. Unknown serialized values fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeSurfaceKind {
+    Document,
+    Accessibility,
+    ShadowDocument,
+    Svg,
+    Canvas2d,
+    Webgl,
+    Webgpu,
+    EmbeddedPdf,
+    Media,
+    Terminal,
+    RemoteApplication,
+    BrowserNative,
+    ExtensionDefined,
+    Unknown,
+    Opaque,
+}
+
+/// How much of a source surface Glass understood when it learned a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeUnderstandingLevel {
+    Opaque,
+    Inferred,
+    Partial,
+    Strong,
+    TaskCompilable,
+}
+
+/// Bounded coverage dimensions retained for explainability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeSurfaceCoverage {
+    None,
+    Structural,
+    Semantic,
+    Interaction,
+    Complete,
+}
+
+impl Default for KnowledgeSurfaceProvenance {
+    fn default() -> Self {
+        Self {
+            kind: KnowledgeSurfaceKind::Opaque,
+            understanding: KnowledgeUnderstandingLevel::Opaque,
+            coverage: KnowledgeSurfaceCoverage::None,
+        }
+    }
+}
+
+/// Backend identity and capability provenance for a learned record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeBackendProvenance {
+    pub backend: KnowledgeBackendKind,
+    pub profile: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<KnowledgeBackendCapability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeBackendKind {
+    Cdp,
+    WebdriverBidi,
+    BrowserExtension,
+    Visual,
+    Terminal,
+    Unknown,
+}
+
+/// Capabilities are evidence provenance, not permission to perform an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeBackendCapability {
+    Navigation,
+    SemanticExtraction,
+    CoordinateInput,
+    Script,
+    Capture,
+    Verification,
+    Storage,
+    Prompt,
+}
+
+impl Default for KnowledgeBackendProvenance {
+    fn default() -> Self {
+        Self {
+            backend: KnowledgeBackendKind::Unknown,
+            profile: "legacy".into(),
+            capabilities: Vec::new(),
+        }
+    }
+}
+
+/// How safely a remembered fact may travel between surfaces and backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgePortability {
+    SemanticPortable,
+    SurfacePortable,
+    BackendCapabilityDependent,
+    BackendSpecific,
+    BrowserSpecific,
+    NonPortable,
+}
+
+/// The advisory role memory had in producing a compiler input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeMemoryInfluence {
+    None,
+    RankingOnly,
+    TemplateSuggested,
+    VerificationSuggested,
+    RecoverySuggested,
+    IdentityContinuitySuggested,
+}
+
+/// Explainable deterministic and optional semantic retrieval evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeRetrievalSignalKind {
+    ExactPageFamilyMatch,
+    ExactFingerprintMatch,
+    OriginMatch,
+    SurfaceMatch,
+    BackendMatch,
+    GraphDistance,
+    SemanticSimilarity,
+    Freshness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeRetrievalSignal {
+    pub kind: KnowledgeRetrievalSignalKind,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_millis: Option<u16>,
+}
+
+/// Current validation is intentionally separate from historical confidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeCurrentValidationStatus {
+    NotValidated,
+    Validated,
+    Rejected,
+    Stale,
+    Contradicted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeEvidenceQuality {
+    None,
+    Weak,
+    Partial,
+    Strong,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeCurrentValidation {
+    pub status: KnowledgeCurrentValidationStatus,
+    pub evidence_quality: KnowledgeEvidenceQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validated_at: Option<String>,
+}
+
+impl Default for KnowledgeCurrentValidation {
+    fn default() -> Self {
+        Self {
+            status: KnowledgeCurrentValidationStatus::NotValidated,
+            evidence_quality: KnowledgeEvidenceQuality::None,
+            current_revision: None,
+            validated_at: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeRetrievalExplanation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<KnowledgeRetrievalSignal>,
+    #[serde(default)]
+    pub current_validation: KnowledgeCurrentValidation,
+}
+
 /// Provenance and verification counters for a knowledge record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,6 +463,34 @@ pub struct KnowledgeSource {
     pub last_verified_at: String,
     pub glass_version: String,
     pub verification_count: u32,
+    #[serde(default)]
+    pub surface: KnowledgeSurfaceProvenance,
+    #[serde(default)]
+    pub backend: KnowledgeBackendProvenance,
+}
+
+impl Default for KnowledgeSource {
+    fn default() -> Self {
+        Self {
+            first_seen_at: String::new(),
+            last_verified_at: String::new(),
+            glass_version: String::new(),
+            verification_count: 0,
+            surface: KnowledgeSurfaceProvenance::default(),
+            backend: KnowledgeBackendProvenance::default(),
+        }
+    }
+}
+impl Default for KnowledgePortability {
+    fn default() -> Self {
+        Self::NonPortable
+    }
+}
+
+impl Default for KnowledgeMemoryInfluence {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 /// Conditions that make remembered knowledge stale or unusable.
@@ -291,6 +526,12 @@ pub struct KnowledgeRecord {
     pub confidence: KnowledgeConfidence,
     pub invalidation: KnowledgeInvalidation,
     pub data: Value,
+    #[serde(default)]
+    pub portability: KnowledgePortability,
+    #[serde(default)]
+    pub memory_influence: KnowledgeMemoryInfluence,
+    #[serde(default)]
+    pub retrieval: KnowledgeRetrievalExplanation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<KnowledgeLifecycleEvent>,
 }
@@ -344,6 +585,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
+                surface: KnowledgeSurfaceProvenance::default(),
+                backend: KnowledgeBackendProvenance::default(),
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -354,6 +597,9 @@ impl KnowledgeRecord {
                 "pageKind": page_kind,
                 "regionKinds": region_kinds,
             }),
+            portability: KnowledgePortability::default(),
+            memory_influence: KnowledgeMemoryInfluence::default(),
+            retrieval: KnowledgeRetrievalExplanation::default(),
             history: Vec::new(),
         };
         record.validate()?;
@@ -407,6 +653,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
+                surface: KnowledgeSurfaceProvenance::default(),
+                backend: KnowledgeBackendProvenance::default(),
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -419,6 +667,9 @@ impl KnowledgeRecord {
                 "regionKind": candidate.region_kind,
                 "purpose": fingerprint.purpose,
             }),
+            portability: KnowledgePortability::default(),
+            memory_influence: KnowledgeMemoryInfluence::default(),
+            retrieval: KnowledgeRetrievalExplanation::default(),
             history: Vec::new(),
         };
         record.validate()?;
@@ -466,6 +717,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
+                surface: KnowledgeSurfaceProvenance::default(),
+                backend: KnowledgeBackendProvenance::default(),
             },
             confidence: KnowledgeConfidence::Candidate,
             invalidation: KnowledgeInvalidation {
@@ -480,6 +733,9 @@ impl KnowledgeRecord {
                 "intentStepCount": workflow.steps.iter().filter(|step| step.intent.is_some()).count(),
                 "postconditionCount": workflow.steps.iter().filter(|step| step.expect.is_some()).count() + 1,
             }),
+            portability: KnowledgePortability::default(),
+            memory_influence: KnowledgeMemoryInfluence::default(),
+            retrieval: KnowledgeRetrievalExplanation::default(),
             history: Vec::new(),
         };
         record.validate()?;
@@ -500,6 +756,27 @@ impl KnowledgeRecord {
         validate_text("recordId", &self.record_id, MAX_RECORD_ID_BYTES, false)?;
         validate_scope(&self.scope)?;
         validate_source(&self.source)?;
+        validate_retrieval(&self.retrieval)?;
+        if self.memory_influence != KnowledgeMemoryInfluence::None
+            && self.retrieval.current_validation.status
+                != KnowledgeCurrentValidationStatus::Validated
+        {
+            return Err(KnowledgeValidationError::new(
+                "memoryInfluence",
+                "memory influence requires current validation",
+            ));
+        }
+        if (matches!(
+            self.source.surface.kind,
+            KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
+        ) || self.source.backend.backend == KnowledgeBackendKind::Unknown)
+            && self.portability != KnowledgePortability::NonPortable
+        {
+            return Err(KnowledgeValidationError::new(
+                "portability",
+                "opaque or unknown provenance is nonPortable",
+            ));
+        }
         validate_invalidation(&self.invalidation)?;
         if self.history.len() > MAX_HISTORY {
             return Err(KnowledgeValidationError::new(
@@ -717,8 +994,9 @@ impl KnowledgeRecord {
         validate_timestamp("observedAt", &observed_at)?;
         if self.confidence == next {
             if fresh_verification {
-                self.source.last_verified_at = observed_at;
+                self.source.last_verified_at = observed_at.clone();
                 self.source.verification_count = self.source.verification_count.saturating_add(1);
+                self.mark_current_validation(&observed_at);
                 self.validate()?;
             }
             return Ok(());
@@ -750,11 +1028,21 @@ impl KnowledgeRecord {
         };
         self.confidence = next;
         if fresh_verification {
-            self.source.last_verified_at = observed_at;
+            self.source.last_verified_at = observed_at.clone();
             self.source.verification_count = self.source.verification_count.saturating_add(1);
+            self.mark_current_validation(&observed_at);
         }
         self.history.push(event);
         self.validate()
+    }
+
+    fn mark_current_validation(&mut self, validated_at: &str) {
+        self.retrieval.current_validation = KnowledgeCurrentValidation {
+            status: KnowledgeCurrentValidationStatus::Validated,
+            evidence_quality: KnowledgeEvidenceQuality::Strong,
+            current_revision: None,
+            validated_at: Some(validated_at.to_owned()),
+        };
     }
 }
 
@@ -955,9 +1243,144 @@ fn validate_source(source: &KnowledgeSource) -> Result<(), KnowledgeValidationEr
         &source.glass_version,
         MAX_SCOPE_VALUE_BYTES,
         false,
-    )
+    )?;
+    validate_surface_provenance(&source.surface)?;
+    validate_backend_provenance(&source.backend)
 }
 
+fn validate_surface_provenance(
+    surface: &KnowledgeSurfaceProvenance,
+) -> Result<(), KnowledgeValidationError> {
+    if surface.coverage == KnowledgeSurfaceCoverage::None
+        && surface.understanding != KnowledgeUnderstandingLevel::Opaque
+    {
+        return Err(KnowledgeValidationError::new(
+            "source.surface.coverage",
+            "none coverage requires opaque understanding",
+        ));
+    }
+    if surface.kind == KnowledgeSurfaceKind::Opaque
+        && surface.understanding != KnowledgeUnderstandingLevel::Opaque
+    {
+        return Err(KnowledgeValidationError::new(
+            "source.surface.understanding",
+            "opaque surfaces cannot claim understanding",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_backend_provenance(
+    backend: &KnowledgeBackendProvenance,
+) -> Result<(), KnowledgeValidationError> {
+    validate_text(
+        "source.backend.profile",
+        &backend.profile,
+        MAX_SCOPE_VALUE_BYTES,
+        false,
+    )?;
+    validate_public_text("source.backend.profile", &backend.profile)?;
+    if backend.capabilities.len() > MAX_BACKEND_CAPABILITIES {
+        return Err(KnowledgeValidationError::new(
+            "source.backend.capabilities",
+            format!("contains more than {MAX_BACKEND_CAPABILITIES} capabilities"),
+        ));
+    }
+    let mut capabilities = BTreeSet::new();
+    for (index, capability) in backend.capabilities.iter().enumerate() {
+        if !capabilities.insert(*capability) {
+            return Err(KnowledgeValidationError::new(
+                format!("source.backend.capabilities[{index}]"),
+                "capability is duplicated",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_retrieval(
+    retrieval: &KnowledgeRetrievalExplanation,
+) -> Result<(), KnowledgeValidationError> {
+    if retrieval.signals.len() > MAX_RETRIEVAL_SIGNALS {
+        return Err(KnowledgeValidationError::new(
+            "retrieval.signals",
+            format!("contains more than {MAX_RETRIEVAL_SIGNALS} signals"),
+        ));
+    }
+    for (index, signal) in retrieval.signals.iter().enumerate() {
+        validate_text(
+            &format!("retrieval.signals[{index}].detail"),
+            &signal.detail,
+            MAX_SCOPE_VALUE_BYTES,
+            false,
+        )?;
+        if signal.score_millis.is_some_and(|score| score > 1_000) {
+            return Err(KnowledgeValidationError::new(
+                format!("retrieval.signals[{index}].scoreMillis"),
+                "must be between 0 and 1000",
+            ));
+        }
+    }
+    let current = &retrieval.current_validation;
+    match current.status {
+        KnowledgeCurrentValidationStatus::Validated => {
+            if current.evidence_quality == KnowledgeEvidenceQuality::None {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation.evidenceQuality",
+                    "validated evidence requires a quality",
+                ));
+            }
+            let timestamp = current.validated_at.as_deref().ok_or_else(|| {
+                KnowledgeValidationError::new(
+                    "retrieval.currentValidation.validatedAt",
+                    "is required for validated evidence",
+                )
+            })?;
+            validate_timestamp("retrieval.currentValidation.validatedAt", timestamp)?;
+        }
+        KnowledgeCurrentValidationStatus::NotValidated => {
+            if current.current_revision.is_some() || current.validated_at.is_some() {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation",
+                    "notValidated evidence cannot include revision or timestamp",
+                ));
+            }
+            if current.evidence_quality != KnowledgeEvidenceQuality::None {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation.evidenceQuality",
+                    "notValidated evidence must have none quality",
+                ));
+            }
+        }
+        _ => {
+            if current.validated_at.is_some() {
+                return Err(KnowledgeValidationError::new(
+                    "retrieval.currentValidation.validatedAt",
+                    "only validated evidence may include a validation timestamp",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_public_text(path: &str, value: &str) -> Result<(), KnowledgeValidationError> {
+    let normalized = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    const FORBIDDEN: &[&str] = &[
+        "authorization", "cookie", "credential", "password", "secret", "session", "token",
+    ];
+    if FORBIDDEN.iter().any(|word| normalized.contains(word)) {
+        return Err(KnowledgeValidationError::new(
+            path,
+            "sensitive value is not permitted in provenance",
+        ));
+    }
+    Ok(())
+}
 fn validate_timestamp(path: &str, value: &str) -> Result<(), KnowledgeValidationError> {
     validate_text(path, value, MAX_TIMESTAMP_BYTES, false)?;
     chrono::DateTime::parse_from_rfc3339(value).map_err(|error| {
@@ -1143,6 +1566,8 @@ mod tests {
                 last_verified_at: "2026-07-27T00:00:00Z".into(),
                 glass_version: "0.2.0".into(),
                 verification_count: 1,
+                surface: KnowledgeSurfaceProvenance::default(),
+                backend: KnowledgeBackendProvenance::default(),
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -1150,6 +1575,9 @@ mod tests {
                 required_landmarks: vec!["main".into(), "search".into()],
             },
             data: json!({"pageKind": "documentation", "regions": ["main", "search"]}),
+            portability: KnowledgePortability::default(),
+            memory_influence: KnowledgeMemoryInfluence::default(),
+            retrieval: KnowledgeRetrievalExplanation::default(),
             history: Vec::new(),
         }
     }
@@ -1396,5 +1824,123 @@ mod tests {
         assert!(!data.contains("linear-typed-output"));
         assert!(!data.contains("Glass Scorecard"));
         assert!(!data.contains("target"));
+    }
+    #[test]
+    fn metadata_round_trip_is_serde_stable_and_bounded() {
+        let mut record = record();
+        record.source.surface = KnowledgeSurfaceProvenance {
+            kind: KnowledgeSurfaceKind::Document,
+            understanding: KnowledgeUnderstandingLevel::Strong,
+            coverage: KnowledgeSurfaceCoverage::Semantic,
+        };
+        record.source.backend = KnowledgeBackendProvenance {
+            backend: KnowledgeBackendKind::Cdp,
+            profile: "production".into(),
+            capabilities: vec![
+                KnowledgeBackendCapability::SemanticExtraction,
+                KnowledgeBackendCapability::Verification,
+            ],
+        };
+        record.portability = KnowledgePortability::SurfacePortable;
+        record.retrieval.signals = vec![KnowledgeRetrievalSignal {
+            kind: KnowledgeRetrievalSignalKind::ExactPageFamilyMatch,
+            detail: "same page family".into(),
+            score_millis: Some(1_000),
+        }];
+        record.validate().unwrap();
+        let json = record.to_canonical_json().unwrap();
+        let parsed: KnowledgeRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, record);
+        assert!(json.contains("\"surface\""));
+        assert!(json.contains("\"backend\""));
+        assert!(json.contains("\"surfacePortable\""));
+        assert!(json.contains("\"exactPageFamilyMatch\""));
+    }
+
+    #[test]
+    fn legacy_snapshot_uses_fail_closed_additive_defaults() {
+        let legacy = r#"{
+            "schemaVersion":1,
+            "records":[{
+                "schemaVersion":1,
+                "recordId":"legacy",
+                "kind":"pageFamily",
+                "scope":{
+                    "origin":"https://example.test",
+                    "pathPattern":"/docs/*",
+                    "profileScope":"anonymous",
+                    "browserFamily":"chromium",
+                    "glassSchemaVersion":1,
+                    "policyPreset":"balanced"
+                },
+                "source":{
+                    "firstSeenAt":"2026-07-27T00:00:00Z",
+                    "lastVerifiedAt":"2026-07-27T00:00:00Z",
+                    "glassVersion":"0.2.0",
+                    "verificationCount":1
+                },
+                "confidence":"observed",
+                "invalidation":{},
+                "data":{"pageKind":"documentation"}
+            }]
+        }"#;
+        let snapshot: KnowledgeStoreSnapshot = serde_json::from_str(legacy).unwrap();
+        snapshot.validate().unwrap();
+        let migrated = &snapshot.records[0];
+        assert_eq!(migrated.source.surface.kind, KnowledgeSurfaceKind::Opaque);
+        assert_eq!(migrated.source.backend.backend, KnowledgeBackendKind::Unknown);
+        assert_eq!(migrated.portability, KnowledgePortability::NonPortable);
+        assert_eq!(migrated.memory_influence, KnowledgeMemoryInfluence::None);
+        assert_eq!(
+            migrated.retrieval.current_validation.status,
+            KnowledgeCurrentValidationStatus::NotValidated
+        );
+    }
+
+    #[test]
+    fn invalid_metadata_fails_closed_and_sensitive_profile_is_rejected() {
+        let unknown = serde_json::from_str::<KnowledgeSurfaceKind>(r#""futureSurface""#);
+        assert!(unknown.is_err());
+        let mut base = record();
+        base.source.backend.profile = "session-token-profile".into();
+        let error = base.validate().unwrap_err();
+        assert_eq!(error.path, "source.backend.profile");
+
+        let mut influenced = record();
+        influenced.source.backend.profile = "production".into();
+        influenced.memory_influence = KnowledgeMemoryInfluence::RankingOnly;
+        let error = influenced.validate().unwrap_err();
+        assert_eq!(error.path, "memoryInfluence");
+    }
+
+    #[test]
+    fn fresh_transition_validates_memory_but_never_authorizes_mutation() {
+        let mut record = record();
+        assert_eq!(
+            record.retrieval.current_validation.status,
+            KnowledgeCurrentValidationStatus::NotValidated
+        );
+        record
+            .transition(
+                KnowledgeConfidence::Verified,
+                "historical-only".into(),
+                "2026-07-27T00:00:01Z".into(),
+                false,
+            )
+            .unwrap_err();
+        record
+            .transition(
+                KnowledgeConfidence::Verified,
+                "fresh browser evidence".into(),
+                "2026-07-27T00:00:01Z".into(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            record.retrieval.current_validation.status,
+            KnowledgeCurrentValidationStatus::Validated
+        );
+        assert!(record.data.get("reference").is_none());
+        assert!(record.data.get("target").is_none());
     }
 }

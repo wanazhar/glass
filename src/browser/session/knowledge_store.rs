@@ -559,6 +559,10 @@ impl From<KnowledgeValidationError> for KnowledgeStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::knowledge::{
+        KnowledgeBackendProvenance, KnowledgeMemoryInfluence, KnowledgePortability,
+        KnowledgeRetrievalExplanation, KnowledgeSurfaceProvenance,
+    };
     use crate::browser::session::{
         KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
         KnowledgeScope, KnowledgeSource,
@@ -598,10 +602,15 @@ mod tests {
                 last_verified_at: format!("2026-07-27T00:00:{verified_at:0>2}Z"),
                 glass_version: "0.2.0".into(),
                 verification_count: 1,
+                surface: KnowledgeSurfaceProvenance::default(),
+                backend: KnowledgeBackendProvenance::default(),
             },
             confidence,
             invalidation: KnowledgeInvalidation::default(),
             data: json!({"pageKind": "documentation"}),
+            portability: KnowledgePortability::default(),
+            memory_influence: KnowledgeMemoryInfluence::default(),
+            retrieval: KnowledgeRetrievalExplanation::default(),
             history: Vec::new(),
         }
     }

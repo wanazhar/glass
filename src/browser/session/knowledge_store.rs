@@ -43,15 +43,14 @@ pub fn default_knowledge_store_path_for_workspace(
     workspace_generation: Option<u64>,
 ) -> PathBuf {
     let digest = Sha256::digest(
-        format!("{workspace_id}\u{1f}{:?}", workspace_generation).as_bytes(),
+        format!("{profile}\u{1f}{workspace_id}\u{1f}{:?}", workspace_generation).as_bytes(),
     );
     std::env::var_os("GLASS_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("glass")
-        .join("knowledge")
-        .join(format!("{profile}-workspace-{digest:x}.json"))
+        .join(format!("workspace-{digest:x}.json"))
 }
 
 /// Resource bounds for one local knowledge store.
@@ -824,5 +823,17 @@ mod tests {
         assert!(store.records().is_empty());
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+    #[test]
+    fn workspace_path_hashes_untrusted_profile_and_is_bounded() {
+        let path = default_knowledge_store_path_for_workspace(
+            "../escape",
+            "workspace-alpha",
+            Some(7),
+        );
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        assert!(file_name.starts_with("workspace-"));
+        assert!(!file_name.contains(".."));
+        assert!(!path.to_string_lossy().contains("../escape"));
     }
 }

@@ -243,6 +243,7 @@ impl BrowserSession {
                 let mut current = observation;
                 let mut completed = 0usize;
                 let mut stopped = false;
+                let mut unsafe_until_reconciled = false;
                 while completed < max_pages {
                     let regions = scoped_regions_for_observation(&current, task)?;
                     let region = regions
@@ -312,12 +313,25 @@ impl BrowserSession {
                         });
                     }
                     completed += 1;
-                    if !semantic_page_changed(&current, &after) {
-                        stopped = true;
-                        current = after;
+                    let page_changed = semantic_page_changed(&current, &after);
+                    current = after;
+                    if !page_changed {
+                        let regions = scoped_regions_for_observation(&current, task)?;
+                        if pagination_next_is_usable(&regions, next_name) {
+                            let step = steps
+                                .last_mut()
+                                .expect("pagination click always records one step");
+                            step.status = "indeterminate".into();
+                            step.detail = Some(
+                                "pagination click produced no semantic page change while the next control remained available"
+                                    .into(),
+                            );
+                            unsafe_until_reconciled = true;
+                        } else {
+                            stopped = true;
+                        }
                         break;
                     }
-                    current = after;
                 }
                 let mut alerts = alert_labels(current.regions.iter());
                 if !stopped && completed == max_pages {
@@ -325,13 +339,29 @@ impl BrowserSession {
                 }
                 Ok(TaskExecutionResult {
                     task: task.task,
-                    status: "succeeded".into(),
+                    status: if unsafe_until_reconciled {
+                        "indeterminate"
+                    } else {
+                        "succeeded"
+                    }
+                    .into(),
                     phase: "pagination-collection".into(),
                     mutation_possible: completed > 0,
                     source_revision,
                     current_revision: current.revision,
                     steps,
-                    retry: retry_guidance(RetryClassification::SafeImmediate, "inspect_page"),
+                    retry: retry_guidance(
+                        if unsafe_until_reconciled {
+                            RetryClassification::UnsafeUntilReconciled
+                        } else {
+                            RetryClassification::SafeImmediate
+                        },
+                        if unsafe_until_reconciled {
+                            "recover_run"
+                        } else {
+                            "inspect_page"
+                        },
+                    ),
                     form: None,
                     extraction: None,
                     dialog: None,
@@ -1599,6 +1629,13 @@ fn scoped_regions_for_observation<'a>(
     }
 }
 
+fn pagination_next_is_usable(regions: &[&SemanticRegion], next_name: &str) -> bool {
+    regions.iter().flat_map(|region| region.targets.iter()).any(|target| {
+        target.name.eq_ignore_ascii_case(next_name)
+            && matches!(target.role.as_str(), "button" | "link" | "tab")
+    })
+}
+
 fn resolved_fields(
     regions: &[&SemanticRegion],
     inputs: &std::collections::BTreeMap<String, String>,
@@ -1766,6 +1803,22 @@ mod tests {
             targets,
             expansion: None,
         }
+    }
+
+    #[test]
+    fn pagination_noop_with_usable_next_is_not_terminal() {
+        let mut next = target("Next", "next");
+        next.role = "button".into();
+        let page = region("Results", vec![next]);
+
+        assert!(pagination_next_is_usable(&[&page], "next"));
+    }
+
+    #[test]
+    fn pagination_noop_with_disappeared_next_is_terminal() {
+        let page = region("Results", Vec::new());
+
+        assert!(!pagination_next_is_usable(&[&page], "Next"));
     }
 
     #[test]

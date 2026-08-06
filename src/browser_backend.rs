@@ -1561,7 +1561,26 @@ impl std::error::Error for BrowserBackendError {}
 impl BackendContract for BrowserBackendError {
     fn validate(&self) -> Result<(), BrowserBackendError> {
         match self {
-            Self::CapabilityUnavailable { .. } => Ok(()),
+            Self::CapabilityUnavailable {
+                required,
+                actual,
+                declared,
+                ..
+            } => {
+                if actual.satisfies(*required) {
+                    return Err(invalid(
+                        "capability error",
+                        "actual support satisfies the required level",
+                    ));
+                }
+                if !*declared && *actual != SupportLevel::Unavailable {
+                    return Err(invalid(
+                        "capability error",
+                        "undeclared capabilities must report unavailable support",
+                    ));
+                }
+                Ok(())
+            },
             Self::InvalidConfiguration { field, reason }
             | Self::Connection { operation: field, reason }
             | Self::UnsupportedOperation { operation: field, reason } => {
@@ -2578,6 +2597,32 @@ mod tests {
                 ..
             })
         ));
+    }
+    #[test]
+    fn capability_error_invariants_reject_contradictory_support() {
+        let contradictory = BrowserBackendError::CapabilityUnavailable {
+            capability: BrowserCapability::Capture,
+            required: SupportLevel::Available,
+            actual: SupportLevel::Available,
+            declared: true,
+        };
+        assert!(contradictory.validate().is_err());
+
+        let undeclared_partial = BrowserBackendError::CapabilityUnavailable {
+            capability: BrowserCapability::Capture,
+            required: SupportLevel::Available,
+            actual: SupportLevel::Partial,
+            declared: false,
+        };
+        assert!(undeclared_partial.validate().is_err());
+
+        let valid = BrowserBackendError::CapabilityUnavailable {
+            capability: BrowserCapability::Capture,
+            required: SupportLevel::Available,
+            actual: SupportLevel::Unavailable,
+            declared: false,
+        };
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

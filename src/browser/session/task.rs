@@ -253,6 +253,14 @@ impl BrowserSession {
                 while completed < max_pages {
                     let regions = match scoped_regions_for_observation(&current, task) {
                         Ok(regions) => regions,
+                        Err(error) if completed == 0 => {
+                            return Ok(preflight_result(
+                                task,
+                                &plan,
+                                current.revision,
+                                &error.to_string(),
+                            ));
+                        }
                         Err(error) => {
                             let current_revision = self
                                 .page_revision
@@ -281,20 +289,42 @@ impl BrowserSession {
                         break;
                     }
                     if candidates.len() > 1 {
-                        return Ok(preflight_result(
+                        if completed == 0 {
+                            return Ok(preflight_result(
+                                task,
+                                &plan,
+                                current.revision,
+                                "pagination.collect next control is ambiguous",
+                            ));
+                        }
+                        return Ok(mutation_failure_result(
                             task,
                             &plan,
-                            current.revision,
-                            "pagination.collect next control is ambiguous",
+                            (source_revision, current.revision),
+                            steps,
+                            TaskPlanOperation::CollectPages,
+                            "pagination-collection",
+                            "pagination.collect next control became ambiguous after mutation",
                         ));
                     }
                     let target = candidates[0];
                     if !matches!(target.role.as_str(), "button" | "link" | "tab") {
-                        return Ok(preflight_result(
+                        if completed == 0 {
+                            return Ok(preflight_result(
+                                task,
+                                &plan,
+                                current.revision,
+                                "pagination.collect target is not a semantic navigation control",
+                            ));
+                        }
+                        return Ok(mutation_failure_result(
                             task,
                             &plan,
-                            current.revision,
-                            "pagination.collect target is not a semantic navigation control",
+                            (source_revision, current.revision),
+                            steps,
+                            TaskPlanOperation::CollectPages,
+                            "pagination-collection",
+                            "pagination.collect target became non-navigational after mutation",
                         ));
                     }
                     let before_revision = current.revision;

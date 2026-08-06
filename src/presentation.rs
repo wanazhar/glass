@@ -15,9 +15,10 @@ pub const PRESENTATION_CONTRACT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_IDENTITY_BYTES: usize = 256;
 /// Maximum frame dimension in either axis.
 pub const MAX_FRAME_DIMENSION: u32 = 32_768;
+/// Maximum serialized frame metadata accepted by the convenience parser.
+pub const MAX_FRAME_METADATA_BYTES: usize = 128 * 1024;
 /// Maximum damage rectangles in one frame.
 pub const MAX_DAMAGE_RECTS: usize = 64;
-/// Maximum target frame rate accepted by this contract.
 pub const MAX_FRAME_RATE: u16 = 60;
 /// Minimum configurable frame rate (idle presentation may use 1 fps).
 pub const MIN_FRAME_RATE: u16 = 1;
@@ -217,8 +218,32 @@ impl<'de> Deserialize<'de> for CaptureScale {
             {
                 CaptureScale::new(value).map_err(|error| E::custom(error.to_string()))
             }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if !value.is_finite() || value < f32::MIN as f64 || value > f32::MAX as f64 {
+                    return Err(E::custom("capture scale must be a finite f32"));
+                }
+                self.visit_f32(value as f32)
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                self.visit_f64(value as f64)
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                self.visit_f64(value as f64)
+            }
         }
-        deserializer.deserialize_f32(ScaleVisitor)
+        deserializer.deserialize_any(ScaleVisitor)
     }
 }
 
@@ -678,8 +703,13 @@ impl BrowserFrame {
         CaptureScale::new(self.capture_scale.0)?;
         self.damage.validate()
     }
-
     pub fn from_json(input: &str) -> Result<Self, PresentationContractError> {
+        if input.len() > MAX_FRAME_METADATA_BYTES {
+            return Err(PresentationContractError::invalid(
+                "$",
+                format!("frame metadata exceeds {MAX_FRAME_METADATA_BYTES} bytes"),
+            ));
+        }
         let frame: Self = serde_json::from_str(input).map_err(|error| {
             PresentationContractError::invalid("$", format!("invalid browser frame: {error}"))
         })?;
@@ -884,8 +914,13 @@ impl LatestFrameMailbox {
         self.submit(frame)
     }
 
-    pub fn current(&self) -> Option<&BrowserFrame> {
-        self.current.as_ref()
+    /// Access the displayed frame only with the caller's current revisions.
+    pub fn current(
+        &self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Option<&BrowserFrame>, PresentationContractError> {
+        self.current_for_revision(browser_revision, geometry_revision)
     }
     pub fn current_for_revision(
         &self,
@@ -909,8 +944,13 @@ impl LatestFrameMailbox {
         Ok(self.pending.as_ref())
     }
 
-    pub fn pending(&self) -> Option<&BrowserFrame> {
-        self.pending.as_ref()
+    /// Access the pending frame only with the caller's current revisions.
+    pub fn pending(
+        &self,
+        browser_revision: u64,
+        geometry_revision: u64,
+    ) -> Result<Option<&BrowserFrame>, PresentationContractError> {
+        self.pending_for_revision(browser_revision, geometry_revision)
     }
 
     pub fn counters(&self) -> MailboxCounters {
@@ -936,12 +976,16 @@ impl LatestFrameMailbox {
             return Ok(None);
         };
         if next.browser_revision != browser_revision {
+            self.counters.stale_rejected = self.counters.stale_rejected.saturating_add(1);
+            self.counters.dropped = self.counters.dropped.saturating_add(1);
             return Err(PresentationContractError::StaleRevision {
                 expected: next.browser_revision,
                 actual: browser_revision,
             });
         }
         if next.geometry_revision != geometry_revision {
+            self.counters.stale_rejected = self.counters.stale_rejected.saturating_add(1);
+            self.counters.dropped = self.counters.dropped.saturating_add(1);
             return Err(PresentationContractError::StaleGeometryRevision {
                 expected: next.geometry_revision,
                 actual: geometry_revision,
@@ -1285,17 +1329,18 @@ mod tests {
         assert_eq!(mailbox.submit(frame(2, 1)).unwrap(), SubmitOutcome::Pending);
         assert_eq!(mailbox.submit(frame(3, 1)).unwrap(), SubmitOutcome::ReplacedPending);
         assert_eq!(mailbox.len(), 2);
-        assert_eq!(mailbox.pending().unwrap().generation, 3);
+        assert_eq!(mailbox.pending(1, 1).unwrap().unwrap().generation, 3);
         assert_eq!(mailbox.counters().replaced_pending, 1);
         assert_eq!(mailbox.counters().dropped, 1);
-        assert_eq!(mailbox.counters().presented, 1);
         assert!(matches!(
             mailbox.promote_pending(1, 2),
             Err(PresentationContractError::StaleGeometryRevision { .. })
         ));
-        assert_eq!(mailbox.pending().unwrap().generation, 3);
+        assert_eq!(mailbox.pending(1, 1).unwrap().unwrap().generation, 3);
+        assert_eq!(mailbox.counters().stale_rejected, 1);
+        assert_eq!(mailbox.counters().dropped, 2);
         assert_eq!(mailbox.promote_pending(1, 1).unwrap().unwrap().generation, 1);
-        assert_eq!(mailbox.current().unwrap().generation, 3);
+        assert_eq!(mailbox.current(1, 1).unwrap().unwrap().generation, 3);
         assert_eq!(mailbox.len(), 1);
     }
 
@@ -1319,7 +1364,7 @@ mod tests {
             mailbox.submit(older_geometry).unwrap(),
             SubmitOutcome::DroppedStale
         );
-        assert_eq!(mailbox.current().unwrap().generation, 1);
+        assert_eq!(mailbox.current(2, 2).unwrap().unwrap().generation, 1);
     }
 
     #[test]

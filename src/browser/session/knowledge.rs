@@ -75,6 +75,10 @@ pub struct KnowledgeRecordBuildOptions {
     pub scope: KnowledgeScope,
     pub glass_version: String,
     pub observed_at: String,
+    pub surface: KnowledgeSurfaceProvenance,
+    pub backend: KnowledgeBackendProvenance,
+    pub portability: KnowledgePortability,
+    pub current_validation: KnowledgeCurrentValidation,
 }
 
 impl KnowledgeLookupContext {
@@ -634,8 +638,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
-                surface: KnowledgeSurfaceProvenance::default(),
-                backend: KnowledgeBackendProvenance::default(),
+                surface: options.surface,
+                backend: options.backend,
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -646,9 +650,12 @@ impl KnowledgeRecord {
                 "pageKind": page_kind,
                 "regionKinds": region_kinds,
             }),
-            portability: KnowledgePortability::default(),
+            portability: options.portability,
             memory_influence: KnowledgeMemoryInfluence::default(),
-            retrieval: KnowledgeRetrievalExplanation::default(),
+            retrieval: KnowledgeRetrievalExplanation {
+                current_validation: options.current_validation,
+                ..KnowledgeRetrievalExplanation::default()
+            },
             history: Vec::new(),
         };
         record.validate()?;
@@ -702,8 +709,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
-                surface: KnowledgeSurfaceProvenance::default(),
-                backend: KnowledgeBackendProvenance::default(),
+                surface: options.surface,
+                backend: options.backend,
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -716,9 +723,12 @@ impl KnowledgeRecord {
                 "regionKind": candidate.region_kind,
                 "purpose": fingerprint.purpose,
             }),
-            portability: KnowledgePortability::default(),
+            portability: options.portability,
             memory_influence: KnowledgeMemoryInfluence::default(),
-            retrieval: KnowledgeRetrievalExplanation::default(),
+            retrieval: KnowledgeRetrievalExplanation {
+                current_validation: options.current_validation,
+                ..KnowledgeRetrievalExplanation::default()
+            },
             history: Vec::new(),
         };
         record.validate()?;
@@ -766,8 +776,8 @@ impl KnowledgeRecord {
                 last_verified_at: options.observed_at,
                 glass_version: options.glass_version,
                 verification_count: 0,
-                surface: KnowledgeSurfaceProvenance::default(),
-                backend: KnowledgeBackendProvenance::default(),
+                surface: options.surface,
+                backend: options.backend,
             },
             confidence: KnowledgeConfidence::Candidate,
             invalidation: KnowledgeInvalidation {
@@ -782,9 +792,12 @@ impl KnowledgeRecord {
                 "intentStepCount": workflow.steps.iter().filter(|step| step.intent.is_some()).count(),
                 "postconditionCount": workflow.steps.iter().filter(|step| step.expect.is_some()).count() + 1,
             }),
-            portability: KnowledgePortability::default(),
+            portability: options.portability,
             memory_influence: KnowledgeMemoryInfluence::default(),
-            retrieval: KnowledgeRetrievalExplanation::default(),
+            retrieval: KnowledgeRetrievalExplanation {
+                current_validation: options.current_validation,
+                ..KnowledgeRetrievalExplanation::default()
+            },
             history: Vec::new(),
         };
         record.validate()?;
@@ -851,14 +864,21 @@ impl KnowledgeRecord {
         validate_scope(&self.scope)?;
         validate_source(&self.source)?;
         validate_retrieval(&self.retrieval)?;
-        if self.memory_influence != KnowledgeMemoryInfluence::None
-            && self.retrieval.current_validation.status
+        if self.memory_influence != KnowledgeMemoryInfluence::None {
+            if self.retrieval.signals.is_empty() {
+                return Err(KnowledgeValidationError::new(
+                    "memoryInfluence",
+                    "memory influence requires retrieval signals",
+                ));
+            }
+            if self.retrieval.current_validation.status
                 != KnowledgeCurrentValidationStatus::Validated
-        {
-            return Err(KnowledgeValidationError::new(
-                "memoryInfluence",
-                "memory influence requires current validation",
-            ));
+            {
+                return Err(KnowledgeValidationError::new(
+                    "memoryInfluence",
+                    "memory influence requires current validation",
+                ));
+            }
         }
         if (matches!(
             self.source.surface.kind,
@@ -1163,6 +1183,19 @@ impl KnowledgeRecord {
     /// contradiction/quarantine require fresh verification evidence and a
     /// separately recorded current validation witness.
     pub fn transition(
+        &mut self,
+        next: KnowledgeConfidence,
+        reason: String,
+        observed_at: String,
+        fresh_verification: bool,
+    ) -> Result<(), KnowledgeValidationError> {
+        let mut candidate = self.clone();
+        candidate.transition_in_place(next, reason, observed_at, fresh_verification)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn transition_in_place(
         &mut self,
         next: KnowledgeConfidence,
         reason: String,
@@ -2100,6 +2133,18 @@ mod tests {
                 scope: record().scope,
                 glass_version: "0.2.0".into(),
                 observed_at: "2026-07-27T00:00:00Z".into(),
+                surface: KnowledgeSurfaceProvenance {
+                    kind: KnowledgeSurfaceKind::Document,
+                    understanding: KnowledgeUnderstandingLevel::Strong,
+                    coverage: KnowledgeSurfaceCoverage::Semantic,
+                },
+                backend: KnowledgeBackendProvenance {
+                    backend: KnowledgeBackendKind::Cdp,
+                    profile: "test".into(),
+                    capabilities: vec![KnowledgeBackendCapability::SemanticExtraction],
+                },
+                portability: KnowledgePortability::SemanticPortable,
+                current_validation: KnowledgeCurrentValidation::default(),
             },
         )
         .unwrap();
@@ -2144,6 +2189,18 @@ mod tests {
                 scope: record().scope,
                 glass_version: "0.2.0".into(),
                 observed_at: "2026-07-27T00:00:00Z".into(),
+                surface: KnowledgeSurfaceProvenance {
+                    kind: KnowledgeSurfaceKind::Document,
+                    understanding: KnowledgeUnderstandingLevel::Strong,
+                    coverage: KnowledgeSurfaceCoverage::Semantic,
+                },
+                backend: KnowledgeBackendProvenance {
+                    backend: KnowledgeBackendKind::Cdp,
+                    profile: "test".into(),
+                    capabilities: vec![KnowledgeBackendCapability::SemanticExtraction],
+                },
+                portability: KnowledgePortability::SemanticPortable,
+                current_validation: KnowledgeCurrentValidation::default(),
             },
         )
         .unwrap();
@@ -2170,6 +2227,18 @@ mod tests {
                 scope: record().scope,
                 glass_version: "0.2.0".into(),
                 observed_at: "2026-07-27T00:00:00Z".into(),
+                surface: KnowledgeSurfaceProvenance {
+                    kind: KnowledgeSurfaceKind::Document,
+                    understanding: KnowledgeUnderstandingLevel::Strong,
+                    coverage: KnowledgeSurfaceCoverage::Semantic,
+                },
+                backend: KnowledgeBackendProvenance {
+                    backend: KnowledgeBackendKind::Cdp,
+                    profile: "test".into(),
+                    capabilities: vec![KnowledgeBackendCapability::SemanticExtraction],
+                },
+                portability: KnowledgePortability::SemanticPortable,
+                current_validation: KnowledgeCurrentValidation::default(),
             },
         )
         .unwrap();
@@ -2275,6 +2344,7 @@ mod tests {
     fn boolean_freshness_cannot_promote_without_witness() {
         let mut value = record();
         value.retrieval.current_validation = KnowledgeCurrentValidation::default();
+        let before = value.clone();
         let error = value
             .transition(
                 KnowledgeConfidence::Verified,
@@ -2284,6 +2354,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.path, "currentValidation");
+        assert_eq!(value, before);
         value
             .transition_with_validation(
                 KnowledgeConfidence::Verified,

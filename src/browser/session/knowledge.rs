@@ -63,6 +63,9 @@ pub struct KnowledgeLookupOptions {
     pub glass_schema_version: u32,
     pub policy_preset: String,
     pub now_epoch_seconds: i64,
+    pub surface_kind: Option<KnowledgeSurfaceKind>,
+    pub backend_kind: Option<KnowledgeBackendKind>,
+    pub backend_capabilities: Vec<KnowledgeBackendCapability>,
 }
 
 /// Inputs for creating one page-family record from fresh semantic evidence.
@@ -117,10 +120,25 @@ impl KnowledgeLookupContext {
                 .map(|landmark| landmark.trim_matches('"').to_string())
                 .collect(),
             now_epoch_seconds: options.now_epoch_seconds,
-            surface_kind: None,
-            backend_kind: None,
-            backend_capabilities: Vec::new(),
+            surface_kind: options.surface_kind,
+            backend_kind: options.backend_kind,
+            backend_capabilities: options.backend_capabilities,
         })
+    }
+    /// Build a lookup context with the live surface/backend evidence used by
+    /// the observation. Callers must provide these dimensions explicitly.
+    pub fn from_observation_with_portability(
+        observation: &SemanticObservation,
+        options: KnowledgeLookupOptions,
+        surface_kind: KnowledgeSurfaceKind,
+        backend_kind: KnowledgeBackendKind,
+        backend_capabilities: Vec<KnowledgeBackendCapability>,
+    ) -> Result<Self, KnowledgeValidationError> {
+        let mut context = Self::from_observation(observation, options)?;
+        context.surface_kind = Some(surface_kind);
+        context.backend_kind = Some(backend_kind);
+        context.backend_capabilities = backend_capabilities;
+        Ok(context)
     }
 }
 
@@ -1733,6 +1751,43 @@ impl std::error::Error for KnowledgeValidationError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lookup_options_propagate_live_portability_without_defaults() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../benchmarks/scenarios/semantic-observation-v1.json"
+        ))
+        .unwrap();
+        let observation =
+            SemanticObservation::from_json(&corpus["fixtures"][1]["observation"].to_string())
+                .unwrap();
+        let options = KnowledgeLookupOptions {
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: None,
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: Some("120.0".into()),
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            now_epoch_seconds: 0,
+            surface_kind: Some(KnowledgeSurfaceKind::Svg),
+            backend_kind: Some(KnowledgeBackendKind::Visual),
+            backend_capabilities: vec![KnowledgeBackendCapability::Capture],
+        };
+        let context = KnowledgeLookupContext::from_observation(&observation, options).unwrap();
+        assert_eq!(context.surface_kind, Some(KnowledgeSurfaceKind::Svg));
+        assert_eq!(context.backend_kind, Some(KnowledgeBackendKind::Visual));
+        assert_eq!(
+            context.backend_capabilities,
+            vec![KnowledgeBackendCapability::Capture]
+        );
+        let mut absent = context;
+        absent.surface_kind = None;
+        absent.backend_kind = None;
+        absent.backend_capabilities.clear();
+        assert!(absent.surface_kind.is_none());
+        assert!(absent.backend_kind.is_none());
+    }
     use super::*;
     use crate::browser::session::{
         FingerprintInvalidation, IntentConfidence, SemanticIntentPurpose, SemanticRegionKind,

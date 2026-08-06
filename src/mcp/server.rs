@@ -3852,6 +3852,9 @@ fn parse_knowledge_lookup_options(arguments: &Value) -> BrowserResult<KnowledgeL
         glass_schema_version: 1,
         policy_preset: String::new(),
         now_epoch_seconds: 0,
+        surface_kind: None,
+        backend_kind: None,
+        backend_capabilities: Vec::new(),
     })
 }
 

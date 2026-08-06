@@ -1294,7 +1294,7 @@ impl KnowledgeRecord {
             };
         }
 
-        let mut signals = vec![
+        let mut provenance = vec![
             KnowledgeRetrievalSignal {
                 kind: KnowledgeRetrievalSignalKind::OriginMatch,
                 detail: "current origin matches".into(),
@@ -1307,19 +1307,20 @@ impl KnowledgeRecord {
             },
         ];
         if context.surface_kind == Some(self.source.surface.kind) {
-            signals.push(KnowledgeRetrievalSignal {
+            provenance.push(KnowledgeRetrievalSignal {
                 kind: KnowledgeRetrievalSignalKind::SurfaceMatch,
                 detail: "surface provenance matches".into(),
                 score_millis: Some(350),
             });
         }
         if context.backend_kind == Some(self.source.backend.backend) {
-            signals.push(KnowledgeRetrievalSignal {
+            provenance.push(KnowledgeRetrievalSignal {
                 kind: KnowledgeRetrievalSignalKind::BackendMatch,
                 detail: "backend provenance matches".into(),
                 score_millis: Some(350),
             });
         }
+        let mut signals = Vec::new();
         let page_kind = self.data.get("pageKind").and_then(Value::as_str);
         let page_kind_mismatch = self.kind == KnowledgeRecordKind::PageFamily
             && query.page_kind.as_deref().is_some_and(|expected| {
@@ -1383,11 +1384,12 @@ impl KnowledgeRecord {
             return KnowledgeRetrievalCandidate {
                 record_id: self.record_id.clone(),
                 selected: false,
-                signals,
+                signals: provenance,
                 rejection: Some(KnowledgeRejectionReason::NoExactOrGraphMatch),
                 explanation: Some("no exact or graph-compatible semantic match".into()),
             };
         }
+        signals.extend(provenance);
         KnowledgeRetrievalCandidate {
             record_id: self.record_id.clone(),
             selected: false,

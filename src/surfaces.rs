@@ -861,6 +861,21 @@ impl Surface {
                 "semantic understanding cannot be established from detection, memory, or geometry alone",
             ));
         }
+        let media_action_requested = matches!(self.kind, SurfaceKind::Media)
+            && (self.understanding == UnderstandingLevel::TaskCompilable
+                || self.capabilities.contains(&SurfaceCapability::SemanticAction));
+        if media_action_requested
+            && !self.evidence.iter().any(|evidence| {
+                evidence.quality >= CoverageLevel::Strong
+                    && media_control_evidence_source(evidence.source)
+                    && trusted_action_provenance(evidence)
+            })
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "media semantic actions require strong control evidence; metadata is observation-only",
+            ));
+        }
         let has_bridge_evidence = self.evidence.iter().any(|evidence| {
             matches!(
                 evidence.source,
@@ -1354,6 +1369,17 @@ fn trusted_action_provenance(evidence: &SurfaceEvidence) -> bool {
             | ProvenanceSourceClass::Bridge
     )
 }
+fn media_control_evidence_source(source: SurfaceEvidenceSource) -> bool {
+    matches!(
+        source,
+        SurfaceEvidenceSource::Dom
+            | SurfaceEvidenceSource::Accessibility
+            | SurfaceEvidenceSource::BrowserNative
+            | SurfaceEvidenceSource::Bridge
+            | SurfaceEvidenceSource::Extension
+    )
+}
+
 
 fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     match kind {
@@ -1513,6 +1539,7 @@ fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) 
             SurfaceEvidenceSource::MediaMetadata
                 | SurfaceEvidenceSource::Dom
                 | SurfaceEvidenceSource::Accessibility
+                | SurfaceEvidenceSource::BrowserNative
         ),
         SurfaceKind::Terminal => source == SurfaceEvidenceSource::TerminalProtocol,
         SurfaceKind::BrowserNative => source == SurfaceEvidenceSource::BrowserNative,
@@ -2101,6 +2128,24 @@ mod tests {
         value.evidence[0].source = SurfaceEvidenceSource::Visual;
         value.evidence[0].provenance.source_class = ProvenanceSourceClass::Visual;
         assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn media_metadata_is_observation_only_for_semantic_actions() {
+        let mut metadata_only = surface(
+            SurfaceKind::Media,
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::SemanticAction],
+        );
+        metadata_only.evidence[0].source = SurfaceEvidenceSource::MediaMetadata;
+        assert!(metadata_only.validate().is_err());
+
+        let controls = surface(
+            SurfaceKind::Media,
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::SemanticAction],
+        );
+        assert!(controls.validate().is_ok());
     }
 
     #[test]

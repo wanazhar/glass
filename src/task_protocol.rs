@@ -289,7 +289,22 @@ impl GlassTask {
                 "form.fill requires at least one bounded input",
             ));
         }
-        if self.scope.region_name.is_none() {
+        if matches!(
+            self.task,
+            TaskKind::FormInspect
+                | TaskKind::FormFill
+                | TaskKind::FormValidate
+                | TaskKind::FormSubmit
+                | TaskKind::FieldRead
+                | TaskKind::NavigationSelectTab
+                | TaskKind::PaginationNext
+                | TaskKind::NavigationOpenMenu
+                | TaskKind::PaginationCollect
+                | TaskKind::TableExtract
+                | TaskKind::CollectionExtract
+                | TaskKind::RegionExtract
+        ) && self.scope.region_name.is_none()
+        {
             return Err(TaskProtocolError::new(
                 "scope.regionName",
                 "browser-backed task requires a semantic region scope",
@@ -706,5 +721,39 @@ mod tests {
             expected: None,
         }];
         assert_eq!(invalid.validate().unwrap_err().path, "postconditions[0].expected");
+    }
+
+    #[test]
+    fn navigation_and_dialog_tasks_allow_non_region_semantic_scopes() {
+        let mut navigation = task();
+        navigation.task = TaskKind::NavigationFollow;
+        navigation.scope.region_name = None;
+        navigation.scope.entity_kind = Some(DraftEntityKind::Link);
+        navigation.inputs = BTreeMap::from([(
+            String::from("url"),
+            String::from("https://example.test/next"),
+        )]);
+        navigation.postconditions = vec![TaskPostcondition {
+            kind: TaskPostconditionKind::NavigationOccurred,
+            expected: None,
+        }];
+        navigation.validate().unwrap();
+
+        for kind in [
+            TaskKind::DialogInspect,
+            TaskKind::DialogConfirm,
+            TaskKind::DialogCancel,
+        ] {
+            let mut dialog = task();
+            dialog.task = kind;
+            dialog.scope.region_name = None;
+            dialog.scope.entity_kind = Some(DraftEntityKind::Dialog);
+            dialog.inputs.clear();
+            dialog.postconditions = vec![TaskPostcondition {
+                kind: TaskPostconditionKind::DialogClosed,
+                expected: None,
+            }];
+            dialog.validate().unwrap();
+        }
     }
 }

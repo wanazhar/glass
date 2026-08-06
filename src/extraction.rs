@@ -6,9 +6,10 @@
 use crate::browser::dom::{CompactAxNode, CompactInteractiveElement, DomNode};
 use crate::browser::session::{PageContext, find_region_node};
 use crate::surfaces::{
-    CoverageLevel, InteractionCoverage, ProvenanceSourceClass, Surface, SurfaceCapability,
-    SurfaceCoverage, SurfaceEvidence, SurfaceEvidenceSource, SurfaceId, SurfaceKind,
-    SurfaceProvenance, SurfaceRevision, SurfaceSet, UnderstandingLevel, SURFACE_SCHEMA_VERSION,
+    CoverageLevel, DiagnosticSeverity, InteractionCoverage, ProvenanceSourceClass, Surface,
+    SurfaceCapability, SurfaceCoverage, SurfaceDiagnostic, SurfaceEvidence, SurfaceEvidenceSource,
+    SurfaceId, SurfaceKind, SurfaceProvenance, SurfaceRevision, SurfaceSet, UnderstandingLevel,
+    SURFACE_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -642,6 +643,11 @@ fn build_surface_set(
     } else {
         CoverageLevel::Strong
     };
+    let timestamp = format!(
+        "1970-01-01T00:{:02}:{:02}Z",
+        (revision.0 / 60) % 60,
+        revision.0 % 60
+    );
     let provenance = || SurfaceProvenance {
         schema_version: SURFACE_SCHEMA_VERSION,
         source_class: ProvenanceSourceClass::LiveWebIr,
@@ -655,8 +661,8 @@ fn build_surface_set(
         grant_token: None,
         bridge_capabilities: Vec::new(),
         source_revision: revision,
-        observed_at: "2026-01-01T00:00:00Z".into(),
-        validated_at: "2026-01-01T00:00:00Z".into(),
+        observed_at: timestamp.clone(),
+        validated_at: timestamp.clone(),
     };
     let evidence = |source: SurfaceEvidenceSource, detail: String, level| SurfaceEvidence {
         source,
@@ -666,6 +672,7 @@ fn build_surface_set(
     };
     let available = |source: EvidenceSource| requested.contains(&source) && !missing.contains(&source);
     let mut surfaces = Vec::new();
+    let mut surface_bound_omitted = false;
     let add = |surfaces: &mut Vec<Surface>,
                    id: String,
                    parent: Option<SurfaceId>,
@@ -708,37 +715,37 @@ fn build_surface_set(
             quality,
         ));
     }
-    if document_evidence.is_empty() {
-        return Ok(None);
-    }
+    let has_document = !document_evidence.is_empty();
     let root_id = SurfaceId::new("document")
         .map_err(|error| ExtractionContractError::new("surfaceSet.surfaces", error.to_string()))?;
-    add(
-        &mut surfaces,
-        "document".into(),
-        None,
-        SurfaceKind::Document,
-        document_evidence,
-        UnderstandingLevel::Structural,
-        SurfaceCoverage {
-            structural: quality,
-            semantic: if available(EvidenceSource::Accessibility) {
-                quality
-            } else {
-                CoverageLevel::Partial
+    if has_document {
+        add(
+            &mut surfaces,
+            "document".into(),
+            None,
+            SurfaceKind::Document,
+            document_evidence,
+            UnderstandingLevel::Structural,
+            SurfaceCoverage {
+                structural: quality,
+                semantic: if available(EvidenceSource::Accessibility) {
+                    quality
+                } else {
+                    CoverageLevel::Partial
+                },
+                interaction: InteractionCoverage::Unavailable,
             },
-            interaction: InteractionCoverage::Unavailable,
-        },
-        vec![
-            SurfaceCapability::ReadStructure,
-            SurfaceCapability::ReadText,
-            SurfaceCapability::ReadRelations,
-            SurfaceCapability::ReadState,
-            SurfaceCapability::Extraction,
-            SurfaceCapability::RevisionObservation,
-        ],
-    )?;
-
+            vec![
+                SurfaceCapability::ReadStructure,
+                SurfaceCapability::ReadText,
+                SurfaceCapability::ReadRelations,
+                SurfaceCapability::ReadState,
+                SurfaceCapability::Extraction,
+                SurfaceCapability::RevisionObservation,
+            ],
+        )?;
+    }
+    let parent_surface_id = has_document.then(|| root_id.clone());
     let mut add_children = |kind: SurfaceKind,
                             source: SurfaceEvidenceSource,
                             request_source: EvidenceSource,
@@ -749,12 +756,13 @@ fn build_surface_set(
         }
         for index in 0..count.min(256) {
             if surfaces.len() >= 256 {
+                surface_bound_omitted = true;
                 break;
             }
             add(
                 &mut surfaces,
                 format!("{prefix}_{index}"),
-                Some(root_id.clone()),
+                parent_surface_id.clone(),
                 kind.clone(),
                 vec![evidence(source, format!("observed {prefix} boundary"), quality)],
                 UnderstandingLevel::Structural,
@@ -837,12 +845,13 @@ fn build_surface_set(
         }
         for index in 0..count.min(256) {
             if surfaces.len() >= 256 {
+                surface_bound_omitted = true;
                 break;
             }
             add(
                 &mut surfaces,
                 format!("{prefix}_{index}"),
-                Some(root_id.clone()),
+                parent_surface_id.clone(),
                 kind.clone(),
                 vec![evidence(
                     SurfaceEvidenceSource::CanvasDetection,
@@ -859,11 +868,11 @@ fn build_surface_set(
             )?;
         }
     }
-    if context.boundaries.truncated && surfaces.len() < 256 {
+    if context.boundaries.truncated && surfaces.len() < 256 && available(EvidenceSource::Layout) {
         add(
             &mut surfaces,
             "opaque_boundary".into(),
-            Some(root_id),
+            parent_surface_id,
             SurfaceKind::Opaque,
             vec![evidence(
                 SurfaceEvidenceSource::Layout,
@@ -874,6 +883,18 @@ fn build_surface_set(
             SurfaceCoverage::OPAQUE,
             Vec::new(),
         )?;
+    }
+    if surface_bound_omitted {
+        if let Some(surface) = surfaces.first_mut() {
+            surface.diagnostics.push(SurfaceDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                code: "surfaceBound".into(),
+                message: "additional observed surfaces omitted at the contract bound".into(),
+            });
+        }
+    }
+    if surfaces.is_empty() {
+        return Ok(None);
     }
     let set = SurfaceSet {
         schema_version: SURFACE_SCHEMA_VERSION,
@@ -1725,7 +1746,40 @@ mod tests {
         let mut unauthorized = opaque.clone();
         unauthorized.capabilities.push(SurfaceCapability::SemanticAction);
         assert!(unauthorized.validate().is_err());
+        let mut reversed = ir.clone();
+        if let Some(surface_set) = &mut reversed.surface_set {
+            surface_set.surfaces.reverse();
+            for surface in &mut surface_set.surfaces {
+                surface.evidence.reverse();
+            }
+        }
+        assert_eq!(
+            ir.to_canonical_json().unwrap(),
+            reversed.to_canonical_json().unwrap()
+        );
+        let mut next_context = context.clone();
+        next_context.accessibility.revision = 8;
+        let next = extract_page_context(&next_context, &request).unwrap();
+        let next_ir = crate::web_ir::reconcile_evidence(&next).unwrap();
+        assert!(ir.diff(&next_ir).unwrap().surface_set_changed);
         assert!(ir.to_canonical_json().unwrap().contains("surfaceSet"));
+    }
+
+    #[test]
+    fn extraction_classifies_specialized_surface_without_document_root() {
+        let mut context = page_context();
+        context.dom = None;
+        context.accessibility.roots.clear();
+        context.boundaries.canvases = 1;
+        context.boundaries.canvas_2d = 0;
+        let mut request = request();
+        request.sources = vec![EvidenceSource::CanvasDetection];
+        let evidence = extract_page_context(&context, &request).unwrap();
+        let surfaces = evidence.surface_set.expect("canvas surface");
+        assert_eq!(surfaces.surfaces.len(), 1);
+        assert_eq!(surfaces.surfaces[0].kind, SurfaceKind::Canvas2d);
+        assert!(surfaces.surfaces[0].parent_surface_id.is_none());
+        surfaces.validate().unwrap();
     }
     #[test]
     fn extraction_emits_controls_hint_for_custom_form_roles() {

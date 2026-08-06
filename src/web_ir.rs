@@ -238,6 +238,8 @@ pub struct GlassWebIrDiff {
     pub limits_changed: bool,
     pub diagnostics_changed: bool,
     pub relationship_hint_diagnostics_changed: bool,
+    #[serde(default)]
+    pub surface_set_changed: bool,
 }
 
 /// Continuity classification for one entity across Web IR revisions.
@@ -521,6 +523,16 @@ impl GlassWebIrV1 {
             surface_set
                 .validate()
                 .map_err(|error| WebIrValidationError::new("surfaceSet", error.to_string()))?;
+            if surface_set
+                .surfaces
+                .iter()
+                .any(|surface| surface.revision.0 != self.revision)
+            {
+                return Err(WebIrValidationError::new(
+                    "surfaceSet.surfaces.revision",
+                    "surface revisions must match the Web IR revision",
+                ));
+            }
         }
         if self.relationships.len() > MAX_WEB_IR_RELATIONSHIPS {
             return Err(WebIrValidationError::new(
@@ -782,6 +794,7 @@ impl GlassWebIrV1 {
             diagnostics_changed: self.diagnostics != next.diagnostics,
             relationship_hint_diagnostics_changed: self.relationship_hint_diagnostics
                 != next.relationship_hint_diagnostics,
+            surface_set_changed: self.surface_set != next.surface_set,
         })
     }
 
@@ -884,6 +897,22 @@ impl GlassWebIrV1 {
             surface_set
                 .surfaces
                 .sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
+            for surface in &mut surface_set.surfaces {
+                surface.evidence.sort_by_key(|evidence| {
+                    (
+                        evidence.source,
+                        evidence.quality,
+                        evidence.detail.clone().unwrap_or_default(),
+                    )
+                });
+                surface.diagnostics.sort_by_key(|diagnostic| {
+                    (
+                        diagnostic.severity,
+                        diagnostic.code.clone(),
+                        diagnostic.message.clone(),
+                    )
+                });
+            }
         }
         for entity in &mut canonical.entities {
             entity.evidence_sources.sort();

@@ -33,7 +33,7 @@ use crate::browser::dom::{
 };
 use crate::browser::mouse::{MouseEngine, Point};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
-use crate::browser::profile::ProfileManager;
+use crate::browser::profile::{ProfileLock, ProfileManager};
 
 /// Convenience alias for fallible browser operations. All session methods
 /// return this type so callers can propagate errors with `?` without boxing
@@ -408,7 +408,16 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         summary.scanned_elements += 1;
         if (element.shadowRoot) summary.shadow_roots += 1;
         if (element.localName === 'iframe' || element.localName === 'frame') summary.child_frames += 1;
-        if (element.localName === 'canvas') summary.canvases += 1;
+        if (element.localName === 'canvas') {
+            summary.canvases += 1;
+            try {
+                if (element.getContext('webgl') || element.getContext('experimental-webgl')) {
+                    summary.webgl_canvases += 1;
+                } else if (element.getContext('webgpu')) {
+                    summary.webgpu_canvases += 1;
+                }
+            } catch (_) {}
+        }
         if (element.localName === 'svg') summary.svg_elements += 1;
         if (element.localName === 'audio' || element.localName === 'video') summary.media_elements += 1;
         if (element.localName === 'object' || element.localName === 'embed') {
@@ -419,7 +428,11 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
                 summary.pdf_documents += 1;
             }
         }
-    summary.canvas_2d = summary.canvases;
+    }
+    summary.canvas_2d = Math.max(
+        0,
+        summary.canvases - summary.webgl_canvases - summary.webgpu_canvases
+    );
     summary.viewport = {
         scroll_x: window.scrollX,
         scroll_y: window.scrollY,
@@ -2585,6 +2598,7 @@ pub struct BrowserSession {
     pub(crate) disposable_profile: Option<DisposableProfileDir>,
     pub(crate) launched_incognito_context_id: Option<String>,
     pub(crate) profile: String,
+    pub(crate) profile_lock: Option<ProfileLock>,
     pub(crate) interaction_mode: InteractionMode,
     pub(crate) mouse: MouseEngine,
     pub(crate) pointer: Mutex<Option<Point>>,

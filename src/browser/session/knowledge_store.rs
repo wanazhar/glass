@@ -12,6 +12,7 @@ use super::knowledge::{
     KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
 };
 use fs2::FileExt;
+use sha2::{Digest, Sha256};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
@@ -32,6 +33,25 @@ pub fn default_knowledge_store_path(profile: &str) -> PathBuf {
         .join("glass")
         .join("knowledge")
         .join(format!("{profile}.json"))
+}
+
+/// Derive a workspace-incarnation-specific path. The identity is hashed so
+/// arbitrary workspace names cannot escape the profile directory.
+pub fn default_knowledge_store_path_for_workspace(
+    profile: &str,
+    workspace_id: &str,
+    workspace_generation: Option<u64>,
+) -> PathBuf {
+    let digest = Sha256::digest(
+        format!("{workspace_id}\u{1f}{:?}", workspace_generation).as_bytes(),
+    );
+    std::env::var_os("GLASS_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("glass")
+        .join("knowledge")
+        .join(format!("{profile}-workspace-{digest:x}.json"))
 }
 
 /// Resource bounds for one local knowledge store.
@@ -645,6 +665,8 @@ mod tests {
                 browser_version_range: None,
                 glass_schema_version: 1,
                 policy_preset: "balanced".into(),
+                workspace_id: None,
+                workspace_generation: None,
             },
             source: KnowledgeSource {
                 first_seen_at: format!("2026-07-27T00:00:{verified_at:0>2}Z"),
@@ -758,6 +780,8 @@ mod tests {
             surface_kind: None,
             backend_kind: None,
             backend_capabilities: Vec::new(),
+            workspace_id: None,
+            workspace_generation: None,
         };
         let assessments = store.assess(&context);
         assert_eq!(assessments.len(), 1);

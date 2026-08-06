@@ -29,6 +29,7 @@ const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_OBJECT_ENTRIES: usize = 64;
 const MAX_JSON_ARRAY_ENTRIES: usize = 64;
 const MAX_JSON_STRING_BYTES: usize = 4096;
+const MAX_WORKSPACE_ID_BYTES: usize = 128;
 /// Current browser/session dimensions used to assess one stored record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeLookupContext {
@@ -50,6 +51,10 @@ pub struct KnowledgeLookupContext {
     /// Current source dimensions are optional for callers that only need
     pub backend_capabilities: Vec<KnowledgeBackendCapability>,
     pub current_extension_id: Option<String>,
+    /// Workspace identity is optional only for legacy/profile-scoped callers.
+    /// When supplied, both identity and generation must match a record.
+    pub workspace_id: Option<String>,
+    pub workspace_generation: Option<u64>,
 }
 
 /// Explicit session inputs used to construct a lookup context from an
@@ -70,6 +75,8 @@ pub struct KnowledgeLookupOptions {
     pub surface_kind: Option<KnowledgeSurfaceKind>,
     pub backend_kind: Option<KnowledgeBackendKind>,
     pub backend_capabilities: Vec<KnowledgeBackendCapability>,
+    pub workspace_id: Option<String>,
+    pub workspace_generation: Option<u64>,
 }
 
 /// Inputs for creating one page-family record from fresh semantic evidence.
@@ -137,6 +144,21 @@ impl KnowledgeLookupContext {
                 "extension-defined contexts require an extension identifier",
             ));
         }
+        validate_workspace_scope(
+            "workspaceId",
+            options.workspace_id.as_deref(),
+            options.workspace_generation,
+        )?;
+        if options.surface_kind != Some(KnowledgeSurfaceKind::ExtensionDefined)
+            && current_extension_id.is_some()
+        {
+            return Err(KnowledgeValidationError::new(
+                "currentExtensionId",
+                "extension identifiers are only valid for extension-defined contexts",
+            ));
+        }
+        let workspace_id = options.workspace_id.clone();
+        let workspace_generation = options.workspace_generation;
         if let Some(extension_id) = &current_extension_id {
             validate_text("currentExtensionId", extension_id, MAX_EXTENSION_ID_BYTES, false)?;
             validate_public_text("currentExtensionId", extension_id)?;
@@ -163,6 +185,8 @@ impl KnowledgeLookupContext {
             backend_capabilities: options.backend_capabilities,
             current_extension_id,
             current_revision,
+            workspace_id,
+            workspace_generation,
         })
     }
     /// Build a lookup context with the live surface/backend evidence used by
@@ -212,6 +236,7 @@ pub enum KnowledgeSignalKind {
     OriginMatch,
     PathMatch,
     ProfileScopeMatch,
+    WorkspaceMatch,
     LocaleMatch,
     TenantMatch,
     BrowserMatch,
@@ -326,6 +351,12 @@ pub struct KnowledgeScope {
     pub browser_version_range: Option<String>,
     pub glass_schema_version: u32,
     pub policy_preset: String,
+    /// Bound workspace identity. Legacy records omit both fields and are
+    /// rejected whenever a live workspace context is supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_generation: Option<u64>,
 }
 
 /// Whether a record is anonymous, generally authenticated, or bound to one
@@ -564,6 +595,12 @@ pub struct KnowledgeRetrievalQuery {
 #[serde(rename_all = "camelCase")]
 pub enum KnowledgeRejectionReason {
     OutOfScope,
+    WorkspaceMismatch,
+    WorkspaceGenerationMismatch,
+    LegacyWorkspaceUnbound,
+    StaleLifecycle,
+    ContradictedLifecycle,
+    Quarantined,
     Stale,
     BackendIncompatible,
     SurfaceIncompatible,
@@ -1102,6 +1139,29 @@ impl KnowledgeRecord {
         } else {
             conflicts.push("profile scope does not match".into());
         }
+        if context.workspace_id.is_none() {
+            if self.scope.workspace_id.is_none() {
+                signals.push(signal(
+                    KnowledgeSignalKind::WorkspaceMatch,
+                    "legacy workspace-unbound scope is allowed without live workspace binding",
+                ));
+            } else {
+                conflicts.push("record is workspace-bound but context is not".into());
+            }
+        } else if self.scope.workspace_id == context.workspace_id
+            && self.scope.workspace_generation == context.workspace_generation
+        {
+            signals.push(signal(
+                KnowledgeSignalKind::WorkspaceMatch,
+                "workspace identity and generation match",
+            ));
+        } else if self.scope.workspace_id.is_none() {
+            conflicts.push("record has no workspace identity for the live context".into());
+        } else if self.scope.workspace_id != context.workspace_id {
+            conflicts.push("workspace identity does not match".into());
+        } else {
+            conflicts.push("workspace generation does not match".into());
+        }
         compare_optional_scope(
             &mut signals,
             &mut conflicts,
@@ -1177,25 +1237,39 @@ impl KnowledgeRecord {
             conflicts.push("lastVerifiedAt is not a valid RFC3339 timestamp".into());
         }
 
+        let current_contradiction = self.retrieval.current_validation.status
+            == KnowledgeCurrentValidationStatus::Contradicted;
         let current_validation_conflict = self.retrieval.current_validation.status
             != KnowledgeCurrentValidationStatus::Validated;
         let current_revision_conflict = self.retrieval.current_validation.current_revision
             != Some(context.current_revision);
-        if current_validation_conflict {
+        if current_contradiction {
+            conflicts.push("current validation contradicts live Web IR".into());
+        } else if current_validation_conflict {
             conflicts.push("record lacks current Web IR validation".into());
         } else if current_revision_conflict {
             conflicts.push("current Web IR revision does not match".into());
         }
-        let extension_conflict = (self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined
-            || context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined))
-            && self.source.surface.extension_id.as_ref() != context.current_extension_id.as_ref();
+        if self.confidence == KnowledgeConfidence::Stale {
+            conflicts.push("record lifecycle is stale".into());
+        } else if self.confidence == KnowledgeConfidence::Contradicted {
+            conflicts.push("record lifecycle is contradicted".into());
+        }
+        let record_extension = self.source.surface.kind == KnowledgeSurfaceKind::ExtensionDefined;
+        let context_extension = context.surface_kind == Some(KnowledgeSurfaceKind::ExtensionDefined);
+        let extension_conflict = record_extension != context_extension
+            || (record_extension
+                && self.source.surface.extension_id.as_ref()
+                    != context.current_extension_id.as_ref());
         if extension_conflict {
             conflicts.push("extension provenance does not match".into());
         }
         let provenance_conflict = matches!(
             self.source.surface.kind,
             KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
-        ) || self.source.backend.backend == KnowledgeBackendKind::Unknown;
+        ) || self.source.surface.understanding == KnowledgeUnderstandingLevel::Opaque
+            || self.source.surface.coverage == KnowledgeSurfaceCoverage::None
+            || self.source.backend.backend == KnowledgeBackendKind::Unknown;
         if provenance_conflict {
             conflicts.push("surface or backend provenance is unknown".into());
         }
@@ -1237,6 +1311,10 @@ impl KnowledgeRecord {
                 "origin does not match"
                     | "path is outside the record pattern"
                     | "profile scope does not match"
+                    | "workspace identity does not match"
+                    | "workspace generation does not match"
+                    | "record has no workspace identity for the live context"
+                    | "record is workspace-bound but context is not"
                     | "locale does not match"
                     | "tenant does not match"
                     | "browser family or version does not match"
@@ -1244,7 +1322,9 @@ impl KnowledgeRecord {
                     | "policy scope does not match"
             )
         });
-        let status = if self.confidence == KnowledgeConfidence::Contradicted {
+        let status = if current_contradiction {
+            KnowledgeAssessmentStatus::Contradicted
+        } else if self.confidence == KnowledgeConfidence::Contradicted {
             KnowledgeAssessmentStatus::Contradicted
         } else if self.confidence == KnowledgeConfidence::Quarantined {
             KnowledgeAssessmentStatus::Quarantined
@@ -1257,6 +1337,7 @@ impl KnowledgeRecord {
             || portability_conflict
             || !missing_landmarks.is_empty()
             || age_seconds.is_none()
+            || self.confidence == KnowledgeConfidence::Stale
             || self
                 .invalidation
                 .max_age_seconds
@@ -1373,7 +1454,10 @@ impl KnowledgeRecord {
                 score_millis: Some(900),
             });
         }
-        if self.kind == KnowledgeRecordKind::WorkflowEntryPoint && query.task_kind.is_some() {
+        if self.kind == KnowledgeRecordKind::WorkflowEntryPoint
+            && query.task_kind.is_some()
+            && !signals.is_empty()
+        {
             signals.push(KnowledgeRetrievalSignal {
                 kind: KnowledgeRetrievalSignalKind::GraphDistance,
                 detail: "workflow entry is graph-compatible with the task".into(),
@@ -1539,12 +1623,34 @@ fn normalized_knowledge_value(value: &str) -> String {
 
 fn rejection_reason(assessment: &KnowledgeAssessment) -> KnowledgeRejectionReason {
     match assessment.status {
-        KnowledgeAssessmentStatus::Contradicted => KnowledgeRejectionReason::Contradicted,
-        KnowledgeAssessmentStatus::Quarantined => KnowledgeRejectionReason::OpaqueProvenance,
-        KnowledgeAssessmentStatus::OutOfScope => KnowledgeRejectionReason::OutOfScope,
+        KnowledgeAssessmentStatus::Contradicted => {
+            let joined = assessment.conflicts.join(" ").to_ascii_lowercase();
+            if joined.contains("current validation") {
+                KnowledgeRejectionReason::Contradicted
+            } else {
+                KnowledgeRejectionReason::ContradictedLifecycle
+            }
+        }
+        KnowledgeAssessmentStatus::Quarantined => KnowledgeRejectionReason::Quarantined,
+        KnowledgeAssessmentStatus::OutOfScope => {
+            let joined = assessment.conflicts.join(" ").to_ascii_lowercase();
+            if joined.contains("workspace generation") {
+                KnowledgeRejectionReason::WorkspaceGenerationMismatch
+            } else if joined.contains("workspace") {
+                if joined.contains("no workspace identity") {
+                    KnowledgeRejectionReason::LegacyWorkspaceUnbound
+                } else {
+                    KnowledgeRejectionReason::WorkspaceMismatch
+                }
+            } else {
+                KnowledgeRejectionReason::OutOfScope
+            }
+        }
         KnowledgeAssessmentStatus::Stale => {
             let joined = assessment.conflicts.join(" ").to_ascii_lowercase();
-            if joined.contains("unknown") || joined.contains("opaque") {
+            if joined.contains("record lifecycle is stale") {
+                KnowledgeRejectionReason::StaleLifecycle
+            } else if joined.contains("unknown") || joined.contains("opaque") {
                 KnowledgeRejectionReason::OpaqueProvenance
             } else if joined.contains("extension") {
                 KnowledgeRejectionReason::ExtensionMismatch
@@ -1734,6 +1840,11 @@ fn validate_scope(scope: &KnowledgeScope) -> Result<(), KnowledgeValidationError
             "must be positive",
         ));
     }
+    validate_workspace_scope(
+        "scope.workspaceId",
+        scope.workspace_id.as_deref(),
+        scope.workspace_generation,
+    )?;
     for (path, value) in [
         ("scope.profileKey", scope.profile_key.as_deref()),
         ("scope.locale", scope.locale.as_deref()),
@@ -1762,6 +1873,29 @@ fn validate_scope(scope: &KnowledgeScope) -> Result<(), KnowledgeValidationError
         }
         _ => Ok(()),
     }
+}
+
+fn validate_workspace_scope(
+    path: &str,
+    workspace_id: Option<&str>,
+    workspace_generation: Option<u64>,
+) -> Result<(), KnowledgeValidationError> {
+    if let Some(workspace_id) = workspace_id {
+        validate_text(path, workspace_id, MAX_WORKSPACE_ID_BYTES, false)?;
+        validate_public_text(path, workspace_id)?;
+    } else if workspace_generation.is_some() {
+        return Err(KnowledgeValidationError::new(
+            "workspaceGeneration",
+            "requires a workspace identity",
+        ));
+    }
+    if workspace_generation == Some(0) {
+        return Err(KnowledgeValidationError::new(
+            "workspaceGeneration",
+            "must be positive",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_surface_provenance(
@@ -2138,6 +2272,8 @@ mod tests {
             surface_kind: Some(KnowledgeSurfaceKind::Svg),
             backend_kind: Some(KnowledgeBackendKind::Visual),
             backend_capabilities: vec![KnowledgeBackendCapability::Capture],
+            workspace_id: None,
+            workspace_generation: None,
         };
         let mut mismatch = options.clone();
         mismatch.current_revision = Some(observation.revision.saturating_sub(1));
@@ -2181,6 +2317,8 @@ mod tests {
                 browser_version_range: Some(">=120".into()),
                 glass_schema_version: 1,
                 policy_preset: "balanced".into(),
+                workspace_id: None,
+                workspace_generation: None,
             },
             source: KnowledgeSource {
                 first_seen_at: "2026-07-27T00:00:00Z".into(),
@@ -2245,6 +2383,8 @@ mod tests {
                 KnowledgeBackendCapability::Verification,
             ],
             current_extension_id: None,
+            workspace_id: None,
+            workspace_generation: None,
         }
     }
 
@@ -2310,6 +2450,94 @@ mod tests {
         assert_eq!(
             record.content_hash().unwrap(),
             parsed.content_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn workspace_identity_and_generation_isolation_is_fail_closed() {
+        let mut context = retrieval_context();
+        context.workspace_id = Some("workspace-alpha".into());
+        context.workspace_generation = Some(7);
+        let legacy = record().retrieve_candidate(
+            &context,
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("documentation".into()),
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+        assert_eq!(
+            legacy.rejection,
+            Some(KnowledgeRejectionReason::LegacyWorkspaceUnbound)
+        );
+
+        let mut bound = record();
+        bound.scope.workspace_id = Some("workspace-alpha".into());
+        bound.scope.workspace_generation = Some(7);
+        bound.validate().unwrap();
+        let wire = bound.to_canonical_json().unwrap();
+        assert!(wire.contains("\"workspaceId\":\"workspace-alpha\""));
+        assert!(wire.contains("\"workspaceGeneration\":7"));
+        assert_eq!(
+            bound
+                .retrieve_candidate(
+                    &context,
+                    &KnowledgeRetrievalQuery {
+                        page_kind: Some("documentation".into()),
+                        ..KnowledgeRetrievalQuery::default()
+                    },
+                )
+                .rejection,
+            None
+        );
+        context.workspace_generation = Some(8);
+        let stale = bound.retrieve_candidate(
+            &context,
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("documentation".into()),
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+        assert_eq!(
+            stale.rejection,
+            Some(KnowledgeRejectionReason::WorkspaceGenerationMismatch)
+        );
+    }
+
+    #[test]
+    fn lifecycle_opaque_and_extension_records_fail_closed() {
+        let query = KnowledgeRetrievalQuery {
+            page_kind: Some("documentation".into()),
+            ..KnowledgeRetrievalQuery::default()
+        };
+        for (confidence, expected) in [
+            (KnowledgeConfidence::Stale, KnowledgeRejectionReason::StaleLifecycle),
+            (
+                KnowledgeConfidence::Contradicted,
+                KnowledgeRejectionReason::ContradictedLifecycle,
+            ),
+            (KnowledgeConfidence::Quarantined, KnowledgeRejectionReason::Quarantined),
+        ] {
+            let mut historical = record();
+            historical.confidence = confidence;
+            assert_eq!(
+                historical.retrieve_candidate(&retrieval_context(), &query).rejection,
+                Some(expected)
+            );
+        }
+        let mut opaque = record();
+        opaque.source.surface.understanding = KnowledgeUnderstandingLevel::Opaque;
+        assert_eq!(
+            opaque.retrieve_candidate(&retrieval_context(), &query).rejection,
+            Some(KnowledgeRejectionReason::OpaqueProvenance)
+        );
+        let mut extension = record();
+        extension.source.surface.kind = KnowledgeSurfaceKind::ExtensionDefined;
+        extension.source.surface.extension_id = Some("com.example.alpha".into());
+        let mut extension_context = retrieval_context();
+        extension_context.current_extension_id = Some("com.example.alpha".into());
+        assert_eq!(
+            extension.retrieve_candidate(&extension_context, &query).rejection,
+            Some(KnowledgeRejectionReason::ExtensionMismatch)
         );
     }
 
@@ -2410,6 +2638,8 @@ mod tests {
             policy_preset: "balanced".into(),
             current_revision: 42,
             current_extension_id: None,
+            workspace_id: None,
+            workspace_generation: None,
             landmarks: vec!["documentation".into(), "main".into(), "search".into()],
             now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:00Z")
                 .unwrap()

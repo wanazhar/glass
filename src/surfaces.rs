@@ -1356,7 +1356,8 @@ fn keyboard_evidence_source(kind: &SurfaceKind, source: SurfaceEvidenceSource) -
         | SurfaceKind::EmbeddedDocument
         | SurfaceKind::Media => matches!(
             source,
-            SurfaceEvidenceSource::Dom
+            SurfaceEvidenceSource::Svg
+                | SurfaceEvidenceSource::Dom
                 | SurfaceEvidenceSource::Accessibility
                 | SurfaceEvidenceSource::Bridge
                 | SurfaceEvidenceSource::Extension
@@ -2118,6 +2119,18 @@ mod tests {
         );
         semantic_document.evidence[0].source = SurfaceEvidenceSource::MediaMetadata;
         assert!(semantic_document.validate().is_err());
+    }
+
+    #[test]
+    fn svg_evidence_can_supply_keyboard_input() {
+        let mut value = surface(
+            SurfaceKind::Svg,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::Svg;
+        value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_ok());
     }
 
     #[test]

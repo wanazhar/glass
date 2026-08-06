@@ -211,7 +211,6 @@ impl GlassTask {
     }
 
     /// Validate the authored task without browser access or mutation.
-
     pub fn validate(&self) -> Result<(), TaskProtocolError> {
         if self.risk == TaskRiskClass::UnknownRisk {
             return Err(TaskProtocolError::new(

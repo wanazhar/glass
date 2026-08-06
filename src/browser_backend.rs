@@ -499,9 +499,11 @@ where
     deserialize_bounded_string_vec::<D, 64>(deserializer)
 }
 
-struct BoundedStringMapVisitor<const LIMIT: usize>;
+struct BoundedStringMapVisitor<const LIMIT: usize, const KEY_BYTES: usize>;
 
-impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringMapVisitor<LIMIT> {
+impl<'de, const LIMIT: usize, const KEY_BYTES: usize> Visitor<'de>
+    for BoundedStringMapVisitor<LIMIT, KEY_BYTES>
+{
     type Value = BTreeMap<String, String>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -515,29 +517,34 @@ impl<'de, const LIMIT: usize> Visitor<'de> for BoundedStringMapVisitor<LIMIT> {
         let mut values = BTreeMap::new();
         let mut pairs = 0;
         while pairs < LIMIT {
-            let Some((key, value)) =
-                access.next_entry_seed(BoundedStringSeed, BoundedStringSeed)?
-            else {
+            let Some((key, value)) = access.next_entry_seed(
+                BoundedLimitedStringSeed::<KEY_BYTES>,
+                BoundedStringSeed,
+            )? else {
                 return Ok(values);
             };
             pairs += 1;
             values.insert(key, value);
         }
         if access
-            .next_entry_seed(BoundedStringSeed, BoundedStringSeed)?
+            .next_entry_seed(BoundedLimitedStringSeed::<KEY_BYTES>, BoundedStringSeed)?
             .is_some()
         {
-            return Err(serde::de::Error::custom("string map exceeds the bounded entry count"));
+            return Err(serde::de::Error::custom(
+                "string map exceeds the bounded entry count",
+            ));
         }
         Ok(values)
     }
 }
 
-fn deserialize_bounded_string_map<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+fn deserialize_bounded_string_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    deserializer.deserialize_map(BoundedStringMapVisitor::<MAX_STORAGE_ENTRIES>)
+    deserializer.deserialize_map(BoundedStringMapVisitor::<MAX_STORAGE_ENTRIES, MAX_BACKEND_ID_BYTES>)
 }
 
 struct JsonVisitor {
@@ -762,6 +769,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BrowserCapability {
+    Lifecycle,
     Navigation,
     Contexts,
     Evidence,
@@ -775,7 +783,8 @@ pub enum BrowserCapability {
 }
 
 impl BrowserCapability {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::Lifecycle,
         Self::Navigation,
         Self::Contexts,
         Self::Evidence,
@@ -1930,7 +1939,7 @@ pub enum BackendOperation {
 impl BackendOperation {
     pub const fn capability(self) -> BrowserCapability {
         match self {
-            Self::Initialize | Self::Close => BrowserCapability::Contexts,
+            Self::Initialize | Self::Close => BrowserCapability::Lifecycle,
             Self::Navigate => BrowserCapability::Navigation,
             Self::Contexts => BrowserCapability::Contexts,
             Self::Evidence => BrowserCapability::Evidence,
@@ -2390,6 +2399,10 @@ mod tests {
             "contexts": contexts
         }))
         .is_err());
+        let oversized_key = json!({
+            "entries": { "k".repeat(MAX_BACKEND_ID_BYTES + 1): "value" }
+        });
+        assert!(serde_json::from_value::<StorageResult>(oversized_key).is_err());
     }
 
     #[test]

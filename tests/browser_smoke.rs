@@ -3012,7 +3012,7 @@ async fn browser_session_executes_scoped_form_tasks() {
         .await
         .unwrap();
     assert_eq!(collected.status, "succeeded");
-    assert_eq!(collected.steps.len(), 2);
+    assert_eq!(collected.steps.len(), 3);
     session.navigate(&fixture_server.url).await.unwrap();
     let observation = session
         .semantic_observe(SemanticObservationLevel::Structured)

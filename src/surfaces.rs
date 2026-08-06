@@ -267,11 +267,19 @@ impl SurfaceCoverage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ProvenanceSourceClass {
-    Live,
-    Bridge,
-    Visual,
+    LiveWebIr,
     Backend,
-    Extension,
+    Bridge,
+    Memory,
+    Visual,
+}
+/// Trust established for a page-provided semantic bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeTrustLevel {
+    Untrusted,
+    OriginValidated,
+    CapabilityGranted,
 }
 
 /// Revision-bound, machine-readable evidence provenance.
@@ -289,11 +297,16 @@ pub struct SurfaceProvenance {
     pub adapter_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_trust: Option<BridgeTrustLevel>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridge_capabilities: Vec<SurfaceCapability>,
     pub source_revision: SurfaceRevision,
     pub observed_at: String,
     pub validated_at: String,
 }
-
 impl SurfaceProvenance {
     fn validate(
         &self,
@@ -318,15 +331,13 @@ impl SurfaceProvenance {
                 "evidence provenance revision must match the surface revision",
             ));
         }
-        validate_bounded_text(
+        validate_canonical_timestamp(
             &format!("{path}.observedAt"),
             &self.observed_at,
-            MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES,
         )?;
-        validate_bounded_text(
+        validate_canonical_timestamp(
             &format!("{path}.validatedAt"),
             &self.validated_at,
-            MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES,
         )?;
         if self.validated_at < self.observed_at {
             return Err(SurfaceContractError::new(
@@ -349,15 +360,29 @@ impl SurfaceProvenance {
             }
         }
         match source {
-            SurfaceEvidenceSource::Bridge => {
+            SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension => {
                 if self.source_class != ProvenanceSourceClass::Bridge
                     || self.bridge_version.is_none()
+                    || self.bridge_origin.is_none()
+                    || self.bridge_trust < Some(BridgeTrustLevel::OriginValidated)
                 {
                     return Err(SurfaceContractError::new(
                         path,
-                        "bridge evidence requires bridge provenance and bridgeVersion",
+                        "bridge evidence requires validated origin, trust, and bridgeVersion",
                     ));
                 }
+                if matches!(source, SurfaceEvidenceSource::Extension)
+                    && self.adapter_version.is_none()
+                {
+                    return Err(SurfaceContractError::new(
+                        path,
+                        "extension evidence requires adapterVersion",
+                    ));
+                }
+                validate_origin(
+                    &format!("{path}.bridgeOrigin"),
+                    self.bridge_origin.as_deref().unwrap(),
+                )?;
             }
             SurfaceEvidenceSource::Visual => {
                 if self.source_class != ProvenanceSourceClass::Visual {
@@ -367,22 +392,18 @@ impl SurfaceProvenance {
                     ));
                 }
             }
-            SurfaceEvidenceSource::Extension => {
-                if self.source_class != ProvenanceSourceClass::Extension
-                    || self.adapter_version.is_none()
-                {
+            SurfaceEvidenceSource::Memory => {
+                if self.source_class != ProvenanceSourceClass::Memory {
                     return Err(SurfaceContractError::new(
                         path,
-                        "extension evidence requires extension provenance and adapterVersion",
+                        "memory evidence requires memory provenance",
                     ));
                 }
             }
             _ => {
-                if matches!(
+                if !matches!(
                     self.source_class,
-                    ProvenanceSourceClass::Bridge
-                        | ProvenanceSourceClass::Visual
-                        | ProvenanceSourceClass::Extension
+                    ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Backend
                 ) {
                     return Err(SurfaceContractError::new(
                         path,
@@ -398,6 +419,15 @@ impl SurfaceProvenance {
                 path,
                 "backend provenance requires backend and backendVersion",
             ));
+        }
+        let mut granted = BTreeSet::new();
+        for capability in &self.bridge_capabilities {
+            if !granted.insert(*capability) {
+                return Err(SurfaceContractError::new(
+                    format!("{path}.bridgeCapabilities"),
+                    "bridge capabilities must not be duplicated",
+                ));
+            }
         }
         Ok(())
     }
@@ -421,8 +451,9 @@ pub enum SurfaceEvidenceSource {
     BrowserNative,
     RemoteStream,
     Bridge,
-    Visual,
     Extension,
+    Memory,
+    Visual,
 }
 
 /// One provenance record.  It describes evidence and does not authorize an
@@ -576,6 +607,19 @@ impl Surface {
     }
 
     fn validate_evidence_requirements(&self) -> Result<(), SurfaceContractError> {
+        let structural_evidence = self
+            .evidence
+            .iter()
+            .filter(|evidence| source_supports_structure(&self.kind, evidence.source));
+        let has_structural_evidence = structural_evidence
+            .clone()
+            .any(|evidence| evidence.quality >= self.coverage.structural);
+        if self.understanding >= UnderstandingLevel::Structural && !has_structural_evidence {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "structural coverage requires compatible DOM, accessibility, or validated adapter evidence",
+            ));
+        }
         let mut semantic_evidence = self
             .evidence
             .iter()
@@ -585,9 +629,7 @@ impl Surface {
             .any(|evidence| evidence.quality >= CoverageLevel::Strong);
         let has_any_semantic_evidence = semantic_evidence.next().is_some();
         let needs_semantics = self.understanding >= UnderstandingLevel::Semantic
-            || self
-                .capabilities
-                .contains(&SurfaceCapability::SemanticAction);
+            || self.capabilities.contains(&SurfaceCapability::SemanticAction);
         if needs_semantics
             && (self.coverage.semantic < CoverageLevel::Strong
                 || !has_strong_semantic_evidence)
@@ -600,9 +642,15 @@ impl Surface {
         if needs_semantics && !has_any_semantic_evidence {
             return Err(SurfaceContractError::new(
                 "evidence",
-                "semantic understanding cannot be established from detection or geometry alone",
+                "semantic understanding cannot be established from detection, memory, or geometry alone",
             ));
         }
+        let has_bridge_evidence = self.evidence.iter().any(|evidence| {
+            matches!(
+                evidence.source,
+                SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+            )
+        });
         if self.understanding == UnderstandingLevel::TaskCompilable
             && (self.coverage.structural < CoverageLevel::Strong
                 || self.coverage.semantic < CoverageLevel::Strong
@@ -612,6 +660,30 @@ impl Surface {
                 "evidence",
                 "task-compilable understanding requires strong structural and semantic evidence",
             ));
+        }
+        let actionability_requested = self.understanding == UnderstandingLevel::TaskCompilable
+            || self.capabilities.contains(&SurfaceCapability::SemanticAction);
+        if actionability_requested && has_bridge_evidence {
+            let required: &[SurfaceCapability] =
+                if self.understanding == UnderstandingLevel::TaskCompilable {
+                    &[SurfaceCapability::SemanticAction, SurfaceCapability::Verification]
+                } else {
+                    &[SurfaceCapability::SemanticAction]
+                };
+            if !self.evidence.iter().any(|evidence| {
+                matches!(
+                    evidence.source,
+                    SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+                ) && evidence.provenance.bridge_trust == Some(BridgeTrustLevel::CapabilityGranted)
+                    && required
+                        .iter()
+                        .all(|capability| evidence.provenance.bridge_capabilities.contains(capability))
+            }) {
+                return Err(SurfaceContractError::new(
+                    "evidence",
+                    "bridge-derived semantic action requires a validated capability grant",
+                ));
+            }
         }
         Ok(())
     }
@@ -893,6 +965,10 @@ impl Display for SurfaceContractError {
 
 impl std::error::Error for SurfaceContractError {}
 
+fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
+    source_supports_semantics(kind, source)
+}
+
 fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     if matches!(
         source,
@@ -996,6 +1072,76 @@ fn validate_bounded_text(
     }
     Ok(())
 }
+fn validate_canonical_timestamp(
+    path: &str,
+    value: &str,
+) -> Result<(), SurfaceContractError> {
+    if value.len() != 20
+        || value.as_bytes()[4] != b'-'
+        || value.as_bytes()[7] != b'-'
+        || value.as_bytes()[10] != b'T'
+        || value.as_bytes()[13] != b':'
+        || value.as_bytes()[16] != b':'
+        || value.as_bytes()[19] != b'Z'
+        || value
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16 | 19) == false && !byte.is_ascii_digit())
+    {
+        return Err(SurfaceContractError::new(
+            path,
+            "timestamp must use canonical UTC RFC3339 form YYYY-MM-DDTHH:MM:SSZ",
+        ));
+    }
+    let number = |start: usize, end: usize| {
+        value.as_bytes()[start..end]
+            .iter()
+            .fold(0u32, |total, byte| total * 10 + u32::from(byte - b'0'))
+    };
+    let month = number(5, 7);
+    let day = number(8, 10);
+    let hour = number(11, 13);
+    let minute = number(14, 16);
+    let second = number(17, 19);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return Err(SurfaceContractError::new(
+            path,
+            "timestamp contains an invalid UTC date or time",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> {
+    validate_bounded_text(path, value, MAX_SURFACE_PROVENANCE_ID_BYTES)?;
+    let Some(authority) = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+    else {
+        return Err(SurfaceContractError::new(
+            path,
+            "bridge origin must use http or https",
+        ));
+    };
+    if authority.is_empty()
+        || authority.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '/' | '?' | '#')
+        })
+    {
+        return Err(SurfaceContractError::new(
+            path,
+            "bridge origin must contain only an origin authority",
+        ));
+    }
+    Ok(())
+}
+
 
 fn validate_nesting(has_parent: bool, depth: u16) -> Result<(), SurfaceContractError> {
     if depth > MAX_SURFACE_NESTING_DEPTH {
@@ -1036,6 +1182,9 @@ mod tests {
                     backend_version: None,
                     adapter_version: None,
                     bridge_version: Some("1".into()),
+                    bridge_origin: Some("https://example.test".into()),
+                    bridge_trust: Some(BridgeTrustLevel::CapabilityGranted),
+                    bridge_capabilities: vec![SurfaceCapability::ReadStructure],
                     source_revision: SurfaceRevision(1),
                     observed_at: "2026-08-06T00:00:00Z".into(),
                     validated_at: "2026-08-06T00:00:01Z".into(),
@@ -1046,12 +1195,15 @@ mod tests {
                 SurfaceEvidenceSource::Accessibility,
                 SurfaceProvenance {
                     schema_version: SURFACE_SCHEMA_VERSION,
-                    source_class: ProvenanceSourceClass::Live,
+                    source_class: ProvenanceSourceClass::LiveWebIr,
                     source_id: "browser.session".into(),
+                    bridge_version: None,
+                    bridge_origin: None,
+                    bridge_trust: None,
+                    bridge_capabilities: vec![],
                     backend: Some("cdp".into()),
                     backend_version: Some("1".into()),
                     adapter_version: None,
-                    bridge_version: None,
                     source_revision: SurfaceRevision(1),
                     observed_at: "2026-08-06T00:00:00Z".into(),
                     validated_at: "2026-08-06T00:00:01Z".into(),
@@ -1174,5 +1326,56 @@ mod tests {
         let extension = ExtensionIdentifier::new_versioned("vendor.example", "chart", "2.1").unwrap();
         assert_eq!(extension.qualified_name(), "vendor.example:chart@2.1");
         assert!(ExtensionIdentifier::new("vendor:example", "chart").is_err());
+    }
+    #[test]
+    fn structural_coverage_rejects_layout_only_evidence() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::Layout;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn memory_evidence_is_advisory_only() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::Memory;
+        value.evidence[0].provenance.source_class = ProvenanceSourceClass::Memory;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn bridge_action_requires_origin_and_capability_grant() {
+        let extension = ExtensionIdentifier::new("vendor.example", "chart").unwrap();
+        let mut value = surface(
+            SurfaceKind::ExtensionDefined { extension },
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::ReadStructure, SurfaceCapability::SemanticAction],
+        );
+        assert!(value.validate().is_err());
+        value.evidence[0]
+            .provenance
+            .bridge_capabilities
+            .push(SurfaceCapability::SemanticAction);
+        assert!(value.validate().is_ok());
+        value.evidence[0].provenance.bridge_origin = Some("not-an-origin".into());
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn timestamps_must_be_canonical_utc() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::Structural,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        value.evidence[0].provenance.observed_at = "yesterday".into();
+        assert!(value.validate().is_err());
     }
 }

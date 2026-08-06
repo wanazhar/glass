@@ -30,6 +30,12 @@ pub const MAX_SURFACE_DIAGNOSTIC_MESSAGE_BYTES: usize = 512;
 pub const MAX_SURFACE_EVIDENCE_DETAIL_BYTES: usize = 256;
 /// Maximum canonical serialized surface payload.
 pub const MAX_SURFACE_PAYLOAD_BYTES: usize = 64 * 1024;
+/// Maximum bytes in a provenance source identifier.
+pub const MAX_SURFACE_PROVENANCE_ID_BYTES: usize = 128;
+/// Maximum bytes in an adapter/backend/bridge version.
+pub const MAX_SURFACE_PROVENANCE_VERSION_BYTES: usize = 64;
+/// Maximum bytes in an observation timestamp.
+pub const MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES: usize = 64;
 
 /// A stable identity for one surface boundary.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,13 +61,16 @@ impl From<SurfaceId> for String {
     }
 }
 
-/// A namespaced extension identifier.  The namespace is part of identity, so
-/// an extension cannot collide with a core or another vendor's concept.
+/// A namespaced, versioned extension identifier.  The namespace is part of
+/// identity, so an extension cannot collide with a core or another vendor's
+/// concept.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExtensionIdentifier {
+    pub schema_version: u32,
     pub namespace: String,
     pub name: String,
+    pub version: String,
 }
 
 impl ExtensionIdentifier {
@@ -69,21 +78,42 @@ impl ExtensionIdentifier {
         namespace: impl Into<String>,
         name: impl Into<String>,
     ) -> Result<Self, SurfaceContractError> {
+        Self::new_versioned(namespace, name, "1")
+    }
+
+    pub fn new_versioned(
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Result<Self, SurfaceContractError> {
         let identifier = Self {
+            schema_version: SURFACE_SCHEMA_VERSION,
             namespace: namespace.into(),
             name: name.into(),
+            version: version.into(),
         };
         identifier.validate()?;
         Ok(identifier)
     }
 
     pub fn validate(&self) -> Result<(), SurfaceContractError> {
-        validate_namespaced_component("extension.namespace", &self.namespace)?;
-        validate_namespaced_component("extension.name", &self.name)
+        if self.schema_version != SURFACE_SCHEMA_VERSION {
+            return Err(SurfaceContractError::new(
+                "extension.schemaVersion",
+                "unsupported extension identifier schema version",
+            ));
+        }
+        validate_extension_component("extension.namespace", &self.namespace)?;
+        validate_extension_component("extension.name", &self.name)?;
+        validate_bounded_text(
+            "extension.version",
+            &self.version,
+            MAX_SURFACE_PROVENANCE_VERSION_BYTES,
+        )
     }
 
     pub fn qualified_name(&self) -> String {
-        format!("{}:{}", self.namespace, self.name)
+        format!("{}:{}@{}", self.namespace, self.name, self.version)
     }
 }
 
@@ -233,6 +263,146 @@ impl SurfaceCoverage {
     }
 }
 
+/// Class of the component that supplied one evidence record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProvenanceSourceClass {
+    Live,
+    Bridge,
+    Visual,
+    Backend,
+    Extension,
+}
+
+/// Revision-bound, machine-readable evidence provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SurfaceProvenance {
+    pub schema_version: u32,
+    pub source_class: ProvenanceSourceClass,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_version: Option<String>,
+    pub source_revision: SurfaceRevision,
+    pub observed_at: String,
+    pub validated_at: String,
+}
+
+impl SurfaceProvenance {
+    fn validate(
+        &self,
+        path: &str,
+        surface_revision: SurfaceRevision,
+        source: SurfaceEvidenceSource,
+    ) -> Result<(), SurfaceContractError> {
+        if self.schema_version != SURFACE_SCHEMA_VERSION {
+            return Err(SurfaceContractError::new(
+                format!("{path}.schemaVersion"),
+                "unsupported provenance schema version",
+            ));
+        }
+        validate_identifier_with_max(
+            &format!("{path}.sourceId"),
+            &self.source_id,
+            MAX_SURFACE_PROVENANCE_ID_BYTES,
+        )?;
+        if self.source_revision != surface_revision {
+            return Err(SurfaceContractError::new(
+                format!("{path}.sourceRevision"),
+                "evidence provenance revision must match the surface revision",
+            ));
+        }
+        validate_bounded_text(
+            &format!("{path}.observedAt"),
+            &self.observed_at,
+            MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES,
+        )?;
+        validate_bounded_text(
+            &format!("{path}.validatedAt"),
+            &self.validated_at,
+            MAX_SURFACE_PROVENANCE_TIMESTAMP_BYTES,
+        )?;
+        if self.validated_at < self.observed_at {
+            return Err(SurfaceContractError::new(
+                format!("{path}.validatedAt"),
+                "validatedAt must not precede observedAt",
+            ));
+        }
+        for (field, value) in [
+            ("backend", self.backend.as_deref()),
+            ("backendVersion", self.backend_version.as_deref()),
+            ("adapterVersion", self.adapter_version.as_deref()),
+            ("bridgeVersion", self.bridge_version.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_bounded_text(
+                    &format!("{path}.{field}"),
+                    value,
+                    MAX_SURFACE_PROVENANCE_VERSION_BYTES,
+                )?;
+            }
+        }
+        match source {
+            SurfaceEvidenceSource::Bridge => {
+                if self.source_class != ProvenanceSourceClass::Bridge
+                    || self.bridge_version.is_none()
+                {
+                    return Err(SurfaceContractError::new(
+                        path,
+                        "bridge evidence requires bridge provenance and bridgeVersion",
+                    ));
+                }
+            }
+            SurfaceEvidenceSource::Visual => {
+                if self.source_class != ProvenanceSourceClass::Visual {
+                    return Err(SurfaceContractError::new(
+                        path,
+                        "visual evidence requires visual provenance",
+                    ));
+                }
+            }
+            SurfaceEvidenceSource::Extension => {
+                if self.source_class != ProvenanceSourceClass::Extension
+                    || self.adapter_version.is_none()
+                {
+                    return Err(SurfaceContractError::new(
+                        path,
+                        "extension evidence requires extension provenance and adapterVersion",
+                    ));
+                }
+            }
+            _ => {
+                if matches!(
+                    self.source_class,
+                    ProvenanceSourceClass::Bridge
+                        | ProvenanceSourceClass::Visual
+                        | ProvenanceSourceClass::Extension
+                ) {
+                    return Err(SurfaceContractError::new(
+                        path,
+                        "provenance source class is incompatible with evidence source",
+                    ));
+                }
+            }
+        }
+        if self.source_class == ProvenanceSourceClass::Backend
+            && (self.backend.is_none() || self.backend_version.is_none())
+        {
+            return Err(SurfaceContractError::new(
+                path,
+                "backend provenance requires backend and backendVersion",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Source class for one bounded surface observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -262,12 +432,19 @@ pub enum SurfaceEvidenceSource {
 pub struct SurfaceEvidence {
     pub source: SurfaceEvidenceSource,
     pub quality: CoverageLevel,
+    pub provenance: SurfaceProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
 impl SurfaceEvidence {
-    fn validate(&self, path: &str) -> Result<(), SurfaceContractError> {
+    fn validate(
+        &self,
+        path: &str,
+        surface_revision: SurfaceRevision,
+    ) -> Result<(), SurfaceContractError> {
+        self.provenance
+            .validate(&format!("{path}.provenance"), surface_revision, self.source)?;
         if let Some(detail) = &self.detail {
             validate_bounded_text(
                 &format!("{path}.detail"),
@@ -369,6 +546,7 @@ impl Surface {
         self.validate_kind()?;
         self.validate_capabilities()?;
         self.coverage.validate(self.understanding)?;
+        let revision = SurfaceRevision::new(self.revision.0)?;
         if self.evidence.is_empty() {
             return Err(SurfaceContractError::new(
                 "evidence",
@@ -382,9 +560,9 @@ impl Surface {
             ));
         }
         for (index, evidence) in self.evidence.iter().enumerate() {
-            evidence.validate(&format!("evidence[{index}]"))?;
+            evidence.validate(&format!("evidence[{index}]"), revision)?;
         }
-        SurfaceRevision::new(self.revision.0)?;
+        self.validate_evidence_requirements()?;
         if self.diagnostics.len() > MAX_SURFACE_DIAGNOSTICS {
             return Err(SurfaceContractError::new(
                 "diagnostics",
@@ -393,6 +571,47 @@ impl Surface {
         }
         for (index, diagnostic) in self.diagnostics.iter().enumerate() {
             diagnostic.validate(&format!("diagnostics[{index}]"))?;
+        }
+        Ok(())
+    }
+
+    fn validate_evidence_requirements(&self) -> Result<(), SurfaceContractError> {
+        let mut semantic_evidence = self
+            .evidence
+            .iter()
+            .filter(|evidence| source_supports_semantics(&self.kind, evidence.source));
+        let has_strong_semantic_evidence = semantic_evidence
+            .clone()
+            .any(|evidence| evidence.quality >= CoverageLevel::Strong);
+        let has_any_semantic_evidence = semantic_evidence.next().is_some();
+        let needs_semantics = self.understanding >= UnderstandingLevel::Semantic
+            || self
+                .capabilities
+                .contains(&SurfaceCapability::SemanticAction);
+        if needs_semantics
+            && (self.coverage.semantic < CoverageLevel::Strong
+                || !has_strong_semantic_evidence)
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "semantic understanding and action require strong compatible evidence",
+            ));
+        }
+        if needs_semantics && !has_any_semantic_evidence {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "semantic understanding cannot be established from detection or geometry alone",
+            ));
+        }
+        if self.understanding == UnderstandingLevel::TaskCompilable
+            && (self.coverage.structural < CoverageLevel::Strong
+                || self.coverage.semantic < CoverageLevel::Strong
+                || !has_strong_semantic_evidence)
+        {
+            return Err(SurfaceContractError::new(
+                "evidence",
+                "task-compilable understanding requires strong structural and semantic evidence",
+            ));
         }
         Ok(())
     }
@@ -513,16 +732,16 @@ impl Surface {
 
     /// Parse and validate one surface from strict JSON.
     pub fn from_json(input: &str) -> Result<Self, SurfaceContractError> {
-        let surface: Self = serde_json::from_str(input).map_err(|error| {
-            SurfaceContractError::new("$", format!("invalid surface: {error}"))
-        })?;
-        surface.validate()?;
         if input.len() > MAX_SURFACE_PAYLOAD_BYTES {
             return Err(SurfaceContractError::new(
                 "$",
                 "surface payload exceeds the contract bound",
             ));
         }
+        let surface: Self = serde_json::from_str(input).map_err(|error| {
+            SurfaceContractError::new("$", format!("invalid surface: {error}"))
+        })?;
+        surface.validate()?;
         Ok(surface)
     }
 
@@ -614,16 +833,16 @@ impl SurfaceSet {
     }
 
     pub fn from_json(input: &str) -> Result<Self, SurfaceContractError> {
-        let set: Self = serde_json::from_str(input).map_err(|error| {
-            SurfaceContractError::new("$", format!("invalid surface set: {error}"))
-        })?;
-        set.validate()?;
         if input.len() > MAX_SURFACE_PAYLOAD_BYTES {
             return Err(SurfaceContractError::new(
                 "$",
                 "surface payload exceeds the contract bound",
             ));
         }
+        let set: Self = serde_json::from_str(input).map_err(|error| {
+            SurfaceContractError::new("$", format!("invalid surface set: {error}"))
+        })?;
+        set.validate()?;
         Ok(set)
     }
 
@@ -674,6 +893,45 @@ impl Display for SurfaceContractError {
 
 impl std::error::Error for SurfaceContractError {}
 
+fn source_supports_semantics(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
+    if matches!(
+        source,
+        SurfaceEvidenceSource::CanvasDetection
+            | SurfaceEvidenceSource::Layout
+            | SurfaceEvidenceSource::Frame
+            | SurfaceEvidenceSource::ShadowDom
+            | SurfaceEvidenceSource::RemoteStream
+            | SurfaceEvidenceSource::Visual
+    ) {
+        return false;
+    }
+    match kind {
+        SurfaceKind::Canvas2d
+        | SurfaceKind::Webgl
+        | SurfaceKind::Webgpu
+        | SurfaceKind::RemoteApplication => matches!(
+            source,
+            SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::ExtensionDefined { .. } => {
+            matches!(source, SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension)
+        }
+        _ => matches!(
+            source,
+            SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+                | SurfaceEvidenceSource::Svg
+                | SurfaceEvidenceSource::EmbeddedDocument
+                | SurfaceEvidenceSource::Pdf
+                | SurfaceEvidenceSource::MediaMetadata
+                | SurfaceEvidenceSource::TerminalProtocol
+                | SurfaceEvidenceSource::BrowserNative
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+    }
+}
+
 fn validate_surface_id(path: &str, value: &SurfaceId) -> Result<(), SurfaceContractError> {
     validate_identifier_with_max(path, value.as_str(), MAX_SURFACE_IDENTIFIER_BYTES)
 }
@@ -700,13 +958,29 @@ fn validate_identifier_with_max(
             || (*byte == b'-' && index > 0)
             || (*byte == b':' && index > 0 && index + 1 < value.len())
     });
-    if !valid || !value.as_bytes()[0].is_ascii_alphanumeric() || !value.as_bytes()[value.len() - 1].is_ascii_alphanumeric() {
+    if !valid
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value.as_bytes()[value.len() - 1].is_ascii_alphanumeric()
+    {
         return Err(SurfaceContractError::new(
             path,
             "identifier must use alphanumeric namespaced characters and cannot begin or end with punctuation",
         ));
     }
     Ok(())
+}
+
+fn validate_extension_component(
+    path: &str,
+    value: &str,
+) -> Result<(), SurfaceContractError> {
+    if value.contains(':') {
+        return Err(SurfaceContractError::new(
+            path,
+            "extension namespace and name must not contain ':'",
+        ));
+    }
+    validate_namespaced_component(path, value)
 }
 
 fn validate_bounded_text(
@@ -751,6 +1025,39 @@ mod tests {
     use serde_json::json;
 
     fn surface(kind: SurfaceKind, level: UnderstandingLevel, capabilities: Vec<SurfaceCapability>) -> Surface {
+        let (source, provenance) = if matches!(&kind, SurfaceKind::ExtensionDefined { .. }) {
+            (
+                SurfaceEvidenceSource::Bridge,
+                SurfaceProvenance {
+                    schema_version: SURFACE_SCHEMA_VERSION,
+                    source_class: ProvenanceSourceClass::Bridge,
+                    source_id: "bridge.chart".into(),
+                    backend: None,
+                    backend_version: None,
+                    adapter_version: None,
+                    bridge_version: Some("1".into()),
+                    source_revision: SurfaceRevision(1),
+                    observed_at: "2026-08-06T00:00:00Z".into(),
+                    validated_at: "2026-08-06T00:00:01Z".into(),
+                },
+            )
+        } else {
+            (
+                SurfaceEvidenceSource::Accessibility,
+                SurfaceProvenance {
+                    schema_version: SURFACE_SCHEMA_VERSION,
+                    source_class: ProvenanceSourceClass::Live,
+                    source_id: "browser.session".into(),
+                    backend: Some("cdp".into()),
+                    backend_version: Some("1".into()),
+                    adapter_version: None,
+                    bridge_version: None,
+                    source_revision: SurfaceRevision(1),
+                    observed_at: "2026-08-06T00:00:00Z".into(),
+                    validated_at: "2026-08-06T00:00:01Z".into(),
+                },
+            )
+        };
         Surface {
             schema_version: SURFACE_SCHEMA_VERSION,
             surface_id: SurfaceId::new("surface.document.main").unwrap(),
@@ -770,7 +1077,7 @@ mod tests {
                     UnderstandingLevel::TaskCompilable => InteractionCoverage::TaskCompilable,
                 },
             },
-            evidence: vec![SurfaceEvidence { source: SurfaceEvidenceSource::Accessibility, quality: CoverageLevel::Strong, detail: None }],
+            evidence: vec![SurfaceEvidence { source, quality: CoverageLevel::Strong, provenance, detail: None }],
             revision: SurfaceRevision(1),
             diagnostics: vec![],
         }
@@ -823,5 +1130,49 @@ mod tests {
     fn task_compilable_requires_guard_capabilities() {
         let value = surface(SurfaceKind::Document, UnderstandingLevel::TaskCompilable, vec![SurfaceCapability::ReadStructure]);
         assert!(value.validate().is_err());
+    }
+    #[test]
+    fn semantic_evidence_rejects_detection_only() {
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::Semantic,
+            vec![SurfaceCapability::ReadStructure],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn task_compilable_requires_strong_revision_bound_evidence() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::TaskCompilable,
+            vec![
+                SurfaceCapability::ReadStructure,
+                SurfaceCapability::ReadState,
+                SurfaceCapability::SemanticAction,
+                SurfaceCapability::RevisionObservation,
+                SurfaceCapability::Verification,
+            ],
+        );
+        value.evidence[0].quality = CoverageLevel::Partial;
+        assert!(value.validate().is_err());
+        value.evidence[0].quality = CoverageLevel::Strong;
+        value.evidence[0].provenance.source_revision = SurfaceRevision(2);
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn oversized_json_is_rejected_before_deserialization() {
+        let input = format!(r#"{{"padding":"{}"}}"#, "x".repeat(MAX_SURFACE_PAYLOAD_BYTES));
+        let error = Surface::from_json(&input).unwrap_err();
+        assert_eq!(error.path, "$");
+    }
+
+    #[test]
+    fn extension_identity_is_versioned_and_colon_free() {
+        let extension = ExtensionIdentifier::new_versioned("vendor.example", "chart", "2.1").unwrap();
+        assert_eq!(extension.qualified_name(), "vendor.example:chart@2.1");
+        assert!(ExtensionIdentifier::new("vendor:example", "chart").is_err());
     }
 }

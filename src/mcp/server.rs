@@ -2848,13 +2848,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "executeTask",
-            description: "Execute a confirmed, revision-guarded form Task Protocol task in the current browser session.",
+            description: "Execute a confirmed, revision-guarded Task Protocol v1 task from any validated browser-backed family in the current browser session.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "object",
-                        "description": "Strict form Task Protocol v1 authored task."
+                        "description": "Validated Task Protocol v1 authored task from a form, navigation, dialog, pagination, extraction, or field-read family."
                     },
                     "expectedRevision": {
                         "type": "integer",
@@ -4370,6 +4370,32 @@ mod tests {
             .expect("preflightNavigation must be advertised");
         assert_eq!(preflight["inputSchema"]["required"], json!(["url"]));
         assert_eq!(preflight["inputSchema"]["additionalProperties"], false);
+        let execute_task = tools
+            .iter()
+            .find(|tool| tool["name"] == "executeTask")
+            .expect("executeTask must be advertised");
+        assert_eq!(
+            execute_task["description"],
+            "Execute a confirmed, revision-guarded Task Protocol v1 task from any validated browser-backed family in the current browser session."
+        );
+        assert!(
+            !execute_task["description"]
+                .as_str()
+                .unwrap()
+                .contains("form Task Protocol")
+        );
+        assert_eq!(
+            execute_task["inputSchema"]["properties"]["task"]["description"],
+            "Validated Task Protocol v1 authored task from a form, navigation, dialog, pagination, extraction, or field-read family."
+        );
+        assert_eq!(
+            execute_task["inputSchema"]["properties"]["expectedRevision"]["type"],
+            "integer"
+        );
+        assert_eq!(
+            execute_task["inputSchema"]["properties"]["confirmed"]["description"],
+            "Explicit confirmation for risky or ambiguity-gated tasks."
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "executeTask"));

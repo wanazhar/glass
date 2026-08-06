@@ -151,6 +151,7 @@ A tool may request one bounded failure-trace content item with
 | `batch` | Run a bounded fixed, chain, or unguarded batch. |
 | `compileTask` | Validate a semantic Task Protocol v1 task and return a browser-free execution plan. |
 | `validateTask` | Validate a semantic Task Protocol v1 task without compiling or starting Chrome. |
+| `executeTask` | Execute any validated, revision-guarded Task Protocol v1 task in the current browser session. |
 | `inspectWebIr` | Return bounded summary metadata for a validated browser-free Web IR draft. |
 | `validateWebIr` | Validate a browser-free Web IR draft without starting Chrome. |
 | `diffWebIr` | Return bounded revision-change counts for two validated Web IR drafts. |
@@ -287,6 +288,24 @@ For example, an invalid `form.fill` with no bounded inputs returns:
   "reason": "form.fill requires at least one bounded input"
 }
 ```
+
+### Execute a validated task in the browser
+
+`executeTask` runs any validated browser-backed Task Protocol v1 family,
+including form, navigation, dialog, pagination, extraction, and field-read
+tasks. The task payload is authored once and dispatched through the same
+typed protocol validation used by `validateTask` and `compileTask`.
+
+`expectedRevision` is required and must come from the caller's preceding
+semantic observation. Glass re-observes before execution and returns a guarded
+preflight result without dispatching browser actions when the revision is
+stale or changes during preflight.
+
+`confirmed` defaults to `false`. If the compiled task is
+confirmation-gated by its risk or ambiguity policy, execution returns a
+confirmation-required preflight result until the caller explicitly retries
+with `confirmed: true`. These revision and confirmation guards apply to every
+supported Task Protocol family, not only form tasks.
 
 ### Inspect and validate a Web IR draft without starting Chrome
 

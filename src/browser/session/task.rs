@@ -282,6 +282,13 @@ impl BrowserSession {
                     )
                     .await;
                     let after = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
+                    let after = wait_for_semantic_page_change(
+                        self,
+                        &current,
+                        after,
+                        task.limits.timeout_ms,
+                    )
+                    .await?;
                     let succeeded = outcome.is_ok();
                     steps.push(step(
                         &plan,

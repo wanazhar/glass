@@ -517,7 +517,6 @@ fn validate_input_contract(
     Ok(())
 }
 
-
 fn validate_text(path: &str, value: &str, max_bytes: usize) -> Result<(), TaskProtocolError> {
     if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
         return Err(TaskProtocolError::new(
@@ -720,7 +719,10 @@ mod tests {
             kind: TaskPostconditionKind::RegionPresent,
             expected: None,
         }];
-        assert_eq!(invalid.validate().unwrap_err().path, "postconditions[0].expected");
+        assert_eq!(
+            invalid.validate().unwrap_err().path,
+            "postconditions[0].expected"
+        );
     }
 
     #[test]

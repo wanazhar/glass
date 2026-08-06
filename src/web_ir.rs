@@ -310,8 +310,7 @@ impl GlassWebIrDraft {
             }
             if entity.kind == DraftEntityKind::OpaqueRegion {
                 opaque_regions = opaque_regions.saturating_add(1);
-                if entity.quality != EvidenceQuality::Opaque
-                    || !entity.evidence_sources.is_empty()
+                if entity.quality != EvidenceQuality::Opaque || !entity.evidence_sources.is_empty()
                 {
                     return Err(WebIrValidationError::new(
                         "entities.opaqueRegion",
@@ -664,15 +663,17 @@ impl GlassWebIrDraft {
         canonical.relationships.dedup();
         canonical.diagnostics.sort();
         canonical.coverage.reasons.sort();
-        canonical.relationship_hint_diagnostics.sort_by_key(|diagnostic| {
-            (
-                diagnostic.fact_index,
-                diagnostic.source,
-                diagnostic.parent_role.to_ascii_lowercase(),
-                diagnostic.hint,
-                diagnostic.status,
-            )
-        });
+        canonical
+            .relationship_hint_diagnostics
+            .sort_by_key(|diagnostic| {
+                (
+                    diagnostic.fact_index,
+                    diagnostic.source,
+                    diagnostic.parent_role.to_ascii_lowercase(),
+                    diagnostic.hint,
+                    diagnostic.status,
+                )
+            });
         serde_json::to_string(&canonical)
             .map_err(|error| WebIrValidationError::new("$", error.to_string()))
     }
@@ -1631,16 +1632,20 @@ mod tests {
         let mut opaque = evidence();
         opaque.coverage.opaque_regions = 1;
         let mut draft = reconcile_evidence(&opaque).unwrap();
-        draft.entities.iter_mut().find(|entity| {
-            entity.kind == DraftEntityKind::OpaqueRegion
-        }).unwrap().quality = EvidenceQuality::Strong;
+        draft
+            .entities
+            .iter_mut()
+            .find(|entity| entity.kind == DraftEntityKind::OpaqueRegion)
+            .unwrap()
+            .quality = EvidenceQuality::Strong;
         let error = draft.validate().unwrap_err();
         assert_eq!(error.path, "entities.opaqueRegion");
 
         let mut duplicate = reconcile_evidence(&evidence()).unwrap();
-        duplicate.relationships.push(duplicate.relationships[0].clone());
+        duplicate
+            .relationships
+            .push(duplicate.relationships[0].clone());
         let error = duplicate.validate().unwrap_err();
         assert_eq!(error.path, "relationships");
     }
-
 }

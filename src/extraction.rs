@@ -8,6 +8,7 @@ use crate::browser::session::PageContext;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
+use std::time::{Duration, Instant};
 
 /// Version of the extraction request contract.
 pub const EXTRACTION_CONTRACT_SCHEMA_VERSION: u32 = 1;
@@ -381,6 +382,7 @@ pub fn extract_page_context(
             reason,
             crate::browser::session::ObservationIncompleteReason::AccessibilityNode
                 | crate::browser::session::ObservationIncompleteReason::AccessibilityLabel
+                | crate::browser::session::ObservationIncompleteReason::Control
         )
     });
 
@@ -461,6 +463,7 @@ pub fn extract_page_context(
         &request.sources,
         &missing_sources,
         collector.truncated,
+        collector.timed_out,
         inconsistent_observation,
     );
     let mut evidence = ExtractionEvidence {
@@ -483,24 +486,41 @@ pub fn extract_page_context(
 
 struct EvidenceCollector {
     budgets: ExtractionBudgets,
+    deadline: Instant,
     facts: Vec<EvidenceFact>,
     omitted_facts: u32,
     text_bytes: u32,
     truncated: bool,
+    timed_out: bool,
 }
 
 impl EvidenceCollector {
     fn new(budgets: ExtractionBudgets) -> Self {
         Self {
+            deadline: Instant::now() + Duration::from_millis(budgets.max_duration_ms),
             budgets,
             facts: Vec::new(),
             omitted_facts: 0,
             text_bytes: 0,
             truncated: false,
+            timed_out: false,
         }
     }
 
+    fn deadline_reached(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    fn mark_timeout(&mut self) {
+        self.timed_out = true;
+        self.mark_omitted();
+    }
+
     fn allow_depth(&mut self, depth: u16) -> bool {
+        if self.deadline_reached() {
+            self.mark_timeout();
+            return false;
+        }
         if depth >= self.budgets.max_depth {
             self.mark_omitted();
             false
@@ -519,6 +539,10 @@ impl EvidenceCollector {
     }
 
     fn push(&mut self, mut fact: EvidenceFact) {
+        if self.deadline_reached() {
+            self.mark_timeout();
+            return;
+        }
         if self.is_full() {
             self.mark_omitted();
             return;
@@ -549,8 +573,7 @@ impl EvidenceCollector {
 fn observation_has_mutation_race(context: &PageContext) -> bool {
     !context.consistency.consistent
         || context.consistency.start_revision != context.consistency.end_revision
-        || context.consistency.start_mutation_revision
-            != context.consistency.end_mutation_revision
+        || context.consistency.start_mutation_revision != context.consistency.end_mutation_revision
 }
 
 fn evidence_coverage(
@@ -558,6 +581,7 @@ fn evidence_coverage(
     sources: &[EvidenceSource],
     missing_sources: &BTreeSet<EvidenceSource>,
     truncated: bool,
+    timed_out: bool,
     inconsistent_observation: bool,
 ) -> EvidenceCoverage {
     let requested = |source| sources.contains(&source);
@@ -593,6 +617,9 @@ fn evidence_coverage(
         .collect::<Vec<_>>();
     if truncated {
         reasons.push("budgetTruncated".into());
+    }
+    if timed_out {
+        reasons.push("timeBudgetExceeded".into());
     }
     if inconsistent_observation {
         reasons.push("mutationRace".into());
@@ -828,17 +855,9 @@ fn trim_to_output_budget(
         removed_fact = true;
         evidence.limits.omitted_facts = evidence.limits.omitted_facts.saturating_add(1);
         evidence.limits.truncated = true;
-        evidence.limits.text_bytes = evidence
-            .facts
-            .iter()
-            .map(fact_text_bytes)
-            .sum::<u32>();
+        evidence.limits.text_bytes = evidence.facts.iter().map(fact_text_bytes).sum::<u32>();
     }
-    evidence.limits.text_bytes = evidence
-        .facts
-        .iter()
-        .map(fact_text_bytes)
-        .sum::<u32>();
+    evidence.limits.text_bytes = evidence.facts.iter().map(fact_text_bytes).sum::<u32>();
     if removed_fact {
         evidence.coverage.structural = downgrade_coverage(evidence.coverage.structural);
         evidence.coverage.semantic = downgrade_coverage(evidence.coverage.semantic);
@@ -1226,18 +1245,16 @@ mod tests {
         assert!(bounded.limits.omitted_facts > 0);
         assert_eq!(
             bounded.limits.text_bytes,
-            bounded
-                .facts
-                .iter()
-                .map(fact_text_bytes)
-                .sum::<u32>()
+            bounded.facts.iter().map(fact_text_bytes).sum::<u32>()
         );
         assert_eq!(bounded.coverage.structural, EvidenceQuality::Partial);
-        assert!(bounded
-            .coverage
-            .reasons
-            .iter()
-            .any(|reason| reason == "budgetTruncated"));
+        assert!(
+            bounded
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "budgetTruncated")
+        );
     }
 
     #[test]
@@ -1252,17 +1269,44 @@ mod tests {
         assert!(absent.limits.missing_sources.is_empty());
 
         let mut missing_context = absent_context;
-        missing_context.incomplete.push(
-            crate::browser::session::ObservationIncompleteReason::AccessibilityNode,
-        );
+        missing_context
+            .incomplete
+            .push(crate::browser::session::ObservationIncompleteReason::AccessibilityNode);
         let missing = extract_page_context(&missing_context, &request).unwrap();
         assert!(missing.facts.is_empty());
         assert_eq!(missing.limits.missing_sources, vec![EvidenceSource::Forms]);
-        assert!(missing
-            .coverage
-            .reasons
-            .iter()
-            .any(|reason| reason == "missingSource:Forms"));
+        assert!(
+            missing
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "missingSource:Forms")
+        );
+    }
+
+    #[test]
+    fn extraction_treats_truncated_controls_as_missing_forms() {
+        let mut context = page_context();
+        context
+            .incomplete
+            .push(crate::browser::session::ObservationIncompleteReason::Control);
+        let mut request = request();
+        request.sources = vec![EvidenceSource::Forms];
+
+        let evidence = extract_page_context(&context, &request).unwrap();
+        assert!(evidence.facts.is_empty());
+        assert_eq!(evidence.limits.missing_sources, vec![EvidenceSource::Forms]);
+    }
+
+    #[test]
+    fn extraction_enforces_duration_budget_at_collection_checkpoint() {
+        let mut collector = EvidenceCollector::new(ExtractionBudgets::default());
+        collector.deadline = Instant::now() - Duration::from_millis(1);
+
+        assert!(!collector.allow_depth(0));
+        assert!(collector.timed_out);
+        assert!(collector.truncated);
+        assert_eq!(collector.omitted_facts, 1);
     }
 
     #[test]
@@ -1272,11 +1316,13 @@ mod tests {
         let evidence = extract_page_context(&context, &request()).unwrap();
         assert_eq!(evidence.coverage.structural, EvidenceQuality::Partial);
         assert_eq!(evidence.coverage.semantic, EvidenceQuality::Partial);
-        assert!(evidence
-            .coverage
-            .reasons
-            .iter()
-            .any(|reason| reason == "mutationRace"));
+        assert!(
+            evidence
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "mutationRace")
+        );
     }
 
     #[test]
@@ -1292,21 +1338,29 @@ mod tests {
         ];
         let evidence = extract_page_context(&context, &request).unwrap();
         assert_eq!(serde_json::to_vec(&context).unwrap(), before);
-        assert!(evidence
-            .facts
-            .iter()
-            .all(|fact| request.sources.contains(&fact.source)));
-        assert!(evidence
-            .facts
-            .iter()
-            .any(|fact| fact.source == EvidenceSource::Dom));
-        assert!(evidence
-            .facts
-            .iter()
-            .any(|fact| fact.source == EvidenceSource::Forms));
-        assert!(evidence
-            .facts
-            .iter()
-            .any(|fact| fact.source == EvidenceSource::Layout));
+        assert!(
+            evidence
+                .facts
+                .iter()
+                .all(|fact| request.sources.contains(&fact.source))
+        );
+        assert!(
+            evidence
+                .facts
+                .iter()
+                .any(|fact| fact.source == EvidenceSource::Dom)
+        );
+        assert!(
+            evidence
+                .facts
+                .iter()
+                .any(|fact| fact.source == EvidenceSource::Forms)
+        );
+        assert!(
+            evidence
+                .facts
+                .iter()
+                .any(|fact| fact.source == EvidenceSource::Layout)
+        );
     }
 }

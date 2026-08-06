@@ -128,7 +128,6 @@ impl TaskExecutionPlan {
                     ));
                 }
             }
-
         }
         if self.task == TaskKind::FormSubmit && self.postconditions.is_empty() {
             return Err(TaskCompilationError::new(
@@ -563,11 +562,10 @@ mod tests {
         assert_eq!(error.path, "postconditions[0].kind");
     }
 
-
     #[test]
     fn compiler_rejects_unknown_risk_before_plan_emission() {
-        let error = compile_task(&task(TaskKind::FormFill, TaskRiskClass::UnknownRisk))
-            .unwrap_err();
+        let error =
+            compile_task(&task(TaskKind::FormFill, TaskRiskClass::UnknownRisk)).unwrap_err();
         assert_eq!(error.path, "risk");
     }
 

@@ -432,9 +432,8 @@ fn write_recovery_report(
         recovered_at: chrono::Utc::now().to_rfc3339(),
         runs: runs.to_vec(),
     };
-    validate_recovery_report(&report).map_err(|error| -> Box<dyn std::error::Error> {
-        error.into()
-    })?;
+    validate_recovery_report(&report)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let bytes = serde_json::to_vec_pretty(&report)?;
     if bytes.len() > MAX_DAEMON_RECOVERY_BYTES {
         return Err("daemon recovery report exceeds its serialized size bound".into());
@@ -1090,7 +1089,12 @@ mod tests {
         let active: DaemonStatus =
             serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
         assert_eq!(active.active_runs[0].request_id, "workflow 1");
-        assert!(state.begin_workflow("workflow\n2", "daemon-client-1").await.is_err());
+        assert!(
+            state
+                .begin_workflow("workflow\n2", "daemon-client-1")
+                .await
+                .is_err()
+        );
         assert_eq!(state.record_interrupted_workflows().await.unwrap(), 1);
         let recovery_log = std::fs::read_to_string(log_path_for(&status_path)).unwrap();
         assert!(recovery_log.contains("workflow 1"));
@@ -1187,8 +1191,10 @@ mod tests {
 
     #[test]
     fn daemon_recovery_reader_rejects_oversized_and_unknown_state() {
-        let root =
-            std::env::temp_dir().join(format!("glass-daemon-recovery-bound-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "glass-daemon-recovery-bound-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let status_path = root.join("daemon.json");
         let recovery_path = recovery_path_for(&status_path);

@@ -208,6 +208,9 @@ and never serializes authored input values.
 bounded execution ID and return conservative reconciliation guidance without
 starting Chrome.
 
+Snapshot listing, inspection, diff, and purge operations are also browser-free;
+only snapshot creation observes the current browser session.
+
 Tools that return this contract accept `responseMode` values `minimal`,
 `normal`, and `diagnostic`; MCP defaults to `minimal`. The CLI exposes the same
 projection through the global `--response-mode` option. The extraction payload

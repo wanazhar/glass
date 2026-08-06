@@ -1510,6 +1510,28 @@ fn canonical_payload_request(
     canonical.payload = payload;
     Ok(canonical)
 }
+fn browser_free_session_snapshot(
+    operation: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    profile: &str,
+) -> BrowserResult<Value> {
+    let store = SessionSnapshotStore::new(default_session_snapshot_path(profile));
+    match operation {
+        "list" => serialized_result(&store.list()?),
+        "inspect" => {
+            let id = from.ok_or("sessionSnapshot inspect requires from")?;
+            serialized_result(&store.load(id)?)
+        }
+        "diff" => {
+            let left = from.ok_or("sessionSnapshot diff requires from")?;
+            let right = to.ok_or("sessionSnapshot diff requires to")?;
+            serialized_result(&store.diff(left, right)?)
+        }
+        "purge" => serialized_result(&json!({"removed": store.purge()?})),
+        _ => Err("sessionSnapshot operation must be list, inspect, diff, or purge".into()),
+    }
+}
 
 async fn call_tool(
     request: &JsonRpcRequest,
@@ -1604,6 +1626,20 @@ async fn call_tool(
         ToolInvocation::ResolveIntentWithKnowledge { .. }
     ) {
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
+    }
+    if let ToolInvocation::SessionSnapshot {
+        operation,
+        from,
+        to,
+    } = &invocation
+        && operation != "create"
+    {
+        return browser_free_session_snapshot(
+            operation,
+            from.as_deref(),
+            to.as_deref(),
+            &options.profile,
+        );
     }
     if let ToolInvocation::RecoverRun { execution_id } = &invocation {
         return serialized_result(&recover_run(execution_id)?);
@@ -4643,6 +4679,33 @@ mod tests {
         assert_eq!(result["known"], false);
         assert_eq!(result["mutationPossible"], true);
         assert_eq!(result["retry"]["classification"], "unsafeUntilReconciled");
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_snapshot_read_is_browser_free() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "snapshot",
+            "method": "tools/call",
+            "params": {
+                "name": "sessionSnapshot",
+                "arguments": {"operation": "inspect"}
+            }
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.result.unwrap()["isError"], true);
         assert!(session.is_none());
     }
 

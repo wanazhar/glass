@@ -2079,8 +2079,10 @@ pub struct DownloadResult {
     #[serde(deserialize_with = "deserialize_bounded_download_ids")]
     pub download_ids: Vec<String>,
 }
-
-pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BrowserBackendError>> + Send + 'a>>;
+/// Futures are transport-neutral but need not be `Send`: the current CDP
+/// session boundary exposes legacy `Box<dyn Error>` browser results. Adapters
+/// translate those errors before returning this stable backend error type.
+pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BrowserBackendError>> + 'a>>;
 
 /// Requests and responses used by the public backend extension point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

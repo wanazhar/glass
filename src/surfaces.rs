@@ -768,7 +768,9 @@ impl Surface {
         let has_explicit_action_evidence = self.evidence.iter().any(|evidence| {
             matches!(
                 evidence.provenance.source_class,
-                ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Bridge
+                ProvenanceSourceClass::LiveWebIr
+                    | ProvenanceSourceClass::Backend
+                    | ProvenanceSourceClass::Bridge
             ) && !matches!(
                 evidence.source,
                 SurfaceEvidenceSource::Visual | SurfaceEvidenceSource::Memory
@@ -780,30 +782,27 @@ impl Surface {
                 "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
-        if self
-            .capabilities
-            .iter()
-            .any(|capability| matches!(capability, SurfaceCapability::CoordinateAction | SurfaceCapability::Input))
-        {
-            let has_strong_geometry = self.evidence.iter().any(|evidence| {
+        let coordinate_action_requested = self.capabilities.contains(&SurfaceCapability::CoordinateAction);
+        let input_requested = self.capabilities.contains(&SurfaceCapability::Input);
+        if coordinate_action_requested || input_requested {
+            let has_strong_action_evidence = self.evidence.iter().any(|evidence| {
                 evidence.quality >= CoverageLevel::Strong
-                    && (matches!(
+                    && action_evidence_source(
+                        &self.kind,
                         evidence.source,
-                        SurfaceEvidenceSource::Layout
-                            | SurfaceEvidenceSource::CanvasDetection
-                            | SurfaceEvidenceSource::Bridge
-                            | SurfaceEvidenceSource::Extension
-                    ) || (matches!(&self.kind, SurfaceKind::RemoteApplication)
-                        && evidence.source == SurfaceEvidenceSource::RemoteStream))
+                        coordinate_action_requested,
+                    )
                     && matches!(
                         evidence.provenance.source_class,
-                        ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Bridge
+                        ProvenanceSourceClass::LiveWebIr
+                            | ProvenanceSourceClass::Backend
+                            | ProvenanceSourceClass::Bridge
                     )
             });
-            if !has_strong_geometry {
+            if !has_strong_action_evidence {
                 return Err(SurfaceContractError::new(
                     "evidence",
-                    "coordinate actions require strong bounded live geometry or a trusted bridge grant",
+                    "coordinate or input actions require strong compatible live evidence or a trusted bridge grant",
                 ));
             }
         }
@@ -1238,6 +1237,61 @@ impl Display for SurfaceContractError {
 }
 
 impl std::error::Error for SurfaceContractError {}
+
+fn action_evidence_source(
+    kind: &SurfaceKind,
+    source: SurfaceEvidenceSource,
+    coordinate_action: bool,
+) -> bool {
+    if coordinate_action {
+        return matches!(
+            source,
+            SurfaceEvidenceSource::Layout
+                | SurfaceEvidenceSource::CanvasDetection
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ) || (matches!(kind, SurfaceKind::RemoteApplication)
+            && source == SurfaceEvidenceSource::RemoteStream)
+            || (matches!(kind, SurfaceKind::Terminal)
+                && source == SurfaceEvidenceSource::TerminalProtocol)
+            || (matches!(kind, SurfaceKind::BrowserNative)
+                && source == SurfaceEvidenceSource::BrowserNative);
+    }
+    match kind {
+        SurfaceKind::Canvas2d | SurfaceKind::Webgl | SurfaceKind::Webgpu => matches!(
+            source,
+            SurfaceEvidenceSource::Layout
+                | SurfaceEvidenceSource::CanvasDetection
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::RemoteApplication => matches!(
+            source,
+            SurfaceEvidenceSource::RemoteStream
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::Terminal => matches!(
+            source,
+            SurfaceEvidenceSource::TerminalProtocol
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        SurfaceKind::BrowserNative => matches!(
+            source,
+            SurfaceEvidenceSource::BrowserNative
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+        _ => matches!(
+            source,
+            SurfaceEvidenceSource::Dom
+                | SurfaceEvidenceSource::Accessibility
+                | SurfaceEvidenceSource::Bridge
+                | SurfaceEvidenceSource::Extension
+        ),
+    }
+}
 
 fn source_supports_structure(kind: &SurfaceKind, source: SurfaceEvidenceSource) -> bool {
     source_supports_semantics(kind, source)
@@ -1816,6 +1870,36 @@ mod tests {
         );
         value.evidence[0].source = SurfaceEvidenceSource::RemoteStream;
         value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_ok());
+    }
+    #[test]
+    fn terminal_and_native_input_use_strong_protocol_evidence() {
+        let mut terminal = surface(
+            SurfaceKind::Terminal,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        terminal.evidence[0].source = SurfaceEvidenceSource::TerminalProtocol;
+        terminal.evidence[0].quality = CoverageLevel::Strong;
+        assert!(terminal.validate().is_ok());
+        let mut native = surface(
+            SurfaceKind::BrowserNative,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        native.evidence[0].source = SurfaceEvidenceSource::BrowserNative;
+        native.evidence[0].quality = CoverageLevel::Strong;
+        assert!(native.validate().is_ok());
+    }
+
+    #[test]
+    fn backend_provenance_can_support_strong_document_input() {
+        let mut value = surface(
+            SurfaceKind::Document,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        value.evidence[0].provenance.source_class = ProvenanceSourceClass::Backend;
         assert!(value.validate().is_ok());
     }
     #[test]

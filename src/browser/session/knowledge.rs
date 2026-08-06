@@ -940,6 +940,28 @@ impl KnowledgeRecord {
             conflicts.push("lastVerifiedAt is not a valid RFC3339 timestamp".into());
         }
 
+        let current_validation_conflict = self.retrieval.current_validation.status
+            != KnowledgeCurrentValidationStatus::Validated;
+        if current_validation_conflict {
+            conflicts.push("record lacks current Web IR validation".into());
+        }
+        let provenance_conflict = matches!(
+            self.source.surface.kind,
+            KnowledgeSurfaceKind::Opaque | KnowledgeSurfaceKind::Unknown
+        ) || self.source.backend.backend == KnowledgeBackendKind::Unknown;
+        if provenance_conflict {
+            conflicts.push("surface or backend provenance is unknown".into());
+        }
+        let portability_conflict = matches!(
+            self.portability,
+            KnowledgePortability::BackendCapabilityDependent
+                | KnowledgePortability::BackendSpecific
+                | KnowledgePortability::BrowserSpecific
+                | KnowledgePortability::NonPortable
+        );
+        if portability_conflict {
+            conflicts.push("record portability is incompatible with this context".into());
+        }
         let scope_conflict = conflicts.iter().any(|conflict| {
             matches!(
                 conflict.as_str(),
@@ -959,7 +981,10 @@ impl KnowledgeRecord {
             KnowledgeAssessmentStatus::Quarantined
         } else if scope_conflict {
             KnowledgeAssessmentStatus::OutOfScope
-        } else if !missing_landmarks.is_empty()
+        } else if current_validation_conflict
+            || provenance_conflict
+            || portability_conflict
+            || !missing_landmarks.is_empty()
             || age_seconds.is_none()
             || self
                 .invalidation
@@ -1566,8 +1591,19 @@ mod tests {
                 last_verified_at: "2026-07-27T00:00:00Z".into(),
                 glass_version: "0.2.0".into(),
                 verification_count: 1,
-                surface: KnowledgeSurfaceProvenance::default(),
-                backend: KnowledgeBackendProvenance::default(),
+                surface: KnowledgeSurfaceProvenance {
+                    kind: KnowledgeSurfaceKind::Document,
+                    understanding: KnowledgeUnderstandingLevel::Strong,
+                    coverage: KnowledgeSurfaceCoverage::Semantic,
+                },
+                backend: KnowledgeBackendProvenance {
+                    backend: KnowledgeBackendKind::Cdp,
+                    profile: "production".into(),
+                    capabilities: vec![
+                        KnowledgeBackendCapability::SemanticExtraction,
+                        KnowledgeBackendCapability::Verification,
+                    ],
+                },
             },
             confidence: KnowledgeConfidence::Observed,
             invalidation: KnowledgeInvalidation {
@@ -1575,9 +1611,17 @@ mod tests {
                 required_landmarks: vec!["main".into(), "search".into()],
             },
             data: json!({"pageKind": "documentation", "regions": ["main", "search"]}),
-            portability: KnowledgePortability::default(),
-            memory_influence: KnowledgeMemoryInfluence::default(),
-            retrieval: KnowledgeRetrievalExplanation::default(),
+            portability: KnowledgePortability::SurfacePortable,
+            memory_influence: KnowledgeMemoryInfluence::None,
+            retrieval: KnowledgeRetrievalExplanation {
+                signals: Vec::new(),
+                current_validation: KnowledgeCurrentValidation {
+                    status: KnowledgeCurrentValidationStatus::Validated,
+                    evidence_quality: KnowledgeEvidenceQuality::Strong,
+                    current_revision: Some(42),
+                    validated_at: Some("2026-07-27T00:00:00Z".into()),
+                },
+            },
             history: Vec::new(),
         }
     }
@@ -1696,6 +1740,33 @@ mod tests {
         assert_eq!(assessment.status, KnowledgeAssessmentStatus::Eligible);
         assert_eq!(assessment.missing_landmarks, Vec::<String>::new());
         assert!(assessment.conflicts.is_empty());
+    }
+    #[test]
+    fn assessment_fails_closed_without_current_validation() {
+        let mut legacy = record();
+        legacy.retrieval.current_validation = KnowledgeCurrentValidation::default();
+        let assessment = legacy.assess(&lookup_context());
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Stale);
+        assert!(
+            assessment
+                .conflicts
+                .contains(&"record lacks current Web IR validation".to_string())
+        );
+    }
+
+    #[test]
+    fn assessment_fails_closed_for_opaque_backend_and_nonportable_memory() {
+        let mut legacy = record();
+        legacy.source.surface = KnowledgeSurfaceProvenance::default();
+        legacy.source.backend = KnowledgeBackendProvenance::default();
+        legacy.portability = KnowledgePortability::NonPortable;
+        let assessment = legacy.assess(&lookup_context());
+        assert_eq!(assessment.status, KnowledgeAssessmentStatus::Stale);
+        assert!(
+            assessment
+                .conflicts
+                .contains(&"surface or backend provenance is unknown".to_string())
+        );
     }
 
     #[test]
@@ -1909,6 +1980,7 @@ mod tests {
         let mut influenced = record();
         influenced.source.backend.profile = "production".into();
         influenced.memory_influence = KnowledgeMemoryInfluence::RankingOnly;
+        influenced.retrieval.current_validation = KnowledgeCurrentValidation::default();
         let error = influenced.validate().unwrap_err();
         assert_eq!(error.path, "memoryInfluence");
     }
@@ -1918,7 +1990,7 @@ mod tests {
         let mut record = record();
         assert_eq!(
             record.retrieval.current_validation.status,
-            KnowledgeCurrentValidationStatus::NotValidated
+            KnowledgeCurrentValidationStatus::Validated
         );
         record
             .transition(

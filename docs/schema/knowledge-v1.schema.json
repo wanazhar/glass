@@ -26,6 +26,9 @@
         "confidence": {"enum": ["candidate", "observed", "verified", "stale", "contradicted", "quarantined"]},
         "invalidation": {"$ref": "#/$defs/invalidation"},
         "data": {"$ref": "#/$defs/data"},
+        "portability": {"enum": ["semanticPortable", "surfacePortable", "backendCapabilityDependent", "backendSpecific", "browserSpecific", "nonPortable"]},
+        "memoryInfluence": {"enum": ["none", "rankingOnly", "templateSuggested", "verificationSuggested", "recoverySuggested", "identityContinuitySuggested"]},
+        "retrieval": {"$ref": "#/$defs/retrieval"},
         "history": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/history"}}
       }
     },
@@ -54,7 +57,9 @@
         "firstSeenAt": {"type": "string", "minLength": 1, "maxLength": 64},
         "lastVerifiedAt": {"type": "string", "minLength": 1, "maxLength": 64},
         "glassVersion": {"type": "string", "minLength": 1, "maxLength": 256},
-        "verificationCount": {"type": "integer", "minimum": 0}
+        "verificationCount": {"type": "integer", "minimum": 0},
+        "surface": {"$ref": "#/$defs/surfaceProvenance"},
+        "backend": {"$ref": "#/$defs/backendProvenance"}
       }
     },
     "invalidation": {
@@ -81,6 +86,55 @@
       "maxProperties": 64,
       "maxItems": 64,
       "description": "Bounded model data. The runtime rejects sensitive field names and limits the canonical payload to 16 KiB."
+    },
+    "surfaceProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "understanding", "coverage"],
+      "properties": {
+        "kind": {"enum": ["document", "accessibility", "shadowDocument", "svg", "canvas2d", "webgl", "webgpu", "embeddedPdf", "media", "terminal", "remoteApplication", "browserNative", "extensionDefined", "unknown", "opaque"]},
+        "understanding": {"enum": ["opaque", "inferred", "partial", "strong", "taskCompilable"]},
+        "coverage": {"enum": ["none", "structural", "semantic", "interaction", "complete"]}
+      }
+    },
+    "backendProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "profile"],
+      "properties": {
+        "backend": {"enum": ["cdp", "webdriverBidi", "browserExtension", "visual", "terminal", "unknown"]},
+        "profile": {"type": "string", "minLength": 1, "maxLength": 256},
+        "capabilities": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"enum": ["navigation", "semanticExtraction", "coordinateInput", "script", "capture", "verification", "storage", "prompt"]}}
+      }
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "signals": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/retrievalSignal"}},
+        "currentValidation": {"$ref": "#/$defs/currentValidation"}
+      }
+    },
+    "retrievalSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "detail"],
+      "properties": {
+        "kind": {"enum": ["exactPageFamilyMatch", "exactFingerprintMatch", "originMatch", "surfaceMatch", "backendMatch", "graphDistance", "semanticSimilarity", "freshness"]},
+        "detail": {"type": "string", "minLength": 1, "maxLength": 256},
+        "scoreMillis": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    },
+    "currentValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceQuality"],
+      "properties": {
+        "status": {"enum": ["notValidated", "validated", "rejected", "stale", "contradicted"]},
+        "evidenceQuality": {"enum": ["none", "weak", "partial", "strong"]},
+        "currentRevision": {"type": "integer", "minimum": 0},
+        "validatedAt": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
     }
   }
 }

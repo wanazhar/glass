@@ -308,6 +308,12 @@ confirmation-required preflight result until the caller explicitly retries
 with `confirmed: true`. These revision and confirmation guards apply to every
 supported Task Protocol family, not only form tasks.
 
+In local-daemon mode, read-only task families (`form.inspect`,
+`form.validate`, `field.read`, table/collection/region extraction, and
+`dialog.inspect`) do not require a mutation lease. Browser-changing families
+such as form fill/submit, navigation, pagination, and dialog confirmation or
+cancellation still require one.
+
 ### Inspect and validate a Web IR draft without starting Chrome
 
 `inspectWebIr` and `validateWebIr` consume a bounded draft JSON object and never

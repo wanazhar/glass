@@ -251,7 +251,23 @@ impl BrowserSession {
                 let mut stopped = false;
                 let mut unsafe_until_reconciled = false;
                 while completed < max_pages {
-                    let regions = scoped_regions_for_observation(&current, task)?;
+                    let regions = match scoped_regions_for_observation(&current, task) {
+                        Ok(regions) => regions,
+                        Err(error) => {
+                            let current_revision = self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            return Ok(mutation_failure_result(
+                                task,
+                                &plan,
+                                (source_revision, current_revision),
+                                steps,
+                                TaskPlanOperation::CollectPages,
+                                "pagination-collection",
+                                format!("post-action scope reconciliation failed: {error}"),
+                            ));
+                        }
+                    };
                     let region = regions
                         .first()
                         .expect("scoped_regions contains exactly one region");
@@ -304,13 +320,30 @@ impl BrowserSession {
                             ));
                         }
                     };
-                    let after = Box::pin(wait_for_semantic_page_change(
+                    let after = match Box::pin(wait_for_semantic_page_change(
                         self,
                         &current,
                         after,
                         task.limits.timeout_ms,
                     ))
-                    .await?;
+                    .await
+                    {
+                        Ok(after) => after,
+                        Err(error) => {
+                            let current_revision = self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            return Ok(mutation_failure_result(
+                                task,
+                                &plan,
+                                (source_revision, current_revision),
+                                steps,
+                                TaskPlanOperation::CollectPages,
+                                "pagination-collection",
+                                format!("post-action transition observation failed: {error}"),
+                            ));
+                        }
+                    };
                     let succeeded = outcome.is_ok();
                     steps.push(step(
                         &plan,
@@ -345,7 +378,23 @@ impl BrowserSession {
                     let page_changed = semantic_page_changed(&current, &after);
                     current = after;
                     if !page_changed {
-                        let regions = scoped_regions_for_observation(&current, task)?;
+                        let regions = match scoped_regions_for_observation(&current, task) {
+                            Ok(regions) => regions,
+                            Err(error) => {
+                                let current_revision = self
+                                    .page_revision
+                                    .load(std::sync::atomic::Ordering::Relaxed);
+                                return Ok(mutation_failure_result(
+                                    task,
+                                    &plan,
+                                    (source_revision, current_revision),
+                                    steps,
+                                    TaskPlanOperation::CollectPages,
+                                    "pagination-collection",
+                                    format!("post-action scope reconciliation failed: {error}"),
+                                ));
+                            }
+                        };
                         if pagination_next_is_usable(&regions, next_name) {
                             let step = steps
                                 .last_mut()
@@ -1196,8 +1245,29 @@ impl BrowserSession {
             _ => Box::pin(self.execute_form_task(task, expected_revision, confirmed)).await?,
         };
         if result.status == "succeeded" && !task.postconditions.is_empty() {
-            let observation = bounded(self.inspect_page(), task.limits.timeout_ms).await?;
-            let regions = scoped_regions_for_observation(&observation, task).unwrap_or_default();
+            let observation = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
+                Ok(observation) => observation,
+                Err(error) => {
+                    let current_revision = self
+                        .page_revision
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    return Ok(postcondition_failure_result(
+                        result,
+                        current_revision,
+                        format!("postcondition observation failed: {error}"),
+                    ));
+                }
+            };
+            let regions = match scoped_regions_for_observation(&observation, task) {
+                Ok(regions) => regions,
+                Err(error) => {
+                    return Ok(postcondition_failure_result(
+                        result,
+                        observation.revision,
+                        format!("postcondition scope reconciliation failed: {error}"),
+                    ));
+                }
+            };
             if !postconditions_hold(
                 task,
                 &observation,
@@ -1435,6 +1505,32 @@ fn mutation_failure_result(
         dialog: None,
         alerts: Vec::new(),
     }
+}
+fn postcondition_failure_result(
+    mut result: TaskExecutionResult,
+    current_revision: u64,
+    detail: impl Into<String>,
+) -> TaskExecutionResult {
+    result.status = "indeterminate".into();
+    result.phase = "postcondition-verification".into();
+    result.current_revision = current_revision;
+    result.retry = retry_guidance(
+        if result.mutation_possible {
+            RetryClassification::UnsafeUntilReconciled
+        } else {
+            RetryClassification::SafeAfterReconcile
+        },
+        if result.mutation_possible {
+            "recover_run"
+        } else {
+            "inspect_page"
+        },
+    );
+    if let Some(last) = result.steps.last_mut() {
+        last.status = "indeterminate".into();
+        last.detail = Some(detail.into());
+    }
+    result
 }
 
 async fn aria_boolean_state(
@@ -2101,6 +2197,33 @@ mod tests {
         assert_eq!(
             result.retry.classification,
             RetryClassification::UnsafeUntilReconciled
+        );
+    }
+
+    #[test]
+    fn postcondition_observation_failure_preserves_recovery_guidance() {
+        let task = task();
+        let plan = compile_task(&task).unwrap();
+        let initial = mutation_failure_result(
+            &task,
+            &plan,
+            (7, 9),
+            Vec::new(),
+            TaskPlanOperation::SubmitForm,
+            "submit-verification",
+            "dispatch completed but verification was unavailable",
+        );
+        let result = postcondition_failure_result(initial, 10, "postcondition observation failed");
+        assert_eq!(result.status, "indeterminate");
+        assert_eq!(result.phase, "postcondition-verification");
+        assert_eq!(result.current_revision, 10);
+        assert_eq!(
+            result.retry.classification,
+            RetryClassification::UnsafeUntilReconciled
+        );
+        assert_eq!(
+            result.steps[0].detail.as_deref(),
+            Some("postcondition observation failed")
         );
     }
 

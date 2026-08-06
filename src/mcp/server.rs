@@ -1003,7 +1003,11 @@ async fn mutation_lease_error(
     owner_id: &str,
 ) -> Option<JsonRpcResponse> {
     let tool_name = request.params.get("name").and_then(Value::as_str)?;
-    if !tool_requires_mutation_lease(tool_name) {
+    if tool_name == "executeTask" {
+        if !execute_task_requires_mutation_lease(request) {
+            return None;
+        }
+    } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
     let token = request
@@ -1023,6 +1027,29 @@ async fn mutation_lease_error(
         .validate(session_id, owner_id, token, current_time_ms())
         .err()
         .map(|error| lease_error_response(request, error))
+}
+fn execute_task_requires_mutation_lease(request: &JsonRpcRequest) -> bool {
+    let Some(task) = request
+        .params
+        .get("arguments")
+        .and_then(|arguments| arguments.get("task"))
+        .cloned()
+    else {
+        return true;
+    };
+    let Ok(task) = serde_json::from_value::<crate::task_protocol::GlassTask>(task) else {
+        return true;
+    };
+    !matches!(
+        task.task,
+        crate::task_protocol::TaskKind::FormInspect
+            | crate::task_protocol::TaskKind::FormValidate
+            | crate::task_protocol::TaskKind::FieldRead
+            | crate::task_protocol::TaskKind::TableExtract
+            | crate::task_protocol::TaskKind::CollectionExtract
+            | crate::task_protocol::TaskKind::RegionExtract
+            | crate::task_protocol::TaskKind::DialogInspect
+    )
 }
 
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
@@ -5150,6 +5177,43 @@ mod tests {
         assert_eq!(task.task, crate::task_protocol::TaskKind::FormInspect);
         assert_eq!(expected_revision, 17);
         assert!(confirmed);
+    }
+
+    #[test]
+    fn execute_task_lease_requirement_matches_task_family() {
+        let request = |task: &str| {
+            serde_json::from_value::<JsonRpcRequest>(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "executeTask",
+                    "arguments": {
+                        "task": {
+                            "schemaVersion": 1,
+                            "task": task,
+                            "scope": {"regionName": "Checkout"},
+                            "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
+                            "risk": if task == "form.inspect" { "readOnly" } else { "localMutation" }
+                        },
+                        "expectedRevision": 17,
+                        "confirmed": true
+                    }
+                }
+            }))
+            .unwrap()
+        };
+
+        assert!(!execute_task_requires_mutation_lease(&request(
+            "form.inspect"
+        )));
+        assert!(!execute_task_requires_mutation_lease(&request(
+            "table.extract"
+        )));
+        assert!(execute_task_requires_mutation_lease(&request("form.fill")));
+        assert!(execute_task_requires_mutation_lease(&request(
+            "navigation.follow"
+        )));
     }
     #[test]
     fn parses_observe_bootstrap_with_response_modes() {

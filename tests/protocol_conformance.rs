@@ -290,6 +290,53 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
     }
 }
 
+#[test]
+fn task_execute_and_structured_extraction_contract_fixture_round_trips() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/task-extraction-conformance-v1.json"))
+            .expect("task/extraction conformance fixture should be valid JSON");
+
+    let request: GlassRequest =
+        serde_json::from_value(fixture["taskExecute"].clone()).expect("task.execute request");
+    request
+        .validate()
+        .expect("task.execute lease binding is valid");
+    let payload = request
+        .decode_task_execute()
+        .expect("task.execute payload should decode");
+    assert_eq!(payload.expected_revision, 7);
+
+    let extraction_request = &fixture["extractionRequest"];
+    assert_eq!(extraction_request["fields"].as_array().unwrap().len(), 2);
+    assert_eq!(extraction_request["continuation"], Value::Null);
+    let extraction_result = &fixture["extractionResult"];
+    assert_eq!(extraction_result["recordItems"][0]["field"], "name");
+    assert_eq!(extraction_result["continuation"]["nextIndex"], 1);
+    assert_eq!(extraction_result["limits"]["serializedBytes"], 512);
+    assert_eq!(
+        fixture["extractionError"]["code"],
+        "extraction.continuationMismatch"
+    );
+    assert_eq!(fixture["extractionError"]["details"]["kind"], "extraction");
+}
+
+#[test]
+fn public_request_rejects_mismatched_lease_session() {
+    let request: GlassRequest = serde_json::from_value(serde_json::json!({
+        "protocolVersion": 1,
+        "requestId": "mismatch-1",
+        "sessionId": "session-a",
+        "mutationLease": {"sessionId": "session-b", "token": "lease-1"},
+        "operation": "browser.click",
+        "payload": {"target": "ref=r1"}
+    }))
+    .expect("request envelope should deserialize");
+    let error = request
+        .validate()
+        .expect_err("mismatched lease must be rejected");
+    assert!(error.to_string().contains("sessionId must match"));
+}
+
 #[cfg(unix)]
 #[test]
 fn daemon_handshake_advertises_isolated_session_mode() {

@@ -27,8 +27,8 @@ impl BrowserSession {
             }
             targets.push(PageTargetInfo {
                 id: id.to_string(),
-                url: bounded_topology_text(info["url"].as_str().unwrap_or_default()),
-                title: bounded_topology_text(info["title"].as_str().unwrap_or_default()),
+                url: redact_diagnostic_url(info["url"].as_str().unwrap_or_default()),
+                title: redact_diagnostic_text(info["title"].as_str().unwrap_or_default()),
                 opener_id: retained_optional_topology_id(info["openerId"].as_str())?,
                 active: active.as_deref() == Some(id),
             });
@@ -132,7 +132,7 @@ impl BrowserSession {
             .into_iter()
             .find(|target| target.id == id)
             .ok_or_else(|| -> Box<dyn Error> { "created target was not discoverable".into() })?;
-        self.record_audit("attach", &url);
+        self.record_audit("attach", redact_diagnostic_url(&url));
         Ok(target)
     }
 
@@ -148,6 +148,20 @@ impl BrowserSession {
             .into_iter()
             .find(|target| target.id == target_id)
             .ok_or("page target was not found")?;
+        // Re-read the authoritative URL immediately before attaching. The
+        // public target snapshot is redacted, so policy must inspect the raw
+        // browser value and cannot be bypassed by selecting an open page.
+        let current_targets = self.cdp.send_browser("Target.getTargets", None).await?;
+        let current_target = current_targets["targetInfos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|info| info["targetId"].as_str() == Some(target_id))
+            .ok_or("page target disappeared before policy preflight")?;
+        let current_url = current_target["url"]
+            .as_str()
+            .ok_or("page target returned no URL")?;
+        self.policy.require_existing_target_url(current_url)?;
         let attached = self
             .cdp
             .send_browser(
@@ -159,6 +173,60 @@ impl BrowserSession {
             .as_str()
             .ok_or("Target.attachToTarget returned no sessionId")?
             .to_string();
+        let attached_targets = match self.cdp.send_browser("Target.getTargets", None).await {
+            Ok(targets) => targets,
+            Err(error) => {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err(Box::new(error));
+            }
+        };
+        let attached_target = match attached_targets["targetInfos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|info| info["targetId"].as_str() == Some(target_id))
+        {
+            Some(target) => target,
+            None => {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err("attached target disappeared before URL verification".into());
+            }
+        };
+        let attached_url = match attached_target["url"].as_str() {
+            Some(url) => url,
+            None => {
+                let _ = self
+                    .cdp
+                    .send_browser(
+                        "Target.detachFromTarget",
+                        Some(serde_json::json!({"sessionId": new_session})),
+                    )
+                    .await;
+                return Err("attached target returned no URL".into());
+            }
+        };
+        if let Err(error) = self.policy.require_existing_target_url(attached_url) {
+            let _ = self
+                .cdp
+                .send_browser(
+                    "Target.detachFromTarget",
+                    Some(serde_json::json!({"sessionId": new_session})),
+                )
+                .await;
+            return Err(Box::new(error));
+        }
         let old_session = self.topology.lock().await.active_session_id.clone();
         if let Err(error) = self.cdp.enable_observation_events_for(&new_session).await {
             let _ = self

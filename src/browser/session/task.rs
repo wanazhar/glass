@@ -4,16 +4,16 @@ use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
     InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
     SemanticTarget, StructuredExtractionLimits, StructuredExtractionProvenance,
-    StructuredExtractionRequest, StructuredExtractionResult, parse_revisioned_reference,
+    StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
+    parse_revisioned_reference,
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{TaskExecutionPlan, TaskPlanOperation, compile_task};
 use crate::task_protocol::{GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy};
 use serde::Serialize;
 use serde_json::json;
-use std::future::Future;
 use std::io::{Error as IoError, ErrorKind};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A bounded result for one browser-backed Task Protocol execution.
 #[derive(Debug, Clone, Serialize)]
@@ -222,7 +222,10 @@ impl BrowserSession {
                     phase: "navigation-verification".into(),
                     mutation_possible: true,
                     source_revision: observation.revision,
-                    current_revision: after.revision,
+                    current_revision: self
+                        .page_revision
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        .max(after.revision),
                     steps,
                     retry: if succeeded {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
@@ -250,6 +253,9 @@ impl BrowserSession {
                 let mut completed = 0usize;
                 let mut stopped = false;
                 let mut unsafe_until_reconciled = false;
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_millis(task.limits.timeout_ms);
+                let mut pagination_extraction: Option<StructuredExtractionResult> = None;
                 while completed < max_pages {
                     let regions = match scoped_regions_for_observation(&current, task) {
                         Ok(regions) => regions,
@@ -279,6 +285,53 @@ impl BrowserSession {
                     let region = regions
                         .first()
                         .expect("scoped_regions contains exactly one region");
+                    let page_extraction = match bounded(
+                        self.extract_structured(&StructuredExtractionRequest {
+                            fields: vec![ExtractionField {
+                                name: "items".into(),
+                                path: "$.structuredRecords".into(),
+                                kind: ExtractionKind::RepeatedItems,
+                            }],
+                            region_id: Some(region.id.clone()),
+                            start_index: 0,
+                            continuation: None,
+                            max_items: task.limits.max_items as usize,
+                            max_bytes: 64 * 1024,
+                        }),
+                        remaining_timeout(deadline),
+                    )
+                    .await
+                    {
+                        Ok(extraction) => extraction,
+                        Err(error) if completed == 0 => {
+                            return Ok(preflight_result(
+                                task,
+                                &plan,
+                                current.revision,
+                                &format!("pagination extraction failed: {error}"),
+                            ));
+                        }
+                        Err(error) => {
+                            let current_revision = self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            return Ok(mutation_failure_result(
+                                task,
+                                &plan,
+                                (source_revision, current_revision),
+                                steps,
+                                TaskPlanOperation::CollectPages,
+                                "pagination-collection",
+                                format!("pagination extraction failed: {error}"),
+                            ));
+                        }
+                    };
+                    merge_pagination_extraction(
+                        &mut pagination_extraction,
+                        page_extraction,
+                        task.limits.max_items as usize,
+                        64 * 1024,
+                    );
                     let candidates = region
                         .targets
                         .iter()
@@ -330,31 +383,32 @@ impl BrowserSession {
                     let before_revision = current.revision;
                     let outcome = bounded(
                         self.click_with_revision(&target.reference, before_revision),
-                        task.limits.timeout_ms,
+                        remaining_timeout(deadline),
                     )
                     .await;
-                    let after = match bounded(self.inspect_page(), task.limits.timeout_ms).await {
-                        Ok(after) => after,
-                        Err(error) => {
-                            let current_revision = self
-                                .page_revision
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            return Ok(mutation_failure_result(
-                                task,
-                                &plan,
-                                (source_revision, current_revision),
-                                steps,
-                                TaskPlanOperation::CollectPages,
-                                "pagination-collection",
-                                format!("post-action observation failed: {error}"),
-                            ));
-                        }
-                    };
+                    let after =
+                        match bounded(self.inspect_page(), remaining_timeout(deadline)).await {
+                            Ok(after) => after,
+                            Err(error) => {
+                                let current_revision = self
+                                    .page_revision
+                                    .load(std::sync::atomic::Ordering::Relaxed);
+                                return Ok(mutation_failure_result(
+                                    task,
+                                    &plan,
+                                    (source_revision, current_revision),
+                                    steps,
+                                    TaskPlanOperation::CollectPages,
+                                    "pagination-collection",
+                                    format!("post-action observation failed: {error}"),
+                                ));
+                            }
+                        };
                     let after = match Box::pin(wait_for_semantic_page_change(
                         self,
                         &current,
                         after,
-                        task.limits.timeout_ms,
+                        remaining_timeout(deadline),
                     ))
                     .await
                     {
@@ -392,7 +446,10 @@ impl BrowserSession {
                             phase: "pagination-collection".into(),
                             mutation_possible: true,
                             source_revision,
-                            current_revision: after.revision,
+                            current_revision: self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                .max(after.revision),
                             steps,
                             retry: retry_guidance(
                                 RetryClassification::UnsafeUntilReconciled,
@@ -471,7 +528,7 @@ impl BrowserSession {
                         },
                     ),
                     form: None,
-                    extraction: None,
+                    extraction: pagination_extraction,
                     dialog: None,
                     alerts,
                 })
@@ -574,7 +631,10 @@ impl BrowserSession {
                     phase: "pagination-verification".into(),
                     mutation_possible: true,
                     source_revision: observation.revision,
-                    current_revision: after.revision,
+                    current_revision: self
+                        .page_revision
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        .max(after.revision),
                     steps,
                     retry: if succeeded {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
@@ -875,7 +935,103 @@ impl BrowserSession {
             }
             TaskKind::FormValidate => {
                 let alerts = alert_labels(scoped_regions.iter().copied());
-                let valid = alerts.is_empty();
+                let values =
+                    match bounded(self.observe_with_form_values(), task.limits.timeout_ms).await {
+                        Ok(values) => values,
+                        Err(error) => {
+                            steps.push(step(
+                                &plan,
+                                TaskPlanOperation::ValidateForm,
+                                "verification-failed",
+                                Some(format!("form validity observation failed: {error}")),
+                            ));
+                            return Ok(TaskExecutionResult {
+                                task: task.task,
+                                status: "verification-failed".into(),
+                                phase: "validation".into(),
+                                mutation_possible: false,
+                                source_revision: observation.revision,
+                                current_revision: self
+                                    .page_revision
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                steps,
+                                retry: retry_guidance(
+                                    RetryClassification::SafeAfterReconcile,
+                                    "inspect_page",
+                                ),
+                                form: None,
+                                extraction: None,
+                                dialog: None,
+                                alerts,
+                            });
+                        }
+                    };
+                let values_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if values_revision != observation.revision {
+                    steps.push(step(
+                        &plan,
+                        TaskPlanOperation::ValidateForm,
+                        "stale",
+                        Some("form value observation crossed revisions".into()),
+                    ));
+                    return Ok(TaskExecutionResult {
+                        task: task.task,
+                        status: "stale".into(),
+                        phase: "validation".into(),
+                        mutation_possible: false,
+                        source_revision: observation.revision,
+                        current_revision: values_revision,
+                        steps,
+                        retry: retry_guidance(
+                            RetryClassification::SafeAfterReconcile,
+                            "inspect_page",
+                        ),
+                        form: None,
+                        extraction: None,
+                        dialog: None,
+                        alerts,
+                    });
+                }
+                let validity_deadline =
+                    Instant::now() + Duration::from_millis(task.limits.timeout_ms);
+                let mut native_valid = true;
+                for target in scoped_regions
+                    .iter()
+                    .flat_map(|region| region.targets.iter())
+                {
+                    let remaining_ms = validity_deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64;
+                    if remaining_ms == 0 {
+                        native_valid = false;
+                        break;
+                    }
+                    let validity = bounded(
+                        async { Ok(native_control_validity(self, &target.reference).await) },
+                        remaining_ms,
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                    native_valid &= validity.is_some_and(|(valid, required, value_missing)| {
+                        valid && !(required && value_missing)
+                    });
+                }
+                let required_values_present = scoped_regions
+                    .iter()
+                    .flat_map(|region| region.targets.iter())
+                    .all(|target| {
+                        values
+                            .accessibility
+                            .interactive
+                            .iter()
+                            .find(|control| control.reference == target.reference)
+                            .is_some_and(|control| !control.required || !control.empty)
+                    });
+                let valid = alerts.is_empty() && native_valid && required_values_present;
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::ValidateForm,
@@ -884,7 +1040,7 @@ impl BrowserSession {
                     } else {
                         "verification-failed"
                     },
-                    (!valid).then(|| "semantic alert region present".into()),
+                    (!valid).then(|| "native form validity or required state failed".into()),
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
@@ -897,7 +1053,13 @@ impl BrowserSession {
                     phase: "validation".into(),
                     mutation_possible: false,
                     source_revision: observation.revision,
-                    current_revision: observation.revision,
+                    current_revision: values.accessibility.interactive.first().map_or(
+                        observation.revision,
+                        |_| {
+                            self.page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        },
+                    ),
                     steps,
                     retry: if valid {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
@@ -924,7 +1086,7 @@ impl BrowserSession {
                 };
                 let borrowed = fields
                     .iter()
-                    .map(|(target, value)| (target.as_str(), value.as_str()))
+                    .map(|(target, _, value)| (target.as_str(), value.as_str()))
                     .collect::<Vec<_>>();
                 let form = match bounded(
                     self.fill_form_with_expected_revision(&borrowed, Some(observation.revision)),
@@ -965,20 +1127,41 @@ impl BrowserSession {
                         ));
                     }
                 };
-                let succeeded = form.filled == form.total;
+                let values =
+                    match bounded(self.observe_with_form_values(), task.limits.timeout_ms).await {
+                        Ok(values) => values,
+                        Err(error) => {
+                            let current_revision = self
+                                .page_revision
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            return Ok(form_fill_failure_result(
+                                task,
+                                &plan,
+                                observation.revision,
+                                current_revision,
+                                steps,
+                                Some(form),
+                                format!("form fill verification failed: {error}"),
+                            ));
+                        }
+                    };
+                let verified = form.filled == form.total && form_values_match(&values, &fields);
+                let current_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 steps.push(step(
                     &plan,
                     TaskPlanOperation::FillInputs,
-                    if succeeded {
+                    if verified {
                         "succeeded"
                     } else {
                         "indeterminate"
                     },
-                    (!succeeded).then(|| "form fill did not complete".into()),
+                    (!verified).then(|| "form values did not match requested values".into()),
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
-                    status: if succeeded {
+                    status: if verified {
                         "succeeded"
                     } else {
                         "indeterminate"
@@ -987,12 +1170,12 @@ impl BrowserSession {
                     phase: "mutation-verification".into(),
                     mutation_possible: form.filled > 0,
                     source_revision: observation.revision,
-                    current_revision: after.revision,
+                    current_revision,
                     steps,
-                    retry: if succeeded {
+                    retry: if verified {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
                     } else {
-                        retry_guidance(RetryClassification::SafeAfterReconcile, "inspect_page")
+                        retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run")
                     },
                     form: Some(form),
                     extraction: None,
@@ -1072,7 +1255,10 @@ impl BrowserSession {
                     phase: "submit-verification".into(),
                     mutation_possible: true,
                     source_revision: observation.revision,
-                    current_revision: after.revision,
+                    current_revision: self
+                        .page_revision
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        .max(after.revision),
                     steps,
                     retry: if succeeded {
                         retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
@@ -1228,7 +1414,7 @@ impl BrowserSession {
     async fn finalize_task_result(
         &self,
         task: &GlassTask,
-        expected_revision: u64,
+        _expected_revision: u64,
         mut result: TaskExecutionResult,
     ) -> BrowserResult<TaskExecutionResult> {
         if result.status == "succeeded" && !task.postconditions.is_empty() {
@@ -1247,26 +1433,44 @@ impl BrowserSession {
             };
             let regions = match scoped_regions_for_observation(&observation, task) {
                 Ok(regions) => regions,
+                Err(_error)
+                    if matches!(
+                        task.task,
+                        TaskKind::NavigationFollow
+                            | TaskKind::DialogInspect
+                            | TaskKind::DialogConfirm
+                            | TaskKind::DialogCancel
+                    ) =>
+                {
+                    Vec::new()
+                }
                 Err(error) => {
                     return Ok(postcondition_failure_result(
                         result,
-                        observation.revision,
+                        self.page_revision
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            .max(observation.revision),
                         format!("postcondition scope reconciliation failed: {error}"),
                     ));
                 }
             };
+            let pending_dialog = self.pending_dialog().await;
             if !postconditions_hold(
                 task,
                 &observation,
                 &regions,
-                expected_revision,
+                result.source_revision,
                 result.extraction.as_ref(),
-                result.dialog.as_ref(),
+                pending_dialog.as_ref(),
             ) {
                 result.status = "indeterminate".into();
                 result.phase = "postcondition-verification".into();
+                result.current_revision = self
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .max(observation.revision);
                 result.retry =
-                    retry_guidance(RetryClassification::SafeAfterReconcile, "inspect_page");
+                    retry_guidance(RetryClassification::UnsafeUntilReconciled, "recover_run");
                 if let Some(last) = result.steps.last_mut() {
                     last.status = "indeterminate".into();
                     last.detail = Some("authored postcondition did not hold".into());
@@ -1434,7 +1638,7 @@ impl BrowserSession {
             TaskKind::DialogCancel => self.dismiss_dialog_with_revision(expected_revision).await,
             _ => unreachable!(),
         };
-        let still_pending = self.pending_dialog().await.is_some();
+        let still_pending = !wait_for_dialog_closed(self, task.limits.timeout_ms).await;
         let succeeded = dialog_action_succeeded(&action, still_pending);
         let operation = if task.task == TaskKind::DialogConfirm {
             TaskPlanOperation::ConfirmDialog
@@ -1549,6 +1753,19 @@ fn form_fill_failure_result(
         alerts: Vec::new(),
     }
 }
+async fn wait_for_dialog_closed(session: &BrowserSession, timeout_ms: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if session.pending_dialog().await.is_none() {
+            return true;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(10))).await;
+    }
+}
 
 fn mutation_failure_result(
     task: &GlassTask,
@@ -1651,6 +1868,45 @@ fn navigation_destination_matches(requested: &str, actual: &str) -> bool {
     requested == actual || requested.trim_end_matches('/') == actual.trim_end_matches('/')
 }
 
+async fn native_control_validity(
+    session: &BrowserSession,
+    reference: &str,
+) -> Option<(bool, bool, bool)> {
+    let reference = parse_revisioned_reference(reference).ok().flatten()?;
+    let object_id = session
+        .cdp
+        .resolve_node_object(None, Some(reference.backend_dom_node_id))
+        .await
+        .ok()?;
+    let result = session
+        .cdp
+        .send(
+            "Runtime.callFunctionOn",
+            Some(json!({
+                "objectId": object_id,
+                "functionDeclaration": "function(){const validity=this.validity;return {valid: validity ? validity.valid : true, required: !!this.required, valueMissing: !!(validity && validity.valueMissing)};}",
+                "returnByValue": true,
+                "awaitPromise": false,
+            })),
+        )
+        .await
+        .ok();
+    let _ = session
+        .cdp
+        .send(
+            "Runtime.releaseObject",
+            Some(json!({"objectId": object_id})),
+        )
+        .await;
+    let result = result?;
+    let value = result.get("result")?.get("value")?;
+    Some((
+        value.get("valid")?.as_bool()?,
+        value.get("required")?.as_bool()?,
+        value.get("valueMissing")?.as_bool()?,
+    ))
+}
+
 async fn wait_for_aria_true(
     session: &BrowserSession,
     reference: &str,
@@ -1659,10 +1915,8 @@ async fn wait_for_aria_true(
 ) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        match aria_boolean_state(session, reference, attribute).await {
-            Some(true) => return true,
-            None => return false,
-            Some(false) => {}
+        if aria_boolean_state(session, reference, attribute).await == Some(true) {
+            return true;
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
@@ -1813,7 +2067,7 @@ impl BrowserSession {
         )
         .await;
         let succeeded = outcome.is_ok() && menu_open;
-        let detail = if let Err(error) = outcome {
+        let detail = if let Err(error) = &outcome {
             Some(format!("menu control click was not dispatched: {error}"))
         } else if !menu_open {
             Some("menu expanded state was not observed after the click".into())
@@ -1841,10 +2095,13 @@ impl BrowserSession {
                 "indeterminate"
             }
             .into(),
-            phase: "navigation-verification".into(),
-            mutation_possible: true,
+            phase: "mutation-verification".into(),
+            mutation_possible: outcome.is_ok(),
             source_revision: observation.revision,
-            current_revision: after.revision,
+            current_revision: self
+                .page_revision
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(after.revision),
             steps,
             retry: if succeeded {
                 retry_guidance(RetryClassification::SafeImmediate, "inspect_page")
@@ -1869,13 +2126,83 @@ fn scoped_regions_for_observation<'a>(
     let regions = observation
         .regions
         .iter()
-        .filter(|region| region.label.eq_ignore_ascii_case(region_name))
+        .filter(|region| {
+            region.label.eq_ignore_ascii_case(region_name)
+                && task
+                    .scope
+                    .entity_kind
+                    .is_none_or(|kind| semantic_region_matches_entity(region, kind))
+                && task.scope.entity_name.as_deref().is_none_or(|entity_name| {
+                    region.label.eq_ignore_ascii_case(entity_name)
+                        || region
+                            .targets
+                            .iter()
+                            .any(|target| target.name.eq_ignore_ascii_case(entity_name))
+                })
+        })
         .collect::<Vec<_>>();
     match regions.len() {
         1 => Ok(regions),
         0 => Err(format!("semantic region not found: {region_name}").into()),
         _ => Err(format!("semantic region is ambiguous: {region_name}").into()),
     }
+}
+
+fn semantic_region_matches_entity(
+    region: &SemanticRegion,
+    kind: crate::web_ir::DraftEntityKind,
+) -> bool {
+    use crate::web_ir::DraftEntityKind;
+    match kind {
+        DraftEntityKind::Page
+        | DraftEntityKind::Region
+        | DraftEntityKind::OpaqueRegion
+        | DraftEntityKind::UnknownInteractive => true,
+        DraftEntityKind::Form => region.kind == SemanticRegionKind::Form,
+        DraftEntityKind::Dialog => region.kind == SemanticRegionKind::Dialog,
+        DraftEntityKind::Table => region.kind == SemanticRegionKind::Table,
+        DraftEntityKind::Collection => region.kind == SemanticRegionKind::Collection,
+        DraftEntityKind::PaginationControl => region.kind == SemanticRegionKind::Pagination,
+        DraftEntityKind::Field => region.targets.iter().any(|target| {
+            target.input_type.is_some()
+                || matches!(target.role.as_str(), "textbox" | "combobox" | "listbox")
+        }),
+        DraftEntityKind::Action => region.targets.iter().any(|target| {
+            matches!(
+                target.role.as_str(),
+                "button" | "checkbox" | "radio" | "switch" | "menuitem"
+            )
+        }),
+        DraftEntityKind::Link => region.targets.iter().any(|target| target.role == "link"),
+        DraftEntityKind::NavigationItem => region.kind == SemanticRegionKind::Navigation,
+        DraftEntityKind::Tab => region.targets.iter().any(|target| target.role == "tab"),
+        DraftEntityKind::Row | DraftEntityKind::Cell | DraftEntityKind::CollectionItem => true,
+        DraftEntityKind::Text => true,
+    }
+}
+fn form_values_match(values: &super::PageContext, fields: &[(String, String, String)]) -> bool {
+    fields.iter().all(|(reference, name, expected)| {
+        let Some(control) = values.accessibility.interactive.iter().find(|control| {
+            control.reference == *reference || control.name.eq_ignore_ascii_case(name)
+        }) else {
+            return false;
+        };
+        if matches!(control.role.as_str(), "checkbox" | "radio")
+            || control
+                .input_type
+                .as_deref()
+                .is_some_and(|input_type| matches!(input_type, "checkbox" | "radio"))
+        {
+            let expected_checked =
+                !expected.is_empty() && expected != "false" && expected != "0" && expected != "off";
+            control.checked == Some(expected_checked)
+        } else if matches!(control.role.as_str(), "combobox" | "listbox") {
+            control.selected_option.as_deref() == Some(expected.as_str())
+                || control.value.as_deref() == Some(expected.as_str())
+        } else {
+            control.value.as_deref() == Some(expected.as_str())
+        }
+    })
 }
 
 fn pagination_next_is_usable(regions: &[&SemanticRegion], next_name: &str) -> bool {
@@ -1887,16 +2214,87 @@ fn pagination_next_is_usable(regions: &[&SemanticRegion], next_name: &str) -> bo
                 && matches!(target.role.as_str(), "button" | "link" | "tab")
         })
 }
+fn merge_pagination_extraction(
+    aggregate: &mut Option<StructuredExtractionResult>,
+    page: StructuredExtractionResult,
+    max_items: usize,
+    max_bytes: usize,
+) {
+    let Some(result) = aggregate.as_mut() else {
+        let mut initial = page;
+        let observed_items = initial.limits.observed_items;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut items = Vec::new();
+        for item in initial.record_items.drain(..) {
+            let duplicate = item
+                .entity_ids
+                .first()
+                .is_some_and(|entity_id| !seen.insert(entity_id.clone()));
+            if duplicate {
+                continue;
+            }
+            items.push(item);
+            if items.len() >= max_items {
+                break;
+            }
+        }
+        initial.record_items = items;
+        initial.truncated |= initial.record_items.len() < observed_items;
+        initial.limits.observed_items = initial.record_items.len();
+        initial.limits.truncated = initial.truncated;
+        initial.limits.serialized_bytes =
+            serde_json::to_vec(&initial).map_or(0, |bytes| bytes.len());
+        *aggregate = Some(initial);
+        return;
+    };
+    result.truncated |= page.truncated;
+    if page.continuation.is_some() {
+        result.continuation = page.continuation;
+    }
+    result.source_revision = page.source_revision;
+    result.source_route = page.source_route;
+    let mut seen = result
+        .record_items
+        .iter()
+        .filter_map(|item| item.entity_ids.first().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for item in page.record_items {
+        if result.record_items.len() >= max_items {
+            result.truncated = true;
+            break;
+        }
+        let duplicate = item
+            .entity_ids
+            .first()
+            .is_some_and(|entity_id| !seen.insert(entity_id.clone()));
+        if duplicate {
+            continue;
+        }
+        result.record_items.push(StructuredExtractionRecord {
+            index: result.record_items.len(),
+            ..item
+        });
+        if serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() > max_bytes) {
+            result.record_items.pop();
+            result.truncated = true;
+            break;
+        }
+    }
+    result.limits.observed_items = result.record_items.len();
+    result.limits.serialized_bytes = serde_json::to_vec(result).map_or(0, |bytes| bytes.len());
+    result.limits.truncated = result.truncated;
+}
 
 fn resolved_fields(
     regions: &[&SemanticRegion],
     inputs: &std::collections::BTreeMap<String, String>,
-) -> BrowserResult<Vec<(String, String)>> {
+) -> BrowserResult<Vec<(String, String, String)>> {
     inputs
         .iter()
         .map(|(name, value)| {
             Ok((
                 unique_target(regions, name)?.reference.clone(),
+                name.clone(),
                 value.clone(),
             ))
         })
@@ -1926,7 +2324,19 @@ fn extraction_matches_observation(
     extraction.source_revision == observation.revision
         && extraction.source_route.target_id == observation.page.target_id
         && extraction.source_route.frame_id == observation.page.frame_id
-        && extraction.source_route.url == observation.page.url
+        && diagnostic_route_url(&extraction.source_route.url)
+            == diagnostic_route_url(&observation.page.url)
+}
+
+fn diagnostic_route_url(url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.split(['?', '#']).next().unwrap_or_default().to_owned();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
 }
 
 fn semantic_page_changed(before: &InspectPageResult, after: &InspectPageResult) -> bool {
@@ -1993,7 +2403,7 @@ fn unsupported_revision_policy(task: &GlassTask) -> Option<&'static str> {
 fn postconditions_hold(
     task: &GlassTask,
     observation: &InspectPageResult,
-    regions: &[&SemanticRegion],
+    _regions: &[&SemanticRegion],
     source_revision: u64,
     extraction: Option<&StructuredExtractionResult>,
     dialog: Option<&PendingDialog>,
@@ -2024,17 +2434,17 @@ fn postconditions_hold(
                     expected
                         .parse::<usize>()
                         .ok()
-                        .is_some_and(|minimum| result.records.len() >= minimum)
+                        .is_some_and(|minimum| result.record_items.len() >= minimum)
                 })
             }),
             TaskPostconditionKind::EntityState => false,
         })
-        && (task.postconditions.iter().all(|postcondition| {
-            !matches!(
-                postcondition.kind,
-                TaskPostconditionKind::RegionPresent | TaskPostconditionKind::EntityState
-            )
-        }) || !regions.is_empty())
+}
+fn remaining_timeout(deadline: tokio::time::Instant) -> u64 {
+    deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .as_millis()
+        .clamp(1, u64::MAX as u128) as u64
 }
 
 async fn bounded<T, F>(future: F, timeout_ms: u64) -> BrowserResult<T>
@@ -2167,7 +2577,11 @@ mod tests {
         let fields = resolved_fields(&[&form], &task().inputs).unwrap();
         assert_eq!(
             fields,
-            vec![(String::from("target-1"), String::from("a@example.test"))]
+            vec![(
+                String::from("target-1"),
+                String::from("Email"),
+                String::from("a@example.test")
+            )]
         );
     }
 

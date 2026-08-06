@@ -27,6 +27,12 @@ a crates.io dry run, publishes the crate when needed, and creates the matching
 GitHub Release with generated notes. Existing crate or release records are
 detected idempotently; native binary artifacts are never uploaded.
 
+Issue #30 / 0.2.9 exit acceptance additionally requires the canonical
+`task.execute` and structured-extraction fixtures, lease-bound public request
+envelopes, observable MCP/CLI `responseMode`, and deterministic Web IR corpus
+baseline validation. These are source-checkout contracts; they do not claim
+live browser coverage.
+
 ## Prepare
 
 - [x] Confirm release version `0.2.8`; release date `2026-08-01`.
@@ -51,6 +57,7 @@ python3 scripts/check-version-sync.py
 cargo test --all --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
+python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 cargo package --locked --no-verify
 cargo publish --locked --dry-run --no-verify
 cargo deny check

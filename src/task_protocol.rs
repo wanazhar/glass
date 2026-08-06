@@ -193,6 +193,7 @@ impl GlassTask {
             ));
         }
         self.scope.validate()?;
+        self.scope.validate_for_task(self.task)?;
         self.limits.validate()?;
         if self.inputs.len() > MAX_INPUTS {
             return Err(TaskProtocolError::new(
@@ -216,7 +217,29 @@ impl GlassTask {
             ));
         }
         for (index, postcondition) in self.postconditions.iter().enumerate() {
+            if !postcondition_allowed_for(self.task, postcondition.kind) {
+                return Err(TaskProtocolError::new(
+                    format!("postconditions[{index}].kind"),
+                    "postcondition kind is incompatible with the task family",
+                ));
+            }
             postcondition.validate_at(index)?;
+            if postcondition.kind == TaskPostconditionKind::RecordsExtracted
+                && let Some(expected) = postcondition.expected.as_deref()
+            {
+                let minimum = expected.parse::<u32>().map_err(|_| {
+                    TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "recordsExtracted expected must be a non-negative integer",
+                    )
+                })?;
+                if minimum > self.limits.max_items {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "recordsExtracted expected exceeds task maxItems",
+                    ));
+                }
+            }
         }
         if matches!(self.task, TaskKind::FormSubmit) && self.postconditions.is_empty() {
             return Err(TaskProtocolError::new(
@@ -253,16 +276,40 @@ impl GlassTask {
         }
 
         match self.task {
+            TaskKind::FormSubmit if !self.inputs.contains_key("submit") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.submit",
+                    "form.submit requires the semantic submit target in inputs.submit",
+                ));
+            }
+            TaskKind::FormSubmit if self.inputs.keys().any(|name| name != "submit") => {
+                return Err(TaskProtocolError::new(
+                    "inputs",
+                    "form.submit accepts only the submit target input",
+                ));
+            }
             TaskKind::NavigationOpenMenu if !self.inputs.contains_key("menu") => {
                 return Err(TaskProtocolError::new(
                     "inputs.menu",
                     "navigation.openMenu requires a bounded menu input",
                 ));
             }
+            TaskKind::NavigationSelectTab if !self.inputs.contains_key("tab") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.tab",
+                    "navigation.selectTab requires a bounded tab input",
+                ));
+            }
             TaskKind::PaginationCollect if !self.inputs.contains_key("next") => {
                 return Err(TaskProtocolError::new(
                     "inputs.next",
                     "pagination.collect requires a bounded next control input",
+                ));
+            }
+            TaskKind::PaginationNext if !self.inputs.contains_key("next") => {
+                return Err(TaskProtocolError::new(
+                    "inputs.next",
+                    "pagination.next requires a bounded next control input",
                 ));
             }
             TaskKind::NavigationFollow if !self.inputs.contains_key("url") => {
@@ -275,18 +322,6 @@ impl GlassTask {
                 return Err(TaskProtocolError::new(
                     "inputs.field",
                     "field.read requires the semantic field name in inputs.field",
-                ));
-            }
-            TaskKind::NavigationSelectTab if !self.inputs.contains_key("tab") => {
-                return Err(TaskProtocolError::new(
-                    "inputs.tab",
-                    "navigation.selectTab requires a bounded tab input",
-                ));
-            }
-            TaskKind::PaginationNext if !self.inputs.contains_key("next") => {
-                return Err(TaskProtocolError::new(
-                    "inputs.next",
-                    "pagination.next requires a bounded next control input",
                 ));
             }
             _ => {}
@@ -346,6 +381,68 @@ impl TaskScope {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn validate_for_task(&self, task: TaskKind) -> Result<(), TaskProtocolError> {
+        let expected_kind = match task {
+            TaskKind::FormInspect
+            | TaskKind::FormFill
+            | TaskKind::FormValidate
+            | TaskKind::FormSubmit => DraftEntityKind::Form,
+            TaskKind::FieldRead => DraftEntityKind::Field,
+            TaskKind::NavigationSelectTab => DraftEntityKind::Tab,
+            TaskKind::NavigationOpenMenu => DraftEntityKind::NavigationItem,
+            TaskKind::TableExtract => DraftEntityKind::Table,
+            TaskKind::CollectionExtract => DraftEntityKind::Collection,
+            TaskKind::RegionExtract => DraftEntityKind::Region,
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+                DraftEntityKind::Dialog
+            }
+            TaskKind::PaginationNext | TaskKind::PaginationCollect => {
+                DraftEntityKind::PaginationControl
+            }
+            TaskKind::NavigationFollow => DraftEntityKind::Link,
+        };
+        if let Some(actual) = self.entity_kind
+            && actual != expected_kind
+        {
+            return Err(TaskProtocolError::new(
+                "scope.entityKind",
+                "entity kind is incompatible with the task family",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn postcondition_allowed_for(task: TaskKind, kind: TaskPostconditionKind) -> bool {
+    use TaskPostconditionKind::*;
+    match task {
+        TaskKind::FormInspect | TaskKind::FormFill | TaskKind::FormValidate => {
+            matches!(kind, ValidationClear | RegionPresent | PageKind)
+        }
+        TaskKind::FormSubmit => matches!(
+            kind,
+            NavigationOccurred | ValidationClear | RegionPresent | PageKind | DialogClosed
+        ),
+        TaskKind::NavigationFollow => matches!(kind, NavigationOccurred | RegionPresent | PageKind),
+        TaskKind::NavigationSelectTab | TaskKind::NavigationOpenMenu => {
+            matches!(kind, RegionPresent | PageKind)
+        }
+        TaskKind::TableExtract | TaskKind::CollectionExtract | TaskKind::RegionExtract => {
+            matches!(kind, RecordsExtracted | RegionPresent | PageKind)
+        }
+        TaskKind::FieldRead => matches!(kind, RegionPresent | PageKind),
+        TaskKind::DialogInspect => matches!(kind, DialogClosed | RegionPresent | PageKind),
+        TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+            matches!(kind, DialogClosed | PageKind)
+        }
+        TaskKind::PaginationNext => matches!(
+            kind,
+            NavigationOccurred | RecordsExtracted | RegionPresent | PageKind
+        ),
+        TaskKind::PaginationCollect => {
+            matches!(kind, RecordsExtracted | RegionPresent | PageKind)
+        }
     }
 }
 
@@ -457,40 +554,47 @@ mod tests {
     #[test]
     fn field_read_requires_semantic_field_input() {
         let mut invalid = task();
+        invalid.postconditions.clear();
         invalid.task = TaskKind::FieldRead;
-        invalid.inputs.clear();
+        invalid.scope.entity_kind = Some(DraftEntityKind::Field);
         assert_eq!(invalid.validate().unwrap_err().path, "inputs.field");
     }
 
     #[test]
     fn browser_backed_tasks_require_region_scope() {
         let mut invalid = task();
+        invalid.postconditions.clear();
         invalid.task = TaskKind::FieldRead;
+        invalid.scope.entity_kind = Some(DraftEntityKind::Field);
         invalid.scope.region_name = None;
-        invalid.inputs = BTreeMap::from([(String::from("field"), String::from("Email"))]);
         assert_eq!(invalid.validate().unwrap_err().path, "scope.regionName");
     }
 
     #[test]
     fn navigation_follow_requires_bounded_url_input() {
         let mut task = task();
+        task.postconditions.clear();
         task.task = TaskKind::NavigationFollow;
+        task.scope.entity_kind = Some(DraftEntityKind::Link);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.url");
         task.inputs
             .insert("url".into(), "https://example.test/next".into());
         task.validate().unwrap();
         task.task = TaskKind::NavigationSelectTab;
+        task.scope.entity_kind = Some(DraftEntityKind::Tab);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.tab");
         task.inputs.insert("tab".into(), "Payment".into());
         task.validate().unwrap();
         task.task = TaskKind::NavigationOpenMenu;
+        task.scope.entity_kind = Some(DraftEntityKind::NavigationItem);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.menu");
         task.inputs.insert("menu".into(), "Products".into());
         task.validate().unwrap();
         task.task = TaskKind::PaginationNext;
+        task.scope.entity_kind = Some(DraftEntityKind::PaginationControl);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());
@@ -499,7 +603,9 @@ mod tests {
     #[test]
     fn pagination_collect_requires_bounded_next_input() {
         let mut task = task();
+        task.postconditions.clear();
         task.task = TaskKind::PaginationCollect;
+        task.scope.entity_kind = Some(DraftEntityKind::PaginationControl);
         task.inputs.clear();
         assert_eq!(task.validate().unwrap_err().path, "inputs.next");
         task.inputs.insert("next".into(), "Next page".into());

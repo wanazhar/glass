@@ -61,6 +61,11 @@ def require_unique(values: list[str], path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="write the baseline report to this path")
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="compare the generated baseline byte-for-byte with this checked-in report",
+    )
     args = parser.parse_args()
 
     corpus = load_json(CORPUS_PATH)
@@ -251,6 +256,23 @@ def main() -> None:
         "fixtures": reports,
     }
     serialized = json.dumps(baseline, indent=2, sort_keys=False) + "\n"
+    if args.baseline:
+        baseline_path = (
+            args.baseline
+            if args.baseline.is_absolute()
+            else ROOT / args.baseline
+        ).resolve()
+        try:
+            baseline_path.relative_to(ROOT)
+        except ValueError:
+            fail("--baseline must stay inside the repository")
+        try:
+            expected = baseline_path.read_text(encoding="utf-8")
+        except OSError as error:
+            fail(f"--baseline could not be read: {error}")
+        if expected != serialized:
+            fail(f"deterministic baseline mismatch: {baseline_path}")
+
     if args.output:
         output = (ROOT / args.output).resolve() if not args.output.is_absolute() else args.output
         try:

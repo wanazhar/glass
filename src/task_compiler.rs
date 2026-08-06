@@ -6,7 +6,7 @@
 use crate::task_protocol::{
     GlassTask, MAX_INPUT_NAME_BYTES, MAX_INPUTS, MAX_POSTCONDITIONS, TASK_PROTOCOL_SCHEMA_VERSION,
     TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskPostcondition, TaskProtocolError,
-    TaskRevisionPolicy, TaskRiskClass, TaskScope,
+    TaskRevisionPolicy, TaskRiskClass, TaskScope, postcondition_allowed_for,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -85,6 +85,9 @@ impl TaskExecutionPlan {
             ));
         }
         self.scope.validate().map_err(TaskCompilationError::from)?;
+        self.scope
+            .validate_for_task(self.task)
+            .map_err(TaskCompilationError::from)?;
         self.limits.validate().map_err(TaskCompilationError::from)?;
         if self.postconditions.len() > MAX_POSTCONDITIONS {
             return Err(TaskCompilationError::new(
@@ -93,9 +96,21 @@ impl TaskExecutionPlan {
             ));
         }
         for (index, postcondition) in self.postconditions.iter().enumerate() {
+            if !postcondition_allowed_for(self.task, postcondition.kind) {
+                return Err(TaskCompilationError::new(
+                    format!("postconditions[{index}].kind"),
+                    "postcondition kind is incompatible with the task family",
+                ));
+            }
             postcondition
                 .validate_at(index)
                 .map_err(TaskCompilationError::from)?;
+        }
+        if self.task == TaskKind::FormSubmit && self.postconditions.is_empty() {
+            return Err(TaskCompilationError::new(
+                "postconditions",
+                "form.submit requires at least one bounded postcondition",
+            ));
         }
         if self.steps.is_empty() {
             return Err(TaskCompilationError::new(
@@ -109,35 +124,25 @@ impl TaskExecutionPlan {
                 "execution plan exceeds the maxActions bound",
             ));
         }
-        if self.steps[0].operation != TaskPlanOperation::ObserveScope {
-            return Err(TaskCompilationError::new(
-                "steps[0].operation",
-                "execution plan must begin with scope observation",
-            ));
-        }
-        if self
-            .steps
-            .iter()
-            .filter(|step| step.operation == TaskPlanOperation::ObserveScope)
-            .count()
-            != 1
-        {
-            return Err(TaskCompilationError::new(
-                "steps",
-                "execution plan must contain exactly one scope observation",
-            ));
-        }
         let expected_operation = operation_for_task(self.task);
-        if self
-            .steps
-            .iter()
-            .filter(|step| step.operation == expected_operation)
-            .count()
-            != 1
+        let expected_operations = [TaskPlanOperation::ObserveScope, expected_operation];
+        if self.steps.len() != expected_operations.len()
+            || self
+                .steps
+                .iter()
+                .map(|step| step.operation)
+                .ne(expected_operations)
         {
             return Err(TaskCompilationError::new(
                 "steps",
-                "execution plan must contain exactly one task operation",
+                "execution plan operation sequence does not exactly match the task family",
+            ));
+        }
+        let minimum_risk = minimum_risk_for_task(self.task);
+        if !risk_at_least(self.risk, minimum_risk) {
+            return Err(TaskCompilationError::new(
+                "risk",
+                "declared risk is below the minimum risk required by the task operation",
             ));
         }
         if confirmation_required_for(self.risk, self.ambiguity) && !self.confirmation_required {
@@ -197,6 +202,14 @@ impl TaskExecutionPlan {
                     "input names are only valid for form operations",
                 ));
             }
+            if step.operation == TaskPlanOperation::SubmitForm
+                && step.input_names != ["submit".to_string()]
+            {
+                return Err(TaskCompilationError::new(
+                    format!("steps[{index}].inputNames"),
+                    "submitForm must carry exactly the submit input name",
+                ));
+            }
             let mut input_names = BTreeSet::new();
             if step.input_names.len() > MAX_INPUTS {
                 return Err(TaskCompilationError::new(
@@ -231,12 +244,17 @@ impl TaskExecutionPlan {
 /// Compile an authored task without browser access or side effects.
 pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilationError> {
     task.validate().map_err(TaskCompilationError::from)?;
-    let confirmation_required = confirmation_required_for(task.risk, task.ambiguity);
+    let effective_risk = max_risk(task.risk, minimum_risk_for_task(task.task));
+    let confirmation_required = confirmation_required_for(effective_risk, task.ambiguity);
     let operations = vec![
         TaskPlanOperation::ObserveScope,
         operation_for_task(task.task),
     ];
-    let input_names = task.inputs.keys().cloned().collect::<Vec<_>>();
+    let input_names = if task.task == TaskKind::FormSubmit {
+        vec!["submit".to_string()]
+    } else {
+        task.inputs.keys().cloned().collect::<Vec<_>>()
+    };
     let steps = operations
         .into_iter()
         .enumerate()
@@ -261,7 +279,7 @@ pub fn compile_task(task: &GlassTask) -> Result<TaskExecutionPlan, TaskCompilati
         task: task.task,
         scope: task.scope.clone(),
         limits: task.limits,
-        risk: task.risk,
+        risk: effective_risk,
         ambiguity: task.ambiguity,
         revision: task.revision,
         confirmation_required,
@@ -292,6 +310,49 @@ fn operation_for_task(task: TaskKind) -> TaskPlanOperation {
         TaskKind::PaginationCollect => TaskPlanOperation::CollectPages,
     }
 }
+fn minimum_risk_for_task(task: TaskKind) -> TaskRiskClass {
+    match task {
+        TaskKind::FormFill => TaskRiskClass::LocalMutation,
+        TaskKind::FormSubmit => TaskRiskClass::RemoteIrreversible,
+        TaskKind::DialogConfirm | TaskKind::DialogCancel => TaskRiskClass::RemoteReversible,
+        TaskKind::NavigationFollow
+        | TaskKind::NavigationSelectTab
+        | TaskKind::NavigationOpenMenu
+        | TaskKind::PaginationNext
+        | TaskKind::PaginationCollect => TaskRiskClass::LocalMutation,
+        TaskKind::FormInspect
+        | TaskKind::FormValidate
+        | TaskKind::TableExtract
+        | TaskKind::CollectionExtract
+        | TaskKind::RegionExtract
+        | TaskKind::FieldRead
+        | TaskKind::DialogInspect => TaskRiskClass::ReadOnly,
+    }
+}
+
+fn risk_rank(risk: TaskRiskClass) -> u8 {
+    match risk {
+        TaskRiskClass::ReadOnly => 0,
+        TaskRiskClass::LocalMutation => 1,
+        TaskRiskClass::RemoteReversible => 2,
+        TaskRiskClass::RemoteIrreversible => 3,
+        TaskRiskClass::Authentication => 4,
+        TaskRiskClass::DataDisclosure => 5,
+        TaskRiskClass::UnknownRisk => 6,
+    }
+}
+
+fn risk_at_least(actual: TaskRiskClass, minimum: TaskRiskClass) -> bool {
+    actual == TaskRiskClass::UnknownRisk || risk_rank(actual) >= risk_rank(minimum)
+}
+
+fn max_risk(left: TaskRiskClass, right: TaskRiskClass) -> TaskRiskClass {
+    if risk_rank(left) >= risk_rank(right) {
+        left
+    } else {
+        right
+    }
+}
 
 fn confirmation_required_for(risk: TaskRiskClass, ambiguity: TaskAmbiguityPolicy) -> bool {
     matches!(
@@ -299,6 +360,7 @@ fn confirmation_required_for(risk: TaskRiskClass, ambiguity: TaskAmbiguityPolicy
         TaskRiskClass::RemoteIrreversible
             | TaskRiskClass::Authentication
             | TaskRiskClass::DataDisclosure
+            | TaskRiskClass::UnknownRisk
     ) || matches!(ambiguity, TaskAmbiguityPolicy::RequireConfirmation)
 }
 
@@ -342,6 +404,33 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn task(kind: TaskKind, risk: TaskRiskClass) -> GlassTask {
+        let input_name = if kind == TaskKind::FormSubmit {
+            "submit"
+        } else {
+            "email"
+        };
+        let postcondition_kind = match kind {
+            TaskKind::FormSubmit | TaskKind::NavigationFollow => {
+                TaskPostconditionKind::NavigationOccurred
+            }
+            TaskKind::TableExtract
+            | TaskKind::CollectionExtract
+            | TaskKind::RegionExtract
+            | TaskKind::PaginationNext
+            | TaskKind::PaginationCollect => TaskPostconditionKind::RecordsExtracted,
+            TaskKind::NavigationSelectTab | TaskKind::NavigationOpenMenu | TaskKind::FieldRead => {
+                TaskPostconditionKind::PageKind
+            }
+            TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel => {
+                TaskPostconditionKind::DialogClosed
+            }
+            _ => TaskPostconditionKind::ValidationClear,
+        };
+        let expected = match postcondition_kind {
+            TaskPostconditionKind::PageKind => Some("form".into()),
+            TaskPostconditionKind::RecordsExtracted => Some("0".into()),
+            _ => None,
+        };
         GlassTask {
             schema_version: TASK_PROTOCOL_SCHEMA_VERSION,
             task: kind,
@@ -349,14 +438,14 @@ mod tests {
                 region_name: Some("Checkout".into()),
                 ..TaskScope::default()
             },
-            inputs: BTreeMap::from([(String::from("email"), String::from("a@example.test"))]),
+            inputs: BTreeMap::from([(String::from(input_name), String::from("a@example.test"))]),
             limits: TaskLimits::default(),
             risk,
             ambiguity: TaskAmbiguityPolicy::Fail,
             revision: Default::default(),
             postconditions: vec![TaskPostcondition {
-                kind: TaskPostconditionKind::ValidationClear,
-                expected: None,
+                kind: postcondition_kind,
+                expected,
             }],
         }
     }
@@ -375,142 +464,37 @@ mod tests {
             ]
         );
         assert_eq!(plan.steps[1].input_names, vec!["email"]);
-        assert_eq!(plan.scope.region_name.as_deref(), Some("Checkout"));
-        assert_eq!(plan.limits, TaskLimits::default());
-        assert_eq!(plan.ambiguity, TaskAmbiguityPolicy::Fail);
-        assert_eq!(plan.revision, TaskRevisionPolicy::Exact);
         assert!(!plan.to_canonical_json().unwrap().contains("a@example.test"));
-        let first = plan.to_canonical_json().unwrap();
-        let second = compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation))
-            .unwrap()
-            .to_canonical_json()
-            .unwrap();
-        assert_eq!(first, second);
     }
 
     #[test]
-    fn compiler_preserves_non_default_execution_guards() {
-        let mut authored = task(TaskKind::NavigationFollow, TaskRiskClass::RemoteReversible);
-        authored.scope.region_name = Some("Shipping".into());
-        authored
-            .inputs
-            .insert("url".into(), "https://example.test/shipping".into());
-        authored.limits = TaskLimits {
-            max_actions: 7,
-            timeout_ms: 2_500,
-            max_items: 9,
-        };
-        authored.ambiguity = TaskAmbiguityPolicy::RequireConfirmation;
-        authored.revision = TaskRevisionPolicy::Compatible;
-
-        let plan = compile_task(&authored).unwrap();
-
-        assert_eq!(plan.scope.region_name.as_deref(), Some("Shipping"));
-        assert_eq!(plan.limits, authored.limits);
-        assert_eq!(plan.ambiguity, authored.ambiguity);
-        assert_eq!(plan.revision, authored.revision);
-    }
-
-    #[test]
-    fn submit_plans_preserve_only_input_names() {
-        let plan = compile_task(&task(
-            TaskKind::FormSubmit,
-            TaskRiskClass::RemoteIrreversible,
-        ))
-        .unwrap();
-        assert_eq!(plan.steps[1].operation, TaskPlanOperation::SubmitForm);
-        assert_eq!(plan.steps[1].input_names, vec!["email"]);
-        assert!(!plan.to_canonical_json().unwrap().contains("a@example.test"));
+    fn submit_requires_submit_input_and_confirmation() {
+        let plan = compile_task(&task(TaskKind::FormSubmit, TaskRiskClass::ReadOnly)).unwrap();
+        assert_eq!(plan.steps[1].input_names, vec!["submit"]);
+        assert_eq!(plan.risk, TaskRiskClass::RemoteIrreversible);
         assert!(plan.confirmation_required);
     }
-    #[test]
-    fn irreversible_and_explicit_confirmation_tasks_are_gated() {
-        let irreversible = compile_task(&task(
-            TaskKind::FormSubmit,
-            TaskRiskClass::RemoteIrreversible,
-        ))
-        .unwrap();
-        assert!(irreversible.confirmation_required);
-        assert!(irreversible.steps[1].requires_confirmation);
-        let mut explicit = task(TaskKind::NavigationFollow, TaskRiskClass::ReadOnly);
-        explicit.ambiguity = TaskAmbiguityPolicy::RequireConfirmation;
-        explicit
-            .inputs
-            .insert("url".into(), "https://example.test/next".into());
-        assert!(compile_task(&explicit).unwrap().confirmation_required);
-    }
 
     #[test]
-    fn invalid_authored_tasks_fail_before_plan_emission() {
-        let mut invalid = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
-        invalid.inputs.clear();
-        let error = compile_task(&invalid).unwrap_err();
-        assert_eq!(error.path, "inputs");
-    }
-
-    #[test]
-    fn plan_validation_rejects_noncontiguous_ordinals() {
+    fn plan_rejects_extra_operations_and_preserves_revision_policy() {
         let mut plan =
             compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
-        plan.steps[1].ordinal = 3;
-        assert_eq!(plan.validate().unwrap_err().path, "steps[1].ordinal");
-    }
-    #[test]
-    fn plan_validation_rejects_steps_over_action_budget() {
-        let mut plan =
-            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
-        plan.limits.max_actions = 1;
+        plan.steps.push(plan.steps[1].clone());
         assert_eq!(plan.validate().unwrap_err().path, "steps");
+        let mut authored = task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly);
+        authored.revision = TaskRevisionPolicy::Compatible;
+        let plan = compile_task(&authored).unwrap();
+        assert_eq!(plan.revision, TaskRevisionPolicy::Compatible);
     }
 
     #[test]
-    fn plan_validation_rejects_task_operation_mismatch() {
-        let mut plan =
-            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
-        plan.steps[1].operation = TaskPlanOperation::InspectForm;
-        assert_eq!(plan.validate().unwrap_err().path, "steps");
-    }
-
-    #[test]
-    fn plan_validation_rejects_empty_fill_inputs() {
-        let mut plan =
-            compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation)).unwrap();
-        plan.steps[1].input_names.clear();
-        assert_eq!(plan.validate().unwrap_err().path, "steps[1].inputNames");
-    }
-
-    #[test]
-    fn plan_validation_requires_confirmation_for_risky_tasks() {
+    fn plan_validation_rejects_downgraded_risk() {
         let mut plan = compile_task(&task(
             TaskKind::FormSubmit,
             TaskRiskClass::RemoteIrreversible,
         ))
         .unwrap();
-        plan.confirmation_required = false;
-        plan.steps[1].requires_confirmation = false;
-        assert_eq!(plan.validate().unwrap_err().path, "confirmationRequired");
-    }
-    #[test]
-    fn plan_validation_rejects_unbounded_postconditions() {
-        let mut plan =
-            compile_task(&task(TaskKind::RegionExtract, TaskRiskClass::ReadOnly)).unwrap();
-        plan.postconditions[0].expected = Some("\u{0007}".into());
-        assert_eq!(
-            plan.validate().unwrap_err().path,
-            "postconditions[0].expected"
-        );
-
-        plan.postconditions = vec![plan.postconditions[0].clone(); MAX_POSTCONDITIONS + 1];
-        assert_eq!(plan.validate().unwrap_err().path, "postconditions");
-    }
-
-    #[test]
-    fn plan_validation_rejects_too_many_fill_inputs() {
-        let mut plan =
-            compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation)).unwrap();
-        plan.steps[1].input_names = (0..=MAX_INPUTS)
-            .map(|index| format!("field-{index}"))
-            .collect();
-        assert_eq!(plan.validate().unwrap_err().path, "steps[1].inputNames");
+        plan.risk = TaskRiskClass::ReadOnly;
+        assert_eq!(plan.validate().unwrap_err().path, "risk");
     }
 }

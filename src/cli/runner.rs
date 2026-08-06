@@ -1258,7 +1258,7 @@ async fn run_command(
             let result = session
                 .execute_task(&payload.task, payload.expected_revision, payload.confirmed)
                 .await?;
-            print_json(&result)?;
+            print_json_mode(&result, response_mode)?;
         }
         Commands::Capabilities
         | Commands::Daemon { .. }

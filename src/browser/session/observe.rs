@@ -463,7 +463,10 @@ impl BrowserSession {
             boundaries: page_state.boundaries,
             incomplete,
         };
-        if consistent && self.page_revision.load(Ordering::Relaxed) == end_revision {
+        if consistent
+            && !include_form_values
+            && self.page_revision.load(Ordering::Relaxed) == end_revision
+        {
             *self.observation_cache.lock().await = Some(CachedObservation {
                 revision: end_revision,
                 context: context.clone(),
@@ -581,6 +584,8 @@ impl BrowserSession {
             result.readOnly = !!el.readOnly;
             result.required = !!el.required;
             result.autocomplete = el.getAttribute('autocomplete') || '';
+            result.name = el.getAttribute('name') || '';
+            result.id = el.getAttribute('id') || '';
             result.inputType = (el.type || '').toLowerCase();
             return JSON.stringify(result);
         }"#;
@@ -633,14 +638,15 @@ impl BrowserSession {
                 .map(String::from)
                 .or_else(|| control.input_type.clone());
 
-            let is_password = input_type.as_deref() == Some("password");
-            let is_sensitive_autocomplete = parsed["autocomplete"]
-                .as_str()
-                .map(|ac| ac.starts_with("cc-") || ac == "current-password" || ac == "new-password")
-                .unwrap_or(false);
+            let input_type = input_type.unwrap_or_default();
+            let autocomplete = parsed["autocomplete"].as_str().unwrap_or_default();
+            let field_name = parsed["name"].as_str().unwrap_or_default();
+            let field_id = parsed["id"].as_str().unwrap_or_default();
+            let is_sensitive =
+                sensitive_form_field(&input_type, autocomplete, field_name, field_id);
 
             if let Some(val) = parsed["value"].as_str() {
-                if (is_password || is_sensitive_autocomplete) && !allow_sensitive {
+                if is_sensitive && !allow_sensitive {
                     control.value = Some("<redacted>".to_string());
                 } else {
                     let (truncated, _) = truncate_utf8(val, FORM_VALUE_MAX_BYTES);
@@ -653,16 +659,20 @@ impl BrowserSession {
             }
 
             if let Some(opt) = parsed["selectedOption"].as_str() {
-                let (truncated, _) = truncate_utf8(opt, SELECT_OPTION_MAX_BYTES);
-                control.selected_option = Some(truncated.to_string());
+                if is_sensitive && !allow_sensitive {
+                    control.selected_option = Some("<redacted>".to_string());
+                } else {
+                    let (truncated, _) = truncate_utf8(opt, SELECT_OPTION_MAX_BYTES);
+                    control.selected_option = Some(truncated.to_string());
+                }
             }
 
             control.empty = parsed["empty"].as_bool().unwrap_or(true);
             control.read_only = parsed["readOnly"].as_bool().unwrap_or(false);
             control.required = parsed["required"].as_bool().unwrap_or(false);
 
-            if let Some(it) = input_type {
-                control.input_type = Some(it);
+            if !input_type.is_empty() {
+                control.input_type = Some(input_type);
             }
         }
 
@@ -744,6 +754,41 @@ impl BrowserSession {
             context.take();
         }
     }
+}
+
+fn sensitive_form_field(input_type: &str, autocomplete: &str, name: &str, id: &str) -> bool {
+    let autocomplete = autocomplete.to_ascii_lowercase();
+    let identity = [input_type, autocomplete.as_str(), name, id]
+        .join(" ")
+        .to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "ssn",
+        "social-security",
+        "social_security",
+        "otp",
+        "one-time",
+        "one_time",
+        "verification-code",
+        "verification_code",
+        "auth-code",
+        "auth_code",
+        "pin",
+        "cvv",
+        "cvc",
+        "credit-card",
+        "credit_card",
+        "card-number",
+        "card_number",
+        "current-password",
+        "new-password",
+    ]
+    .iter()
+    .any(|marker| identity.contains(marker))
+        || autocomplete.starts_with("cc-")
 }
 
 fn is_stale_observation_context(error: &(dyn std::error::Error + 'static)) -> bool {

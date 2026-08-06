@@ -4,7 +4,6 @@
 //! these envelopes for the operation payload. The envelope is intentionally
 //! small: transport-specific framing, streaming, and authentication remain
 //! outside this contract.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -342,6 +341,13 @@ impl GlassRequest {
             validate_identifier(&lease.session_id, "mutationLease.sessionId")?;
             validate_identifier(&lease.token, "mutationLease.token")?;
         }
+        if let (Some(session_id), Some(lease)) = (&self.session_id, &self.mutation_lease)
+            && session_id != &lease.session_id
+        {
+            return Err(ProtocolError::InvalidField(
+                "sessionId must match mutationLease.sessionId".into(),
+            ));
+        }
         if self.operation.is_empty() || self.operation.len() > MAX_OPERATION_BYTES {
             return Err(ProtocolError::InvalidField(
                 "operation must be a bounded non-empty string".into(),
@@ -386,10 +392,13 @@ impl GlassRequest {
                 "expected operation {TASK_EXECUTE_OPERATION}"
             )));
         }
-        let payload: TaskExecutionPayload =
-            serde_json::from_value(self.payload.clone()).map_err(|error| {
-                ProtocolError::InvalidField(format!("task.execute payload: {error}"))
-            })?;
+        let mut value = self.payload.clone();
+        if let Value::Object(fields) = &mut value {
+            fields.remove("responseMode");
+        }
+        let payload: TaskExecutionPayload = serde_json::from_value(value).map_err(|error| {
+            ProtocolError::InvalidField(format!("task.execute payload: {error}"))
+        })?;
         payload.validate()?;
         Ok(payload)
     }

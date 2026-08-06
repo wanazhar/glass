@@ -1026,7 +1026,7 @@ impl BrowserSession {
     /// different target, or escalate without a full DOM round-trip.
     pub async fn failure_trace(
         &self,
-        outcome: ActionOutcome,
+        mut outcome: ActionOutcome,
         error: impl Into<String>,
     ) -> FailureTracePack {
         const MAX_TRACE_BYTES: usize = 8192;
@@ -1041,20 +1041,31 @@ impl BrowserSession {
             error_text.truncate(end);
         }
 
-        let last_observation =
-            self.observation_cache
-                .lock()
-                .await
-                .as_ref()
-                .map(|cached| CompactObservationTrace {
-                    page: PageInfo {
-                        url: redact_diagnostic_url(&cached.context.page.url),
-                        ..cached.context.page.clone()
-                    },
-                    revision: cached.revision,
-                    interactive: cached.context.accessibility.interactive.clone(),
-                    completeness: cached.context.accessibility.completeness.clone(),
-                });
+        // Failure traces are diagnostics, never a continuation of the
+        // value-bearing action result. Remove arbitrary evidence and scrub
+        // labels before serializing the trace.
+        if let Some(target) = outcome.target.as_mut() {
+            target.label = redact_diagnostic_text(&target.label);
+        }
+        outcome.evidence = None;
+
+        let last_observation = self.observation_cache.lock().await.as_ref().map(|cached| {
+            let mut page = cached.context.page.clone();
+            page.url = redact_diagnostic_url(&page.url);
+            page.title = redact_diagnostic_text(&page.title);
+            let mut interactive = cached.context.accessibility.interactive.clone();
+            for control in &mut interactive {
+                control.name = redact_diagnostic_text(&control.name);
+                control.value = None;
+                control.selected_option = None;
+            }
+            CompactObservationTrace {
+                page,
+                revision: cached.revision,
+                interactive,
+                completeness: cached.context.accessibility.completeness.clone(),
+            }
+        });
 
         let topology = topology::trace_for(&self.topology).await;
 

@@ -67,6 +67,9 @@ jobs:
       - name: Validate public read-only adapter inventory
         run: python3 scripts/check-public-readonly-adapters.py
 
+      - name: Validate Web IR corpus and deterministic baseline
+        run: python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
+
       - name: Build documentation
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 

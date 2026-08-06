@@ -138,6 +138,8 @@ pub struct StructuredExtractionContinuation {
     pub region_id: Option<String>,
     pub contract_hash: String,
     pub source_route: SemanticRouteIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_route_fingerprint: Option<String>,
 }
 
 /// Evidence supporting one extracted field.
@@ -325,19 +327,37 @@ impl BrowserSession {
             serde_json::to_value(&observation)?
         };
         let mut record = Map::new();
-        let mut truncated = false;
+        let mut truncated = observation.limits.truncated
+            || observation.limits.omitted_regions > 0
+            || observation.limits.omitted_targets > 0
+            || observation.limits.omitted_structured_records > 0;
         let mut next_index: Option<usize> = None;
-        let mut observed_items = 0usize;
+        let mut observed_items = observation.limits.omitted_structured_records;
+        let mut emitted_items = 0usize;
         let mut record_items = Vec::new();
         let mut field_provenance = Vec::with_capacity(request.fields.len());
         for field in &request.fields {
-            let value = extraction_source_value(&source, field);
-            let mut value = validate_extracted_value(value, field)?;
+            let mut value = extraction_source_value(&source, field)
+                .ok_or_else(|| format!("field path is missing: {}", field.path))?;
+            if value_contains_sensitive(&value) {
+                if field.path == "$.targets"
+                    || (field.path == "$"
+                        && field.name == "region"
+                        && field.kind == ExtractionKind::Object)
+                {
+                    redact_sensitive_value(&mut value);
+                } else {
+                    self.policy.require_sensitive_extraction()?;
+                }
+            }
+            let mut value = validate_extracted_value(Some(value), field)?;
             if let Value::Array(items) = &mut value {
                 let item_count = items.len();
                 observed_items = observed_items.saturating_add(item_count);
                 let start = start_index.min(item_count);
-                let end = start.saturating_add(request.max_items).min(item_count);
+                let remaining = request.max_items.saturating_sub(emitted_items);
+                let end = start.saturating_add(remaining).min(item_count);
+                emitted_items = emitted_items.saturating_add(end.saturating_sub(start));
                 truncated |= start > 0 || end < item_count;
                 if end < item_count {
                     next_index = Some(next_index.map_or(end, |current| current.max(end)));
@@ -356,13 +376,14 @@ impl BrowserSession {
             });
             record.insert(field.name.clone(), value);
         }
-        let source_route = observation.route.clone();
+        let source_route = sanitized_route(&observation.route);
         let continuation = next_index.map(|next_index| StructuredExtractionContinuation {
             next_index,
             source_revision: observation.revision,
             source_route: source_route.clone(),
             region_id: request.region_id.clone(),
             contract_hash: contract_hash.clone(),
+            source_route_fingerprint: Some(route_fingerprint(&observation.route)),
         });
         let result = StructuredExtractionResult {
             source_revision: observation.revision,
@@ -385,7 +406,13 @@ impl BrowserSession {
                 truncated,
             },
         };
-        finalize_extraction_result(result, request.max_bytes)
+        finalize_extraction_result_with_context(
+            result,
+            request.max_bytes,
+            Some(&contract_hash),
+            request.region_id.as_deref(),
+            Some(&route_fingerprint(&observation.route)),
+        )
     }
 
     /// Reconcile a run ID conservatively when the original session is gone.
@@ -414,33 +441,83 @@ pub fn recover_run(execution_id: &str) -> BrowserResult<RecoverRunResult> {
     })
 }
 
-fn finalize_extraction_result(
-    mut result: StructuredExtractionResult,
-    max_bytes: usize,
-) -> BrowserResult<StructuredExtractionResult> {
-    let serialized_bytes = serialized_extraction_result_bytes(&mut result)?;
-    if serialized_bytes > max_bytes {
-        return Err(format!(
-            "extraction exceeds maxBytes ({} > {})",
-            serialized_bytes, max_bytes
-        )
-        .into());
-    }
-    Ok(result)
-}
-
 fn serialized_extraction_result_bytes(
     result: &mut StructuredExtractionResult,
 ) -> BrowserResult<usize> {
-    let mut serialized_bytes = 0;
-    loop {
-        result.limits.serialized_bytes = serialized_bytes;
-        let next_bytes = serde_json::to_vec(result)?.len();
-        if next_bytes == serialized_bytes {
-            return Ok(serialized_bytes);
+    let mut observed = 0usize;
+    for _ in 0..8 {
+        let serialized = serde_json::to_vec(result)
+            .map_err(|error| format!("failed to serialize extraction result: {error}"))?;
+        let bytes = serialized.len();
+        result.limits.serialized_bytes = bytes;
+        if bytes == observed {
+            return Ok(bytes);
         }
-        serialized_bytes = next_bytes;
+        observed = bytes;
     }
+    Ok(observed)
+}
+
+#[cfg(test)]
+fn finalize_extraction_result(
+    result: StructuredExtractionResult,
+    max_bytes: usize,
+) -> BrowserResult<StructuredExtractionResult> {
+    finalize_extraction_result_with_context(result, max_bytes, None, None, None)
+}
+
+fn finalize_extraction_result_with_context(
+    mut result: StructuredExtractionResult,
+    max_bytes: usize,
+    contract_hash: Option<&str>,
+    region_id: Option<&str>,
+    route_fingerprint: Option<&str>,
+) -> BrowserResult<StructuredExtractionResult> {
+    loop {
+        let serialized_bytes = serialized_extraction_result_bytes(&mut result)?;
+        if serialized_bytes <= max_bytes {
+            return Ok(result);
+        }
+        let Some(removed_index) = trim_one_extraction_item(&mut result) else {
+            return Err(format!(
+                "extraction exceeds maxBytes ({} > {})",
+                serialized_bytes, max_bytes
+            )
+            .into());
+        };
+        if result.continuation.is_none()
+            && let Some(contract_hash) = contract_hash
+        {
+            result.continuation = Some(StructuredExtractionContinuation {
+                next_index: removed_index.saturating_add(1),
+                source_revision: result.source_revision,
+                region_id: region_id.map(str::to_string),
+                contract_hash: contract_hash.to_string(),
+                source_route: result.source_route.clone(),
+                source_route_fingerprint: route_fingerprint.map(str::to_string),
+            });
+        }
+        result.truncated = true;
+        result.limits.truncated = true;
+    }
+}
+
+fn trim_one_extraction_item(result: &mut StructuredExtractionResult) -> Option<usize> {
+    let field_name = {
+        let record = result.records.first_mut().and_then(Value::as_object_mut)?;
+        let (field, items) = record
+            .iter_mut()
+            .rev()
+            .find_map(|(field, value)| value.as_array_mut().map(|items| (field, items)))?;
+        items.pop()?;
+        field.clone()
+    };
+    result
+        .record_items
+        .iter()
+        .rposition(|item| item.field == field_name)
+        .map(|position| result.record_items.remove(position).index)
+        .or(Some(0))
 }
 
 fn validate_extraction_request(request: &StructuredExtractionRequest) -> BrowserResult<()> {
@@ -449,6 +526,11 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
     }
     if request.start_index > MAX_EXTRACTION_ITEMS {
         return Err(format!("startIndex must be <= {MAX_EXTRACTION_ITEMS}").into());
+    }
+    if let Some(region_id) = request.region_id.as_deref()
+        && (region_id.is_empty() || region_id.len() > 128)
+    {
+        return Err("regionId must be 1..=128 bytes".into());
     }
     if let Some(continuation) = &request.continuation {
         if continuation.next_index > MAX_EXTRACTION_ITEMS {
@@ -466,15 +548,57 @@ fn validate_extraction_request(request: &StructuredExtractionRequest) -> Browser
     if !(1..=MAX_EXTRACTION_BYTES).contains(&request.max_bytes) {
         return Err(format!("maxBytes must be 1..={MAX_EXTRACTION_BYTES}").into());
     }
+    let mut names = std::collections::BTreeSet::new();
     for field in &request.fields {
-        if field.path.is_empty() {
-            return Err("extraction field paths must be non-empty".into());
+        if field.name.is_empty()
+            || field.name.len() > 128
+            || field.path.len() > 512
+            || !is_identifier(&field.name)
+        {
+            return Err("extraction field names and paths must be bounded identifiers".into());
         }
-        if field.name.is_empty() || field.name.len() > 128 || field.path.len() > 512 {
-            return Err("extraction field names and paths must be bounded".into());
+        if !names.insert(field.name.as_str()) {
+            return Err(format!("duplicate extraction field name: {}", field.name).into());
+        }
+        if !(is_semantic_path(&field.path)
+            || (field.path == "$"
+                && field.name == "region"
+                && field.kind == ExtractionKind::Object
+                && request.region_id.is_some()))
+        {
+            return Err(format!("invalid semantic extraction path: {}", field.path).into());
         }
     }
     Ok(())
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if index == 0 {
+                byte.is_ascii_alphabetic() || byte == b'_'
+            } else {
+                byte.is_ascii_alphanumeric() || byte == b'_'
+            }
+        })
+}
+
+fn is_semantic_path(path: &str) -> bool {
+    let Some(path) = path.strip_prefix("$.") else {
+        return false;
+    };
+    !path.is_empty()
+        && !path.contains(['[', ']', '/', ':', '(', ')', '#', '@'])
+        && path.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment.bytes().enumerate().all(|(index, byte)| {
+                    if index == 0 {
+                        byte.is_ascii_alphabetic() || byte == b'_'
+                    } else {
+                        byte.is_ascii_alphanumeric() || byte == b'_'
+                    }
+                })
+        })
 }
 
 fn extraction_field_is_sensitive(field: &ExtractionField) -> bool {
@@ -513,9 +637,37 @@ fn continuation_matches_source(
     contract_hash: &str,
 ) -> bool {
     continuation.source_revision == revision
-        && continuation.source_route == *route
+        && match continuation.source_route_fingerprint.as_deref() {
+            Some(fingerprint) => fingerprint == route_fingerprint(route),
+            None => continuation.source_route == sanitized_route(route),
+        }
         && continuation.region_id.as_deref() == region_id
         && continuation.contract_hash == contract_hash
+}
+
+fn route_fingerprint(route: &SemanticRouteIdentity) -> String {
+    let canonical = serde_json::to_vec(route).expect("route identity is serializable");
+    let digest = Sha256::digest(canonical);
+    format!("sha256:{digest:x}")
+}
+
+fn sanitized_route(route: &SemanticRouteIdentity) -> SemanticRouteIdentity {
+    let mut sanitized = route.clone();
+    if let Ok(mut url) = url::Url::parse(&sanitized.url) {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        sanitized.url = url.to_string();
+    } else {
+        sanitized.url = sanitized
+            .url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
+    }
+    sanitized
 }
 
 fn extraction_contract_hash(request: &StructuredExtractionRequest) -> String {
@@ -524,36 +676,76 @@ fn extraction_contract_hash(request: &StructuredExtractionRequest) -> String {
     let digest = Sha256::digest(canonical);
     format!("sha256:{digest:x}")
 }
+
 fn extraction_source_value(source: &Value, field: &ExtractionField) -> Option<Value> {
-    let value = value_at_path(source, &field.path).cloned();
+    if field.path == "$" && field.name == "region" && field.kind == ExtractionKind::Object {
+        return Some(source.clone());
+    }
+    if let Some(value) = value_at_path(source, &field.path) {
+        return Some(value.clone());
+    }
     if field.path == "$.structuredRecords"
-        && value
-            .as_ref()
-            .is_some_and(|value| value.as_array().is_some_and(Vec::is_empty))
+        && matches!(
+            field.kind,
+            ExtractionKind::Table | ExtractionKind::RepeatedItems
+        )
     {
-        value_at_path(source, "$.targets").cloned().or(value)
-    } else {
-        value
+        return source.get("targets").cloned();
+    }
+    None
+}
+
+fn value_contains_sensitive(value: &Value) -> bool {
+    match value {
+        Value::String(value) => is_sensitive_extraction_text(value),
+        Value::Array(values) => values.iter().any(value_contains_sensitive),
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            is_sensitive_extraction_text(key) || value_contains_sensitive(value)
+        }),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+fn redact_sensitive_value(value: &mut Value) {
+    match value {
+        Value::String(text) if is_sensitive_extraction_text(text) => {
+            *text = "<redacted>".into();
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_sensitive_value(value);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                if is_sensitive_extraction_text(key) {
+                    *value = Value::String("<redacted>".into());
+                } else {
+                    redact_sensitive_value(value);
+                }
+            }
+        }
+        Value::String(_) | Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
 fn value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    if path.is_empty() || path == "$" {
-        return Some(value);
-    }
-    path.trim_start_matches("$.")
+    path.strip_prefix("$.")?
         .split('.')
         .try_fold(value, |current, segment| current.get(segment))
 }
 
 fn validate_extracted_value(value: Option<Value>, field: &ExtractionField) -> BrowserResult<Value> {
-    let value = value.unwrap_or(Value::Null);
+    let Some(value) = value else {
+        return Err(format!("field path is missing: {}", field.path).into());
+    };
     let valid = match field.kind {
         ExtractionKind::Scalar => value.is_string() || value.is_number() || value.is_boolean(),
         ExtractionKind::OptionalScalar => {
             value.is_null() || value.is_string() || value.is_number() || value.is_boolean()
         }
-        ExtractionKind::String | ExtractionKind::Enum => value.is_string(),
+        ExtractionKind::String | ExtractionKind::Enum => value
+            .as_str()
+            .is_some_and(|value| !value.is_empty() && value.len() <= 256),
         ExtractionKind::OptionalString => value.is_null() || value.is_string(),
         ExtractionKind::Number => value.is_number(),
         ExtractionKind::Currency => {
@@ -578,7 +770,6 @@ fn validate_extracted_value(value: Option<Value>, field: &ExtractionField) -> Br
     }
     Ok(value)
 }
-
 fn provenance_entity_ids(value: &Value) -> Vec<String> {
     let Value::Array(items) = value else {
         return Vec::new();
@@ -598,7 +789,7 @@ fn extraction_record_items(
 ) -> Vec<StructuredExtractionRecord> {
     if !matches!(
         field.kind,
-        ExtractionKind::Table | ExtractionKind::RepeatedItems
+        ExtractionKind::List | ExtractionKind::Table | ExtractionKind::RepeatedItems
     ) {
         return Vec::new();
     }
@@ -661,7 +852,7 @@ mod tests {
         let request = StructuredExtractionRequest {
             fields: vec![ExtractionField {
                 name: "title".into(),
-                path: "page.title".into(),
+                path: "$.page.title".into(),
                 kind: ExtractionKind::Scalar,
             }],
             region_id: None,
@@ -700,7 +891,7 @@ mod tests {
         let route = SemanticRouteIdentity {
             target_id: "target".into(),
             frame_id: "frame".into(),
-            url: "https://example.test".into(),
+            url: "https://example.test/".into(),
         };
         let mut request = StructuredExtractionRequest {
             fields: vec![ExtractionField {
@@ -716,6 +907,7 @@ mod tests {
                 contract_hash: "sha256:test".into(),
                 region_id: None,
                 source_route: route.clone(),
+                source_route_fingerprint: None,
             }),
             max_items: 2,
             max_bytes: 1024,
@@ -907,6 +1099,11 @@ mod tests {
                     frame_id: "frame".into(),
                     url: "https://example.test".into(),
                 },
+                source_route_fingerprint: Some(route_fingerprint(&SemanticRouteIdentity {
+                    target_id: "target".into(),
+                    frame_id: "frame".into(),
+                    url: "https://example.test".into(),
+                })),
             }),
             limits: StructuredExtractionLimits {
                 max_items: 2,
@@ -954,5 +1151,60 @@ mod tests {
         assert_eq!(serialized["fieldProvenance"][0]["entityIds"][0], "r7:b1");
         assert_eq!(serialized["limits"]["observedItems"], 3);
         assert_eq!(serialized["limits"]["truncated"], true);
+    }
+    #[test]
+    fn extraction_contract_rejects_ambiguous_or_unsafe_paths() {
+        let mut request = StructuredExtractionRequest {
+            fields: vec![
+                ExtractionField {
+                    name: "title".into(),
+                    path: "$.page.title".into(),
+                    kind: ExtractionKind::String,
+                },
+                ExtractionField {
+                    name: "title".into(),
+                    path: "$.page.url".into(),
+                    kind: ExtractionKind::Url,
+                },
+            ],
+            region_id: Some("r".into()),
+            start_index: 0,
+            continuation: None,
+            max_items: 1,
+            max_bytes: 1024,
+        };
+        assert!(validate_extraction_request(&request).is_err());
+        request.fields[1].name = "url".into();
+        request.fields[1].path = "$.page[href]".into();
+        assert!(validate_extraction_request(&request).is_err());
+        request.fields[1].path = "$".into();
+        assert!(validate_extraction_request(&request).is_err());
+    }
+
+    #[test]
+    fn missing_and_explicit_null_are_distinct() {
+        let field = ExtractionField {
+            name: "value".into(),
+            path: "$.value".into(),
+            kind: ExtractionKind::OptionalString,
+        };
+        assert!(validate_extracted_value(None, &field).is_err());
+        assert_eq!(
+            validate_extracted_value(Some(Value::Null), &field).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn extraction_route_redacts_credentials_and_query_identity() {
+        let route = SemanticRouteIdentity {
+            target_id: "target".into(),
+            frame_id: "frame".into(),
+            url: "https://user:pass@example.test/path?token=secret#fragment".into(),
+        };
+        let sanitized = sanitized_route(&route);
+        assert_eq!(sanitized.target_id, route.target_id);
+        assert_eq!(sanitized.frame_id, route.frame_id);
+        assert_eq!(sanitized.url, "https://example.test/path");
     }
 }

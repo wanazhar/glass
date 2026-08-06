@@ -12,6 +12,10 @@ package_version=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
 
 echo "[i] Glass package version: ${package_version}"
 
+echo ""
+echo "--- Validating Web IR corpus and deterministic baseline ---"
+python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
+
 # ── Build release-size profile ──────────────────────────────────────────────
 
 echo ""

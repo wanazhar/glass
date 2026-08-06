@@ -1,10 +1,12 @@
 //! Retry policies for browser operations.
 //!
-//! Provides [`RetryPolicy`] and retry-aware wrappers around common
-//! browser operations. Transport and CDP protocol errors are retried;
-//! targeting ambiguity (element not found, ambiguous selector, stale
-//! reference) always fails immediately — Glass never guesses a
-//! destructive target.
+//! Retries are permitted only for typed failures that explicitly prove they
+//! stopped before dispatch. Targeting ambiguity (element not found, ambiguous
+//! selector, stale reference) and all post-dispatch or uncertain failures
+//! always fail immediately.
+//!
+//! Glass never guesses a destructive target or repeats an operation whose
+//! browser-side dispatch status is unknown.
 
 use super::*;
 use std::sync::Arc;
@@ -15,9 +17,9 @@ pub type RetryPredicate = Arc<dyn Fn(&(dyn std::error::Error + 'static)) -> bool
 
 /// Policy controlling retry behaviour for browser operations.
 ///
-/// Transport and CDP protocol errors are retried. Targeting ambiguity
-/// (element not found, ambiguous selector, stale reference) always
-/// fails immediately — Glass never guesses a destructive target.
+/// Only typed failures that explicitly prove they stopped before dispatch
+/// are eligible for retry. Targeting ambiguity and uncertain dispatch status
+/// always fail immediately — Glass never guesses a destructive target.
 pub struct RetryPolicy {
     pub max_attempts: usize,
     pub backoff: Duration,
@@ -67,23 +69,32 @@ impl RetryPolicy {
         }
     }
 }
+fn is_retryable_pre_dispatch(error: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(error) = error.downcast_ref::<ActionContractError>() {
+        return error.phase == ActionFailurePhase::Preflight
+            && error.recovery_strategy == RecoveryStrategy::RetrySafe;
+    }
+    if let Some(error) = error.downcast_ref::<ActionVerificationError>() {
+        return matches!(
+            error.phase,
+            ActionFailurePhase::Preflight | ActionFailurePhase::TargetResolution
+        ) && error.recovery_strategy == RecoveryStrategy::RetrySafe;
+    }
+    false
+}
 
-fn is_retryable_default(error: &(dyn std::error::Error + 'static)) -> bool {
-    if error.downcast_ref::<TargetError>().is_some() {
-        return false;
-    }
-    if error
-        .downcast_ref::<crate::browser::cdp::CdpError>()
-        .is_some()
-    {
-        return true;
-    }
-    true
+fn should_retry(policy: &RetryPolicy, error: &(dyn std::error::Error + 'static)) -> bool {
+    is_retryable_pre_dispatch(error)
+        && policy
+            .predicate
+            .as_ref()
+            .is_none_or(|predicate| predicate(error))
 }
 
 impl BrowserSession {
-    /// Click one element with retry on transport/CDP errors.
-    /// Targeting ambiguity always fails immediately.
+    /// Click one element. Retries are limited to typed, pre-dispatch
+    /// failures that explicitly opt into safe recovery.
+    /// Targeting ambiguity and uncertain dispatch status always fail.
     pub async fn click_with_retry(
         &self,
         target: &str,
@@ -93,12 +104,7 @@ impl BrowserSession {
             match self.click(target).await {
                 Ok(outcome) => return Ok(outcome),
                 Err(error) => {
-                    let retryable = policy
-                        .predicate
-                        .as_ref()
-                        .map(|pred| pred(error.as_ref()))
-                        .unwrap_or_else(|| is_retryable_default(error.as_ref()));
-                    if !retryable || attempt == policy.max_attempts {
+                    if !should_retry(policy, error.as_ref()) || attempt == policy.max_attempts {
                         return Err(error);
                     }
                     tracing::debug!(attempt, ?policy.backoff, "click retry");
@@ -109,7 +115,8 @@ impl BrowserSession {
         unreachable!("loop always returns")
     }
 
-    /// Navigate to a URL with retry on transport/CDP errors.
+    /// Navigate to a URL. Retries are limited to typed, pre-dispatch
+    /// failures that explicitly opt into safe recovery.
     pub async fn navigate_with_retry(
         &self,
         url: &str,
@@ -119,12 +126,7 @@ impl BrowserSession {
             match self.navigate(url).await {
                 Ok(page) => return Ok(page),
                 Err(error) => {
-                    let retryable = policy
-                        .predicate
-                        .as_ref()
-                        .map(|pred| pred(error.as_ref()))
-                        .unwrap_or_else(|| is_retryable_default(error.as_ref()));
-                    if !retryable || attempt == policy.max_attempts {
+                    if !should_retry(policy, error.as_ref()) || attempt == policy.max_attempts {
                         return Err(error);
                     }
                     tracing::debug!(attempt, ?policy.backoff, "navigate retry");
@@ -162,7 +164,7 @@ mod tests {
             recovery: None,
             diagnostics: None,
         };
-        assert!(!is_retryable_default(&target_error));
+        assert!(!is_retryable_pre_dispatch(&target_error));
     }
 
     #[test]
@@ -174,7 +176,7 @@ mod tests {
             recovery: None,
             diagnostics: None,
         };
-        assert!(!is_retryable_default(&target_error));
+        assert!(!is_retryable_pre_dispatch(&target_error));
     }
 
     #[test]
@@ -186,7 +188,7 @@ mod tests {
             recovery: None,
             diagnostics: None,
         };
-        assert!(!is_retryable_default(&target_error));
+        assert!(!is_retryable_pre_dispatch(&target_error));
     }
 
     #[test]

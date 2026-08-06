@@ -24,6 +24,7 @@ const MAX_TARGETS: usize = 32;
 const MAX_CHANGE_ITEMS: usize = 128;
 const MAX_STRUCTURED_RECORDS: usize = 256;
 const MAX_STRUCTURED_FIELDS: usize = 32;
+const MAX_STRUCTURED_BYTES: usize = 64 * 1024;
 const MAX_ROLE_BYTES: usize = 64;
 const MAX_VISIBLE_TEXT_BYTES: usize = 8 * 1024;
 
@@ -247,7 +248,7 @@ pub struct SemanticRegion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_count: Option<usize>,
     pub confidence: SemanticConfidence,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub structured_records: Vec<SemanticStructuredRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
@@ -265,6 +266,10 @@ pub struct SemanticObservationLimits {
     pub omitted_regions: usize,
     #[serde(default)]
     pub omitted_targets: usize,
+    #[serde(default)]
+    pub omitted_structured_records: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitted_bytes: Option<usize>,
     /// Number of bytes included in the optional bounded text projection.
@@ -335,14 +340,50 @@ impl SemanticObservation {
                 &mut anchors,
             );
         }
-        for region in &mut regions {
-            if matches!(
-                region.kind,
-                SemanticRegionKind::Collection | SemanticRegionKind::Table
-            ) && let Some(node) = find_region_node(context, region.id.as_str())
-            {
-                region.structured_records = structured_records_for_region(node, region.kind);
+        let mut omitted_structured_records = 0usize;
+        if level.includes_text() {
+            for region in &mut regions {
+                if matches!(
+                    region.kind,
+                    SemanticRegionKind::Collection | SemanticRegionKind::Table
+                ) && let Some(node) = find_region_node(context, region.id.as_str())
+                {
+                    let available = structured_record_count(node, region.kind);
+                    region.structured_records = structured_records_for_region(node, region.kind);
+                    omitted_structured_records = omitted_structured_records
+                        .saturating_add(available.saturating_sub(region.structured_records.len()));
+                }
             }
+        }
+        let mut retained_records = 0usize;
+        let mut structured_bytes = 0usize;
+        for region in &mut regions {
+            while retained_records.saturating_add(region.structured_records.len())
+                > MAX_STRUCTURED_RECORDS
+                || structured_bytes.saturating_add(
+                    region
+                        .structured_records
+                        .iter()
+                        .filter_map(|record| {
+                            serde_json::to_vec(record).ok().map(|bytes| bytes.len())
+                        })
+                        .sum::<usize>(),
+                ) > MAX_STRUCTURED_BYTES
+            {
+                if region.structured_records.is_empty() {
+                    break;
+                }
+                region.structured_records.pop();
+                omitted_structured_records = omitted_structured_records.saturating_add(1);
+            }
+            retained_records = retained_records.saturating_add(region.structured_records.len());
+            structured_bytes = structured_bytes.saturating_add(
+                region
+                    .structured_records
+                    .iter()
+                    .filter_map(|record| serde_json::to_vec(record).ok().map(|bytes| bytes.len()))
+                    .sum::<usize>(),
+            );
         }
         if regions.is_empty() {
             regions.push(SemanticRegion {
@@ -410,11 +451,14 @@ impl SemanticObservation {
                 truncated: context.accessibility.truncated
                     || context.accessibility.omitted_count > 0
                     || !context.incomplete.is_empty()
+                    || omitted_structured_records > 0
                     || bounded_text
                         .as_deref()
                         .is_some_and(|text| text.ends_with("[truncated]")),
                 omitted_regions: 0,
                 omitted_targets: context.accessibility.omitted_count,
+                omitted_structured_records,
+                structured_bytes: level.includes_text().then_some(structured_bytes),
                 omitted_bytes: None,
                 text_bytes: bounded_text.as_ref().map(String::len),
                 text_truncated: bounded_text
@@ -491,6 +535,15 @@ impl SemanticObservation {
             .is_some_and(|text| text.ends_with("[truncated]"));
         observation.limits.omitted_bytes =
             selected_text.map(|text| context.text.len().saturating_sub(text.len()));
+        let scoped_structured_bytes = observation
+            .regions
+            .iter()
+            .flat_map(|region| region.structured_records.iter())
+            .filter_map(|record| serde_json::to_vec(record).ok())
+            .map(|bytes| bytes.len())
+            .sum();
+        observation.limits.structured_bytes =
+            level.includes_text().then_some(scoped_structured_bytes);
         observation.accessibility = level.includes_accessibility().then(|| {
             region_node
                 .map(|node| vec![to_semantic_node(node)])
@@ -655,6 +708,8 @@ impl SemanticObservation {
             ));
         }
         let mut region_ids = BTreeSet::new();
+        let mut total_structured_records = 0usize;
+        let mut total_structured_bytes = 0usize;
         for (index, region) in self.regions.iter().enumerate() {
             let path = format!("regions[{index}]");
             validate_text(&format!("{path}.id"), &region.id, MAX_ID_BYTES, false)?;
@@ -736,6 +791,15 @@ impl SemanticObservation {
                     )?;
                 }
             }
+            total_structured_records =
+                total_structured_records.saturating_add(region.structured_records.len());
+            total_structured_bytes = total_structured_bytes.saturating_add(
+                region
+                    .structured_records
+                    .iter()
+                    .filter_map(|record| serde_json::to_vec(record).ok().map(|bytes| bytes.len()))
+                    .sum::<usize>(),
+            );
             if let Some(expansion) = &region.expansion {
                 if expansion.region_id != region.id || expansion.revision != self.revision {
                     return Err(SemanticObservationError::new(
@@ -750,6 +814,32 @@ impl SemanticObservation {
                     ));
                 }
             }
+        }
+        if total_structured_records > MAX_STRUCTURED_RECORDS {
+            return Err(SemanticObservationError::new(
+                "regions.structuredRecords",
+                format!("contains more than {MAX_STRUCTURED_RECORDS} aggregate records"),
+            ));
+        }
+        if total_structured_bytes > MAX_STRUCTURED_BYTES {
+            return Err(SemanticObservationError::new(
+                "regions.structuredRecords",
+                format!("contains more than {MAX_STRUCTURED_BYTES} aggregate bytes"),
+            ));
+        }
+        if self.limits.omitted_structured_records > 0 && !self.limits.truncated {
+            return Err(SemanticObservationError::new(
+                "limits.truncated",
+                "structured record omissions require truncated=true",
+            ));
+        }
+        if let Some(reported) = self.limits.structured_bytes
+            && reported != total_structured_bytes
+        {
+            return Err(SemanticObservationError::new(
+                "limits.structuredBytes",
+                "structured byte count does not match the serialized records",
+            ));
         }
         Ok(())
     }
@@ -788,6 +878,16 @@ fn validate_level_payload(
         return Err(SemanticObservationError::new(
             "text",
             "visible text payload does not match observation level",
+        ));
+    }
+    let has_structured_records = observation
+        .regions
+        .iter()
+        .any(|region| !region.structured_records.is_empty());
+    if has_structured_records && !observation.level.includes_text() {
+        return Err(SemanticObservationError::new(
+            "regions.structuredRecords",
+            "structured records are not available at summary or interactive observation levels",
         ));
     }
     if observation.accessibility.is_some() != observation.level.includes_accessibility() {
@@ -1075,6 +1175,20 @@ impl std::fmt::Display for SemanticObservationError {
 }
 
 impl std::error::Error for SemanticObservationError {}
+fn structured_record_count(node: &CompactAxNode, kind: SemanticRegionKind) -> usize {
+    let role = match kind {
+        SemanticRegionKind::Table => "row",
+        SemanticRegionKind::Collection => "listitem",
+        _ => return 0,
+    };
+    let mut nodes = Vec::new();
+    collect_role_nodes(node, role, &mut nodes);
+    nodes
+        .into_iter()
+        .filter(|node| kind != SemanticRegionKind::Table || !contains_role(node, "columnheader"))
+        .count()
+}
+
 fn structured_records_for_region(
     node: &CompactAxNode,
     kind: SemanticRegionKind,
@@ -1868,7 +1982,7 @@ mod tests {
             })
             .collect();
         let error = too_many.validate().unwrap_err();
-        assert_eq!(error.path, "regions[0].structuredRecords");
+        assert_eq!(error.path, "regions.structuredRecords");
 
         let mut too_many_fields = observation();
         too_many_fields.regions[0].structured_records = vec![SemanticStructuredRecord {
@@ -1877,14 +1991,14 @@ mod tests {
                 .collect(),
         }];
         let error = too_many_fields.validate().unwrap_err();
-        assert_eq!(error.path, "regions[0].structuredRecords[0].fields");
+        assert_eq!(error.path, "regions.structuredRecords");
 
         let mut oversized_value = observation();
         oversized_value.regions[0].structured_records = vec![SemanticStructuredRecord {
             fields: BTreeMap::from([("name".into(), "x".repeat(MAX_LABEL_BYTES + 1))]),
         }];
         let error = oversized_value.validate().unwrap_err();
-        assert_eq!(error.path, "regions[0].structuredRecords[0].fields.name");
+        assert_eq!(error.path, "regions.structuredRecords");
     }
 
     #[test]
@@ -2154,5 +2268,16 @@ mod tests {
         assert_eq!(document.page.confidence, SemanticConfidence::High);
         assert!(document.limits.text_truncated);
         assert_eq!(document.limits.viewport.unwrap().scroll_y, 500.0);
+    }
+    #[test]
+    fn summary_observations_reject_structured_record_payloads() {
+        let mut summary = observation();
+        summary.regions[0]
+            .structured_records
+            .push(SemanticStructuredRecord {
+                fields: BTreeMap::from([("name".into(), "secret".into())]),
+            });
+        let error = summary.validate().unwrap_err();
+        assert_eq!(error.path, "regions.structuredRecords");
     }
 }

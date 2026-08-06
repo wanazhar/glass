@@ -892,12 +892,31 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
         "validateTask" => crate::protocol::TASK_VALIDATE_OPERATION.to_string(),
         _ => format!("browser.{name}"),
     };
+    let session_id = arguments
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mutation_lease = arguments
+        .get("mutationLease")
+        .and_then(Value::as_object)
+        .and_then(|lease| {
+            Some(crate::protocol::MutationLeaseRef {
+                session_id: lease.get("sessionId")?.as_str()?.to_string(),
+                token: lease.get("token")?.as_str()?.to_string(),
+            })
+        })
+        .or_else(|| {
+            Some(crate::protocol::MutationLeaseRef {
+                session_id: session_id.clone()?,
+                token: arguments.get("leaseToken")?.as_str()?.to_string(),
+            })
+        });
     let canonical = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
         request_id,
         correlation_id: None,
-        session_id: None,
-        mutation_lease: None,
+        session_id,
+        mutation_lease,
         operation,
         payload: arguments,
         deadline_ms: None,
@@ -1011,11 +1030,12 @@ async fn mutation_lease_error(
     } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
-    let token = request
-        .params
-        .get("arguments")
-        .and_then(|arguments| arguments.get("leaseToken"))
-        .and_then(Value::as_str);
+    let arguments = request.params.get("arguments")?;
+    let lease = arguments.get("mutationLease").and_then(Value::as_object);
+    let token = lease
+        .and_then(|lease| lease.get("token"))
+        .and_then(Value::as_str)
+        .or_else(|| arguments.get("leaseToken").and_then(Value::as_str));
     let Some(token) = token else {
         return Some(error_response(
             request.id.response_value(),
@@ -1515,20 +1535,21 @@ fn browser_free_session_snapshot(
     from: Option<&str>,
     to: Option<&str>,
     profile: &str,
+    response_mode: ResponseMode,
 ) -> BrowserResult<Value> {
     let store = SessionSnapshotStore::new(default_session_snapshot_path(profile));
     match operation {
-        "list" => serialized_result(&store.list()?),
+        "list" => serialized_result_mode(&store.list()?, response_mode),
         "inspect" => {
             let id = from.ok_or("sessionSnapshot inspect requires from")?;
-            serialized_result(&store.load(id)?)
+            serialized_result_mode(&store.load(id)?, response_mode)
         }
         "diff" => {
             let left = from.ok_or("sessionSnapshot diff requires from")?;
             let right = to.ok_or("sessionSnapshot diff requires to")?;
-            serialized_result(&store.diff(left, right)?)
+            serialized_result_mode(&store.diff(left, right)?, response_mode)
         }
-        "purge" => serialized_result(&json!({"removed": store.purge()?})),
+        "purge" => serialized_result_mode(&json!({"removed": store.purge()?}), response_mode),
         _ => Err("sessionSnapshot operation must be list, inspect, diff, or purge".into()),
     }
 }
@@ -1639,6 +1660,7 @@ async fn call_tool(
             from.as_deref(),
             to.as_deref(),
             &options.profile,
+            response_mode,
         );
     }
     if let ToolInvocation::RecoverRun { execution_id } = &invocation {
@@ -1655,7 +1677,7 @@ async fn call_tool(
         let result = session
             .execute_task(task, expected_revision, confirmed)
             .await?;
-        return serialized_result(&result);
+        return serialized_result_mode(&result, response_mode);
     }
     match invocation {
         ToolInvocation::PreflightNavigation { .. } => {
@@ -1929,23 +1951,25 @@ async fn call_tool(
                         observation,
                     );
                     store.save(&snapshot)?;
-                    serialized_result(&snapshot)
+                    serialized_result_mode(&snapshot, response_mode)
                 }
-                "list" => serialized_result(&store.list()?),
+                "list" => serialized_result_mode(&store.list()?, response_mode),
                 "inspect" => {
                     let id = from
                         .as_deref()
                         .ok_or("sessionSnapshot inspect requires from")?;
-                    serialized_result(&store.load(id)?)
+                    serialized_result_mode(&store.load(id)?, response_mode)
                 }
                 "diff" => {
                     let left = from
                         .as_deref()
                         .ok_or("sessionSnapshot diff requires from")?;
                     let right = to.as_deref().ok_or("sessionSnapshot diff requires to")?;
-                    serialized_result(&store.diff(left, right)?)
+                    serialized_result_mode(&store.diff(left, right)?, response_mode)
                 }
-                "purge" => serialized_result(&json!({"removed": store.purge()?})),
+                "purge" => {
+                    serialized_result_mode(&json!({"removed": store.purge()?}), response_mode)
+                }
                 _ => Err(
                     "sessionSnapshot operation must be create, list, inspect, diff, or purge"
                         .into(),
@@ -2564,6 +2588,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .as_object_mut()
                 .ok_or("actAndVerify arguments must be an object")?;
             object.remove("responseMode");
+            object.remove("leaseToken");
             let timeout_ms = object
                 .remove("timeoutMs")
                 .and_then(|value| value.as_u64())
@@ -2627,6 +2652,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 .ok_or("executeIntent arguments must be an object")?;
             object.remove("candidateId");
             object.remove("value");
+            object.remove("leaseToken");
             let request = SemanticIntentRequest::from_json(&serde_json::to_string(&request)?)?;
             let request = SemanticIntentExecutionRequest {
                 request,
@@ -2932,6 +2958,17 @@ fn tools() -> Vec<Tool> {
                         "type": "boolean",
                         "default": false,
                         "description": "Explicit confirmation for risky or ambiguity-gated tasks."
+                    },
+                    "leaseToken": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Mutation lease token issued by glass/lease/acquire when running against a daemon."
+                    },
+                    "responseMode": {
+                        "type": "string",
+                        "enum": ["minimal", "normal", "diagnostic"],
+                        "default": "minimal"
                     }
                 },
                 "required": ["task", "expectedRevision"],
@@ -3133,6 +3170,7 @@ fn tools() -> Vec<Tool> {
                     "expectedRevision":{"type":"integer","minimum":0},
                     "predicate":{"type":"object"},
                     "timeoutMs":{"type":"integer","minimum":1,"maximum":300000,"default":10000},
+                    "leaseToken":{"type":"string","minLength":1,"maxLength":256},
                     "responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}
                 }
             }),
@@ -3299,7 +3337,8 @@ fn tools() -> Vec<Tool> {
                     "resolutionPolicy": {"type": "string", "enum": ["reportOnly", "requireExact", "requireUniqueHighConfidence", "allowUniqueMediumConfidence", "interactiveConfirmation"]},
                     "expectedRevision": {"type": "integer", "minimum": 0},
                     "candidateId": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "value": {"type": "string", "maxLength": 4096}
+                    "value": {"type": "string", "maxLength": 4096},
+                    "leaseToken": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
         },
@@ -3344,7 +3383,8 @@ fn tools() -> Vec<Tool> {
                     "recordId": {"type": "string", "minLength": 1, "maxLength": 128},
                     "state": {"type": "string", "enum": ["stale", "contradicted", "quarantined"]},
                     "reason": {"type": "string", "maxLength": 256},
-                    "observedAt": {"type": "string", "maxLength": 64}
+                    "observedAt": {"type": "string", "maxLength": 64},
+                    "leaseToken": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
         },
@@ -3356,7 +3396,8 @@ fn tools() -> Vec<Tool> {
                 "additionalProperties": false,
                 "required": ["origin"],
                 "properties": {
-                    "origin": {"type": "string", "minLength": 1, "maxLength": 2048}
+                    "origin": {"type": "string", "minLength": 1, "maxLength": 2048},
+                    "leaseToken": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
         },
@@ -4462,6 +4503,14 @@ mod tests {
         assert_eq!(
             execute_task["inputSchema"]["properties"]["confirmed"]["description"],
             "Explicit confirmation for risky or ambiguity-gated tasks."
+        );
+        assert_eq!(
+            execute_task["inputSchema"]["properties"]["leaseToken"]["type"],
+            "string"
+        );
+        assert_eq!(
+            execute_task["inputSchema"]["properties"]["responseMode"]["enum"],
+            json!(["minimal", "normal", "diagnostic"])
         );
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));

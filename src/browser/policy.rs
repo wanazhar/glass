@@ -532,6 +532,29 @@ impl BrowserPolicy {
         Ok(url)
     }
 
+    /// Validate the URL of an already-open page immediately before attaching
+    /// to it. This uses the same hardened checks as navigation but reports
+    /// the attach operation, so callers cannot bypass host policy by selecting
+    /// a pre-existing target.
+    pub fn require_existing_target_url(&self, value: &str) -> Result<Url, PolicyError> {
+        let url = Url::parse(value).map_err(|error| PolicyError::Denied {
+            operation: "attach".to_string(),
+            reason: format!("target URL is invalid: {error}"),
+        })?;
+        self.check_url(&url).map_err(|error| match error {
+            PolicyError::Denied { reason, .. } => PolicyError::Denied {
+                operation: "attach".to_string(),
+                reason,
+            },
+            PolicyError::ConfirmationRequired { reason, .. } => PolicyError::ConfirmationRequired {
+                operation: "attach".to_string(),
+                reason,
+            },
+            other => other,
+        })?;
+        Ok(url)
+    }
+
     /// Evaluate a navigation URL without starting a browser or consuming a
     /// confirmation token. This intentionally performs no DNS lookup; hardened
     /// policies report an unpinned host instead of resolving it here.
@@ -753,12 +776,12 @@ fn normalize_navigation_url(value: &str) -> String {
 
 fn redacted_url(url: &Url) -> String {
     let mut safe = url.clone();
-    if !safe.username().is_empty() {
-        let _ = safe.set_username("");
-    }
-    if safe.password().is_some() {
-        let _ = safe.set_password(None);
-    }
+    let _ = safe.set_username("");
+    let _ = safe.set_password(None);
+    // Query and fragment components are not navigation identity and may
+    // carry credentials or other user-controlled secrets.
+    safe.set_query(None);
+    safe.set_fragment(None);
     safe.to_string()
 }
 

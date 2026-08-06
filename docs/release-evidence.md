@@ -31,6 +31,7 @@ python3 scripts/check-feature-parity.py
 python3 scripts/check-reliability-matrix.py
 python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-version-sync.py
+python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 python3 scripts/check-github-releases.py
 cargo package --locked --no-verify
 cargo publish --locked --dry-run --no-verify

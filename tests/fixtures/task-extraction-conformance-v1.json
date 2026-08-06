@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "taskExecute": {
+    "protocolVersion": 1,
+    "requestId": "task-execute-extraction-1",
+    "sessionId": "session-extraction-1",
+    "mutationLease": {
+      "sessionId": "session-extraction-1",
+      "token": "lease-extraction-1"
+    },
+    "operation": "task.execute",
+    "payload": {
+      "task": {
+        "schemaVersion": 1,
+        "task": "collection.extract",
+        "scope": {"regionName": "Results"},
+        "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 2},
+        "risk": "readOnly"
+      },
+      "expectedRevision": 7,
+      "confirmed": false,
+      "responseMode": "normal"
+    }
+  },
+  "extractionRequest": {
+    "fields": [
+      {"name": "name", "path": "$.name", "kind": "string"},
+      {"name": "price", "path": "$.price", "kind": "currency"}
+    ],
+    "regionId": "region-results",
+    "startIndex": 0,
+    "maxItems": 2,
+    "maxBytes": 4096
+  },
+  "extractionResult": {
+    "sourceRoute": {"targetId": "target-1", "frameId": "frame-0", "url": "https://fixture.invalid/results"},
+    "records": [],
+    "recordItems": [
+      {"field": "name", "index": 0, "value": "Alpha", "entityIds": ["item-0"]},
+      {"field": "price", "index": 0, "value": 12.5, "entityIds": ["item-0"]}
+    ],
+    "truncated": true,
+    "provenance": ["semantic:region-results"],
+    "fieldProvenance": [
+      {"field": "name", "path": "$.name", "regionId": "region-results", "entityIds": ["item-0"]}
+    ],
+    "continuation": {
+      "nextIndex": 1,
+      "sourceRevision": 7,
+      "regionId": "region-results",
+      "contractHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceRoute": {"targetId": "target-1", "frameId": "frame-0", "url": "https://fixture.invalid/results"}
+    },
+    "limits": {
+      "maxItems": 2,
+      "maxBytes": 4096,
+      "observedItems": 1,
+      "serializedBytes": 512,
+      "truncated": true
+    }
+  },
+  "extractionError": {
+    "code": "extraction.continuationMismatch",
+    "phase": "verification",
+    "message": "continuation does not match the current semantic source, region, or extraction contract",
+    "mutationPossible": false,
+    "retry": {
+      "classification": "safeAfterReobserve",
+      "recommendedOperation": "inspect_page"
+    },
+    "details": {
+      "kind": "extraction",
+      "continuation": true
+    }
+  }
+}

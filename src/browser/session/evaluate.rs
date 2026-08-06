@@ -16,7 +16,7 @@ impl BrowserSession {
                 // Invalidate synchronously so the next cached observation cannot race
                 // the asynchronous CDP mutation event stream.
                 self.invalidate_observation().await;
-                self.record_audit("evaluate", redact_diagnostic_text(expression));
+                self.record_audit("evaluate", "javascript evaluation completed");
                 result
             })
             .await

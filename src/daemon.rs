@@ -7,7 +7,7 @@
 use clap::Parser;
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,9 @@ pub const MAX_DAEMON_ACTIVE_RUNS: usize = 16;
 pub const DAEMON_SESSION_ID_PREFIX: &str = "daemon-session-";
 const MIN_LEASE_TTL_MS: u64 = 100;
 const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
+const MAX_DAEMON_LOG_BYTES: u64 = 64 * 1024;
+const MAX_DAEMON_RECOVERY_BYTES: usize = 64 * 1024;
+const MAX_DAEMON_STATUS_BYTES: usize = 64 * 1024;
 
 /// A single mutation lease held by one local client owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +202,39 @@ fn validate_lease_identity(value: &str, field: &str) -> Result<(), LeaseError> {
     Ok(())
 }
 
+fn validate_active_run(run: &DaemonActiveRun) -> Result<(), String> {
+    validate_lease_identity(&run.request_id, "requestId")
+        .map_err(|error| error.to_string())?;
+    validate_lease_identity(&run.owner_id, "ownerId").map_err(|error| error.to_string())?;
+    if run.started_at.is_empty() || run.started_at.len() > 128 {
+        return Err("startedAt must be a bounded non-empty timestamp".into());
+    }
+    Ok(())
+}
+
+fn validate_recovery_report(report: &DaemonRecovery) -> Result<(), String> {
+    if report.schema_version != DAEMON_RECOVERY_SCHEMA_VERSION {
+        return Err("unsupported daemon recovery schema".into());
+    }
+    if report.state != "reconciliation_required" {
+        return Err("unsupported daemon recovery state".into());
+    }
+    if report.runs.len() > MAX_DAEMON_ACTIVE_RUNS {
+        return Err("daemon recovery contains too many active runs".into());
+    }
+    if report.recovered_at.is_empty() || report.recovered_at.len() > 128 {
+        return Err("recoveredAt must be a bounded non-empty timestamp".into());
+    }
+    let mut request_ids = BTreeSet::new();
+    for run in &report.runs {
+        validate_active_run(run)?;
+        if !request_ids.insert(run.request_id.as_str()) {
+            return Err("daemon recovery contains duplicate request IDs".into());
+        }
+    }
+    Ok(())
+}
+
 /// One workflow request active in one daemon client session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,6 +314,10 @@ impl DaemonStatusState {
         request_id: &str,
         owner_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        validate_lease_identity(request_id, "requestId")
+            .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
+        validate_lease_identity(owner_id, "ownerId")
+            .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
         if request_id.is_empty() || request_id.len() > 128 {
             return Err("workflow request id exceeds the daemon status bound".into());
         }
@@ -355,6 +395,24 @@ fn append_daemon_log(status_path: &Path, message: &str) -> Result<(), std::io::E
     writeln!(log, "{message}")
 }
 
+fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(max_bytes.saturating_add(1));
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "daemon artifact {} exceeds the {} byte bound",
+            path.display(),
+            max_bytes
+        )
+        .into());
+    }
+    Ok(bytes)
+}
+
 fn write_recovery_report(
     status_path: &Path,
     runs: &[DaemonActiveRun],
@@ -362,16 +420,23 @@ fn write_recovery_report(
     if runs.is_empty() {
         return Ok(());
     }
+    if runs.len() > MAX_DAEMON_ACTIVE_RUNS {
+        return Err("daemon recovery contains too many active runs".into());
+    }
     let report = DaemonRecovery {
         schema_version: DAEMON_RECOVERY_SCHEMA_VERSION,
         state: "reconciliation_required".into(),
         recovered_at: chrono::Utc::now().to_rfc3339(),
         runs: runs.to_vec(),
     };
-    std::fs::write(
-        recovery_path_for(status_path),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
+    validate_recovery_report(&report).map_err(|error| -> Box<dyn std::error::Error> {
+        error.into()
+    })?;
+    let bytes = serde_json::to_vec_pretty(&report)?;
+    if bytes.len() > MAX_DAEMON_RECOVERY_BYTES {
+        return Err("daemon recovery report exceeds its serialized size bound".into());
+    }
+    std::fs::write(recovery_path_for(status_path), bytes)?;
     Ok(())
 }
 
@@ -380,10 +445,10 @@ fn read_recovery(status_path: &Path) -> Result<Option<DaemonRecovery>, Box<dyn s
     if !path.is_file() {
         return Ok(None);
     }
-    let report: DaemonRecovery = serde_json::from_slice(&std::fs::read(path)?)?;
-    if report.schema_version != DAEMON_RECOVERY_SCHEMA_VERSION {
-        return Err("unsupported daemon recovery schema".into());
-    }
+    let report: DaemonRecovery =
+        serde_json::from_slice(&read_bounded_file(&path, MAX_DAEMON_RECOVERY_BYTES)?)?;
+    validate_recovery_report(&report)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     Ok(Some(report))
 }
 
@@ -563,6 +628,9 @@ pub fn acknowledge_recovery(
     let (_, default_status) = default_paths();
     let status_path = status_path.unwrap_or(&default_status);
     let path = recovery_path_for(status_path);
+    if reconciled_request_ids.len() > MAX_DAEMON_ACTIVE_RUNS {
+        return Err("recovery acknowledgement exceeds the daemon run bound".into());
+    }
     let Some(report) = read_recovery(status_path)? else {
         return Ok(serde_json::json!({
             "status": "clear",
@@ -605,7 +673,8 @@ pub fn acknowledge_recovery(
 
 /// Read a bounded tail of the daemon log without exposing an unbounded file.
 pub fn logs(status_path: Option<&Path>) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    const MAX_LOG_BYTES: usize = 64 * 1024;
+    use std::io::{Read, Seek, SeekFrom};
+
     let (_, default_status) = default_paths();
     let status_path = status_path.unwrap_or(&default_status);
     let path = log_path_for(status_path);
@@ -617,13 +686,17 @@ pub fn logs(status_path: Option<&Path>) -> Result<serde_json::Value, Box<dyn std
             "truncated": false,
         }));
     }
-    let bytes = std::fs::read(&path)?;
-    let truncated = bytes.len() > MAX_LOG_BYTES;
-    let start = bytes.len().saturating_sub(MAX_LOG_BYTES);
+    let file_size = std::fs::metadata(&path)?.len();
+    let truncated = file_size > MAX_DAEMON_LOG_BYTES;
+    let start = file_size.saturating_sub(MAX_DAEMON_LOG_BYTES);
+    let mut file = std::fs::File::open(&path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(MAX_DAEMON_LOG_BYTES as usize);
+    file.take(MAX_DAEMON_LOG_BYTES).read_to_end(&mut bytes)?;
     Ok(serde_json::json!({
         "status": "available",
         "path": path,
-        "content": String::from_utf8_lossy(&bytes[start..]),
+        "content": String::from_utf8_lossy(&bytes),
         "truncated": truncated,
     }))
 }
@@ -786,14 +859,40 @@ fn authorize_local_peer(stream: &tokio::net::UnixStream) -> Result<(), Box<dyn s
     Ok(())
 }
 
+fn validate_status(path: &Path, status: &DaemonStatus) -> Result<(), String> {
+    if status.protocol_version != DAEMON_PROTOCOL_VERSION {
+        return Err("unsupported daemon status protocol".into());
+    }
+    if !matches!(status.state.as_str(), "running" | "stopping" | "stopped") {
+        return Err("unsupported daemon status state".into());
+    }
+    if status.status_path != path {
+        return Err("daemon status path does not match the requested status".into());
+    }
+    if status.client_sessions > MAX_DAEMON_CLIENT_SESSIONS {
+        return Err("daemon status reports too many client sessions".into());
+    }
+    if status.active_runs.len() > MAX_DAEMON_ACTIVE_RUNS {
+        return Err("daemon status reports too many active workflows".into());
+    }
+    let mut request_ids = BTreeSet::new();
+    for run in &status.active_runs {
+        validate_active_run(run)?;
+        if !request_ids.insert(run.request_id.as_str()) {
+            return Err("daemon status contains duplicate workflow request IDs".into());
+        }
+    }
+    Ok(())
+}
+
 fn read_status(path: &Path) -> Result<Option<DaemonStatus>, Box<dyn std::error::Error>> {
     if !path.is_file() {
         return Ok(None);
     }
-    let status: DaemonStatus = serde_json::from_slice(&std::fs::read(path)?)?;
-    if status.protocol_version != DAEMON_PROTOCOL_VERSION {
-        return Err("unsupported daemon status protocol".into());
-    }
+    let status: DaemonStatus =
+        serde_json::from_slice(&read_bounded_file(path, MAX_DAEMON_STATUS_BYTES)?)?;
+    validate_status(path, &status)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     Ok(Some(status))
 }
 
@@ -818,10 +917,15 @@ fn remove_socket_if_safe(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn write_status(path: &Path, status: &DaemonStatus) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::write(path, serde_json::to_vec_pretty(status)?)?;
+    validate_status(path, status)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let bytes = serde_json::to_vec_pretty(status)?;
+    if bytes.len() > MAX_DAEMON_STATUS_BYTES {
+        return Err("daemon status exceeds its serialized size bound".into());
+    }
+    std::fs::write(path, bytes)?;
     Ok(())
 }
-
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
@@ -1049,6 +1153,54 @@ mod tests {
         assert_eq!(value["truncated"], true);
         assert_eq!(value["content"].as_str().unwrap().len(), 64 * 1024);
         std::fs::remove_file(log_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn daemon_status_reader_rejects_unknown_state() {
+        let root =
+            std::env::temp_dir().join(format!("glass-daemon-status-state-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("daemon.json");
+        let status = serde_json::json!({
+            "protocolVersion": DAEMON_PROTOCOL_VERSION,
+            "state": "future_state",
+            "pid": 42,
+            "socket": root.join("glass.sock"),
+            "statusPath": status_path,
+            "startedAt": "2026-07-28T00:00:00Z",
+            "transport": "unix-mcp-isolated-sessions",
+            "clientSessions": 0,
+            "activeRuns": []
+        });
+        std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
+
+        let result = read_status(&status_path);
+
+        assert!(result.is_err());
+        std::fs::remove_file(status_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_recovery_reader_rejects_oversized_and_unknown_state() {
+        let root =
+            std::env::temp_dir().join(format!("glass-daemon-recovery-bound-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("daemon.json");
+        let recovery_path = recovery_path_for(&status_path);
+        std::fs::write(&recovery_path, vec![b'x'; MAX_DAEMON_RECOVERY_BYTES + 1]).unwrap();
+        assert!(read_recovery(&status_path).is_err());
+
+        let report = serde_json::json!({
+            "schemaVersion": DAEMON_RECOVERY_SCHEMA_VERSION,
+            "state": "unknown",
+            "recoveredAt": "2026-07-28T00:00:00Z",
+            "runs": []
+        });
+        std::fs::write(&recovery_path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(read_recovery(&status_path).is_err());
+
+        std::fs::remove_file(recovery_path).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 }

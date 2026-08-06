@@ -13,6 +13,7 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_OPERATION_BYTES: usize = 96;
 const MAX_ERROR_CODE_BYTES: usize = 64;
 const MAX_MESSAGE_BYTES: usize = 512;
+const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
 const MAX_DEADLINE_MS: u64 = 15 * 60 * 1_000;
 
 /// Canonical transport operation for browser-free Web IR validation.
@@ -563,6 +564,9 @@ impl GlassResponse {
         if let Some(correlation_id) = &self.correlation_id {
             validate_identifier(correlation_id, "correlationId")?;
         }
+        if let Some(error) = &self.error {
+            error.validate()?;
+        }
         match (self.ok, self.result.is_some(), self.error.is_some()) {
             (true, true, false) | (false, false, true) => Ok(()),
             _ => Err(ProtocolError::InvalidField(
@@ -746,6 +750,16 @@ impl GlassError {
             &self.retry.recommended_operation,
             "retry.recommendedOperation",
         )?;
+        if let Some(details) = &self.details {
+            let detail_bytes = serde_json::to_vec(details).map_err(|error| {
+                ProtocolError::InvalidField(format!("error details are not serializable: {error}"))
+            })?;
+            if detail_bytes.len() > MAX_ERROR_DETAILS_BYTES {
+                return Err(ProtocolError::InvalidField(format!(
+                    "error details must be at most {MAX_ERROR_DETAILS_BYTES} bytes"
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -881,6 +895,30 @@ mod tests {
         let mut invalid = response.clone();
         invalid.ok = true;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn response_validation_rejects_unbounded_error_diagnostics() {
+        let response = GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "request-1".into(),
+            correlation_id: None,
+            ok: false,
+            result: None,
+            error: Some(GlassError {
+                code: "invalid".into(),
+                phase: ErrorPhase::Preflight,
+                message: "request rejected".into(),
+                mutation_possible: false,
+                retry: RetryGuidance::default(),
+                retryable: None,
+                details: Some(serde_json::json!({
+                    "diagnostic": "x".repeat(MAX_ERROR_DETAILS_BYTES)
+                })),
+            }),
+        };
+        let error = response.validate().unwrap_err();
+        assert!(error.to_string().contains("error details must be at most"));
     }
 
     #[test]

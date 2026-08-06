@@ -288,6 +288,13 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
             _ => {}
         }
     }
+    for value in fixture["invalidResponses"].as_array().unwrap() {
+        let response: GlassResponse = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            response.validate().is_err(),
+            "invalid response fixture must fail canonical validation"
+        );
+    }
 }
 
 #[test]

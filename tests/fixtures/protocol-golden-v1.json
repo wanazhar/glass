@@ -647,5 +647,16 @@
         }
       }
     }
+  ],
+  "invalidResponses": [
+    {
+      "protocolVersion": 1,
+      "requestId": "invalid-error-1",
+      "ok": false,
+      "error": {
+        "code": "",
+        "message": "empty error code must fail response validation"
+      }
+    }
   ]
 }

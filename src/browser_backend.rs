@@ -6,6 +6,7 @@
 //! this boundary.
 
 use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -66,25 +67,116 @@ fn validate_json(field: &str, value: &serde_json::Value) -> Result<(), BrowserBa
     }
     Ok(())
 }
+struct BoundedStringVisitor;
+
+impl<'de> Visitor<'de> for BoundedStringVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded UTF-8 string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(value)
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value.is_empty() {
+            return Err(E::custom("string must not be empty"));
+        }
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(E::custom("string exceeds the bounded payload size"));
+        }
+        Ok(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value.is_empty() {
+            return Err(E::custom("string must not be empty"));
+        }
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(E::custom("string exceeds the bounded payload size"));
+        }
+        Ok(value)
+    }
+}
+
 fn deserialize_bounded_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = String::deserialize(deserializer)?;
-    if value.len() > MAX_TEXT_BYTES {
-        return Err(serde::de::Error::custom("string exceeds the bounded payload size"));
-    }
-    Ok(value)
+    deserializer.deserialize_str(BoundedStringVisitor)
 }
+
+struct BoundedOptionVisitor;
+
+impl<'de> Visitor<'de> for BoundedOptionVisitor {
+    type Value = Option<String>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an optional bounded UTF-8 string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_bounded_string(deserializer).map(Some)
+    }
+}
+
 fn deserialize_bounded_string_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Option::<String>::deserialize(deserializer)?;
-    if value.as_deref().is_some_and(|value| value.len() > MAX_TEXT_BYTES) {
-        return Err(serde::de::Error::custom("string exceeds the bounded payload size"));
+    deserializer.deserialize_option(BoundedOptionVisitor)
+}
+
+
+struct BoundedVecVisitor<T, const LIMIT: usize>(std::marker::PhantomData<T>);
+
+impl<'de, T, const LIMIT: usize> Visitor<'de> for BoundedVecVisitor<T, LIMIT>
+where
+    T: Deserialize<'de>,
+{
+    type Value = Vec<T>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded sequence")
     }
-    Ok(value)
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0).min(LIMIT));
+        while values.len() < LIMIT {
+            let Some(value) = access.next_element()? else {
+                return Ok(values);
+            };
+            values.push(value);
+        }
+        if access.next_element::<T>()?.is_some() {
+            return Err(serde::de::Error::custom("vector exceeds the bounded entry count"));
+        }
+        Ok(values)
+    }
 }
 
 fn deserialize_bounded_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -92,22 +184,51 @@ where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    let value = Vec::<T>::deserialize(deserializer)?;
-    if value.len() > MAX_CONTEXTS {
-        return Err(serde::de::Error::custom("vector exceeds the bounded entry count"));
+    deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX_CONTEXTS>(std::marker::PhantomData))
+}
+
+struct BoundedBytesVisitor;
+
+impl<'de> Visitor<'de> for BoundedBytesVisitor {
+    type Value = Vec<u8>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded bytes")
     }
-    Ok(value)
+
+    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_bytes(value)
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value.len() > MAX_CAPTURE_BYTES {
+            return Err(E::custom("capture exceeds the bounded payload size"));
+        }
+        Ok(value.to_vec())
+    }
+
+    fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value.len() > MAX_CAPTURE_BYTES {
+            return Err(E::custom("capture exceeds the bounded payload size"));
+        }
+        Ok(value)
+    }
 }
 
 fn deserialize_bounded_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Vec::<u8>::deserialize(deserializer)?;
-    if value.len() > MAX_CAPTURE_BYTES {
-        return Err(serde::de::Error::custom("capture exceeds the bounded payload size"));
-    }
-    Ok(value)
+    deserializer.deserialize_bytes(BoundedBytesVisitor)
 }
 
 fn deserialize_bounded_json<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
@@ -120,28 +241,67 @@ where
     Ok(value)
 }
 
+struct BoundedMapVisitor<K, V, const LIMIT: usize>(std::marker::PhantomData<(K, V)>);
+
+impl<'de, K, V, const LIMIT: usize> Visitor<'de> for BoundedMapVisitor<K, V, LIMIT>
+where
+    K: Ord + Deserialize<'de>,
+    V: Deserialize<'de>,
+{
+    type Value = BTreeMap<K, V>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded map")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut values = BTreeMap::new();
+        while values.len() < LIMIT {
+            let Some((key, value)) = access.next_entry()? else {
+                return Ok(values);
+            };
+            values.insert(key, value);
+        }
+        if access.next_entry::<K, V>()?.is_some() {
+            return Err(serde::de::Error::custom("map exceeds the bounded entry count"));
+        }
+        Ok(values)
+    }
+}
+
 fn deserialize_bounded_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
 where
     D: serde::Deserializer<'de>,
     K: Ord + Deserialize<'de>,
     V: Deserialize<'de>,
 {
-    let value = BTreeMap::<K, V>::deserialize(deserializer)?;
-    if value.len() > MAX_STORAGE_ENTRIES {
-        return Err(serde::de::Error::custom("map exceeds the bounded entry count"));
-    }
-    Ok(value)
+    deserializer.deserialize_map(BoundedMapVisitor::<K, V, MAX_STORAGE_ENTRIES>(
+        std::marker::PhantomData,
+    ))
 }
 
 fn deserialize_bounded_candidates<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Vec::<String>::deserialize(deserializer)?;
-    if value.len() > MAX_BACKEND_CANDIDATES {
-        return Err(serde::de::Error::custom("candidate list exceeds the bounded entry count"));
-    }
-    Ok(value)
+    deserializer.deserialize_seq(BoundedVecVisitor::<String, MAX_BACKEND_CANDIDATES>(
+        std::marker::PhantomData,
+    ))
+}
+fn deserialize_bounded_capability_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<BrowserCapability, CapabilityDescriptor>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_map(BoundedMapVisitor::<
+        BrowserCapability,
+        CapabilityDescriptor,
+        MAX_CAPABILITIES,
+    >(std::marker::PhantomData))
 }
 /// Semantic operations that a backend may expose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -499,7 +659,7 @@ impl BackendProfile {
 struct BackendProfileWire {
     schema_version: u32,
     identity: BackendIdentity,
-    #[serde(default, deserialize_with = "deserialize_bounded_map")]
+    #[serde(default, deserialize_with = "deserialize_bounded_capability_map")]
     capabilities: BTreeMap<BrowserCapability, CapabilityDescriptor>,
 }
 
@@ -1350,6 +1510,108 @@ pub trait BrowserBackend: Send + Sync {
         self.profile().require_operation(operation, minimum)
     }
 }
+/// Mandatory validation and capability gate for backend calls.
+///
+/// Adapters implement [`BrowserBackend`] as the transport-facing primitive;
+/// callers should retain this dispatcher rather than invoking those primitives
+/// directly.  Every method validates inputs, checks the complete profile
+/// dependency closure, and validates the backend result before returning it.
+pub struct BrowserBackendDispatcher<'a> {
+    backend: &'a dyn BrowserBackend,
+}
+
+impl<'a> BrowserBackendDispatcher<'a> {
+    pub fn new(backend: &'a dyn BrowserBackend) -> Self {
+        Self { backend }
+    }
+
+    pub fn navigate(&self, request: NavigationRequest) -> BackendFuture<'a, NavigationResult> {
+        self.call(BackendOperation::Navigate, request, |backend, request| {
+            backend.navigate(request)
+        })
+    }
+
+    pub fn contexts(&self, request: ContextRequest) -> BackendFuture<'a, Vec<BrowsingContext>> {
+        let backend = self.backend;
+        Box::pin(async move {
+            request.validate()?;
+            backend.profile().validate()?;
+            backend.require_operation(BackendOperation::Contexts, SupportLevel::Available)?;
+            let result = backend.contexts(request).await?;
+            result.validate()?;
+            Ok(result)
+        })
+    }
+
+    pub fn evidence(&self, request: EvidenceRequest) -> BackendFuture<'a, EvidenceResult> {
+        self.call(BackendOperation::Evidence, request, |backend, request| {
+            backend.evidence(request)
+        })
+    }
+
+    pub fn action(&self, request: ActionRequest) -> BackendFuture<'a, ActionResult> {
+        self.call(BackendOperation::Action, request, |backend, request| {
+            backend.action(request)
+        })
+    }
+
+    pub fn effects(&self, request: EffectsRequest) -> BackendFuture<'a, EffectsResult> {
+        self.call(BackendOperation::Effects, request, |backend, request| {
+            backend.effects(request)
+        })
+    }
+
+    pub fn script(&self, request: ScriptRequest) -> BackendFuture<'a, ScriptResult> {
+        self.call(BackendOperation::Script, request, |backend, request| {
+            backend.script(request)
+        })
+    }
+
+    pub fn capture(&self, request: CaptureRequest) -> BackendFuture<'a, CaptureResult> {
+        self.call(BackendOperation::Capture, request, |backend, request| {
+            backend.capture(request)
+        })
+    }
+
+    pub fn storage(&self, request: StorageRequest) -> BackendFuture<'a, StorageResult> {
+        self.call(BackendOperation::Storage, request, |backend, request| {
+            backend.storage(request)
+        })
+    }
+
+    pub fn prompt(&self, request: PromptRequest) -> BackendFuture<'a, PromptResult> {
+        self.call(BackendOperation::Prompt, request, |backend, request| {
+            backend.prompt(request)
+        })
+    }
+
+    pub fn download(&self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult> {
+        self.call(BackendOperation::Download, request, |backend, request| {
+            backend.download(request)
+        })
+    }
+
+    fn call<T, R>(
+        &self,
+        operation: BackendOperation,
+        request: T,
+        call: impl FnOnce(&'a dyn BrowserBackend, T) -> BackendFuture<'a, R> + Send + 'a,
+    ) -> BackendFuture<'a, R>
+    where
+        T: BackendContract + Send + 'a,
+        R: BackendContract + Send + 'a,
+    {
+        let backend = self.backend;
+        Box::pin(async move {
+            request.validate()?;
+            backend.profile().validate()?;
+            backend.require_operation(operation, SupportLevel::Available)?;
+            let result = call(backend, request).await?;
+            result.validate()?;
+            Ok(result)
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1474,6 +1736,7 @@ mod tests {
     fn request_deserialization_rejects_oversized_strings() {
         let value = json!({ "url": "x".repeat(MAX_TEXT_BYTES + 1) });
         assert!(serde_json::from_value::<NavigationRequest>(value).is_err());
+        assert!(serde_json::from_value::<NavigationRequest>(json!({ "url": "" })).is_err());
     }
 
     #[test]
@@ -1559,5 +1822,32 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+    #[test]
+    fn direct_profile_deserialization_validates_dependency_closure() {
+        let mut value = serde_json::to_value(profile("closure-json", CertificationLevel::Partial)).unwrap();
+        value["capabilities"]["navigation"]["dependencies"] = json!([{
+            "capability": "evidence",
+            "minimum": "available",
+            "reason": "evidence required"
+        }]);
+        value["capabilities"]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence");
+        assert!(serde_json::from_value::<BackendProfile>(value).is_err());
+    }
+
+    #[test]
+    fn nested_deserialization_stops_at_bounded_counts() {
+        let requirements = (0..(MAX_CONTEXTS + 1))
+            .map(|_| json!({"capability": "evidence", "minimum": "available"}))
+            .collect::<Vec<_>>();
+        let request = json!({
+            "schemaVersion": 1,
+            "glassVersion": "0.3.1",
+            "requiredCapabilities": requirements
+        });
+        assert!(serde_json::from_value::<BackendSelectionRequest>(request).is_err());
     }
 }

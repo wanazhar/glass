@@ -780,16 +780,21 @@ impl Surface {
                 "executable actions require explicit live Web IR or trusted bridge evidence",
             ));
         }
-        if self.capabilities.contains(&SurfaceCapability::CoordinateAction) {
+        if self
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability, SurfaceCapability::CoordinateAction | SurfaceCapability::Input))
+        {
             let has_strong_geometry = self.evidence.iter().any(|evidence| {
                 evidence.quality >= CoverageLevel::Strong
-                    && matches!(
+                    && (matches!(
                         evidence.source,
                         SurfaceEvidenceSource::Layout
                             | SurfaceEvidenceSource::CanvasDetection
                             | SurfaceEvidenceSource::Bridge
                             | SurfaceEvidenceSource::Extension
-                    )
+                    ) || (matches!(&self.kind, SurfaceKind::RemoteApplication)
+                        && evidence.source == SurfaceEvidenceSource::RemoteStream))
                     && matches!(
                         evidence.provenance.source_class,
                         ProvenanceSourceClass::LiveWebIr | ProvenanceSourceClass::Bridge
@@ -1789,6 +1794,30 @@ mod tests {
         assert!(value.validate().is_ok());
     }
 
+    #[test]
+    fn input_only_requires_strong_geometry() {
+        let mut value = surface(
+            SurfaceKind::Canvas2d,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
+        value.evidence[0].quality = CoverageLevel::Opaque;
+        assert!(value.validate().is_err());
+        value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_ok());
+    }
+    #[test]
+    fn remote_stream_can_supply_strong_coordinate_input() {
+        let mut value = surface(
+            SurfaceKind::RemoteApplication,
+            UnderstandingLevel::CoordinateOnly,
+            vec![SurfaceCapability::Input],
+        );
+        value.evidence[0].source = SurfaceEvidenceSource::RemoteStream;
+        value.evidence[0].quality = CoverageLevel::Strong;
+        assert!(value.validate().is_ok());
+    }
     #[test]
     fn visual_only_evidence_cannot_authorize_coordinate_input() {
         let mut value = surface(

@@ -21,7 +21,13 @@ pub const MAX_DEPENDENCIES: usize = 16;
 pub const MAX_LIMITATIONS: usize = 16;
 pub const MAX_LIMITATION_BYTES: usize = 256;
 pub const MAX_SELECTION_REQUIREMENTS: usize = 32;
+pub const MAX_BACKEND_CANDIDATES: usize = 32;
+pub const MAX_DIAGNOSTIC_BYTES: usize = 512;
 pub const MAX_CONTEXTS: usize = 64;
+pub const MAX_STORAGE_ENTRIES: usize = 128;
+pub const MAX_DOWNLOADS: usize = 64;
+pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_JSON_BYTES: usize = 64 * 1024;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 
 fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBackendError> {
@@ -46,6 +52,86 @@ fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBack
     Ok(())
 }
 
+fn validate_vec_len(field: &str, len: usize, max: usize) -> Result<(), BrowserBackendError> {
+    if len > max {
+        return Err(invalid(field, &format!("must contain at most {max} entries")));
+    }
+    Ok(())
+}
+
+fn validate_json(field: &str, value: &serde_json::Value) -> Result<(), BrowserBackendError> {
+    let bytes = serde_json::to_vec(value).map_err(|error| invalid(field, &error.to_string()))?;
+    if bytes.len() > MAX_JSON_BYTES {
+        return Err(invalid(field, "serialized JSON exceeds the bounded payload size"));
+    }
+    Ok(())
+}
+fn deserialize_bounded_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.len() > MAX_TEXT_BYTES {
+        return Err(serde::de::Error::custom("string exceeds the bounded payload size"));
+    }
+    Ok(value)
+}
+fn deserialize_bounded_string_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value.as_deref().is_some_and(|value| value.len() > MAX_TEXT_BYTES) {
+        return Err(serde::de::Error::custom("string exceeds the bounded payload size"));
+    }
+    Ok(value)
+}
+
+fn deserialize_bounded_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value = Vec::<T>::deserialize(deserializer)?;
+    if value.len() > MAX_CONTEXTS {
+        return Err(serde::de::Error::custom("vector exceeds the bounded entry count"));
+    }
+    Ok(value)
+}
+
+fn deserialize_bounded_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Vec::<u8>::deserialize(deserializer)?;
+    if value.len() > MAX_CAPTURE_BYTES {
+        return Err(serde::de::Error::custom("capture exceeds the bounded payload size"));
+    }
+    Ok(value)
+}
+
+fn deserialize_bounded_json<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    validate_json("script result", &value)
+        .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+    Ok(value)
+}
+
+fn deserialize_bounded_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    K: Ord + Deserialize<'de>,
+    V: Deserialize<'de>,
+{
+    let value = BTreeMap::<K, V>::deserialize(deserializer)?;
+    if value.len() > MAX_STORAGE_ENTRIES {
+        return Err(serde::de::Error::custom("map exceeds the bounded entry count"));
+    }
+    Ok(value)
+}
 /// Semantic operations that a backend may expose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -260,21 +346,21 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
 pub struct CertificationProfile {
     pub level: CertificationLevel,
     pub glass_version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
     pub tested_capabilities: Vec<BrowserCapability>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
     pub limitations: Vec<String>,
 }
 
 impl CertificationProfile {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         validate_text("certification glass version", &self.glass_version, MAX_VERSION_BYTES)?;
-        if self.tested_capabilities.len() > MAX_CAPABILITIES {
-            return Err(invalid("certification tested capabilities", "too many entries"));
-        }
-        if self.limitations.len() > MAX_LIMITATIONS {
-            return Err(invalid("certification limitations", "too many entries"));
-        }
+        validate_vec_len(
+            "certification tested capabilities",
+            self.tested_capabilities.len(),
+            MAX_CAPABILITIES,
+        )?;
+        validate_vec_len("certification limitations", self.limitations.len(), MAX_LIMITATIONS)?;
         for limitation in &self.limitations {
             validate_text("certification limitation", limitation, MAX_LIMITATION_BYTES)?;
         }
@@ -314,7 +400,7 @@ impl BackendIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackendProfile {
     pub schema_version: u32,
@@ -322,18 +408,45 @@ pub struct BackendProfile {
     #[serde(default)]
     pub capabilities: BTreeMap<BrowserCapability, CapabilityDescriptor>,
 }
-
 impl BackendProfile {
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
         if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
             return Err(invalid("schema version", "unsupported browser backend schema"));
         }
         self.identity.validate()?;
-        if self.capabilities.len() > MAX_CAPABILITIES {
-            return Err(invalid("capabilities", "too many entries"));
-        }
+        validate_vec_len("capabilities", self.capabilities.len(), MAX_CAPABILITIES)?;
         for descriptor in self.capabilities.values() {
             descriptor.validate()?;
+        }
+        for capability in &self.identity.certification.tested_capabilities {
+            let Some(descriptor) = self.capabilities.get(capability) else {
+                return Err(invalid(
+                    "certification tested capabilities",
+                    "every tested capability must be declared",
+                ));
+            };
+            if descriptor.level == SupportLevel::Unavailable {
+                return Err(invalid(
+                    "certification tested capabilities",
+                    "tested capabilities must be supported",
+                ));
+            }
+        }
+        for (capability, descriptor) in &self.capabilities {
+            for dependency in &descriptor.dependencies {
+                let Some(dependency_descriptor) = self.capabilities.get(&dependency.capability) else {
+                    return Err(invalid(
+                        "capability dependencies",
+                        &format!("{capability:?} depends on an undeclared capability"),
+                    ));
+                };
+                if !dependency_descriptor.level.satisfies(dependency.minimum) {
+                    return Err(invalid(
+                        "capability dependencies",
+                        &format!("{capability:?} dependency is below its required support level"),
+                    ));
+                }
+            }
         }
         if self.identity.certification.level == CertificationLevel::Unsupported
             && self.capabilities.values().any(|descriptor| descriptor.level != SupportLevel::Unavailable)
@@ -370,6 +483,32 @@ impl BackendProfile {
         })
     }
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackendProfileWire {
+    schema_version: u32,
+    identity: BackendIdentity,
+    #[serde(default, deserialize_with = "deserialize_bounded_map")]
+    capabilities: BTreeMap<BrowserCapability, CapabilityDescriptor>,
+}
+
+impl<'de> Deserialize<'de> for BackendProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BackendProfileWire::deserialize(deserializer)?;
+        let profile = Self {
+            schema_version: wire.schema_version,
+            identity: wire.identity,
+            capabilities: wire.capabilities,
+        };
+        profile
+            .validate()
+            .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        Ok(profile)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -378,19 +517,20 @@ pub struct CapabilityRequirement {
     pub minimum: SupportLevel,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackendSelectionRequest {
     pub schema_version: u32,
-    #[serde(default)]
+    pub glass_version: String,
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
     pub preferred_backend_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
     pub required_capabilities: Vec<CapabilityRequirement>,
     #[serde(default = "default_minimum_certification")]
     pub minimum_certification: CertificationLevel,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
     pub browser_family: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
     pub browser_version: Option<String>,
 }
 
@@ -403,19 +543,71 @@ impl BackendSelectionRequest {
         if self.schema_version != BROWSER_BACKEND_SCHEMA_VERSION {
             return Err(invalid("schema version", "unsupported browser backend schema"));
         }
+        validate_text("glass version", &self.glass_version, MAX_VERSION_BYTES)?;
         if let Some(id) = &self.preferred_backend_id {
             validate_text("preferred backend id", id, MAX_BACKEND_ID_BYTES)?;
         }
-        if self.required_capabilities.len() > MAX_SELECTION_REQUIREMENTS {
-            return Err(invalid("required capabilities", "too many entries"));
+        validate_vec_len(
+            "required capabilities",
+            self.required_capabilities.len(),
+            MAX_SELECTION_REQUIREMENTS,
+        )?;
+        for requirement in &self.required_capabilities {
+            if requirement.minimum == SupportLevel::Unavailable {
+                return Err(invalid("required capability", "minimum cannot be unavailable"));
+            }
         }
         if let Some(family) = &self.browser_family {
             validate_text("browser family", family, MAX_BROWSER_FAMILY_BYTES)?;
         }
         if let Some(version) = &self.browser_version {
+            if self.browser_family.is_none() {
+                return Err(invalid(
+                    "browser family",
+                    "browser version requires browser family",
+                ));
+            }
             validate_text("browser version", version, MAX_VERSION_BYTES)?;
         }
         Ok(())
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackendSelectionRequestWire {
+    schema_version: u32,
+    glass_version: String,
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    preferred_backend_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bounded_vec")]
+    required_capabilities: Vec<CapabilityRequirement>,
+    #[serde(default = "default_minimum_certification")]
+    minimum_certification: CertificationLevel,
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    browser_family: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bounded_string_option")]
+    browser_version: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for BackendSelectionRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BackendSelectionRequestWire::deserialize(deserializer)?;
+        let request = Self {
+            schema_version: wire.schema_version,
+            glass_version: wire.glass_version,
+            preferred_backend_id: wire.preferred_backend_id,
+            required_capabilities: wire.required_capabilities,
+            minimum_certification: wire.minimum_certification,
+            browser_family: wire.browser_family,
+            browser_version: wire.browser_version,
+        };
+        request
+            .validate()
+            .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        Ok(request)
     }
 }
 
@@ -425,6 +617,7 @@ pub struct BackendSelectionResult {
     pub schema_version: u32,
     pub selected: BackendProfile,
     pub reason: SelectionReason,
+    #[serde(deserialize_with = "deserialize_bounded_vec")]
     pub considered_backend_ids: Vec<String>,
 }
 
@@ -451,6 +644,7 @@ pub fn select_backend(
     profiles: &[BackendProfile],
 ) -> Result<BackendSelectionResult, BrowserBackendError> {
     request.validate()?;
+    validate_vec_len("backend candidates", profiles.len(), MAX_BACKEND_CANDIDATES)?;
     if profiles.is_empty() {
         return Err(BrowserBackendError::SelectionFailed {
             reason: "no backend profiles were provided".into(),
@@ -477,6 +671,12 @@ pub fn select_backend(
         if let Err(error) = profile.validate() {
             if request.preferred_backend_id.as_ref() == Some(id) {
                 preferred_rejection = Some(error.to_string());
+            }
+            continue;
+        }
+        if profile.identity.certification.glass_version != request.glass_version {
+            if request.preferred_backend_id.as_ref() == Some(id) {
+                preferred_rejection = Some("backend certification targets a different Glass version".into());
             }
             continue;
         }
@@ -586,23 +786,33 @@ pub enum BrowserBackendError {
         declared: bool,
     },
     InvalidConfiguration {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         field: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         reason: String,
     },
     Connection {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         operation: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         reason: String,
     },
     Lifecycle {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         operation: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         state: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         reason: String,
     },
     UnsupportedOperation {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         operation: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         reason: String,
     },
     SelectionFailed {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
         reason: String,
     },
 }
@@ -623,16 +833,39 @@ impl fmt::Display for BrowserBackendError {
 }
 
 impl std::error::Error for BrowserBackendError {}
+impl BackendContract for BrowserBackendError {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        match self {
+            Self::CapabilityUnavailable { .. } => Ok(()),
+            Self::InvalidConfiguration { field, reason }
+            | Self::Connection { operation: field, reason }
+            | Self::UnsupportedOperation { operation: field, reason } => {
+                validate_text("error field", field, MAX_BACKEND_ID_BYTES)?;
+                validate_text("error reason", reason, MAX_DIAGNOSTIC_BYTES)
+            }
+            Self::Lifecycle { operation, state, reason } => {
+                validate_text("error operation", operation, MAX_BACKEND_ID_BYTES)?;
+                validate_text("error state", state, MAX_LIMITATION_BYTES)?;
+                validate_text("error reason", reason, MAX_DIAGNOSTIC_BYTES)
+            }
+            Self::SelectionFailed { reason } => {
+                validate_text("selection reason", reason, MAX_DIAGNOSTIC_BYTES)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavigationRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavigationResult {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub url: String,
     pub revision: u64,
 }
@@ -647,7 +880,9 @@ pub struct ContextRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowsingContext {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub url: String,
     pub active: bool,
 }
@@ -655,6 +890,7 @@ pub struct BrowsingContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvidenceRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub level: EvidenceLevel,
 }
@@ -671,10 +907,14 @@ pub enum EvidenceLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvidenceResult {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub revision: u64,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub url: String,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub title: String,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub visible_text: String,
     pub complete: bool,
 }
@@ -682,6 +922,7 @@ pub struct EvidenceResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub action: SemanticAction,
 }
@@ -689,15 +930,21 @@ pub struct ActionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SemanticAction {
-    Click { target: String },
-    Type { target: String, text: String },
-    KeyPress { key: String },
+    Click { #[serde(deserialize_with = "deserialize_bounded_string")] target: String },
+    Type {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        text: String,
+    },
+    KeyPress { #[serde(deserialize_with = "deserialize_bounded_string")] key: String },
     Scroll { delta_x: i32, delta_y: i32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionResult {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub revision: u64,
     pub accepted: bool,
@@ -706,6 +953,7 @@ pub struct ActionResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EffectsRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub since_revision: u64,
 }
@@ -713,6 +961,7 @@ pub struct EffectsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EffectsResult {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub revision: u64,
     pub changed: bool,
@@ -721,13 +970,16 @@ pub struct EffectsResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptResult {
+    #[serde(deserialize_with = "deserialize_bounded_json")]
     pub value: serde_json::Value,
 }
 
@@ -742,6 +994,7 @@ pub enum CaptureFormat {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub format: CaptureFormat,
 }
@@ -750,6 +1003,7 @@ pub struct CaptureRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureResult {
     pub format: CaptureFormat,
+    #[serde(deserialize_with = "deserialize_bounded_bytes")]
     pub bytes: Vec<u8>,
 }
 
@@ -765,13 +1019,19 @@ pub enum StorageScope {
 #[serde(rename_all = "camelCase")]
 pub enum StorageOperation {
     Read,
-    Write { key: String, value: String },
+    Write {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        key: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        value: String,
+    },
     Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub scope: StorageScope,
     pub operation: StorageOperation,
@@ -780,6 +1040,7 @@ pub struct StorageRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageResult {
+    #[serde(deserialize_with = "deserialize_bounded_map")]
     pub entries: BTreeMap<String, String>,
 }
 
@@ -793,8 +1054,229 @@ pub enum PromptDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub decision: PromptDecision,
+}
+
+/// Validation shared by transport adapters before dispatch and after
+/// deserializing backend responses.
+pub trait BackendContract {
+    fn validate(&self) -> Result<(), BrowserBackendError>;
+}
+
+impl BackendContract for NavigationRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("navigation url", &self.url, MAX_TEXT_BYTES)
+    }
+}
+
+impl BackendContract for Vec<BrowsingContext> {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_vec_len("contexts", self.len(), MAX_CONTEXTS)?;
+        for context in self {
+            context.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl BackendContract for NavigationResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("navigation url", &self.url, MAX_TEXT_BYTES)
+    }
+}
+
+impl BackendContract for BrowsingContext {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        validate_text("context url", &self.url, MAX_TEXT_BYTES)
+    }
+}
+
+impl BackendContract for ContextRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        Ok(())
+    }
+}
+
+impl BackendContract for EvidenceRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for EvidenceResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        validate_text("evidence url", &self.url, MAX_TEXT_BYTES)?;
+        validate_text("evidence title", &self.title, MAX_TEXT_BYTES)?;
+        validate_text("visible text", &self.visible_text, MAX_TEXT_BYTES)
+    }
+}
+
+impl BackendContract for SemanticAction {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        match self {
+            Self::Click { target } => validate_text("action target", target, MAX_TEXT_BYTES),
+            Self::Type { target, text } => {
+                validate_text("action target", target, MAX_TEXT_BYTES)?;
+                validate_text("action text", text, MAX_TEXT_BYTES)
+            }
+            Self::KeyPress { key } => validate_text("key", key, MAX_LIMITATION_BYTES),
+            Self::Scroll { .. } => Ok(()),
+        }
+    }
+}
+
+impl BackendContract for ActionRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        self.action.validate()
+    }
+}
+
+impl BackendContract for ActionResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for EffectsRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for EffectsResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for ScriptRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        validate_text("script source", &self.source, MAX_TEXT_BYTES)
+    }
+}
+
+impl BackendContract for ScriptResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_json("script result", &self.value)
+    }
+}
+
+impl BackendContract for CaptureRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for CaptureResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        if self.bytes.len() > MAX_CAPTURE_BYTES {
+            return Err(invalid("capture bytes", "capture exceeds the bounded payload size"));
+        }
+        Ok(())
+    }
+}
+
+impl BackendContract for StorageRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        if let StorageOperation::Write { key, value } = &self.operation {
+            validate_text("storage key", key, MAX_BACKEND_ID_BYTES)?;
+            validate_text("storage value", value, MAX_TEXT_BYTES)?;
+        }
+        Ok(())
+    }
+}
+
+impl BackendContract for StorageResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_vec_len("storage entries", self.entries.len(), MAX_STORAGE_ENTRIES)?;
+        for (key, value) in &self.entries {
+            validate_text("storage key", key, MAX_BACKEND_ID_BYTES)?;
+            validate_text("storage value", value, MAX_TEXT_BYTES)?;
+        }
+        Ok(())
+    }
+}
+
+impl BackendContract for PromptRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)
+    }
+}
+
+impl BackendContract for PromptResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        Ok(())
+    }
+}
+
+impl BackendContract for DownloadRequest {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
+        if let DownloadOperation::Cancel { download_id } = &self.operation {
+            validate_text("download id", download_id, MAX_BACKEND_ID_BYTES)?;
+        }
+        Ok(())
+    }
+}
+
+impl BackendContract for DownloadResult {
+    fn validate(&self) -> Result<(), BrowserBackendError> {
+        validate_vec_len("downloads", self.download_ids.len(), MAX_DOWNLOADS)?;
+        for id in &self.download_ids {
+            validate_text("download id", id, MAX_BACKEND_ID_BYTES)?;
+        }
+        Ok(())
+    }
+}
+
+/// Semantic operation names used for capability-gated dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackendOperation {
+    Navigate,
+    Contexts,
+    Evidence,
+    Action,
+    Effects,
+    Script,
+    Capture,
+    Storage,
+    Prompt,
+    Download,
+}
+
+impl BackendOperation {
+    pub const fn capability(self) -> BrowserCapability {
+        match self {
+            Self::Navigate => BrowserCapability::Navigation,
+            Self::Contexts => BrowserCapability::Contexts,
+            Self::Evidence => BrowserCapability::Evidence,
+            Self::Action => BrowserCapability::Action,
+            Self::Effects => BrowserCapability::Effects,
+            Self::Script => BrowserCapability::Script,
+            Self::Capture => BrowserCapability::Capture,
+            Self::Storage => BrowserCapability::Storage,
+            Self::Prompt => BrowserCapability::Prompts,
+            Self::Download => BrowserCapability::Downloads,
+        }
+    }
+}
+
+impl BackendProfile {
+    pub fn require_operation(
+        &self,
+        operation: BackendOperation,
+        minimum: SupportLevel,
+    ) -> Result<(), BrowserBackendError> {
+        self.require(operation.capability(), minimum)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -807,12 +1289,16 @@ pub struct PromptResult {
 #[serde(rename_all = "camelCase")]
 pub enum DownloadOperation {
     List,
-    Cancel { download_id: String },
+    Cancel {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        download_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DownloadRequest {
+    #[serde(deserialize_with = "deserialize_bounded_string")]
     pub context_id: String,
     pub operation: DownloadOperation,
 }
@@ -820,6 +1306,7 @@ pub struct DownloadRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DownloadResult {
+    #[serde(deserialize_with = "deserialize_bounded_vec")]
     pub download_ids: Vec<String>,
 }
 
@@ -844,6 +1331,13 @@ pub trait BrowserBackend: Send + Sync {
     fn storage<'a>(&'a self, request: StorageRequest) -> BackendFuture<'a, StorageResult>;
     fn prompt<'a>(&'a self, request: PromptRequest) -> BackendFuture<'a, PromptResult>;
     fn download<'a>(&'a self, request: DownloadRequest) -> BackendFuture<'a, DownloadResult>;
+    fn require_operation(
+        &self,
+        operation: BackendOperation,
+        minimum: SupportLevel,
+    ) -> Result<(), BrowserBackendError> {
+        self.profile().require_operation(operation, minimum)
+    }
 }
 
 #[cfg(test)]
@@ -905,6 +1399,7 @@ mod tests {
         let experimental = profile("bidi", CertificationLevel::Experimental);
         let request = BackendSelectionRequest {
             schema_version: 1,
+            glass_version: "0.3.1".into(),
             preferred_backend_id: Some("bidi".into()),
             required_capabilities: vec![CapabilityRequirement {
                 capability: BrowserCapability::Evidence,
@@ -963,5 +1458,95 @@ mod tests {
             assert!(encoded.get("kind").is_some());
             assert_eq!(serde_json::from_value::<BrowserBackendError>(encoded).unwrap(), error);
         }
+    }
+    #[test]
+    fn request_deserialization_rejects_oversized_strings() {
+        let value = json!({ "url": "x".repeat(MAX_TEXT_BYTES + 1) });
+        assert!(serde_json::from_value::<NavigationRequest>(value).is_err());
+    }
+
+    #[test]
+    fn dependency_closure_and_certification_support_are_required() {
+        let mut backend = profile("closure", CertificationLevel::ProductionCertified);
+        let mut evidence = backend.capabilities[&BrowserCapability::Navigation].clone();
+        evidence.dependencies.push(CapabilityDependency {
+            capability: BrowserCapability::Evidence,
+            minimum: SupportLevel::Available,
+            reason: "fresh evidence".into(),
+        });
+        backend.capabilities.insert(BrowserCapability::Navigation, evidence);
+        backend.capabilities.remove(&BrowserCapability::Evidence);
+        assert!(backend.validate().is_err());
+
+        let mut unsupported = profile("bad-cert", CertificationLevel::ProductionCertified);
+        unsupported.capabilities.insert(
+            BrowserCapability::Evidence,
+            CapabilityDescriptor {
+                level: SupportLevel::Unavailable,
+                portability: Portability::NonPortable,
+                dependencies: Vec::new(),
+                limitations: vec!["not available".into()],
+            },
+        );
+        assert!(unsupported.validate().is_err());
+    }
+
+    #[test]
+    fn selection_requires_exact_glass_compatibility_and_browser_family() {
+        let mut request = BackendSelectionRequest {
+            schema_version: 1,
+            glass_version: "0.3.1".into(),
+            preferred_backend_id: None,
+            required_capabilities: Vec::new(),
+            minimum_certification: CertificationLevel::Partial,
+            browser_family: None,
+            browser_version: Some("150.0.0".into()),
+        };
+        assert!(request.validate().is_err());
+        request.browser_family = Some("chromium".into());
+        request.glass_version = "0.4.0".into();
+        assert!(matches!(
+            select_backend(&request, &[profile("cdp", CertificationLevel::Partial)]),
+            Err(BrowserBackendError::SelectionFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn operation_dispatch_reports_missing_capability() {
+        let mut backend = profile("partial", CertificationLevel::Partial);
+        backend.capabilities.remove(&BrowserCapability::Capture);
+        assert!(matches!(
+            backend.require_operation(BackendOperation::Capture, SupportLevel::Available),
+            Err(BrowserBackendError::CapabilityUnavailable {
+                capability: BrowserCapability::Capture,
+                declared: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn candidate_and_error_diagnostics_are_bounded() {
+        let profiles = (0..=MAX_BACKEND_CANDIDATES)
+            .map(|index| profile(&format!("backend-{index}"), CertificationLevel::Partial))
+            .collect::<Vec<_>>();
+        let request = BackendSelectionRequest {
+            schema_version: 1,
+            glass_version: "0.3.1".into(),
+            preferred_backend_id: None,
+            required_capabilities: Vec::new(),
+            minimum_certification: CertificationLevel::Partial,
+            browser_family: None,
+            browser_version: None,
+        };
+        assert!(matches!(
+            select_backend(&request, &profiles),
+            Err(BrowserBackendError::InvalidConfiguration { field, .. }) if field == "backend candidates"
+        ));
+        assert!(BrowserBackendError::SelectionFailed {
+            reason: "x".repeat(MAX_DIAGNOSTIC_BYTES + 1),
+        }
+        .validate()
+        .is_err());
     }
 }

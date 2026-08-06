@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv6Addr;
 use std::fmt::{Display, Formatter};
 
 /// Schema version for the multi-surface contract.
@@ -1403,6 +1404,12 @@ fn validate_origin(path: &str, value: &str) -> Result<(), SurfaceContractError> 
             return Err(SurfaceContractError::new(path, "invalid bracketed origin host"));
         };
         let host = &rest[..end];
+        if host.parse::<Ipv6Addr>().is_err() {
+            return Err(SurfaceContractError::new(
+                path,
+                "bracketed origin host must be a valid IPv6 address",
+            ));
+        }
         let suffix = &rest[end + 1..];
         let port = suffix.strip_prefix(':');
         if !suffix.is_empty() && port.is_none() {
@@ -1714,6 +1721,21 @@ mod tests {
         value.evidence[0].provenance.bridge_origin = Some("https://example.test:bad".into());
         assert!(value.validate_with_grants(&grants).is_err());
         value.evidence[0].provenance.bridge_origin = Some("https://user@example.test".into());
+        let mut ipv6_grants = BridgeGrantRegistry::default();
+        ipv6_grants
+            .insert(BridgeCapabilityGrant {
+                token: "grant-chart".into(),
+                origin: "https://[2001:db8::1]:443".into(),
+                capabilities: vec![
+                    SurfaceCapability::ReadStructure,
+                    SurfaceCapability::SemanticAction,
+                ],
+            })
+            .unwrap();
+        value.evidence[0].provenance.bridge_origin = Some("https://[2001:db8::1]:443".into());
+        assert!(value.validate_with_grants(&ipv6_grants).is_ok());
+        value.evidence[0].provenance.bridge_origin = Some("https://[2001:::1]".into());
+        assert!(value.validate_with_grants(&ipv6_grants).is_err());
         assert!(value.validate_with_grants(&grants).is_err());
     }
 

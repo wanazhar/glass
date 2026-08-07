@@ -1,7 +1,7 @@
 ---
 id: development-032-002
 scope: project runtime protocol adapters
-status: pending
+status: completed
 depends-on: [development-032-001]
 ---
 

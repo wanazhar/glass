@@ -1,7 +1,7 @@
 ---
 id: release-032-001
 scope: 0.3.2 release candidate
-status: pending
+status: completed
 depends-on: [development-032-003]
 ---
 

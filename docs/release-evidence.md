@@ -17,20 +17,16 @@ those are explicit maintainer publication steps. The published
   v0.3.1 browser contracts. Framework-specific LSP, HMR, Neovim RPC, and
   inferred source-map claims remain unavailable without evidence.
 - The version, feature-parity, release-documentation, reliability-matrix,
-  read-only-adapter, Experience Layer, and Web IR corpus checks pass.
+  read-only-adapter, and Web IR corpus checks pass.
 - `cargo test --workspace --all-targets --locked` passes the complete source
   suite.
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
-  --test-threads=1` passes all 17 Chromium scenarios on the recorded Linux ARM64
-  environment.
-- The 120-frame, 1280×720 real Chromium screencast benchmark sustained 59.47
-  receive-plus-decode fps with 120 distinct frames and zero dropped frames;
-  bounded screenshot polling measured 9.98 fps on the same run. This is host
-  evidence, not a cross-platform frame-rate guarantee.
-- Clippy with warnings denied, warning-free rustdoc, `cargo deny`, `cargo
-  audit`, and the fuzz-crate all-target check pass.
-- `cargo package` and `cargo publish --dry-run` are required for both packages
-  and perform no upload.
+  --test-threads=1` passes all 17 Chromium scenarios on the current Linux ARM64
+  host. This is host evidence, not a cross-platform certification claim.
+- Clippy with warnings denied, warning-free workspace rustdoc, `cargo deny`,
+  `cargo audit`, and the fuzz-crate all-target check pass.
+- Both `cargo package` and `cargo publish --dry-run` pass for `glass-browser`
+  and `glass-dev`; each dry run aborts before upload.
 - Issue #32 implementation evidence covers the bounded development runtime,
   CLI/MCP/TUI surfaces, harness, package boundary, and explicit capability
   limits without extending certification claims to unobserved targets.
@@ -39,8 +35,8 @@ those are explicit maintainer publication steps. The published
 
 - No tag, push, crates.io publication, or GitHub Release operation has been
   performed by this pre-publication audit.
-- The release workflow rejects prerelease versions. This candidate therefore
-  cannot publish until a maintainer prepares an approved stable version.
+- The release workflow accepts only stable tags. This candidate cannot publish
+  until a maintainer approves and pushes the matching `v0.3.2` tag.
 
 The 0.3.0 release follows the crates-only distribution boundary.
 The `glass-browser` 0.3.0 release has a source-only GitHub Release with

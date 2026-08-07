@@ -1,7 +1,7 @@
 ---
 id: development-032-003
 scope: native TUI and harness
-status: pending
+status: completed
 depends-on: [development-032-002]
 ---
 

@@ -16,14 +16,15 @@ The source checkout is the local `0.3.2` candidate. Tagging, pushing, crates.io
 publication, and GitHub Release creation remain separate maintainer actions and
 have not been performed.
 
-- [ ] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2`.
-- [ ] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
+- [x] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2`.
+- [x] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
 - [x] Run version-sync, feature-parity, and release-documentation validators.
-- [ ] Run formatting and all-target workspace tests.
-- [ ] Run the opt-in Chromium smoke suite when a supported browser is available.
-- [ ] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
-      gates where the tools and target are available.
-- [ ] Inspect both package file lists and complete publish dry-runs without
+- [x] Run formatting and all-target workspace tests.
+- [x] Run the opt-in 17-scenario Chromium smoke suite in the recorded
+      validation environment.
+- [x] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
+      gates.
+- [x] Inspect both package file lists and complete publish dry-runs without
       uploading.
 - [x] Record bounded issue #32 implementation evidence and target boundaries.
 - [ ] Obtain explicit approval before any stable tag, push, crates.io

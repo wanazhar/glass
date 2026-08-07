@@ -13,10 +13,6 @@ autobins = false
 keywords = ["browser-automation", "chrome", "cdp", "mcp", "browser-control"]
 categories = ["api-bindings", "command-line-utilities", "development-tools::testing"]
 
-[workspace]
-members = [".", "crates/glass-dev"]
-resolver = "2"
-
 exclude = [
   ".github/",
   "AGENTS.md",
@@ -27,6 +23,11 @@ exclude = [
   "fuzz/",
   "scripts/",
 ]
+
+[workspace]
+members = [".", "crates/glass-dev"]
+exclude = ["fuzz"]
+resolver = "2"
 
 [lib]
 name = "glass"

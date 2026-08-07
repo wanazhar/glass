@@ -41,7 +41,7 @@ and independent review.
 
 ## Active plan: Glass v0.3.2 issue #32
 
-Status: Local release-candidate development — no push, tag, crates.io
+Status: Complete local release candidate — no push, tag, crates.io
 publication, or GitHub Release is part of this plan.
 
 Issue #32 is an architectural epic. The release candidate is delivered as a

@@ -1,6 +1,6 @@
 # Glass v0.3.2 release-candidate delivery analysis
 
-Status: Active local development
+Status: Implemented in the local `0.3.2` release candidate
 
 Issue #32 describes Glass as a terminal-native live software development
 environment. It is an epic, so the candidate needs a small number of real

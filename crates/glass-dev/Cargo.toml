@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "development-tools::testing"]
 [[bin]]
 name = "glass"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 glass-browser = { package = "glass-browser", version = "0.3", path = "../.." }

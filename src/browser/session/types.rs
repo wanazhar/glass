@@ -411,7 +411,10 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
         if (element.localName === 'canvas') {
             summary.canvases += 1;
             try {
-                if (element.getContext('webgl') || element.getContext('experimental-webgl')) {
+                const webgl2 = element.getContext('webgl2');
+                const webgl = webgl2 || element.getContext('webgl') ||
+                    element.getContext('experimental-webgl');
+                if (webgl) {
                     summary.webgl_canvases += 1;
                 } else if (element.getContext('webgpu')) {
                     summary.webgpu_canvases += 1;

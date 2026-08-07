@@ -400,12 +400,262 @@ impl BridgeGrantRegistry {
         Ok(())
     }
 }
+/// Version of the host/page semantic bridge payload.
+pub const SEMANTIC_BRIDGE_SCHEMA_VERSION: u32 = 1;
+/// Maximum semantic entities accepted from one bridge payload.
+pub const MAX_BRIDGE_ENTITIES: usize = 256;
+/// Maximum action names declared by one bridge entity.
+pub const MAX_BRIDGE_ACTIONS: usize = 16;
+
+/// An action name the bridge may advertise. The host still decides whether an
+/// action can be compiled; this allowlist is never a browser dispatch grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum BridgeAction {
+    Read,
+    Click,
+    Type,
+    Select,
+    Check,
+    Uncheck,
+    Submit,
+    Open,
+    Close,
+    Confirm,
+    Cancel,
+    Navigate,
+    Extract,
+}
+
+/// One bounded semantic entity supplied by a page bridge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticBridgeEntity {
+    pub id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub quality: CoverageLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_actions: Vec<BridgeAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+}
+
+/// Versioned, origin-bound semantic data exchanged by a page-provided bridge.
+/// It is only evidence: the independent grant registry and current revision
+/// remain authoritative for action compilation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticBridge {
+    pub schema_version: u32,
+    pub bridge_version: String,
+    pub origin: String,
+    pub grant_token: String,
+    pub revision: SurfaceRevision,
+    pub surface_id: SurfaceId,
+    pub surface_kind: SurfaceKind,
+    pub capabilities: Vec<SurfaceCapability>,
+    pub entities: Vec<SemanticBridgeEntity>,
+}
+
+impl SemanticBridge {
+    /// Validate a bridge against independently trusted host grants and the
+    /// current origin/revision. Any mismatch fails closed.
+    pub fn validate(
+        &self,
+        grants: &BridgeGrantRegistry,
+        expected_origin: &str,
+        expected_revision: SurfaceRevision,
+    ) -> Result<(), SurfaceContractError> {
+        if self.schema_version != SEMANTIC_BRIDGE_SCHEMA_VERSION {
+            return Err(SurfaceContractError::new(
+                "schemaVersion",
+                "unsupported semantic bridge schema version",
+            ));
+        }
+        validate_bounded_text(
+            "bridgeVersion",
+            &self.bridge_version,
+            MAX_SURFACE_PROVENANCE_VERSION_BYTES,
+        )?;
+        validate_origin("origin", &self.origin)?;
+        validate_origin("expectedOrigin", expected_origin)?;
+        if self.origin != expected_origin {
+            return Err(SurfaceContractError::new(
+                "origin",
+                "semantic bridge origin does not match the observed page origin",
+            ));
+        }
+        if self.revision != expected_revision || self.revision.0 == 0 {
+            return Err(SurfaceContractError::new(
+                "revision",
+                "semantic bridge revision is stale or invalid",
+            ));
+        }
+        validate_surface_id("surfaceId", &self.surface_id)?;
+        self.surface_kind_validate()?;
+        if self.capabilities.is_empty() || self.capabilities.len() > MAX_SURFACE_CAPABILITIES {
+            return Err(SurfaceContractError::new(
+                "capabilities",
+                "bridge capabilities must be non-empty and bounded",
+            ));
+        }
+        let mut capabilities = BTreeSet::new();
+        for capability in &self.capabilities {
+            if !capabilities.insert(*capability) {
+                return Err(SurfaceContractError::new(
+                    "capabilities",
+                    "bridge capabilities must not be duplicated",
+                ));
+            }
+        }
+        grants.validate()?;
+        let grant = grants.grants.get(&self.grant_token).ok_or_else(|| {
+            SurfaceContractError::new("grantToken", "semantic bridge grant is unknown")
+        })?;
+        if grant.origin != self.origin
+            || !self
+                .capabilities
+                .iter()
+                .all(|capability| grant.capabilities.contains(capability))
+        {
+            return Err(SurfaceContractError::new(
+                "grantToken",
+                "semantic bridge capabilities or origin do not match its grant",
+            ));
+        }
+        if self.entities.is_empty() || self.entities.len() > MAX_BRIDGE_ENTITIES {
+            return Err(SurfaceContractError::new(
+                "entities",
+                "semantic bridge entities must be non-empty and bounded",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        for (index, entity) in self.entities.iter().enumerate() {
+            let path = format!("entities[{index}]");
+            validate_identifier_with_max(
+                &format!("{path}.id"),
+                &entity.id,
+                MAX_SURFACE_IDENTIFIER_BYTES,
+            )?;
+            validate_identifier_with_max(
+                &format!("{path}.kind"),
+                &entity.kind,
+                MAX_SURFACE_IDENTIFIER_BYTES,
+            )?;
+            if !ids.insert(entity.id.as_str()) {
+                return Err(SurfaceContractError::new(
+                    format!("{path}.id"),
+                    "semantic bridge entity IDs must be unique",
+                ));
+            }
+            for (field, value) in [
+                ("role", entity.role.as_deref()),
+                ("name", entity.name.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    validate_bounded_text(
+                        &format!("{path}.{field}"),
+                        value,
+                        MAX_SURFACE_EVIDENCE_DETAIL_BYTES,
+                    )?;
+                }
+            }
+            if entity.allowed_actions.len() > MAX_BRIDGE_ACTIONS {
+                return Err(SurfaceContractError::new(
+                    format!("{path}.allowedActions"),
+                    "semantic bridge action allowlist exceeds the bound",
+                ));
+            }
+            let mut actions = BTreeSet::new();
+            for action in &entity.allowed_actions {
+                if !actions.insert(*action) {
+                    return Err(SurfaceContractError::new(
+                        format!("{path}.allowedActions"),
+                        "semantic bridge action allowlist must not contain duplicates",
+                    ));
+                }
+            }
+            if self
+                .capabilities
+                .contains(&SurfaceCapability::SemanticAction)
+                && entity.allowed_actions.is_empty()
+            {
+                return Err(SurfaceContractError::new(
+                    format!("{path}.allowedActions"),
+                    "semantic bridge action capability requires an explicit action allowlist",
+                ));
+            }
+            if let Some(parent_id) = &entity.parent_id {
+                validate_identifier_with_max(
+                    &format!("{path}.parentId"),
+                    parent_id,
+                    MAX_SURFACE_IDENTIFIER_BYTES,
+                )?;
+                if parent_id == &entity.id {
+                    return Err(SurfaceContractError::new(
+                        format!("{path}.parentId"),
+                        "semantic bridge entities cannot parent themselves",
+                    ));
+                }
+            }
+        }
+        for entity in &self.entities {
+            if let Some(parent_id) = &entity.parent_id
+                && !ids.contains(parent_id.as_str())
+            {
+                return Err(SurfaceContractError::new(
+                    "entities.parentId",
+                    "semantic bridge parent entity is unknown",
+                ));
+            }
+        }
+        let payload = serde_json::to_vec(self).map_err(|error| {
+            SurfaceContractError::new("$", format!("failed to serialize semantic bridge: {error}"))
+        })?;
+        if payload.len() > MAX_SURFACE_PAYLOAD_BYTES {
+            return Err(SurfaceContractError::new(
+                "$",
+                "semantic bridge payload exceeds the contract bound",
+            ));
+        }
+        Ok(())
+    }
+
+    fn surface_kind_validate(&self) -> Result<(), SurfaceContractError> {
+        if matches!(
+            self.surface_kind,
+            SurfaceKind::Unknown | SurfaceKind::Opaque
+        ) {
+            return Err(SurfaceContractError::new(
+                "surfaceKind",
+                "semantic bridges cannot describe unknown or opaque surfaces",
+            ));
+        }
+        if let SurfaceKind::ExtensionDefined { extension } = &self.surface_kind {
+            extension.validate()?;
+        }
+        Ok(())
+    }
+    /// Check the bridge-declared allowlist for an entity. The caller must
+    /// still perform revision, policy, and live capability checks.
+    pub fn allows_action(&self, entity_id: &str, action: BridgeAction) -> bool {
+        self.entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .is_some_and(|entity| entity.allowed_actions.contains(&action))
+    }
+}
 
 /// Revision-bound, machine-readable evidence provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SurfaceProvenance {
     pub schema_version: u32,
+
     pub source_class: ProvenanceSourceClass,
     pub source_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2322,5 +2572,51 @@ mod tests {
         value.evidence[0].source = SurfaceEvidenceSource::CanvasDetection;
         value.evidence[0].quality = CoverageLevel::Strong;
         assert!(value.validate().is_err());
+    }
+    #[test]
+    fn semantic_bridge_is_origin_and_revision_bound() {
+        let mut grants = BridgeGrantRegistry::default();
+        grants
+            .insert(BridgeCapabilityGrant {
+                token: "bridge-grant".into(),
+                origin: "https://example.test".into(),
+                capabilities: vec![SurfaceCapability::ReadStructure],
+            })
+            .unwrap();
+        let bridge = SemanticBridge {
+            schema_version: SEMANTIC_BRIDGE_SCHEMA_VERSION,
+            bridge_version: "1.0".into(),
+            origin: "https://example.test".into(),
+            grant_token: "bridge-grant".into(),
+            revision: SurfaceRevision(7),
+            surface_id: SurfaceId::new("svg-1").unwrap(),
+            surface_kind: SurfaceKind::Svg,
+            capabilities: vec![SurfaceCapability::ReadStructure],
+            entities: vec![SemanticBridgeEntity {
+                id: "label".into(),
+                kind: "text".into(),
+                role: Some("text".into()),
+                name: Some("hello".into()),
+                quality: CoverageLevel::Strong,
+                allowed_actions: vec![BridgeAction::Read],
+                parent_id: None,
+            }],
+        };
+        assert!(
+            bridge
+                .validate(&grants, "https://example.test", SurfaceRevision(7))
+                .is_ok()
+        );
+        assert!(
+            bridge
+                .validate(&grants, "https://evil.test", SurfaceRevision(7))
+                .is_err()
+        );
+        assert!(
+            bridge
+                .validate(&grants, "https://example.test", SurfaceRevision(8))
+                .is_err()
+        );
+        assert!(bridge.allows_action("label", BridgeAction::Read));
     }
 }

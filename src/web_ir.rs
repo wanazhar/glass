@@ -9,7 +9,8 @@ use crate::extraction::{
     ExtractionEvidenceLimits, ExtractionScope,
 };
 use crate::surfaces::{
-    CoverageLevel, SurfaceCoverage, SurfaceEvidenceSource, SurfaceKind, SurfaceSet,
+    BridgeGrantRegistry, CoverageLevel, SurfaceCoverage, SurfaceEvidenceSource, SurfaceKind,
+    SurfaceSet,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -403,6 +404,14 @@ impl WebIrRelationshipKind {
 impl GlassWebIrV1 {
     /// Validate graph invariants before exposing Web IR to another layer.
     pub fn validate(&self) -> Result<(), WebIrValidationError> {
+        self.validate_with_grants(&BridgeGrantRegistry::default())
+    }
+
+    /// Validate graph invariants with explicitly trusted semantic bridge grants.
+    pub fn validate_with_grants(
+        &self,
+        grants: &BridgeGrantRegistry,
+    ) -> Result<(), WebIrValidationError> {
         if self.schema_version != WEB_IR_SCHEMA_VERSION {
             return Err(WebIrValidationError::new(
                 "schemaVersion",
@@ -532,7 +541,7 @@ impl GlassWebIrV1 {
         }
         if let Some(surface_set) = &self.surface_set {
             surface_set
-                .validate()
+                .validate_with_grants(grants)
                 .map_err(|error| WebIrValidationError::new("surfaceSet", error.to_string()))?;
             if surface_set
                 .surfaces
@@ -953,12 +962,20 @@ impl GlassWebIrV1 {
 pub fn reconcile_evidence(
     evidence: &ExtractionEvidence,
 ) -> Result<GlassWebIrV1, WebIrValidationError> {
+    reconcile_evidence_with_grants(evidence, &BridgeGrantRegistry::default())
+}
+
+/// Reconcile evidence while authorizing explicitly trusted semantic bridges.
+pub fn reconcile_evidence_with_grants(
+    evidence: &ExtractionEvidence,
+    grants: &BridgeGrantRegistry,
+) -> Result<GlassWebIrV1, WebIrValidationError> {
     evidence
         .validate_relationship_hints()
         .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
     if let Some(surface_set) = &evidence.surface_set {
         surface_set
-            .validate()
+            .validate_with_grants(grants)
             .map_err(|error| WebIrValidationError::new("surfaceSet", error.to_string()))?;
         if surface_set
             .surfaces
@@ -1269,7 +1286,7 @@ pub fn reconcile_evidence(
         diagnostics: diagnostics.into_iter().collect(),
         relationship_hint_diagnostics,
     };
-    draft.validate()?;
+    draft.validate_with_grants(grants)?;
     Ok(draft)
 }
 

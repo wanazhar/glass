@@ -3,9 +3,13 @@
 //! Implements the Ratatui-based terminal interface with split-pane layout,
 //! command input, observation display, and keyboard-driven interaction.
 
+use base64::Engine as _;
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -17,6 +21,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
@@ -35,27 +40,162 @@ use tokio::{
     time::{self, MissedTickBehavior},
 };
 
+use crate::capabilities::GlassCapabilityManifest;
+
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionOutcome, BrowserResult, BrowserSession, KnowledgeStore, PageContext, PageInfo,
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentRequest,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
-    WorkflowDefinition, default_knowledge_store_path,
+    VisualFormat, WorkflowDefinition, default_knowledge_store_path,
 };
-use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::presentation::{BrowserFrame, CaptureScale, PixelSize, TargetResourceIdentity};
 use crate::terminal_graphics::{
-    PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics, negotiate,
+    MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics, negotiate,
 };
 const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
-const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 8;
+const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 2;
+const MAX_VISUAL_ENCODED_BYTES: usize = 6 * 1024 * 1024;
 const ACTIVITY_LIMIT: usize = 100;
 const TUI_PAGE_MAX_BYTES: usize = 24 * 1024;
 const TUI_HEADER_MAX_BYTES: usize = 512;
 const TUI_ACTIVITY_MAX_BYTES: usize = 512;
+/// Visible Browser Workspace presentation modes. Each mode changes the
+/// inspection surface, but never changes browser authority or policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    #[default]
+    Browser,
+    Split,
+    Workflow,
+    Semantic,
+    Inspect,
+    Takeover,
+}
+
+impl WorkspaceMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Browser => "Browser",
+            Self::Split => "Split",
+            Self::Workflow => "Workflow",
+            Self::Semantic => "Semantic",
+            Self::Inspect => "Inspect",
+            Self::Takeover => "Takeover",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationActor {
+    Human,
+    Agent,
+    Observer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationLeaseState {
+    Available,
+    Held(MutationActor),
+    Reconciling(MutationActor),
+}
+
+/// Small, revision-guarded TUI lease state machine. Browser operations still
+/// enforce their own revision checks; this gate prevents concurrent mutation
+/// intent before an operation reaches the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MutationLease {
+    state: MutationLeaseState,
+    revision: u64,
+}
+
+impl Default for MutationLease {
+    fn default() -> Self {
+        Self {
+            state: MutationLeaseState::Available,
+            revision: 0,
+        }
+    }
+}
+
+impl MutationLease {
+    pub const fn state(self) -> MutationLeaseState {
+        self.state
+    }
+
+    pub const fn revision(self) -> u64 {
+        self.revision
+    }
+
+    pub fn acquire(
+        &mut self,
+        actor: MutationActor,
+        expected_revision: u64,
+    ) -> Result<u64, &'static str> {
+        if actor == MutationActor::Observer {
+            return Err("observer cannot acquire mutation lease");
+        }
+        if expected_revision != self.revision {
+            return Err("lease revision is stale");
+        }
+        if !matches!(self.state, MutationLeaseState::Available) {
+            return Err("mutation lease is already held");
+        }
+        self.revision = self.revision.saturating_add(1);
+        self.state = MutationLeaseState::Held(actor);
+        Ok(self.revision)
+    }
+
+    pub fn takeover(
+        &mut self,
+        actor: MutationActor,
+        expected_revision: u64,
+    ) -> Result<u64, &'static str> {
+        if actor == MutationActor::Observer {
+            return Err("observer cannot take over mutation lease");
+        }
+        if expected_revision != self.revision {
+            return Err("lease revision is stale");
+        }
+        if matches!(self.state, MutationLeaseState::Available) {
+            return Err("no active lease to take over");
+        }
+        self.revision = self.revision.saturating_add(1);
+        self.state = MutationLeaseState::Reconciling(actor);
+        Ok(self.revision)
+    }
+
+    pub fn reconcile(&mut self, expected_revision: u64) -> Result<(), &'static str> {
+        if expected_revision != self.revision {
+            return Err("lease revision is stale");
+        }
+        let MutationLeaseState::Reconciling(actor) = self.state else {
+            return Err("lease is not awaiting reconciliation");
+        };
+        self.state = MutationLeaseState::Held(actor);
+        Ok(())
+    }
+
+    pub fn release(
+        &mut self,
+        actor: MutationActor,
+        expected_revision: u64,
+    ) -> Result<u64, &'static str> {
+        if expected_revision != self.revision {
+            return Err("lease revision is stale");
+        }
+        if self.state != MutationLeaseState::Held(actor) {
+            return Err("actor does not hold mutation lease");
+        }
+        self.revision = self.revision.saturating_add(1);
+        self.state = MutationLeaseState::Available;
+        Ok(self.revision)
+    }
+}
+
 const TUI_INPUT_MAX_BYTES: usize = 4 * 1024;
 const BUSY_TICK: Duration = Duration::from_millis(120);
 const INPUT_POLL: Duration = Duration::from_millis(50);
@@ -80,6 +220,10 @@ pub struct App {
     busy: Option<BusyState>,
     next_operation_id: u64,
     graphics: TerminalGraphics,
+    mode: WorkspaceMode,
+    mutation_lease: MutationLease,
+    visual_revision: u64,
+    visual_status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +240,16 @@ struct BusyState {
     label: String,
     cancelling: bool,
     spinner: usize,
+    /// Revision returned when this operation acquired the human mutation lease.
+    /// Read-only operations intentionally leave this unset.
+    lease_revision: Option<u64>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum UiIntent {
     None,
     Submit(String),
+    Pointer(BrowserOperation),
     Cancel(u64),
     Quit,
 }
@@ -138,6 +286,10 @@ impl App {
             busy: None,
             next_operation_id: 1,
             graphics,
+            mode: WorkspaceMode::Browser,
+            mutation_lease: MutationLease::default(),
+            visual_revision: 0,
+            visual_status: "visual stream pending".to_string(),
         }
     }
 
@@ -165,6 +317,25 @@ impl App {
 
     fn set_status(&mut self, status: impl Into<String>) {
         self.status = bounded_text(&status.into(), TUI_ACTIVITY_MAX_BYTES);
+    }
+    pub fn mode(&self) -> WorkspaceMode {
+        self.mode
+    }
+
+    pub fn mutation_lease(&self) -> MutationLease {
+        self.mutation_lease
+    }
+
+    fn set_mode(&mut self, mode: WorkspaceMode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.graphics.clear_pane().ok();
+            self.add_activity(format!("Workspace mode: {}.", mode.label()));
+        }
+    }
+
+    fn apply_visual_status(&mut self, status: impl Into<String>) {
+        self.visual_status = bounded_text(&status.into(), TUI_ACTIVITY_MAX_BYTES);
     }
 
     fn cursor_byte_index(&self) -> usize {
@@ -212,10 +383,70 @@ impl App {
             self.input.drain(start..end);
         }
     }
+    fn mouse_intent(&mut self, mouse: MouseEvent) -> UiIntent {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => UiIntent::Pointer(BrowserOperation::ScrollAt {
+                dx: 0.0,
+                dy: -480.0,
+                expected_revision: self.graphics.browser_revision(),
+            }),
+            MouseEventKind::ScrollDown => UiIntent::Pointer(BrowserOperation::ScrollAt {
+                dx: 0.0,
+                dy: 480.0,
+                expected_revision: self.graphics.browser_revision(),
+            }),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(geometry) = self.graphics.geometry() else {
+                    self.set_status("Pointer ignored: browser geometry is not ready.");
+                    return UiIntent::None;
+                };
+                let point = crate::presentation::PixelPoint {
+                    x: u32::from(mouse.column),
+                    y: u32::from(mouse.row),
+                };
+                match geometry.pane_to_viewport(
+                    point,
+                    self.graphics.browser_revision(),
+                    geometry.geometry_revision,
+                ) {
+                    Ok(viewport) => UiIntent::Pointer(BrowserOperation::ClickAt {
+                        x: f64::from(viewport.x),
+                        y: f64::from(viewport.y),
+                        expected_revision: self.graphics.browser_revision(),
+                    }),
+                    Err(error) => {
+                        self.set_status(format!("Pointer rejected: {error}"));
+                        UiIntent::None
+                    }
+                }
+            }
+            MouseEventKind::Moved => {
+                self.set_status(format!("Hover cell {},{}.", mouse.column, mouse.row));
+                UiIntent::None
+            }
+            _ => UiIntent::None,
+        }
+    }
 
     fn reduce_key(&mut self, key: KeyEvent) -> UiIntent {
         if key.kind != KeyEventKind::Press {
             return UiIntent::None;
+        }
+
+        if let KeyCode::F(number) = key.code {
+            let mode = match number {
+                1 => Some(WorkspaceMode::Browser),
+                2 => Some(WorkspaceMode::Split),
+                3 => Some(WorkspaceMode::Workflow),
+                4 => Some(WorkspaceMode::Semantic),
+                5 => Some(WorkspaceMode::Inspect),
+                6 => Some(WorkspaceMode::Takeover),
+                _ => None,
+            };
+            if let Some(mode) = mode {
+                self.set_mode(mode);
+                return UiIntent::None;
+            }
         }
 
         match key.code {
@@ -323,13 +554,51 @@ impl App {
             label: label.clone(),
             cancelling: false,
             spinner: 0,
+            lease_revision: None,
         });
         self.set_status(format!("Queued: {label}"));
         self.add_activity(format!("Queued: {label}"));
     }
 
+    fn attach_mutation_lease(&mut self, id: u64, revision: u64) {
+        if let Some(busy) = self.busy.as_mut().filter(|busy| busy.id == id) {
+            busy.lease_revision = Some(revision);
+        }
+    }
+
+    fn release_operation_lease(&mut self, id: u64) {
+        let Some(lease_revision) = self
+            .busy
+            .as_ref()
+            .filter(|busy| busy.id == id)
+            .and_then(|busy| busy.lease_revision)
+        else {
+            return;
+        };
+        let _ = self
+            .mutation_lease
+            .release(MutationActor::Human, lease_revision);
+        if let Some(busy) = self.busy.as_mut().filter(|busy| busy.id == id) {
+            busy.lease_revision = None;
+        }
+    }
+
+    fn release_all_mutation_leases(&mut self) {
+        if matches!(
+            self.mutation_lease.state(),
+            MutationLeaseState::Held(MutationActor::Human)
+        ) {
+            let revision = self.mutation_lease.revision();
+            let _ = self.mutation_lease.release(MutationActor::Human, revision);
+        }
+        if let Some(busy) = self.busy.as_mut() {
+            busy.lease_revision = None;
+        }
+    }
+
     fn finish_operation(&mut self, id: u64) {
         if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
+            self.release_operation_lease(id);
             self.busy = None;
             if self.browser_ready() {
                 self.set_status("Ready");
@@ -361,7 +630,6 @@ impl App {
             self.set_status(status);
         }
     }
-
     fn apply_browser_event(
         &mut self,
         event: BrowserEvent,
@@ -380,6 +648,7 @@ impl App {
             }
             BrowserEvent::StartupFailed { message } => {
                 self.browser_state = BrowserState::Unavailable;
+                self.release_all_mutation_leases();
                 self.busy = None;
                 self.set_status("Browser unavailable");
                 self.report_error(message);
@@ -405,6 +674,16 @@ impl App {
                     self.add_activity(format!("Rejected operation {id}: {message}"));
                 }
             }
+            BrowserEvent::VisualFrame {
+                data,
+                metadata,
+                browser_revision,
+            } => {
+                self.apply_visual_frame(data, metadata, browser_revision)?;
+            }
+            BrowserEvent::VisualStatus { message } => {
+                self.apply_visual_status(message);
+            }
             BrowserEvent::OperationCancelled { id } => {
                 if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
                     self.finish_operation(id);
@@ -413,12 +692,14 @@ impl App {
             }
             BrowserEvent::WorkerFailed { message } => {
                 self.browser_state = BrowserState::Unavailable;
+                self.release_all_mutation_leases();
                 self.busy = None;
                 self.set_status("Browser worker failed");
                 self.report_error(message);
             }
             BrowserEvent::WorkerStopped => {
                 self.browser_state = BrowserState::Stopped;
+                self.release_all_mutation_leases();
                 self.busy = None;
                 self.set_status("Browser worker stopped");
                 self.add_activity("Browser worker stopped.");
@@ -434,12 +715,77 @@ impl App {
             PageUpdate::IntentResolution { request, result } => {
                 self.apply_intent_resolution(*request, *result)
             }
+
             PageUpdate::Text { page, text } => {
                 self.apply_page_header(&page);
                 self.set_page_content(text);
                 Ok(())
             }
         }
+    }
+    fn apply_visual_frame(
+        &mut self,
+        data: String,
+        metadata: Value,
+        browser_revision: u64,
+    ) -> BrowserResult<()> {
+        if data.len() > MAX_VISUAL_ENCODED_BYTES {
+            self.apply_visual_status("visual frame rejected: encoded payload exceeds limit");
+            return Ok(());
+        }
+        let metadata_bytes = serde_json::to_vec(&metadata)?;
+        if metadata_bytes.len() > TUI_HEADER_MAX_BYTES {
+            self.apply_visual_status("visual frame rejected: metadata exceeds limit");
+            return Ok(());
+        }
+        let Some(geometry) = self.graphics.geometry().copied() else {
+            return Ok(());
+        };
+        self.graphics.bind_browser_revision(browser_revision)?;
+        self.visual_revision = browser_revision;
+        let payload = match base64::engine::general_purpose::STANDARD.decode(data.as_bytes()) {
+            Ok(payload) if payload.len() <= MAX_FRAME_BYTES => payload,
+            Ok(_) => {
+                self.apply_visual_status("visual frame rejected: decoded payload exceeds limit");
+                return Ok(());
+            }
+            Err(_) => {
+                self.apply_visual_status("visual frame rejected: invalid base64 payload");
+                return Ok(());
+            }
+        };
+        let frame = BrowserFrame {
+            schema_version: crate::presentation::PRESENTATION_CONTRACT_SCHEMA_VERSION,
+            generation: self
+                .graphics
+                .diagnostics()
+                .accepted_frames
+                .saturating_add(1),
+            identity: TargetResourceIdentity::new("tui", Some("terminal".to_string()))?,
+            acquired_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as u64),
+            viewport: geometry.viewport,
+            content: geometry.content,
+            capture_scale: geometry.capture_scale,
+            encoding: crate::presentation::FrameEncoding::Png,
+            keyframe: true,
+            damage: crate::presentation::FrameDamage::Full,
+            browser_revision,
+            geometry_revision: geometry.geometry_revision,
+            dropped: Default::default(),
+        };
+        match self.submit_graphics_frame(frame, &payload)? {
+            SubmitResult::Stale => self.apply_visual_status("stale visual frame rejected"),
+            SubmitResult::Queued | SubmitResult::Replaced => {
+                self.apply_visual_status("visual frame queued")
+            }
+            SubmitResult::Presented => self.apply_visual_status(format!(
+                "visual frame presented ({:?})",
+                metadata.get("deviceWidth").and_then(Value::as_u64)
+            )),
+        }
+        Ok(())
     }
 
     fn apply_context(&mut self, context: &PageContext) -> BrowserResult<()> {
@@ -569,6 +915,7 @@ impl App {
     ) -> BrowserResult<SubmitResult> {
         Ok(self.graphics.submit(frame, payload)?)
     }
+
     fn render_graphics(&mut self) -> BrowserResult<()> {
         let rendered = self.graphics.render_current(&self.page_content)?;
         if rendered.mode == crate::terminal_graphics::GraphicsMode::Kitty {
@@ -584,6 +931,8 @@ impl App {
 #[derive(Debug)]
 enum InputEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
+    Paste(String),
     Redraw,
     Error(String),
 }
@@ -607,6 +956,16 @@ impl InputWorker {
                                 break;
                             }
                         }
+                        Ok(Event::Mouse(mouse)) => {
+                            if events.blocking_send(InputEvent::Mouse(mouse)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Event::Paste(text)) => {
+                            if events.blocking_send(InputEvent::Paste(text)).is_err() {
+                                break;
+                            }
+                        }
                         Ok(_) => {
                             if events.blocking_send(InputEvent::Redraw).is_err() {
                                 break;
@@ -617,6 +976,7 @@ impl InputWorker {
                             break;
                         }
                     },
+
                     Err(error) => {
                         let _ = events.blocking_send(InputEvent::Error(error.to_string()));
                         break;
@@ -629,11 +989,11 @@ impl InputWorker {
             join: Some(join),
         }
     }
-
-    fn stop(&mut self) -> BrowserResult<()> {
+    fn stop(&mut self) -> io::Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
-        if self.join.take().is_some_and(|join| join.join().is_err()) {
-            return Err("TUI input worker panicked".into());
+        if let Some(join) = self.join.take() {
+            join.join()
+                .map_err(|_| io::Error::other("input worker thread panicked"))?;
         }
         Ok(())
     }
@@ -675,6 +1035,11 @@ enum BrowserOperation {
         region: Option<String>,
     },
     Click(String),
+    ClickAt {
+        x: f64,
+        y: f64,
+        expected_revision: u64,
+    },
     DoubleClick(String),
     Hover(String),
     Clear(String),
@@ -690,6 +1055,13 @@ enum BrowserOperation {
     Scroll {
         dx: f64,
         dy: f64,
+    },
+    /// Scroll captured from a live pane snapshot; stale revisions are rejected
+    /// at execution rather than mutating a newer page.
+    ScrollAt {
+        dx: f64,
+        dy: f64,
+        expected_revision: u64,
     },
     AcceptDialog,
     DismissDialog,
@@ -708,18 +1080,19 @@ impl BrowserOperation {
             Self::Text => "Text",
             Self::Dom => "Compact DOM",
             Self::Observe { .. } => "Observe",
+            Self::ClickAt { .. } => "Coordinate click",
             Self::Semantic { .. } => "Semantic observe",
             Self::Click(_) => "Click",
             Self::DoubleClick(_) => "Double-click",
             Self::Hover(_) => "Hover",
             Self::Clear(_) => "Clear",
+            Self::Scroll { .. } | Self::ScrollAt { .. } => "Scroll",
             Self::Check(_) => "Check",
             Self::Uncheck(_) => "Uncheck",
             Self::Select { .. } => "Select",
             Self::Type(_) => "Type",
             Self::KeyPress(_) => "Key press",
             Self::Shortcut(_) => "Shortcut",
-            Self::Scroll { .. } => "Scroll",
             Self::AcceptDialog => "Accept dialog",
             Self::DismissDialog => "Dismiss dialog",
             Self::DismissConsent => "Dismiss consent",
@@ -728,6 +1101,17 @@ impl BrowserOperation {
             Self::ResolveIntent(_) => "Resolve intent",
             Self::ExecuteIntent(_) => "Execute intent",
         }
+    }
+    fn requires_human_lease(&self) -> bool {
+        !matches!(
+            self,
+            Self::Screenshot(_)
+                | Self::Text
+                | Self::Dom
+                | Self::Observe { .. }
+                | Self::Semantic { .. }
+                | Self::ResolveIntent(_)
+        )
     }
 }
 
@@ -1116,6 +1500,14 @@ enum BrowserEvent {
         id: u64,
         message: String,
     },
+    VisualFrame {
+        data: String,
+        metadata: Value,
+        browser_revision: u64,
+    },
+    VisualStatus {
+        message: String,
+    },
     OperationCancelled {
         id: u64,
     },
@@ -1247,6 +1639,42 @@ async fn worker_loop(
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
 ) {
+    let initial_revision = session
+        .observe_fresh()
+        .await
+        .map(|observation| observation.accessibility.revision)
+        .unwrap_or(1);
+    let mut screencast = match session
+        .start_screencast(VisualFormat::Png, 80, 4096, 4096)
+        .await
+    {
+        Ok(scope) => {
+            let _ = send_browser_event(
+                events,
+                BrowserEvent::VisualStatus {
+                    message: "event-driven screencast active".into(),
+                },
+            )
+            .await;
+            Some(scope)
+        }
+        Err(error) => {
+            let _ = send_browser_event(
+                events,
+                BrowserEvent::VisualStatus {
+                    message: format!(
+                        "screencast unavailable; bounded screenshot fallback: {error}"
+                    ),
+                },
+            )
+            .await;
+            None
+        }
+    };
+    let mut fallback_tick = time::interval(Duration::from_millis(750));
+    fallback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut visual_revision = initial_revision;
+
     loop {
         if *shutdown.borrow() {
             break;
@@ -1256,6 +1684,38 @@ async fn worker_loop(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
+                }
+            }
+            frame = async {
+                match screencast.as_mut() {
+                    Some(scope) => scope.next_frame().await,
+                    None => std::future::pending().await,
+                }
+            }, if screencast.is_some() => {
+                match frame {
+                    Some(frame) => {
+                        let _ = send_browser_event(events, BrowserEvent::VisualFrame {
+                            data: frame.data,
+                            metadata: frame.metadata,
+                            browser_revision: visual_revision,
+                        }).await;
+                    }
+                    None => {
+                        screencast = None;
+                        let _ = send_browser_event(events, BrowserEvent::VisualStatus {
+                            message: "screencast ended; bounded screenshot fallback active".into(),
+                        }).await;
+                    }
+                }
+            }
+            _ = fallback_tick.tick(), if screencast.is_none() => {
+                if let Ok(bytes) = session.screenshot_png().await {
+                    let metadata = serde_json::json!({"source":"screenshot-fallback"});
+                    let _ = send_browser_event(events, BrowserEvent::VisualFrame {
+                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                        metadata,
+                        browser_revision: visual_revision,
+                    }).await;
                 }
             }
             command = commands.recv() => match command {
@@ -1274,6 +1734,9 @@ async fn worker_loop(
                         events,
                     ).await {
                         ActiveOperationState::Completed(Ok(result)) => {
+                            if let Some(PageUpdate::Context(context)) = result.update.as_ref() {
+                                visual_revision = context.accessibility.revision;
+                            }
                             if !send_browser_event(events, BrowserEvent::OperationFinished { id, result }).await {
                                 break;
                             }
@@ -1281,10 +1744,7 @@ async fn worker_loop(
                         ActiveOperationState::Completed(Err(error)) => {
                             let message = error.to_string();
                             drop(error);
-                            if !send_browser_event(events, BrowserEvent::OperationFailed {
-                                id,
-                                message,
-                            }).await {
+                            if !send_browser_event(events, BrowserEvent::OperationFailed { id, message }).await {
                                 break;
                             }
                         }
@@ -1300,6 +1760,9 @@ async fn worker_loop(
         }
     }
 
+    if let Some(scope) = screencast {
+        let _ = scope.stop().await;
+    }
     let close_error = session.close().await.err().map(|error| error.to_string());
     if let Some(message) = close_error {
         let _ = send_browser_event(events, BrowserEvent::WorkerFailed { message }).await;
@@ -1426,6 +1889,27 @@ async fn execute_browser_operation(
                 update: Some(PageUpdate::Context(Box::new(context))),
             }))
         }
+        BrowserOperation::ClickAt {
+            x,
+            y,
+            expected_revision,
+        } => {
+            let observation = session.observe_fresh().await?;
+            if observation.accessibility.revision != expected_revision {
+                return Err(format!(
+                    "stale page revision: expected {expected_revision}, current {}",
+                    observation.accessibility.revision
+                )
+                .into());
+            }
+
+            let _outcome = session.click_at(x, y).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Coordinate click at ({x:.0},{y:.0}) succeeded."),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
         BrowserOperation::DoubleClick(target) => {
             let outcome = session.double_click(&target).await?;
             let context = session.observe_fresh().await?;
@@ -1503,6 +1987,26 @@ async fn execute_browser_operation(
             }))
         }
         BrowserOperation::Scroll { dx, dy } => {
+            let outcome = session.scroll(dx, dy).await?;
+            let context = session.observe_fresh().await?;
+            Ok(Box::new(OperationResult {
+                activity: format!("Scrolled (revision {}).", outcome.revision),
+                update: Some(PageUpdate::Context(Box::new(context))),
+            }))
+        }
+        BrowserOperation::ScrollAt {
+            dx,
+            dy,
+            expected_revision,
+        } => {
+            let current = session.observe_fresh().await?;
+            if current.accessibility.revision != expected_revision {
+                return Err(format!(
+                    "stale page revision: expected {expected_revision}, current {}",
+                    current.accessibility.revision
+                )
+                .into());
+            }
             let outcome = session.scroll(dx, dy).await?;
             let context = session.observe_fresh().await?;
             Ok(Box::new(OperationResult {
@@ -1647,17 +2151,18 @@ fn dispatch_ui_intent(
     intent: UiIntent,
 ) {
     match intent {
-        UiIntent::None => {}
+        UiIntent::Pointer(operation) => queue_browser_operation(app, commands, operation),
         UiIntent::Submit(command) => handle_submission(app, commands, policy, command),
         UiIntent::Cancel(id) => {
             if commands.try_send(BrowserCommand::Cancel { id }).is_err() {
                 app.cancellation_enqueue_failed(id);
                 app.report_error(
-                    "Browser worker is unavailable; cancellation could not be queued.",
+                    "Unable to queue cancellation because the browser command queue is full.",
                 );
             }
         }
         UiIntent::Quit => app.should_quit = true,
+        UiIntent::None => {}
     }
 }
 
@@ -1822,15 +2327,50 @@ fn queue_browser_operation(
         app.report_error("A browser operation is already running; press Esc to cancel it.");
         return;
     }
+    let operation = match operation {
+        BrowserOperation::Scroll { dx, dy } => BrowserOperation::ScrollAt {
+            dx,
+            dy,
+            expected_revision: app.graphics.browser_revision(),
+        },
+        operation => operation,
+    };
+
+    let lease_revision = if operation.requires_human_lease() {
+        let expected_revision = app.mutation_lease.revision();
+        match app
+            .mutation_lease
+            .acquire(MutationActor::Human, expected_revision)
+        {
+            Ok(revision) => Some(revision),
+            Err(error) => {
+                app.report_error(format!("Mutation lease denied: {error}."));
+                return;
+            }
+        }
+    } else {
+        None
+    };
 
     let id = app.allocate_operation_id();
     let label = operation.label().to_string();
     match commands.try_send(BrowserCommand::Execute { id, operation }) {
-        Ok(()) => app.begin_operation(id, label),
+        Ok(()) => {
+            app.begin_operation(id, label);
+            if let Some(revision) = lease_revision {
+                app.attach_mutation_lease(id, revision);
+            }
+        }
         Err(mpsc::error::TrySendError::Full(_)) => {
+            if let Some(revision) = lease_revision {
+                let _ = app.mutation_lease.release(MutationActor::Human, revision);
+            }
             app.report_error("Browser command queue is full.");
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
+            if let Some(revision) = lease_revision {
+                let _ = app.mutation_lease.release(MutationActor::Human, revision);
+            }
             app.browser_state = BrowserState::Unavailable;
             app.report_error("Browser worker is unavailable.");
         }
@@ -1853,7 +2393,8 @@ fn draw(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[0]);
 
-    let title = Paragraph::new(app.title.as_str())
+    let title_text = format!("{} — {}", app.title, app.mode.label());
+    let title = Paragraph::new(title_text)
         .block(Block::default().borders(Borders::ALL).title("Glass"))
         .style(
             Style::default()
@@ -1883,14 +2424,17 @@ fn draw(frame: &mut Frame, app: &App) {
             .style(Style::default().fg(Color::Green)),
         content[0],
     );
-
+    let content_title = match app.mode {
+        WorkspaceMode::Browser => "Browser / Structured Observation",
+        WorkspaceMode::Split => "Split / Browser + Status",
+        WorkspaceMode::Workflow => "Workflow Verification",
+        WorkspaceMode::Semantic => "Semantic Inspector",
+        WorkspaceMode::Inspect => "Inspect / Memory + Backend",
+        WorkspaceMode::Takeover => "Takeover / Reconciliation",
+    };
     frame.render_widget(
         Paragraph::new(app.page_content.as_str())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Structured Observation"),
-            )
+            .block(Block::default().borders(Borders::ALL).title(content_title))
             .scroll((app.page_scroll, 0))
             .wrap(Wrap { trim: true }),
         content[1],
@@ -1908,8 +2452,12 @@ fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            " {}   {} ({})   PgUp/PgDn: observation   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
+            " {} | mode:{} lease:{:?}@{} | {} | {} | {}   PgUp/PgDn: observation   F1-F6: workspace modes   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
             app.status,
+            app.mode.label(),
+            app.mutation_lease.state(),
+            app.mutation_lease.revision(),
+            app.visual_status,
             app.capability_summary,
             app.graphics.diagnostics_label(),
             app.input.chars().count()
@@ -2055,6 +2603,7 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
 
     drop(input_events);
     drop(browser_events);
+    app.release_all_mutation_leases();
     let _ = shutdown_tx.send(true);
     let _ = browser_commands.try_send(BrowserCommand::Shutdown);
     drop(browser_commands);
@@ -2101,6 +2650,17 @@ async fn run_tui_loop(
                     dispatch_ui_intent(app, commands, policy, intent);
                     true
                 }
+                Some(InputEvent::Mouse(mouse)) => {
+                    let intent = app.mouse_intent(mouse);
+                    dispatch_ui_intent(app, commands, policy, intent);
+                    true
+                }
+                Some(InputEvent::Paste(text)) => {
+                    for character in text.chars() {
+                        app.insert_char(character);
+                    }
+                    true
+                }
                 Some(InputEvent::Redraw) => true,
                 Some(InputEvent::Error(error)) => return Err(error.into()),
                 None => return Err("TUI input worker stopped".into()),
@@ -2114,6 +2674,7 @@ async fn run_tui_loop(
                 }
                 None => {
                     browser_events_open = false;
+                    app.release_all_mutation_leases();
                     app.busy = None;
                     if !matches!(app.browser_state, BrowserState::Unavailable | BrowserState::Stopped) {
                         app.browser_state = BrowserState::Unavailable;
@@ -2261,6 +2822,26 @@ mod tests {
         assert!(app.busy.as_ref().unwrap().cancelling);
         assert_eq!(app.reduce_key(key(KeyCode::Esc)), UiIntent::None);
     }
+    #[test]
+    fn mutating_queue_requires_and_releases_human_lease() {
+        let mut app = App::new();
+        app.browser_state = BrowserState::Ready;
+        let (commands, _receiver) = mpsc::channel(1);
+
+        queue_browser_operation(
+            &mut app,
+            &commands,
+            BrowserOperation::Click("r1:b1".to_string()),
+        );
+        assert!(matches!(
+            app.mutation_lease.state(),
+            MutationLeaseState::Held(MutationActor::Human)
+        ));
+        let id = app.busy.as_ref().expect("queued operation").id;
+        app.apply_browser_event(BrowserEvent::OperationCancelled { id })
+            .unwrap();
+        assert_eq!(app.mutation_lease.state(), MutationLeaseState::Available);
+    }
 
     #[test]
     fn app_bounds_retained_page_state() {
@@ -2369,5 +2950,44 @@ mod tests {
             .unwrap();
         assert!(!app.is_busy());
         worker.await.unwrap();
+    }
+
+    #[test]
+    fn workspace_modes_and_lease_are_revision_guarded() {
+        let mut app = App::new();
+        assert_eq!(app.mode(), WorkspaceMode::Browser);
+        assert_eq!(app.reduce_key(key(KeyCode::F(4))), UiIntent::None);
+        assert_eq!(app.mode(), WorkspaceMode::Semantic);
+
+        let mut lease = MutationLease::default();
+        let revision = lease.acquire(MutationActor::Human, 0).unwrap();
+        assert!(lease.acquire(MutationActor::Agent, revision).is_err());
+        let takeover = lease.takeover(MutationActor::Agent, revision).unwrap();
+        assert!(lease.reconcile(takeover).is_ok());
+        assert_eq!(
+            lease.state(),
+            MutationLeaseState::Held(MutationActor::Agent)
+        );
+        assert!(lease.release(MutationActor::Human, takeover).is_err());
+        assert!(lease.release(MutationActor::Agent, takeover).is_ok());
+    }
+
+    #[test]
+    fn pointer_mapping_rejects_stale_geometry_and_emits_coordinate_action() {
+        let mut app = App::new();
+        app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
+            .unwrap();
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 60,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(matches!(
+            app.mouse_intent(mouse),
+            UiIntent::Pointer(BrowserOperation::ClickAt { .. })
+        ));
+        app.graphics.clear_pane().unwrap();
+        assert!(matches!(app.mouse_intent(mouse), UiIntent::None));
     }
 }

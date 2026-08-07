@@ -16,21 +16,32 @@ const MAX_MESSAGE_BYTES: usize = 512;
 const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
 const MAX_DEADLINE_MS: u64 = 15 * 60 * 1_000;
 
-/// Canonical transport operation for browser-free Web IR validation.
+/// Canonical operation for browser-free Web IR validation.
 pub const WEB_IR_VALIDATE_OPERATION: &str = "webIr.validate";
-/// Canonical transport operation for browser-free Web IR inspection.
+/// Canonical operation for browser-free Web IR inspection.
 pub const WEB_IR_INSPECT_OPERATION: &str = "webIr.inspect";
-/// Canonical transport operation for browser-free Web IR revision diffs.
+/// Canonical operation for browser-free Web IR revision diffs.
 pub const WEB_IR_DIFF_OPERATION: &str = "webIr.diff";
-/// Canonical transport operation for browser-free Web IR continuity checks.
+/// Canonical operation for browser-free Web IR continuity checks.
 pub const WEB_IR_CONTINUITY_OPERATION: &str = "webIr.continuity";
-
-/// Canonical transport operation for browser-free Task Protocol compilation.
+/// Canonical operation for browser-free Task Protocol compilation.
 pub const TASK_COMPILE_OPERATION: &str = "task.compile";
-/// Canonical transport operation for browser-free Task Protocol validation.
+/// Canonical operation for browser-free Task Protocol validation.
 pub const TASK_VALIDATE_OPERATION: &str = "task.validate";
-/// Canonical transport operation for browser-backed Task Protocol execution.
+/// Canonical operation for browser-backed Task Protocol execution.
 pub const TASK_EXECUTE_OPERATION: &str = "task.execute";
+
+/// Browser-free or live experience operations use these stable names in all
+/// supported transports.
+pub const EXPERIENCE_INSPECT_OPERATION: &str = "experience.inspect";
+pub const EXPERIENCE_EXTRACT_OPERATION: &str = "experience.extract";
+pub const EXPERIENCE_RESOLVE_OPERATION: &str = "experience.resolve";
+pub const EXPERIENCE_ACT_OPERATION: &str = "experience.act";
+pub const EXPERIENCE_VERIFY_OPERATION: &str = "experience.verify";
+pub const EXPERIENCE_CAPTURE_OPERATION: &str = "experience.capture";
+pub const EXPERIENCE_REPLAY_OPERATION: &str = "experience.replay";
+pub const EXPERIENCE_DIFF_OPERATION: &str = "experience.diff";
+pub const EXPERIENCE_ATTACH_OPERATION: &str = "experience.attach";
 
 /// Typed payload carried by a `task.compile` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -473,6 +484,21 @@ impl GlassRequest {
             })?;
         payload.validate()?;
         Ok(payload)
+    }
+
+    /// Decode the shared experience result payload carried by any transport.
+    pub fn decode_experience_result(
+        &self,
+    ) -> Result<crate::results::ExperienceResult, ProtocolError> {
+        self.validate()?;
+        let result: crate::results::ExperienceResult = serde_json::from_value(self.payload.clone())
+            .map_err(|error| {
+                ProtocolError::InvalidField(format!("experience result payload: {error}"))
+            })?;
+        result
+            .validate()
+            .map_err(|error| ProtocolError::InvalidField(error.to_string()))?;
+        Ok(result)
     }
 }
 

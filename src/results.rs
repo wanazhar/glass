@@ -4,12 +4,16 @@
 //! evidence stays in a local result artifact and is referenced by ID.
 
 use crate::protocol::{ErrorPhase, RetryGuidance};
+use crate::workspace::ResourceReference;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
+
+/// Maximum serialized size of one cross-interface provenance record.
+pub const MAX_PROVENANCE_BYTES: usize = 8 * 1024;
 
 pub const RESULT_SCHEMA_VERSION: u32 = 1;
 const MAX_RESULT_ID_BYTES: usize = 96;
@@ -59,6 +63,164 @@ pub struct OperationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
     pub detail_availability: DetailAvailability,
+}
+/// The interface that produced a result. This closed set prevents arbitrary
+/// strings from being mistaken for an authority boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ProvenanceSource {
+    #[default]
+    Rust,
+    Cli,
+    Mcp,
+    Daemon,
+}
+
+/// Bounded provenance shared by CLI, MCP, daemon, and embedding callers.
+/// Provenance identifies evidence origin; it never grants mutation authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperienceProvenance {
+    pub source: ProvenanceSource,
+    pub authoritative: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_ref: Option<ResourceReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+}
+
+impl Default for ExperienceProvenance {
+    fn default() -> Self {
+        Self {
+            source: ProvenanceSource::Rust,
+            authoritative: false,
+            resource_ref: None,
+            revision: None,
+            observed_at: None,
+        }
+    }
+}
+
+impl ExperienceProvenance {
+    pub fn interface(source: ProvenanceSource) -> Self {
+        Self {
+            source,
+            ..Self::default()
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ResultStoreError> {
+        if let Some(observed_at) = &self.observed_at {
+            chrono::DateTime::parse_from_rfc3339(observed_at)
+                .map_err(|_| ResultStoreError::InvalidExperienceResult)?;
+        }
+        let bytes = serde_json::to_vec(self)?;
+        if bytes.len() > MAX_PROVENANCE_BYTES {
+            return Err(ResultStoreError::TooLarge(
+                bytes.len(),
+                MAX_PROVENANCE_BYTES,
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Shared cross-pillar result envelope used by CLI, MCP, daemon, and Rust
+/// callers. Evidence is deliberately represented as JSON so each pillar can
+/// contribute its own validated contract without importing transport types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperienceResult {
+    pub schema_version: u32,
+    pub status: String,
+    pub operation: String,
+    pub provenance: ExperienceProvenance,
+    #[serde(default)]
+    pub resource_refs: Vec<ResourceReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portability: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflow_timeline: Vec<Value>,
+    pub result: Value,
+}
+
+impl ExperienceResult {
+    pub fn new(operation: impl Into<String>, status: impl Into<String>, result: Value) -> Self {
+        Self {
+            schema_version: RESULT_SCHEMA_VERSION,
+            status: status.into(),
+            operation: operation.into(),
+            provenance: ExperienceProvenance::default(),
+            resource_refs: Vec::new(),
+            workspace: None,
+            backend: None,
+            surface: None,
+            policy: None,
+            memory: None,
+            portability: None,
+            verification: None,
+            workflow_timeline: Vec::new(),
+            result,
+        }
+    }
+
+    pub fn with_provenance(mut self, provenance: ExperienceProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    pub fn with_resource_ref(mut self, resource_ref: ResourceReference) -> Self {
+        self.resource_refs.push(resource_ref);
+        self
+    }
+
+    pub fn with_evidence(mut self, field: &str, evidence: Value) -> Self {
+        match field {
+            "workspace" => self.workspace = Some(evidence),
+            "backend" => self.backend = Some(evidence),
+            "surface" => self.surface = Some(evidence),
+            "policy" => self.policy = Some(evidence),
+            "memory" => self.memory = Some(evidence),
+            "portability" => self.portability = Some(evidence),
+            "verification" => self.verification = Some(evidence),
+            _ => {}
+        }
+        self
+    }
+
+    pub fn with_timeline(mut self, timeline: Vec<Value>) -> Self {
+        self.workflow_timeline = timeline;
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), ResultStoreError> {
+        if self.schema_version != RESULT_SCHEMA_VERSION
+            || self.operation.trim().is_empty()
+            || self.status.trim().is_empty()
+        {
+            return Err(ResultStoreError::InvalidExperienceResult);
+        }
+        self.provenance.validate()?;
+        let bytes = serde_json::to_vec(self)?;
+        if bytes.len() > MAX_RESULT_BYTES {
+            return Err(ResultStoreError::TooLarge(bytes.len(), MAX_RESULT_BYTES));
+        }
+        Ok(())
+    }
 }
 
 impl OperationResult {
@@ -278,6 +440,7 @@ pub fn default_result_store_path() -> PathBuf {
 pub enum ResultStoreError {
     InvalidId,
     InvalidArtifact(String),
+    InvalidExperienceResult,
     TooLarge(usize, usize),
     Io(std::io::Error),
     Json(serde_json::Error),
@@ -288,6 +451,7 @@ impl std::fmt::Display for ResultStoreError {
         match self {
             Self::InvalidId => formatter.write_str("invalid result ID"),
             Self::InvalidArtifact(id) => write!(formatter, "result artifact is invalid: {id}"),
+            Self::InvalidExperienceResult => formatter.write_str("invalid experience result"),
             Self::TooLarge(actual, limit) => write!(
                 formatter,
                 "result artifact is {actual} bytes, exceeding the {limit}-byte budget"

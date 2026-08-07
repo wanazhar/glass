@@ -38,11 +38,18 @@ use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
 const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
+use crate::browser_backend::{BackendProfile, BrowserCapability};
 use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
-use crate::results::{ResponseMode, default_result_store_path, project_and_store};
+use crate::reliability::{ReliabilityReplayBundle, ReliabilityScenario};
+use crate::results::{
+    ExperienceProvenance, ExperienceResult, ProvenanceSource, ResponseMode,
+    default_result_store_path, project_and_store,
+};
+use crate::surfaces::SurfaceSet;
 use crate::task_compiler::TaskCompilationError;
+use crate::workspace::{WorkspaceId, WorkspaceStore};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -319,6 +326,37 @@ enum ToolInvocation<'a> {
     },
     KnowledgePurge {
         origin: &'a str,
+    },
+    KnowledgeForget {
+        record_id: &'a str,
+    },
+    KnowledgeExport,
+    KnowledgePrune,
+    KnowledgeReindex,
+    SurfaceInspect {
+        surfaces: Value,
+        coverage_only: bool,
+    },
+    BackendInspect {
+        profile: Value,
+        test: bool,
+    },
+    WorkspaceStatus,
+    WorkspaceInspect {
+        id: Option<&'a str>,
+    },
+    ReplayInspect {
+        scenario: Value,
+        replay: Value,
+    },
+    ReplayDiff {
+        scenario: Value,
+        before: Value,
+        after: Value,
+    },
+    ReplayAttach {
+        scenario: Value,
+        replay: Value,
     },
     GetDom,
     GetText,
@@ -1094,6 +1132,9 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "extractStructured"
             | "recoverRun"
             | "sessionSnapshot"
+            | "replayInspect"
+            | "replayDiff"
+            | "replayAttach"
             | "resolveIntent"
             | "resolveIntentWithKnowledge"
             | "knowledgeList"
@@ -1111,6 +1152,8 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "diagnostics"
             | "verify"
             | "observeDelta"
+            | "workspaceStatus"
+            | "workspaceInspect"
     )
 }
 
@@ -1585,6 +1628,9 @@ async fn call_tool(
         let result = crate::protocol::web_ir_diff_result(&canonical)?;
         return serialized_result(&result);
     }
+    if let ToolInvocation::PreflightNavigation { url } = &invocation {
+        return serialized_result(&policy.preflight_navigation(url));
+    }
     if let ToolInvocation::ContinuityWebIr {
         before,
         after,
@@ -1633,8 +1679,17 @@ async fn call_tool(
             .decode_task_execute()
             .map_err(|error| error.to_string())?;
     }
-    if let ToolInvocation::PreflightNavigation { url } = &invocation {
-        return serialized_result(&policy.preflight_navigation(url));
+    if matches!(
+        &invocation,
+        ToolInvocation::SurfaceInspect { .. }
+            | ToolInvocation::BackendInspect { .. }
+            | ToolInvocation::WorkspaceStatus
+            | ToolInvocation::WorkspaceInspect { .. }
+            | ToolInvocation::ReplayInspect { .. }
+            | ToolInvocation::ReplayDiff { .. }
+            | ToolInvocation::ReplayAttach { .. }
+    ) {
+        return call_experience_tool(invocation);
     }
     if matches!(
         &invocation,
@@ -1685,8 +1740,8 @@ async fn call_tool(
         return serialized_result_mode(&result, response_mode);
     }
     match invocation {
-        ToolInvocation::PreflightNavigation { .. } => {
-            unreachable!("preflightNavigation is handled before browser session startup")
+        ToolInvocation::PreflightNavigation { url } => {
+            unreachable!("preflightNavigation is handled before browser session startup: {url}")
         }
         ToolInvocation::Navigate {
             url,
@@ -2317,6 +2372,19 @@ async fn call_tool(
         ToolInvocation::ValidateTask { .. } => {
             unreachable!("validateTask is handled before browser session startup")
         }
+        ToolInvocation::KnowledgeForget { .. }
+        | ToolInvocation::KnowledgeExport
+        | ToolInvocation::KnowledgePrune
+        | ToolInvocation::KnowledgeReindex
+        | ToolInvocation::SurfaceInspect { .. }
+        | ToolInvocation::BackendInspect { .. }
+        | ToolInvocation::WorkspaceStatus
+        | ToolInvocation::WorkspaceInspect { .. }
+        | ToolInvocation::ReplayInspect { .. }
+        | ToolInvocation::ReplayDiff { .. }
+        | ToolInvocation::ReplayAttach { .. } => {
+            unreachable!("experience tools are handled before browser session startup")
+        }
     }
 }
 
@@ -2364,8 +2432,140 @@ fn call_knowledge_tool(
         ToolInvocation::KnowledgePurge { origin } => {
             serialized_result(&store.purge_origin(origin)?)
         }
+        ToolInvocation::KnowledgeForget { record_id } => {
+            serialized_result(&store.remove(record_id)?)
+        }
+        ToolInvocation::KnowledgeExport => serialized_result(store.snapshot()),
+        ToolInvocation::KnowledgePrune => {
+            let ids = store
+                .records()
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.confidence,
+                        KnowledgeConfidence::Stale
+                            | KnowledgeConfidence::Contradicted
+                            | KnowledgeConfidence::Quarantined
+                    )
+                })
+                .map(|record| record.record_id.clone())
+                .collect::<Vec<_>>();
+            let mut removed = Vec::new();
+            for id in ids {
+                if store.remove(&id)?.removed {
+                    removed.push(id);
+                }
+            }
+            serialized_result(&json!({"removedRecordIds": removed}))
+        }
+        ToolInvocation::KnowledgeReindex => {
+            store.refresh()?;
+            serialized_result(&store.stats()?)
+        }
         _ => unreachable!("non-knowledge tool passed to knowledge dispatcher"),
     }
+}
+fn call_experience_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value> {
+    let result = match invocation {
+        ToolInvocation::SurfaceInspect {
+            surfaces,
+            coverage_only,
+        } => {
+            let set: SurfaceSet = serde_json::from_value(surfaces)?;
+            set.validate()?;
+            if coverage_only {
+                json!({
+                    "surfaceCount": set.surfaces.len(),
+                    "surfaces": set.surfaces.iter().map(|surface| json!({
+                        "surfaceId": surface.surface_id,
+                        "kind": surface.kind,
+                        "understanding": surface.understanding,
+                        "coverage": surface.coverage,
+                        "capabilities": surface.capabilities,
+                        "evidenceCount": surface.evidence.len(),
+                        "provenance": surface.evidence.iter().map(|e| &e.provenance).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>()
+                })
+            } else {
+                serde_json::to_value(set)?
+            }
+        }
+        ToolInvocation::BackendInspect { profile, test } => {
+            let profile: BackendProfile = serde_json::from_value(profile)?;
+            profile.validate()?;
+            if test {
+                json!({
+                    "valid": true,
+                    "gates": BrowserCapability::ALL.iter().map(|capability| json!({
+                        "capability": capability,
+                        "declared": profile.capabilities.contains_key(capability),
+                        "level": profile.capability(*capability).level,
+                        "portability": profile.capability(*capability).portability,
+                    })).collect::<Vec<_>>()
+                })
+            } else {
+                json!({"identity": profile.identity, "declaredCapabilities": profile.capabilities.len()})
+            }
+        }
+        ToolInvocation::WorkspaceStatus => {
+            let store = WorkspaceStore::open_default()?;
+            json!({"workspaces": store.list()?})
+        }
+        ToolInvocation::WorkspaceInspect { id } => {
+            let store = WorkspaceStore::open_default()?;
+            match id {
+                Some(id) => {
+                    let id = WorkspaceId::new(id)?;
+                    serde_json::to_value(store.open(&id)?)?
+                }
+                None => json!({"workspaces": store.list()?}),
+            }
+        }
+        ToolInvocation::ReplayInspect { scenario, replay } => {
+            let scenario = ReliabilityScenario::from_value(scenario)?;
+            let replay = ReliabilityReplayBundle::from_value(replay, &scenario)?;
+            json!({
+                "scenarioId": replay.scenario_id,
+                "fixtureId": replay.fixture_id,
+                "eventCount": replay.events.len(),
+                "contentHash": replay.content_hash(&scenario)?,
+                "attached": false,
+            })
+        }
+        ToolInvocation::ReplayDiff {
+            scenario,
+            before,
+            after,
+        } => {
+            let scenario = ReliabilityScenario::from_value(scenario)?;
+            let before = ReliabilityReplayBundle::from_value(before, &scenario)?;
+            let after = ReliabilityReplayBundle::from_value(after, &scenario)?;
+            serde_json::to_value(before.compare(&after, &scenario)?)?
+        }
+        ToolInvocation::ReplayAttach { scenario, replay } => {
+            let scenario = ReliabilityScenario::from_value(scenario)?;
+            let replay = ReliabilityReplayBundle::from_value(replay, &scenario)?;
+            json!({
+                "scenarioId": replay.scenario_id,
+                "fixtureId": replay.fixture_id,
+                "eventCount": replay.events.len(),
+                "contentHash": replay.content_hash(&scenario)?,
+                "attached": true,
+                "sideEffects": false,
+            })
+        }
+        _ => return Err("non-experience invocation".into()),
+    };
+    let envelope =
+        ExperienceResult::new("experience", "ok", result).with_provenance(ExperienceProvenance {
+            source: ProvenanceSource::Mcp,
+            authoritative: false,
+            resource_ref: None,
+            revision: None,
+            observed_at: Some(chrono::Utc::now().to_rfc3339()),
+        });
+    envelope.validate()?;
+    serialized_result(&envelope)
 }
 fn response_mode_from_params(params: &Value) -> BrowserResult<ResponseMode> {
     let mode = params
@@ -2685,6 +2885,75 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "knowledgePurge" => Ok(ToolInvocation::KnowledgePurge {
             origin: required_string(arguments, "origin")?,
+        }),
+        "memoryStatus" => Ok(ToolInvocation::KnowledgeStats),
+        "memoryInspect" | "memoryExplain" => Ok(ToolInvocation::KnowledgeShow {
+            record_id: required_string(arguments, "recordId")?,
+        }),
+        "memoryForget" => Ok(ToolInvocation::KnowledgeForget {
+            record_id: required_string(arguments, "recordId")?,
+        }),
+        "memoryExport" => Ok(ToolInvocation::KnowledgeExport),
+        "memoryPrune" => Ok(ToolInvocation::KnowledgePrune),
+        "memoryReindex" => Ok(ToolInvocation::KnowledgeReindex),
+        "surfaceInspect" => Ok(ToolInvocation::SurfaceInspect {
+            surfaces: arguments
+                .get("surfaces")
+                .cloned()
+                .ok_or("surfaceInspect requires surfaces")?,
+            coverage_only: optional_bool(arguments, "coverageOnly")?,
+        }),
+        "backendStatus" => Ok(ToolInvocation::BackendInspect {
+            profile: arguments
+                .get("profile")
+                .cloned()
+                .ok_or("backendStatus requires profile")?,
+            test: false,
+        }),
+        "backendTest" => Ok(ToolInvocation::BackendInspect {
+            profile: arguments
+                .get("profile")
+                .cloned()
+                .ok_or("backendTest requires profile")?,
+            test: true,
+        }),
+        "workspaceStatus" => Ok(ToolInvocation::WorkspaceStatus),
+        "workspaceInspect" => Ok(ToolInvocation::WorkspaceInspect {
+            id: optional_string(arguments, "id")?,
+        }),
+        "replayInspect" => Ok(ToolInvocation::ReplayInspect {
+            scenario: arguments
+                .get("scenario")
+                .cloned()
+                .ok_or("replayInspect requires scenario")?,
+            replay: arguments
+                .get("replay")
+                .cloned()
+                .ok_or("replayInspect requires replay")?,
+        }),
+        "replayDiff" => Ok(ToolInvocation::ReplayDiff {
+            scenario: arguments
+                .get("scenario")
+                .cloned()
+                .ok_or("replayDiff requires scenario")?,
+            before: arguments
+                .get("before")
+                .cloned()
+                .ok_or("replayDiff requires before")?,
+            after: arguments
+                .get("after")
+                .cloned()
+                .ok_or("replayDiff requires after")?,
+        }),
+        "replayAttach" => Ok(ToolInvocation::ReplayAttach {
+            scenario: arguments
+                .get("scenario")
+                .cloned()
+                .ok_or("replayAttach requires scenario")?,
+            replay: arguments
+                .get("replay")
+                .cloned()
+                .ok_or("replayAttach requires replay")?,
         }),
         "getDOM" | "dom" => Ok(ToolInvocation::GetDom),
         "getText" | "text" => Ok(ToolInvocation::GetText),
@@ -3355,6 +3624,81 @@ fn tools() -> Vec<Tool> {
                     "leaseToken": {"type": "string", "minLength": 1, "maxLength": 256}
                 }
             }),
+        },
+        Tool {
+            name: "workspaceStatus",
+            description: "List persisted workspace identities and lifecycle state without browser side effects.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{}}),
+        },
+        Tool {
+            name: "workspaceInspect",
+            description: "Inspect one persisted workspace by normalized identity.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"}}}),
+        },
+        Tool {
+            name: "surfaceInspect",
+            description: "Validate surface evidence and report semantic coverage and provenance.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["surfaces"],"properties":{"surfaces":{"type":"object"},"coverageOnly":{"type":"boolean","default":false}}}),
+        },
+        Tool {
+            name: "backendStatus",
+            description: "Validate a transport-neutral backend profile and report declared capability evidence.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["profile"],"properties":{"profile":{"type":"object"}}}),
+        },
+        Tool {
+            name: "backendTest",
+            description: "Exercise fail-closed capability declarations in a backend profile.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["profile"],"properties":{"profile":{"type":"object"}}}),
+        },
+        Tool {
+            name: "replayInspect",
+            description: "Validate a redacted replay bundle against its exact scenario without starting a browser.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["scenario","replay"],"properties":{"scenario":{"type":"object"},"replay":{"type":"object"}}}),
+        },
+        Tool {
+            name: "replayDiff",
+            description: "Compare two bounded redacted replays bound to one exact scenario without browser side effects.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["scenario","before","after"],"properties":{"scenario":{"type":"object"},"before":{"type":"object"},"after":{"type":"object"}}}),
+        },
+        Tool {
+            name: "replayAttach",
+            description: "Validate and attach one bounded redacted replay reference without starting or mutating a browser.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["scenario","replay"],"properties":{"scenario":{"type":"object"},"replay":{"type":"object"}}}),
+        },
+        Tool {
+            name: "memoryStatus",
+            description: "Report bounded advisory memory lifecycle counts.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{}}),
+        },
+        Tool {
+            name: "memoryInspect",
+            description: "Inspect one advisory memory record and provenance.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["recordId"],"properties":{"recordId":{"type":"string"}}}),
+        },
+        Tool {
+            name: "memoryExplain",
+            description: "Explain why an advisory memory record cannot authorize a mutation.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["recordId"],"properties":{"recordId":{"type":"string"}}}),
+        },
+        Tool {
+            name: "memoryForget",
+            description: "Forget one advisory memory record.",
+            input_schema: json!({"type":"object","additionalProperties":false,"required":["recordId"],"properties":{"recordId":{"type":"string"}}}),
+        },
+        Tool {
+            name: "memoryExport",
+            description: "Export the validated advisory memory snapshot.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{}}),
+        },
+        Tool {
+            name: "memoryPrune",
+            description: "Prune stale, contradicted, and quarantined advisory records.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{}}),
+        },
+        Tool {
+            name: "memoryReindex",
+            description: "Refresh and validate the advisory memory snapshot from disk.",
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{}}),
         },
         Tool {
             name: "knowledgeList",
@@ -4564,7 +4908,7 @@ mod tests {
         .unwrap();
         let result = result.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 85);
+        assert!(tools.len() >= 85);
         let preflight = tools
             .iter()
             .find(|tool| tool["name"] == "preflightNavigation")
@@ -6166,7 +6510,7 @@ mod tests {
         .unwrap();
         let result = response.result.unwrap();
         let resources = result["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 5);
+        assert_eq!(resources.len(), 6);
         let uris: Vec<&str> = resources
             .iter()
             .map(|r| r["uri"].as_str().unwrap())

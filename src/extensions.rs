@@ -108,6 +108,75 @@ pub struct ExtensionManifest {
     pub permissions: ExtensionPermissions,
     pub entrypoint: Option<String>,
 }
+/// Maximum bytes in one extension-defined namespace identifier.
+pub const MAX_EXTENSION_NAMESPACE_BYTES: usize = 128;
+/// Maximum serialized payload retained for one extension-defined namespace.
+pub const MAX_EXTENSION_NAMESPACE_PAYLOAD_BYTES: usize = 32 * 1024;
+
+/// Versioned extension-defined data. Unknown namespaces are intentionally
+/// retained as opaque JSON so newer producers can round-trip through older
+/// hosts without becoming executable capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionNamespace {
+    pub schema_version: u32,
+    pub namespace: String,
+    pub version: u32,
+    pub payload: Value,
+}
+
+impl ExtensionNamespace {
+    pub fn validate(&self) -> Result<(), ExtensionError> {
+        if self.schema_version != EXTENSION_SCHEMA_VERSION {
+            return Err(ExtensionError(
+                "unsupported extension namespace schema version".into(),
+            ));
+        }
+        if self.namespace.is_empty()
+            || self.namespace.len() > MAX_EXTENSION_NAMESPACE_BYTES
+            || !self
+                .namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err(ExtensionError(
+                "extension namespace is empty or out of bounds".into(),
+            ));
+        }
+        if self.version == 0 {
+            return Err(ExtensionError(
+                "extension namespace version must be positive".into(),
+            ));
+        }
+        validate_extension_value(&self.payload)?;
+        let encoded = serde_json::to_vec(self)
+            .map_err(|error| ExtensionError(format!("cannot serialize namespace: {error}")))?;
+        if encoded.len() > MAX_EXTENSION_NAMESPACE_PAYLOAD_BYTES {
+            return Err(ExtensionError(
+                "extension namespace payload exceeds the contract bound".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn from_json(input: &str) -> Result<Self, ExtensionError> {
+        if input.len() > MAX_EXTENSION_NAMESPACE_PAYLOAD_BYTES {
+            return Err(ExtensionError(
+                "extension namespace payload exceeds the contract bound".into(),
+            ));
+        }
+        let value: Self = serde_json::from_str(input)
+            .map_err(|error| ExtensionError(format!("invalid extension namespace: {error}")))?;
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn to_json(&self) -> Result<String, ExtensionError> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map_err(|error| ExtensionError(format!("cannot serialize namespace: {error}")))
+    }
+}
 
 /// Bounded extension registry for metadata and negotiation.
 #[derive(Debug, Default)]
@@ -1077,5 +1146,21 @@ mod tests {
             serde_json::json!({}),
         ));
         assert!(error.unwrap_err().0.contains("escapes"));
+    }
+    #[test]
+    fn unknown_extension_namespace_round_trips_without_execution() {
+        let value = ExtensionNamespace {
+            schema_version: EXTENSION_SCHEMA_VERSION,
+            namespace: "vendor.future.surface".into(),
+            version: 4,
+            payload: serde_json::json!({
+                "kind": "newSurface",
+                "unknownField": ["preserved", 3]
+            }),
+        };
+        let json = value.to_json().unwrap();
+        let decoded = ExtensionNamespace::from_json(&json).unwrap();
+        assert_eq!(decoded, value);
+        assert!(decoded.namespace.starts_with("vendor."));
     }
 }

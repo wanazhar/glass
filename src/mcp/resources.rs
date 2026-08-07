@@ -272,6 +272,35 @@ const RESOURCE_TOPOLOGY: &str = r#"# Glass Target & Frame Topology
 - Attach mode reports `attachMode: true` in session metadata.
 "#;
 
+const RESOURCE_EXPERIENCE: &str = r#"# Glass Experience Layer
+
+CLI, MCP, daemon, and Rust callers share capability-oriented operations:
+
+- `workspace/*` identifies lifecycle, profile ownership, and scoped resource references.
+- `memory/*` is advisory only; fresh Web IR, revision, policy, and capability evidence remain authoritative.
+- `surfaces/*` reports understanding, coverage, and provenance; opaque and coordinate-only surfaces cannot compile semantic actions.
+- `backend/*` reports declared capabilities and portability. Omitted capabilities fail closed.
+- `replay/*` validates, compares, and attaches bounded redacted evidence without browser side effects.
+
+Experience responses always expose a schema version, interface provenance, and
+typed `resourceRefs` (when a workspace resource is known). A resource reference
+is scoped to a workspace/profile and ephemeral generation; it is not an
+executable locator or a mutation grant.
+
+One daemon actor lease serializes workspace mutation. `observe`, `inspect`,
+`extract`, `resolve`, `verify`, and replay operations are read-only and do not
+acquire that lease. Mutation requires the current lease token and revision;
+expiry or scope mismatch fails closed.
+
+Replay diff/attach validates exact scenario and recording hashes, redacted event
+shape, and bounded input size. Attach means attaching evidence metadata only;
+it never starts Chrome, connects to an external browser, or grants takeover.
+
+Every result is bounded and carries provenance, policy, portability, verification, and
+workflow timeline fields when available. Partial backend or surface gates are reported
+honestly and are never promoted to real-browser parity.
+"#;
+
 // ── Resource definitions ────────────────────────────────────────
 
 const RESOURCES: &[ResourceDef] = &[
@@ -297,6 +326,13 @@ const RESOURCES: &[ResourceDef] = &[
         content: RESOURCE_ERRORS,
     },
     ResourceDef {
+        uri: "glass://contract/experience",
+        name: "Experience Layer",
+        description: "Shared workspace, memory, surface, backend, replay, policy, and result contracts",
+        mime_type: "text/markdown",
+        content: RESOURCE_EXPERIENCE,
+    },
+    ResourceDef {
         uri: "glass://contract/limits",
         name: "Observation Budgets & Limits",
         description: "Observation caps (32 controls, 16 KiB text) and incompleteness reasons",
@@ -320,7 +356,7 @@ mod tests {
     fn lists_all_resources() {
         let result = list_resources().unwrap();
         let resources = result["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 5);
+        assert_eq!(resources.len(), 6);
         let uris: Vec<&str> = resources
             .iter()
             .map(|r| r["uri"].as_str().unwrap())
@@ -330,6 +366,7 @@ mod tests {
         assert!(uris.contains(&"glass://contract/errors"));
         assert!(uris.contains(&"glass://contract/limits"));
         assert!(uris.contains(&"glass://contract/topology"));
+        assert!(uris.contains(&"glass://contract/experience"));
     }
 
     #[test]

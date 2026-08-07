@@ -4,11 +4,11 @@
 //! commands, interactive TUI, or the MCP stdio server.
 
 use super::args::{
-    CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand, KnowledgeCommand,
-    KnowledgeInvalidationState, McpClient, ProfileCommand, ResultCommand, SnapshotCommand,
-    TaskCommand, WorkflowAuthoringCommand,
+    BackendCommand, CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand,
+    KnowledgeCommand, KnowledgeInvalidationState, McpClient, MemoryCommand, ProfileCommand,
+    ReplayCommand, ResultCommand, SnapshotCommand, SurfaceCommand, TaskCommand,
+    WorkflowAuthoringCommand, WorkspaceCommand,
 };
-use crate::browser::CdpSessionBackend;
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
@@ -21,7 +21,11 @@ use crate::browser::session::{
     default_knowledge_store_path, diff_workflows, format_workflow_yaml, preview_workflow,
     record_semantic_events,
 };
-use crate::browser_backend::{BrowserBackendDispatcher, NavigationRequest};
+use crate::browser::{BackendFactory, CdpSessionBackend};
+use crate::browser_backend::{
+    ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ContextRequest,
+    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, SemanticAction,
+};
 use crate::capabilities::GlassCapabilityManifest;
 use crate::protocol::{
     GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_EXECUTE_OPERATION,
@@ -33,7 +37,12 @@ use crate::reliability::{
     ReliabilityScenarioObservation, build_reliability_scorecard,
 };
 use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
-use crate::results::{ResponseMode, ResultStore, project_and_store};
+use crate::results::{
+    ExperienceProvenance, ExperienceResult, ProvenanceSource, ResponseMode, ResultStore,
+    project_and_store,
+};
+use crate::surfaces::SurfaceSet;
+use crate::workspace::{ResourceReference, WorkspaceId, WorkspaceStore};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
@@ -130,6 +139,27 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         Some(Commands::Knowledge { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_knowledge(action, cli.knowledge_store.as_deref(), &cli.profile)?;
+            return Ok(());
+        }
+        Some(Commands::Workspace { action }) => {
+            dispatch_workspace(action)?;
+            return Ok(());
+        }
+        Some(Commands::Memory { action }) => {
+            policy.require(PolicyCapability::PersistentProfile)?;
+            dispatch_memory(action, cli.knowledge_store.as_deref(), &cli.profile)?;
+            return Ok(());
+        }
+        Some(Commands::Surfaces { action }) => {
+            dispatch_surfaces(action)?;
+            return Ok(());
+        }
+        Some(Commands::Backend { action }) => {
+            dispatch_backend(action).await?;
+            return Ok(());
+        }
+        Some(Commands::Replay { action }) => {
+            dispatch_replay(action)?;
             return Ok(());
         }
         Some(Commands::Snapshot { action }) if !matches!(action, SnapshotCommand::Create) => {
@@ -771,6 +801,341 @@ async fn dispatch_certify_run(
     print_json(&value)?;
     Ok(())
 }
+fn experience(operation: &str, result: Value) -> BrowserResult<()> {
+    experience_with_refs(operation, result, Vec::new())
+}
+
+fn experience_with_refs(
+    operation: &str,
+    result: Value,
+    resource_refs: Vec<ResourceReference>,
+) -> BrowserResult<()> {
+    let provenance = ExperienceProvenance {
+        source: ProvenanceSource::Cli,
+        authoritative: false,
+        resource_ref: resource_refs.first().cloned(),
+        revision: None,
+        observed_at: Some(chrono::Utc::now().to_rfc3339()),
+    };
+    let mut envelope = ExperienceResult::new(operation, "ok", result).with_provenance(provenance);
+    for resource_ref in resource_refs {
+        envelope = envelope.with_resource_ref(resource_ref);
+    }
+    envelope.validate()?;
+    print_json(&envelope)
+}
+fn dispatch_workspace(action: &WorkspaceCommand) -> BrowserResult<()> {
+    let store = WorkspaceStore::open_default()?;
+    match action {
+        WorkspaceCommand::List => {
+            let ids = store.list()?;
+            let refs = ids
+                .iter()
+                .cloned()
+                .map(ResourceReference::workspace)
+                .collect();
+            experience_with_refs("workspace.list", serde_json::to_value(ids)?, refs)
+        }
+        WorkspaceCommand::Inspect { id } => {
+            let id = WorkspaceId::new(id)?;
+            let workspace = store.open(&id)?;
+            experience_with_refs(
+                "workspace.inspect",
+                serde_json::to_value(&workspace)?,
+                vec![workspace.resource_reference()],
+            )
+        }
+        WorkspaceCommand::Suspend { id } => {
+            let id = WorkspaceId::new(id)?;
+            let workspace = store.suspend(&id)?;
+            experience_with_refs(
+                "workspace.suspend",
+                serde_json::to_value(&workspace)?,
+                vec![workspace.resource_reference()],
+            )
+        }
+        WorkspaceCommand::Resume { id } => {
+            let id = WorkspaceId::new(id)?;
+            let workspace = store.resume(&id)?;
+            experience_with_refs(
+                "workspace.resume",
+                serde_json::to_value(&workspace)?,
+                vec![workspace.resource_reference()],
+            )
+        }
+        WorkspaceCommand::Delete { id } => {
+            let id = WorkspaceId::new(id)?;
+            let reference = ResourceReference::workspace(id.clone());
+            store.delete(&id)?;
+            experience_with_refs(
+                "workspace.delete",
+                serde_json::json!({"id": id, "deleted": true}),
+                vec![reference],
+            )
+        }
+    }
+}
+
+fn dispatch_memory(
+    action: &MemoryCommand,
+    explicit_path: Option<&Path>,
+    profile: &str,
+) -> BrowserResult<()> {
+    ProfileManager::validate_name(profile)?;
+    let path = explicit_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_knowledge_store_path(profile));
+    let mut store = KnowledgeStore::open(path)?;
+    match action {
+        MemoryCommand::Status => experience("memory.status", serde_json::to_value(store.stats()?)?),
+        MemoryCommand::Inspect { record_id } => {
+            let record = store
+                .get(record_id)
+                .ok_or_else(|| format!("memory record not found: {record_id}"))?;
+            experience("memory.inspect", serde_json::to_value(record)?)
+        }
+        MemoryCommand::Explain { record_id } => {
+            let record = store
+                .get(record_id)
+                .ok_or_else(|| format!("memory record not found: {record_id}"))?;
+            experience(
+                "memory.explain",
+                serde_json::json!({
+                    "recordId": record.record_id,
+                    "scope": record.scope,
+                    "source": record.source,
+                    "confidence": record.confidence,
+                    "history": record.history,
+                    "advisoryOnly": true,
+                    "contentHash": record.content_hash()?,
+                }),
+            )
+        }
+        MemoryCommand::Forget { record_id } => experience(
+            "memory.forget",
+            serde_json::to_value(store.remove(record_id)?)?,
+        ),
+        MemoryCommand::Export { output } => {
+            let canonical = store.snapshot().to_canonical_json()?;
+            if let Some(output) = output {
+                std::fs::write(output, canonical)?;
+                experience(
+                    "memory.export",
+                    serde_json::json!({"output": output, "records": store.records().len()}),
+                )
+            } else {
+                experience("memory.export", serde_json::from_str(&canonical)?)
+            }
+        }
+        MemoryCommand::Prune => {
+            let ids = store
+                .records()
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.confidence,
+                        KnowledgeConfidence::Stale
+                            | KnowledgeConfidence::Contradicted
+                            | KnowledgeConfidence::Quarantined
+                    )
+                })
+                .map(|record| record.record_id.clone())
+                .collect::<Vec<_>>();
+            let mut removed = Vec::new();
+            for id in ids {
+                let change = store.remove(&id)?;
+                if change.removed {
+                    removed.push(id);
+                }
+            }
+            experience(
+                "memory.prune",
+                serde_json::json!({"removedRecordIds": removed}),
+            )
+        }
+        MemoryCommand::Reindex => {
+            store.refresh()?;
+            experience("memory.reindex", serde_json::to_value(store.stats()?)?)
+        }
+    }
+}
+
+fn dispatch_surfaces(action: &SurfaceCommand) -> BrowserResult<()> {
+    let input = match action {
+        SurfaceCommand::Inspect { input } | SurfaceCommand::Coverage { input } => {
+            read_json_input(Some(input))?
+        }
+    };
+    let set: SurfaceSet = serde_json::from_value(input)?;
+    set.validate()?;
+    match action {
+        SurfaceCommand::Inspect { .. } => {
+            experience("surfaces.inspect", serde_json::to_value(set)?)
+        }
+        SurfaceCommand::Coverage { .. } => experience(
+            "surfaces.coverage",
+            serde_json::json!({
+                "surfaceCount": set.surfaces.len(),
+                "surfaces": set.surfaces.iter().map(|surface| serde_json::json!({
+                    "surfaceId": surface.surface_id,
+                    "kind": surface.kind,
+                    "understanding": surface.understanding,
+                    "coverage": surface.coverage,
+                    "capabilities": surface.capabilities,
+                    "evidenceCount": surface.evidence.len(),
+                    "provenance": surface.evidence.iter().map(|evidence| &evidence.provenance).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>()
+            }),
+        ),
+    }
+}
+
+async fn dispatch_backend(action: &BackendCommand) -> BrowserResult<()> {
+    let input = match action {
+        BackendCommand::Status { input }
+        | BackendCommand::Capabilities { input }
+        | BackendCommand::Test { input } => input,
+    };
+    let profile: BackendProfile = serde_json::from_value(read_json_input(Some(input))?)?;
+    profile.validate()?;
+    match action {
+        BackendCommand::Status { .. } => experience(
+            "backend.status",
+            serde_json::json!({
+                "identity": profile.identity.clone(),
+                "certification": profile.identity.certification.clone(),
+                "capabilities": profile.capabilities.clone(),
+                "declaredCapabilities": profile.capabilities.len(),
+            }),
+        ),
+        BackendCommand::Capabilities { .. } => experience(
+            "backend.capabilities",
+            serde_json::to_value(profile.capabilities)?,
+        ),
+        BackendCommand::Test { .. } => {
+            if profile.identity.backend_id == "semantic-proof" {
+                let backend = BackendFactory::proof()?;
+                if backend.profile() != &profile {
+                    return Err(
+                        "semantic-proof input profile does not match the built-in proof profile"
+                            .into(),
+                    );
+                }
+                let dispatcher = BrowserBackendDispatcher::new(&backend);
+                dispatcher.initialize().await?;
+                let navigation = dispatcher
+                    .navigate(NavigationRequest {
+                        url: "proof://cli-test".into(),
+                    })
+                    .await?;
+                let contexts = dispatcher
+                    .contexts(ContextRequest {
+                        include_background: false,
+                    })
+                    .await?;
+                let context_id = contexts
+                    .first()
+                    .map(|context| context.context_id.clone())
+                    .ok_or("proof backend returned no context")?;
+                let evidence = dispatcher
+                    .evidence(EvidenceRequest {
+                        context_id: context_id.clone(),
+                        level: EvidenceLevel::Deep,
+                    })
+                    .await?;
+                let action = dispatcher
+                    .action(ActionRequest {
+                        context_id: context_id.clone(),
+                        action: SemanticAction::Click {
+                            target: "proof.button".into(),
+                        },
+                    })
+                    .await?;
+                let effects = dispatcher
+                    .effects(EffectsRequest {
+                        context_id,
+                        since_revision: navigation.revision,
+                    })
+                    .await?;
+                experience(
+                    "backend.test",
+                    serde_json::json!({
+                        "valid": true,
+                        "backend": {
+                            "identity": profile.identity.clone(),
+                            "certification": profile.identity.certification.clone(),
+                            "capabilities": profile.capabilities.clone(),
+                        },
+                        "proof": {
+                            "navigation": navigation,
+                            "evidence": evidence,
+                            "action": action,
+                            "effects": effects,
+                        },
+                    }),
+                )
+            } else {
+                let gates = BrowserCapability::ALL
+                    .iter()
+                    .map(|capability| {
+                        let descriptor = profile.capability(*capability);
+                        serde_json::json!({
+                            "capability": capability,
+                            "declared": profile.capabilities.contains_key(capability),
+                            "level": descriptor.level,
+                            "portability": descriptor.portability,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                experience(
+                    "backend.test",
+                    serde_json::json!({"valid": true, "gates": gates}),
+                )
+            }
+        }
+    }
+}
+
+fn dispatch_replay(action: &ReplayCommand) -> BrowserResult<()> {
+    let scenario_path = match action {
+        ReplayCommand::Inspect { scenario, .. }
+        | ReplayCommand::Attach { scenario, .. }
+        | ReplayCommand::Diff { scenario, .. } => scenario,
+    };
+    let scenario: ReliabilityScenario =
+        ReliabilityScenario::from_value(read_json_input(Some(scenario_path))?)?;
+    match action {
+        ReplayCommand::Inspect { input, .. } | ReplayCommand::Attach { input, .. } => {
+            let replay =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(input))?, &scenario)?;
+            let operation = if matches!(action, ReplayCommand::Attach { .. }) {
+                "replay.attach"
+            } else {
+                "replay.inspect"
+            };
+            experience(
+                operation,
+                serde_json::json!({
+                    "scenarioId": replay.scenario_id,
+                    "fixtureId": replay.fixture_id,
+                    "eventCount": replay.events.len(),
+                    "contentHash": replay.content_hash(&scenario)?,
+                    "attached": matches!(action, ReplayCommand::Attach { .. }),
+                }),
+            )
+        }
+        ReplayCommand::Diff { before, after, .. } => {
+            let left =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(before))?, &scenario)?;
+            let right =
+                ReliabilityReplayBundle::from_value(read_json_input(Some(after))?, &scenario)?;
+            experience(
+                "replay.diff",
+                serde_json::to_value(left.compare(&right, &scenario)?)?,
+            )
+        }
+    }
+}
 
 fn dispatch_knowledge(
     action: &KnowledgeCommand,
@@ -1305,7 +1670,12 @@ async fn run_command(
         | Commands::Result { .. }
         | Commands::Certify { .. }
         | Commands::Knowledge { .. }
-        | Commands::Snapshot { .. } => {
+        | Commands::Snapshot { .. }
+        | Commands::Workspace { .. }
+        | Commands::Memory { .. }
+        | Commands::Surfaces { .. }
+        | Commands::Backend { .. }
+        | Commands::Replay { .. } => {
             unreachable!("offline commands are handled before browser startup")
         }
         Commands::Task {
@@ -1849,11 +2219,14 @@ fn parse_semantic_level(value: &str) -> BrowserResult<SemanticObservationLevel> 
     }
 }
 
+const MAX_EXPERIENCE_INPUT_BYTES: u64 = 4 * 1024 * 1024;
+
 fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_json::Value> {
     let mut input = String::new();
     match path {
         Some(path) if path.as_os_str() == "-" => {
             std::io::stdin()
+                .take(MAX_EXPERIENCE_INPUT_BYTES + 1)
                 .read_to_string(&mut input)
                 .map_err(|error| format!("could not read JSON input from stdin: {error}"))?;
         }
@@ -1864,10 +2237,17 @@ fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_jso
                     "JSON input expects a file path; omit the path or use '-' to read stdin".into(),
                 );
             }
-            std::fs::File::open(path)
-                .map_err(|error| {
-                    format!("could not read JSON input '{}': {error}", path.display())
-                })?
+            let file = std::fs::File::open(path).map_err(|error| {
+                format!("could not read JSON input '{}': {error}", path.display())
+            })?;
+            if file.metadata()?.len() > MAX_EXPERIENCE_INPUT_BYTES {
+                return Err(format!(
+                    "JSON input exceeds the {}-byte bound",
+                    MAX_EXPERIENCE_INPUT_BYTES
+                )
+                .into());
+            }
+            file.take(MAX_EXPERIENCE_INPUT_BYTES + 1)
                 .read_to_string(&mut input)
                 .map_err(|error| {
                     format!("could not read JSON input '{}': {error}", path.display())
@@ -1875,10 +2255,18 @@ fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_jso
         }
         None => {
             std::io::stdin()
+                .take(MAX_EXPERIENCE_INPUT_BYTES + 1)
                 .read_to_string(&mut input)
                 .map_err(|error| format!("could not read JSON input from stdin: {error}"))?;
         }
     };
+    if input.len() as u64 > MAX_EXPERIENCE_INPUT_BYTES {
+        return Err(format!(
+            "JSON input exceeds the {}-byte bound",
+            MAX_EXPERIENCE_INPUT_BYTES
+        )
+        .into());
+    }
     serde_json::from_str(&input).map_err(|error| format!("invalid JSON input: {error}").into())
 }
 

@@ -4,6 +4,9 @@
 //! isolated MCP child session, so a daemon restart or client disconnect cannot
 //! silently transfer a browser session or workflow lease to another client.
 
+use crate::cli::args::Cli;
+use crate::results::{ExperienceProvenance, ProvenanceSource, RESULT_SCHEMA_VERSION};
+use crate::workspace::ResourceReference;
 use clap::Parser;
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -11,9 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::cli::args::Cli;
-
 /// Version of the local daemon status and lifecycle contract.
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 /// Version of the persisted interrupted-run recovery record.
@@ -260,11 +260,17 @@ pub struct DaemonRecovery {
     pub runs: Vec<DaemonActiveRun>,
 }
 
+fn default_result_schema_version() -> u32 {
+    RESULT_SCHEMA_VERSION
+}
+
 /// Stable daemon status written beside the Unix socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonStatus {
     pub protocol_version: u32,
+    #[serde(default = "default_result_schema_version")]
+    pub schema_version: u32,
     pub state: String,
     pub pid: u32,
     pub socket: PathBuf,
@@ -280,6 +286,10 @@ pub struct DaemonStatus {
     pub mutation_lease_owner: Option<String>,
     #[serde(default)]
     pub active_runs: Vec<DaemonActiveRun>,
+    #[serde(default)]
+    pub provenance: ExperienceProvenance,
+    #[serde(default)]
+    pub resource_refs: Vec<ResourceReference>,
 }
 
 /// Serialized status coordinator shared by daemon clients.
@@ -730,6 +740,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     let status = DaemonStatus {
         protocol_version: DAEMON_PROTOCOL_VERSION,
+        schema_version: RESULT_SCHEMA_VERSION,
         state: "running".into(),
         pid: std::process::id(),
         socket: socket.to_path_buf(),
@@ -740,6 +751,14 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         transport: "unix-mcp-isolated-sessions".into(),
         client_sessions: 0,
         mutation_lease_owner: None,
+        provenance: ExperienceProvenance {
+            source: ProvenanceSource::Daemon,
+            authoritative: true,
+            resource_ref: None,
+            revision: None,
+            observed_at: Some(chrono::Utc::now().to_rfc3339()),
+        },
+        resource_refs: Vec::new(),
         active_runs: Vec::new(),
     };
     std::fs::write(status_path, serde_json::to_vec_pretty(&status)?)?;
@@ -946,6 +965,7 @@ mod tests {
     fn daemon_status_serialization_is_versioned_and_local_only() {
         let status = DaemonStatus {
             protocol_version: DAEMON_PROTOCOL_VERSION,
+            schema_version: RESULT_SCHEMA_VERSION,
             state: "running".into(),
             pid: 42,
             socket: PathBuf::from("/tmp/glass.sock"),
@@ -956,6 +976,8 @@ mod tests {
             transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
+            provenance: ExperienceProvenance::default(),
+            resource_refs: Vec::new(),
             active_runs: Vec::new(),
         };
         let value = serde_json::to_value(&status).unwrap();
@@ -1067,6 +1089,7 @@ mod tests {
         let status_path = root.join("daemon.json");
         let status = DaemonStatus {
             protocol_version: DAEMON_PROTOCOL_VERSION,
+            schema_version: RESULT_SCHEMA_VERSION,
             state: "running".into(),
             pid: 42,
             socket: root.join("glass.sock"),
@@ -1077,6 +1100,8 @@ mod tests {
             transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
+            provenance: ExperienceProvenance::default(),
+            resource_refs: Vec::new(),
             active_runs: Vec::new(),
         };
         write_status(&status_path, &status).unwrap();
@@ -1123,6 +1148,7 @@ mod tests {
         std::fs::write(&socket, b"not a socket").unwrap();
         let status = DaemonStatus {
             protocol_version: DAEMON_PROTOCOL_VERSION,
+            schema_version: RESULT_SCHEMA_VERSION,
             state: "running".into(),
             pid: std::process::id().saturating_add(1_000_000),
             socket: socket.clone(),
@@ -1133,6 +1159,8 @@ mod tests {
             transport: "unix-mcp-isolated-sessions".into(),
             client_sessions: 0,
             mutation_lease_owner: None,
+            provenance: ExperienceProvenance::default(),
+            resource_refs: Vec::new(),
             active_runs: Vec::new(),
         };
         std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();

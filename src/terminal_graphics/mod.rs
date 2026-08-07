@@ -380,6 +380,36 @@ impl TerminalGraphics {
         self.cleaned = false;
         Ok(true)
     }
+    /// Bind incoming frames to the current browser revision without changing
+    /// the terminal pane geometry revision. Any frame acquired for the old
+    /// revision is released before the new stream is accepted.
+    pub fn bind_browser_revision(&mut self, browser_revision: u64) -> Result<bool, GraphicsError> {
+        if browser_revision < self.browser_revision {
+            return Err(GraphicsError::Presentation(
+                PresentationContractError::StaleRevision {
+                    expected: self.browser_revision,
+                    actual: browser_revision,
+                },
+            ));
+        }
+        if browser_revision == self.browser_revision {
+            return Ok(false);
+        }
+        self.clear_payloads(FrameCleanupReason::ModeChange);
+        self.browser_revision = browser_revision;
+        if let Some(previous) = self.geometry {
+            self.geometry = Some(ViewportGeometry::new(
+                previous.pane,
+                previous.viewport,
+                previous.content,
+                previous.capture_scale,
+                browser_revision,
+                previous.geometry_revision,
+            )?);
+        }
+        self.cleaned = false;
+        Ok(true)
+    }
 
     /// Submit one bounded payload. The mailbox rejects stale metadata before
     /// this adapter retains any bytes.

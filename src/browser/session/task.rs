@@ -57,6 +57,29 @@ pub struct TaskStepResult {
     pub detail: Option<String>,
 }
 
+fn live_task_evidence_sources() -> Vec<EvidenceSource> {
+    vec![
+        EvidenceSource::Accessibility,
+        EvidenceSource::Dom,
+        EvidenceSource::Forms,
+        EvidenceSource::Layout,
+        EvidenceSource::Navigation,
+        EvidenceSource::Tables,
+        EvidenceSource::Collections,
+        EvidenceSource::Dialogs,
+        EvidenceSource::Frames,
+        EvidenceSource::ShadowDom,
+        EvidenceSource::Svg,
+        EvidenceSource::CanvasDetection,
+        EvidenceSource::MediaMetadata,
+        EvidenceSource::EmbeddedDocument,
+        EvidenceSource::Pdf,
+        EvidenceSource::BrowserNative,
+        EvidenceSource::Bridge,
+        EvidenceSource::BoundedProbe,
+    ]
+}
+
 impl BrowserSession {
     async fn compile_live_task(&self, task: &GlassTask) -> BrowserResult<TaskExecutionPlan> {
         if matches!(
@@ -111,19 +134,7 @@ impl BrowserSession {
         let request = ExtractionRequest {
             schema_version: crate::extraction::EXTRACTION_CONTRACT_SCHEMA_VERSION,
             scope: ExtractionScope::Document,
-            sources: vec![
-                EvidenceSource::Accessibility,
-                EvidenceSource::Dom,
-                EvidenceSource::Forms,
-                EvidenceSource::Layout,
-                EvidenceSource::Navigation,
-                EvidenceSource::Tables,
-                EvidenceSource::Collections,
-                EvidenceSource::Dialogs,
-                EvidenceSource::Frames,
-                EvidenceSource::ShadowDom,
-                EvidenceSource::BoundedProbe,
-            ],
+            sources: live_task_evidence_sources(),
             budgets,
         };
         let ir = self.extract_web_ir(&request).await?;
@@ -2873,5 +2884,27 @@ mod tests {
         .unwrap();
         assert!(reextract.confirmation_required);
         assert!(compiled_revision_mismatch(&reextract, reextract.source_ir_revision - 1).is_none());
+    }
+    #[test]
+    fn live_task_evidence_sources_cover_boundaries_and_bridge() {
+        let sources = live_task_evidence_sources();
+        for source in [
+            EvidenceSource::Frames,
+            EvidenceSource::ShadowDom,
+            EvidenceSource::Svg,
+            EvidenceSource::CanvasDetection,
+            EvidenceSource::MediaMetadata,
+            EvidenceSource::EmbeddedDocument,
+            EvidenceSource::Pdf,
+            EvidenceSource::BrowserNative,
+            EvidenceSource::Bridge,
+            EvidenceSource::BoundedProbe,
+        ] {
+            assert!(sources.contains(&source), "missing live source {source:?}");
+        }
+        let mut sorted = sources.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), sources.len());
     }
 }

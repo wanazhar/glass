@@ -86,20 +86,32 @@ pub mod workspace;
 // capability-specific APIs remain organized under `glass::browser`.
 pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
-    ActionStatus, ActionVerificationEvidence, BrowserResult, BrowserSession, KnowledgeAssessment,
-    KnowledgeAssessmentSignal, KnowledgeAssessmentStatus, KnowledgeConfidence,
-    KnowledgeInvalidation, KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
-    KnowledgeObservationMode, KnowledgeObservationReport, KnowledgeProfileScope,
-    KnowledgePurgeResult, KnowledgeRecord, KnowledgeRecordBuildOptions, KnowledgeRecordKind,
+    ActionStatus, ActionVerificationEvidence, BackendFactory, BackendStartup, BidiBackendConfig,
+    BidiBrowserBackend, BrowserResult, BrowserSession, KnowledgeAssessment,
+    KnowledgeAssessmentSignal, KnowledgeAssessmentStatus, KnowledgeBackendCapability,
+    KnowledgeBackendKind, KnowledgeBackendProvenance, KnowledgeConfidence,
+    KnowledgeCurrentValidation, KnowledgeCurrentValidationStatus, KnowledgeEmbeddingProvider,
+    KnowledgeEvidenceQuality, KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode,
+    KnowledgeGraphNodeKind, KnowledgeGraphTraversal, KnowledgeInvalidation,
+    KnowledgeLearningPolicy, KnowledgeLearningRequest, KnowledgeLearningResult,
+    KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
+    KnowledgeMemoryInfluence, KnowledgeObservationMode, KnowledgeObservationReport,
+    KnowledgePortability, KnowledgeProfileScope, KnowledgePurgeResult, KnowledgeRecord,
+    KnowledgeRecordBuildOptions, KnowledgeRecordKind, KnowledgeRejectionReason,
+    KnowledgeRetrievalCandidate, KnowledgeRetrievalExplanation, KnowledgeRetrievalQuery,
+    KnowledgeRetrievalReport, KnowledgeRetrievalSignal, KnowledgeRetrievalSignalKind,
     KnowledgeScope, KnowledgeScopeSelector, KnowledgeSignalKind, KnowledgeSource, KnowledgeStore,
     KnowledgeStoreChange, KnowledgeStoreError, KnowledgeStoreLimits, KnowledgeStoreSnapshot,
-    KnowledgeStoreStats, KnowledgeValidationError, NavigationOutcome, PageInfo, ProofBackend,
-    SessionOptions, SessionOptionsBuilder, TaskExecutionResult, TaskStepResult, WorkflowBudgets,
-    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
-    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
-    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
-    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    KnowledgeStoreStats, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
+    KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
+    KnowledgeVerifiedWorkflowEvidence, MAX_KNOWLEDGE_RECORDS, NavigationOutcome, PageInfo,
+    ProofBackend, SessionOptions, SessionOptionsBuilder, StartedBackend, TaskExecutionResult,
+    TaskStepResult, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
+    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutput,
+    WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError, WorkflowResumePlan,
+    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
+    WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
+    WorkflowValidationError, WorkflowValueType,
 };
 
 pub use task_protocol::{
@@ -122,6 +134,10 @@ pub use protocol::{
     WebIrInspectionResult, WebIrPayload, WebIrValidationResult, compile_task_request,
     compile_task_result, validate_task_result, web_ir_continuity_result, web_ir_diff_result,
     web_ir_inspect_result, web_ir_validate_result,
+};
+pub use results::{
+    DetailAvailability, ExperienceResult, OperationResult, RESULT_SCHEMA_VERSION, ResponseMode,
+    ResultArtifact, ResultStore, ResultStoreError,
 };
 
 /// Re-export the bounded extraction contract for embedding callers.

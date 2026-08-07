@@ -498,4 +498,52 @@ mod tests {
             BrowserBackendError::UnsupportedOperation { operation, .. } if operation == "navigate"
         ));
     }
+
+    #[tokio::test]
+    async fn stale_context_and_malformed_payload_fail_without_partial_effects() {
+        let backend = ProofBackend::new().unwrap();
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        dispatcher.initialize().await.unwrap();
+        let navigation = dispatcher
+            .navigate(NavigationRequest {
+                url: "proof://shock".into(),
+            })
+            .await
+            .unwrap();
+
+        let stale = dispatcher
+            .action(ActionRequest {
+                context_id: "stale-context".into(),
+                action: SemanticAction::Click {
+                    target: PROOF_CLICK_TARGET.into(),
+                },
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            stale,
+            BrowserBackendError::InvalidConfiguration { field, .. } if field == "context id"
+        ));
+
+        let malformed = dispatcher
+            .navigate(NavigationRequest {
+                url: "x".repeat(crate::browser_backend::MAX_TEXT_BYTES + 1),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            malformed,
+            BrowserBackendError::InvalidConfiguration { field, .. } if field == "navigation url"
+        ));
+
+        let evidence = dispatcher
+            .evidence(EvidenceRequest {
+                context_id: PROOF_CONTEXT_ID.into(),
+                level: EvidenceLevel::Compact,
+            })
+            .await
+            .unwrap();
+        assert_eq!(evidence.revision, navigation.revision);
+        assert_eq!(evidence.visible_text, "proof:ready");
+    }
 }

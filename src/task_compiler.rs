@@ -426,6 +426,14 @@ impl TaskExecutionPlan {
         serde_json::to_string(self)
             .map_err(|error| TaskCompilationError::new("$", error.to_string()))
     }
+    /// Canonical representation of executable fields only. Advisory memory
+    /// provenance is intentionally removed so enabled and disabled plans can
+    /// be compared without allowing memory to alter execution.
+    pub fn executable_canonical_json(&self) -> Result<String, TaskCompilationError> {
+        let mut executable = self.clone();
+        executable.memory_advisory = None;
+        executable.to_canonical_json()
+    }
 }
 
 /// Compile an authored task without browser access or side effects.

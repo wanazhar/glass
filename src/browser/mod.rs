@@ -1,5 +1,9 @@
 /// Typed CDP adapter implementing the transport-neutral browser backend boundary.
 pub mod backend_adapter;
+/// Deterministic backend registration, profile selection, and startup.
+pub mod backend_factory;
+/// WebDriver BiDi adapter implementing the transport-neutral browser backend.
+pub mod bidi_backend;
 /// Low-level CDP WebSocket client for Chrome DevTools Protocol communication.
 pub mod cdp;
 /// Chrome/Chromium process lifecycle, binary resolution, and health checks.
@@ -17,6 +21,10 @@ pub mod proof_backend;
 /// Central browser session orchestrating all CDP operations.
 pub mod session;
 pub(crate) use backend_adapter::CdpSessionBackend;
+/// Backend startup candidates and selected backend handle.
+pub use backend_factory::{BackendFactory, BackendStartup, StartedBackend};
+/// WebDriver BiDi backend and endpoint configuration.
+pub use bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;
 
@@ -166,4 +174,18 @@ pub use session::{
     WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord,
     WorkflowStepState, WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent,
     WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+};
+
+/// Knowledge backend capability and provenance metadata.
+pub use session::{
+    KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
+    KnowledgeCurrentValidation, KnowledgeCurrentValidationStatus, KnowledgeEmbeddingProvider,
+    KnowledgeEvidenceQuality, KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode,
+    KnowledgeGraphNodeKind, KnowledgeGraphTraversal, KnowledgeLearningPolicy,
+    KnowledgeLearningRequest, KnowledgeLearningResult, KnowledgeMemoryInfluence,
+    KnowledgePortability, KnowledgeRejectionReason, KnowledgeRetrievalCandidate,
+    KnowledgeRetrievalExplanation, KnowledgeRetrievalQuery, KnowledgeRetrievalReport,
+    KnowledgeRetrievalSignal, KnowledgeRetrievalSignalKind, KnowledgeSurfaceCoverage,
+    KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
+    KnowledgeVerifiedWorkflowEvidence, MAX_KNOWLEDGE_RECORDS,
 };

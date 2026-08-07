@@ -94,6 +94,110 @@ pub struct KnowledgeRecordBuildOptions {
     pub current_validation: KnowledgeCurrentValidation,
 }
 
+/// Policy governing promotion from an advisory candidate to verified memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnowledgeLearningPolicy {
+    /// Number of compatible successful guarded uses required for promotion.
+    pub required_verified_uses: u32,
+}
+
+impl Default for KnowledgeLearningPolicy {
+    fn default() -> Self {
+        Self {
+            required_verified_uses: 2,
+        }
+    }
+}
+
+impl KnowledgeLearningPolicy {
+    pub fn validate(self) -> Result<(), KnowledgeValidationError> {
+        if self.required_verified_uses == 0 || self.required_verified_uses > 32 {
+            return Err(KnowledgeValidationError::new(
+                "requiredVerifiedUses",
+                "must be between 1 and 32",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Evidence from a successfully executed, revision-guarded workflow.
+///
+/// This witness contains no input values, locators, or output payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeVerifiedWorkflowEvidence {
+    pub guarded_revision: u64,
+    pub successful: bool,
+    pub postcondition_verified: bool,
+    pub evidence_quality: KnowledgeEvidenceQuality,
+    pub observed_at: String,
+    /// Stable workflow identity. Compatible uses must provide the same key.
+    pub compatibility_key: String,
+    /// Explicit privacy gate supplied by the owning session.
+    pub private_context: bool,
+    pub incognito: bool,
+}
+
+impl KnowledgeVerifiedWorkflowEvidence {
+    pub fn validate_against(
+        &self,
+        observation: &SemanticObservation,
+    ) -> Result<(), KnowledgeValidationError> {
+        if self.private_context || self.incognito {
+            return Err(KnowledgeValidationError::new(
+                "privacy",
+                "private or incognito contexts cannot create persistent knowledge",
+            ));
+        }
+        if !self.successful || !self.postcondition_verified {
+            return Err(KnowledgeValidationError::new(
+                "workflow",
+                "learning requires a successful workflow and verified postcondition",
+            ));
+        }
+        if self.guarded_revision == 0 || self.guarded_revision != observation.revision {
+            return Err(KnowledgeValidationError::new(
+                "guardedRevision",
+                "workflow witness must guard the fresh observation revision",
+            ));
+        }
+        if self.evidence_quality == KnowledgeEvidenceQuality::None {
+            return Err(KnowledgeValidationError::new(
+                "evidenceQuality",
+                "workflow witness requires non-empty evidence quality",
+            ));
+        }
+        validate_timestamp("observedAt", &self.observed_at)?;
+        validate_text(
+            "compatibilityKey",
+            &self.compatibility_key,
+            MAX_SCOPE_VALUE_BYTES,
+            false,
+        )?;
+        validate_public_text("compatibilityKey", &self.compatibility_key)?;
+        Ok(())
+    }
+}
+
+/// Input to the verified-learning transaction.
+#[derive(Debug, Clone)]
+pub struct KnowledgeLearningRequest<'a> {
+    pub observation: &'a SemanticObservation,
+    pub build: KnowledgeRecordBuildOptions,
+    pub evidence: KnowledgeVerifiedWorkflowEvidence,
+    pub policy: KnowledgeLearningPolicy,
+}
+
+/// Result of one deterministic learning transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeLearningResult {
+    pub record_id: String,
+    pub confidence: KnowledgeConfidence,
+    pub verification_count: u32,
+    pub promoted: bool,
+    pub created: bool,
+}
+
 impl KnowledgeLookupContext {
     /// Build matching dimensions from a semantic observation and explicit
     /// session scope. Current element references are never retained here.
@@ -778,6 +882,56 @@ pub struct KnowledgeRetrievalReport {
     pub embeddings_used: bool,
 }
 
+/// Stable graph node kinds derived from compact memory fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeGraphNodeKind {
+    Record,
+    PageKind,
+    Landmark,
+    Workflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeGraphNode {
+    pub id: String,
+    pub kind: KnowledgeGraphNodeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeGraph {
+    pub nodes: Vec<KnowledgeGraphNode>,
+    pub edges: Vec<KnowledgeGraphEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeGraphTraversal {
+    pub start: String,
+    pub max_depth: usize,
+    pub node_ids: Vec<String>,
+    pub edges: Vec<KnowledgeGraphEdge>,
+    pub truncated: bool,
+}
+
+/// Optional deterministic embedding hook. It is never invoked by default.
+pub trait KnowledgeEmbeddingProvider {
+    fn similarity_millis(
+        &self,
+        query: &KnowledgeRetrievalQuery,
+        record: &KnowledgeRecord,
+    ) -> Option<u16>;
+}
 impl KnowledgeRetrievalReport {
     pub fn selected(&self) -> impl Iterator<Item = &KnowledgeRetrievalCandidate> {
         self.candidates
@@ -939,6 +1093,62 @@ impl KnowledgeRecord {
         };
         record.validate()?;
         Ok(record)
+    }
+
+    /// Build a candidate from a fresh observation and a successful guarded
+    /// workflow witness. This is the only constructor used by verified
+    /// learning and rejects privacy-sensitive observations.
+    pub fn from_verified_observation(
+        observation: &SemanticObservation,
+        mut options: KnowledgeRecordBuildOptions,
+        evidence: &KnowledgeVerifiedWorkflowEvidence,
+    ) -> Result<Self, KnowledgeValidationError> {
+        observation.validate().map_err(|error| {
+            KnowledgeValidationError::new("observation", format!("invalid observation: {error}"))
+        })?;
+        evidence.validate_against(observation)?;
+        if observation.limits.truncated {
+            return Err(KnowledgeValidationError::new(
+                "observation.limits",
+                "verified learning requires complete observation evidence",
+            ));
+        }
+        if observation_contains_sensitive_data(observation)? {
+            return Err(KnowledgeValidationError::new(
+                "observation",
+                "sensitive fields are not eligible for persistent knowledge",
+            ));
+        }
+        options.current_validation = KnowledgeCurrentValidation {
+            status: KnowledgeCurrentValidationStatus::Validated,
+            evidence_quality: evidence.evidence_quality,
+            current_revision: Some(evidence.guarded_revision),
+            validated_at: Some(evidence.observed_at.clone()),
+        };
+        let mut record = Self::from_page_observation(observation, options)?;
+        record.confidence = KnowledgeConfidence::Candidate;
+        record.source.verification_count = 1;
+        record.data["verifiedUseKey"] = Value::String(evidence.compatibility_key.clone());
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Stable identity for one semantic page family and privacy scope.
+    pub fn deterministic_page_family_id(
+        observation: &SemanticObservation,
+        scope: &KnowledgeScope,
+    ) -> Result<String, KnowledgeValidationError> {
+        let page_kind = serde_json::to_string(&observation.page.kind).map_err(|error| {
+            KnowledgeValidationError::new("observation.page.kind", error.to_string())
+        })?;
+        let digest = hash_knowledge_identity(&[
+            &scope.origin,
+            &scope.path_pattern,
+            &scope.browser_family,
+            &scope.policy_preset,
+            &page_kind,
+        ]);
+        Ok(format!("page-family-{digest}"))
     }
 
     /// Build an observed target-fingerprint record from one fresh intent
@@ -1747,6 +1957,59 @@ impl KnowledgeRecord {
         };
     }
 }
+fn observation_contains_sensitive_data(
+    observation: &SemanticObservation,
+) -> Result<bool, KnowledgeValidationError> {
+    let value = serde_json::to_value(observation).map_err(|error| {
+        KnowledgeValidationError::new(
+            "observation",
+            format!("cannot inspect observation: {error}"),
+        )
+    })?;
+    fn walk(value: &Value) -> bool {
+        match value {
+            Value::String(text) => {
+                let normalized = text
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                [
+                    "authorization",
+                    "cookie",
+                    "credential",
+                    "password",
+                    "secret",
+                    "token",
+                ]
+                .iter()
+                .any(|word| normalized.contains(word))
+            }
+            Value::Array(values) => values.iter().any(walk),
+            Value::Object(values) => values.iter().any(|(key, value)| {
+                let normalized = key
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                [
+                    "authorization",
+                    "cookie",
+                    "credential",
+                    "password",
+                    "secret",
+                    "token",
+                ]
+                .iter()
+                .any(|word| normalized.contains(word))
+                    || walk(value)
+            }),
+            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+        }
+    }
+    Ok(walk(&value))
+}
+
 fn normalized_knowledge_value(value: &str) -> String {
     value
         .chars()
@@ -2362,7 +2625,7 @@ pub struct KnowledgeValidationError {
 }
 
 impl KnowledgeValidationError {
-    fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             reason: reason.into(),

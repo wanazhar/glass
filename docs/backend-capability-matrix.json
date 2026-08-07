@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": 1,
+  "description": "Machine-readable Glass backend capability and dependency matrix. Omitted capabilities are unavailable, never inferred.",
+  "capabilities": [
+    "lifecycle",
+    "navigation",
+    "contexts",
+    "evidence",
+    "action",
+    "effects",
+    "script",
+    "capture",
+    "storage",
+    "prompts",
+    "downloads"
+  ],
+  "backends": {
+    "cdp": {
+      "certification": "partial",
+      "transport": "chrome-devtools-protocol",
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "script", "capture", "storage", "prompts"],
+      "unavailable": ["effects", "downloads"],
+      "dependencies": {},
+      "limitations": ["The stable contract does not expose CDP domain or type names.", "Effects and downloads are intentionally fail-closed at this boundary."]
+    },
+    "webdriver-bidi": {
+      "certification": "experimental",
+      "transport": "websocket-or-http-discovered-websocket",
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "effects", "script"],
+      "unavailable": ["capture", "storage", "prompts", "downloads"],
+      "dependencies": {
+        "evidence": ["script"],
+        "action": ["script"]
+      },
+      "limitations": ["Action certification is bounded to click and type via evaluated DOM input.", "A disabled script capability also disables evidence and action."]
+    },
+    "semantic-proof": {
+      "certification": "experimental",
+      "transport": "browser-free-deterministic-conformance",
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "effects", "script", "storage"],
+      "unavailable": ["capture", "prompts", "downloads"],
+      "dependencies": {},
+      "limitations": ["This backend is not browser parity and must not be presented as a real browser."]
+    }
+  },
+  "rules": {
+    "selection": "explicit-preference-is-strict; automatic-selection-is-certification-then-capability-score-then-backend-id",
+    "omission": "missing-or-disabled-capability-produces-CapabilityUnavailable",
+    "portability": "semantic-portability-does-not-authorize-operations-unavailable-on-the-selected-backend",
+    "evidence": "current-Web-IR/revision/policy/capability-evidence-remains-executable-authority"
+  }
+}

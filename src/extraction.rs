@@ -6,10 +6,10 @@
 use crate::browser::dom::{CompactAxNode, CompactInteractiveElement, DomNode};
 use crate::browser::session::{PageContext, find_region_node};
 use crate::surfaces::{
-    CoverageLevel, DiagnosticSeverity, InteractionCoverage, ProvenanceSourceClass,
-    SURFACE_SCHEMA_VERSION, Surface, SurfaceCapability, SurfaceCoverage, SurfaceDiagnostic,
-    SurfaceEvidence, SurfaceEvidenceSource, SurfaceId, SurfaceKind, SurfaceProvenance,
-    SurfaceRevision, SurfaceSet, UnderstandingLevel,
+    BridgeGrantRegistry, BridgeTrustLevel, CoverageLevel, DiagnosticSeverity, InteractionCoverage,
+    ProvenanceSourceClass, SURFACE_SCHEMA_VERSION, SemanticBridge, Surface, SurfaceCapability,
+    SurfaceCoverage, SurfaceDiagnostic, SurfaceEvidence, SurfaceEvidenceSource, SurfaceId,
+    SurfaceKind, SurfaceProvenance, SurfaceRevision, SurfaceSet, UnderstandingLevel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -555,15 +555,32 @@ pub fn extract_page_context(
                     );
                 }
             }
-            EvidenceSource::Svg
-            | EvidenceSource::CanvasDetection
+            EvidenceSource::Svg => {
+                if let Some(root) = context.dom.as_ref()
+                    && has_svg_node(root)
+                {
+                    collect_svg_semantics(root, &mut collector, 0, false);
+                } else if context.boundaries.svg_elements > 0 {
+                    push_boundary_fact(
+                        &mut collector,
+                        *source,
+                        "surface",
+                        format!(
+                            "{} observed SVG surface(s)",
+                            context.boundaries.svg_elements
+                        ),
+                    );
+                } else {
+                    missing_sources.insert(*source);
+                }
+            }
+            EvidenceSource::CanvasDetection
             | EvidenceSource::MediaMetadata
             | EvidenceSource::EmbeddedDocument
             | EvidenceSource::Pdf
             | EvidenceSource::BrowserNative
             | EvidenceSource::Bridge => {
                 let count = match source {
-                    EvidenceSource::Svg => context.boundaries.svg_elements,
                     EvidenceSource::CanvasDetection => context.boundaries.canvases,
                     EvidenceSource::MediaMetadata => context.boundaries.media_elements,
                     EvidenceSource::EmbeddedDocument => context.boundaries.embedded_documents,
@@ -629,6 +646,135 @@ pub fn extract_page_context(
         surface_set: build_surface_set(context, &request.sources, &missing_sources)?,
     };
     trim_to_output_budget(&mut evidence, request.budgets.max_output_bytes)?;
+    Ok(evidence)
+}
+/// Convert a validated page semantic bridge into bounded extraction evidence.
+///
+/// The bridge is never trusted by itself: origin, revision, capability
+/// allowlists, and the independent host grant are checked before facts are
+/// materialized.
+pub fn extract_semantic_bridge(
+    bridge: &SemanticBridge,
+    grants: &BridgeGrantRegistry,
+    expected_origin: &str,
+    expected_revision: SurfaceRevision,
+) -> Result<ExtractionEvidence, ExtractionContractError> {
+    bridge
+        .validate(grants, expected_origin, expected_revision)
+        .map_err(|error| ExtractionContractError::new("bridge", error.to_string()))?;
+    let timestamp = format!(
+        "1970-01-01T00:{:02}:{:02}Z",
+        (bridge.revision.0 / 60) % 60,
+        bridge.revision.0 % 60
+    );
+    let provenance = SurfaceProvenance {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        source_class: ProvenanceSourceClass::Bridge,
+        source_id: format!("bridge:{}", bridge.surface_id.as_str()),
+        backend: None,
+        backend_version: None,
+        adapter_version: None,
+        bridge_version: Some(bridge.bridge_version.clone()),
+        bridge_origin: Some(bridge.origin.clone()),
+        bridge_trust: Some(BridgeTrustLevel::CapabilityGranted),
+        grant_token: Some(bridge.grant_token.clone()),
+        bridge_capabilities: bridge.capabilities.clone(),
+        source_revision: bridge.revision,
+        observed_at: timestamp.clone(),
+        validated_at: timestamp,
+    };
+    let task_compilable = [
+        SurfaceCapability::ReadStructure,
+        SurfaceCapability::ReadState,
+        SurfaceCapability::SemanticAction,
+        SurfaceCapability::RevisionObservation,
+        SurfaceCapability::Verification,
+    ]
+    .iter()
+    .all(|capability| bridge.capabilities.contains(capability));
+    let surface_understanding = if task_compilable {
+        UnderstandingLevel::TaskCompilable
+    } else {
+        UnderstandingLevel::Semantic
+    };
+    let interaction = if task_compilable {
+        InteractionCoverage::TaskCompilable
+    } else {
+        InteractionCoverage::Semantic
+    };
+    let surface = Surface {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        surface_id: bridge.surface_id.clone(),
+        parent_surface_id: None,
+        nesting_depth: 0,
+        kind: bridge.surface_kind.clone(),
+        capabilities: bridge.capabilities.clone(),
+        understanding: surface_understanding,
+        coverage: SurfaceCoverage {
+            structural: CoverageLevel::Strong,
+            semantic: CoverageLevel::Strong,
+            interaction,
+        },
+        evidence: vec![SurfaceEvidence {
+            source: SurfaceEvidenceSource::Bridge,
+            quality: CoverageLevel::Strong,
+            provenance,
+            detail: Some("validated semantic bridge evidence".into()),
+        }],
+        revision: bridge.revision,
+        diagnostics: Vec::new(),
+    };
+    let surface_set = SurfaceSet {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        surfaces: vec![surface],
+    };
+    surface_set
+        .validate_with_grants(grants)
+        .map_err(|error| ExtractionContractError::new("bridge.surfaceSet", error.to_string()))?;
+    let mut facts = Vec::with_capacity(bridge.entities.len());
+    for entity in &bridge.entities {
+        let role = entity.role.clone().or_else(|| Some(entity.kind.clone()));
+        facts.push(EvidenceFact {
+            source: EvidenceSource::Bridge,
+            kind: entity.kind.clone(),
+            quality: match entity.quality {
+                CoverageLevel::Complete | CoverageLevel::Strong => EvidenceQuality::Confirmed,
+                CoverageLevel::Partial => EvidenceQuality::Partial,
+                CoverageLevel::Opaque => EvidenceQuality::Opaque,
+            },
+            role,
+            name: entity.name.clone(),
+            parent_role: None,
+            relationship_hint: None,
+            input_type: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            geometry_present: Some(true),
+        });
+    }
+    let evidence = ExtractionEvidence {
+        schema_version: EXTRACTION_CONTRACT_SCHEMA_VERSION,
+        revision: bridge.revision.0,
+        scope: ExtractionScope::Document,
+        sources: vec![EvidenceSource::Bridge],
+        facts,
+        limits: ExtractionEvidenceLimits {
+            truncated: false,
+            omitted_facts: 0,
+            text_bytes: 0,
+            missing_sources: Vec::new(),
+        },
+        coverage: EvidenceCoverage {
+            structural: EvidenceQuality::Confirmed,
+            semantic: EvidenceQuality::Confirmed,
+            interactive_entities_observed: bridge.entities.len() as u32,
+            opaque_regions: 0,
+            reasons: Vec::new(),
+        },
+        surface_set: Some(surface_set),
+    };
+    evidence.validate_relationship_hints()?;
     Ok(evidence)
 }
 
@@ -773,6 +919,26 @@ fn build_surface_set(
                 surface_bound_omitted = true;
                 break;
             }
+            let structured_svg =
+                matches!(&kind, SurfaceKind::Svg) && context.dom.as_ref().is_some_and(has_svg_node);
+            let (understanding, semantic, capabilities) = if structured_svg {
+                (
+                    UnderstandingLevel::Semantic,
+                    CoverageLevel::Strong,
+                    vec![
+                        SurfaceCapability::ReadStructure,
+                        SurfaceCapability::ReadText,
+                        SurfaceCapability::ReadRelations,
+                        SurfaceCapability::Extraction,
+                    ],
+                )
+            } else {
+                (
+                    UnderstandingLevel::Structural,
+                    CoverageLevel::Partial,
+                    vec![SurfaceCapability::ReadStructure],
+                )
+            };
             add(
                 &mut surfaces,
                 format!("{prefix}_{index}"),
@@ -783,13 +949,13 @@ fn build_surface_set(
                     format!("observed {prefix} boundary"),
                     quality,
                 )],
-                UnderstandingLevel::Structural,
+                understanding,
                 SurfaceCoverage {
                     structural: quality,
-                    semantic: CoverageLevel::Partial,
+                    semantic,
                     interaction: InteractionCoverage::Unavailable,
                 },
-                vec![SurfaceCapability::ReadStructure],
+                capabilities,
             )?;
         }
         Ok(())
@@ -1397,6 +1563,78 @@ fn collect_accessibility_control(
     });
 }
 
+fn has_svg_node(node: &DomNode) -> bool {
+    if node.node_name.eq_ignore_ascii_case("svg") {
+        return true;
+    }
+    node.children.iter().any(has_svg_node)
+}
+
+fn svg_attribute(node: &DomNode, name: &str) -> Option<String> {
+    node.attributes
+        .chunks_exact(2)
+        .find(|pair| pair[0].eq_ignore_ascii_case(name))
+        .map(|pair| pair[1].clone())
+}
+
+/// Extract a conservative semantic projection from structured SVG markup.
+/// Geometry and paint are intentionally omitted; only bounded roles/names are
+/// promoted to Web IR facts.
+fn collect_svg_semantics(
+    node: &DomNode,
+    collector: &mut EvidenceCollector,
+    depth: u16,
+    inside_svg: bool,
+) {
+    if !collector.allow_node(depth) {
+        return;
+    }
+    let tag = node.node_name.to_ascii_lowercase();
+    let in_svg = inside_svg || tag == "svg";
+    if in_svg {
+        let (role, name) = match tag.as_str() {
+            "svg" => (
+                "region",
+                svg_attribute(node, "aria-label")
+                    .or_else(|| svg_attribute(node, "title"))
+                    .or_else(|| svg_attribute(node, "id")),
+            ),
+            "a" => (
+                "link",
+                svg_attribute(node, "aria-label").or_else(|| svg_attribute(node, "href")),
+            ),
+            "text" | "title" | "desc" => (
+                "text",
+                (!node.node_value.is_empty()).then(|| node.node_value.clone()),
+            ),
+            _ => ("", None),
+        };
+        if !role.is_empty() {
+            collector.push(EvidenceFact {
+                source: EvidenceSource::Svg,
+                kind: tag.clone(),
+                quality: EvidenceQuality::Confirmed,
+                role: Some(role.into()),
+                name,
+                parent_role: None,
+                relationship_hint: None,
+                input_type: None,
+                required: None,
+                read_only: None,
+                empty: None,
+                geometry_present: Some(node.bounding_box.is_some()),
+            });
+        }
+    }
+    for child in &node.children {
+        if collector.node_budget_exhausted() {
+            collector.mark_omitted();
+            break;
+        }
+        collect_svg_semantics(child, collector, depth.saturating_add(1), in_svg);
+    }
+}
+
 fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
     if !collector.allow_node(depth) {
         return;
@@ -1588,6 +1826,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surfaces::SEMANTIC_BRIDGE_SCHEMA_VERSION;
     use serde_json::json;
 
     fn request() -> ExtractionRequest {
@@ -2268,5 +2507,58 @@ mod tests {
         assert_eq!(truncate_utf8("aé", 2), "a");
         assert_eq!(truncate_utf8("aé", 3), "aé");
         assert!(truncate_utf8("🙂🙂", 7).len() <= 7);
+    }
+    #[test]
+    fn semantic_bridge_extracts_svg_fact_and_rejects_stale_revision() {
+        let mut grants = BridgeGrantRegistry::default();
+        grants
+            .insert(crate::surfaces::BridgeCapabilityGrant {
+                token: "svg-grant".into(),
+                origin: "https://example.test".into(),
+                capabilities: vec![SurfaceCapability::ReadStructure],
+            })
+            .unwrap();
+        let bridge = SemanticBridge {
+            schema_version: SEMANTIC_BRIDGE_SCHEMA_VERSION,
+            bridge_version: "1".into(),
+            origin: "https://example.test".into(),
+            grant_token: "svg-grant".into(),
+            revision: SurfaceRevision(11),
+            surface_id: SurfaceId::new("svg-bridge").unwrap(),
+            surface_kind: SurfaceKind::Svg,
+            capabilities: vec![SurfaceCapability::ReadStructure],
+            entities: vec![crate::surfaces::SemanticBridgeEntity {
+                id: "title".into(),
+                kind: "text".into(),
+                role: Some("text".into()),
+                name: Some("Chart".into()),
+                quality: CoverageLevel::Strong,
+                allowed_actions: vec![crate::surfaces::BridgeAction::Read],
+                parent_id: None,
+            }],
+        };
+        let evidence = extract_semantic_bridge(
+            &bridge,
+            &grants,
+            "https://example.test",
+            SurfaceRevision(11),
+        )
+        .unwrap();
+        let ir = crate::web_ir::reconcile_evidence_with_grants(&evidence, &grants).unwrap();
+        assert!(
+            ir.entities
+                .iter()
+                .any(|entity| entity.kind == crate::web_ir::WebIrEntityKind::Text)
+        );
+        assert_eq!(ir.revision, 11);
+        assert!(
+            extract_semantic_bridge(
+                &bridge,
+                &grants,
+                "https://example.test",
+                SurfaceRevision(12),
+            )
+            .is_err()
+        );
     }
 }

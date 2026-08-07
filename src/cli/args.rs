@@ -141,14 +141,39 @@ pub enum Commands {
         action: CertifyCommand,
     },
 
-    /// Print the versioned Glass capability manifest without starting Chrome.
-    Capabilities,
+    /// Inspect local workspace identity, ownership, and lifecycle state.
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceCommand,
+    },
+    /// Inspect and manage advisory semantic memory.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryCommand,
+    },
+    /// Validate surface evidence and report capability coverage.
+    Surfaces {
+        #[command(subcommand)]
+        action: SurfaceCommand,
+    },
+    /// Inspect a declared transport-neutral backend profile.
+    Backend {
+        #[command(subcommand)]
+        action: BackendCommand,
+    },
 
-    /// Start, inspect, stop, or diagnose the local Unix-socket daemon.
+    /// Start and inspect the local daemon lifecycle.
     Daemon {
         #[command(subcommand)]
         action: DaemonCommand,
     },
+    /// Inspect, compare, or attach a validated replay bundle.
+    Replay {
+        #[command(subcommand)]
+        action: ReplayCommand,
+    },
+    /// Print the versioned Glass capability manifest without starting Chrome.
+    Capabilities,
 
     /// Inspect local browser, daemon, profile, policy, and store health.
     Doctor {
@@ -612,12 +637,71 @@ pub enum KnowledgeCommand {
         state: KnowledgeInvalidationState,
         #[arg(long)]
         reason: Option<String>,
-
         #[arg(long)]
         observed_at: Option<String>,
     },
     /// Remove every record for one exact origin.
     Purge { origin: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceCommand {
+    List,
+    Inspect { id: String },
+    Suspend { id: String },
+    Resume { id: String },
+    Delete { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemoryCommand {
+    Status,
+    Inspect {
+        record_id: String,
+    },
+    Explain {
+        record_id: String,
+    },
+    Forget {
+        record_id: String,
+    },
+    Export {
+        output: Option<PathBuf>,
+    },
+    /// Remove stale, contradicted, and quarantined records.
+    Prune,
+    /// Re-read and validate the snapshot from disk.
+    Reindex,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SurfaceCommand {
+    Inspect { input: PathBuf },
+    Coverage { input: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackendCommand {
+    Status { input: PathBuf },
+    Capabilities { input: PathBuf },
+    Test { input: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReplayCommand {
+    Inspect {
+        scenario: PathBuf,
+        input: PathBuf,
+    },
+    Diff {
+        scenario: PathBuf,
+        before: PathBuf,
+        after: PathBuf,
+    },
+    Attach {
+        scenario: PathBuf,
+        input: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -5,19 +5,24 @@
 //! each later knowledge-assisted operation.
 
 use super::knowledge::{
-    KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeLookupContext,
-    KnowledgeRecord, KnowledgeRetrievalCandidate, KnowledgeRetrievalQuery,
-    KnowledgeRetrievalReport, KnowledgeScopeSelector, KnowledgeStoreSnapshot,
-    KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
+    KNOWLEDGE_SCHEMA_VERSION, KnowledgeAssessment, KnowledgeConfidence, KnowledgeEmbeddingProvider,
+    KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgeGraphNodeKind,
+    KnowledgeGraphTraversal, KnowledgeLearningRequest, KnowledgeLearningResult,
+    KnowledgeLookupContext, KnowledgeRecord, KnowledgeRecordKind, KnowledgeRetrievalCandidate,
+    KnowledgeRetrievalQuery, KnowledgeRetrievalReport, KnowledgeScopeSelector,
+    KnowledgeStoreSnapshot, KnowledgeValidationError, MAX_KNOWLEDGE_RECORDS,
 };
 use fs2::FileExt;
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use url::Url;
 
 pub const DEFAULT_KNOWLEDGE_STORE_BYTES: usize = 4 * 1024 * 1024;
 const STORE_LOCK_SUFFIX: &str = ".lock";
@@ -236,6 +241,37 @@ impl KnowledgeStore {
             rejected_record_ids,
             embeddings_used: false,
         }
+    }
+
+    /// Retrieve with an explicitly supplied semantic provider. Passing
+    /// `None` is byte-for-byte equivalent to [`Self::retrieve`] and leaves
+    /// embeddings disabled.
+    pub fn retrieve_with_embeddings(
+        &self,
+        context: &KnowledgeLookupContext,
+        query: &KnowledgeRetrievalQuery,
+        provider: Option<&dyn KnowledgeEmbeddingProvider>,
+    ) -> KnowledgeRetrievalReport {
+        let mut report = self.retrieve(context, query);
+        let Some(provider) = provider else {
+            return report;
+        };
+        report.embeddings_used = true;
+        for candidate in &mut report.candidates {
+            if let Some(record) = self.get(&candidate.record_id)
+                && let Some(score_millis) = provider.similarity_millis(query, record)
+            {
+                candidate
+                    .signals
+                    .push(super::knowledge::KnowledgeRetrievalSignal {
+                        kind: super::knowledge::KnowledgeRetrievalSignalKind::SemanticSimilarity,
+                        detail: "optional embedding provider supplied a bounded similarity score"
+                            .into(),
+                        score_millis: Some(score_millis),
+                    });
+            }
+        }
+        report
     }
 
     /// Return the validated records for inspection or export.
@@ -505,6 +541,296 @@ impl KnowledgeStore {
             },
         })
     }
+
+    /// Persist fresh semantic evidence only after a successful guarded
+    /// workflow. Repeated compatible uses promote the record deterministically.
+    pub fn learn_verified(
+        &mut self,
+        request: KnowledgeLearningRequest<'_>,
+    ) -> Result<KnowledgeLearningResult, KnowledgeStoreError> {
+        request.policy.validate()?;
+        request.observation.validate().map_err(|error| {
+            KnowledgeStoreError::InvalidContract(KnowledgeValidationError::new(
+                "observation",
+                error.to_string(),
+            ))
+        })?;
+        request.evidence.validate_against(request.observation)?;
+        let route_url = Url::parse(&request.observation.route.url).map_err(|error| {
+            KnowledgeStoreError::InvalidContract(KnowledgeValidationError::new(
+                "observation.route.url",
+                format!("invalid URL: {error}"),
+            ))
+        })?;
+        let route_origin = route_url.origin().ascii_serialization();
+        let route_path = if route_url.path().is_empty() {
+            "/"
+        } else {
+            route_url.path()
+        };
+        let scope = &request.build.scope;
+        let path_matches = scope.path_pattern == route_path
+            || scope
+                .path_pattern
+                .strip_suffix('*')
+                .is_some_and(|prefix| route_path.starts_with(prefix));
+        if scope.origin != route_origin {
+            return Err(KnowledgeStoreError::InvalidContract(
+                KnowledgeValidationError::new(
+                    "build.scope.origin",
+                    "learning scope origin must match the fresh observation route",
+                ),
+            ));
+        }
+        if !path_matches {
+            return Err(KnowledgeStoreError::InvalidContract(
+                KnowledgeValidationError::new(
+                    "build.scope.pathPattern",
+                    "learning scope path pattern must match the fresh observation route",
+                ),
+            ));
+        }
+        let mut build = request.build.clone();
+        if build.record_id.is_empty() {
+            build.record_id =
+                KnowledgeRecord::deterministic_page_family_id(request.observation, &build.scope)?;
+        }
+        let incoming = KnowledgeRecord::from_verified_observation(
+            request.observation,
+            build,
+            &request.evidence,
+        )?;
+        let record_id = incoming.record_id.clone();
+        let compatibility_key = request.evidence.compatibility_key.clone();
+        let mut result = KnowledgeLearningResult {
+            record_id: record_id.clone(),
+            confidence: incoming.confidence,
+            verification_count: incoming.source.verification_count,
+            promoted: false,
+            created: false,
+        };
+        self.mutate(|snapshot| {
+            if let Some(existing) = snapshot
+                .records
+                .iter_mut()
+                .find(|record| record.record_id == record_id)
+            {
+                let existing_key = existing
+                    .data
+                    .get("verifiedUseKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if existing_key != compatibility_key {
+                    return Err(KnowledgeStoreError::InvalidContract(
+                        KnowledgeValidationError::new(
+                            "compatibilityKey",
+                            "verified workflow evidence is incompatible with the stored record",
+                        ),
+                    ));
+                }
+                let next_count = existing.source.verification_count.saturating_add(1);
+                let next = if next_count >= request.policy.required_verified_uses {
+                    KnowledgeConfidence::Verified
+                } else {
+                    KnowledgeConfidence::Candidate
+                };
+                existing.transition_with_validation(
+                    next,
+                    if next == KnowledgeConfidence::Verified {
+                        "repeated compatible guarded workflow use promoted record"
+                    } else {
+                        "compatible guarded workflow use refreshed candidate"
+                    }
+                    .into(),
+                    request.evidence.observed_at.clone(),
+                    request.evidence.guarded_revision,
+                    request.evidence.evidence_quality,
+                )?;
+                existing.data["verifiedUseKey"] = Value::String(compatibility_key.clone());
+                result.confidence = existing.confidence;
+                result.verification_count = existing.source.verification_count;
+                result.promoted = existing.confidence == KnowledgeConfidence::Verified;
+            } else {
+                let mut created = incoming.clone();
+                if request.policy.required_verified_uses <= 1 {
+                    created.source.verification_count = 0;
+                    created.transition_with_validation(
+                        KnowledgeConfidence::Verified,
+                        "single configured guarded workflow use promoted record".into(),
+                        request.evidence.observed_at.clone(),
+                        request.evidence.guarded_revision,
+                        request.evidence.evidence_quality,
+                    )?;
+                    result.promoted = true;
+                }
+                result.confidence = created.confidence;
+                result.verification_count = created.source.verification_count;
+                snapshot.records.push(created);
+                result.created = true;
+            }
+            Ok(())
+        })?;
+        Ok(result)
+    }
+
+    /// Mark a record contradicted by a fresh current Web IR witness.
+    pub fn contradict(
+        &mut self,
+        record_id: &str,
+        reason: String,
+        observed_at: String,
+        current_revision: u64,
+        evidence_quality: super::knowledge::KnowledgeEvidenceQuality,
+    ) -> Result<KnowledgeStoreChange, KnowledgeStoreError> {
+        let id = record_id.to_owned();
+        self.mutate(|snapshot| {
+            let record = snapshot
+                .records
+                .iter_mut()
+                .find(|record| record.record_id == id)
+                .ok_or_else(|| KnowledgeStoreError::NotFound(id.clone()))?;
+            record.transition_with_validation(
+                KnowledgeConfidence::Contradicted,
+                reason,
+                observed_at,
+                current_revision,
+                evidence_quality,
+            )?;
+            Ok(())
+        })?;
+        Ok(KnowledgeStoreChange {
+            record_id: id,
+            retained: true,
+            removed: false,
+            pruned_record_ids: self.last_pruned.take().unwrap_or_default(),
+        })
+    }
+
+    /// Derive a bounded graph from the compact records in this local store.
+    pub fn graph(&self) -> KnowledgeGraph {
+        let mut nodes = BTreeMap::new();
+        let mut edges = Vec::new();
+        for record in &self.snapshot.records {
+            let record_node = format!("record:{}", record.record_id);
+            nodes.insert(
+                record_node.clone(),
+                KnowledgeGraphNode {
+                    id: record_node.clone(),
+                    kind: KnowledgeGraphNodeKind::Record,
+                },
+            );
+            if let Some(page_kind) = record.data.get("pageKind").and_then(Value::as_str) {
+                let id = format!("page:{}", page_kind.to_ascii_lowercase());
+                nodes.entry(id.clone()).or_insert(KnowledgeGraphNode {
+                    id: id.clone(),
+                    kind: KnowledgeGraphNodeKind::PageKind,
+                });
+                edges.push(KnowledgeGraphEdge {
+                    from: record_node.clone(),
+                    to: id,
+                    relation: "hasPageKind".into(),
+                });
+            }
+            for landmark in &record.invalidation.required_landmarks {
+                let id = format!("landmark:{}", landmark.to_ascii_lowercase());
+                nodes.entry(id.clone()).or_insert(KnowledgeGraphNode {
+                    id: id.clone(),
+                    kind: KnowledgeGraphNodeKind::Landmark,
+                });
+                edges.push(KnowledgeGraphEdge {
+                    from: record_node.clone(),
+                    to: id,
+                    relation: "requiresLandmark".into(),
+                });
+            }
+            if record.kind == KnowledgeRecordKind::WorkflowEntryPoint {
+                let id = format!("workflow:{}", record.record_id);
+                nodes.entry(id.clone()).or_insert(KnowledgeGraphNode {
+                    id: id.clone(),
+                    kind: KnowledgeGraphNodeKind::Workflow,
+                });
+                edges.push(KnowledgeGraphEdge {
+                    from: record_node,
+                    to: id,
+                    relation: "workflowEntry".into(),
+                });
+            }
+        }
+        edges.sort_by(|left, right| {
+            (&left.from, &left.to, &left.relation).cmp(&(&right.from, &right.to, &right.relation))
+        });
+        KnowledgeGraph {
+            nodes: nodes.into_values().collect(),
+            edges,
+        }
+    }
+
+    /// Traverse the local graph with explicit depth and node bounds.
+    pub fn traverse_graph(
+        &self,
+        start: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<KnowledgeGraphTraversal, KnowledgeStoreError> {
+        if max_depth > 8 || max_nodes == 0 || max_nodes > 256 {
+            return Err(KnowledgeStoreError::InvalidConfiguration(
+                "graph traversal bounds exceed the local contract".into(),
+            ));
+        }
+        let graph = self.graph();
+        if !graph.nodes.iter().any(|node| node.id == start) {
+            return Err(KnowledgeStoreError::NotFound(start.into()));
+        }
+        let mut frontier = vec![(start.to_owned(), 0usize)];
+
+        let mut visited = BTreeSet::from([start.to_owned()]);
+        let mut edges = Vec::new();
+        let mut truncated = false;
+        while let Some((current, depth)) = frontier.pop() {
+            if depth >= max_depth {
+                continue;
+            }
+            for edge in graph.edges.iter().filter(|edge| edge.from == current) {
+                if visited.len() >= max_nodes && !visited.contains(&edge.to) {
+                    truncated = true;
+                    continue;
+                }
+                edges.push(edge.clone());
+                if visited.insert(edge.to.clone()) {
+                    frontier.push((edge.to.clone(), depth + 1));
+                }
+            }
+        }
+        Ok(KnowledgeGraphTraversal {
+            start: start.into(),
+            max_depth,
+            node_ids: visited.into_iter().collect(),
+            edges,
+            truncated,
+        })
+    }
+
+    /// Record an explicit supersession as a contradiction transition on the
+    /// older record. The newer record must already be present in this store.
+    pub fn supersede(
+        &mut self,
+        old_record_id: &str,
+        new_record_id: &str,
+        observed_at: String,
+        current_revision: u64,
+        evidence_quality: super::knowledge::KnowledgeEvidenceQuality,
+    ) -> Result<KnowledgeStoreChange, KnowledgeStoreError> {
+        if self.get(new_record_id).is_none() {
+            return Err(KnowledgeStoreError::NotFound(new_record_id.into()));
+        }
+        self.contradict(
+            old_record_id,
+            format!("record superseded by {new_record_id}"),
+            observed_at,
+            current_revision,
+            evidence_quality,
+        )
+    }
 }
 
 impl KnowledgeStore {
@@ -758,18 +1084,20 @@ impl From<KnowledgeValidationError> for KnowledgeStoreError {
 mod tests {
     use super::super::knowledge::{
         KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
-        KnowledgeCurrentValidation, KnowledgeEvidenceQuality, KnowledgeMemoryInfluence,
-        KnowledgePortability, KnowledgeRejectionReason, KnowledgeRetrievalExplanation,
-        KnowledgeSurfaceCoverage, KnowledgeSurfaceKind, KnowledgeSurfaceProvenance,
-        KnowledgeUnderstandingLevel,
+        KnowledgeCurrentValidation, KnowledgeEmbeddingProvider, KnowledgeEvidenceQuality,
+        KnowledgeMemoryInfluence, KnowledgePortability, KnowledgeRejectionReason,
+        KnowledgeRetrievalExplanation, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
+        KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
     };
     use super::*;
     use crate::browser::session::{
-        KnowledgeInvalidation, KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordKind,
-        KnowledgeScope, KnowledgeScopeSelector, KnowledgeSource,
+        KnowledgeInvalidation, KnowledgeLearningPolicy, KnowledgeLearningRequest,
+        KnowledgeLookupContext, KnowledgeProfileScope, KnowledgeRecordBuildOptions,
+        KnowledgeRecordKind, KnowledgeScope, KnowledgeScopeSelector, KnowledgeSource,
+        KnowledgeVerifiedWorkflowEvidence, SemanticObservation,
     };
     use serde_json::json;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1132,5 +1460,300 @@ mod tests {
             )
             .is_err()
         );
+    }
+    fn learning_observation() -> SemanticObservation {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../benchmarks/scenarios/semantic-observation-v1.json"
+        ))
+        .unwrap();
+        SemanticObservation::from_json(&corpus["fixtures"][1]["observation"].to_string()).unwrap()
+    }
+
+    fn learning_build(record_id: &str) -> KnowledgeRecordBuildOptions {
+        let mut scope = record("template", KnowledgeConfidence::Observed, "01").scope;
+        scope.path_pattern = "/search*".into();
+        KnowledgeRecordBuildOptions {
+            record_id: record_id.into(),
+            scope,
+            glass_version: "0.2.0".into(),
+            observed_at: "2026-08-07T00:00:00Z".into(),
+            surface: KnowledgeSurfaceProvenance {
+                kind: KnowledgeSurfaceKind::Document,
+                understanding: KnowledgeUnderstandingLevel::Strong,
+                coverage: KnowledgeSurfaceCoverage::Semantic,
+                extension_id: None,
+            },
+            backend: KnowledgeBackendProvenance {
+                backend: KnowledgeBackendKind::Cdp,
+                profile: "production".into(),
+                capabilities: vec![
+                    KnowledgeBackendCapability::SemanticExtraction,
+                    KnowledgeBackendCapability::Verification,
+                ],
+            },
+            portability: KnowledgePortability::SurfacePortable,
+            current_validation: KnowledgeCurrentValidation::default(),
+        }
+    }
+
+    fn learning_evidence(
+        observation: &SemanticObservation,
+        compatibility_key: &str,
+    ) -> KnowledgeVerifiedWorkflowEvidence {
+        KnowledgeVerifiedWorkflowEvidence {
+            guarded_revision: observation.revision,
+            successful: true,
+            postcondition_verified: true,
+            evidence_quality: KnowledgeEvidenceQuality::Strong,
+            observed_at: "2026-08-07T00:00:00Z".into(),
+            compatibility_key: compatibility_key.into(),
+            private_context: false,
+            incognito: false,
+        }
+    }
+
+    fn learning_request<'a>(
+        observation: &'a SemanticObservation,
+        record_id: &str,
+        compatibility_key: &str,
+    ) -> KnowledgeLearningRequest<'a> {
+        KnowledgeLearningRequest {
+            observation,
+            build: learning_build(record_id),
+            evidence: learning_evidence(observation, compatibility_key),
+            policy: KnowledgeLearningPolicy {
+                required_verified_uses: 2,
+            },
+        }
+    }
+
+    fn retrieval_context() -> KnowledgeLookupContext {
+        KnowledgeLookupContext {
+            origin: "https://example.test".into(),
+            path: "/docs/start".into(),
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: None,
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: None,
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            landmarks: vec!["documentation".into()],
+            now_epoch_seconds: 1_785_542_400,
+            current_revision: 1,
+            surface_kind: Some(KnowledgeSurfaceKind::Document),
+            backend_kind: Some(KnowledgeBackendKind::Cdp),
+            backend_capabilities: vec![
+                KnowledgeBackendCapability::SemanticExtraction,
+                KnowledgeBackendCapability::Verification,
+            ],
+            current_extension_id: None,
+            workspace_id: None,
+            workspace_generation: None,
+        }
+    }
+
+    #[test]
+    fn learning_rejects_failed_private_truncated_and_sensitive_evidence() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        let observation = learning_observation();
+
+        let mut failed = learning_evidence(&observation, "failed");
+        failed.successful = false;
+        let error = store
+            .learn_verified(KnowledgeLearningRequest {
+                observation: &observation,
+                build: learning_build("failed"),
+                evidence: failed,
+                policy: KnowledgeLearningPolicy::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            KnowledgeStoreError::InvalidContract(error) if error.path == "workflow"
+        ));
+
+        let mut private = learning_evidence(&observation, "private");
+        private.private_context = true;
+        let error = store
+            .learn_verified(KnowledgeLearningRequest {
+                observation: &observation,
+                build: learning_build("private"),
+                evidence: private,
+                policy: KnowledgeLearningPolicy::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            KnowledgeStoreError::InvalidContract(error) if error.path == "privacy"
+        ));
+
+        let mut truncated_observation = observation.clone();
+        truncated_observation.limits.truncated = true;
+        let error = store
+            .learn_verified(learning_request(
+                &truncated_observation,
+                "truncated",
+                "truncated",
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            KnowledgeStoreError::InvalidContract(error) if error.path == "observation.limits"
+        ));
+
+        let mut sensitive_observation = observation;
+        sensitive_observation.text = Some("password".into());
+        let error = store
+            .learn_verified(learning_request(
+                &sensitive_observation,
+                "sensitive",
+                "sensitive",
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            KnowledgeStoreError::InvalidContract(error) if error.path == "observation"
+        ));
+        assert!(store.records().is_empty());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    #[test]
+    fn learning_promotes_after_compatible_uses_and_merges_history() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        let observation = learning_observation();
+        let first = store
+            .learn_verified(learning_request(&observation, "learned", "same-workflow"))
+            .unwrap();
+        assert!(first.created);
+        assert!(!first.promoted);
+        assert_eq!(first.confidence, KnowledgeConfidence::Candidate);
+        assert_eq!(first.verification_count, 1);
+
+        let second = store
+            .learn_verified(learning_request(&observation, "learned", "same-workflow"))
+            .unwrap();
+        assert!(!second.created);
+        assert!(second.promoted);
+        assert_eq!(second.confidence, KnowledgeConfidence::Verified);
+        assert_eq!(second.verification_count, 2);
+        let learned = store.get("learned").unwrap();
+        assert_eq!(learned.source.verification_count, 2);
+        assert_eq!(learned.history.len(), 1);
+        assert_eq!(learned.history[0].from, KnowledgeConfidence::Candidate);
+        assert_eq!(learned.history[0].to, KnowledgeConfidence::Verified);
+
+        let reopened = KnowledgeStore::open(&path).unwrap();
+        let persisted = reopened.get("learned").unwrap();
+        assert_eq!(persisted.source.verification_count, 2);
+        assert_eq!(persisted.history.len(), 1);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    #[test]
+    fn graph_construction_and_traversal_are_deterministic_and_bounded() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("graph-a", KnowledgeConfidence::Observed, "01"))
+            .unwrap();
+        store
+            .upsert(record("graph-b", KnowledgeConfidence::Observed, "02"))
+            .unwrap();
+        let graph = store.graph();
+        assert_eq!(graph, store.graph());
+        assert!(graph.nodes.len() <= 256);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "record:graph-a"
+                && edge.to == "page:documentation"
+                && edge.relation == "hasPageKind"
+        }));
+
+        let bounded = store.traverse_graph("record:graph-a", 1, 1).unwrap();
+        assert_eq!(bounded.node_ids, vec!["record:graph-a"]);
+        assert!(bounded.truncated);
+        let repeat = store.traverse_graph("record:graph-a", 1, 1).unwrap();
+        assert_eq!(bounded, repeat);
+        assert!(matches!(
+            store.traverse_graph("record:graph-a", 9, 2),
+            Err(KnowledgeStoreError::InvalidConfiguration(_))
+        ));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+
+    struct CountingEmbeddingProvider<'a> {
+        calls: &'a AtomicUsize,
+    }
+
+    impl KnowledgeEmbeddingProvider for CountingEmbeddingProvider<'_> {
+        fn similarity_millis(
+            &self,
+            _query: &KnowledgeRetrievalQuery,
+            _record: &KnowledgeRecord,
+        ) -> Option<u16> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Some(777)
+        }
+    }
+
+    #[test]
+    fn embeddings_are_disabled_by_default_and_only_used_when_injected() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("embedding", KnowledgeConfidence::Observed, "01"))
+            .unwrap();
+        let context = retrieval_context();
+        let query = KnowledgeRetrievalQuery {
+            page_kind: Some("documentation".into()),
+            max_results: 1,
+            ..KnowledgeRetrievalQuery::default()
+        };
+        let default_report = store.retrieve(&context, &query);
+        let no_provider = store.retrieve_with_embeddings(&context, &query, None);
+        assert_eq!(default_report, no_provider);
+        assert!(!no_provider.embeddings_used);
+
+        let calls = AtomicUsize::new(0);
+        let provider = CountingEmbeddingProvider { calls: &calls };
+        let injected = store.retrieve_with_embeddings(&context, &query, Some(&provider));
+        assert!(injected.embeddings_used);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(injected.candidates[0].signals.iter().any(|signal| {
+            signal.kind == super::super::knowledge::KnowledgeRetrievalSignalKind::SemanticSimilarity
+                && signal.score_millis == Some(777)
+        }));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
+    #[test]
+    fn learning_rejects_scope_provenance_mismatch_before_mutation() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        let observation = learning_observation();
+        let mut build = learning_build("scope-mismatch");
+        build.scope.origin = "https://other.example".into();
+        let error = store
+            .learn_verified(KnowledgeLearningRequest {
+                observation: &observation,
+                build,
+                evidence: learning_evidence(&observation, "scope-mismatch"),
+                policy: KnowledgeLearningPolicy::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            KnowledgeStoreError::InvalidContract(error) if error.path == "build.scope.origin"
+        ));
+        assert!(store.records().is_empty());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
     }
 }

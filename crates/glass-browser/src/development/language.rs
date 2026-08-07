@@ -128,11 +128,28 @@ impl LspClient {
             }
         }))?;
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut empty_published_at = None;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let value = self.output.recv_timeout(remaining).map_err(|error| {
-                DevelopmentError::Process(format!("language diagnostics timed out: {error}"))
-            })?;
+            let wait = empty_published_at
+                .map(|published: Instant| {
+                    remaining.min(
+                        (published + Duration::from_secs(5))
+                            .saturating_duration_since(Instant::now()),
+                    )
+                })
+                .unwrap_or(remaining);
+            let value = match self.output.recv_timeout(wait) {
+                Ok(value) => value,
+                Err(mpsc::RecvTimeoutError::Timeout) if empty_published_at.is_some() => {
+                    return Ok(Vec::new());
+                }
+                Err(error) => {
+                    return Err(DevelopmentError::Process(format!(
+                        "language diagnostics timed out: {error}"
+                    )));
+                }
+            };
             if value.get("method").and_then(Value::as_str)
                 != Some("textDocument/publishDiagnostics")
                 || value.pointer("/params/uri").and_then(Value::as_str) != Some(uri.as_str())
@@ -147,6 +164,10 @@ impl LspClient {
                         "language server diagnostics must be an array".into(),
                     )
                 })?;
+            if diagnostics.is_empty() {
+                empty_published_at.get_or_insert_with(Instant::now);
+                continue;
+            }
             return diagnostics
                 .iter()
                 .take(512)

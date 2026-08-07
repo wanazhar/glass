@@ -39,6 +39,31 @@ These tasks are intentionally disjoint and do not edit shared exports or
 dispatch files. Integration tasks begin only after committed implementation
 and independent review.
 
+## Active plan: Glass v0.3.2 issue #32
+
+Status: Local release-candidate development — no push, tag, crates.io
+publication, or GitHub Release is part of this plan.
+
+Issue #32 is an architectural epic. The release candidate is delivered as a
+coherent vertical slice rather than as disconnected UI stubs. The delivery
+analysis is [release-032.md](analysis/release-032.md).
+
+Delivery order:
+
+1. [development-032-001](tasks/development-032-001.md) — project detection,
+   bounded files/editor, PTY process runtime, events, graph, and diff core.
+2. [development-032-002](tasks/development-032-002.md) — shared CLI and MCP
+   project-runtime contracts for humans and external agents.
+3. [development-032-003](tasks/development-032-003.md) — native TUI project
+   surface and embedded harness interaction.
+4. [release-032-001](tasks/release-032-001.md) — package boundary, versioned
+   documentation, release validation, and local 0.3.2 candidate checkpoint.
+
+The candidate must keep the v0.3.1 browser intelligence contracts intact. Any
+capability that cannot provide evidence in this checkout is reported as
+experimental or unavailable; it is not presented as a completed framework
+integration.
+
 Integration wave (after foundation review):
 
 - [surface-031-002](tasks/surface-031-002.md) — integrate surfaces into Web

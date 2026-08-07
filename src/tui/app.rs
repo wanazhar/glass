@@ -41,6 +41,7 @@ use tokio::{
 };
 
 use crate::capabilities::GlassCapabilityManifest;
+use crate::development::{Actor, HarnessRequest, LocalHarness, ProcessState, ProjectWorkspace};
 
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
@@ -74,6 +75,7 @@ pub enum WorkspaceMode {
     Semantic,
     Inspect,
     Takeover,
+    Development,
 }
 
 impl WorkspaceMode {
@@ -85,6 +87,7 @@ impl WorkspaceMode {
             Self::Semantic => "Semantic",
             Self::Inspect => "Inspect",
             Self::Takeover => "Takeover",
+            Self::Development => "Development",
         }
     }
 }
@@ -224,6 +227,11 @@ pub struct App {
     mutation_lease: MutationLease,
     visual_revision: u64,
     visual_status: String,
+    development: Option<ProjectWorkspace>,
+    harness: LocalHarness,
+    development_files: String,
+    development_editor: String,
+    development_runtime: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,7 +274,8 @@ impl App {
                 .expect("static TUI graphics identity is valid"),
         )
         .expect("static TUI graphics state is valid");
-        Self {
+        let development = ProjectWorkspace::open(std::env::current_dir().unwrap_or_default()).ok();
+        let mut app = Self {
             url: String::new(),
             title: "Glass — Browser Agent".to_string(),
             activity,
@@ -290,7 +299,14 @@ impl App {
             mutation_lease: MutationLease::default(),
             visual_revision: 0,
             visual_status: "visual stream pending".to_string(),
-        }
+            development,
+            harness: LocalHarness::default(),
+            development_files: "Project detection pending.".into(),
+            development_editor: "Open a file with `project open PATH`.".into(),
+            development_runtime: "No managed processes.".into(),
+        };
+        app.refresh_development_view();
+        app
     }
 
     fn add_activity(&mut self, message: impl Into<String>) {
@@ -332,6 +348,151 @@ impl App {
             self.graphics.clear_pane().ok();
             self.add_activity(format!("Workspace mode: {}.", mode.label()));
         }
+    }
+
+    fn refresh_development_view(&mut self) {
+        let Some(project) = self.development.as_mut() else {
+            self.development_files = "No project workspace could be opened.".into();
+            self.development_editor = "Project detection unavailable.".into();
+            self.development_runtime = "Project runtime unavailable.".into();
+            return;
+        };
+        self.development_files = match project.list_files() {
+            Ok(files) => files
+                .into_iter()
+                .take(80)
+                .map(|file| {
+                    format!(
+                        "{} {}",
+                        if matches!(file.kind, crate::development::FileKind::Directory) {
+                            "▾"
+                        } else {
+                            " "
+                        },
+                        file.path
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(error) => format!("File tree error: {error}"),
+        };
+        self.development_editor = project
+            .buffers()
+            .next()
+            .map(|buffer| numbered_buffer(&buffer.path, &buffer.content))
+            .unwrap_or_else(|| "No open buffer.\n\nproject open PATH".into());
+        self.development_runtime = format_runtime_panel(project);
+    }
+
+    fn handle_project_command(&mut self, command: &str) {
+        self.set_mode(WorkspaceMode::Development);
+        let command = command.trim();
+        let result = (|| -> Result<String, String> {
+            let mut parts = command.splitn(3, char::is_whitespace);
+            let operation = parts.next().unwrap_or("inspect").to_ascii_lowercase();
+            let project = self
+                .development
+                .as_mut()
+                .ok_or_else(|| "project workspace is unavailable".to_string())?;
+            match operation.as_str() {
+                "inspect" => Ok(serde_json::to_string_pretty(project.detection())
+                    .map_err(|error| error.to_string())?),
+                "files" => Ok(serde_json::to_string_pretty(&project.list_files().map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?),
+                "open" => {
+                    let path = parts
+                        .next()
+                        .ok_or_else(|| "project open requires PATH".to_string())?;
+                    let buffer = project
+                        .open_buffer(path, Actor::local())
+                        .map_err(|error| error.to_string())?;
+                    Ok(numbered_buffer(&buffer.path, &buffer.content))
+                }
+                "edit" => {
+                    let path = parts
+                        .next()
+                        .ok_or_else(|| "project edit requires PATH and CONTENT".to_string())?;
+                    let content = parts
+                        .next()
+                        .ok_or_else(|| "project edit requires PATH and CONTENT".to_string())?;
+                    project
+                        .open_buffer(path, Actor::local())
+                        .and_then(|_| project.edit_buffer(path, content.into(), Actor::local()))
+                        .and_then(|_| project.save_buffer(path))
+                        .map(|buffer| numbered_buffer(&buffer.path, &buffer.content))
+                        .map_err(|error| error.to_string())
+                }
+                "run" => {
+                    let name = parts
+                        .next()
+                        .ok_or_else(|| "project run requires NAME and COMMAND".to_string())?;
+                    let command = parts
+                        .next()
+                        .ok_or_else(|| "project run requires NAME and COMMAND".to_string())?;
+                    let snapshot = project
+                        .start_process(name, command)
+                        .map_err(|error| error.to_string())?;
+                    Ok(serde_json::to_string_pretty(&snapshot)
+                        .map_err(|error| error.to_string())?)
+                }
+                "processes" => Ok(serde_json::to_string_pretty(&project.processes().list())
+                    .map_err(|error| error.to_string())?),
+                "stop" => {
+                    let name = parts
+                        .next()
+                        .ok_or_else(|| "project stop requires NAME".to_string())?;
+                    Ok(serde_json::to_string_pretty(
+                        &project
+                            .stop_process(name)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?)
+                }
+                "output" => {
+                    let name = parts
+                        .next()
+                        .ok_or_else(|| "project output requires NAME".to_string())?;
+                    Ok(project
+                        .processes()
+                        .output(name)
+                        .map_err(|error| error.to_string())?)
+                }
+                "diff" => Ok(serde_json::to_string_pretty(
+                    &project.diff().map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?),
+                "timeline" => Ok(serde_json::to_string_pretty(
+                    &project.timeline().events().collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string())?),
+                "agent" => {
+                    let prompt = parts
+                        .next()
+                        .ok_or_else(|| "project agent requires PROMPT".to_string())?;
+                    let events = self
+                        .harness
+                        .handle(
+                            project,
+                            HarnessRequest::Prompt {
+                                text: prompt.into(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                    Ok(serde_json::to_string_pretty(&events)
+                        .map_err(|error| error.to_string())?)
+                }
+                _ => Err("project commands: inspect | files | open PATH | edit PATH CONTENT | run NAME COMMAND | processes | stop NAME | output NAME | diff | timeline | agent PROMPT".into()),
+            }
+        })();
+        match result {
+            Ok(content) => {
+                self.set_page_content(content);
+                self.set_status("Development workspace");
+                self.add_activity("Development command completed.");
+            }
+            Err(error) => self.report_error(error),
+        }
+        self.refresh_development_view();
     }
 
     fn apply_visual_status(&mut self, status: impl Into<String>) {
@@ -441,6 +602,7 @@ impl App {
                 4 => Some(WorkspaceMode::Semantic),
                 5 => Some(WorkspaceMode::Inspect),
                 6 => Some(WorkspaceMode::Takeover),
+                7 => Some(WorkspaceMode::Development),
                 _ => None,
             };
             if let Some(mode) = mode {
@@ -1018,6 +1180,7 @@ enum LocalCommand {
     Profiles,
     Knowledge(Option<String>),
     Daemon(DaemonView),
+    Project(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1135,6 +1298,19 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     }
     if command.eq_ignore_ascii_case("help") {
         return Ok(ParsedCommand::Local(LocalCommand::Help));
+    }
+    if command.eq_ignore_ascii_case("project") {
+        return Ok(ParsedCommand::Local(LocalCommand::Project(
+            "inspect".into(),
+        )));
+    }
+    if let Some(project_command) = strip_ascii_prefix(command, "project ") {
+        return required_command_argument(project_command, "project command")
+            .map(|command| ParsedCommand::Local(LocalCommand::Project(command)));
+    }
+    if let Some(prompt) = strip_ascii_prefix(command, "agent ") {
+        return required_command_argument(prompt, "agent prompt")
+            .map(|prompt| ParsedCommand::Local(LocalCommand::Project(format!("agent {prompt}"))));
     }
     if command.eq_ignore_ascii_case("profiles") {
         return Ok(ParsedCommand::Local(LocalCommand::Profiles));
@@ -2219,12 +2395,15 @@ fn handle_submission(
         return;
     }
     match parse_command(&command) {
+        Ok(ParsedCommand::Local(LocalCommand::Project(project_command))) => {
+            app.handle_project_command(&project_command);
+        }
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
             app.add_activity(
                 "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "press KEY | shortcut MOD+KEY | scroll [DX [DY]] | accept-dialog | dismiss-dialog | dismiss-consent | workflow FILE | resolve-intent FILE | Up/Down select candidate | intent execute [VALUE] | observe | semantic [LEVEL [REGION_ID]] | text | dom | screenshot [FILE] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
@@ -2438,14 +2617,49 @@ fn draw(frame: &mut Frame, app: &App) {
         WorkspaceMode::Semantic => "Semantic Inspector",
         WorkspaceMode::Inspect => "Inspect / Memory + Backend",
         WorkspaceMode::Takeover => "Takeover / Reconciliation",
+        WorkspaceMode::Development => "Development / Live Runtime",
     };
-    frame.render_widget(
-        Paragraph::new(app.page_content.as_str())
-            .block(Block::default().borders(Borders::ALL).title(content_title))
-            .scroll((app.page_scroll, 0))
-            .wrap(Wrap { trim: true }),
-        content[1],
-    );
+    if app.mode == WorkspaceMode::Development {
+        let development = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Percentage(50),
+                Constraint::Percentage(25),
+            ])
+            .split(content[1]);
+        frame.render_widget(
+            Paragraph::new(app.development_files.as_str())
+                .block(Block::default().borders(Borders::ALL).title("Files"))
+                .wrap(Wrap { trim: true }),
+            development[0],
+        );
+        frame.render_widget(
+            Paragraph::new(app.development_editor.as_str())
+                .block(Block::default().borders(Borders::ALL).title(content_title))
+                .scroll((app.page_scroll, 0))
+                .wrap(Wrap { trim: true }),
+            development[1],
+        );
+        frame.render_widget(
+            Paragraph::new(app.development_runtime.as_str())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Runtime / Actors"),
+                )
+                .wrap(Wrap { trim: true }),
+            development[2],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(app.page_content.as_str())
+                .block(Block::default().borders(Borders::ALL).title(content_title))
+                .scroll((app.page_scroll, 0))
+                .wrap(Wrap { trim: true }),
+            content[1],
+        );
+    }
 
     frame.render_widget(
         Paragraph::new(app.input.as_str())
@@ -2459,7 +2673,7 @@ fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            " {} | mode:{} lease:{:?}@{} | {} | {} | {}   PgUp/PgDn: observation   F1-F6: workspace modes   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
+            " {} | mode:{} lease:{:?}@{} | {} | {} | {}   PgUp/PgDn: observation   F1-F7: workspace modes   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
             app.status,
             app.mode.label(),
             app.mutation_lease.state(),
@@ -2736,6 +2950,53 @@ fn bounded_text(value: &str, max_bytes: usize) -> String {
     let mut truncated = value[..end].to_string();
     truncated.push_str(MARKER);
     truncated
+}
+
+fn numbered_buffer(path: &str, content: &str) -> String {
+    let mut output = format!("{path}\n\n");
+    for (index, line) in content.lines().enumerate().take(512) {
+        output.push_str(&format!("{:>4} │ {line}\n", index + 1));
+    }
+    if content.lines().count() > 512 {
+        output.push_str("… [buffer view truncated]\n");
+    }
+    output
+}
+
+fn format_runtime_panel(project: &mut ProjectWorkspace) -> String {
+    let detection = project.detection();
+    let mut lines = vec![
+        format!(
+            "branch: {}",
+            detection.git_branch.as_deref().unwrap_or("detached")
+        ),
+        format!("languages: {}", detection.languages.join(", ")),
+        format!(
+            "browser: {}",
+            detection.browser_url.as_deref().unwrap_or("not configured")
+        ),
+        String::new(),
+        "ACTORS".into(),
+        "◆ Human".into(),
+        "◆ Glass Agent".into(),
+        String::new(),
+        "PROCESSES".into(),
+    ];
+    match project.processes().list() {
+        processes if processes.is_empty() => lines.push("○ none".into()),
+        processes => lines.extend(processes.into_iter().map(|process| {
+            let state = match process.state {
+                ProcessState::Running => "→ running",
+                ProcessState::Exited { .. } => "✓ exited",
+                ProcessState::Stopped => "× stopped",
+                ProcessState::Failed => "! failed",
+            };
+            format!("{state} {} (pty={})", process.name, process.pty)
+        })),
+    }
+    lines.push(String::new());
+    lines.push(format!("revision: {}", project.revision()));
+    lines.join("\n")
 }
 
 #[cfg(test)]

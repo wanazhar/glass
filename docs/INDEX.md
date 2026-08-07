@@ -95,3 +95,5 @@ unreleased development build.
   generation.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
   lifecycle.
+- [Development workspace TUI](architecture/development-tui.md) — files,
+  native buffers, PTY processes, actors, and the local harness view.

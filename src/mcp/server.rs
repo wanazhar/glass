@@ -37,6 +37,7 @@ use crate::browser::session::{
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
+use crate::development::{Actor, HarnessRequest, LinkProvenance, ProcessState, ProjectWorkspace};
 const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
 use crate::browser_backend::{BackendProfile, BrowserCapability};
 use crate::mcp::prompts;
@@ -156,6 +157,65 @@ struct RequestLogMetadata<'a> {
 }
 
 enum ToolInvocation<'a> {
+    ProjectInspect {
+        root: std::path::PathBuf,
+    },
+    ProjectFiles {
+        root: std::path::PathBuf,
+    },
+    ProjectRead {
+        root: std::path::PathBuf,
+        path: &'a str,
+    },
+    ProjectEdit {
+        root: std::path::PathBuf,
+        path: &'a str,
+        content: &'a str,
+    },
+    ProjectRun {
+        root: std::path::PathBuf,
+        name: &'a str,
+        command: &'a str,
+        wait: bool,
+    },
+    ProjectProcessList {
+        root: std::path::PathBuf,
+    },
+    ProjectProcessStop {
+        root: std::path::PathBuf,
+        name: &'a str,
+    },
+    ProjectProcessOutput {
+        root: std::path::PathBuf,
+        name: &'a str,
+    },
+    ProjectDiff {
+        root: std::path::PathBuf,
+    },
+    ProjectTimeline {
+        root: std::path::PathBuf,
+    },
+    ProjectLink {
+        root: std::path::PathBuf,
+        entity: &'a str,
+        path: &'a str,
+        start_line: u32,
+        end_line: u32,
+        provenance: &'a str,
+        confidence: f32,
+        detail: &'a str,
+    },
+    AgentHello {
+        root: std::path::PathBuf,
+    },
+    AgentPrompt {
+        root: std::path::PathBuf,
+        text: &'a str,
+    },
+    AgentSteer {
+        root: std::path::PathBuf,
+        text: &'a str,
+    },
     PreflightNavigation {
         url: &'a str,
     },
@@ -1154,6 +1214,14 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "observeDelta"
             | "workspaceStatus"
             | "workspaceInspect"
+            | "project.inspect"
+            | "project.files"
+            | "project.read"
+            | "project.processes"
+            | "project.process.output"
+            | "project.diff"
+            | "project.timeline"
+            | "agent.hello"
     )
 }
 
@@ -1725,6 +1793,25 @@ async fn call_tool(
     }
     if let ToolInvocation::RecoverRun { execution_id } = &invocation {
         return serialized_result(&recover_run(execution_id)?);
+    }
+    if matches!(
+        &invocation,
+        ToolInvocation::ProjectInspect { .. }
+            | ToolInvocation::ProjectFiles { .. }
+            | ToolInvocation::ProjectRead { .. }
+            | ToolInvocation::ProjectEdit { .. }
+            | ToolInvocation::ProjectRun { .. }
+            | ToolInvocation::ProjectProcessList { .. }
+            | ToolInvocation::ProjectProcessStop { .. }
+            | ToolInvocation::ProjectProcessOutput { .. }
+            | ToolInvocation::ProjectDiff { .. }
+            | ToolInvocation::ProjectTimeline { .. }
+            | ToolInvocation::ProjectLink { .. }
+            | ToolInvocation::AgentHello { .. }
+            | ToolInvocation::AgentPrompt { .. }
+            | ToolInvocation::AgentSteer { .. }
+    ) {
+        return call_development_tool(invocation);
     }
     let session = ensure_session(session, options, policy, viewport).await?;
 
@@ -2385,6 +2472,175 @@ async fn call_tool(
         | ToolInvocation::ReplayAttach { .. } => {
             unreachable!("experience tools are handled before browser session startup")
         }
+        ToolInvocation::ProjectInspect { .. }
+        | ToolInvocation::ProjectFiles { .. }
+        | ToolInvocation::ProjectRead { .. }
+        | ToolInvocation::ProjectEdit { .. }
+        | ToolInvocation::ProjectRun { .. }
+        | ToolInvocation::ProjectProcessList { .. }
+        | ToolInvocation::ProjectProcessStop { .. }
+        | ToolInvocation::ProjectProcessOutput { .. }
+        | ToolInvocation::ProjectDiff { .. }
+        | ToolInvocation::ProjectTimeline { .. }
+        | ToolInvocation::ProjectLink { .. }
+        | ToolInvocation::AgentHello { .. }
+        | ToolInvocation::AgentPrompt { .. }
+        | ToolInvocation::AgentSteer { .. } => {
+            unreachable!("development tools are handled before browser session startup")
+        }
+    }
+}
+
+fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::ProjectInspect { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            Ok(json!({
+                "schemaVersion": crate::development::DEVELOPMENT_SCHEMA_VERSION,
+                "root": workspace.root(),
+                "detection": workspace.detection(),
+                "config": workspace.config(),
+                "revision": workspace.revision(),
+            }))
+        }
+        ToolInvocation::ProjectFiles { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            Ok(serde_json::to_value(workspace.list_files()?)?)
+        }
+        ToolInvocation::ProjectRead { root, path } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            Ok(json!({"path": path, "content": workspace.read_file(path)?}))
+        }
+        ToolInvocation::ProjectEdit {
+            root,
+            path,
+            content,
+        } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            workspace.open_buffer(path, Actor::external("mcp"))?;
+            workspace.edit_buffer(path, content.into(), Actor::external("mcp"))?;
+            Ok(serde_json::to_value(workspace.save_buffer(path)?)?)
+        }
+        ToolInvocation::ProjectRun {
+            root,
+            name,
+            command,
+            wait,
+        } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            workspace.start_process(name, command)?;
+            let snapshot = if wait {
+                wait_for_development_process(&mut workspace, name)?
+            } else {
+                workspace
+                    .processes()
+                    .list()
+                    .into_iter()
+                    .find(|process| process.name == name)
+                    .ok_or_else(|| format!("process {name} disappeared"))?
+            };
+            Ok(serde_json::to_value(snapshot)?)
+        }
+        ToolInvocation::ProjectProcessList { root } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            Ok(serde_json::to_value(workspace.processes().list())?)
+        }
+        ToolInvocation::ProjectProcessStop { root, name } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            Ok(serde_json::to_value(workspace.stop_process(name)?)?)
+        }
+        ToolInvocation::ProjectProcessOutput { root, name } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            Ok(json!({"name": name, "output": workspace.processes().output(name)?}))
+        }
+        ToolInvocation::ProjectDiff { root } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            Ok(serde_json::to_value(workspace.diff()?)?)
+        }
+        ToolInvocation::ProjectTimeline { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            Ok(serde_json::to_value(
+                workspace.timeline().events().collect::<Vec<_>>(),
+            )?)
+        }
+        ToolInvocation::ProjectLink {
+            root,
+            entity,
+            path,
+            start_line,
+            end_line,
+            provenance,
+            confidence,
+            detail,
+        } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let provenance = parse_development_provenance(provenance)?;
+            Ok(serde_json::to_value(workspace.link_runtime_source(
+                entity,
+                path,
+                start_line,
+                end_line,
+                provenance,
+                detail,
+                confidence,
+                Actor::external("mcp"),
+            )?)?)
+        }
+        ToolInvocation::AgentHello { root } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let mut harness = crate::development::LocalHarness::default();
+            Ok(serde_json::to_value(
+                harness.handle(&mut workspace, HarnessRequest::Hello)?,
+            )?)
+        }
+        ToolInvocation::AgentPrompt { root, text } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let mut harness = crate::development::LocalHarness::default();
+            Ok(serde_json::to_value(harness.handle(
+                &mut workspace,
+                HarnessRequest::Prompt { text: text.into() },
+            )?)?)
+        }
+        ToolInvocation::AgentSteer { root, text } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let mut harness = crate::development::LocalHarness::default();
+            Ok(serde_json::to_value(harness.handle(
+                &mut workspace,
+                HarnessRequest::Steer { text: text.into() },
+            )?)?)
+        }
+        _ => Err("non-development tool passed to development dispatcher".into()),
+    }
+}
+
+fn wait_for_development_process(
+    workspace: &mut ProjectWorkspace,
+    name: &str,
+) -> BrowserResult<crate::development::ProcessSnapshot> {
+    loop {
+        let snapshot = workspace
+            .processes()
+            .poll()?
+            .into_iter()
+            .find(|process| process.name == name)
+            .ok_or_else(|| format!("process {name} disappeared"))?;
+        if !matches!(snapshot.state, ProcessState::Running) {
+            return Ok(snapshot);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn parse_development_provenance(value: &str) -> BrowserResult<LinkProvenance> {
+    match value {
+        "explicit-marker" => Ok(LinkProvenance::ExplicitMarker),
+        "runtime-observation" => Ok(LinkProvenance::RuntimeObservation),
+        "static-analysis" => Ok(LinkProvenance::StaticAnalysis),
+        "inferred" => Ok(LinkProvenance::Inferred),
+        _ => Err(
+            "provenance must be explicit-marker, runtime-observation, static-analysis, or inferred"
+                .into(),
+        ),
     }
 }
 
@@ -2590,6 +2846,71 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     }
 
     match tool_name {
+        "project.inspect" => Ok(ToolInvocation::ProjectInspect {
+            root: development_root(arguments)?,
+        }),
+        "project.files" => Ok(ToolInvocation::ProjectFiles {
+            root: development_root(arguments)?,
+        }),
+        "project.read" => Ok(ToolInvocation::ProjectRead {
+            root: development_root(arguments)?,
+            path: required_string(arguments, "path")?,
+        }),
+        "project.edit" => Ok(ToolInvocation::ProjectEdit {
+            root: development_root(arguments)?,
+            path: required_string(arguments, "path")?,
+            content: required_string(arguments, "content")?,
+        }),
+        "project.run" => Ok(ToolInvocation::ProjectRun {
+            root: development_root(arguments)?,
+            name: required_string(arguments, "name")?,
+            command: required_string(arguments, "command")?,
+            wait: optional_bool(arguments, "wait")?,
+        }),
+        "project.processes" => Ok(ToolInvocation::ProjectProcessList {
+            root: development_root(arguments)?,
+        }),
+        "project.process.stop" => Ok(ToolInvocation::ProjectProcessStop {
+            root: development_root(arguments)?,
+            name: required_string(arguments, "name")?,
+        }),
+        "project.process.output" => Ok(ToolInvocation::ProjectProcessOutput {
+            root: development_root(arguments)?,
+            name: required_string(arguments, "name")?,
+        }),
+        "project.diff" => Ok(ToolInvocation::ProjectDiff {
+            root: development_root(arguments)?,
+        }),
+        "project.timeline" => Ok(ToolInvocation::ProjectTimeline {
+            root: development_root(arguments)?,
+        }),
+        "project.link" => Ok(ToolInvocation::ProjectLink {
+            root: development_root(arguments)?,
+            entity: required_string(arguments, "entity")?,
+            path: required_string(arguments, "path")?,
+            start_line: required_u32(arguments, "startLine")?,
+            end_line: required_u32(arguments, "endLine")?,
+            provenance: arguments
+                .get("provenance")
+                .and_then(Value::as_str)
+                .unwrap_or("explicit-marker"),
+            confidence: optional_number(arguments, "confidence", 1.0)? as f32,
+            detail: arguments
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or("explicit project link"),
+        }),
+        "agent.hello" => Ok(ToolInvocation::AgentHello {
+            root: development_root(arguments)?,
+        }),
+        "agent.prompt" => Ok(ToolInvocation::AgentPrompt {
+            root: development_root(arguments)?,
+            text: required_string(arguments, "text")?,
+        }),
+        "agent.steer" => Ok(ToolInvocation::AgentSteer {
+            root: development_root(arguments)?,
+            text: required_string(arguments, "text")?,
+        }),
         "preflightNavigation" => {
             let url = required_string(arguments, "url")?;
             if url.len() > MAX_PREFLIGHT_URL_BYTES {
@@ -3116,6 +3437,76 @@ async fn ensure_session<'a>(
 
 fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "project.inspect",
+            description: "Detect a local project and return bounded runtime configuration without starting Chrome.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.files",
+            description: "List bounded, workspace-confined project files without starting Chrome.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.read",
+            description: "Read one bounded file inside a local project workspace.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.edit",
+            description: "Replace and save one bounded workspace-confined file with external-agent provenance.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.run",
+            description: "Run a local project command in a real PTY with a bounded output tail.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"},"command":{"type":"string"},"wait":{"type":"boolean","default":false}},"required":["name","command"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.processes",
+            description: "List managed local project processes without starting Chrome.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.process.stop",
+            description: "Stop one managed local project process.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.process.output",
+            description: "Read the bounded output tail of one managed project process.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.diff",
+            description: "Return code, runtime, semantic, and workflow impact for a local project.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.timeline",
+            description: "Return the bounded actor-attributed local development timeline.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.link",
+            description: "Record a source/runtime link with explicit provenance and confidence.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"entity":{"type":"string"},"path":{"type":"string"},"startLine":{"type":"integer","minimum":1},"endLine":{"type":"integer","minimum":1},"provenance":{"type":"string","enum":["explicit-marker","runtime-observation","static-analysis","inferred"],"default":"explicit-marker"},"confidence":{"type":"number","minimum":0,"maximum":1,"default":1},"detail":{"type":"string"}},"required":["entity","path","startLine","endLine"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "agent.hello",
+            description: "Negotiate the Glass-owned local harness protocol.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "agent.prompt",
+            description: "Run one bounded prompt through the deterministic local Glass harness.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"text":{"type":"string"}},"required":["text"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "agent.steer",
+            description: "Send a steering event to the local Glass harness.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"text":{"type":"string"}},"required":["text"],"additionalProperties":false}),
+        },
         Tool {
             name: "inspectWebIr",
             description: "Inspect a validated browser-free Glass Web IR v1 without starting Chrome.",
@@ -4079,6 +4470,20 @@ fn required_u64(arguments: &Value, name: &str) -> BrowserResult<u64> {
         .get(name)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("{name} must be a non-negative integer").into())
+}
+
+fn required_u32(arguments: &Value, name: &str) -> BrowserResult<u32> {
+    let value = required_u64(arguments, name)?;
+    u32::try_from(value)
+        .map_err(|_| format!("{name} must fit in an unsigned 32-bit integer").into())
+}
+
+fn development_root(arguments: &Value) -> BrowserResult<std::path::PathBuf> {
+    let root = arguments.get("root").and_then(Value::as_str).unwrap_or(".");
+    if root.is_empty() || root.len() > 1024 {
+        return Err("root must be a path of 1-1024 bytes".into());
+    }
+    Ok(std::path::PathBuf::from(root))
 }
 
 fn required_string_array<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Vec<&'a str>> {

@@ -149,6 +149,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: WorkspaceCommand,
     },
+    /// Inspect and operate the current project development runtime.
+    Project {
+        #[command(subcommand)]
+        action: ProjectCommand,
+    },
+    /// Send a prompt or control request to the local Glass harness.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
     /// Inspect and manage advisory semantic memory.
     Memory {
         #[command(subcommand)]
@@ -654,6 +664,128 @@ pub enum WorkspaceCommand {
     Suspend { id: String },
     Resume { id: String },
     Delete { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// Detect the project and print its runtime configuration.
+    Inspect {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// List bounded project files.
+    Files {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Read one workspace-confined file.
+    Read {
+        path: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Edit and save one file through the native buffer contract.
+    Edit {
+        path: String,
+        #[arg(long, conflicts_with = "input")]
+        content: Option<String>,
+        #[arg(long, conflicts_with = "content")]
+        input: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Start a named development process in a real PTY.
+    Run {
+        name: String,
+        #[arg(long)]
+        command: Option<String>,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Run the detected test command in a PTY and wait for completion.
+    Test {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Run the detected lint command in a PTY and wait for completion.
+    Lint {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Inspect, start, stop, or read a managed process.
+    Process {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[command(subcommand)]
+        action: ProjectProcessCommand,
+    },
+    /// Show code, runtime, semantic, and workflow impact.
+    Diff {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Record an explicit source/runtime relationship with evidence.
+    Link {
+        entity: String,
+        path: String,
+        #[arg(long)]
+        start_line: u32,
+        #[arg(long)]
+        end_line: u32,
+        #[arg(long, default_value = "explicit-marker")]
+        provenance: String,
+        #[arg(long, default_value_t = 1.0)]
+        confidence: f32,
+        #[arg(long, default_value = "explicit project link")]
+        detail: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Show the bounded development timeline.
+    Timeline {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectProcessCommand {
+    List,
+    Start {
+        name: String,
+        command: String,
+        #[arg(long)]
+        wait: bool,
+    },
+    Stop {
+        name: String,
+    },
+    Output {
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// Negotiate the Glass-owned harness protocol.
+    Hello {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Run one bounded local prompt through the harness.
+    Prompt {
+        text: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Steer the active local harness request.
+    Steer {
+        text: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

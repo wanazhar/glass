@@ -43,6 +43,15 @@ impl Actor {
             name: "Glass Agent".into(),
         }
     }
+
+    pub fn external(name: &str) -> Self {
+        let name = if name.is_empty() { "external" } else { name };
+        Self {
+            id: format!("external:{name}"),
+            kind: ActorKind::ExternalAgent,
+            name: name.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

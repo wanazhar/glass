@@ -348,6 +348,7 @@ impl ProjectWorkspace {
         Ok(snapshot)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn link_runtime_source(
         &mut self,
         entity_id: &str,

@@ -4,10 +4,10 @@
 //! commands, interactive TUI, or the MCP stdio server.
 
 use super::args::{
-    BackendCommand, CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand,
-    KnowledgeCommand, KnowledgeInvalidationState, McpClient, MemoryCommand, ProfileCommand,
-    ReplayCommand, ResultCommand, SnapshotCommand, SurfaceCommand, TaskCommand,
-    WorkflowAuthoringCommand, WorkspaceCommand,
+    AgentCommand, BackendCommand, CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand,
+    IrCommand, KnowledgeCommand, KnowledgeInvalidationState, McpClient, MemoryCommand,
+    ProfileCommand, ProjectCommand, ProjectProcessCommand, ReplayCommand, ResultCommand,
+    SnapshotCommand, SurfaceCommand, TaskCommand, WorkflowAuthoringCommand, WorkspaceCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::profile::ProfileManager;
@@ -27,6 +27,9 @@ use crate::browser_backend::{
     EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, SemanticAction,
 };
 use crate::capabilities::GlassCapabilityManifest;
+use crate::development::{
+    Actor, HarnessRequest, LinkProvenance, ProcessSnapshot, ProjectWorkspace,
+};
 use crate::protocol::{
     GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_EXECUTE_OPERATION,
     TASK_VALIDATE_OPERATION, WEB_IR_CONTINUITY_OPERATION, WEB_IR_INSPECT_OPERATION,
@@ -143,6 +146,14 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
         }
         Some(Commands::Workspace { action }) => {
             dispatch_workspace(action)?;
+            return Ok(());
+        }
+        Some(Commands::Project { action }) => {
+            dispatch_project(action)?;
+            return Ok(());
+        }
+        Some(Commands::Agent { action }) => {
+            dispatch_agent(action)?;
             return Ok(());
         }
         Some(Commands::Memory { action }) => {
@@ -297,6 +308,218 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
         }
     }
     Ok(())
+}
+
+fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
+    match action {
+        ProjectCommand::Inspect { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            print_json(&serde_json::json!({
+                "schemaVersion": crate::development::DEVELOPMENT_SCHEMA_VERSION,
+                "root": workspace.root(),
+                "detection": workspace.detection(),
+                "config": workspace.config(),
+                "revision": workspace.revision(),
+            }))?;
+        }
+        ProjectCommand::Files { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            print_json(&workspace.list_files()?)?;
+        }
+        ProjectCommand::Read { root, path } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let content = workspace.read_file(path)?;
+            print_json(&serde_json::json!({"path": path, "content": content}))?;
+        }
+        ProjectCommand::Edit {
+            root,
+            path,
+            content,
+            input,
+        } => {
+            let content = match (content, input) {
+                (Some(content), None) => content.clone(),
+                (None, Some(input)) => std::fs::read_to_string(input)?,
+                (None, None) => {
+                    return Err("project edit requires --content or --input".into());
+                }
+                (Some(_), Some(_)) => unreachable!("clap prevents conflicting edit inputs"),
+            };
+            let mut workspace = ProjectWorkspace::open(root)?;
+            workspace.open_buffer(path, Actor::local())?;
+            workspace.edit_buffer(path, content, Actor::local())?;
+            print_json(&workspace.save_buffer(path)?)?;
+        }
+        ProjectCommand::Run {
+            root,
+            name,
+            command,
+            wait,
+        } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let command = command
+                .clone()
+                .or_else(|| detected_command(workspace.detection(), name))
+                .ok_or_else(|| format!("no configured command for process {name}"))?;
+            let snapshot = workspace.start_process(name, &command)?;
+            let snapshot = if *wait {
+                wait_for_project_process(&mut workspace, name)?
+            } else {
+                snapshot
+            };
+            print_json(&snapshot)?;
+        }
+        ProjectCommand::Test { root } => {
+            run_detected_command(root, "test", workspace_test_command)?;
+        }
+        ProjectCommand::Lint { root } => {
+            run_detected_command(root, "lint", workspace_lint_command)?;
+        }
+        ProjectCommand::Process { root, action } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            match action {
+                ProjectProcessCommand::List => print_json(&workspace.processes().list())?,
+                ProjectProcessCommand::Start {
+                    name,
+                    command,
+                    wait,
+                } => {
+                    workspace.start_process(name, command)?;
+                    let snapshot = if *wait {
+                        wait_for_project_process(&mut workspace, name)?
+                    } else {
+                        workspace
+                            .processes()
+                            .list()
+                            .into_iter()
+                            .find(|process| process.name == *name)
+                            .ok_or_else(|| format!("process {name} disappeared"))?
+                    };
+                    print_json(&snapshot)?;
+                }
+                ProjectProcessCommand::Stop { name } => {
+                    print_json(&workspace.stop_process(name)?)?;
+                }
+                ProjectProcessCommand::Output { name } => {
+                    print_json(&serde_json::json!({
+                        "name": name,
+                        "output": workspace.processes().output(name)?,
+                    }))?;
+                }
+            }
+        }
+        ProjectCommand::Diff { root } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            print_json(&workspace.diff()?)?;
+        }
+        ProjectCommand::Link {
+            root,
+            entity,
+            path,
+            start_line,
+            end_line,
+            provenance,
+            confidence,
+            detail,
+        } => {
+            let mut workspace = ProjectWorkspace::open(root)?;
+            let provenance = parse_link_provenance(provenance)?;
+            let link = workspace.link_runtime_source(
+                entity,
+                path,
+                *start_line,
+                *end_line,
+                provenance,
+                detail,
+                *confidence,
+                Actor::local(),
+            )?;
+            print_json(&link)?;
+        }
+        ProjectCommand::Timeline { root } => {
+            let workspace = ProjectWorkspace::open(root)?;
+            print_json(&workspace.timeline().events().collect::<Vec<_>>())?;
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
+    let (root, request) = match action {
+        AgentCommand::Hello { root } => (root, HarnessRequest::Hello),
+        AgentCommand::Prompt { root, text } => {
+            (root, HarnessRequest::Prompt { text: text.clone() })
+        }
+        AgentCommand::Steer { root, text } => (root, HarnessRequest::Steer { text: text.clone() }),
+    };
+    let mut workspace = ProjectWorkspace::open(root)?;
+    let mut harness = crate::development::LocalHarness::default();
+    print_json(&harness.handle(&mut workspace, request)?)?;
+    Ok(())
+}
+
+fn detected_command(
+    detection: &crate::development::ProjectDetection,
+    name: &str,
+) -> Option<String> {
+    match name {
+        "dev" => detection.dev_command.clone(),
+        "test" => detection.test_command.clone(),
+        "lint" => detection.lint_command.clone(),
+        "build" => detection.build_command.clone(),
+        _ => None,
+    }
+}
+
+fn workspace_test_command(detection: &crate::development::ProjectDetection) -> Option<String> {
+    detection.test_command.clone()
+}
+
+fn workspace_lint_command(detection: &crate::development::ProjectDetection) -> Option<String> {
+    detection.lint_command.clone()
+}
+
+fn run_detected_command(
+    root: &std::path::Path,
+    name: &str,
+    command: fn(&crate::development::ProjectDetection) -> Option<String>,
+) -> BrowserResult<()> {
+    let mut workspace = ProjectWorkspace::open(root)?;
+    let command = command(workspace.detection())
+        .ok_or_else(|| format!("project has no detected {name} command"))?;
+    workspace.start_process(name, &command)?;
+    print_json(&wait_for_project_process(&mut workspace, name)?)?;
+    Ok(())
+}
+
+fn wait_for_project_process(
+    workspace: &mut ProjectWorkspace,
+    name: &str,
+) -> BrowserResult<ProcessSnapshot> {
+    loop {
+        let snapshots = workspace.processes().poll()?;
+        let snapshot = snapshots
+            .into_iter()
+            .find(|process| process.name == name)
+            .ok_or_else(|| format!("process {name} disappeared"))?;
+        if !matches!(snapshot.state, crate::development::ProcessState::Running) {
+            return Ok(snapshot);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn parse_link_provenance(value: &str) -> BrowserResult<LinkProvenance> {
+    match value {
+        "explicit-marker" => Ok(LinkProvenance::ExplicitMarker),
+        "runtime-observation" => Ok(LinkProvenance::RuntimeObservation),
+        "static-analysis" => Ok(LinkProvenance::StaticAnalysis),
+        "inferred" => Ok(LinkProvenance::Inferred),
+        _ => Err(
+            "provenance must be explicit-marker, runtime-observation, static-analysis, or inferred"
+                .into(),
+        ),
+    }
 }
 
 async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> BrowserResult<()> {
@@ -1672,6 +1895,8 @@ async fn run_command(
         | Commands::Knowledge { .. }
         | Commands::Snapshot { .. }
         | Commands::Workspace { .. }
+        | Commands::Project { .. }
+        | Commands::Agent { .. }
         | Commands::Memory { .. }
         | Commands::Surfaces { .. }
         | Commands::Backend { .. }

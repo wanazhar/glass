@@ -198,7 +198,7 @@ impl LocalHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf};
+    use std::fs;
 
     #[test]
     fn local_harness_proves_prompt_tool_result_and_steer_events() {
@@ -243,6 +243,6 @@ mod tests {
                 .unwrap()[0],
             HarnessEvent::State { .. }
         ));
-        let _ = fs::remove_dir_all(PathBuf::from(root));
+        let _ = fs::remove_dir_all(root);
     }
 }

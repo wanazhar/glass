@@ -9,7 +9,7 @@ const iterations = Number.isInteger(requestedIterations) && requestedIterations 
   ? requestedIterations
   : 50;
 const executablePath = process.env.CHROME_PATH;
-const fixture = readFileSync(new URL("../tests/fixtures/basic.html", import.meta.url), "utf8");
+const fixture = readFileSync(new URL("../crates/glass-browser/tests/fixtures/basic.html", import.meta.url), "utf8");
 const dataUrl = "data:text/html;base64," + Buffer.from(fixture).toString("base64");
 
 const startupStarted = performance.now();

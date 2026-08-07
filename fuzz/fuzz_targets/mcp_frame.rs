@@ -10,5 +10,5 @@ fuzz_target!(|data: &[u8]| {
             .build()
             .unwrap()
     });
-    runtime.block_on(glass::mcp::server::fuzz_frame(data));
+    runtime.block_on(glass_browser::mcp::server::fuzz_frame(data));
 });

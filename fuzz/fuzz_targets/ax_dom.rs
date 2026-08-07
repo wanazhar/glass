@@ -1,5 +1,5 @@
 #![no_main]
-use glass::browser::dom::{parse_accessibility_tree, parse_dom_tree, project_compact_accessibility};
+use glass_browser::browser::dom::{parse_accessibility_tree, parse_dom_tree, project_compact_accessibility};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

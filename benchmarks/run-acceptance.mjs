@@ -10,7 +10,7 @@ import { comparativeGates } from "./acceptance-gates.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const contract = readJson(path.join(root, "benchmarks/acceptance-v1.json"));
-const corpus = readJson(path.join(root, "benchmarks/scenarios/v1.json"));
+const corpus = readJson(path.join(root, "crates/glass-browser/benchmarks/scenarios/v1.json"));
 const outputDir = path.resolve(process.env.GLASS_ACCEPTANCE_OUTPUT_DIR ?? path.join(root, "benchmarks/results/compare-018"));
 const rawDir = path.join(outputDir, "raw");
 fs.mkdirSync(rawDir, { recursive: true });

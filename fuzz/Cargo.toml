@@ -13,7 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
-glass = { package = "glass-browser", path = "..", features = ["fuzzing"] }
+glass_browser = { package = "glass-browser", path = "../crates/glass-browser", features = ["fuzzing"] }
 
 [[bin]]
 name = "mcp_frame"

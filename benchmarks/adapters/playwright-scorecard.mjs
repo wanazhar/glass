@@ -12,7 +12,7 @@ const corpus = JSON.parse(
   fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"),
 );
 const fixture = fs.readFileSync(
-  new URL("../../tests/fixtures/scorecard.html", import.meta.url),
+  new URL("../../crates/glass-browser/tests/fixtures/scorecard.html", import.meta.url),
   "utf8",
 );
 const iterations = positiveInteger(

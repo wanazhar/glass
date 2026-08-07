@@ -11,8 +11,9 @@ from typing import NoReturn
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS_PATH = ROOT / "tests/fixtures/web-ir/corpus-v1.json"
-SCENARIO_PATH = ROOT / "benchmarks/scenarios/web-ir-v1.json"
+BROWSER_ROOT = ROOT / "crates/glass-browser"
+CORPUS_PATH = ROOT / "crates/glass-browser/tests/fixtures/web-ir/corpus-v1.json"
+SCENARIO_PATH = ROOT / "crates/glass-browser/benchmarks/scenarios/web-ir-v1.json"
 ALLOWED_COVERAGE = {"strong", "partial", "opaque"}
 ALLOWED_HINT_DIAGNOSTIC_STATUSES = {"validated", "emitted", "unmatchedParent"}
 ALLOWED_RISKS = {
@@ -167,9 +168,9 @@ def main() -> None:
         if any(value not in ALLOWED_RISKS for value in risk_hints):
             fail(f"{path}.riskHints contains an unknown risk")
 
-        resolved = (ROOT / fixture_path).resolve()
+        resolved = (BROWSER_ROOT / fixture_path).resolve()
         try:
-            resolved.relative_to(ROOT / "tests/fixtures/web-ir")
+            resolved.relative_to(ROOT / "crates/glass-browser/tests/fixtures/web-ir")
         except ValueError:
             fail(f"{path}.path must stay under tests/fixtures/web-ir")
         if resolved.suffix != ".html":

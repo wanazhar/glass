@@ -43,7 +43,7 @@ def main() -> None:
     parser.add_argument(
         "--corpus",
         type=pathlib.Path,
-        default=pathlib.Path("benchmarks/scenarios/knowledge-v1.json"),
+        default=pathlib.Path("crates/glass-browser/benchmarks/scenarios/knowledge-v1.json"),
     )
     args = parser.parse_args()
     if args.binding_kind == "packaged_artifact" and not args.target:

@@ -96,14 +96,32 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 
       - name: Validate the crate packages
+        shell: bash
         run: |
-          cargo package --package glass-browser --locked --no-verify
-          cargo package --package glass-dev --locked --no-verify
+          set -euo pipefail
+          cargo package --package glass-browser --locked
+          cargo package --package glass-dev --locked --no-verify \
+            --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+          python3 scripts/check-packaged-dependency.py "target/package/glass-dev-${version}.crate" --version "$version"
+
+      - name: Smoke-test packaged glass-browser installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-browser"))')"
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          mkdir -p "$root/source"
+          tar -xzf "target/package/glass-browser-${version}.crate" -C "$root/source"
+          cargo install --path "$root/source/glass-browser-${version}" --locked --root "$root/install"
+          "$root/install/bin/glass-browser" --help >/dev/null
 
       - name: Dry-run crates.io publication
         run: |
           cargo publish --package glass-browser --locked --dry-run --no-verify
-          cargo publish --package glass-dev --locked --dry-run --no-verify
+          cargo publish --package glass-dev --locked --dry-run --no-verify \
+            --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 
       - name: Check crates.io publication state
         id: publication
@@ -162,9 +180,35 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          set -euo pipefail
           crate_version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+          for attempt in $(seq 1 30); do
+            browser_status="$(curl --silent --show-error --user-agent 'glass-browser-release-ci (+https://github.com/wanazhar/glass)' --output /dev/null --write-out '%{http_code}' "https://crates.io/api/v1/crates/glass-browser/${crate_version}")"
+            [ "$browser_status" = "200" ] && break
+            if [ "$attempt" = "30" ]; then echo "glass-browser ${crate_version} did not become visible" >&2; exit 1; fi
+            sleep 10
+          done
           status="$(curl --silent --show-error --user-agent 'glass-browser-release-ci (+https://github.com/wanazhar/glass)' --output /dev/null --write-out '%{http_code}' "https://crates.io/api/v1/crates/glass-dev/${crate_version}")"
           if [ "$status" = "404" ]; then cargo publish --package glass-dev --locked; else echo "glass-dev ${crate_version} already published"; fi
+
+      - name: Smoke-test registry installations
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+          for crate in glass-browser glass-dev; do
+            for attempt in $(seq 1 30); do
+              cargo search "$crate" --limit 1 | grep -F "\"$version\"" && break
+              if [ "$attempt" = "30" ]; then echo "$crate $version did not become searchable" >&2; exit 1; fi
+              sleep 10
+            done
+          done
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          cargo install glass-browser --version "=$version" --locked --root "$root/browser"
+          cargo install glass-dev --version "=$version" --locked --root "$root/dev"
+          "$root/browser/bin/glass-browser" --help >/dev/null
+          "$root/dev/bin/glass" --help >/dev/null
 
       - name: Confirm existing crates.io publication
         if: needs.validate.outputs.already_published == 'true'

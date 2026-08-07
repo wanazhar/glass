@@ -9,8 +9,9 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SCENARIO_PATH = ROOT / "tests/fixtures/reliability-capability-suite-v1.json"
-FIXTURE_PATH = ROOT / "tests/fixtures/reliability-fixture-v1.json"
+BROWSER_ROOT = ROOT / "crates/glass-browser"
+SCENARIO_PATH = ROOT / "crates/glass-browser/tests/fixtures/reliability-capability-suite-v1.json"
+FIXTURE_PATH = ROOT / "crates/glass-browser/tests/fixtures/reliability-fixture-v1.json"
 TARGETS = {"linux-x86-64", "linux-arm64", "macos-x86-64", "macos-arm64"}
 EXPECTED_SCENARIOS = {
     "targets-reordered-before-action",
@@ -63,7 +64,7 @@ def main() -> None:
         fail("fixture manifest has an unexpected identity")
     if set(fixture.get("oracles", [])) != {"snapshot", "submitSideEffectCount"}:
         fail("fixture must expose both independent snapshot and side-effect oracles")
-    entrypoint = ROOT / fixture.get("entrypoint", "")
+    entrypoint = BROWSER_ROOT / fixture.get("entrypoint", "")
     if not entrypoint.is_file():
         fail(f"fixture entrypoint is missing: {entrypoint}")
 
@@ -85,7 +86,7 @@ def main() -> None:
         for step in scenario["steps"]:
             workflow = step.get("runWorkflow")
             if workflow:
-                workflow_path = ROOT / "tests/fixtures" / workflow
+                workflow_path = ROOT / "crates/glass-browser/tests/fixtures" / workflow
                 if not workflow_path.is_file():
                     fail(f"{scenario_id} references missing workflow {workflow}")
                 try:

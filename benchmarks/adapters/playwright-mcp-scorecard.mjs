@@ -11,7 +11,7 @@ class TransportError extends Error {}
 class UnsupportedScenario extends Error {}
 
 const corpus = JSON.parse(fs.readFileSync(new URL("../scenarios/v1.json", import.meta.url), "utf8"));
-const fixture = fs.readFileSync(new URL("../../tests/fixtures/scorecard.html", import.meta.url), "utf8");
+const fixture = fs.readFileSync(new URL("../../crates/glass-browser/tests/fixtures/scorecard.html", import.meta.url), "utf8");
 const iterations = positiveInteger("GLASS_SCORECARD_ITERATIONS", process.env.GLASS_SCORECARD_ITERATIONS ?? "10");
 const chromePath = requiredEnv("CHROME_PATH");
 const command = requiredEnv("PLAYWRIGHT_MCP_COMMAND");

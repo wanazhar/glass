@@ -84,7 +84,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 -m http.server 18765 --directory tests/fixtures >"$smoke_root/server.log" 2>&1 &
+python3 -m http.server 18765 --directory crates/glass-browser/tests/fixtures >"$smoke_root/server.log" 2>&1 &
 server_pid=$!
 sleep 1
 

@@ -1,5 +1,5 @@
 #![no_main]
-use glass::browser::session::{Locator, WaitCondition};
+use glass_browser::browser::session::{Locator, WaitCondition};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

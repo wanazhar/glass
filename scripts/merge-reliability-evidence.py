@@ -32,7 +32,7 @@ def main() -> None:
 
     output = pathlib.Path(sys.argv[1])
     evidence_root = pathlib.Path(sys.argv[2])
-    suite_path = pathlib.Path("tests/fixtures/reliability-capability-suite-v1.json")
+    suite_path = pathlib.Path("crates/glass-browser/tests/fixtures/reliability-capability-suite-v1.json")
     scenarios = load_json(suite_path)
     if not isinstance(scenarios, list):
         fail("capability suite is not a JSON array")

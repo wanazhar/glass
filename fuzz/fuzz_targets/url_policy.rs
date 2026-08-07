@@ -1,5 +1,5 @@
 #![no_main]
-use glass::browser::{policy::BrowserPolicy, session::normalize_url};
+use glass_browser::browser::{policy::BrowserPolicy, session::normalize_url};
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 

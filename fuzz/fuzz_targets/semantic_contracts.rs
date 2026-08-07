@@ -1,5 +1,5 @@
 #![no_main]
-use glass::{GlassTask, GlassWebIrV1, TaskExecutionPlan, compile_task};
+use glass_browser::{GlassTask, GlassWebIrV1, TaskExecutionPlan, compile_task};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 

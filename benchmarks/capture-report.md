@@ -80,7 +80,7 @@ Run:
       GLASS_CAPTURE_WARMUP=10 \
       cargo run --release --example capture_benchmark
 
-The fixed local page is `tests/fixtures/basic.html`. Results below are 50
+The fixed local page is `crates/glass-browser/tests/fixtures/basic.html`. Results below are 50
 captures after 10 warmups.
 
 | Mode | Mean ms | FPS | Encoded bytes | Effect versus PNG |

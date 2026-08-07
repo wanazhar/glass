@@ -1,79 +1,18 @@
-[package]
-name = "glass-browser"
+[workspace]
+resolver = "3"
+members = [
+    "crates/glass-browser",
+    "crates/glass-dev",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
 version = "0.3.2"
 edition = "2024"
 rust-version = "1.88"
-description = "Local browser intelligence runtime with semantic memory, verified workflows, multi-surface understanding, CLI, TUI, MCP, and Rust APIs"
 license = "MIT"
-readme = "README.md"
-documentation = "https://docs.rs/glass-browser"
-homepage = "https://github.com/wanazhar/glass"
 repository = "https://github.com/wanazhar/glass"
-autobins = false
-keywords = ["browser-automation", "chrome", "cdp", "mcp", "browser-control"]
-categories = ["api-bindings", "command-line-utilities", "development-tools::testing"]
-
-exclude = [
-  ".github/",
-  "AGENTS.md",
-  "benchmarks/",
-  "clients/",
-  "deny.toml",
-  "docs/plan/",
-  "fuzz/",
-  "scripts/",
-]
-
-[workspace]
-members = [".", "crates/glass-dev"]
-exclude = ["fuzz"]
-resolver = "2"
-
-[lib]
-name = "glass"
-path = "src/lib.rs"
-
-[package.metadata.docs.rs]
-all-features = true
-
-[features]
-default = []
-visual-compare = ["dep:png"]
-fuzzing = []
-
-[dependencies]
-base64 = "0.22"
-tokio = {
-    version = "1",
-    features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"],
-}
-tokio-tungstenite = "0.26"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
-crossterm = "0.29"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-url = "2"
-dirs = "6"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = "0.4"
-ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
-futures-util = "0.3"
-libc = "0.2"
-fs2 = "0.4"
-imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
-sha2 = "0.10"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
-png = { version = "0.17", optional = true }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-portable-pty = "0.9"
-toml = "0.9"
-
-[dev-dependencies]
-base64-simd = "0.8"
+homepage = "https://github.com/wanazhar/glass"
 
 [profile.release]
 opt-level = "z"

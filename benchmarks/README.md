@@ -455,10 +455,10 @@ The scorecard is published as a versioned, reproducible package:
 
 | Artifact | Location | Description |
 |----------|----------|-------------|
-| Scenario definitions | `benchmarks/scenarios/v1.json` | Versioned corpus with expected outcomes |
+| Scenario definitions | `crates/glass-browser/benchmarks/scenarios/v1.json` | Versioned corpus with expected outcomes |
 | Report schema | `benchmarks/report-schema.json` | JSON Schema for scorecard reports |
 | Methodology | This document | Reproducibility requirements |
-| Fixture | `tests/fixtures/scorecard.html` | Standalone HTML fixture |
+| Fixture | `crates/glass-browser/tests/fixtures/scorecard.html` | Standalone HTML fixture |
 
 Third parties can re-run and reproduce the structure by building Glass from
 source and running the scorecard example. No credentials or external services

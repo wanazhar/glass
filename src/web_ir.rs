@@ -8,7 +8,9 @@ use crate::extraction::{
     EvidenceFact, EvidenceQuality, EvidenceRelationshipHint, EvidenceSource, ExtractionEvidence,
     ExtractionEvidenceLimits, ExtractionScope,
 };
-use crate::surfaces::SurfaceSet;
+use crate::surfaces::{
+    CoverageLevel, SurfaceCoverage, SurfaceEvidenceSource, SurfaceKind, SurfaceSet,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -152,6 +154,15 @@ pub struct WebIrEntityDetails {
     pub sensitivity: WebIrSensitivity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_stability_key: Option<String>,
+    /// Surface metadata is retained on the revision-local boundary entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_kind: Option<SurfaceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_coverage: Option<SurfaceCoverage>,
     #[serde(default)]
     pub truncated: bool,
 }
@@ -945,6 +956,36 @@ pub fn reconcile_evidence(
     evidence
         .validate_relationship_hints()
         .map_err(|error| WebIrValidationError::new(error.path, error.reason))?;
+    if let Some(surface_set) = &evidence.surface_set {
+        surface_set
+            .validate()
+            .map_err(|error| WebIrValidationError::new("surfaceSet", error.to_string()))?;
+        if surface_set
+            .surfaces
+            .iter()
+            .any(|surface| surface.revision.0 != evidence.revision)
+        {
+            return Err(WebIrValidationError::new(
+                "surfaceSet.surfaces.revision",
+                "surface revisions must match the Web IR revision",
+            ));
+        }
+    }
+    let opaque_surface_count = evidence
+        .surface_set
+        .as_ref()
+        .map(|surface_set| {
+            surface_set
+                .surfaces
+                .iter()
+                .filter(|surface| {
+                    matches!(surface.kind, SurfaceKind::Unknown | SurfaceKind::Opaque)
+                })
+                .count() as u32
+        })
+        .unwrap_or_default();
+    let mut coverage = evidence.coverage.clone();
+    coverage.opaque_regions = coverage.opaque_regions.max(opaque_surface_count);
     let mut relationship_hint_diagnostics = evidence
         .facts
         .iter()
@@ -1068,7 +1109,7 @@ pub fn reconcile_evidence(
         }
     }
 
-    for index in 0..evidence.coverage.opaque_regions {
+    for index in 0..coverage.opaque_regions {
         let id = format!("opaque_region_{index}");
         entities.push(WebIrEntity {
             id: id.clone(),
@@ -1096,6 +1137,12 @@ pub fn reconcile_evidence(
         entity_details.insert(id, details);
     }
 
+    let surface_entity_ids = materialize_surface_entities(
+        evidence.surface_set.as_ref(),
+        &mut entities,
+        &mut entity_details,
+        &mut diagnostics,
+    )?;
     let mut relationships = entities
         .iter()
         .filter(|entity| entity.kind != WebIrEntityKind::Page)
@@ -1105,6 +1152,26 @@ pub fn reconcile_evidence(
             kind: WebIrRelationshipKind::Contains,
         })
         .collect::<Vec<_>>();
+    if let Some(surface_set) = &evidence.surface_set {
+        for surface in &surface_set.surfaces {
+            let Some(parent_surface_id) = surface.parent_surface_id.as_ref() else {
+                continue;
+            };
+            let Some(from) = surface_entity_ids.get(parent_surface_id.as_str()) else {
+                continue;
+            };
+            let Some(to) = surface_entity_ids.get(surface.surface_id.as_str()) else {
+                continue;
+            };
+            if from != to {
+                relationships.push(WebIrRelationship {
+                    from: from.clone(),
+                    to: to.clone(),
+                    kind: WebIrRelationshipKind::Contains,
+                });
+            }
+        }
+    }
     for (fact_index, parent_role, child_id, child_kind, relationship_hint) in parent_links {
         let Some(parent_kind) = parent_entity_kind(&parent_role) else {
             if relationship_hint.is_some() {
@@ -1196,7 +1263,7 @@ pub fn reconcile_evidence(
         entities,
         relationships,
         entity_details,
-        coverage: evidence.coverage.clone(),
+        coverage,
         limits: evidence.limits.clone(),
         surface_set: evidence.surface_set.clone(),
         diagnostics: diagnostics.into_iter().collect(),
@@ -1204,6 +1271,200 @@ pub fn reconcile_evidence(
     };
     draft.validate()?;
     Ok(draft)
+}
+
+fn surface_entity_kind(kind: &SurfaceKind) -> WebIrEntityKind {
+    match kind {
+        SurfaceKind::Document => WebIrEntityKind::Page,
+        SurfaceKind::FrameDocument => WebIrEntityKind::Frame,
+        SurfaceKind::ShadowDocument => WebIrEntityKind::ShadowRoot,
+        SurfaceKind::Unknown | SurfaceKind::Opaque => WebIrEntityKind::OpaqueRegion,
+        SurfaceKind::BrowserNative => WebIrEntityKind::Probe,
+        SurfaceKind::Accessibility
+        | SurfaceKind::Svg
+        | SurfaceKind::Canvas2d
+        | SurfaceKind::Webgl
+        | SurfaceKind::Webgpu
+        | SurfaceKind::EmbeddedDocument
+        | SurfaceKind::Pdf
+        | SurfaceKind::Media
+        | SurfaceKind::Terminal
+        | SurfaceKind::RemoteApplication
+        | SurfaceKind::ExtensionDefined { .. } => WebIrEntityKind::Probe,
+    }
+}
+
+fn surface_quality(surface: &crate::surfaces::Surface) -> EvidenceQuality {
+    let level = surface.coverage.structural.max(surface.coverage.semantic);
+    match level {
+        CoverageLevel::Opaque => EvidenceQuality::Opaque,
+        CoverageLevel::Partial => EvidenceQuality::Partial,
+        CoverageLevel::Strong => EvidenceQuality::Strong,
+        CoverageLevel::Complete => EvidenceQuality::Confirmed,
+    }
+}
+
+fn surface_evidence_sources(surface: &crate::surfaces::Surface) -> Vec<EvidenceSource> {
+    let mut sources = surface
+        .evidence
+        .iter()
+        .map(|evidence| match evidence.source {
+            SurfaceEvidenceSource::Dom => EvidenceSource::Dom,
+            SurfaceEvidenceSource::Accessibility => EvidenceSource::Accessibility,
+            SurfaceEvidenceSource::Layout => EvidenceSource::Layout,
+            SurfaceEvidenceSource::CanvasDetection => EvidenceSource::CanvasDetection,
+            SurfaceEvidenceSource::Svg => EvidenceSource::Svg,
+            SurfaceEvidenceSource::Frame => EvidenceSource::Frames,
+            SurfaceEvidenceSource::ShadowDom => EvidenceSource::ShadowDom,
+            SurfaceEvidenceSource::EmbeddedDocument => EvidenceSource::EmbeddedDocument,
+            SurfaceEvidenceSource::Pdf => EvidenceSource::Pdf,
+            SurfaceEvidenceSource::MediaMetadata => EvidenceSource::MediaMetadata,
+            SurfaceEvidenceSource::BrowserNative => EvidenceSource::BrowserNative,
+            SurfaceEvidenceSource::Bridge | SurfaceEvidenceSource::Extension => {
+                EvidenceSource::Bridge
+            }
+            SurfaceEvidenceSource::TerminalProtocol
+            | SurfaceEvidenceSource::RemoteStream
+            | SurfaceEvidenceSource::Memory
+            | SurfaceEvidenceSource::Visual => EvidenceSource::BoundedProbe,
+        })
+        .collect::<Vec<_>>();
+    sources.sort();
+    sources.dedup();
+    sources
+}
+
+fn attach_surface_details(details: &mut WebIrEntityDetails, surface: &crate::surfaces::Surface) {
+    details.surface_id = Some(surface.surface_id.as_str().to_owned());
+    details.surface_parent_id = surface
+        .parent_surface_id
+        .as_ref()
+        .map(|parent| parent.as_str().to_owned());
+    details.surface_kind = Some(surface.kind.clone());
+    details.surface_coverage = Some(surface.coverage);
+    details.semantic_stability_key = Some(format!("surface:{}", surface.surface_id.as_str()));
+    details.scope = match &surface.kind {
+        SurfaceKind::FrameDocument => WebIrScopeKind::Frame,
+        SurfaceKind::ShadowDocument => WebIrScopeKind::ShadowRoot,
+        _ => WebIrScopeKind::Document,
+    };
+    details.scope_id = match &surface.kind {
+        SurfaceKind::FrameDocument | SurfaceKind::ShadowDocument => {
+            Some(surface.surface_id.as_str().to_owned())
+        }
+        _ => None,
+    };
+    if !matches!(&surface.kind, SurfaceKind::Document) {
+        // A boundary is observational until semantic evidence and an explicit
+        // action contract are present; coordinate-only surfaces stay inert.
+        details.supported_actions.clear();
+    }
+}
+
+fn surface_diagnostic_text(
+    surface_id: &str,
+    diagnostic: &crate::surfaces::SurfaceDiagnostic,
+) -> String {
+    let value = format!(
+        "surface[{surface_id}] {}: {}",
+        diagnostic.code, diagnostic.message
+    );
+    if value.len() <= MAX_WEB_IR_DIAGNOSTIC_BYTES {
+        return value;
+    }
+    let mut end = MAX_WEB_IR_DIAGNOSTIC_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn materialize_surface_entities(
+    surface_set: Option<&SurfaceSet>,
+    entities: &mut Vec<WebIrEntity>,
+    entity_details: &mut BTreeMap<String, WebIrEntityDetails>,
+    diagnostics: &mut BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, WebIrValidationError> {
+    let Some(surface_set) = surface_set else {
+        return Ok(BTreeMap::new());
+    };
+    let mut surfaces = surface_set.surfaces.iter().collect::<Vec<_>>();
+    surfaces.sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
+    let mut ids = entities
+        .iter()
+        .map(|entity| entity.id.clone())
+        .collect::<BTreeSet<_>>();
+    let opaque_ids = entities
+        .iter()
+        .filter(|entity| entity.kind == WebIrEntityKind::OpaqueRegion)
+        .map(|entity| entity.id.clone())
+        .collect::<Vec<_>>();
+    let mut opaque_index = 0;
+    let mut surface_entity_ids = BTreeMap::new();
+    for surface in surfaces {
+        let kind = surface_entity_kind(&surface.kind);
+        let id = if kind == WebIrEntityKind::Page {
+            "page".to_owned()
+        } else if kind == WebIrEntityKind::OpaqueRegion {
+            let id = opaque_ids.get(opaque_index).cloned().unwrap_or_else(|| {
+                let id = format!("opaque_region_{opaque_index}");
+                entities.push(WebIrEntity {
+                    id: id.clone(),
+                    kind: WebIrEntityKind::OpaqueRegion,
+                    role: None,
+                    name: None,
+                    quality: EvidenceQuality::Opaque,
+                    evidence_sources: Vec::new(),
+                });
+                entity_details.insert(
+                    id.clone(),
+                    WebIrEntityDetails {
+                        truncated: true,
+                        ..WebIrEntityDetails::default()
+                    },
+                );
+                id
+            });
+            opaque_index += 1;
+            id
+        } else {
+            let base = format!("surface_{}", slug(Some(surface.surface_id.as_str())));
+            let mut id = base.clone();
+            let mut suffix = 0;
+            while !ids.insert(id.clone()) {
+                suffix += 1;
+                id = format!("{base}_{suffix}");
+            }
+            id
+        };
+        if kind == WebIrEntityKind::Page {
+            ids.insert(id.clone());
+        }
+        if kind != WebIrEntityKind::Page && kind != WebIrEntityKind::OpaqueRegion {
+            let mut sources = surface_evidence_sources(surface);
+            if sources.is_empty() {
+                sources.push(EvidenceSource::BoundedProbe);
+            }
+            entities.push(WebIrEntity {
+                id: id.clone(),
+                kind,
+                role: Some("surface".into()),
+                name: Some(surface.surface_id.as_str().to_owned()),
+                quality: surface_quality(surface),
+                evidence_sources: sources,
+            });
+        }
+        let details = entity_details.entry(id.clone()).or_default();
+        attach_surface_details(details, surface);
+        for diagnostic in &surface.diagnostics {
+            diagnostics.insert(surface_diagnostic_text(
+                surface.surface_id.as_str(),
+                diagnostic,
+            ));
+        }
+        surface_entity_ids.insert(surface.surface_id.as_str().to_owned(), id);
+    }
+    Ok(surface_entity_ids)
 }
 
 /// A machine-readable Glass Web IR validation failure.
@@ -1351,7 +1612,34 @@ fn validate_entity_details(
         &format!("entityDetails.{entity_id}.semanticStabilityKey"),
         details.semantic_stability_key.as_deref(),
         512,
-    )
+    )?;
+    validate_optional_text(
+        &format!("entityDetails.{entity_id}.surfaceId"),
+        details.surface_id.as_deref(),
+        128,
+    )?;
+    validate_optional_text(
+        &format!("entityDetails.{entity_id}.surfaceParentId"),
+        details.surface_parent_id.as_deref(),
+        128,
+    )?;
+    if details.surface_id.is_some()
+        && (details.surface_kind.is_none() || details.surface_coverage.is_none())
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.surface"),
+            "surface metadata requires kind and coverage",
+        ));
+    }
+    if details.surface_id.is_none()
+        && (details.surface_kind.is_some() || details.surface_coverage.is_some())
+    {
+        return Err(WebIrValidationError::new(
+            format!("entityDetails.{entity_id}.surface"),
+            "surface kind and coverage require a surface ID",
+        ));
+    }
+    Ok(())
 }
 
 fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrEntityDetails {
@@ -1440,6 +1728,10 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
             fact.role.as_deref(),
             fact.name.as_deref(),
         )),
+        surface_id: None,
+        surface_parent_id: None,
+        surface_kind: None,
+        surface_coverage: None,
         truncated: false,
     }
 }

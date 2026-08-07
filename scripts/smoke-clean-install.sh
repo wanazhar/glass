@@ -12,7 +12,7 @@ if [[ -z "$previous_version" ]]; then
     exit 2
 fi
 
-version="$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1 \
+version="$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --locked --format-version 1 \
     | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-browser"))')"
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/glass-clean-install.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT

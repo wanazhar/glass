@@ -5,6 +5,30 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1-rc.1] - 2026-08-06
+
+This is a local release candidate only: it is not tagged, pushed, or published
+to crates.io or GitHub.
+
+### Validation scope
+
+- Rust, Python, and TypeScript package metadata are synchronized for the
+  `0.3.1-rc.1` candidate (Python uses its PEP 440 spelling, `0.3.1rc1`).
+- Version-sync, feature-parity, and release-documentation validators pass
+  against the local candidate checkout.
+- The four-pillar and Experience Layer implementation evidence remains
+  bounded by the issue #31 contracts and the target-specific certification
+  matrix.
+
+### Known issue gates
+
+- No tag, push, crates.io publication, or GitHub Release is part of this
+  candidate.
+- Full release publication gates, native target certification, and any
+  remaining issue #31 integration checks must pass before a public release
+  claim is made.
+
+
 ## [0.3.0] - 2026-08-06
 - Promoted bounded extraction reconciliation to stable Glass Web IR v1 with
   strict entity-detail invariants, canonical serialization, revision diffs,

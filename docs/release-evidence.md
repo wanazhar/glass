@@ -1,5 +1,28 @@
 # Release evidence
 
+## 0.3.1-rc.1 local candidate
+
+This is a local release candidate only. It is not tagged, pushed, published,
+or represented by a crates.io package or GitHub Release. The published
+`glass-browser 0.3.0` evidence below remains the current release record.
+
+### Completed validation scope
+
+- Rust, Python, and TypeScript package metadata are synchronized at the
+  `0.3.1-rc.1` candidate (with Python's PEP 440 spelling `0.3.1rc1`).
+- `check-version-sync.py`, `check-feature-parity.py`, and
+  `check-release-documentation.py` pass against this checkout.
+- Candidate evidence records the bounded four-pillar and Experience Layer
+  implementation scope without extending target certification claims.
+
+### Known issue gates
+
+- No tag, push, crates.io publication, or GitHub Release operation has been
+  performed for this candidate.
+- Full release publication approval, native target certification, package
+  dry-runs, and remaining issue #31 integration gates are still required
+  before changing the published/current release record.
+
 The 0.3.0 release follows the crates-only distribution boundary.
 The `glass-browser` 0.3.0 release has a source-only GitHub Release with
 generated notes. The project does not publish native GitHub release binaries,

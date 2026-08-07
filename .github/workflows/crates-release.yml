@@ -40,8 +40,20 @@ jobs:
         shell: bash
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
-          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
+          if [[ "$tag_version" == *-* ]]; then
+            echo "Refusing prerelease tag ${GITHUB_REF_NAME}; publish only stable vX.Y.Z tags." >&2
+            exit 1
+          fi
+          crate_version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
           test "$tag_version" = "$crate_version"
+      - name: Reject prerelease package versions
+        shell: bash
+        run: |
+          crate_version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
+          if [[ "$crate_version" == *-* ]]; then
+            echo "Refusing to publish prerelease package ${crate_version}; use a stable release checkout." >&2
+            exit 1
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -86,7 +98,7 @@ jobs:
           CRATE_NAME: glass-browser
         run: |
           set -euo pipefail
-          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
+          crate_version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
           response_file="$RUNNER_TEMP/crates-release-version.json"
           status="$(curl --silent --show-error --user-agent 'glass-browser-release-ci (+https://github.com/wanazhar/glass)' --output "$response_file" --write-out '%{http_code}' "https://crates.io/api/v1/crates/${CRATE_NAME}/${crate_version}")"
 
@@ -152,7 +164,7 @@ jobs:
             exit 0
           fi
 
-          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
+          crate_version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "glass-browser"))')"
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \

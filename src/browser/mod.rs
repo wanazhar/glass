@@ -12,9 +12,13 @@ pub mod mouse;
 pub mod policy;
 /// Chrome user-data directory profiles for persistent sessions.
 pub mod profile;
+/// Browser-free deterministic backend for semantic protocol conformance.
+pub mod proof_backend;
 /// Central browser session orchestrating all CDP operations.
 pub mod session;
 pub(crate) use backend_adapter::CdpSessionBackend;
+/// Browser-free deterministic backend used for semantic conformance tests.
+pub use proof_backend::ProofBackend;
 
 // Re-export key session types to the browser module level.
 

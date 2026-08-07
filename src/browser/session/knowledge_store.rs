@@ -225,9 +225,15 @@ impl KnowledgeStore {
             candidate.selected = true;
             selected_record_ids.push(candidate.record_id.clone());
         }
+        let rejected_record_ids = candidates
+            .iter()
+            .filter(|candidate| candidate.rejection.is_some())
+            .map(|candidate| candidate.record_id.clone())
+            .collect();
         KnowledgeRetrievalReport {
             candidates,
             selected_record_ids,
+            rejected_record_ids,
             embeddings_used: false,
         }
     }
@@ -753,8 +759,9 @@ mod tests {
     use super::super::knowledge::{
         KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
         KnowledgeCurrentValidation, KnowledgeEvidenceQuality, KnowledgeMemoryInfluence,
-        KnowledgePortability, KnowledgeRetrievalExplanation, KnowledgeSurfaceCoverage,
-        KnowledgeSurfaceKind, KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel,
+        KnowledgePortability, KnowledgeRejectionReason, KnowledgeRetrievalExplanation,
+        KnowledgeSurfaceCoverage, KnowledgeSurfaceKind, KnowledgeSurfaceProvenance,
+        KnowledgeUnderstandingLevel,
     };
     use super::*;
     use crate::browser::session::{
@@ -916,6 +923,76 @@ mod tests {
         let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
     }
 
+    #[test]
+    fn retrieval_report_is_explicitly_bounded_and_auditable_without_embeddings() {
+        let path = test_path();
+        let mut store = KnowledgeStore::open(&path).unwrap();
+        store
+            .upsert(record("eligible", KnowledgeConfidence::Observed, "01"))
+            .unwrap();
+        let mut stale = record("stale", KnowledgeConfidence::Stale, "01");
+        stale.retrieval.current_validation = KnowledgeCurrentValidation {
+            status: super::super::knowledge::KnowledgeCurrentValidationStatus::Stale,
+            evidence_quality: KnowledgeEvidenceQuality::None,
+            current_revision: None,
+            validated_at: None,
+        };
+        store.upsert(stale).unwrap();
+
+        let context = KnowledgeLookupContext {
+            origin: "https://example.test".into(),
+            path: "/docs/start".into(),
+            profile_scope: KnowledgeProfileScope::Anonymous,
+            profile_key: None,
+            locale: None,
+            tenant_key: None,
+            browser_family: "chromium".into(),
+            browser_version: None,
+            glass_schema_version: 1,
+            policy_preset: "balanced".into(),
+            landmarks: vec!["documentation".into()],
+            now_epoch_seconds: chrono::DateTime::parse_from_rfc3339("2026-07-27T00:00:02Z")
+                .unwrap()
+                .timestamp(),
+            current_revision: 1,
+            surface_kind: Some(KnowledgeSurfaceKind::Document),
+            backend_kind: Some(KnowledgeBackendKind::Cdp),
+            backend_capabilities: vec![
+                KnowledgeBackendCapability::SemanticExtraction,
+                KnowledgeBackendCapability::Verification,
+            ],
+            current_extension_id: None,
+            workspace_id: None,
+            workspace_generation: None,
+        };
+        let report = store.retrieve(
+            &context,
+            &KnowledgeRetrievalQuery {
+                page_kind: Some("documentation".into()),
+                max_results: 1,
+                ..KnowledgeRetrievalQuery::default()
+            },
+        );
+
+        assert!(!report.embeddings_used);
+        assert_eq!(report.selected_record_ids, vec!["eligible"]);
+        assert_eq!(report.rejected_record_ids, vec!["stale"]);
+        let stale = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.record_id == "stale")
+            .unwrap();
+        assert_eq!(
+            stale.current_validation.status,
+            super::super::knowledge::KnowledgeCurrentValidationStatus::Stale
+        );
+        assert_eq!(
+            stale.rejection,
+            Some(KnowledgeRejectionReason::StaleLifecycle)
+        );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}{}", path.display(), STORE_LOCK_SUFFIX));
+    }
     #[test]
     fn lifecycle_management_and_stats_are_persisted() {
         let path = test_path();

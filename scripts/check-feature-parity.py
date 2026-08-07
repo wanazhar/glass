@@ -129,7 +129,7 @@ def main() -> None:
 
     metadata = json.loads(
         subprocess.check_output(
-            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            ["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"],
             cwd=ROOT,
             text=True,
         )
@@ -139,8 +139,13 @@ def main() -> None:
         for package in metadata["packages"]
         if package["name"] == "glass-browser"
     )
-    if cargo_version not in {baseline["version"], matrix["next_release"]}:
-        fail("Cargo.toml version is neither the published baseline nor the next release")
+    next_release = matrix["next_release"]
+    prerelease_candidate = f"{next_release}-rc.1"
+    if cargo_version not in {baseline["version"], next_release, prerelease_candidate}:
+        fail(
+            "Cargo.toml version is neither the published baseline, the next "
+            "release, nor the accepted local prerelease candidate"
+        )
 
     required_text = {
         "README.md": "| 0.3.0 | Current release |",
@@ -153,9 +158,15 @@ def main() -> None:
         if expected not in text:
             fail(f"{relative_path} is missing release truth marker {expected!r}")
 
+    release_label = (
+        f"local candidate {prerelease_candidate}"
+        if cargo_version == prerelease_candidate
+        else cargo_version
+    )
     print(
         f"feature parity validated: {len(capabilities)} capabilities across "
-        f"{len(targets)} targets; baseline {baseline['version']}; next {matrix['next_release']}"
+        f"{len(targets)} targets; baseline {baseline['version']}; "
+        f"next {next_release}; checkout {release_label}"
     )
 
 

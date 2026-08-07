@@ -10,6 +10,19 @@ evidence is currently recorded. Other declared targets require their own native
 validation.
 Windows is unsupported.
 
+## 0.3.1-rc.1 local candidate
+
+This checklist section records local candidate metadata only. There is no tag, push, crates.io publication, or GitHub Release for `0.3.1-rc.1`; the current published release remains `0.3.0`.
+
+- [x] Synchronize Cargo, Python, and TypeScript package metadata for the local
+      candidate (Python uses `0.3.1rc1`, its PEP 440 spelling).
+- [x] Run version-sync, feature-parity, and release-documentation validators.
+- [x] Record bounded issue #31 implementation evidence and target
+      certification boundaries.
+- [ ] Complete full release publication gates and obtain explicit approval.
+- [ ] Complete native target certification and any remaining issue #31
+      integration gates.
+
 Every version tag must have a matching, published, non-draft GitHub Release
 entry. The release entry contains generated notes and does not imply native
 binary distribution.

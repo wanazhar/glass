@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Validate release truth markers in the current user-facing documentation."""
 
+import json
 import pathlib
 import re
+import subprocess
 import sys
 
 
@@ -13,7 +15,10 @@ REQUIRED_MARKERS = {
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
-    "CHANGELOG.md": ["## [0.3.0] - 2026-08-06", "## [Unreleased]"],
+    "CHANGELOG.md": [
+        "## [0.3.0] - 2026-08-06",
+        "## [Unreleased]",
+    ],
     "docs/plan/README.md": [
         "[ir-030-081](tasks/ir-030-081.md)",
         "[ir-030-089](tasks/ir-030-089.md)",
@@ -43,6 +48,21 @@ REQUIRED_MARKERS = {
         "`0.2.8 local development; not ready for",
     ],
 }
+CANDIDATE_MARKERS = {
+    "CHANGELOG.md": [
+        "## [0.3.1-rc.1] - 2026-08-06",
+        "not tagged, pushed, or published",
+    ],
+    "docs/release-checklist.md": [
+        "## 0.3.1-rc.1 local candidate",
+        "no tag, push, crates.io publication, or GitHub Release",
+    ],
+    "docs/release-evidence.md": [
+        "## 0.3.1-rc.1 local candidate",
+        "not tagged, pushed, published",
+        "Known issue gates",
+    ],
+}
 FORBIDDEN_MARKERS = (
     "0.2.0 is unpublished",
     "0.2.0 is not published",
@@ -60,6 +80,25 @@ FORBIDDEN_CURRENT_RELEASE_PATTERNS = (
         r"\b(?:the\s+)?(?:current|latest)\s+"
         r"(?:published\s+)?(?:release|version)\s+is\s+"
         r"(?:`?glass-browser`?\s+version\s+)?`?0\.2\.8`?\b",
+        re.IGNORECASE,
+    ),
+)
+FORBIDDEN_RC_PUBLICATION_PATTERNS = (
+    re.compile(
+        r"\b0\.3\.1-rc\.1\s+is\s+(?:now\s+)?(?:published|available|"
+        r"the\s+(?:current|latest)\s+(?:release|version))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:published|publication|publish(?:ed|ing)?)\s+(?:to\s+)?"
+        r"(?:crates\.io|the\s+registry|GitHub|a\s+GitHub\s+Release)?"
+        r"\s*(?:release\s+)?(?:`?glass-browser`?\s+)?`?0\.3\.1-rc\.1`?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bGitHub\s+Release\s+v?0\.3\.1-rc\.1\b", re.IGNORECASE),
+    re.compile(
+        r"\bcrates\.io\b[^\n]{0,80}\b(?:contains|has|lists|offers|"
+        r"provides|publishes?)\b[^\n]{0,40}\b0\.3\.1-rc\.1\b",
         re.IGNORECASE,
     ),
 )
@@ -93,8 +132,26 @@ def fail(message: str) -> None:
 
 
 def main() -> None:
+    try:
+        metadata = json.loads(
+            subprocess.check_output(
+                ["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"],
+                cwd=ROOT,
+                text=True,
+            )
+        )
+        package_version = next(
+            package["version"]
+            for package in metadata["packages"]
+            if package["name"] == "glass-browser"
+        )
+    except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
+        fail(f"cannot read package version: {error}")
+    marker_sets = REQUIRED_MARKERS
+    if package_version == "0.3.1-rc.1":
+        marker_sets = {**REQUIRED_MARKERS, **CANDIDATE_MARKERS}
     failures = []
-    for relative, markers in REQUIRED_MARKERS.items():
+    for relative, markers in marker_sets.items():
         path = ROOT / relative
         try:
             text = path.read_text(encoding="utf-8")
@@ -104,6 +161,11 @@ def main() -> None:
             if marker not in text:
                 failures.append(f"{relative} is missing {marker!r}")
         lowered = text.lower()
+        for pattern in FORBIDDEN_RC_PUBLICATION_PATTERNS:
+            if pattern.search(lowered):
+                failures.append(
+                    f"{relative} contains an accidental publication claim for 0.3.1-rc.1"
+                )
         for marker in FORBIDDEN_MARKERS:
             if marker in lowered:
                 failures.append(f"{relative} contains stale release claim {marker!r}")
@@ -119,6 +181,11 @@ def main() -> None:
             lowered = path.read_text(encoding="utf-8").lower()
         except OSError as error:
             fail(f"cannot read {relative}: {error}")
+        for pattern in FORBIDDEN_RC_PUBLICATION_PATTERNS:
+            if pattern.search(lowered):
+                failures.append(
+                    f"{relative} contains an accidental publication claim for 0.3.1-rc.1"
+                )
         for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
             if pattern.search(lowered):
                 failures.append(
@@ -131,7 +198,7 @@ def main() -> None:
                 )
     if failures:
         fail("; ".join(failures))
-    print(f"release documentation truth validated: {len(REQUIRED_MARKERS)} documents")
+    print(f"release documentation truth validated: {len(marker_sets)} documents")
 
 
 if __name__ == "__main__":

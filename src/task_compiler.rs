@@ -68,6 +68,14 @@ pub struct TaskEvidenceRequirements {
 pub struct TaskMemoryAdvisory {
     pub retrieval: KnowledgeRetrievalReport,
     pub influence: KnowledgeMemoryInfluence,
+    /// Explicit proof that memory only ranked candidates and did not alter
+    /// the executable plan derived from the current Web IR.
+    #[serde(default = "default_executable_plan_unchanged")]
+    pub executable_plan_unchanged: bool,
+}
+
+fn default_executable_plan_unchanged() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Default)]
@@ -576,6 +584,15 @@ pub fn compile_task_with_options(
         .collect();
     let memory_advisory = match (options.knowledge_store, options.knowledge_context) {
         (Some(store), Some(context)) => {
+            // A caller-provided context is only trusted when it describes the
+            // exact Web IR revision being compiled. Otherwise historical
+            // validation could accidentally make an old record look current.
+            if context.current_revision != ir.revision {
+                return Err(TaskCompilationError::new(
+                    "memory.currentRevision",
+                    "knowledge context revision must match the current Web IR revision",
+                ));
+            }
             let mut query = KnowledgeRetrievalQuery {
                 page_kind: ir.document.kind.clone(),
                 task_kind: Some(format!("{:?}", task.task)),
@@ -598,6 +615,10 @@ pub fn compile_task_with_options(
                     KnowledgeMemoryInfluence::RankingOnly
                 },
                 retrieval,
+                // The executable fields above are fully derived from live
+                // Web IR. Retrieval is deliberately performed only after
+                // those fields are fixed and can therefore only rank.
+                executable_plan_unchanged: true,
             })
         }
         _ => None,
@@ -1392,5 +1413,30 @@ mod tests {
             plan.validate().unwrap_err().path,
             "postconditions[0].expected"
         );
+    }
+
+    #[test]
+    fn memory_bypass_preserves_the_executable_plan_byte_for_byte() {
+        let authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        let ir = test_compiler_ir();
+        let baseline = compile_task(&authored, &ir).unwrap();
+        let bypassed = compile_task_with_options(
+            &authored,
+            &ir,
+            TaskCompilationOptions {
+                knowledge_store: None,
+                knowledge_context: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(baseline.steps, bypassed.steps);
+        assert_eq!(baseline.preconditions, bypassed.preconditions);
+        assert_eq!(baseline.selected_entity_ids, bypassed.selected_entity_ids);
+        assert_eq!(
+            baseline.to_canonical_json().unwrap(),
+            bypassed.to_canonical_json().unwrap()
+        );
+        assert!(bypassed.memory_advisory.is_none());
     }
 }

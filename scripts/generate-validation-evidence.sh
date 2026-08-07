@@ -8,7 +8,7 @@ set -euo pipefail
 output_dir="${1:-benchmarks/results/validation/$(git rev-parse --short HEAD)}"
 mkdir -p "$output_dir"
 revision="$(git rev-parse HEAD)"
-version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="glass-browser"))')"
+version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="glass-browser"))')"
 host_target="$(rustc -vV | awk '/^host:/ {print $2}')"
 installed_targets="$(rustup target list --installed 2>/dev/null || true)"
 platform_target="${GLASS_PLATFORM_TARGET:-}"

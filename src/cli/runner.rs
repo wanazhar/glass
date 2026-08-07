@@ -38,7 +38,7 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -58,6 +58,17 @@ pub(crate) fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
         return Err("viewport dimensions must be width 320..10000 and height 240..10000".into());
     }
     Ok((width, height))
+}
+fn should_run_tui(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
+    stdin_is_terminal && stdout_is_terminal
+}
+
+fn start_here_message() -> &'static str {
+    "Glass is ready for a first step; no browser was started.\n\nSTART HERE\n  glass \"navigate to https://example.com\"\n  glass doctor\n  glass --help\n\nFor the interactive terminal UI, run `glass tui` from a terminal."
+}
+
+fn print_start_here() {
+    println!("{}", start_here_message());
 }
 
 /// Top-level command-line entry point: parses CLI arguments and dispatches
@@ -152,7 +163,14 @@ pub async fn dispatch(cli: Cli) -> BrowserResult<()> {
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
-            return crate::tui::app::run_tui(&cli).await;
+            if should_run_tui(
+                std::io::stdin().is_terminal(),
+                std::io::stdout().is_terminal(),
+            ) {
+                return crate::tui::app::run_tui(&cli).await;
+            }
+            print_start_here();
+            return Ok(());
         }
         _ => {}
     }
@@ -1975,12 +1993,31 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
             }),
         );
     }
+
     Ok(serde_json::to_string(&value)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_dispatch_requires_both_terminal_streams_for_tui() {
+        assert!(should_run_tui(true, true));
+        assert!(!should_run_tui(false, true));
+        assert!(!should_run_tui(true, false));
+        assert!(!should_run_tui(false, false));
+    }
+
+    #[test]
+    fn non_interactive_default_has_concise_start_here_guidance() {
+        let message = start_here_message();
+
+        assert!(message.contains("START HERE"));
+        assert!(message.contains("glass \"navigate to https://example.com\""));
+        assert!(message.contains("glass doctor"));
+        assert!(message.contains("glass --help"));
+    }
     use serde_json::json;
 
     #[test]

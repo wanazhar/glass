@@ -17,7 +17,7 @@ use std::error::Error;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 
-const DEFAULT_GLASS_VERSION: &str = "0.3.1";
+const DEFAULT_GLASS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CDP_BACKEND_ID: &str = "cdp";
 const CDP_BACKEND_VERSION: &str = "1";
 
@@ -621,6 +621,7 @@ mod tests {
     #[test]
     fn cdp_profile_declares_supported_and_unavailable_capabilities() {
         let profile = CdpBrowserBackend::profile_for("test").expect("valid profile");
+        assert_eq!(DEFAULT_GLASS_VERSION, env!("CARGO_PKG_VERSION"));
         assert_eq!(profile.identity.backend_id, "cdp");
         assert_eq!(
             profile.capability(BrowserCapability::Navigation).level,

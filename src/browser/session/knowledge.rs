@@ -479,7 +479,7 @@ pub struct KnowledgeSurfaceProvenance {
 
 /// Surface kinds are deliberately transport-neutral and closed over the
 /// known foundation vocabulary. Unknown serialized values fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum KnowledgeSurfaceKind {
     Document,
@@ -499,6 +499,7 @@ pub enum KnowledgeSurfaceKind {
     BrowserNative,
     ExtensionDefined,
     Unknown,
+    #[default]
     Opaque,
 }
 
@@ -545,7 +546,7 @@ pub struct KnowledgeBackendProvenance {
     pub capabilities: Vec<KnowledgeBackendCapability>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum KnowledgeBackendKind {
     Cdp,
@@ -553,6 +554,7 @@ pub enum KnowledgeBackendKind {
     BrowserExtension,
     Visual,
     Terminal,
+    #[default]
     Unknown,
 }
 
@@ -747,6 +749,17 @@ pub struct KnowledgeRetrievalCandidate {
     pub rejection: Option<KnowledgeRejectionReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
+    /// Fresh validation evidence copied from the record assessment. This is
+    /// explanatory only; it never contains an executable target.
+    #[serde(default)]
+    pub current_validation: KnowledgeCurrentValidation,
+    /// Provenance dimensions used by the eligibility filter.
+    #[serde(default)]
+    pub portability: KnowledgePortability,
+    #[serde(default)]
+    pub surface_kind: KnowledgeSurfaceKind,
+    #[serde(default)]
+    pub backend_kind: KnowledgeBackendKind,
 }
 
 /// Deterministic, bounded exact/graph retrieval output. Embeddings are
@@ -758,6 +771,10 @@ pub struct KnowledgeRetrievalReport {
     pub candidates: Vec<KnowledgeRetrievalCandidate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_record_ids: Vec<String>,
+    /// IDs rejected by current scope, validation, portability, or semantic
+    /// matching checks. Kept separate from selected IDs for auditability.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_record_ids: Vec<String>,
     pub embeddings_used: bool,
 }
 
@@ -766,6 +783,11 @@ impl KnowledgeRetrievalReport {
         self.candidates
             .iter()
             .filter(|candidate| candidate.selected)
+    }
+    pub fn rejected(&self) -> impl Iterator<Item = &KnowledgeRetrievalCandidate> {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.rejection.is_some())
     }
 }
 
@@ -1470,6 +1492,10 @@ impl KnowledgeRecord {
                 signals: Vec::new(),
                 rejection: Some(rejection_reason(&assessment)),
                 explanation: Some(assessment.conflicts.join("; ")),
+                current_validation: self.retrieval.current_validation.clone(),
+                portability: self.portability,
+                surface_kind: self.source.surface.kind,
+                backend_kind: self.source.backend.backend,
             };
         }
 
@@ -1514,6 +1540,10 @@ impl KnowledgeRecord {
                 signals: Vec::new(),
                 rejection: Some(KnowledgeRejectionReason::Contradicted),
                 explanation: Some("current page family contradicts live Web IR".into()),
+                current_validation: self.retrieval.current_validation.clone(),
+                portability: self.portability,
+                surface_kind: self.source.surface.kind,
+                backend_kind: self.source.backend.backend,
             };
         }
         if query.page_kind.as_deref().is_some_and(|expected| {
@@ -1567,6 +1597,10 @@ impl KnowledgeRecord {
                 signals: provenance,
                 rejection: Some(KnowledgeRejectionReason::NoExactOrGraphMatch),
                 explanation: Some("no exact or graph-compatible semantic match".into()),
+                current_validation: self.retrieval.current_validation.clone(),
+                portability: self.portability,
+                surface_kind: self.source.surface.kind,
+                backend_kind: self.source.backend.backend,
             };
         }
         signals.extend(provenance);
@@ -1576,6 +1610,10 @@ impl KnowledgeRecord {
             signals,
             rejection: None,
             explanation: None,
+            current_validation: self.retrieval.current_validation.clone(),
+            portability: self.portability,
+            surface_kind: self.source.surface.kind,
+            backend_kind: self.source.backend.backend,
         }
     }
 
@@ -2498,6 +2536,13 @@ mod tests {
             },
         );
         assert!(candidate.rejection.is_none());
+        assert_eq!(
+            candidate.current_validation.status,
+            KnowledgeCurrentValidationStatus::Validated
+        );
+        assert_eq!(candidate.portability, KnowledgePortability::SurfacePortable);
+        assert_eq!(candidate.surface_kind, KnowledgeSurfaceKind::Document);
+        assert_eq!(candidate.backend_kind, KnowledgeBackendKind::Cdp);
         assert!(
             candidate.signals.iter().any(|signal| {
                 signal.kind == KnowledgeRetrievalSignalKind::ExactPageFamilyMatch

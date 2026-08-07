@@ -892,6 +892,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_invocation_is_promptless_and_commandless() {
+        let cli = Cli::try_parse_from(["glass"]).unwrap();
+
+        assert!(cli.prompt.is_none());
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn tui_is_discoverable_as_an_explicit_command() {
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "tui"]).unwrap().command,
+            Some(Commands::Tui)
+        ));
+    }
+
+    #[test]
     fn observation_and_human_interaction_are_defaults() {
         let cli = Cli::try_parse_from(["glass", "observe"]).unwrap();
 

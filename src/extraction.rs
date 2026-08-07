@@ -1104,9 +1104,9 @@ fn evidence_coverage(
             semantic = EvidenceQuality::Partial;
         }
     }
-    let opaque_regions = (context.boundaries.child_frames
-        + context.boundaries.shadow_roots
-        + context.boundaries.canvases) as u32;
+    // Frames, shadow roots, and graphics are explicit boundaries with
+    // structural or coordinate coverage; only an omitted boundary is opaque.
+    let opaque_regions = u32::from(context.boundaries.truncated);
     let mut reasons = missing_sources
         .iter()
         .map(|source| format!("missingSource:{source:?}"))
@@ -1831,7 +1831,33 @@ mod tests {
         assert_eq!(opaque.understanding, UnderstandingLevel::Opaque);
         assert!(opaque.capabilities.is_empty());
         let ir = crate::web_ir::reconcile_evidence(&evidence).unwrap();
+        for (surface_id, expected_kind) in [
+            ("canvas2d_0", SurfaceKind::Canvas2d),
+            ("embedded_0", SurfaceKind::EmbeddedDocument),
+            ("pdf_0", SurfaceKind::Pdf),
+        ] {
+            let entity_id = ir
+                .entity_details
+                .iter()
+                .find(|(_, details)| details.surface_id.as_deref() == Some(surface_id))
+                .map(|(id, _)| id)
+                .expect("surface entity details");
+            assert_eq!(
+                ir.entity_details[entity_id].surface_kind.as_ref(),
+                Some(&expected_kind)
+            );
+            assert!(ir.relationships.iter().any(|relationship| {
+                relationship.from == "page" && relationship.to == *entity_id
+            }));
+            assert!(ir.entity_details[entity_id].supported_actions.is_empty());
+        }
+        assert!(ir.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("embedded_0") && diagnostic.contains("semanticUnavailable")
+        }));
         assert!(ir.surface_set.is_some());
+        let mut malformed = evidence.clone();
+        malformed.surface_set.as_mut().unwrap().schema_version = 99;
+        assert!(crate::web_ir::reconcile_evidence(&malformed).is_err());
         let mut unauthorized = opaque.clone();
         unauthorized
             .capabilities
@@ -2078,11 +2104,11 @@ mod tests {
         assert!(evidence.limits.missing_sources.is_empty());
     }
     #[test]
-    fn extraction_reports_opaque_boundaries_without_claiming_completeness() {
+    fn extraction_reports_explicit_opaque_boundaries_without_counting_structural_boundaries() {
         let mut context = page_context();
         context.boundaries.child_frames = 1;
         let evidence = extract_page_context(&context, &request()).unwrap();
-        assert_eq!(evidence.coverage.opaque_regions, 1);
+        assert_eq!(evidence.coverage.opaque_regions, 0);
         assert!(
             evidence
                 .coverage
@@ -2091,6 +2117,18 @@ mod tests {
                 .any(|reason| reason == "frameBoundary")
         );
         assert_ne!(evidence.coverage.semantic, EvidenceQuality::Opaque);
+
+        context.boundaries.truncated = true;
+        let mut opaque_request = request();
+        opaque_request.sources.push(EvidenceSource::Layout);
+        let opaque = extract_page_context(&context, &opaque_request).unwrap();
+        assert_eq!(opaque.coverage.opaque_regions, 1);
+        assert!(opaque.surface_set.as_ref().is_some_and(|surface_set| {
+            surface_set
+                .surfaces
+                .iter()
+                .any(|surface| surface.kind == SurfaceKind::Opaque)
+        }));
     }
     #[test]
     fn extraction_output_budget_truncation_updates_coverage_and_text_bytes() {

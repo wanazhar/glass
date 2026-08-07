@@ -6,7 +6,7 @@ echo ""
 
 # ── Cargo package version ───────────────────────────────────────────────────
 
-package_version=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
+package_version=$(cargo metadata --no-deps --locked --format-version 1 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); pkg=next(p for p in d['packages'] if p['name']=='glass-browser'); print(pkg['version'])" \
   2>/dev/null || echo "unknown")
 

@@ -205,6 +205,39 @@ extension-loader status. It does not start Chrome or load extensions.
 
 The daemon is local-only. Read [Local daemon](daemon.md).
 
+## Project development runtime
+
+The `project` command family is browser-free and operates on the selected
+workspace root. Paths are confined to that root, file writes are atomic, PTY
+output is bounded, and mutations are recorded with an actor and timeline
+event.
+
+```console
+glass project inspect --root .
+glass project files --root .
+glass project read README.md --root .
+glass project edit notes.txt --content "hello\n" --root .
+glass project run dev --command "cargo run" --root .
+glass project test --root .
+glass project lint --root .
+glass project process list --root .
+glass project process output dev --root .
+glass project diff --root .
+glass project timeline --root .
+```
+
+Use `glass project link` only for explicit source/runtime evidence. Glass does
+not infer framework source maps or advertise LSP, HMR, or editor RPC support
+without a verified provider.
+
+The deterministic local harness is available through:
+
+```console
+glass agent hello --root .
+glass agent prompt "read README.md" --root .
+glass agent steer "pause" --root .
+```
+
 ## Profiles and files
 
 Run:

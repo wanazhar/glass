@@ -13,7 +13,7 @@ if [[ -z "$previous_version" ]]; then
 fi
 
 version="$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --locked --format-version 1 \
-    | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-browser"))')"
+    | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/glass-clean-install.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT
 
@@ -22,25 +22,25 @@ export CARGO_TARGET_DIR="$temp_root/target"
 mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
 
 echo "--- Installing previous release ${previous_version} ---"
-cargo install glass-browser --version "$previous_version" --locked --root "$temp_root/upgrade-root"
+cargo install glass-dev --version "$previous_version" --locked --root "$temp_root/upgrade-root"
 previous_binary="$temp_root/upgrade-root/bin/glass"
 "$previous_binary" --version | grep -F "${previous_version}" >/dev/null
 
 echo "--- Packaging ${version} ---"
-cargo package --manifest-path "$root/Cargo.toml" --locked --allow-dirty
-crate="$CARGO_TARGET_DIR/package/glass-browser-${version}.crate"
+cargo package --manifest-path "$root/crates/glass-dev/Cargo.toml" --locked --allow-dirty
+crate="$CARGO_TARGET_DIR/package/glass-dev-${version}.crate"
 test -f "$crate"
 
 echo "--- Installing packaged ${version} ---"
 mkdir -p "$temp_root/package"
 tar -xzf "$crate" -C "$temp_root/package"
-cargo install --path "$temp_root/package/glass-browser-${version}" --locked --root "$temp_root/clean-root"
+cargo install --path "$temp_root/package/glass-dev-${version}" --locked --root "$temp_root/clean-root"
 clean_binary="$temp_root/clean-root/bin/glass"
 "$clean_binary" --version | grep -F "${version}" >/dev/null
 "$clean_binary" capabilities >/dev/null
 
 echo "--- Upgrading the previous installation to ${version} ---"
-cargo install --path "$temp_root/package/glass-browser-${version}" --locked \
+cargo install --path "$temp_root/package/glass-dev-${version}" --locked \
     --root "$temp_root/upgrade-root" --force
 "$previous_binary" --version | grep -F "${version}" >/dev/null
 "$previous_binary" capabilities >/dev/null

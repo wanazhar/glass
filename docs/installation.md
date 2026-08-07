@@ -21,19 +21,22 @@ Build the release executable:
 cargo build --release --locked
 ```
 
-The executable is `target/release/glass`.
+The executable is `target/release/glass` from the `glass-dev` package.
 
 Install the local checkout:
 
 ```console
-cargo install --path . --locked
+cargo install --path crates/glass-dev --locked
 ```
 
 Install the published crate after a release:
 
 ```console
-cargo install glass-browser --locked
+cargo install glass-dev --locked
 ```
+
+The `glass-browser` crate is the reusable Rust library. It does not install a
+second competing executable.
 
 ## Diagnose an installation
 

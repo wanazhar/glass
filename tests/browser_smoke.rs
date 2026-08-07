@@ -29,6 +29,8 @@ use tokio::{
     sync::oneshot,
 };
 
+mod support;
+
 struct FixtureServer {
     url: String,
     shutdown: Option<oneshot::Sender<()>>,
@@ -105,15 +107,7 @@ async fn page_target_id(port: u16) -> String {
 }
 
 fn glass_binary_path() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_glass")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let binary_name = if cfg!(windows) { "glass.exe" } else { "glass" };
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("debug")
-                .join(binary_name)
-        })
+    support::glass_binary()
 }
 
 fn required_chrome() -> PathBuf {

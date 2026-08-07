@@ -1,6 +1,6 @@
 [package]
 name = "glass-browser"
-version = "0.3.1"
+version = "0.3.2-rc.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Local browser intelligence runtime with semantic memory, verified workflows, multi-surface understanding, CLI, TUI, MCP, and Rust APIs"
@@ -9,8 +9,14 @@ readme = "README.md"
 documentation = "https://docs.rs/glass-browser"
 homepage = "https://github.com/wanazhar/glass"
 repository = "https://github.com/wanazhar/glass"
+autobins = false
 keywords = ["browser-automation", "chrome", "cdp", "mcp", "browser-control"]
 categories = ["api-bindings", "command-line-utilities", "development-tools::testing"]
+
+[workspace]
+members = [".", "crates/glass-dev"]
+resolver = "2"
+
 exclude = [
   ".github/",
   "AGENTS.md",
@@ -28,10 +34,6 @@ path = "src/lib.rs"
 
 [package.metadata.docs.rs]
 all-features = true
-
-[[bin]]
-name = "glass"
-path = "src/main.rs"
 
 [features]
 default = []

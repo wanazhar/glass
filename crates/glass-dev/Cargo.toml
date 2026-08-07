@@ -1,0 +1,22 @@
+[package]
+name = "glass-dev"
+version = "0.3.2-rc.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Glass terminal-native development and browser workspace"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/wanazhar/glass"
+repository = "https://github.com/wanazhar/glass"
+keywords = ["browser-automation", "development-runtime", "mcp", "tui"]
+categories = ["command-line-utilities", "development-tools::testing"]
+
+[[bin]]
+name = "glass"
+path = "src/main.rs"
+
+[dependencies]
+glass-browser = { package = "glass-browser", version = "0.3.2-rc.1", path = "../.." }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

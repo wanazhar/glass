@@ -1,9 +1,11 @@
 use serde_json::Value;
 use std::process::Command;
 
+mod support;
+
 #[test]
 fn release_certification_blocks_a_suite_without_observations() {
-    let output = Command::new(env!("CARGO_BIN_EXE_glass"))
+    let output = Command::new(support::glass_binary())
         .args([
             "certify",
             "release",
@@ -27,7 +29,7 @@ fn release_certification_blocks_a_suite_without_observations() {
 
 #[test]
 fn execution_plan_command_is_browser_free_and_manifest_bound() {
-    let output = Command::new(env!("CARGO_BIN_EXE_glass"))
+    let output = Command::new(support::glass_binary())
         .args([
             "certify",
             "plan",

@@ -16,17 +16,18 @@ platform_smoke_passed="${GLASS_PLATFORM_SMOKE_PASSED:-0}"
 platform_raw_report="${GLASS_PLATFORM_RAW_REPORT:-}"
 
 test_status=passed
-if ! cargo test --all-targets --locked >/dev/null; then test_status=failed; fi
+if ! cargo test --workspace --all-targets --locked >/dev/null; then test_status=failed; fi
 fmt_status=passed
 if ! cargo fmt --all -- --check >/dev/null; then fmt_status=failed; fi
 clippy_status=passed
-if ! cargo clippy --all-targets --all-features --locked -- -D warnings >/dev/null; then clippy_status=failed; fi
+if ! cargo clippy --workspace --all-targets --all-features --locked -- -D warnings >/dev/null; then clippy_status=failed; fi
 docs_status=passed
 if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked >/dev/null; then docs_status=failed; fi
 build_status=passed
-if ! cargo build --release --locked >/dev/null; then build_status=failed; fi
+if ! cargo build --package glass-dev --release --locked >/dev/null; then build_status=failed; fi
 package_status=passed
-if ! cargo package --locked --allow-dirty --no-verify >/dev/null; then package_status=failed; fi
+if ! cargo package --package glass-browser --locked --allow-dirty --no-verify >/dev/null || \
+   ! cargo package --package glass-dev --locked --allow-dirty --no-verify >/dev/null; then package_status=failed; fi
 deny_status=failed
 if command -v cargo-deny >/dev/null 2>&1 && cargo deny check >/dev/null; then deny_status=passed; fi
 audit_status=failed
@@ -81,11 +82,11 @@ base = {
 }
 check_commands = {
     "fmt": "cargo fmt --all -- --check",
-    "test": "cargo test --all-targets --locked",
-    "clippy": "cargo clippy --all-targets --all-features --locked -- -D warnings",
+    "test": "cargo test --workspace --all-targets --locked",
+    "clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
     "docs": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --locked",
-    "build": "cargo build --release --locked",
-    "package": "cargo package --locked --allow-dirty --no-verify",
+    "build": "cargo build --package glass-dev --release --locked",
+    "package": "cargo package --package glass-browser --locked --allow-dirty --no-verify && cargo package --package glass-dev --locked --allow-dirty --no-verify",
     "deny": "cargo deny check",
     "audit": "cargo audit",
     "fuzz-check": "cargo fetch --manifest-path fuzz/Cargo.toml --locked && cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets",

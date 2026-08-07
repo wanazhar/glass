@@ -4,31 +4,30 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` version `0.3.1`. Linux x86-64, Linux
-arm64, macOS x86-64, and macOS arm64 remain declared targets. Target support
-claims remain bounded by the machine-readable feature-parity matrix and native
-evidence recorded for each environment.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.2-rc.1`.
+Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
+targets. Target support claims remain bounded by the machine-readable
+feature-parity matrix and native evidence recorded for each environment.
 Windows is unsupported.
 
-## 0.3.1 pre-publication checklist
+## 0.3.2-rc.1 local candidate checklist
 
-The source checkout is final stable `0.3.1`; it is not a prerelease package.
-Tagging, pushing, crates.io publication, and GitHub Release creation remain
-separate maintainer actions and have not been performed by this checklist.
+The source checkout is the local `0.3.2-rc.1` candidate. It is intentionally a
+prerelease package. Tagging, pushing, crates.io publication, and GitHub Release
+creation remain separate maintainer actions and have not been performed.
 
-- [x] Synchronize Cargo, Python, and TypeScript package metadata at `0.3.1`.
+- [ ] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2-rc.1`.
+- [ ] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
 - [x] Run version-sync, feature-parity, and release-documentation validators.
-- [x] Run formatting and all-target Rust tests.
-- [x] Run the opt-in 17-scenario Chromium smoke suite.
-- [x] Run the 120-frame real Chromium screencast benchmark at 1280×720; the
-      event-driven path sustained 59.47 fps with zero dropped frames.
-- [x] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
-      gates.
-- [x] Inspect the 226-file crate package and complete the crates.io publication
-      dry-run without uploading.
-- [x] Record bounded issue #31 implementation evidence and target boundaries.
-- [ ] Obtain explicit approval, create the signed `v0.3.1` tag, push it, and
-      verify the crates.io package and matching GitHub Release.
+- [ ] Run formatting and all-target workspace tests.
+- [ ] Run the opt-in Chromium smoke suite when a supported browser is available.
+- [ ] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
+      gates where the tools and target are available.
+- [ ] Inspect both package file lists and complete publish dry-runs without
+      uploading.
+- [x] Record bounded issue #32 implementation evidence and target boundaries.
+- [ ] Obtain explicit approval before any stable tag, push, crates.io
+      publication, or GitHub Release.
 
 Every version tag must have a matching, published, non-draft GitHub Release
 entry. The release entry contains generated notes and does not imply native
@@ -74,12 +73,14 @@ Run:
 ```console
 cargo fmt --all -- --check
 python3 scripts/check-version-sync.py
-cargo test --all --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
-cargo package --locked --no-verify
-cargo publish --locked --dry-run --no-verify
+cargo package --package glass-browser --locked --no-verify
+cargo publish --package glass-browser --locked --dry-run --no-verify
+cargo package --package glass-dev --locked --no-verify
+cargo publish --package glass-dev --locked --dry-run --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins

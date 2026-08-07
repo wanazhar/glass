@@ -22,9 +22,9 @@
 //! ```
 //!
 //! The [`browser`] module contains the reusable Rust API. The [`cli`] module
-//! backs the `glass` binary, [`mcp`] exposes the MCP stdio server, and [`tui`]
-//! provides the terminal interface. User-facing guides are available in the
-//! repository's [`docs`](https://github.com/wanazhar/glass/tree/main/docs).
+//! backs the `glass-dev` executable, [`mcp`] exposes the MCP stdio server, and
+//! [`tui`] provides the terminal interface. User-facing guides are available
+//! in the repository's [`docs`](https://github.com/wanazhar/glass/tree/main/docs).
 //!
 //! # Cargo features
 //!

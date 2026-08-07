@@ -5,10 +5,10 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod support;
+
 fn glass_binary() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_glass")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/glass"))
+    support::glass_binary()
 }
 
 #[test]

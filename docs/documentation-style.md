@@ -56,7 +56,7 @@ Use this order for a procedure:
 Example:
 
 ```console
-cargo install --path . --locked
+cargo install --path crates/glass-dev --locked
 glass --help
 ```
 

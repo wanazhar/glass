@@ -10,5 +10,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    glass::cli::runner::dispatch(glass::cli::args::Cli::parse()).await
+    glass_browser::cli::runner::dispatch(glass_browser::cli::args::Cli::parse()).await
 }

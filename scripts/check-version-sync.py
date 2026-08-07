@@ -15,14 +15,16 @@ metadata = json.loads(
         text=True,
     )
 )
-cargo_version = next(
-    package["version"]
+cargo_versions = {
+    package["name"]: package["version"]
     for package in metadata["packages"]
-    if package["name"] == "glass-browser"
-)
+    if package["name"] in {"glass-browser", "glass-dev"}
+}
+cargo_version = cargo_versions["glass-browser"]
 
 versions = {
     "Cargo.toml": cargo_version,
+    "crates/glass-dev/Cargo.toml": cargo_versions["glass-dev"],
     "clients/python/pyproject.toml": tomllib.loads(
         (root / "clients/python/pyproject.toml").read_text()
     )["project"]["version"],

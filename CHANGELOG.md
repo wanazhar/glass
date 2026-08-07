@@ -5,6 +5,30 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2-rc.1] - 2026-08-07
+
+### Added
+
+- Added a bounded local development runtime for project detection, optional
+  `glass.toml` configuration, workspace-confined files and native buffers,
+  atomic saves, PTY processes, actor-attributed events, timelines, runtime
+  links, and cross-surface diffs.
+- Added `glass project` CLI commands and browser-free MCP tools for project
+  inspection, file editing, process control, runtime links, diffs, and event
+  timelines.
+- Added a TUI Development workspace with files, editor, runtime, activity, and
+  actor panes, plus a deterministic Glass-owned local harness for prompt,
+  stream, tool, result, steering, and error transitions.
+- Split the distribution boundary into the reusable `glass-browser` crate and
+  the `glass-dev` package that owns the single installed `glass` executable.
+
+### Changed
+
+- Kept structured browser observation, explicit screenshot escalation, browser
+  policy, MCP framing, and existing v0.3.1 browser contracts unchanged.
+- Documented unsupported framework-specific LSP, hot-module replacement,
+  Neovim RPC, and source-map claims as unavailable without evidence.
+
 ## [0.3.1] - 2026-08-07
 
 ### Added

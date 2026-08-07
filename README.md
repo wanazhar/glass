@@ -21,7 +21,8 @@ loop.
 | macOS x86-64 | Declared target; native runtime certification pending |
 | macOS arm64 | Declared target; native runtime certification pending |
 | Windows | Unsupported |
-| 0.3.1 | Current source release |
+| 0.3.2-rc.1 | Current local release candidate |
+| 0.3.1 | Previous source release |
 | 0.3.0 | Previous published release |
 | 0.2.9 | Earlier published release |
 | 0.2.8 | Earlier published release |
@@ -44,16 +45,18 @@ Prerequisite: install stable Rust and a supported Chrome or Chromium browser.
 Run:
 
 ```console
-cargo install --path . --locked
+cargo install --path crates/glass-dev --locked
 glass --help
 ```
 
-The command builds and installs the local `glass` executable.
+The command builds and installs the local `glass` executable from the
+`glass-dev` package. The reusable browser library is the separate
+`glass-browser` package.
 
 The latest published package can be installed with:
 
 ```console
-cargo install glass-browser --locked
+cargo install glass-dev --locked
 ```
 
 Use `glass install-chromium` when no supported system browser is available.
@@ -85,6 +88,22 @@ Run one operation from the CLI:
 glass navigate https://example.com
 glass --incognito --headed navigate https://example.com
 ```
+
+Open the terminal-native development workspace without starting Chrome:
+
+```console
+glass project inspect --root .
+glass project files --root .
+glass project run dev --command "cargo run" --root .
+glass project diff --root .
+glass agent prompt "read README.md" --root .
+```
+
+The project runtime keeps files workspace-confined, runs commands in a bounded
+PTY, records actor-attributed events, and exposes the same operations through
+MCP and the TUI Development workspace. It does not claim framework-specific
+LSP, hot-module replacement, or source maps unless explicit evidence is
+available.
 
 Compile a bounded Task Protocol plan against stable Glass Web IR v1 without
 starting Chrome:
@@ -124,8 +143,8 @@ for a disposable browser profile.
 
 | Interface | Use | Entry point |
 |---|---|---|
-| CLI | Scripts and one operation | `glass <command>` |
-| TUI | An interactive session | `glass tui` |
+| CLI | Browser and project operations | `glass <command>` |
+| TUI | Browser or Development workspace | `glass tui` |
 | MCP | A long-lived stdio connection | `glass --mcp` |
 | Rust library | An embedded session runtime | crate `glass-browser`, import `glass` |
 
@@ -226,7 +245,7 @@ revision-safe actions, target and frame management, storage, downloads,
 screenshots, PDFs, semantic observations, and the MCP server.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) remain experimental repository clients for the 0.3.1
+client](clients/python) remain experimental repository clients for the 0.3.2
 release line. They are not published as npm or PyPI packages, do not
 include a browser runtime, and do not change the primary Cargo installation
 path.
@@ -254,8 +273,10 @@ Run the checks before you submit a change:
 
 ```console
 cargo fmt --all -- --check
-cargo test --all-targets --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo package --package glass-browser --locked --no-verify
+cargo package --package glass-dev --locked --no-verify
 ```
 
 Run the browser smoke test only when a supported browser is available:

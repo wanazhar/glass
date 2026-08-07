@@ -4,7 +4,8 @@ Status: Accepted
 
 ## Purpose and boundary
 
-Glass is a single Rust binary that gives local automation clients a semantic
+Glass is a reusable Rust library plus one `glass` executable from the
+`glass-dev` package that gives local automation clients a semantic
 execution layer over direct Chrome control through raw CDP. It owns the client
 and session lifecycle, bounded extraction, Web IR reconciliation, deterministic
 task compilation, and guarded execution; Chrome remains the browser process.

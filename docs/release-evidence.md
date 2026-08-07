@@ -1,19 +1,26 @@
 # Release evidence
 
-## 0.3.1 pre-publication evidence
+## 0.3.2-rc.1 local pre-publication evidence
 
-The source checkout contains the final stable `0.3.1` package metadata. It is
-not tagged, pushed, published, or represented by a crates.io package or GitHub
-Release yet; those are explicit maintainer publication steps. The published
-`glass-browser 0.3.0` evidence below remains the latest registry record until
-the `v0.3.1` workflow completes.
+The source checkout contains the local `0.3.2-rc.1` candidate metadata for the
+`glass-browser` library and `glass-dev` executable packages. It is not tagged,
+pushed, published, or represented by a crates.io package or GitHub Release;
+those are explicit maintainer publication steps. The published
+`glass-browser 0.3.0` evidence below remains historical registry evidence.
 
 ### Completed validation scope
 
-- Rust, Python, and TypeScript package metadata are synchronized at `0.3.1`.
+- Rust, Python, and TypeScript package metadata are intended to be synchronized
+  at `0.3.2-rc.1` (Python's normalized wheel version is `0.3.2rc1`).
+- The `glass-browser` library package and `glass-dev` executable package share
+  one release version; only `glass-dev` installs the `glass` executable.
+- The issue #32 vertical slice is browser-free by default and preserves the
+  v0.3.1 browser contracts. Framework-specific LSP, HMR, Neovim RPC, and
+  inferred source-map claims remain unavailable without evidence.
 - The version, feature-parity, release-documentation, reliability-matrix,
   read-only-adapter, Experience Layer, and Web IR corpus checks pass.
-- `cargo test --all-targets --locked` passes the complete source suite.
+- `cargo test --workspace --all-targets --locked` passes the complete source
+  suite.
 - `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
   --test-threads=1` passes all 17 Chromium scenarios on the recorded Linux ARM64
   environment.
@@ -23,17 +30,18 @@ the `v0.3.1` workflow completes.
   evidence, not a cross-platform frame-rate guarantee.
 - Clippy with warnings denied, warning-free rustdoc, `cargo deny`, `cargo
   audit`, and the fuzz-crate all-target check pass.
-- `cargo package` contains 226 files (3.9 MiB; 778.1 KiB compressed), and
-  `cargo publish --dry-run` completes without uploading.
-- Issue #31 implementation evidence covers all four pillars and the Experience
-  Layer without extending certification claims to unobserved targets.
+- `cargo package` and `cargo publish --dry-run` are required for both packages
+  and perform no upload.
+- Issue #32 implementation evidence covers the bounded development runtime,
+  CLI/MCP/TUI surfaces, harness, package boundary, and explicit capability
+  limits without extending certification claims to unobserved targets.
 
 ### Publication boundary
 
 - No tag, push, crates.io publication, or GitHub Release operation has been
   performed by this pre-publication audit.
-- The release workflow rejects prerelease versions and will publish only when
-  an approved stable `v0.3.1` tag exactly matches the crate version.
+- The release workflow rejects prerelease versions. This candidate therefore
+  cannot publish until a maintainer prepares an approved stable version.
 
 The 0.3.0 release follows the crates-only distribution boundary.
 The `glass-browser` 0.3.0 release has a source-only GitHub Release with
@@ -68,9 +76,12 @@ python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-version-sync.py
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 python3 scripts/check-github-releases.py
-cargo package --locked --no-verify
-cargo publish --locked --dry-run --no-verify
-cargo package --locked --list
+cargo package --package glass-browser --locked --no-verify
+cargo publish --package glass-browser --locked --dry-run --no-verify
+cargo package --package glass-browser --locked --list
+cargo package --package glass-dev --locked --no-verify
+cargo publish --package glass-dev --locked --dry-run --no-verify
+cargo package --package glass-dev --locked --list
 ```
 
 Run the native browser check in the target environment:

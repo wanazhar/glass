@@ -131,6 +131,32 @@ A tool may request one bounded failure-trace content item with
 
 ## Main tools
 
+### Project runtime tools
+
+These browser-free tools share the local development runtime used by the CLI
+and TUI:
+
+| Tool | Result |
+|---|---|
+| `project.inspect` | Detect the project and return bounded configuration. |
+| `project.files` | List workspace-confined files. |
+| `project.read` | Read one bounded file. |
+| `project.edit` | Atomically save one native buffer. |
+| `project.run` | Start a named command in a bounded PTY. |
+| `project.processes` | List managed PTY processes. |
+| `project.process.stop` | Stop one managed process. |
+| `project.process.output` | Read one process's bounded output tail. |
+| `project.diff` | Project code, runtime, semantic, and workflow impact. |
+| `project.timeline` | Read the bounded actor-attributed event timeline. |
+| `project.link` | Record explicit source/runtime evidence. |
+| `agent.hello` | Negotiate the Glass-owned local harness protocol. |
+| `agent.prompt` | Run one deterministic bounded local harness prompt. |
+| `agent.steer` | Steer the local harness state. |
+
+Mutating project and agent tools require the normal daemon mutation lease when
+used through a leased session. Read-only project inspection and harness hello
+remain browser-free and do not start Chrome.
+
 | Tool | Result |
 |---|---|
 | `navigate` | Navigate and return page state. |

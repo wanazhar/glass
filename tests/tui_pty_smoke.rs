@@ -12,11 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod support;
+
 #[test]
 fn tui_enters_and_leaves_a_real_terminal_cleanly() {
     let (mut master, slave) = open_pty();
     let controlling_terminal = slave.as_raw_fd();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_glass"));
+    let mut command = Command::new(support::glass_binary());
     command
         .stdin(Stdio::from(
             slave.try_clone().expect("PTY slave must clone"),

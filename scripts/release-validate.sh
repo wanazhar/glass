@@ -20,7 +20,7 @@ python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.j
 
 echo ""
 echo "--- Building release-size profile ---"
-cargo build --profile release-size 2>&1
+cargo build --package glass-dev --profile release-size 2>&1
 
 # ── Binary size check ───────────────────────────────────────────────────────
 

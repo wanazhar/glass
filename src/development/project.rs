@@ -655,9 +655,15 @@ fn default_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fixture() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("glass-project-{}", std::process::id()));
+        static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "glass-project-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(

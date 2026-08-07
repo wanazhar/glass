@@ -21,7 +21,7 @@ loop.
 | macOS x86-64 | Declared target; native runtime certification pending |
 | macOS arm64 | Declared target; native runtime certification pending |
 | Windows | Unsupported |
-| 0.3.2-rc.1 | Current local release candidate |
+| 0.3.2 | Current local release candidate |
 | 0.3.1 | Previous source release |
 | 0.3.0 | Previous published release |
 | 0.2.9 | Earlier published release |

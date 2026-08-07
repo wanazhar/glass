@@ -1,8 +1,8 @@
 # Release evidence
 
-## 0.3.2-rc.1 local pre-publication evidence
+## 0.3.2 local pre-publication evidence
 
-The source checkout contains the local `0.3.2-rc.1` candidate metadata for the
+The source checkout contains the local `0.3.2` candidate metadata for the
 `glass-browser` library and `glass-dev` executable packages. It is not tagged,
 pushed, published, or represented by a crates.io package or GitHub Release;
 those are explicit maintainer publication steps. The published
@@ -10,8 +10,7 @@ those are explicit maintainer publication steps. The published
 
 ### Completed validation scope
 
-- Rust, Python, and TypeScript package metadata are intended to be synchronized
-  at `0.3.2-rc.1` (Python's normalized wheel version is `0.3.2rc1`).
+- Rust, Python, and TypeScript package metadata are synchronized at `0.3.2`.
 - The `glass-browser` library package and `glass-dev` executable package share
   one release version; only `glass-dev` installs the `glass` executable.
 - The issue #32 vertical slice is browser-free by default and preserves the

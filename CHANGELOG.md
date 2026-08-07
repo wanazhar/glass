@@ -5,7 +5,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.3.2-rc.1] - 2026-08-07
+## [0.3.2] - 2026-08-07
 
 ### Added
 

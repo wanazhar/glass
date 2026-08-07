@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "glass-browser"
-version = "0.3.2-rc.1"
+version = "0.3.2"
 dependencies = [
  "base64",
  "base64-simd",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "glass-dev"
-version = "0.3.2-rc.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "glass-browser",

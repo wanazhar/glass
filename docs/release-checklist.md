@@ -4,19 +4,19 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.2-rc.1`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.2`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows is unsupported.
 
-## 0.3.2-rc.1 local candidate checklist
+## 0.3.2 local candidate checklist
 
-The source checkout is the local `0.3.2-rc.1` candidate. It is intentionally a
-prerelease package. Tagging, pushing, crates.io publication, and GitHub Release
-creation remain separate maintainer actions and have not been performed.
+The source checkout is the local `0.3.2` candidate. Tagging, pushing, crates.io
+publication, and GitHub Release creation remain separate maintainer actions and
+have not been performed.
 
-- [ ] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2-rc.1`.
+- [ ] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2`.
 - [ ] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
 - [x] Run version-sync, feature-parity, and release-documentation validators.
 - [ ] Run formatting and all-target workspace tests.

@@ -1,7 +1,7 @@
 # Glass documentation
 
 The guides use [the project documentation style](documentation-style.md).
-They describe the current `0.3.2-rc.1` local release candidate. A feature
+They describe the current `0.3.2` local release candidate. A feature
 marked `Local only` is part of an unreleased development build.
 
 ## User guides

@@ -10,12 +10,12 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.3.2-rc.1 | Current local release candidate |",
+        "| 0.3.2 | Current local release candidate |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
-        "## [0.3.2-rc.1] - 2026-08-07",
+        "## [0.3.2] - 2026-08-07",
         "## [Unreleased]",
     ],
     "docs/plan/README.md": [
@@ -25,8 +25,8 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.2-rc.1`",
-        "## 0.3.2-rc.1 local candidate checklist",
+        "release checkout is `glass-browser` and `glass-dev` version `0.3.2`",
+        "## 0.3.2 local candidate checklist",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
@@ -35,8 +35,8 @@ REQUIRED_MARKERS = {
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [
-        "## 0.3.2-rc.1 local pre-publication evidence",
-        "local `0.3.2-rc.1` candidate metadata",
+        "## 0.3.2 local pre-publication evidence",
+        "local `0.3.2` candidate metadata",
         "`feature-parity.json`",
         "cargo publish --locked --dry-run",
         "`glass-browser 0.3.0` to crates.io",
@@ -119,8 +119,8 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
-    if package_version != "0.3.2-rc.1":
-        fail(f"release checkout must use local candidate package version 0.3.2-rc.1, not {package_version}")
+    if package_version != "0.3.2":
+        fail(f"release checkout must use local candidate package version 0.3.2, not {package_version}")
     marker_sets = REQUIRED_MARKERS
     failures = []
     for relative, markers in marker_sets.items():

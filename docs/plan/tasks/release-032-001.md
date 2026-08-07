@@ -37,5 +37,5 @@ package dry runs, complete validation, and a conventional local checkpoint.
 - `cargo package --locked --no-verify` for each publishable package;
 - `cargo publish --locked --dry-run --no-verify` for each package;
 - release candidate report records unavailable platform/browser evidence;
-- commit locally with a conventional `chore(release): prepare 0.3.2-rc.1`
+- commit locally with a conventional `chore(release): prepare 0.3.2`
   checkpoint; do not push or publish.

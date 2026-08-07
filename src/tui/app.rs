@@ -873,7 +873,9 @@ impl App {
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
             .split(chunks[1]);
         let pane = content[1];
-        if pane.width == 0 || pane.height == 0 {
+        let image_width = pane.width.saturating_sub(2);
+        let image_height = pane.height.saturating_sub(2);
+        if image_width == 0 || image_height == 0 {
             let changed = self.graphics.clear_pane()?;
             if changed {
                 self.add_activity("Graphics pane is empty; released terminal frame.");
@@ -881,17 +883,22 @@ impl App {
             return Ok(changed);
         }
         let changed = self.graphics.resize(
-            PaneArea::new(pane.x, pane.y, pane.width, pane.height),
-            PixelSize::new(pane.width as u32, pane.height as u32),
-            PixelSize::new(pane.width as u32, pane.height as u32),
+            PaneArea::new(
+                pane.x.saturating_add(1),
+                pane.y.saturating_add(1),
+                image_width,
+                image_height,
+            ),
+            PixelSize::new(image_width as u32, image_height as u32),
+            PixelSize::new(image_width as u32, image_height as u32),
             CaptureScale::FULL,
             self.graphics.browser_revision(),
         )?;
         if changed {
             self.add_activity(format!(
-                "Graphics pane resized to {}x{} ({}).",
-                pane.width,
-                pane.height,
+                "Graphics image area resized to {}x{} ({}).",
+                image_width,
+                image_height,
                 self.graphics.mode().label()
             ));
         }

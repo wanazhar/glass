@@ -26,6 +26,7 @@ pub const MAX_OWNERSHIP_RECORDS: usize = 32;
 
 const KITTY_INTRO: &[u8] = b"\x1b_G";
 const KITTY_END: &[u8] = b"\x1b\\";
+const KITTY_CHUNK_BYTES: usize = 4096;
 
 /// Terminal capability selected by negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -609,14 +610,42 @@ impl TerminalGraphics {
         };
         let (x, y, width, height) = self.kitty_placement();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&current.bytes);
-        let mut output =
-            Vec::with_capacity(KITTY_INTRO.len() + encoded.len() + KITTY_END.len() + 96);
-        output.extend_from_slice(KITTY_INTRO);
-        output.extend_from_slice(
-            format!("a=p,x={x},y={y},w={width},h={height},f={format},{extra}m=0;").as_bytes(),
+        let chunk_count = encoded.len().div_ceil(KITTY_CHUNK_BYTES).max(1);
+        let mut output = Vec::with_capacity(
+            KITTY_INTRO
+                .len()
+                .saturating_mul(chunk_count)
+                .saturating_add(encoded.len())
+                .saturating_add(KITTY_END.len().saturating_mul(chunk_count))
+                .saturating_add(128),
         );
-        output.extend_from_slice(encoded.as_bytes());
-        output.extend_from_slice(KITTY_END);
+        output.extend_from_slice(
+            format!(
+                "\x1b[{};{}H",
+                u32::from(y).saturating_add(1),
+                u32::from(x).saturating_add(1)
+            )
+            .as_bytes(),
+        );
+        for index in 0..chunk_count {
+            let start = index.saturating_mul(KITTY_CHUNK_BYTES);
+            let end = start.saturating_add(KITTY_CHUNK_BYTES).min(encoded.len());
+            let final_chunk = index + 1 == chunk_count;
+            output.extend_from_slice(KITTY_INTRO);
+            if index == 0 {
+                let continuation = if final_chunk { "" } else { "m=1" };
+                output.extend_from_slice(
+                    format!("a=T,q=2,c={width},r={height},C=1,f={format},{extra}{continuation};")
+                        .as_bytes(),
+                );
+            } else if final_chunk {
+                output.extend_from_slice(b";");
+            } else {
+                output.extend_from_slice(b"m=1;");
+            }
+            output.extend_from_slice(&encoded.as_bytes()[start..end]);
+            output.extend_from_slice(KITTY_END);
+        }
         if output.len() > MAX_OUTPUT_BYTES {
             return Err(GraphicsError::OutputTooLarge {
                 actual: output.len(),
@@ -907,7 +936,8 @@ mod tests {
         let command = std::str::from_utf8(&rendered.bytes).unwrap();
         assert!(command.contains("f=32"));
         assert!(command.contains("s=2,v=1"));
-        assert!(command.contains("x=2,y=3,w=40,h=20"));
+        assert!(command.starts_with("\x1b[4;3H\x1b_Ga=T"));
+        assert!(command.contains("c=40,r=20,C=1,f=32"));
     }
     #[test]
     fn unsupported_encoding_reports_semantic_fallback() {
@@ -1074,8 +1104,34 @@ mod tests {
             .unwrap();
         graphics.submit(frame(1, 1), b"png").unwrap();
         let output = graphics.render_current("ignored").unwrap();
-        assert!(output.bytes.starts_with(KITTY_INTRO));
+        let command = std::str::from_utf8(&output.bytes).unwrap();
+        assert!(command.starts_with("\x1b[4;10H\x1b_Ga=T"));
+        assert!(command.contains("c=26,r=20,C=1,f=100"));
         assert!(output.bytes.len() <= MAX_OUTPUT_BYTES);
         assert!(!graphics.shutdown().is_empty());
+    }
+    #[test]
+    fn kitty_output_chunks_large_payloads() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(0, 0, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        let payload = vec![0xabu8; 5_000];
+        graphics.submit(frame(1, 1), &payload).unwrap();
+        let output = graphics.render_current("ignored").unwrap();
+        let intro_count = output
+            .bytes
+            .windows(KITTY_INTRO.len())
+            .filter(|window| *window == KITTY_INTRO)
+            .count();
+        assert_eq!(intro_count, 2);
+        assert!(output.bytes.windows(4).any(|window| window == b"m=1;"));
+        assert!(output.bytes.ends_with(KITTY_END));
     }
 }

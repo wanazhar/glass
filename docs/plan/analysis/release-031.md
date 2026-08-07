@@ -1,6 +1,7 @@
 # Glass v0.3.1 — issue #31 delivery analysis
 
-Status: Active local development plan. No publication or remote release is part of this sprint.
+Status: Implemented and integrated in the final local `0.3.1` release checkout.
+Publication and remote release operations remain explicit maintainer actions.
 
 Source of truth: [issue #31](https://github.com/wanazhar/glass/issues/31) and its authoritative amendments. The release contract has four mandatory pillars plus the cross-cutting Glass Experience Layer:
 
@@ -88,4 +89,5 @@ CLI/TUI/MCP/daemon/Rust API → shared resource references, errors, revisions, a
 - Each foundation task is committed with a conventional commit before review.
 - Review agents inspect committed code against this analysis and issue #31; blocking findings require fixes before merge.
 - Integration is merged locally only. No `git push`, tag, `cargo publish`, or GitHub release operation is permitted.
-- The final local report distinguishes completed foundation/integration work from remaining release gates; `v0.3.1` is not claimed until all mandatory issue gates pass.
+- The final local report distinguishes completed implementation and validation
+  from the separate tag, push, registry publication, and GitHub Release steps.

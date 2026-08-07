@@ -11,15 +11,18 @@ use crate::browser::session::{
     BatchMode, InteractionMode, PreflightAction, VisualClip, VisualFormat,
 };
 use crate::results::ResponseMode;
-/// Top-level CLI configuration parsed from command-line arguments.
+/// Glass — semantic browser execution for humans and agents.
 ///
-/// Wraps clap-derived flags for policy, browser selection, session options,
-/// and the subcommand to execute.
+/// Run `glass` for the interactive terminal workspace, or choose a command for
+/// a bounded one-shot operation. Browser actions share revision guards,
+/// verification, workspace ownership, and typed results across CLI, TUI, MCP,
+/// daemon, and Rust interfaces.
 #[derive(Debug, Parser)]
 #[command(
     name = "glass",
     version,
-    about = "Lightweight local-first browser agent using raw Chrome DevTools Protocol"
+    about = "Semantic browser execution for humans and agents",
+    after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nUse `glass <command> --help` for command-specific options and examples."
 )]
 pub struct Cli {
     /// Browser safety preset. Hardened mode fails closed for privileged operations.

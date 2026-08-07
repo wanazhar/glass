@@ -148,9 +148,9 @@ def main() -> None:
         )
 
     required_text = {
-        "README.md": "| 0.3.0 | Current release |",
+        "README.md": "| 0.3.1 | Current source release |",
         "CHANGELOG.md": "## [0.3.0] - 2026-08-06",
-        "docs/release-checklist.md": "current release is `glass-browser` version `0.3.0`",
+        "docs/release-checklist.md": "release checkout is `glass-browser` version `0.3.1`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.7 published; source-only GitHub Release",
     }
     for relative_path, expected in required_text.items():

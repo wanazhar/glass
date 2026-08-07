@@ -1,9 +1,9 @@
 [package]
 name = "glass-browser"
-version = "0.3.1-rc.1"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
-description = "Local, revision-safe Chrome automation runtime for agents, with semantic observation, verified workflows, MCP, CLI, TUI, and Rust APIs"
+description = "Local browser intelligence runtime with semantic memory, verified workflows, multi-surface understanding, CLI, TUI, MCP, and Rust APIs"
 license = "MIT"
 readme = "README.md"
 documentation = "https://docs.rs/glass-browser"

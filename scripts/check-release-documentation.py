@@ -5,18 +5,17 @@ import json
 import pathlib
 import re
 import subprocess
-import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.3.0 | Current release |",
+        "| 0.3.1 | Current source release |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
-        "## [0.3.0] - 2026-08-06",
+        "## [0.3.1] - 2026-08-07",
         "## [Unreleased]",
     ],
     "docs/plan/README.md": [
@@ -26,8 +25,8 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "current release is `glass-browser` version `0.3.0`",
-        "only Linux ARM64",
+        "release checkout is `glass-browser` version `0.3.1`",
+        "## 0.3.1 pre-publication checklist",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
@@ -36,9 +35,10 @@ REQUIRED_MARKERS = {
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [
+        "## 0.3.1 pre-publication evidence",
+        "final stable `0.3.1` package metadata",
         "`feature-parity.json`",
         "cargo publish --locked --dry-run",
-        "no native binary assets are expected",
         "`glass-browser 0.3.0` to crates.io",
         "85 advertised MCP tools",
     ],
@@ -46,21 +46,6 @@ REQUIRED_MARKERS = {
         "`0.2.0` publication boundary has been crossed",
         "`0.2.7 published; source-only GitHub Release",
         "`0.2.8 local development; not ready for",
-    ],
-}
-CANDIDATE_MARKERS = {
-    "CHANGELOG.md": [
-        "## [0.3.1-rc.1] - 2026-08-06",
-        "not tagged, pushed, or published",
-    ],
-    "docs/release-checklist.md": [
-        "## 0.3.1-rc.1 local candidate",
-        "no tag, push, crates.io publication, or GitHub Release",
-    ],
-    "docs/release-evidence.md": [
-        "## 0.3.1-rc.1 local candidate",
-        "not tagged, pushed, published",
-        "Known issue gates",
     ],
 }
 FORBIDDEN_MARKERS = (
@@ -83,22 +68,9 @@ FORBIDDEN_CURRENT_RELEASE_PATTERNS = (
         re.IGNORECASE,
     ),
 )
-FORBIDDEN_RC_PUBLICATION_PATTERNS = (
+FORBIDDEN_PRERELEASE_PATTERNS = (
     re.compile(
-        r"\b0\.3\.1-rc\.1\s+is\s+(?:now\s+)?(?:published|available|"
-        r"the\s+(?:current|latest)\s+(?:release|version))\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:published|publication|publish(?:ed|ing)?)\s+(?:to\s+)?"
-        r"(?:crates\.io|the\s+registry|GitHub|a\s+GitHub\s+Release)?"
-        r"\s*(?:release\s+)?(?:`?glass-browser`?\s+)?`?0\.3\.1-rc\.1`?\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bGitHub\s+Release\s+v?0\.3\.1-rc\.1\b", re.IGNORECASE),
-    re.compile(
-        r"\bcrates\.io\b[^\n]{0,80}\b(?:contains|has|lists|offers|"
-        r"provides|publishes?)\b[^\n]{0,40}\b0\.3\.1-rc\.1\b",
+        r"\b0\.3\.1-(?:alpha|beta|rc)[.0-9-]*\b",
         re.IGNORECASE,
     ),
 )
@@ -147,9 +119,9 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
+    if package_version != "0.3.1":
+        fail(f"release checkout must use stable package version 0.3.1, not {package_version}")
     marker_sets = REQUIRED_MARKERS
-    if package_version == "0.3.1-rc.1":
-        marker_sets = {**REQUIRED_MARKERS, **CANDIDATE_MARKERS}
     failures = []
     for relative, markers in marker_sets.items():
         path = ROOT / relative
@@ -161,10 +133,10 @@ def main() -> None:
             if marker not in text:
                 failures.append(f"{relative} is missing {marker!r}")
         lowered = text.lower()
-        for pattern in FORBIDDEN_RC_PUBLICATION_PATTERNS:
+        for pattern in FORBIDDEN_PRERELEASE_PATTERNS:
             if pattern.search(lowered):
                 failures.append(
-                    f"{relative} contains an accidental publication claim for 0.3.1-rc.1"
+                    f"{relative} contains stale 0.3.1 prerelease metadata"
                 )
         for marker in FORBIDDEN_MARKERS:
             if marker in lowered:
@@ -181,10 +153,10 @@ def main() -> None:
             lowered = path.read_text(encoding="utf-8").lower()
         except OSError as error:
             fail(f"cannot read {relative}: {error}")
-        for pattern in FORBIDDEN_RC_PUBLICATION_PATTERNS:
+        for pattern in FORBIDDEN_PRERELEASE_PATTERNS:
             if pattern.search(lowered):
                 failures.append(
-                    f"{relative} contains an accidental publication claim for 0.3.1-rc.1"
+                    f"{relative} contains stale 0.3.1 prerelease metadata"
                 )
         for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
             if pattern.search(lowered):

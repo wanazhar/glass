@@ -1,13 +1,16 @@
 # Glass
 
-Glass is a local, revision-safe Chrome automation runtime for agents. It
-combines semantic observation, verified workflows, MCP, CLI, TUI, and Rust
-APIs while keeping every browser action explicit and bounded.
+Glass is a local, revision-safe browser intelligence runtime for humans and
+agents. It combines semantic memory, multi-surface understanding, verified
+workflows, a terminal browser workspace, MCP, CLI, and Rust APIs while keeping
+every browser action explicit and bounded.
 
-Glass controls Chrome or Chromium through the Chrome DevTools Protocol (CDP);
-it does not include a browser runtime or create an autonomous action plan.
-Install the executable with Cargo, then use the safe observe → guarded action
-→ verify loop.
+Glass controls Chrome or Chromium through a transport-neutral backend
+contract. CDP is the primary production backend, WebDriver BiDi is an
+experimental bounded backend, and unsupported capabilities fail closed. Glass
+does not include a browser engine or create an autonomous action plan. Install
+the executable with Cargo, then use the safe observe → guarded action → verify
+loop.
 
 ## Support status
 
@@ -18,8 +21,9 @@ Install the executable with Cargo, then use the safe observe → guarded action
 | macOS x86-64 | Declared target; native runtime certification pending |
 | macOS arm64 | Declared target; native runtime certification pending |
 | Windows | Unsupported |
-| 0.3.0 | Current release |
-| 0.2.9 | Previous published release |
+| 0.3.1 | Current source release |
+| 0.3.0 | Previous published release |
+| 0.2.9 | Earlier published release |
 | 0.2.8 | Earlier published release |
 | Chrome and Chromium | Supported browser families |
 | Firefox, WebKit, and Safari | Unsupported browser families |
@@ -61,9 +65,10 @@ enabling opt-in features.
 
 ## Run Glass
 
-Start the TUI for a visible session:
+Start the interactive terminal workspace (both forms are equivalent):
 
 ```console
+glass
 glass tui
 ```
 
@@ -221,15 +226,16 @@ revision-safe actions, target and frame management, storage, downloads,
 screenshots, PDFs, semantic observations, and the MCP server.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) remain experimental repository clients for the 0.3.0
+client](clients/python) remain experimental repository clients for the 0.3.1
 release line. They are not published as npm or PyPI packages, do not
 include a browser runtime, and do not change the primary Cargo installation
 path.
 
 ## Safety and scope
 
-Glass requires a local Chrome or Chromium process and a local CDP connection.
-It does not provide a hosted browser service or Windows support.
+Glass requires a local Chrome or Chromium process. The primary backend uses a
+local CDP connection; the bounded WebDriver BiDi backend remains experimental.
+Glass does not provide a hosted browser service or Windows support.
 
 Use a dedicated browser profile. Keep the CDP endpoint local. Treat profiles,
 screenshots, DOM output, cookies, and logs as sensitive. Read the

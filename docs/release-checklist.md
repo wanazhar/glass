@@ -4,24 +4,31 @@ Use this checklist for each public release.
 
 ## Release status
 
-The current release is `glass-browser` version `0.3.0`. Linux x86-64, Linux
-arm64, macOS x86-64, and macOS arm64 remain declared targets; only Linux ARM64
-evidence is currently recorded. Other declared targets require their own native
-validation.
+The release checkout is `glass-browser` version `0.3.1`. Linux x86-64, Linux
+arm64, macOS x86-64, and macOS arm64 remain declared targets. Target support
+claims remain bounded by the machine-readable feature-parity matrix and native
+evidence recorded for each environment.
 Windows is unsupported.
 
-## 0.3.1-rc.1 local candidate
+## 0.3.1 pre-publication checklist
 
-This checklist section records local candidate metadata only. There is no tag, push, crates.io publication, or GitHub Release for `0.3.1-rc.1`; the current published release remains `0.3.0`.
+The source checkout is final stable `0.3.1`; it is not a prerelease package.
+Tagging, pushing, crates.io publication, and GitHub Release creation remain
+separate maintainer actions and have not been performed by this checklist.
 
-- [x] Synchronize Cargo, Python, and TypeScript package metadata for the local
-      candidate (Python uses `0.3.1rc1`, its PEP 440 spelling).
+- [x] Synchronize Cargo, Python, and TypeScript package metadata at `0.3.1`.
 - [x] Run version-sync, feature-parity, and release-documentation validators.
-- [x] Record bounded issue #31 implementation evidence and target
-      certification boundaries.
-- [ ] Complete full release publication gates and obtain explicit approval.
-- [ ] Complete native target certification and any remaining issue #31
-      integration gates.
+- [x] Run formatting and all-target Rust tests.
+- [x] Run the opt-in 17-scenario Chromium smoke suite.
+- [x] Run the 120-frame real Chromium screencast benchmark at 1280×720; the
+      event-driven path sustained 59.47 fps with zero dropped frames.
+- [x] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
+      gates.
+- [x] Inspect the 226-file crate package and complete the crates.io publication
+      dry-run without uploading.
+- [x] Record bounded issue #31 implementation evidence and target boundaries.
+- [ ] Obtain explicit approval, create the signed `v0.3.1` tag, push it, and
+      verify the crates.io package and matching GitHub Release.
 
 Every version tag must have a matching, published, non-draft GitHub Release
 entry. The release entry contains generated notes and does not imply native

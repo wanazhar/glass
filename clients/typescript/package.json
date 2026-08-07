@@ -1,6 +1,6 @@
 {
   "name": "@glass-browser/client",
-  "version": "0.3.1-rc.1",
+  "version": "0.3.1",
   "description": "Dependency-free TypeScript thin client for the Glass MCP browser control plane",
   "type": "module",
   "main": "./dist/index.js",

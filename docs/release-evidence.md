@@ -1,27 +1,39 @@
 # Release evidence
 
-## 0.3.1-rc.1 local candidate
+## 0.3.1 pre-publication evidence
 
-This is a local release candidate only. It is not tagged, pushed, published,
-or represented by a crates.io package or GitHub Release. The published
-`glass-browser 0.3.0` evidence below remains the current release record.
+The source checkout contains the final stable `0.3.1` package metadata. It is
+not tagged, pushed, published, or represented by a crates.io package or GitHub
+Release yet; those are explicit maintainer publication steps. The published
+`glass-browser 0.3.0` evidence below remains the latest registry record until
+the `v0.3.1` workflow completes.
 
 ### Completed validation scope
 
-- Rust, Python, and TypeScript package metadata are synchronized at the
-  `0.3.1-rc.1` candidate (with Python's PEP 440 spelling `0.3.1rc1`).
-- `check-version-sync.py`, `check-feature-parity.py`, and
-  `check-release-documentation.py` pass against this checkout.
-- Candidate evidence records the bounded four-pillar and Experience Layer
-  implementation scope without extending target certification claims.
+- Rust, Python, and TypeScript package metadata are synchronized at `0.3.1`.
+- The version, feature-parity, release-documentation, reliability-matrix,
+  read-only-adapter, Experience Layer, and Web IR corpus checks pass.
+- `cargo test --all-targets --locked` passes the complete source suite.
+- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
+  --test-threads=1` passes all 17 Chromium scenarios on the recorded Linux ARM64
+  environment.
+- The 120-frame, 1280×720 real Chromium screencast benchmark sustained 59.47
+  receive-plus-decode fps with 120 distinct frames and zero dropped frames;
+  bounded screenshot polling measured 9.98 fps on the same run. This is host
+  evidence, not a cross-platform frame-rate guarantee.
+- Clippy with warnings denied, warning-free rustdoc, `cargo deny`, `cargo
+  audit`, and the fuzz-crate all-target check pass.
+- `cargo package` contains 226 files (3.9 MiB; 778.1 KiB compressed), and
+  `cargo publish --dry-run` completes without uploading.
+- Issue #31 implementation evidence covers all four pillars and the Experience
+  Layer without extending certification claims to unobserved targets.
 
-### Known issue gates
+### Publication boundary
 
 - No tag, push, crates.io publication, or GitHub Release operation has been
-  performed for this candidate.
-- Full release publication approval, native target certification, package
-  dry-runs, and remaining issue #31 integration gates are still required
-  before changing the published/current release record.
+  performed by this pre-publication audit.
+- The release workflow rejects prerelease versions and will publish only when
+  an approved stable `v0.3.1` tag exactly matches the crate version.
 
 The 0.3.0 release follows the crates-only distribution boundary.
 The `glass-browser` 0.3.0 release has a source-only GitHub Release with
@@ -149,5 +161,6 @@ Publication verification:
 The native evidence remains limited to the recorded Linux ARM64 environment;
 other declared targets are not certified by this release.
 
-The `glass-browser` `0.3.0` crate is the current release, and `v0.3.0` has a
-matching published GitHub Release entry. No native binary assets are expected.
+The `glass-browser` `0.3.0` crate remains the latest published registry version
+until `v0.3.1` is approved and pushed. Its matching GitHub Release entry has no
+native binary assets, as expected for the crates-only distribution boundary.

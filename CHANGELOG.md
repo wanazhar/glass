@@ -5,28 +5,43 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.3.1-rc.1] - 2026-08-06
+## [0.3.1] - 2026-08-07
 
-This is a local release candidate only: it is not tagged, pushed, or published
-to crates.io or GitHub.
+### Added
 
-### Validation scope
+- Added profile-, workspace-, and origin-scoped semantic memory with exact and
+  graph retrieval, optional injected embeddings, explicit lifecycle states,
+  provenance, inspection, export, pruning, and deletion. Memory remains
+  advisory and must match fresh Web IR evidence before influencing compilation.
+- Added a bounded multi-surface model for document, accessibility, frame,
+  shadow, SVG, graphics, media, terminal, remote-application, browser-native,
+  extension, and opaque surfaces with explicit coverage and action evidence.
+- Added a transport-neutral browser capability boundary, deterministic backend
+  selection, the production CDP adapter, a bounded experimental WebDriver BiDi
+  backend, and a browser-free semantic proof backend for conformance tests.
+- Added persistent workspace identity, resource references, actor roles,
+  revision-guarded mutation leases, observer attachments, replay inspection,
+  and semantic revision diffs across CLI, MCP, daemon, TUI, and Rust contracts.
+- Added browser-presentation and terminal-graphics contracts with bounded
+  latest-frame delivery, Kitty rendering, semantic fallback, viewport-safe
+  input mapping, performance metrics, and takeover-aware TUI workspace modes.
+- Added user-facing `workspace`, `memory`, `surfaces`, `backend`, `replay`, and
+  `doctor` command families plus a useful command-free TUI entry point.
 
-- Rust, Python, and TypeScript package metadata are synchronized for the
-  `0.3.1-rc.1` candidate (Python uses its PEP 440 spelling, `0.3.1rc1`).
-- Version-sync, feature-parity, and release-documentation validators pass
-  against the local candidate checkout.
-- The four-pillar and Experience Layer implementation evidence remains
-  bounded by the issue #31 contracts and the target-specific certification
-  matrix.
+### Changed
 
-### Known issue gates
+- Routed live extraction, semantic actions, task execution, and presentation
+  through revision-bound backend and surface evidence without exposing raw
+  transport identifiers as public execution authority.
+- Updated package metadata, installation guidance, migration documentation,
+  capability matrices, and release checks for the integrated issue #31
+  architecture.
 
-- No tag, push, crates.io publication, or GitHub Release is part of this
-  candidate.
-- Full release publication gates, native target certification, and any
-  remaining issue #31 integration checks must pass before a public release
-  claim is made.
+### Fixed
+
+- Hardened workspace persistence, profile ownership, frame lifecycle, surface
+  provenance, backend dispatch, semantic-memory scoping, and advisory rejection
+  against stale, cross-scope, malformed, or unsupported inputs.
 
 
 ## [0.3.0] - 2026-08-06

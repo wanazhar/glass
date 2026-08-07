@@ -51,6 +51,8 @@ pub mod capabilities;
 pub mod cli;
 /// Local Unix-socket daemon lifecycle and MCP bridge.
 pub mod daemon;
+/// Terminal-native project development runtime contracts.
+pub mod development;
 /// Validated extension metadata and permission boundaries.
 pub mod extensions;
 /// Experimental bounded browser-evidence extraction contracts.

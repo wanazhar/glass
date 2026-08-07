@@ -31,6 +31,7 @@ all-features = true
 default = []
 visual-compare = ["dep:png"]
 fuzzing = []
+development-runtime = ["dep:portable-pty", "dep:toml"]
 
 [dependencies]
 base64 = "0.22"
@@ -60,8 +61,8 @@ sha2 = "0.10"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 png = { version = "0.17", optional = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
-portable-pty = "0.9"
-toml = "0.9"
+portable-pty = { version = "0.9", optional = true }
+toml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 base64-simd = "0.8"

@@ -31,6 +31,8 @@
 //! - `visual-compare` enables PNG comparison helpers for screenshot checks.
 //! - `fuzzing` enables test-oriented fuzzing hooks and is not needed by normal
 //!   applications.
+//! - `development-runtime` enables the PTY and `glass.toml` implementation
+//!   consumed by `glass-dev`; standalone browser installs leave it disabled.
 //!
 //! # Modules
 //!

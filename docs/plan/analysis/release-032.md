@@ -23,8 +23,10 @@ The workspace root is virtual (`resolver = "3"`), publication is browser
 first, and the workflow waits for crates.io visibility before packaging,
 publishing, and clean-installing `glass-dev`. Executable names do not collide.
 The browser product hides and rejects the project/agent commands and disables
-Development mode; it never installs Pi or Node. The dependency direction is
-one-way.
+Development mode. Its default feature set does not compile the PTY or
+`glass.toml` implementation; `glass-dev` explicitly enables
+`development-runtime`. It never installs Pi or Node. The dependency direction
+is one-way.
 
 ## Pillar evidence matrix
 

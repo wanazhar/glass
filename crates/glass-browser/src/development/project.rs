@@ -157,17 +157,7 @@ impl ProjectWorkspace {
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = canonical_root(root.as_ref())?;
         let detection = detect_project(&root)?;
-        let config = detection
-            .config_path
-            .as_deref()
-            .map(fs::read_to_string)
-            .transpose()?
-            .map(|text| {
-                toml::from_str::<GlassProjectConfig>(&text)
-                    .map_err(|error| DevelopmentError::Config(error.to_string()))
-            })
-            .transpose()?
-            .unwrap_or_default();
+        let config = load_project_config(detection.config_path.as_deref())?;
         let timeline = Timeline::for_project(&root)?;
         let graph_path = timeline.path().with_file_name("graph.json");
         let graph = DevelopmentGraph::load(&graph_path)?;
@@ -965,16 +955,7 @@ pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetect
         None
     };
     let framework = detect_framework(&root);
-    let config = config_path
-        .as_deref()
-        .map(fs::read_to_string)
-        .transpose()?
-        .map(|text| {
-            toml::from_str::<GlassProjectConfig>(&text)
-                .map_err(|error| DevelopmentError::Config(error.to_string()))
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let config = load_project_config(config_path.as_deref())?;
     let defaults = default_commands(&root, package_manager.as_deref());
     let build_system = if root.join("Cargo.toml").is_file() {
         Some("cargo".into())
@@ -1031,6 +1012,28 @@ pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetect
         agent_harness: config.agent.harness,
         config_path,
     })
+}
+
+#[cfg(feature = "development-runtime")]
+fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectConfig> {
+    path.map(fs::read_to_string)
+        .transpose()?
+        .map(|text| {
+            toml::from_str::<GlassProjectConfig>(&text)
+                .map_err(|error| DevelopmentError::Config(error.to_string()))
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+#[cfg(not(feature = "development-runtime"))]
+fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectConfig> {
+    if path.is_some() {
+        return Err(DevelopmentError::Config(
+            "glass.toml belongs to glass-dev; enable development-runtime".into(),
+        ));
+    }
+    Ok(GlassProjectConfig::default())
 }
 
 fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {

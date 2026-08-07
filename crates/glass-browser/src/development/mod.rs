@@ -15,6 +15,10 @@ pub mod experiment;
 pub mod graph;
 pub mod language;
 pub mod neovim;
+#[cfg(feature = "development-runtime")]
+pub mod process;
+#[cfg(not(feature = "development-runtime"))]
+#[path = "process_disabled.rs"]
 pub mod process;
 pub mod project;
 pub mod replay;

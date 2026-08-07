@@ -16,7 +16,7 @@ name = "glass"
 path = "src/main.rs"
 
 [dependencies]
-glass-browser = { package = "glass-browser", version = "0.3.2-rc.1", path = "../.." }
+glass-browser = { package = "glass-browser", path = "../.." }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

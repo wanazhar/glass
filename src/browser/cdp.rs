@@ -197,6 +197,8 @@ pub struct CdpScreencastFrame {
     pub data: String,
     pub metadata: Value,
     pub session_id: Option<String>,
+    /// The Page.screencastFrame session identifier used for acknowledgement.
+    pub frame_id: u64,
 }
 
 struct ScreencastSink {
@@ -1382,6 +1384,33 @@ impl CdpClient {
             .await
     }
 
+    /// Acknowledge one consumed Page.screencastFrame.
+    ///
+    /// Acknowledgements are intentionally issued by the presentation consumer
+    /// rather than the socket reader so Chrome cannot keep encoding frames
+    /// while the bounded mailbox is saturated.
+    pub async fn ack_screencast_frame(
+        &self,
+        session_id: Option<&str>,
+        frame_id: u64,
+    ) -> Result<(), CdpError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut request = serde_json::json!({
+            "id": id,
+            "method": "Page.screencastFrameAck",
+            "params": {"sessionId": frame_id}
+        });
+        if let Some(session_id) = session_id {
+            request["sessionId"] = Value::from(session_id);
+        }
+        self.tx
+            .send(Command::FireAndForget {
+                json: request.to_string(),
+            })
+            .map_err(|_| CdpError::transport("CDP connection is closed"))?;
+        Ok(())
+    }
+
     /// Ask the connection task to close its WebSocket.
     pub async fn close(&self) {
         let _ = self.tx.send(Command::Close);
@@ -1394,6 +1423,24 @@ struct ScreencastDispatch<'a> {
     dropped: &'a AtomicU64,
     command_tx: &'a mpsc::UnboundedSender<Command>,
     next_id: &'a AtomicU64,
+}
+fn send_screencast_ack(
+    screencast: &ScreencastDispatch<'_>,
+    session_id: Option<&str>,
+    frame_id: u64,
+) {
+    let id = screencast.next_id.fetch_add(1, Ordering::Relaxed);
+    let mut ack = serde_json::json!({
+        "id": id,
+        "method": "Page.screencastFrameAck",
+        "params": {"sessionId": frame_id}
+    });
+    if let Some(session_id) = session_id {
+        ack["sessionId"] = Value::from(session_id);
+    }
+    let _ = screencast.command_tx.send(Command::FireAndForget {
+        json: ack.to_string(),
+    });
 }
 
 fn handle_incoming_message(
@@ -1428,42 +1475,46 @@ fn handle_incoming_message(
         if method == "Page.screencastFrame" {
             match serde_json::from_str::<IncomingEventParams>(text) {
                 Ok(mut payload) => {
-                    let frame_session_id = payload.params["sessionId"].as_u64();
-                    if let Some(frame_session_id) = frame_session_id {
-                        let id = screencast.next_id.fetch_add(1, Ordering::Relaxed);
-                        let mut ack = serde_json::json!({
-                            "id": id,
-                            "method": "Page.screencastFrameAck",
-                            "params": {"sessionId": frame_session_id}
-                        });
-                        if let Some(session_id) = message.session_id.as_deref() {
-                            ack["sessionId"] = Value::from(session_id);
-                        }
-                        let _ = screencast.command_tx.send(Command::FireAndForget {
-                            json: ack.to_string(),
-                        });
-                    }
+                    let Some(frame_id) = payload.params["sessionId"].as_u64() else {
+                        let _ = events.send(CdpEvent { method });
+                        return;
+                    };
                     let data = payload.params["data"].take();
                     let metadata = payload.params["metadata"].take();
                     let frame = match data {
                         Value::String(data) => Some(CdpScreencastFrame {
                             data,
                             metadata,
-                            session_id: message.session_id,
+                            session_id: message.session_id.clone(),
+                            frame_id,
                         }),
                         _ => None,
                     };
                     if let Some(frame) = frame {
+                        let frame_id = frame.frame_id;
                         let sink = screencast.sink.lock().expect("screencast sink poisoned");
-                        if let Some(sink) = sink.as_ref()
-                            && sink.session_id == frame.session_id
-                        {
-                            screencast.received.fetch_add(1, Ordering::Relaxed);
-                            if frame.data.len() > 32 * 1024 * 1024
-                                || sink.sender.try_send(frame).is_err()
-                            {
-                                screencast.dropped.fetch_add(1, Ordering::Relaxed);
+                        if let Some(sink) = sink.as_ref() {
+                            if sink.session_id == frame.session_id {
+                                screencast.received.fetch_add(1, Ordering::Relaxed);
+                                if frame.data.len() > 32 * 1024 * 1024
+                                    || sink.sender.try_send(frame).is_err()
+                                {
+                                    screencast.dropped.fetch_add(1, Ordering::Relaxed);
+                                    send_screencast_ack(
+                                        &screencast,
+                                        sink.session_id.as_deref(),
+                                        frame_id,
+                                    );
+                                }
+                            } else {
+                                send_screencast_ack(
+                                    &screencast,
+                                    frame.session_id.as_deref(),
+                                    frame_id,
+                                );
                             }
+                        } else {
+                            send_screencast_ack(&screencast, frame.session_id.as_deref(), frame_id);
                         }
                     }
                 }
@@ -1680,13 +1731,23 @@ mod tests {
         let mut frames = client
             .open_screencast_channel(Some("wanted".to_string()))
             .unwrap();
-        client.send("test.ready", None).await.unwrap();
+        let ready_client = client.clone();
+        let ready = tokio::spawn(async move {
+            ready_client.send("test.ready", None).await.unwrap();
+        });
 
         assert_eq!(methods.recv().await.unwrap().method, "Page.screencastFrame");
-        assert_eq!(frames.recv().await.unwrap().data, "frame-1");
-        assert_eq!(frames.recv().await.unwrap().data, "frame-2");
+        for expected in ["frame-1", "frame-2", "frame-3", "frame-4"] {
+            let frame = frames.recv().await.unwrap();
+            assert_eq!(frame.data, expected);
+            client
+                .ack_screencast_frame(frame.session_id.as_deref(), frame.frame_id)
+                .await
+                .unwrap();
+        }
+        ready.await.unwrap();
         assert!(payloads.try_recv().is_err());
-        assert_eq!(client.screencast_stats(), (4, 2));
+        assert_eq!(client.screencast_stats(), (4, 0));
 
         client.close().await;
         server.await.unwrap();

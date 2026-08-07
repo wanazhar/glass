@@ -212,45 +212,89 @@ pub fn parse_accessibility_tree(raw: &Value) -> Vec<AxNode> {
         .collect()
 }
 
+struct AxBuildFrame {
+    id: String,
+    child_ids: Vec<String>,
+    next_child: usize,
+    children: Vec<AxNode>,
+}
+
 fn build_ax_node(
     id: &str,
     by_id: &HashMap<String, Value>,
     visiting: &mut HashSet<String>,
 ) -> Option<AxNode> {
-    if !visiting.insert(id.to_string()) {
+    if by_id.get(id).is_none() || !visiting.insert(id.to_string()) {
         return None;
     }
-    let raw = by_id.get(id)?;
-    let children = raw["childIds"]
+
+    let mut stack = vec![AxBuildFrame {
+        id: id.to_string(),
+        child_ids: child_ids_for(by_id.get(id)?),
+        next_child: 0,
+        children: Vec::new(),
+    }];
+
+    loop {
+        let child_id = {
+            let frame = stack.last_mut()?;
+            let child_id = frame.child_ids.get(frame.next_child).cloned();
+            frame.next_child = frame.next_child.saturating_add(1);
+            child_id
+        };
+
+        if let Some(child_id) = child_id {
+            if by_id.get(&child_id).is_some() && visiting.insert(child_id.clone()) {
+                stack.push(AxBuildFrame {
+                    child_ids: child_ids_for(by_id.get(&child_id)?),
+                    id: child_id,
+                    next_child: 0,
+                    children: Vec::new(),
+                });
+            }
+            continue;
+        }
+
+        let frame = stack.pop()?;
+        visiting.remove(&frame.id);
+        let raw = by_id.get(&frame.id)?;
+        let role = property_text(raw, "role").unwrap_or_else(|| "unknown".to_string());
+        let interactive = is_interactive_role(&role)
+            || raw["properties"].as_array().is_some_and(|properties| {
+                properties.iter().any(|property| {
+                    property["name"].as_str() == Some("focusable")
+                        && property["value"]["value"].as_bool() == Some(true)
+                })
+            });
+        let node = AxNode {
+            ax_node_id: frame.id,
+            backend_dom_node_id: raw["backendDOMNodeId"].as_i64(),
+            role,
+            name: property_text(raw, "name").unwrap_or_default(),
+            description: property_text(raw, "description").unwrap_or_default(),
+            value: property_text(raw, "value"),
+            children: frame.children,
+            bounds: None,
+            interactive,
+            input_type: extract_input_type(raw),
+        };
+
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(node);
+        } else {
+            return Some(node);
+        }
+    }
+}
+
+fn child_ids_for(raw: &Value) -> Vec<String> {
+    raw["childIds"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter_map(|child_id| build_ax_node(child_id, by_id, visiting))
-        .collect();
-    visiting.remove(id);
-
-    let role = property_text(raw, "role").unwrap_or_else(|| "unknown".to_string());
-    let interactive = is_interactive_role(&role)
-        || raw["properties"].as_array().is_some_and(|properties| {
-            properties.iter().any(|property| {
-                property["name"].as_str() == Some("focusable")
-                    && property["value"]["value"].as_bool() == Some(true)
-            })
-        });
-
-    Some(AxNode {
-        ax_node_id: id.to_string(),
-        backend_dom_node_id: raw["backendDOMNodeId"].as_i64(),
-        role,
-        name: property_text(raw, "name").unwrap_or_default(),
-        description: property_text(raw, "description").unwrap_or_default(),
-        value: property_text(raw, "value"),
-        children,
-        bounds: None,
-        interactive,
-        input_type: extract_input_type(raw),
-    })
+        .map(String::from)
+        .collect()
 }
 
 fn property_text(raw: &Value, property: &str) -> Option<String> {
@@ -283,11 +327,12 @@ fn is_interactive_role(role: &str) -> bool {
 /// order (depth-first).
 pub fn find_interactive_elements(nodes: &[AxNode]) -> Vec<&AxNode> {
     let mut result = Vec::new();
-    for node in nodes {
+    let mut pending = nodes.iter().rev().collect::<Vec<_>>();
+    while let Some(node) = pending.pop() {
         if node.interactive {
             result.push(node);
         }
-        result.extend(find_interactive_elements(&node.children));
+        pending.extend(node.children.iter().rev());
     }
     result
 }
@@ -556,11 +601,12 @@ pub fn extract_text_content(nodes: &[AxNode]) -> String {
 }
 
 fn extract_text_recursive(nodes: &[AxNode], parts: &mut Vec<String>) {
-    for node in nodes {
+    let mut pending = nodes.iter().rev().collect::<Vec<_>>();
+    while let Some(node) = pending.pop() {
         if !node.name.is_empty() && node.role != "presentation" && node.role != "none" {
             parts.push(node.name.clone());
         }
-        extract_text_recursive(&node.children, parts);
+        pending.extend(node.children.iter().rev());
     }
 }
 
@@ -568,8 +614,13 @@ fn extract_text_recursive(nodes: &[AxNode], parts: &mut Vec<String>) {
 /// debugging and inspection.
 pub fn format_tree(nodes: &[AxNode], indent: usize) -> String {
     let mut output = String::new();
-    for node in nodes {
-        let prefix = "  ".repeat(indent);
+    let mut pending = nodes
+        .iter()
+        .rev()
+        .map(|node| (node, indent))
+        .collect::<Vec<_>>();
+    while let Some((node, depth)) = pending.pop() {
+        let prefix = "  ".repeat(depth);
         let interactive_marker = if node.interactive {
             " [interactive]"
         } else {
@@ -588,7 +639,8 @@ pub fn format_tree(nodes: &[AxNode], indent: usize) -> String {
             "{}[{}] \"{}\"{}{}\n",
             prefix, node.role, node.name, value_preview, interactive_marker
         ));
-        output.push_str(&format_tree(&node.children, indent + 1));
+        let child_depth = depth.saturating_add(1);
+        pending.extend(node.children.iter().rev().map(|child| (child, child_depth)));
     }
     output
 }
@@ -804,6 +856,39 @@ mod tests {
             Some(42)
         );
         assert!(format_tree(&tree, 0).contains("[interactive]"));
+    }
+
+    #[test]
+    fn parses_deep_accessibility_tree_without_recursive_stack_growth() {
+        let depth = 1024usize;
+        let nodes = (0..depth)
+            .map(|index| {
+                let child_ids = if index + 1 < depth {
+                    serde_json::json!([format!("node-{next}", next = index + 1)])
+                } else {
+                    serde_json::json!([])
+                };
+                serde_json::json!({
+                    "nodeId": format!("node-{index}"),
+                    "role": {"value": "generic"},
+                    "childIds": child_ids,
+                })
+            })
+            .collect::<Vec<_>>();
+        let tree = parse_accessibility_tree(&serde_json::json!({"nodes": nodes}));
+
+        assert_eq!(tree.len(), 1);
+        let mut node = &tree[0];
+        for index in 0..depth {
+            assert_eq!(node.ax_node_id, format!("node-{index}"));
+            if index + 1 < depth {
+                assert_eq!(node.children.len(), 1);
+                node = &node.children[0];
+            } else {
+                assert!(node.children.is_empty());
+            }
+        }
+        assert!(find_interactive_elements(&tree).is_empty());
     }
 
     #[test]

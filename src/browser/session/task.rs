@@ -7,6 +7,11 @@ use super::{
     StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
     parse_revisioned_reference,
 };
+use crate::browser::session::{
+    KnowledgeLearningPolicy, KnowledgeLearningRequest, KnowledgeLearningResult,
+    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeRecordBuildOptions, KnowledgeStore,
+    KnowledgeVerifiedWorkflowEvidence,
+};
 use crate::extraction::{
     EvidenceCoverage, EvidenceFact, EvidenceQuality, EvidenceSource, ExtractionBudgets,
     ExtractionEvidence, ExtractionEvidenceLimits, ExtractionRequest, ExtractionScope,
@@ -14,7 +19,8 @@ use crate::extraction::{
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{
-    TaskExecutionPlan, TaskPlanOperation, compile_task, effective_postconditions,
+    TaskCompilationOptions, TaskExecutionPlan, TaskPlanOperation, compile_task,
+    compile_task_with_options, effective_postconditions,
 };
 use crate::task_protocol::{
     GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy, TaskRiskClass,
@@ -82,6 +88,65 @@ fn live_task_evidence_sources() -> Vec<EvidenceSource> {
 
 impl BrowserSession {
     async fn compile_live_task(&self, task: &GlassTask) -> BrowserResult<TaskExecutionPlan> {
+        self.compile_live_task_with_memory(task, None).await
+    }
+
+    /// Compile a task from one fresh live Web IR revision while consulting
+    /// caller-owned advisory memory.
+    ///
+    /// Memory is explicitly opt-in. The current extraction remains
+    /// authoritative: the store receives only a lookup context built from a
+    /// fresh semantic observation whose revision must equal the compiled IR.
+    /// Historical records can explain ranking, but cannot provide entity
+    /// handles, actions, or postconditions.
+    pub async fn compile_live_task_with_knowledge(
+        &self,
+        task: &GlassTask,
+        store: &KnowledgeStore,
+        options: KnowledgeLookupOptions,
+    ) -> BrowserResult<TaskExecutionPlan> {
+        self.compile_live_task_with_memory(task, Some((store, options)))
+            .await
+    }
+
+    /// Persist one verified-learning witness after re-observing the live page.
+    ///
+    /// This is an explicit opt-in update path. The caller supplies a successful
+    /// guarded workflow witness and privacy scope; the session supplies the
+    /// fresh semantic observation, so a stale or mismatched revision cannot be
+    /// promoted into persistent memory.
+    pub async fn learn_verified_knowledge(
+        &self,
+        store: &mut KnowledgeStore,
+        build: KnowledgeRecordBuildOptions,
+        evidence: KnowledgeVerifiedWorkflowEvidence,
+        policy: KnowledgeLearningPolicy,
+    ) -> BrowserResult<KnowledgeLearningResult> {
+        let observation = self
+            .semantic_observe(SemanticObservationLevel::Structured)
+            .await?;
+        if observation.revision != evidence.guarded_revision {
+            return Err(format!(
+                "verified-learning witness revision {} does not match fresh observation revision {}",
+                evidence.guarded_revision, observation.revision
+            )
+            .into());
+        }
+        store
+            .learn_verified(KnowledgeLearningRequest {
+                observation: &observation,
+                build,
+                evidence,
+                policy,
+            })
+            .map_err(|error| error.to_string().into())
+    }
+
+    async fn compile_live_task_with_memory(
+        &self,
+        task: &GlassTask,
+        memory: Option<(&KnowledgeStore, KnowledgeLookupOptions)>,
+    ) -> BrowserResult<TaskExecutionPlan> {
         if matches!(
             task.task,
             TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
@@ -138,7 +203,30 @@ impl BrowserSession {
             budgets,
         };
         let ir = self.extract_web_ir(&request).await?;
-        compile_task(task, &ir).map_err(|error| error.to_string().into())
+        let plan = if let Some((store, options)) = memory {
+            let observation = self
+                .semantic_observe(SemanticObservationLevel::Structured)
+                .await?;
+            if observation.revision != ir.revision {
+                return Err(format!(
+                    "live semantic observation revision {} disagrees with extracted Web IR revision {}",
+                    observation.revision, ir.revision
+                )
+                .into());
+            }
+            let context = KnowledgeLookupContext::from_observation(&observation, options)?;
+            compile_task_with_options(
+                task,
+                &ir,
+                TaskCompilationOptions {
+                    knowledge_store: Some(store),
+                    knowledge_context: Some(&context),
+                },
+            )
+        } else {
+            compile_task(task, &ir)
+        };
+        plan.map_err(|error| error.to_string().into())
     }
 
     /// Execute a validated form task against one caller-observed revision.

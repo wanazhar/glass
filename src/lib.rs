@@ -121,9 +121,9 @@ pub use task_protocol::{
 };
 
 pub use task_compiler::{
-    TASK_COMPILER_VERSION, TASK_PLAN_SCHEMA_VERSION, TaskCompilationError,
+    TASK_COMPILER_VERSION, TASK_PLAN_SCHEMA_VERSION, TaskCompilationError, TaskCompilationOptions,
     TaskEvidenceRequirements, TaskExecutionPlan, TaskPlanOperation, TaskPlanPrecondition,
-    TaskPlanStep, compile_task,
+    TaskPlanStep, compile_task, compile_task_with_knowledge, compile_task_with_options,
 };
 
 pub use protocol::{

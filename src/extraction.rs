@@ -1699,6 +1699,7 @@ fn trim_to_output_budget(
     max_output_bytes: u32,
 ) -> Result<(), ExtractionContractError> {
     let mut removed_fact = false;
+    let mut removed_surface_set = false;
     while serde_json::to_vec(evidence)
         .map_err(|error| ExtractionContractError::new("$", error.to_string()))?
         .len()
@@ -1706,6 +1707,13 @@ fn trim_to_output_budget(
     {
         if evidence.facts.pop().is_none() {
             if evidence.surface_set.take().is_some() {
+                removed_surface_set = true;
+                evidence.limits.truncated = true;
+                evidence
+                    .coverage
+                    .reasons
+                    .push("surfaceSetBudgetTruncated".into());
+                evidence.coverage.reasons.truncate(16);
                 continue;
             }
             return Err(ExtractionContractError::new(
@@ -1732,7 +1740,7 @@ fn trim_to_output_budget(
         evidence.limits.text_bytes = evidence.facts.iter().map(fact_text_bytes).sum::<u32>();
     }
     evidence.limits.text_bytes = evidence.facts.iter().map(fact_text_bytes).sum::<u32>();
-    if removed_fact {
+    if removed_fact || removed_surface_set {
         evidence.coverage.structural = downgrade_coverage(evidence.coverage.structural);
         evidence.coverage.semantic = downgrade_coverage(evidence.coverage.semantic);
     }
@@ -2392,6 +2400,33 @@ mod tests {
                 .reasons
                 .iter()
                 .any(|reason| reason == "budgetTruncated")
+        );
+    }
+    #[test]
+    fn extraction_marks_surface_set_omission_when_output_budget_requires_it() {
+        let context = page_context();
+        let mut request = request();
+        request.sources = vec![
+            EvidenceSource::Accessibility,
+            EvidenceSource::Dom,
+            EvidenceSource::Frames,
+        ];
+        let complete = extract_page_context(&context, &request).unwrap();
+        assert!(complete.surface_set.is_some());
+        let mut facts_removed = complete.clone();
+        facts_removed.facts.clear();
+        let minimum_with_surfaces = serde_json::to_vec(&facts_removed).unwrap().len();
+        request.budgets.max_output_bytes = (minimum_with_surfaces - 1) as u32;
+
+        let bounded = extract_page_context(&context, &request).unwrap();
+        assert!(bounded.surface_set.is_none());
+        assert!(bounded.limits.truncated);
+        assert!(
+            bounded
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason == "surfaceSetBudgetTruncated")
         );
     }
 

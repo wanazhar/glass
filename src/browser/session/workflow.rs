@@ -2086,7 +2086,7 @@ impl super::BrowserSession {
         }
         let mut suffix = workflow.clone();
         suffix.steps = workflow.steps[plan.next_step_index..].to_vec();
-        let mut result = self.run_workflow(&suffix, inputs).await?;
+        let mut result = Box::pin(self.run_workflow(&suffix, inputs)).await?;
         let mut prefix = checkpoint.steps[..plan.next_step_index]
             .iter()
             .map(checkpoint_step_to_record)

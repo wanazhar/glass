@@ -1852,6 +1852,8 @@ pub(crate) fn decode_png_for_comparison(value: &str) -> BrowserResult<(u32, u32,
 pub struct ScreencastFrame {
     pub data: String,
     pub metadata: Value,
+    /// The protocol frame identifier acknowledged after this frame is consumed.
+    pub frame_id: u64,
 }
 
 /// Screencast delivery statistics (frames received vs dropped).
@@ -1906,9 +1908,17 @@ impl ScreencastScope {
     pub async fn next_frame(&mut self) -> Option<ScreencastFrame> {
         while let Some(frame) = self.receiver.recv().await {
             if frame.session_id == self.session_id {
+                let frame_id = frame.frame_id;
+                let data = frame.data;
+                let metadata = frame.metadata;
+                let _ = self
+                    .cdp
+                    .ack_screencast_frame(self.session_id.as_deref(), frame_id)
+                    .await;
                 return Some(ScreencastFrame {
-                    data: frame.data,
-                    metadata: frame.metadata,
+                    data,
+                    metadata,
+                    frame_id,
                 });
             }
         }

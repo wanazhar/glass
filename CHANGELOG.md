@@ -16,18 +16,21 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Added `glass project` CLI commands and browser-free MCP tools for project
   inspection, file editing, process control, runtime links, diffs, and event
   timelines.
-- Added a TUI Development workspace with files, editor, runtime, activity, and
-  actor panes, plus a deterministic Glass-owned local harness for prompt,
-  stream, tool, result, steering, and error transitions.
-- Split the distribution boundary into the reusable `glass-browser` crate and
-  the `glass-dev` package that owns the single installed `glass` executable.
+- Added a responsive TUI Development workspace with a native editor, live app,
+  files/Git, runtime/tests/actors, attributed timeline, asynchronous LSP work,
+  and a non-blocking long-lived Pi RPC worker.
+- Added real rust-analyzer diagnostics, PTY health and URL detection, explicit
+  source/runtime graph links, semantic breakpoints, replay, worktree
+  experiments, collaboration claims, global search, and Neovim PTY/RPC probes.
+- Split distribution into the `glass-browser` crate and `glass-browser`
+  executable plus the exact-version `glass-dev` package that owns `glass`.
 
 ### Changed
 
 - Kept structured browser observation, explicit screenshot escalation, browser
   policy, MCP framing, and existing v0.3.1 browser contracts unchanged.
-- Documented unsupported framework-specific LSP, hot-module replacement,
-  Neovim RPC, and source-map claims as unavailable without evidence.
+- Require live browser revision evidence before confirming a build/live-update
+  event, and keep inferred framework source maps explicitly uncertain.
 
 ## [0.3.1] - 2026-08-07
 

@@ -20,12 +20,12 @@ have not been performed.
 - [x] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
 - [x] Run version-sync, feature-parity, and release-documentation validators.
 - [x] Run formatting and all-target workspace tests.
-- [x] Run the opt-in 17-scenario Chromium smoke suite in the recorded
+- [x] Run the opt-in 18-scenario Chromium smoke suite in the recorded
       validation environment.
 - [x] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
       gates.
-- [x] Inspect both package file lists and complete publish dry-runs without
-      uploading.
+- [x] Inspect both package file lists; validate the exact normalized dev
+      dependency with a local patch source; complete dry-runs without upload.
 - [x] Record bounded issue #32 implementation evidence and target boundaries.
 - [ ] Obtain explicit approval before any stable tag, push, crates.io
       publication, or GitHub Release.
@@ -78,9 +78,9 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
-cargo package --package glass-browser --locked --no-verify
+cargo package --package glass-browser --locked
 cargo publish --package glass-browser --locked --dry-run --no-verify
-cargo package --package glass-dev --locked --no-verify
+cargo package --package glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 cargo publish --package glass-dev --locked --dry-run --no-verify
 cargo deny check
 cargo audit

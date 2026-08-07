@@ -22,10 +22,10 @@ The schemas are in [docs/schema](schema/reliability-scenario-v1.schema.json).
 
 The checked-in fixtures are:
 
-- `tests/fixtures/reliability-scenario-v1.json`;
-- `tests/fixtures/reliability-fixture-v1.json`;
-- `tests/fixtures/reliability-lab.html`; and
-- `tests/fixtures/reliability-submit.json`.
+- `crates/glass-browser/tests/fixtures/reliability-scenario-v1.json`;
+- `crates/glass-browser/tests/fixtures/reliability-fixture-v1.json`;
+- `crates/glass-browser/tests/fixtures/reliability-lab.html`; and
+- `crates/glass-browser/tests/fixtures/reliability-submit.json`.
 
 The fixture tests target replacement, renaming, duplication, reordering,
 movement, overlays, frame detachment, delayed effects, and counted submit
@@ -49,7 +49,7 @@ Set up a local fixture server. Then run:
 ```console
 glass certify run \
   --scenario scenario.json \
-  --fixture tests/fixtures/reliability-fixture-v1.json \
+  --fixture crates/glass-browser/tests/fixtures/reliability-fixture-v1.json \
   --url http://127.0.0.1:8000/fixture.html \
   --workflow-root tests/fixtures \
   --output evidence.json
@@ -74,7 +74,7 @@ python3 scripts/merge-reliability-evidence.py \
   evidence/reliability-matrix.json evidence/reliability
 python3 scripts/certify-reliability-matrix.py \
   evidence/reliability-matrix.json \
-  --scenarios tests/fixtures/reliability-capability-suite-v1.json \
+  --scenarios crates/glass-browser/tests/fixtures/reliability-capability-suite-v1.json \
   --binary target/debug/glass \
   --version 0.2.1 \
   --output evidence/reliability-scorecards.json
@@ -101,15 +101,15 @@ Inspect a plan without Chrome:
 
 ```console
 glass certify plan \
-  --scenario tests/fixtures/reliability-scenario-v1.json \
-  --fixture tests/fixtures/reliability-fixture-v1.json
+  --scenario crates/glass-browser/tests/fixtures/reliability-scenario-v1.json \
+  --fixture crates/glass-browser/tests/fixtures/reliability-fixture-v1.json
 ```
 
 Validate a replay:
 
 ```console
 glass certify replay \
-  --scenario tests/fixtures/reliability-scenario-v1.json \
+  --scenario crates/glass-browser/tests/fixtures/reliability-scenario-v1.json \
   --input replay.json
 ```
 
@@ -117,7 +117,7 @@ Compare two replays:
 
 ```console
 glass certify replay-diff \
-  --scenario tests/fixtures/reliability-scenario-v1.json \
+  --scenario crates/glass-browser/tests/fixtures/reliability-scenario-v1.json \
   --before baseline.json --after candidate.json
 ```
 

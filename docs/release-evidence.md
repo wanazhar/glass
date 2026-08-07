@@ -3,7 +3,8 @@
 ## 0.3.2 local pre-publication evidence
 
 The source checkout contains the local `0.3.2` candidate metadata for the
-`glass-browser` library and `glass-dev` executable packages. It is not tagged,
+`glass-browser` library/browser-executable and `glass-dev` development-
+executable packages. It is not tagged,
 pushed, published, or represented by a crates.io package or GitHub Release;
 those are explicit maintainer publication steps. The published
 `glass-browser 0.3.0` evidence below remains historical registry evidence.
@@ -11,22 +12,27 @@ those are explicit maintainer publication steps. The published
 ### Completed validation scope
 
 - Rust, Python, and TypeScript package metadata are synchronized at `0.3.2`.
-- The `glass-browser` library package and `glass-dev` executable package share
-  one release version; only `glass-dev` installs the `glass` executable.
-- The issue #32 vertical slice is browser-free by default and preserves the
-  v0.3.1 browser contracts. Framework-specific LSP, HMR, Neovim RPC, and
-  inferred source-map claims remain unavailable without evidence.
+- The packages share one release version. `glass-browser` owns the
+  `glass-browser` executable and `glass_browser` library; `glass-dev` owns
+  `glass` and declares an exact `=0.3.2` browser dependency.
+- Issue #32 includes a native editor, real rust-analyzer LSP path, PTY/process
+  manager, Glass-owned local and Pi harness adapters, development graph,
+  semantic breakpoints, replay, experiments, collaboration, and a coherent
+  live-browser Development TUI.
 - The version, feature-parity, release-documentation, reliability-matrix,
   read-only-adapter, and Web IR corpus checks pass.
 - `cargo test --workspace --all-targets --locked` passes the complete source
   suite.
-- `GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture
-  --test-threads=1` passes all 17 Chromium scenarios on the current Linux ARM64
+- `GLASS_E2E=1 cargo test -p glass-browser --test browser_smoke --locked --
+  --nocapture --test-threads=1` passes all 18 Chromium scenarios on the current Linux ARM64
   host. This is host evidence, not a cross-platform certification claim.
 - Clippy with warnings denied, warning-free workspace rustdoc, `cargo deny`,
   `cargo audit`, and the fuzz-crate all-target check pass.
-- Both `cargo package` and `cargo publish --dry-run` pass for `glass-browser`
-  and `glass-dev`; each dry run aborts before upload.
+- `cargo package` verifies `glass-browser`. The unpublished `glass-dev`
+  candidate packages through a Cargo patch source, and the normalized archive
+  is checked to retain exact `glass-browser =0.3.2` without a path. The release
+  workflow publishes the browser first, waits for registry visibility, then
+  verifies/publishes the development crate and clean-installs both products.
 - Issue #32 implementation evidence covers the bounded development runtime,
   CLI/MCP/TUI surfaces, harness, package boundary, and explicit capability
   limits without extending certification claims to unobserved targets.
@@ -71,11 +77,12 @@ python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-version-sync.py
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 python3 scripts/check-github-releases.py
-cargo package --package glass-browser --locked --no-verify
+cargo package --package glass-browser --locked
 cargo publish --package glass-browser --locked --dry-run --no-verify
 cargo package --package glass-browser --locked --list
-cargo package --package glass-dev --locked --no-verify
-cargo publish --package glass-dev --locked --dry-run --no-verify
+cargo package --package glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+cargo publish --package glass-dev --locked --dry-run --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+python3 scripts/check-packaged-dependency.py target/package/glass-dev-0.3.2.crate --version 0.3.2
 cargo package --package glass-dev --locked --list
 ```
 

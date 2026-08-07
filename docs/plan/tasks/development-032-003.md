@@ -21,8 +21,8 @@ and the command surface while preserving the existing browser workspace.
 
 # Path
 
-- `src/tui/`
-- `src/development/agent.rs`
+- `crates/glass-browser/src/tui/`
+- `crates/glass-browser/src/development/agent.rs`
 - `docs/architecture/development-tui.md`
 
 # Verification

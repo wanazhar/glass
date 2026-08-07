@@ -49,14 +49,17 @@ cargo install --path crates/glass-dev --locked
 glass --help
 ```
 
-The command builds and installs the local `glass` executable from the
-`glass-dev` package. The reusable browser library is the separate
-`glass-browser` package.
+The command installs the full `glass` environment from `glass-dev`. For the
+independent browser control plane, install `glass-browser`; it owns the
+non-conflicting `glass-browser` executable and the `glass_browser` Rust
+library.
 
 The latest published package can be installed with:
 
 ```console
 cargo install glass-dev --locked
+# or, for browser automation without the development workspace:
+cargo install glass-browser --locked
 ```
 
 Use `glass install-chromium` when no supported system browser is available.
@@ -94,16 +97,16 @@ Open the terminal-native development workspace without starting Chrome:
 ```console
 glass project inspect --root .
 glass project files --root .
-glass project run dev --command "cargo run" --root .
+glass project run check --command "cargo check" --wait --root .
 glass project diff --root .
 glass agent prompt "read README.md" --root .
 ```
 
 The project runtime keeps files workspace-confined, runs commands in a bounded
 PTY, records actor-attributed events, and exposes the same operations through
-MCP and the TUI Development workspace. It does not claim framework-specific
-LSP, hot-module replacement, or source maps unless explicit evidence is
-available.
+MCP and the TUI Development workspace. Rust diagnostics use a real bounded
+rust-analyzer LSP path; live-update and source/runtime claims remain pending
+unless browser revisions or explicit markers provide evidence.
 
 Compile a bounded Task Protocol plan against stable Glass Web IR v1 without
 starting Chrome:
@@ -146,7 +149,8 @@ for a disposable browser profile.
 | CLI | Browser and project operations | `glass <command>` |
 | TUI | Browser or Development workspace | `glass tui` |
 | MCP | A long-lived stdio connection | `glass --mcp` |
-| Rust library | An embedded session runtime | crate `glass-browser`, import `glass` |
+| Browser CLI | Browser-only control plane | `glass-browser <command>` |
+| Rust library | An embedded session runtime | crate `glass-browser`, import `glass_browser` |
 
 The bounded extraction contract and stable Glass Web IR v1 data model are
 available from the Rust crate root (`ExtractionRequest`, `ExtractionEvidence`,
@@ -275,8 +279,8 @@ Run the checks before you submit a change:
 cargo fmt --all -- --check
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo package --package glass-browser --locked --no-verify
-cargo package --package glass-dev --locked --no-verify
+cargo package --package glass-browser --locked
+cargo package --package glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 ```
 
 Run the browser smoke test only when a supported browser is available:

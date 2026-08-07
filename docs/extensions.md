@@ -77,7 +77,7 @@ The sandbox does not provide browser handles. It does not bypass policy.
 
 ## First-party fixtures
 
-Two reference extensions are in `extensions/first-party/`. They test:
+Two reference extensions are in `crates/glass-browser/extensions/first-party/`. They test:
 
 - manifest validation;
 - exact host and action permissions; and

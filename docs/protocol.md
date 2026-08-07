@@ -42,7 +42,7 @@ Browser-free Task Protocol tools also use canonical operation names:
 | `compileTask` | `task.compile` | `task` plus the source `ir` |
 | `validateTask` | `task.validate` | `task` |
 
-The checked-in [protocol golden fixture](../tests/fixtures/protocol-golden-v1.json)
+The checked-in [protocol golden fixture](../crates/glass-browser/tests/fixtures/protocol-golden-v1.json)
 covers read, leased mutation, workflow, browser-free Web IR inspection and
 revision operations, Task Protocol validation and compilation, success, and
 typed-error envelopes. Rust tests round-trip the fixture. MCP tests check the

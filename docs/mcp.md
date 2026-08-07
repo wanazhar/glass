@@ -140,14 +140,25 @@ and TUI:
 |---|---|
 | `project.inspect` | Detect the project and return bounded configuration. |
 | `project.files` | List workspace-confined files. |
+| `project.search` | Fuzzy-search files, entities, processes, events, and commands. |
 | `project.read` | Read one bounded file. |
 | `project.edit` | Atomically save one native buffer. |
-| `project.run` | Start a named command in a bounded PTY. |
+| `project.mkdir` | Create a workspace-confined directory. |
+| `project.rename` | Rename/move one workspace-confined path. |
+| `project.delete` | Delete a file/empty directory with explicit confirmation. |
+| `project.diagnostics` | Request real bounded rust-analyzer diagnostics. |
+| `project.run` | Run a named command in a bounded PTY; `wait: true` is required. |
 | `project.processes` | List managed PTY processes. |
 | `project.process.stop` | Stop one managed process. |
 | `project.process.output` | Read one process's bounded output tail. |
 | `project.diff` | Project code, runtime, semantic, and workflow impact. |
 | `project.timeline` | Read the bounded actor-attributed event timeline. |
+| `project.replay` | Replay a bounded attributed revision window. |
+| `project.graph` | Discover or navigate source/runtime links in either direction. |
+| `project.breakpoint` | Evaluate a semantic regression breakpoint. |
+| `project.neovim.probe` | Probe PTY Neovim and the RPC prototype. |
+| `project.experiment.create` | Create an isolated Git worktree experiment. |
+| `project.attach` | Attach an external actor with explicit authority. |
 | `project.link` | Record explicit source/runtime evidence. |
 | `agent.hello` | Negotiate the Glass-owned local harness protocol. |
 | `agent.prompt` | Run one deterministic bounded local harness prompt. |
@@ -501,7 +512,7 @@ The returned `plan` records compiler and source schema versions, source
 revision, task fingerprint, selected entity IDs, evidence requirements,
 preconditions, bounded steps, risk, confirmation, revision policy, and generated
 postconditions. The complete canonical request and result are checked in at
-[`tests/fixtures/protocol-golden-v1.json`](../tests/fixtures/protocol-golden-v1.json).
+[`crates/glass-browser/tests/fixtures/protocol-golden-v1.json`](../crates/glass-browser/tests/fixtures/protocol-golden-v1.json).
 Input values are represented only by bounded input names in the plan.
 
 Ambiguity policy `fail`, inadequate quality, missing evidence sources, opacity,

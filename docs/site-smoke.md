@@ -80,7 +80,7 @@ cargo run -- \
   --policy polite \
   --chrome-path /path/to/chromium \
   --viewport 1280x800 \
-  smoke-sites tests/fixtures/site-smoke-modern-v1.json
+  smoke-sites crates/glass-browser/tests/fixtures/site-smoke-modern-v1.json
 ```
 `polite` enforces each site's `robots.txt` and crawl-delay rules. URL-policy
 denials and robots/runtime-policy denials are distinct:

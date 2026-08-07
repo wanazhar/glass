@@ -168,8 +168,8 @@ Run the local workflow scorecard:
 GLASS_WORKFLOW_SCORECARD_ITERATIONS=10 cargo run --release --example workflow_scorecard
 ```
 
-The scorecard uses `benchmarks/scenarios/workflow-v1.json` and the local
-`tests/fixtures/scorecard.html` fixture. It checks linear completion,
+The scorecard uses `crates/glass-browser/benchmarks/scenarios/workflow-v1.json` and the local
+`crates/glass-browser/tests/fixtures/scorecard.html` fixture. It checks linear completion,
 conditional skip, budget exhaustion, marker reconciliation, and terminal-proof
 refusal.
 

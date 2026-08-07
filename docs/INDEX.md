@@ -9,6 +9,8 @@ marked `Local only` is part of an unreleased development build.
 - [Installation and operations](installation.md) — build, browser discovery,
   profiles, attach mode, logging, and production deployment.
 - [CLI reference](cli.md) — global options, commands, targets, and output.
+- [Development Runtime](development-runtime.md) — project onboarding, native
+  editing, PTYs, diagnostics, agents, evidence, and Neovim integration.
 - [Live-site smoke testing](site-smoke.md) — bounded multi-site navigation,
   observation, safe preflight probes, metrics, and policy classifications.
 - [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
@@ -97,3 +99,6 @@ marked `Local only` is part of an unreleased development build.
   lifecycle.
 - [Development workspace TUI](architecture/development-tui.md) — files,
   native buffers, PTY processes, actors, and the local harness view.
+- [v0.3.2 development surface atlas](design/v0.3.2/development-surface-atlas.svg)
+  — the requested editor, live app, search, process, review, diff, replay,
+  graph, workflow, experiment, and collaboration wireframes.

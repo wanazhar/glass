@@ -44,9 +44,10 @@ and independent review.
 Status: Complete local release candidate — no push, tag, crates.io
 publication, or GitHub Release is part of this plan.
 
-Issue #32 is an architectural epic. The release candidate is delivered as a
-coherent vertical slice rather than as disconnected UI stubs. The delivery
-analysis is [release-032.md](analysis/release-032.md).
+Issue #32 is an architectural epic. The original thin-slice interpretation was
+rejected during the issue/comment audit; the current candidate is reviewed
+against every pillar, mandatory release gate, visual comment, and packaging
+comment in the [delivery evidence matrix](analysis/release-032.md).
 
 Delivery order:
 

@@ -21,8 +21,8 @@ source/runtime graph links, and deterministic impact projections.
 
 # Path
 
-- `src/development/`
-- `src/lib.rs`
+- `crates/glass-browser/src/development/`
+- `crates/glass-browser/src/lib.rs`
 - `Cargo.toml`
 - focused unit tests beside the new modules
 

@@ -22,9 +22,9 @@ without going through the embedded TUI harness.
 
 # Path
 
-- `src/cli/args.rs`
-- `src/cli/runner.rs`
-- `src/mcp/server.rs`
+- `crates/glass-browser/src/cli/args.rs`
+- `crates/glass-browser/src/cli/runner.rs`
+- `crates/glass-browser/src/mcp/server.rs`
 - `docs/cli.md`
 - `docs/mcp.md`
 

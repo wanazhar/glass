@@ -15,28 +15,37 @@ browser runtime.
 
 ## Install from source
 
-Build the release executable:
+Build both release executables:
 
 ```console
 cargo build --release --locked
 ```
 
-The executable is `target/release/glass` from the `glass-dev` package.
+The executables are `target/release/glass` from `glass-dev` and
+`target/release/glass-browser` from `glass-browser`.
 
 Install the local checkout:
 
 ```console
 cargo install --path crates/glass-dev --locked
+glass --help
+
+# Browser control plane only
+cargo install --path crates/glass-browser --locked
+glass-browser --help
 ```
 
 Install the published crate after a release:
 
 ```console
 cargo install glass-dev --locked
+cargo install glass-browser --locked
 ```
 
-The `glass-browser` crate is the reusable Rust library. It does not install a
-second competing executable.
+The names do not compete: `glass-dev` owns `glass`; `glass-browser` owns
+`glass-browser` and exports the `glass_browser` Rust library. `glass-dev`
+depends one-way on the exact matching browser crate version. Installing the
+browser package never installs Pi or Node.
 
 ## Diagnose an installation
 

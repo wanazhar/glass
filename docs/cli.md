@@ -217,25 +217,34 @@ glass project inspect --root .
 glass project files --root .
 glass project read README.md --root .
 glass project edit notes.txt --content "hello\n" --root .
-glass project run dev --command "cargo run" --root .
+glass project search checkout --root .
+glass project run check --command "cargo check" --wait --root .
 glass project test --root .
 glass project lint --root .
-glass project process list --root .
-glass project process output dev --root .
+glass project diagnostics src/main.rs --root .
+glass project graph discover --root .
+glass project replay --root .
+glass project neovim probe --root .
+glass project experiment create alternative --port 3101 --root .
 glass project diff --root .
 glass project timeline --root .
 ```
 
-Use `glass project link` only for explicit source/runtime evidence. Glass does
-not infer framework source maps or advertise LSP, HMR, or editor RPC support
-without a verified provider.
+One-shot CLI PTY operations require `--wait`; use the TUI for persistent
+interactive dev servers, input, resize, restart, and live output. Use
+`glass project link` only for explicit source/runtime evidence. Glass does not
+infer framework source maps or confirm live updates without browser revision
+evidence.
 
 The deterministic local harness is available through:
 
 ```console
 glass agent hello --root .
 glass agent prompt "read README.md" --root .
-glass agent steer "pause" --root .
+glass agent hello --harness pi --root .
+glass agent models --root .
+glass agent prompt "Explain @diagnostic" --harness pi --root .
+glass agent steer "focus on the failing test" --root .
 ```
 
 ## Profiles and files

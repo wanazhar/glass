@@ -7,6 +7,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added a remote development cockpit with bounded resident project sessions,
+  persistent MCP PTYs, non-sensitive reconnect capsules, a mobile attention
+  inbox, opt-in terminal alerts, revision-bound semantic tap actions, compact
+  verification cards, adaptive live quality, and higher-level TypeScript and
+  Python orchestration workflows.
+
 - Added complete typed Development Runtime helpers to the repository
   TypeScript and Python clients, plus a negotiated, cursor-bounded project
   event feed that reports timeline-compaction gaps without streaming pixels

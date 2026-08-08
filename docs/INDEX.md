@@ -101,6 +101,9 @@ marked `Local only` is part of an unreleased development build.
   lifecycle.
 - [Development workspace TUI](architecture/development-tui.md) — files,
   native buffers, PTY processes, actors, and the local harness view.
+- [Remote development cockpit](architecture/mobile-cockpit.md) — resident
+  sessions, reconnect capsules, attention, semantic tap, verification cards,
+  adaptive live view, and SDK workflow contracts.
 - [v0.3.2 development surface atlas](design/v0.3.2/development-surface-atlas.svg)
   — the requested editor, live app, search, process, review, diff, replay,
   graph, workflow, experiment, and collaboration wireframes.

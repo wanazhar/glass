@@ -82,6 +82,14 @@ Integration wave (after foundation review):
 - [integration-031-001](tasks/integration-031-001.md) — run the integrated
   four-pillar conformance demonstration.
 
+## Completed plan: remote development cockpit
+
+Status: Implemented and verified by direct serial work on the local 0.3.2 candidate.
+
+The post-issue-32 product enhancements are defined in the
+[delivery analysis](analysis/mobile-cockpit.md) and implemented as the atomic
+[mobile-cockpit-001](tasks/mobile-cockpit-001.md) task.
+
 ## Active plan: best-in-class agent browser
 
 

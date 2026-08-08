@@ -325,6 +325,121 @@ export interface GlassCapabilityManifest {
   constraints: GlassCapabilityConstraints;
 }
 
+export type DevelopmentEventKind =
+  | "workspaceOpened" | "fileOpened" | "fileSaved" | "processStarted"
+  | "processOutput" | "processExited" | "agentPrompt" | "agentSteered"
+  | "agentToolCalled" | "agentToolResult" | "sourceRuntimeLinked"
+  | "verificationCompleted" | "diagnosticsPublished" | "semanticBreakpointHit"
+  | "testStarted" | "testCompleted" | "hmrObserved" | "actorJoined" | "actorLeft";
+
+export interface DevelopmentActor {
+  id: string;
+  kind: "human" | "embeddedAgent" | "externalAgent" | "system" | "observer";
+  name: string;
+  session: string;
+  capabilities: string[];
+  authority: "owner" | "mutate" | "readOnly" | "system";
+  connection: "local" | "embedded" | "cli" | "mcp" | "daemon" | "disconnected";
+}
+
+export interface DevelopmentEvent {
+  schemaVersion: string;
+  id: string;
+  occurredAtMs: number;
+  actor: DevelopmentActor;
+  kind: DevelopmentEventKind;
+  workspace: string;
+  payload: unknown;
+}
+
+export interface DevelopmentEventPage {
+  schemaVersion: string;
+  events: DevelopmentEvent[];
+  cursor: string | null;
+  oldestId: string | null;
+  newestId: string | null;
+  hasMore: boolean;
+  cursorExpired: boolean;
+}
+
+export interface ProjectDetection {
+  root: string;
+  languages: string[];
+  packageManager: string | null;
+  framework: string | null;
+  buildSystem: string | null;
+  formatter: string | null;
+  lspServers: string[];
+  gitBranch: string | null;
+  devCommand: string | null;
+  testCommand: string | null;
+  lintCommand: string | null;
+  buildCommand: string | null;
+  browserUrl: string | null;
+  localDevelopmentUrls: string[];
+  editorEngine: string | null;
+  agentHarness: string | null;
+  configPath: string | null;
+}
+
+export interface ProjectInspectResult {
+  schemaVersion: string;
+  root: string;
+  detection: ProjectDetection;
+  config: Record<string, unknown>;
+  revision: number;
+}
+
+export interface ProjectFileEntry {
+  path: string;
+  kind: "file" | "directory";
+  bytes: number | null;
+  gitStatus?: string;
+  dirty: boolean;
+  actor?: DevelopmentActor;
+}
+
+export interface ProjectSearchHit {
+  kind: "file" | "browserEntity" | "process" | "event" | "command";
+  label: string;
+  detail: string;
+  score: number;
+}
+
+export interface ProjectProcess {
+  name: string;
+  command: string;
+  pid: number | null;
+  state: "running" | "stopped" | "failed" | { exited: { code: number | null } };
+  startedAtMs: number;
+  output: string;
+  pty: boolean;
+  cwd: string;
+  health: "starting" | "healthy" | "exited" | "stopped" | "failed";
+  detectedUrls: string[];
+}
+
+export interface ProjectDiff {
+  schemaVersion: string;
+  files: Array<{ path: string; status: string }>;
+  runtime: Record<string, unknown>;
+  semantic: Record<string, unknown>;
+  visual: Record<string, unknown>;
+  workflow: Record<string, unknown>;
+  testImpact: Record<string, unknown>;
+}
+
+export type ProjectLinkProvenance = "explicit-marker" | "runtime-observation" | "static-analysis" | "inferred";
+export type ProjectGraphOperation = "discover" | "entity" | "source";
+export type ProjectBreakpointKind = "disappears" | "name-missing" | "role-changes" | "actionability-lost";
+
+export interface ProjectEventWatchOptions {
+  afterId?: string;
+  limit?: number;
+  pollIntervalMs?: number;
+  signal?: AbortSignal;
+}
+
 /** Small MCP client with typed helpers for the stable Glass surface. */
 export class GlassClient {
   private readonly input: Writable;
@@ -368,10 +483,10 @@ export class GlassClient {
       protocolVersion: "2024-11-05",
       glass: {
         protocolVersion: 1,
-        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1] },
+        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1] },
       },
       capabilities: {},
-      clientInfo: { name: "glass-typescript-client", version: "0.2.2" },
+      clientInfo: { name: "glass-typescript-client", version: "0.3.2" },
     });
     const manifest = (result as { glass?: GlassCapabilityManifest }).glass;
     if (!manifest) throw new Error("Glass capability manifest missing from initialize response");
@@ -435,6 +550,122 @@ export class GlassClient {
     if (this.leaseToken === undefined) return;
     await this.request("glass/lease/release", { token: this.leaseToken });
     this.leaseToken = undefined;
+  }
+
+  projectInspect(root = "."): Promise<ProjectInspectResult> {
+    return this.call<ProjectInspectResult>("project.inspect", { root });
+  }
+  projectFiles(root = "."): Promise<ProjectFileEntry[]> {
+    return this.call<ProjectFileEntry[]>("project.files", { root });
+  }
+  projectSearch(query: string, root = ".", limit = 64): Promise<ProjectSearchHit[]> {
+    return this.call<ProjectSearchHit[]>("project.search", { root, query, limit });
+  }
+  projectRead(path: string, root = "."): Promise<{ path: string; content: string }> {
+    return this.call("project.read", { root, path });
+  }
+  projectEdit(path: string, content: string, root = "."): Promise<Record<string, unknown>> {
+    return this.call("project.edit", { root, path, content });
+  }
+  projectMkdir(path: string, root = "."): Promise<{ path: string; created: boolean }> {
+    return this.call("project.mkdir", { root, path });
+  }
+  projectRename(from: string, to: string, root = "."): Promise<{ from: string; to: string; renamed: boolean }> {
+    return this.call("project.rename", { root, from, to });
+  }
+  projectDelete(path: string, confirmed: true, root = "."): Promise<{ path: string; deleted: boolean }> {
+    return this.call("project.delete", { root, path, confirmed });
+  }
+  projectDiagnostics(path: string, root = "."): Promise<Array<Record<string, unknown>>> {
+    return this.call("project.diagnostics", { root, path });
+  }
+  projectRun(name: string, command: string, root = "."): Promise<ProjectProcess> {
+    return this.call<ProjectProcess>("project.run", { root, name, command, wait: true });
+  }
+  projectProcesses(root = "."): Promise<ProjectProcess[]> {
+    return this.call<ProjectProcess[]>("project.processes", { root });
+  }
+  projectProcessStop(name: string, root = "."): Promise<ProjectProcess> {
+    return this.call<ProjectProcess>("project.process.stop", { root, name });
+  }
+  projectProcessOutput(name: string, root = "."): Promise<{ name: string; output: string }> {
+    return this.call("project.process.output", { root, name });
+  }
+  projectDiff(root = "."): Promise<ProjectDiff> {
+    return this.call<ProjectDiff>("project.diff", { root });
+  }
+  projectTimeline(root = "."): Promise<DevelopmentEvent[]> {
+    return this.call<DevelopmentEvent[]>("project.timeline", { root });
+  }
+  projectEvents(root = ".", afterId?: string, limit = 64): Promise<DevelopmentEventPage> {
+    return this.call<DevelopmentEventPage>("project.events", {
+      root,
+      ...(afterId === undefined ? {} : { afterId }),
+      limit,
+    });
+  }
+  async *watchProjectEvents(root = ".", options: ProjectEventWatchOptions = {}): AsyncGenerator<DevelopmentEventPage> {
+    const pollIntervalMs = Math.min(60_000, Math.max(50, options.pollIntervalMs ?? 500));
+    let cursor = options.afterId;
+    while (!options.signal?.aborted) {
+      const page = await this.projectEvents(root, cursor, options.limit ?? 64);
+      cursor = page.cursor ?? (page.cursorExpired ? undefined : cursor);
+      if (page.events.length > 0 || page.cursorExpired) yield page;
+      if (page.hasMore) continue;
+      await pollDelay(pollIntervalMs, options.signal);
+    }
+  }
+  projectReplay(root = ".", start = 0, limit = 64): Promise<Record<string, unknown>> {
+    return this.call("project.replay", { root, start, limit });
+  }
+  projectGraph(
+    operation: ProjectGraphOperation,
+    options: { root?: string; entity?: string; path?: string; line?: number } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    return this.call("project.graph", { root: options.root ?? ".", operation, ...options });
+  }
+  projectBreakpoint(
+    kind: ProjectBreakpointKind,
+    entity: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+    root = ".",
+  ): Promise<Array<Record<string, unknown>>> {
+    return this.call("project.breakpoint", { root, kind, entity, before, after });
+  }
+  projectNeovimProbe(): Promise<Record<string, unknown>> {
+    return this.call("project.neovim.probe");
+  }
+  projectExperimentCreate(name: string, port: number, root = "."): Promise<Record<string, unknown>> {
+    return this.call("project.experiment.create", { root, name, port });
+  }
+  projectAttach(actor: string, root = "."): Promise<DevelopmentActor> {
+    return this.call<DevelopmentActor>("project.attach", { root, actor });
+  }
+  projectLink(
+    entity: string,
+    path: string,
+    startLine: number,
+    endLine: number,
+    options: { root?: string; provenance?: ProjectLinkProvenance; confidence?: number; detail?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.call("project.link", {
+      root: options.root ?? ".",
+      entity,
+      path,
+      startLine,
+      endLine,
+      ...options,
+    });
+  }
+  agentHello(root = "."): Promise<Record<string, unknown>> {
+    return this.call("agent.hello", { root });
+  }
+  agentPrompt(text: string, root = "."): Promise<Record<string, unknown>> {
+    return this.call("agent.prompt", { root, text });
+  }
+  agentSteer(text: string, root = "."): Promise<Record<string, unknown>> {
+    return this.call("agent.steer", { root, text });
   }
 
   observe<T = Record<string, unknown>>(
@@ -729,4 +960,17 @@ export class GlassClient {
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
+}
+
+function pollDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }

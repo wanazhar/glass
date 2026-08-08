@@ -7,6 +7,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added complete typed Development Runtime helpers to the repository
+  TypeScript and Python clients, plus a negotiated, cursor-bounded project
+  event feed that reports timeline-compaction gaps without streaming pixels
+  through MCP.
 - Added an explicit terminal-native live browser for remote and phone TUI
   sessions with Herdr-owned PNG streaming, direct Kitty capability probing,
   true-color ANSI half-block fallback, adaptive data/balanced/smooth profiles,

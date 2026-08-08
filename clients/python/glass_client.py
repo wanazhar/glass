@@ -6,6 +6,8 @@ import json
 import os
 import socket
 import subprocess
+import time
+from collections.abc import Callable, Iterator
 from typing import Any, BinaryIO, Literal, Optional, TypedDict
 
 
@@ -239,6 +241,112 @@ class WorkflowCheckpoint(TypedDict, total=False):
     steps: list[WorkflowCheckpointStep]
 
 
+DevelopmentEventKind = Literal[
+    "workspaceOpened", "fileOpened", "fileSaved", "processStarted", "processOutput",
+    "processExited", "agentPrompt", "agentSteered", "agentToolCalled", "agentToolResult",
+    "sourceRuntimeLinked", "verificationCompleted", "diagnosticsPublished",
+    "semanticBreakpointHit", "testStarted", "testCompleted", "hmrObserved", "actorJoined",
+    "actorLeft",
+]
+
+
+class DevelopmentActor(TypedDict):
+    id: str
+    kind: str
+    name: str
+    session: str
+    capabilities: list[str]
+    authority: str
+    connection: str
+
+
+class DevelopmentEvent(TypedDict):
+    schemaVersion: str
+    id: str
+    occurredAtMs: int
+    actor: DevelopmentActor
+    kind: DevelopmentEventKind
+    workspace: str
+    payload: Any
+
+
+class DevelopmentEventPage(TypedDict):
+    schemaVersion: str
+    events: list[DevelopmentEvent]
+    cursor: Optional[str]
+    oldestId: Optional[str]
+    newestId: Optional[str]
+    hasMore: bool
+    cursorExpired: bool
+
+
+class ProjectDetection(TypedDict):
+    root: str
+    languages: list[str]
+    packageManager: Optional[str]
+    framework: Optional[str]
+    buildSystem: Optional[str]
+    formatter: Optional[str]
+    lspServers: list[str]
+    gitBranch: Optional[str]
+    devCommand: Optional[str]
+    testCommand: Optional[str]
+    lintCommand: Optional[str]
+    buildCommand: Optional[str]
+    browserUrl: Optional[str]
+    localDevelopmentUrls: list[str]
+    editorEngine: Optional[str]
+    agentHarness: Optional[str]
+    configPath: Optional[str]
+
+
+class ProjectInspectResult(TypedDict):
+    schemaVersion: str
+    root: str
+    detection: ProjectDetection
+    config: dict[str, Any]
+    revision: int
+
+
+class ProjectFileEntry(TypedDict, total=False):
+    path: str
+    kind: Literal["file", "directory"]
+    bytes: Optional[int]
+    gitStatus: str
+    dirty: bool
+    actor: DevelopmentActor
+
+
+class ProjectSearchHit(TypedDict):
+    kind: Literal["file", "browserEntity", "process", "event", "command"]
+    label: str
+    detail: str
+    score: int
+
+
+class ProjectProcess(TypedDict, total=False):
+    name: str
+    command: str
+    pid: int
+    state: Any
+    startedAtMs: int
+    output: str
+    pty: bool
+    cwd: str
+    health: Literal["starting", "healthy", "exited", "stopped", "failed"]
+    detectedUrls: list[str]
+
+
+class ProjectDiff(TypedDict):
+    schemaVersion: str
+    files: list[dict[str, str]]
+    runtime: dict[str, Any]
+    semantic: dict[str, Any]
+    visual: dict[str, Any]
+    workflow: dict[str, Any]
+    testImpact: dict[str, Any]
+
+
 class GlassClient:
     def __init__(
         self,
@@ -286,10 +394,10 @@ class GlassClient:
                 "protocolVersion": "2024-11-05",
                 "glass": {
                     "protocolVersion": 1,
-                    "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1]},
+                    "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1], "developmentEvents": [1]},
                 },
                 "capabilities": {},
-                "clientInfo": {"name": "glass-python-client", "version": "0.2.2"},
+                "clientInfo": {"name": "glass-python-client", "version": "0.3.2"},
             },
         )
         manifest = result.get("glass") if isinstance(result, dict) else None
@@ -375,6 +483,139 @@ class GlassClient:
             return
         self._request("glass/lease/release", {"token": self._lease_token})
         self._lease_token = None
+
+    def project_inspect(self, root: str = ".") -> ProjectInspectResult:
+        return self.call("project.inspect", {"root": root})
+
+    def project_files(self, root: str = ".") -> list[ProjectFileEntry]:
+        return self.call("project.files", {"root": root})
+
+    def project_search(self, query: str, root: str = ".", limit: int = 64) -> list[ProjectSearchHit]:
+        return self.call("project.search", {"root": root, "query": query, "limit": limit})
+
+    def project_read(self, path: str, root: str = ".") -> dict[str, str]:
+        return self.call("project.read", {"root": root, "path": path})
+
+    def project_edit(self, path: str, content: str, root: str = ".") -> dict[str, Any]:
+        return self.call("project.edit", {"root": root, "path": path, "content": content})
+
+    def project_mkdir(self, path: str, root: str = ".") -> dict[str, Any]:
+        return self.call("project.mkdir", {"root": root, "path": path})
+
+    def project_rename(self, source: str, destination: str, root: str = ".") -> dict[str, Any]:
+        return self.call("project.rename", {"root": root, "from": source, "to": destination})
+
+    def project_delete(self, path: str, *, confirmed: Literal[True], root: str = ".") -> dict[str, Any]:
+        return self.call("project.delete", {"root": root, "path": path, "confirmed": confirmed})
+
+    def project_diagnostics(self, path: str, root: str = ".") -> list[dict[str, Any]]:
+        return self.call("project.diagnostics", {"root": root, "path": path})
+
+    def project_run(self, name: str, command: str, root: str = ".") -> ProjectProcess:
+        return self.call("project.run", {"root": root, "name": name, "command": command, "wait": True})
+
+    def project_processes(self, root: str = ".") -> list[ProjectProcess]:
+        return self.call("project.processes", {"root": root})
+
+    def project_process_stop(self, name: str, root: str = ".") -> ProjectProcess:
+        return self.call("project.process.stop", {"root": root, "name": name})
+
+    def project_process_output(self, name: str, root: str = ".") -> dict[str, str]:
+        return self.call("project.process.output", {"root": root, "name": name})
+
+    def project_diff(self, root: str = ".") -> ProjectDiff:
+        return self.call("project.diff", {"root": root})
+
+    def project_timeline(self, root: str = ".") -> list[DevelopmentEvent]:
+        return self.call("project.timeline", {"root": root})
+
+    def project_events(
+        self, root: str = ".", after_id: Optional[str] = None, limit: int = 64
+    ) -> DevelopmentEventPage:
+        arguments: dict[str, Any] = {"root": root, "limit": limit}
+        if after_id is not None:
+            arguments["afterId"] = after_id
+        return self.call("project.events", arguments)
+
+    def watch_project_events(
+        self,
+        root: str = ".",
+        *,
+        after_id: Optional[str] = None,
+        limit: int = 64,
+        poll_interval: float = 0.5,
+        stop: Optional[Callable[[], bool]] = None,
+    ) -> Iterator[DevelopmentEventPage]:
+        """Yield non-empty bounded event pages until ``stop`` returns true."""
+        cursor = after_id
+        interval = min(60.0, max(0.05, poll_interval))
+        while stop is None or not stop():
+            page = self.project_events(root, cursor, limit)
+            cursor = page["cursor"] if page["cursor"] is not None else (
+                None if page["cursorExpired"] else cursor
+            )
+            if page.get("events") or page.get("cursorExpired", False):
+                yield page
+            if not page.get("hasMore", False):
+                time.sleep(interval)
+
+    def project_replay(self, root: str = ".", start: int = 0, limit: int = 64) -> dict[str, Any]:
+        return self.call("project.replay", {"root": root, "start": start, "limit": limit})
+
+    def project_graph(
+        self,
+        operation: Literal["discover", "entity", "source"],
+        *,
+        root: str = ".",
+        entity: Optional[str] = None,
+        path: Optional[str] = None,
+        line: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        arguments: dict[str, Any] = {"root": root, "operation": operation}
+        arguments.update({key: value for key, value in {"entity": entity, "path": path, "line": line}.items() if value is not None})
+        return self.call("project.graph", arguments)
+
+    def project_breakpoint(
+        self,
+        kind: Literal["disappears", "name-missing", "role-changes", "actionability-lost"],
+        entity: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        root: str = ".",
+    ) -> list[dict[str, Any]]:
+        return self.call("project.breakpoint", {"root": root, "kind": kind, "entity": entity, "before": before, "after": after})
+
+    def project_neovim_probe(self) -> dict[str, Any]:
+        return self.call("project.neovim.probe")
+
+    def project_experiment_create(self, name: str, port: int, root: str = ".") -> dict[str, Any]:
+        return self.call("project.experiment.create", {"root": root, "name": name, "port": port})
+
+    def project_attach(self, actor: str, root: str = ".") -> DevelopmentActor:
+        return self.call("project.attach", {"root": root, "actor": actor})
+
+    def project_link(
+        self,
+        entity: str,
+        path: str,
+        start_line: int,
+        end_line: int,
+        *,
+        root: str = ".",
+        provenance: Literal["explicit-marker", "runtime-observation", "static-analysis", "inferred"] = "explicit-marker",
+        confidence: float = 1.0,
+        detail: str = "explicit project link",
+    ) -> dict[str, Any]:
+        return self.call("project.link", {"root": root, "entity": entity, "path": path, "startLine": start_line, "endLine": end_line, "provenance": provenance, "confidence": confidence, "detail": detail})
+
+    def agent_hello(self, root: str = ".") -> dict[str, Any]:
+        return self.call("agent.hello", {"root": root})
+
+    def agent_prompt(self, text: str, root: str = ".") -> dict[str, Any]:
+        return self.call("agent.prompt", {"root": root, "text": text})
+
+    def agent_steer(self, text: str, root: str = ".") -> dict[str, Any]:
+        return self.call("agent.steer", {"root": root, "text": text})
 
     def observe(
         self,

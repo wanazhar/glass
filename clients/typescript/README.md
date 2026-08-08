@@ -3,7 +3,7 @@
 The dependency-free TypeScript client starts `glass --mcp`. It provides typed
 helpers for navigation, actions, verification, batches, workflows, waits,
 semantic observations, knowledge, targets, frames, storage, checkpoints,
-diagnostics, and browser controls.
+diagnostics, browser controls, and the complete local Development Runtime.
 
 The client does not include Chrome, Chromium, or another browser runtime.
 
@@ -56,3 +56,35 @@ in logs or persistent files.
 
 The client accepts newline-delimited MCP responses and `Content-Length` frames.
 It limits each frame to 4 MiB.
+
+## Development Runtime
+
+Typed helpers cover project detection, files, search, editing, diagnostics,
+processes, code/runtime/semantic diffs, replay, the Development Graph,
+breakpoints, experiments, external actors, source/runtime links, and the local
+agent harness:
+
+```typescript
+const project = await glass.projectInspect("/srv/storefront");
+const files = await glass.projectFiles(project.root);
+const diff = await glass.projectDiff(project.root);
+await glass.agentPrompt("Explain the failing verification", project.root);
+```
+
+`watchProjectEvents()` is an async generator over cursor-bounded event pages.
+It retains no unbounded history and reports `cursorExpired` when timeline
+compaction created a gap:
+
+```typescript
+const controller = new AbortController();
+for await (const page of glass.watchProjectEvents("/srv/storefront", {
+  signal: controller.signal,
+})) {
+  for (const event of page.events) console.log(event.kind, event.actor.id);
+}
+```
+
+Live PNG frames are deliberately not part of this feed. Use structured events
+for orchestration and a dedicated latest-frame side channel for visual clients.
+See [`examples/development-events.ts`](examples/development-events.ts) for a
+complete interruptible watcher.

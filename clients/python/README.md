@@ -3,7 +3,7 @@
 The Python client uses only the Python standard library. It starts one local
 Glass binary, negotiates MCP, and provides typed helpers for browser actions,
 observations, workflows, knowledge, targets, frames, storage, diagnostics,
-and browser controls.
+browser controls, and the complete local Development Runtime.
 
 ## Install
 
@@ -55,3 +55,29 @@ in logs or persistent files.
 
 The client accepts newline-delimited MCP frames and `Content-Length` frames.
 It limits each frame to 4 MiB.
+
+## Development Runtime
+
+Project, file, process, diff, replay, graph, breakpoint, experiment, actor,
+source-link, and agent-harness operations have typed snake-case helpers:
+
+```python
+project = glass.project_inspect("/srv/storefront")
+files = glass.project_files(project["root"])
+diff = glass.project_diff(project["root"])
+glass.agent_prompt("Explain the failing verification", project["root"])
+```
+
+`watch_project_events()` yields cursor-bounded pages and accepts a `stop`
+callback. `cursorExpired` explicitly reports a gap when the persisted timeline
+was compacted:
+
+```python
+for page in glass.watch_project_events("/srv/storefront", stop=lambda: done):
+    for event in page["events"]:
+        print(event["kind"], event["actor"]["id"])
+```
+
+Live PNG frames are deliberately separate from this structured event feed.
+See [`examples/development_events.py`](examples/development_events.py) for a
+complete interruptible watcher.

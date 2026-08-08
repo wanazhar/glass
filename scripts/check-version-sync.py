@@ -3,6 +3,7 @@
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -32,6 +33,22 @@ versions = {
         (root / "clients/typescript/package.json").read_text()
     )["version"],
 }
+
+client_identity_patterns = {
+    "clients/python/glass_client.py clientInfo": (
+        root / "clients/python/glass_client.py",
+        r'"clientInfo": \{"name": "glass-python-client", "version": "([^"]+)"\}',
+    ),
+    "clients/typescript/src/index.ts clientInfo": (
+        root / "clients/typescript/src/index.ts",
+        r'clientInfo: \{ name: "glass-typescript-client", version: "([^"]+)" \}',
+    ),
+}
+for label, (path, pattern) in client_identity_patterns.items():
+    match = re.search(pattern, path.read_text())
+    if match is None:
+        raise SystemExit(f"could not locate {label}")
+    versions[label] = match.group(1)
 
 if len(set(versions.values())) == 1:
     version_message = next(iter(versions.values()))

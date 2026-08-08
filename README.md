@@ -268,7 +268,8 @@ The repository-only [TypeScript client](clients/typescript) and [Python
 client](clients/python) remain experimental repository clients for the 0.3.2
 release line. They are not published as npm or PyPI packages, do not
 include a browser runtime, and do not change the primary Cargo installation
-path.
+path. Both expose typed browser and Development Runtime helpers plus a bounded,
+cursor-based project event subscription API.
 
 ## Safety and scope
 

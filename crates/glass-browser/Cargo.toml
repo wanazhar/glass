@@ -29,7 +29,7 @@ all-features = true
 
 [features]
 default = []
-visual-compare = ["dep:png"]
+visual-compare = []
 fuzzing = []
 development-runtime = ["dep:portable-pty", "dep:toml"]
 
@@ -59,7 +59,7 @@ fs2 = "0.4"
 imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
-png = { version = "0.17", optional = true }
+png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 portable-pty = { version = "0.9", optional = true }
 toml = { version = "0.9", optional = true }

@@ -110,6 +110,22 @@ pub struct Cli {
     #[arg(long = "tui-layout", global = true, value_enum, default_value_t = TuiLayout::Auto)]
     pub tui_layout: TuiLayout,
 
+    /// Terminal-native live browser policy. Off preserves semantic-only startup.
+    #[arg(long = "tui-live", global = true, value_enum, default_value_t = TuiLiveMode::Off)]
+    pub tui_live: TuiLiveMode,
+
+    /// Preferred terminal-native live browser renderer.
+    #[arg(long = "tui-live-backend", global = true, value_enum, default_value_t = TuiLiveBackend::Auto)]
+    pub tui_live_backend: TuiLiveBackend,
+
+    /// Terminal-native live browser bandwidth and frame-rate profile.
+    #[arg(long = "tui-live-quality", global = true, value_enum, default_value_t = TuiLiveQuality::Balanced)]
+    pub tui_live_quality: TuiLiveQuality,
+
+    /// How ANSI-sampled browser pixels fit inside the terminal App pane.
+    #[arg(long = "tui-live-fit", global = true, value_enum, default_value_t = TuiLiveFit::Contain)]
+    pub tui_live_fit: TuiLiveFit,
+
     /// Override the per-profile persistent knowledge snapshot path.
     #[arg(long, global = true)]
     pub knowledge_store: Option<PathBuf>,
@@ -143,6 +159,52 @@ pub enum TuiLayout {
     Desktop,
     /// Use a single-pane, phone-friendly workspace and semantic browser output.
     Mobile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiLiveMode {
+    /// Do not capture continuous browser pixels; explicit screenshots still work.
+    #[default]
+    Off,
+    /// Enable live pixels only when a native Herdr or Kitty backend is detected.
+    Auto,
+    /// Enable live pixels and use the ANSI renderer when native graphics are absent.
+    On,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiLiveBackend {
+    /// Prefer Herdr, then Kitty, then ANSI according to the live policy.
+    #[default]
+    Auto,
+    /// Use Herdr's owned pane graphics stream.
+    Herdr,
+    /// Emit the Kitty terminal graphics protocol directly.
+    Kitty,
+    /// Render browser pixels as true-color Unicode half blocks.
+    Ansi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiLiveQuality {
+    /// Approximately 3 FPS at a compact capture size.
+    Data,
+    /// Approximately 6 FPS with balanced resolution and transfer cost.
+    #[default]
+    Balanced,
+    /// Approximately 12 FPS at the largest bounded pane resolution.
+    Smooth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiLiveFit {
+    /// Show the complete frame with letterboxing; native image backends always use this.
+    #[default]
+    Contain,
+    /// Fill the ANSI pane and crop browser edges when aspect ratios differ.
+    Cover,
+    /// Use one source pixel per ANSI half-block sample and crop overflow.
+    Actual,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1319,9 +1381,31 @@ mod tests {
     fn tui_layout_defaults_to_auto_and_accepts_mobile_override() {
         let default = Cli::try_parse_from(["glass", "tui"]).unwrap();
         assert_eq!(default.tui_layout, TuiLayout::Auto);
+        assert_eq!(default.tui_live, TuiLiveMode::Off);
+        assert_eq!(default.tui_live_backend, TuiLiveBackend::Auto);
+        assert_eq!(default.tui_live_quality, TuiLiveQuality::Balanced);
+        assert_eq!(default.tui_live_fit, TuiLiveFit::Contain);
 
-        let mobile = Cli::try_parse_from(["glass", "--tui-layout", "mobile", "tui"]).unwrap();
+        let mobile = Cli::try_parse_from([
+            "glass",
+            "--tui-layout",
+            "mobile",
+            "--tui-live",
+            "on",
+            "--tui-live-backend",
+            "ansi",
+            "--tui-live-quality",
+            "data",
+            "--tui-live-fit",
+            "cover",
+            "tui",
+        ])
+        .unwrap();
         assert_eq!(mobile.tui_layout, TuiLayout::Mobile);
+        assert_eq!(mobile.tui_live, TuiLiveMode::On);
+        assert_eq!(mobile.tui_live_backend, TuiLiveBackend::Ansi);
+        assert_eq!(mobile.tui_live_quality, TuiLiveQuality::Data);
+        assert_eq!(mobile.tui_live_fit, TuiLiveFit::Cover);
     }
 
     #[test]

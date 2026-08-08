@@ -15,6 +15,10 @@ use crate::presentation::{
     TargetResourceIdentity, ViewportGeometry,
 };
 
+mod ansi;
+
+pub use ansi::{AnsiCanvas, AnsiCell, AnsiUpdate, FrameFit, Rgb};
+
 /// Maximum encoded payload retained for a single frame.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum bytes emitted by one Kitty render command.

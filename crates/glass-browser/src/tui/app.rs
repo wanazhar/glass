@@ -33,7 +33,7 @@ use std::{
         mpsc as std_mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     sync::{mpsc, watch},
@@ -54,12 +54,13 @@ use crate::browser::session::{
     SemanticIntentRequest, SemanticIntentResult, SemanticObservation, SemanticObservationLevel,
     SessionOptions, VisualFormat, WorkflowDefinition, default_knowledge_store_path,
 };
-use crate::cli::args::{Cli, TuiLayout};
+use crate::cli::args::{Cli, TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
 use crate::presentation::{BrowserFrame, CaptureScale, PixelSize, TargetResourceIdentity};
 use crate::terminal_graphics::{
-    GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics,
-    negotiate,
+    AnsiCanvas, FrameFit, GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult,
+    TerminalEnvironment, TerminalGraphics, negotiate,
 };
+use crate::tui::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
 const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
 const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 2;
@@ -71,6 +72,8 @@ const TUI_ACTIVITY_MAX_BYTES: usize = 512;
 const PHONE_MAX_COLUMNS: u16 = 72;
 const REMOTE_PHONE_MAX_COLUMNS: u16 = 96;
 const COMPACT_MAX_COLUMNS: u16 = 109;
+const LIVE_CAPTURE_MAX_WIDTH: u32 = 1280;
+const LIVE_CAPTURE_MAX_HEIGHT: u32 = 1024;
 /// Visible Browser Workspace presentation modes. Each mode changes the
 /// inspection surface, but never changes browser authority or policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,6 +169,240 @@ impl RemoteContext {
         } else {
             "local"
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveLiveBackend {
+    Herdr,
+    Kitty,
+    Ansi,
+}
+
+impl ActiveLiveBackend {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Herdr => "Herdr graphics",
+            Self::Kitty => "Kitty graphics",
+            Self::Ansi => "ANSI half blocks",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreencastConfig {
+    enabled: bool,
+    max_width: u32,
+    max_height: u32,
+    minimum_interval: Duration,
+}
+
+impl Default for ScreencastConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_width: 320,
+            max_height: 240,
+            minimum_interval: Duration::from_millis(333),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LiveMetrics {
+    window_started: Instant,
+    bytes: u64,
+    frames: u64,
+    dropped: u64,
+    fps: f64,
+    bytes_per_second: f64,
+}
+
+impl Default for LiveMetrics {
+    fn default() -> Self {
+        Self {
+            window_started: Instant::now(),
+            bytes: 0,
+            frames: 0,
+            dropped: 0,
+            fps: 0.0,
+            bytes_per_second: 0.0,
+        }
+    }
+}
+
+impl LiveMetrics {
+    fn received(&mut self, bytes: usize) {
+        self.bytes = self.bytes.saturating_add(bytes as u64);
+        self.frames = self.frames.saturating_add(1);
+        self.refresh();
+    }
+
+    fn dropped(&mut self) {
+        self.dropped = self.dropped.saturating_add(1);
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        let elapsed = self.window_started.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            let seconds = elapsed.as_secs_f64();
+            self.fps = self.frames as f64 / seconds;
+            self.bytes_per_second = self.bytes as f64 / seconds;
+            self.window_started = Instant::now();
+            self.bytes = 0;
+            self.frames = 0;
+        }
+    }
+}
+
+struct LiveViewState {
+    mode: TuiLiveMode,
+    preference: TuiLiveBackend,
+    quality: TuiLiveQuality,
+    fit: TuiLiveFit,
+    backend: Option<ActiveLiveBackend>,
+    kitty_detected: bool,
+    herdr_environment: Option<HerdrEnvironment>,
+    herdr_worker: Option<HerdrGraphicsWorker>,
+    ansi: AnsiCanvas,
+    metrics: LiveMetrics,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveViewOptions {
+    mode: TuiLiveMode,
+    backend: TuiLiveBackend,
+    quality: TuiLiveQuality,
+    fit: TuiLiveFit,
+    kitty_detected: bool,
+}
+
+impl Default for LiveViewOptions {
+    fn default() -> Self {
+        Self {
+            mode: TuiLiveMode::Off,
+            backend: TuiLiveBackend::Auto,
+            quality: TuiLiveQuality::Balanced,
+            fit: TuiLiveFit::Contain,
+            kitty_detected: false,
+        }
+    }
+}
+
+impl LiveViewState {
+    fn new(
+        mode: TuiLiveMode,
+        preference: TuiLiveBackend,
+        quality: TuiLiveQuality,
+        fit: TuiLiveFit,
+        kitty_detected: bool,
+    ) -> Self {
+        let mut state = Self {
+            mode,
+            preference,
+            quality,
+            fit,
+            backend: None,
+            kitty_detected,
+            herdr_environment: HerdrEnvironment::from_process(),
+            herdr_worker: None,
+            ansi: AnsiCanvas::default(),
+            metrics: LiveMetrics::default(),
+        };
+        state.select_backend();
+        state
+    }
+
+    fn enabled(&self) -> bool {
+        self.backend.is_some()
+    }
+
+    fn select_backend(&mut self) {
+        self.stop_herdr();
+        self.ansi.clear();
+        self.backend = if self.mode == TuiLiveMode::Off {
+            None
+        } else {
+            match self.preference {
+                TuiLiveBackend::Herdr if self.herdr_environment.is_some() => {
+                    Some(ActiveLiveBackend::Herdr)
+                }
+                TuiLiveBackend::Herdr if self.mode == TuiLiveMode::On => {
+                    Some(ActiveLiveBackend::Ansi)
+                }
+                TuiLiveBackend::Kitty => Some(ActiveLiveBackend::Kitty),
+                TuiLiveBackend::Ansi => Some(ActiveLiveBackend::Ansi),
+                TuiLiveBackend::Auto if self.herdr_environment.is_some() => {
+                    Some(ActiveLiveBackend::Herdr)
+                }
+                TuiLiveBackend::Auto if self.kitty_detected => Some(ActiveLiveBackend::Kitty),
+                TuiLiveBackend::Auto if self.mode == TuiLiveMode::On => {
+                    Some(ActiveLiveBackend::Ansi)
+                }
+                _ => None,
+            }
+        };
+        if self.backend == Some(ActiveLiveBackend::Herdr) {
+            self.herdr_worker = self
+                .herdr_environment
+                .clone()
+                .map(HerdrGraphicsWorker::spawn);
+        }
+    }
+
+    fn fall_back_from(&mut self, failed: ActiveLiveBackend) {
+        self.stop_herdr();
+        self.ansi.clear();
+        self.backend = match failed {
+            ActiveLiveBackend::Herdr if self.kitty_detected => Some(ActiveLiveBackend::Kitty),
+            ActiveLiveBackend::Herdr | ActiveLiveBackend::Kitty if self.mode == TuiLiveMode::On => {
+                Some(ActiveLiveBackend::Ansi)
+            }
+            ActiveLiveBackend::Herdr | ActiveLiveBackend::Kitty | ActiveLiveBackend::Ansi => None,
+        };
+    }
+
+    fn stop_herdr(&mut self) {
+        if let Some(mut worker) = self.herdr_worker.take() {
+            let _ = worker.stop();
+        }
+    }
+
+    fn ensure_herdr(&mut self) {
+        if self.backend == Some(ActiveLiveBackend::Herdr) && self.herdr_worker.is_none() {
+            self.herdr_worker = self
+                .herdr_environment
+                .clone()
+                .map(HerdrGraphicsWorker::spawn);
+        }
+    }
+
+    fn fit(&self) -> FrameFit {
+        match self.fit {
+            TuiLiveFit::Contain => FrameFit::Contain,
+            TuiLiveFit::Cover => FrameFit::Cover,
+            TuiLiveFit::Actual => FrameFit::Actual,
+        }
+    }
+
+    fn diagnostics(&self) -> String {
+        match self.backend {
+            Some(backend) => format!(
+                "LIVE · {} · {:.1} FPS · {:.0} KiB/s · {} dropped",
+                backend.label(),
+                self.metrics.fps,
+                self.metrics.bytes_per_second / 1024.0,
+                self.metrics.dropped
+            ),
+            None => "LIVE off · semantic browser view · screenshot remains explicit".into(),
+        }
+    }
+}
+
+impl Drop for LiveViewState {
+    fn drop(&mut self) {
+        self.stop_herdr();
     }
 }
 
@@ -327,6 +564,7 @@ pub struct App {
     busy: Option<BusyState>,
     next_operation_id: u64,
     graphics: TerminalGraphics,
+    live: LiveViewState,
     mode: WorkspaceMode,
     layout_preference: TuiLayout,
     display_class: DisplayClass,
@@ -401,6 +639,7 @@ impl App {
             TuiLayout::Desktop,
             RemoteContext::default(),
             120,
+            LiveViewOptions::default(),
         )
     }
 
@@ -409,17 +648,29 @@ impl App {
         layout_preference: TuiLayout,
         remote_context: RemoteContext,
         terminal_width: u16,
+        live_options: LiveViewOptions,
     ) -> Self {
         let (development_event_tx, development_event_rx) = std_mpsc::channel();
         let mut activity = VecDeque::new();
         activity.push_back("Glass started.".to_string());
         activity.push_back("Connecting to Chrome…".to_string());
-        let environment = TerminalEnvironment::from_process();
         let display_class = display_class(layout_preference, terminal_width, remote_context);
-        let graphics_mode = if display_class == DisplayClass::Phone {
-            GraphicsMode::Semantic
+        let mut live = LiveViewState::new(
+            live_options.mode,
+            live_options.backend,
+            live_options.quality,
+            live_options.fit,
+            live_options.kitty_detected,
+        );
+        if remote_context.mosh && live.preference == TuiLiveBackend::Auto {
+            live.herdr_environment = None;
+            live.kitty_detected = false;
+            live.select_backend();
+        }
+        let graphics_mode = if live.backend == Some(ActiveLiveBackend::Kitty) {
+            GraphicsMode::Kitty
         } else {
-            negotiate(environment.as_borrowed())
+            GraphicsMode::Semantic
         };
         let graphics = TerminalGraphics::new(
             graphics_mode,
@@ -450,6 +701,7 @@ impl App {
             busy: None,
             next_operation_id: 1,
             graphics,
+            live,
             mode: if development_enabled && display_class == DisplayClass::Phone {
                 WorkspaceMode::Development
             } else {
@@ -463,11 +715,7 @@ impl App {
             remote_context,
             mutation_lease: MutationLease::default(),
             visual_revision: 0,
-            visual_status: if display_class == DisplayClass::Phone {
-                "semantic mobile view; visual capture is explicit".to_string()
-            } else {
-                "visual stream pending".to_string()
-            },
+            visual_status: "semantic browser view; live capture is explicit".to_string(),
             development,
             development_enabled,
             harness: LocalHarness::default(),
@@ -535,6 +783,109 @@ impl App {
         self.mobile_help = false;
         self.page_scroll = 0;
         self.set_status(format!("Mobile view: {}", view.label()));
+    }
+
+    fn configure_live(
+        &mut self,
+        mode: Option<TuiLiveMode>,
+        backend: Option<TuiLiveBackend>,
+        quality: Option<TuiLiveQuality>,
+        fit: Option<TuiLiveFit>,
+    ) {
+        if let Some(mode) = mode {
+            self.live.mode = mode;
+        }
+        if let Some(backend) = backend {
+            self.live.preference = backend;
+        }
+        if let Some(quality) = quality {
+            self.live.quality = quality;
+        }
+        if let Some(fit) = fit {
+            self.live.fit = fit;
+        }
+        self.live.metrics = LiveMetrics::default();
+        self.live.select_backend();
+        self.sync_live_graphics_mode();
+        if self.live.enabled() {
+            self.set_mobile_view(MobileView::App);
+            self.set_status(self.live.diagnostics());
+        } else {
+            self.graphics.clear_pane().ok();
+            self.set_status("Live view disabled; semantic browser view active.");
+        }
+    }
+
+    fn sync_live_graphics_mode(&mut self) {
+        let mode = if self.live.backend == Some(ActiveLiveBackend::Kitty) {
+            GraphicsMode::Kitty
+        } else {
+            GraphicsMode::Semantic
+        };
+        if self.graphics.mode() == mode {
+            return;
+        }
+        let cleanup = self.graphics.cleanup();
+        if !cleanup.is_empty() {
+            let mut stdout = io::stdout();
+            let _ = stdout.write_all(&cleanup).and_then(|()| stdout.flush());
+        }
+        self.graphics = TerminalGraphics::new(
+            mode,
+            TargetResourceIdentity::new("tui", Some("terminal".to_string()))
+                .expect("static TUI graphics identity is valid"),
+        )
+        .expect("static TUI graphics state is valid");
+    }
+
+    fn poll_live_worker(&mut self) -> bool {
+        let event = self
+            .live
+            .herdr_worker
+            .as_ref()
+            .and_then(HerdrGraphicsWorker::try_event);
+        match event {
+            Some(HerdrEvent::Connected) => {
+                self.visual_status = "Herdr pane graphics stream connected".into();
+                self.add_activity("Live browser connected to Herdr pane graphics.");
+                true
+            }
+            Some(HerdrEvent::Failed(message)) => {
+                self.add_activity(format!(
+                    "Herdr graphics unavailable ({message}); selecting fallback."
+                ));
+                self.live.fall_back_from(ActiveLiveBackend::Herdr);
+                self.sync_live_graphics_mode();
+                self.visual_status = self.live.diagnostics();
+                true
+            }
+            Some(HerdrEvent::Stopped) => false,
+            None => false,
+        }
+    }
+
+    fn live_capture_config(&self) -> ScreencastConfig {
+        let Some(area) = self.live_area else {
+            return ScreencastConfig::default();
+        };
+        if !self.live.enabled() || area.width == 0 || area.height == 0 {
+            return ScreencastConfig::default();
+        }
+        let (horizontal_scale, vertical_scale, fps) = match self.live.quality {
+            TuiLiveQuality::Data => (2_u32, 4_u32, 3_u64),
+            TuiLiveQuality::Balanced => (4, 8, 6),
+            TuiLiveQuality::Smooth => (8, 16, 12),
+        };
+        ScreencastConfig {
+            enabled: true,
+            max_width: u32::from(area.width)
+                .saturating_mul(horizontal_scale)
+                .clamp(64, LIVE_CAPTURE_MAX_WIDTH),
+            max_height: u32::from(area.height)
+                .saturating_mul(vertical_scale)
+                .clamp(64, LIVE_CAPTURE_MAX_HEIGHT),
+            minimum_interval: Duration::from_millis(1000 / fps),
+        }
     }
 
     fn cycle_mobile_view(&mut self, delta: i8) {
@@ -1489,11 +1840,13 @@ impl App {
             self.apply_visual_status("visual frame rejected: metadata exceeds limit");
             return Ok(());
         }
-        let Some(geometry) = self.graphics.geometry().copied() else {
+        if !self.live.enabled() {
             return Ok(());
-        };
-        self.graphics.bind_browser_revision(browser_revision)?;
-        self.visual_revision = browser_revision;
+        }
+        let pane = self.graphics.pane();
+        if pane.is_empty() {
+            return Ok(());
+        }
         let payload = match base64::engine::general_purpose::STANDARD.decode(data.as_bytes()) {
             Ok(payload) if payload.len() <= MAX_FRAME_BYTES => payload,
             Ok(_) => {
@@ -1505,6 +1858,44 @@ impl App {
                 return Ok(());
             }
         };
+        let image_size = match imagesize::blob_size(&payload) {
+            Ok(size) => size,
+            Err(error) => {
+                self.apply_visual_status(format!("live frame rejected: {error}"));
+                self.live.metrics.dropped();
+                return Ok(());
+            }
+        };
+        let image_width = u32::try_from(image_size.width).map_err(|_| "live PNG width overflow")?;
+        let image_height =
+            u32::try_from(image_size.height).map_err(|_| "live PNG height overflow")?;
+        let viewport_width = metadata
+            .get("deviceWidth")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(image_width);
+        let viewport_height = metadata
+            .get("deviceHeight")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(image_height);
+        self.graphics.bind_browser_revision(browser_revision)?;
+        self.graphics.resize(
+            pane,
+            PixelSize::new(viewport_width, viewport_height),
+            PixelSize::new(viewport_width, viewport_height),
+            CaptureScale::FULL,
+            browser_revision,
+        )?;
+        self.visual_revision = browser_revision;
+        self.live.metrics.received(payload.len());
+        let geometry = self
+            .graphics
+            .geometry()
+            .copied()
+            .ok_or("live graphics geometry was not initialized")?;
         let frame = BrowserFrame {
             schema_version: crate::presentation::PRESENTATION_CONTRACT_SCHEMA_VERSION,
             generation: self
@@ -1526,16 +1917,53 @@ impl App {
             geometry_revision: geometry.geometry_revision,
             dropped: Default::default(),
         };
-        match self.submit_graphics_frame(frame, &payload)? {
-            SubmitResult::Stale => self.apply_visual_status("stale visual frame rejected"),
-            SubmitResult::Queued | SubmitResult::Replaced => {
-                self.apply_visual_status("visual frame queued")
+        match self.live.backend {
+            Some(ActiveLiveBackend::Herdr) => {
+                let queued = self.live.herdr_worker.as_ref().is_some_and(|worker| {
+                    worker.try_send(HerdrFrame {
+                        png: payload,
+                        image_width,
+                        image_height,
+                        viewport_col: i32::from(pane.x),
+                        viewport_row: i32::from(pane.y),
+                        grid_cols: u32::from(pane.width),
+                        grid_rows: u32::from(pane.height),
+                    })
+                });
+                if !queued {
+                    self.live.metrics.dropped();
+                }
             }
-            SubmitResult::Presented => self.apply_visual_status(format!(
-                "visual frame presented ({:?})",
-                metadata.get("deviceWidth").and_then(Value::as_u64)
-            )),
+            Some(ActiveLiveBackend::Kitty) => match self.submit_graphics_frame(frame, &payload) {
+                Ok(SubmitResult::Stale | SubmitResult::Replaced) => self.live.metrics.dropped(),
+                Ok(SubmitResult::Queued | SubmitResult::Presented) => {}
+                Err(error) => {
+                    self.add_activity(format!(
+                        "Kitty graphics failed ({error}); selecting fallback."
+                    ));
+                    self.live.fall_back_from(ActiveLiveBackend::Kitty);
+                    self.sync_live_graphics_mode();
+                }
+            },
+            Some(ActiveLiveBackend::Ansi) => {
+                match self
+                    .live
+                    .ansi
+                    .update_png(&payload, pane.width, pane.height, self.live.fit())
+                {
+                    Ok(update) if update.changed_cells == 0 => self.live.metrics.dropped(),
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.add_activity(format!(
+                            "ANSI live renderer rejected a frame ({error}); semantic fallback active."
+                        ));
+                        self.live.fall_back_from(ActiveLiveBackend::Ansi);
+                    }
+                }
+            }
+            None => {}
         }
+        self.apply_visual_status(self.live.diagnostics());
         Ok(())
     }
 
@@ -1621,26 +2049,32 @@ impl App {
         }
         let root = root_regions(area, self.display_class);
         self.mobile_nav_area = root.nav;
-        if self.display_class != DisplayClass::Wide {
-            self.editor_area = None;
-            self.live_area = None;
-            return Ok(self.graphics.clear_pane()?);
-        }
-
-        let pane = if self.mode == WorkspaceMode::Development {
-            let regions = wide_development_regions(root.content);
-            self.editor_area = Some(regions.editor);
-            self.live_area = Some(regions.app);
-            regions.app
+        self.editor_area = if self.display_class == DisplayClass::Wide
+            && self.mode == WorkspaceMode::Development
+        {
+            Some(wide_development_regions(root.content).editor)
         } else {
-            let content = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(root.content);
-            self.editor_area = None;
-            self.live_area = Some(content[1]);
-            content[1]
+            None
         };
+        let Some(pane) = live_panel_region(
+            area,
+            self.display_class,
+            self.mode,
+            self.mobile_view,
+            self.live.enabled(),
+        ) else {
+            self.live_area = None;
+            self.live.ansi.clear();
+            self.live.stop_herdr();
+            return Ok(self.graphics.clear_pane()?);
+        };
+        self.live.ensure_herdr();
+        self.live_area = Some(Rect {
+            x: pane.x.saturating_add(1),
+            y: pane.y.saturating_add(1),
+            width: pane.width.saturating_sub(2),
+            height: pane.height.saturating_sub(2),
+        });
         let image_width = pane.width.saturating_sub(2);
         let image_height = pane.height.saturating_sub(2);
         if image_width == 0 || image_height == 0 {
@@ -1692,13 +2126,34 @@ impl App {
     }
 
     fn render_graphics(&mut self) -> BrowserResult<()> {
-        let rendered = self.graphics.render_current(&self.page_content)?;
+        let rendered = match self.graphics.render_current(&self.page_content) {
+            Ok(rendered) => rendered,
+            Err(error) if self.live.backend == Some(ActiveLiveBackend::Kitty) => {
+                self.add_activity(format!(
+                    "Kitty graphics render failed ({error}); selecting fallback."
+                ));
+                self.live.fall_back_from(ActiveLiveBackend::Kitty);
+                self.sync_live_graphics_mode();
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         if rendered.mode == crate::terminal_graphics::GraphicsMode::Kitty {
             let mut stdout = io::stdout();
             stdout.write_all(&rendered.bytes)?;
             stdout.flush()?;
         }
-        self.graphics.present_pending()?;
+        if let Err(error) = self.graphics.present_pending() {
+            if self.live.backend == Some(ActiveLiveBackend::Kitty) {
+                self.add_activity(format!(
+                    "Kitty graphics presentation failed ({error}); selecting fallback."
+                ));
+                self.live.fall_back_from(ActiveLiveBackend::Kitty);
+                self.sync_live_graphics_mode();
+                return Ok(());
+            }
+            return Err(error.into());
+        }
         Ok(())
     }
 }
@@ -1784,10 +2239,21 @@ impl Drop for InputWorker {
 enum LocalCommand {
     Help,
     Safari,
+    Live(LiveCommand),
     Profiles,
     Knowledge(Option<String>),
     Daemon(DaemonView),
     Project(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveCommand {
+    Show,
+    Mode(TuiLiveMode),
+    Backend(TuiLiveBackend),
+    Quality(TuiLiveQuality),
+    Fit(TuiLiveFit),
+    Doctor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1905,6 +2371,63 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     }
     if command.eq_ignore_ascii_case("help") {
         return Ok(ParsedCommand::Local(LocalCommand::Help));
+    }
+    if command.eq_ignore_ascii_case("live") || command.eq_ignore_ascii_case("live status") {
+        return Ok(ParsedCommand::Local(LocalCommand::Live(LiveCommand::Show)));
+    }
+    if command.eq_ignore_ascii_case("live doctor") {
+        return Ok(ParsedCommand::Local(LocalCommand::Live(
+            LiveCommand::Doctor,
+        )));
+    }
+    if let Some(value) = strip_ascii_prefix(command, "live backend ") {
+        let backend = match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => TuiLiveBackend::Auto,
+            "herdr" => TuiLiveBackend::Herdr,
+            "kitty" => TuiLiveBackend::Kitty,
+            "ansi" => TuiLiveBackend::Ansi,
+            _ => return Err("live backend must be auto, herdr, kitty, or ansi".into()),
+        };
+        return Ok(ParsedCommand::Local(LocalCommand::Live(
+            LiveCommand::Backend(backend),
+        )));
+    }
+    if let Some(value) = strip_ascii_prefix(command, "live quality ") {
+        let quality = match value.trim().to_ascii_lowercase().as_str() {
+            "data" => TuiLiveQuality::Data,
+            "balanced" => TuiLiveQuality::Balanced,
+            "smooth" => TuiLiveQuality::Smooth,
+            _ => return Err("live quality must be data, balanced, or smooth".into()),
+        };
+        return Ok(ParsedCommand::Local(LocalCommand::Live(
+            LiveCommand::Quality(quality),
+        )));
+    }
+    if let Some(value) = strip_ascii_prefix(command, "live fit ") {
+        let fit = match value.trim().to_ascii_lowercase().as_str() {
+            "contain" => TuiLiveFit::Contain,
+            "cover" => TuiLiveFit::Cover,
+            "actual" => TuiLiveFit::Actual,
+            _ => return Err("live fit must be contain, cover, or actual".into()),
+        };
+        return Ok(ParsedCommand::Local(LocalCommand::Live(LiveCommand::Fit(
+            fit,
+        ))));
+    }
+    if let Some(value) = strip_ascii_prefix(command, "live ") {
+        let mode = match value.trim().to_ascii_lowercase().as_str() {
+            "on" => TuiLiveMode::On,
+            "auto" => TuiLiveMode::Auto,
+            "off" => TuiLiveMode::Off,
+            _ => {
+                return Err(
+                    "live expects on, auto, off, status, doctor, backend, quality, or fit".into(),
+                );
+            }
+        };
+        return Ok(ParsedCommand::Local(LocalCommand::Live(LiveCommand::Mode(
+            mode,
+        ))));
     }
     if matches!(
         command.to_ascii_lowercase().as_str(),
@@ -2410,7 +2933,7 @@ async fn browser_worker(
     viewport: Option<(i64, i64)>,
     options: SessionOptions,
     policy: BrowserPolicy,
-    visual_mode: watch::Receiver<bool>,
+    visual_mode: watch::Receiver<ScreencastConfig>,
     mut commands: mpsc::Receiver<BrowserCommand>,
     events: mpsc::Sender<BrowserEvent>,
     mut shutdown: watch::Receiver<bool>,
@@ -2502,16 +3025,16 @@ async fn worker_loop(
     commands: &mut mpsc::Receiver<BrowserCommand>,
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
-    mut visual_mode: watch::Receiver<bool>,
+    mut visual_mode: watch::Receiver<ScreencastConfig>,
 ) {
     let initial_revision = session
         .observe_fresh()
         .await
         .map(|observation| observation.accessibility.revision)
         .unwrap_or(1);
-    let mut visual_stream_enabled = *visual_mode.borrow();
-    let mut screencast = if visual_stream_enabled {
-        start_tui_screencast(&session, events).await
+    let mut visual_config = *visual_mode.borrow();
+    let mut screencast = if visual_config.enabled {
+        start_tui_screencast(&session, events, visual_config).await
     } else {
         let _ = send_browser_event(
             events,
@@ -2525,6 +3048,7 @@ async fn worker_loop(
     let mut fallback_tick = time::interval(Duration::from_millis(750));
     fallback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut visual_revision = initial_revision;
+    let mut last_frame_sent = None::<Instant>;
 
     loop {
         if *shutdown.borrow() {
@@ -2542,18 +3066,19 @@ async fn worker_loop(
                     break;
                 }
                 let requested = *visual_mode.borrow();
-                if requested == visual_stream_enabled {
+                if requested == visual_config {
                     continue;
                 }
-                visual_stream_enabled = requested;
-                if visual_stream_enabled {
-                    screencast = start_tui_screencast(&session, events).await;
+                if let Some(scope) = screencast.take() {
+                    let _ = scope.stop().await;
+                }
+                visual_config = requested;
+                last_frame_sent = None;
+                if visual_config.enabled {
+                    screencast = start_tui_screencast(&session, events, visual_config).await;
                 } else {
-                    if let Some(scope) = screencast.take() {
-                        let _ = scope.stop().await;
-                    }
                     let _ = send_browser_event(events, BrowserEvent::VisualStatus {
-                        message: "semantic mobile view; use screenshot explicitly".into(),
+                        message: "live view off; semantic observation and explicit screenshots remain available".into(),
                     }).await;
                 }
             }
@@ -2562,14 +3087,18 @@ async fn worker_loop(
                     Some(scope) => scope.next_frame().await,
                     None => std::future::pending().await,
                 }
-            }, if visual_stream_enabled && screencast.is_some() => {
+            }, if visual_config.enabled && screencast.is_some() => {
                 match frame {
                     Some(frame) => {
-                        let _ = send_browser_event(events, BrowserEvent::VisualFrame {
-                            data: frame.data,
-                            metadata: frame.metadata,
-                            browser_revision: visual_revision,
-                        }).await;
+                        let now = Instant::now();
+                        if last_frame_sent.is_none_or(|last| now.duration_since(last) >= visual_config.minimum_interval) {
+                            last_frame_sent = Some(now);
+                            let _ = send_browser_event(events, BrowserEvent::VisualFrame {
+                                data: frame.data,
+                                metadata: frame.metadata,
+                                browser_revision: visual_revision,
+                            }).await;
+                        }
                     }
                     None => {
                         screencast = None;
@@ -2579,7 +3108,7 @@ async fn worker_loop(
                     }
                 }
             }
-            _ = fallback_tick.tick(), if visual_stream_enabled && screencast.is_none() => {
+            _ = fallback_tick.tick(), if visual_config.enabled && screencast.is_none() => {
                 if let Ok(bytes) = session.screenshot_png().await {
                     let metadata = serde_json::json!({"source":"screenshot-fallback"});
                     let _ = send_browser_event(events, BrowserEvent::VisualFrame {
@@ -2644,16 +3173,22 @@ async fn worker_loop(
 async fn start_tui_screencast(
     session: &BrowserSession,
     events: &mpsc::Sender<BrowserEvent>,
+    config: ScreencastConfig,
 ) -> Option<ScreencastScope> {
     match session
-        .start_screencast(VisualFormat::Png, 80, 4096, 4096)
+        .start_screencast(VisualFormat::Png, 80, config.max_width, config.max_height)
         .await
     {
         Ok(scope) => {
             let _ = send_browser_event(
                 events,
                 BrowserEvent::VisualStatus {
-                    message: "event-driven screencast active".into(),
+                    message: format!(
+                        "event-driven PNG screencast active (max {}x{}, {:.0} FPS)",
+                        config.max_width,
+                        config.max_height,
+                        1.0 / config.minimum_interval.as_secs_f64()
+                    ),
                 },
             )
             .await;
@@ -3124,9 +3659,51 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "live [on|auto|off|status|doctor|backend NAME|quality NAME|fit NAME] | project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
         }
+        Ok(ParsedCommand::Local(LocalCommand::Live(command))) => match command {
+            LiveCommand::Show => {
+                app.set_page_content(format!(
+                    "TERMINAL LIVE BROWSER\n\n{}\n\nmode: {:?}\npreference: {:?}\nquality: {:?}\nfit: {:?}\nkitty detected: {}\nherdr stream: {}\ntransport: {}\n\nSafari forwarding remains the stable native-browser channel.",
+                    app.live.diagnostics(),
+                    app.live.mode,
+                    app.live.preference,
+                    app.live.quality,
+                    app.live.fit,
+                    app.live.kitty_detected,
+                    if app.live.herdr_environment.is_some() { "available" } else { "unavailable" },
+                    app.remote_context.label(),
+                ));
+                app.set_mobile_view(MobileView::App);
+            }
+            LiveCommand::Doctor => {
+                let recommendation = if app.remote_context.mosh {
+                    "Mosh synchronizes terminal cells, so use the ANSI backend for live frames. Use SSH for Kitty/Herdr pixels."
+                } else if app.live.herdr_environment.is_some() {
+                    "Herdr pane graphics is available and is the preferred owned image layer."
+                } else if app.live.kitty_detected {
+                    "Kitty graphics is available directly over this terminal transport."
+                } else {
+                    "No native pixel backend was detected; `live on` will use portable ANSI half blocks."
+                };
+                app.set_page_content(format!(
+                    "LIVE VIEW DOCTOR\n\ntransport: {}\nSSH: {}\nMosh: {}\nHerdr environment: {}\nKitty capability: {}\nactive: {}\n\n{}\n\nCommands:\n  live on\n  live backend ansi\n  live quality data|balanced|smooth\n  live fit contain|cover|actual",
+                    app.remote_context.label(),
+                    app.remote_context.ssh,
+                    app.remote_context.mosh,
+                    app.live.herdr_environment.is_some(),
+                    app.live.kitty_detected,
+                    app.live.diagnostics(),
+                    recommendation,
+                ));
+                app.set_mobile_view(MobileView::App);
+            }
+            LiveCommand::Mode(mode) => app.configure_live(Some(mode), None, None, None),
+            LiveCommand::Backend(backend) => app.configure_live(None, Some(backend), None, None),
+            LiveCommand::Quality(quality) => app.configure_live(None, None, Some(quality), None),
+            LiveCommand::Fit(fit) => app.configure_live(None, None, None, Some(fit)),
+        },
         Ok(ParsedCommand::Local(LocalCommand::Safari)) => {
             let configured = app
                 .development
@@ -3386,6 +3963,54 @@ fn wide_development_regions(area: Rect) -> WideDevelopmentRegions {
     }
 }
 
+fn live_panel_region(
+    area: Rect,
+    display: DisplayClass,
+    mode: WorkspaceMode,
+    mobile_view: MobileView,
+    live_enabled: bool,
+) -> Option<Rect> {
+    if !live_enabled {
+        return None;
+    }
+    let root = root_regions(area, display);
+    match display {
+        DisplayClass::Phone => (mobile_view == MobileView::App).then_some(root.content),
+        DisplayClass::Wide if mode == WorkspaceMode::Development => {
+            Some(wide_development_regions(root.content).app)
+        }
+        DisplayClass::Wide => {
+            let content = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(root.content);
+            Some(content[1])
+        }
+        DisplayClass::Compact if mode == WorkspaceMode::Development => {
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(root.content);
+            let main = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                .split(vertical[0]);
+            let work = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+                .split(main[1]);
+            Some(work[1])
+        }
+        DisplayClass::Compact => {
+            let content = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(root.content);
+            Some(content[1])
+        }
+    }
+}
+
 fn draw(frame: &mut Frame, app: &App) {
     let root = root_regions(frame.area(), app.display_class);
     match app.display_class {
@@ -3428,20 +4053,21 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
                 app.page_content
             ),
         ),
-        MobileView::App => (
-            "App / Semantics · command: safari",
-            app.page_content.clone(),
-        ),
+        MobileView::App => ("App · live on/off · safari", app.page_content.clone()),
         MobileView::Diff => ("Diff / Verification", app.development_diff.clone()),
         MobileView::Project => ("Project / Editor / Runtime", mobile_project(app)),
     };
-    frame.render_widget(
-        Paragraph::new(content)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .scroll((app.page_scroll, 0))
-            .wrap(Wrap { trim: true }),
-        root.content,
-    );
+    if app.mobile_view == MobileView::App && app.live.enabled() {
+        render_live_or_semantic(frame, app, title, &content, root.content);
+    } else {
+        frame.render_widget(
+            Paragraph::new(content)
+                .block(Block::default().borders(Borders::ALL).title(title))
+                .scroll((app.page_scroll, 0))
+                .wrap(Wrap { trim: true }),
+            root.content,
+        );
+    }
     frame.render_widget(
         Paragraph::new(app.input.as_str()).block(
             Block::default()
@@ -3490,7 +4116,7 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
 
 fn mobile_home(app: &App) -> String {
     format!(
-        "STATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n\nRUNTIME\n{}",
+        "STATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n{}\n\nRUNTIME\n{}",
         app.status,
         app.remote_context.label(),
         if app.remote_context.herdr {
@@ -3506,6 +4132,7 @@ fn mobile_home(app: &App) -> String {
             app.url.as_str()
         },
         app.visual_status,
+        app.live.diagnostics(),
         app.development_runtime,
     )
 }
@@ -3560,15 +4187,11 @@ fn draw_desktop(frame: &mut Frame, app: &App, root: RootRegions, compact: bool) 
                 .style(Style::default().fg(Color::Green)),
             content[0],
         );
-        frame.render_widget(
-            Paragraph::new(app.page_content.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(workspace_content_title(app.mode)),
-                )
-                .scroll((app.page_scroll, 0))
-                .wrap(Wrap { trim: true }),
+        render_live_or_semantic(
+            frame,
+            app,
+            workspace_content_title(app.mode),
+            &app.page_content,
             content[1],
         );
     }
@@ -3616,8 +4239,9 @@ fn draw_wide_development(frame: &mut Frame, app: &App, area: Rect) {
         &app.development_editor,
         regions.editor,
     );
-    render_development_panel(
+    render_live_or_semantic(
         frame,
+        app,
         "Live App / Semantics",
         &app.page_content,
         regions.app,
@@ -3659,7 +4283,7 @@ fn draw_compact_development(frame: &mut Frame, app: &App, area: Rect) {
         .split(vertical[1]);
     render_development_panel(frame, "Project / Git", &app.development_files, main[0]);
     render_development_panel(frame, "Editor", &app.development_editor, work[0]);
-    render_development_panel(frame, "App / Semantics", &app.page_content, work[1]);
+    render_live_or_semantic(frame, app, "App / Semantics", &app.page_content, work[1]);
     render_development_panel(frame, "Runtime", &app.development_runtime, lower[0]);
     frame.render_widget(
         List::new(activity_items(app))
@@ -3674,6 +4298,72 @@ fn render_development_panel(frame: &mut Frame, title: &'static str, content: &st
         Paragraph::new(content)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_live_or_semantic(
+    frame: &mut Frame,
+    app: &App,
+    title: &'static str,
+    semantic: &str,
+    area: Rect,
+) {
+    if !app.live.enabled() || app.live.ansi.cells().is_empty() {
+        let content = if app.live.enabled() {
+            format!(
+                "{}\n\nWaiting for live browser frame…",
+                app.live.diagnostics()
+            )
+        } else {
+            semantic.to_string()
+        };
+        frame.render_widget(
+            Paragraph::new(content)
+                .block(Block::default().borders(Borders::ALL).title(title))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+    if app.live.backend != Some(ActiveLiveBackend::Ansi) {
+        frame.render_widget(
+            Paragraph::new("").block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
+    let mut lines = Vec::with_capacity(usize::from(app.live.ansi.height()));
+    for row in app
+        .live
+        .ansi
+        .cells()
+        .chunks(usize::from(app.live.ansi.width().max(1)))
+    {
+        let mut spans = Vec::new();
+        let mut start = 0;
+        while start < row.len() {
+            let cell = row[start];
+            let mut end = start + 1;
+            while end < row.len() && row[end] == cell {
+                end += 1;
+            }
+            spans.push(Span::styled(
+                "▀".repeat(end - start),
+                Style::default()
+                    .fg(Color::Rgb(cell.top.red, cell.top.green, cell.top.blue))
+                    .bg(Color::Rgb(
+                        cell.bottom.red,
+                        cell.bottom.green,
+                        cell.bottom.blue,
+                    )),
+            ));
+            start = end;
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -3699,11 +4389,11 @@ const fn workspace_content_title(mode: WorkspaceMode) -> &'static str {
 
 fn draw_overlays(frame: &mut Frame, app: &App) {
     if app.mobile_help {
-        let popup = centered_popup_sized(frame.area(), 38, 12);
+        let popup = centered_popup_sized(frame.area(), 38, 15);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(
-                "1-5  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nagent PROMPT\nproject open PATH\nproject diff\nsafari  tunnel guidance\nscreenshot PATH  explicit visual",
+                "1-5  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nlive on / live off\nlive doctor\nagent PROMPT\nproject open PATH\nproject diff\nsafari  native tunnel\nscreenshot PATH  explicit evidence",
             )
             .block(Block::default().borders(Borders::ALL).title("Phone controls"))
             .wrap(Wrap { trim: true }),
@@ -3783,25 +4473,98 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Probe Kitty graphics before the input worker starts, so terminal replies
+/// cannot be mistaken for user key events. Environment hints remain the fast
+/// path; this bounded query covers generic `xterm-256color` SSH clients.
+#[cfg(unix)]
+fn probe_kitty_graphics() -> bool {
+    let mut stdout = io::stdout();
+    if stdout
+        .write_all(b"\x1b_Gi=31,a=q,s=1,v=1,f=24;AAAA\x1b\\\x1b[c")
+        .and_then(|()| stdout.flush())
+        .is_err()
+    {
+        return false;
+    }
+    let deadline = Instant::now() + Duration::from_millis(180);
+    let mut response = Vec::with_capacity(256);
+    while Instant::now() < deadline && response.len() < 4096 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        let mut descriptor = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `descriptor` points to one initialized pollfd for the call.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if ready <= 0 {
+            break;
+        }
+        let mut buffer = [0_u8; 256];
+        // SAFETY: `buffer` is valid for its full length and stdin is open while
+        // the TUI terminal guard is active.
+        let read =
+            unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if read <= 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read as usize]);
+        if response.windows(8).any(|window| window == b"i=31;OK") {
+            return true;
+        }
+        if response.ends_with(b"c") && response.contains(&0x1b) {
+            break;
+        }
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn probe_kitty_graphics() -> bool {
+    false
+}
+
 pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
     run_tui_for_product(cli, true).await
 }
 
 pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> BrowserResult<()> {
     let mut terminal_guard = TerminalGuard::enter()?;
+    let terminal_environment = TerminalEnvironment::from_process();
+    let environment_kitty = negotiate(terminal_environment.as_borrowed()) == GraphicsMode::Kitty;
+    let remote_context = RemoteContext::from_process();
+    let should_probe_kitty = cli.tui_live != TuiLiveMode::Off
+        && matches!(
+            cli.tui_live_backend,
+            TuiLiveBackend::Auto | TuiLiveBackend::Kitty
+        )
+        && !remote_context.herdr
+        && !remote_context.mosh;
+    let kitty_detected = environment_kitty || (should_probe_kitty && probe_kitty_graphics());
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let initial_size = terminal.size()?;
-    let remote_context = RemoteContext::from_process();
-    let initial_display = display_class(cli.tui_layout, initial_size.width, remote_context);
-    let visual_stream_enabled = initial_display != DisplayClass::Phone;
+    let mut app = App::new_for_product_with_context(
+        development_enabled,
+        cli.tui_layout,
+        remote_context,
+        initial_size.width,
+        LiveViewOptions {
+            mode: cli.tui_live,
+            backend: cli.tui_live_backend,
+            quality: cli.tui_live_quality,
+            fit: cli.tui_live_fit,
+            kitty_detected,
+        },
+    );
 
     let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
     let (browser_commands, browser_command_rx) = mpsc::channel(BROWSER_COMMAND_CHANNEL_CAPACITY);
     let (browser_event_tx, mut browser_events) = mpsc::channel(BROWSER_EVENT_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (visual_mode_tx, visual_mode_rx) = watch::channel(visual_stream_enabled);
+    let (visual_mode_tx, visual_mode_rx) = watch::channel(ScreencastConfig::default());
 
     let viewport = cli
         .viewport
@@ -3838,12 +4601,6 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         shutdown_rx,
     ));
     let mut input_worker = InputWorker::spawn(input_tx);
-    let mut app = App::new_for_product_with_context(
-        development_enabled,
-        cli.tui_layout,
-        remote_context,
-        initial_size.width,
-    );
     let manifest = GlassCapabilityManifest::for_policy_with_experimental_extensions(
         &policy,
         cli.experimental_extensions,
@@ -3880,6 +4637,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     let _ = shutdown_tx.send(true);
     let _ = browser_commands.try_send(BrowserCommand::Shutdown);
     drop(browser_commands);
+    app.live.stop_herdr();
     let graphics_result = app.graphics_shutdown();
     let input_result = input_worker.stop();
     let cursor_result = terminal.show_cursor();
@@ -3901,7 +4659,7 @@ async fn run_tui_loop(
     input_events: &mut mpsc::Receiver<InputEvent>,
     browser_events: &mut mpsc::Receiver<BrowserEvent>,
     policy: &BrowserPolicy,
-    visual_mode: &watch::Sender<bool>,
+    visual_mode: &watch::Sender<ScreencastConfig>,
 ) -> BrowserResult<()> {
     let mut redraw = true;
     let mut browser_events_open = true;
@@ -3912,15 +4670,16 @@ async fn run_tui_loop(
         if redraw {
             let area = terminal.size()?;
             app.sync_graphics_geometry(area.into())?;
-            let _ = visual_mode.send_if_modified(|enabled| {
-                let next = app.display_class != DisplayClass::Phone;
-                if *enabled == next {
+            let next = app.live_capture_config();
+            let _ = visual_mode.send_if_modified(|config| {
+                if *config == next {
                     false
                 } else {
-                    *enabled = next;
+                    *config = next;
                     true
                 }
             });
+            app.poll_live_worker();
             terminal.draw(|frame| draw(frame, app))?;
             app.render_graphics()?;
         }
@@ -3975,7 +4734,8 @@ async fn run_tui_loop(
                 if app.is_busy() {
                     app.tick_busy();
                 }
-                app.poll_development_events() || app.is_busy()
+                let live_changed = app.poll_live_worker();
+                app.poll_development_events() || app.is_busy() || live_changed
             },
         };
     }
@@ -4129,6 +4889,19 @@ mod tests {
             Ok(ParsedCommand::Local(LocalCommand::Safari))
         ));
         assert!(matches!(
+            parse_command("live on"),
+            Ok(ParsedCommand::Local(LocalCommand::Live(LiveCommand::Mode(
+                TuiLiveMode::On
+            ))))
+        ));
+        assert!(matches!(
+            parse_command("live backend ansi"),
+            Ok(ParsedCommand::Local(LocalCommand::Live(
+                LiveCommand::Backend(TuiLiveBackend::Ansi)
+            )))
+        ));
+        assert!(parse_command("live quality enormous").is_err());
+        assert!(matches!(
             parse_command("double click r7:b42"),
             Ok(ParsedCommand::Browser(BrowserOperation::DoubleClick(target))) if target == "r7:b42"
         ));
@@ -4240,6 +5013,7 @@ mod tests {
                 ..RemoteContext::default()
             },
             40,
+            LiveViewOptions::default(),
         );
         assert_eq!(app.mode, WorkspaceMode::Development);
         assert_eq!(app.graphics.mode(), GraphicsMode::Semantic);
@@ -4275,6 +5049,7 @@ mod tests {
                 ..RemoteContext::default()
             },
             40,
+            LiveViewOptions::default(),
         );
         app.sync_graphics_geometry(Rect::new(0, 0, 40, 20)).unwrap();
         assert!(app.graphics.geometry().is_none());
@@ -4293,6 +5068,126 @@ mod tests {
         assert!(rendered.contains("1 Home"));
         assert!(rendered.contains("5 More"));
         assert!(rendered.contains("Command"));
+    }
+
+    #[test]
+    fn phone_live_view_uses_bounded_ansi_frames_and_adaptive_capture() {
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                ..RemoteContext::default()
+            },
+            40,
+            LiveViewOptions {
+                mode: TuiLiveMode::On,
+                backend: TuiLiveBackend::Ansi,
+                quality: TuiLiveQuality::Data,
+                ..LiveViewOptions::default()
+            },
+        );
+        app.set_mobile_view(MobileView::App);
+        app.sync_graphics_geometry(Rect::new(0, 0, 40, 20)).unwrap();
+        let config = app.live_capture_config();
+        assert!(config.enabled);
+        assert_eq!(config.minimum_interval, Duration::from_millis(333));
+        assert!(config.max_width <= 80);
+        app.apply_visual_frame(
+            base64::engine::general_purpose::STANDARD.encode(test_live_png()),
+            serde_json::json!({"deviceWidth": 2, "deviceHeight": 2}),
+            7,
+        )
+        .unwrap();
+        assert!(!app.live.ansi.cells().is_empty());
+        assert_eq!(app.graphics.browser_revision(), 7);
+
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() == "▀")
+        );
+    }
+
+    #[test]
+    fn live_backend_policy_is_conservative_and_mosh_safe() {
+        let mut live = LiveViewState::new(
+            TuiLiveMode::Auto,
+            TuiLiveBackend::Auto,
+            TuiLiveQuality::Balanced,
+            TuiLiveFit::Contain,
+            false,
+        );
+        live.herdr_environment = None;
+        live.select_backend();
+        assert_eq!(live.backend, None);
+
+        live.mode = TuiLiveMode::On;
+        live.select_backend();
+        assert_eq!(live.backend, Some(ActiveLiveBackend::Ansi));
+
+        live.kitty_detected = true;
+        live.select_backend();
+        assert_eq!(live.backend, Some(ActiveLiveBackend::Kitty));
+
+        let app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                mosh: true,
+                ..RemoteContext::default()
+            },
+            40,
+            LiveViewOptions {
+                mode: TuiLiveMode::On,
+                ..LiveViewOptions::default()
+            },
+        );
+        assert_eq!(app.live.backend, Some(ActiveLiveBackend::Ansi));
+    }
+
+    #[test]
+    fn malformed_live_frame_degrades_without_terminating_the_tui() {
+        let mut app = App::new();
+        app.configure_live(
+            Some(TuiLiveMode::On),
+            Some(TuiLiveBackend::Ansi),
+            None,
+            None,
+        );
+        app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
+            .unwrap();
+        app.apply_visual_frame(
+            base64::engine::general_purpose::STANDARD.encode(b"not a png"),
+            serde_json::json!({}),
+            1,
+        )
+        .unwrap();
+        assert!(app.visual_status.contains("rejected"));
+        assert_eq!(app.live.metrics.dropped, 1);
+    }
+
+    fn test_live_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 2, 2);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
+                .unwrap();
+        }
+        bytes
     }
 
     #[test]
@@ -4358,6 +5253,12 @@ mod tests {
     #[test]
     fn graphics_geometry_tracks_resize_and_releases_on_shutdown() {
         let mut app = App::new();
+        app.configure_live(
+            Some(TuiLiveMode::On),
+            Some(TuiLiveBackend::Ansi),
+            None,
+            None,
+        );
         assert!(
             app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
                 .unwrap()
@@ -4478,6 +5379,12 @@ mod tests {
     #[test]
     fn pointer_mapping_rejects_stale_geometry_and_emits_coordinate_action() {
         let mut app = App::new();
+        app.configure_live(
+            Some(TuiLiveMode::On),
+            Some(TuiLiveBackend::Ansi),
+            None,
+            None,
+        );
         app.sync_graphics_geometry(Rect::new(0, 0, 100, 30))
             .unwrap();
         let mouse = MouseEvent {

@@ -4,3 +4,4 @@
 //! layout showing observations, actions, and session state.
 
 pub mod app;
+mod herdr_graphics;

@@ -21,7 +21,7 @@ have not been performed.
 - [x] Run version-sync, feature-parity, release-documentation, and complete
       documentation inventory/link validators.
 - [x] Run formatting and all-target workspace tests.
-- [x] Run the opt-in 18-scenario Chromium smoke suite in the recorded
+- [x] Run the opt-in 19-scenario Chromium smoke suite in the recorded
       validation environment.
 - [x] Run Clippy, rustdoc, dependency-policy, vulnerability, and fuzz-build
       gates.

@@ -80,6 +80,9 @@ jobs:
       - name: Validate release documentation
         run: python3 scripts/check-release-documentation.py
 
+      - name: Validate documentation inventories and links
+        run: python3 scripts/check-documentation-coverage.py
+
       - name: Validate feature parity
         run: python3 scripts/check-feature-parity.py
 

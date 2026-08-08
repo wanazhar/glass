@@ -1,5 +1,20 @@
 # Release evidence
 
+## 0.3.2 publication evidence
+
+- Signed annotated tag `v0.3.2` points to
+  `4e548421abb6ed27ef1c91024379f7eb7abf3f90`.
+- [Release workflow run 31254928934](https://github.com/wanazhar/glass/actions/runs/31254928934)
+  passed validation, ordered publication, registry propagation, clean installs,
+  executable help smokes, and GitHub Release creation.
+- crates.io published `glass-browser 0.3.2` at
+  `2026-08-08T11:34:05.365045Z` and `glass-dev 0.3.2` at
+  `2026-08-08T11:34:48.438905Z`; neither version is yanked.
+- [GitHub Release v0.3.2](https://github.com/wanazhar/glass/releases/tag/v0.3.2)
+  is published, non-draft, non-prerelease, marked latest, and source-only.
+- The release contains no native binaries, checksum manifests, Sigstore
+  bundles, or npm/PyPI client packages.
+
 ## 0.3.2 local pre-publication evidence
 
 The source checkout contains the local `0.3.2` candidate metadata for the

@@ -1,8 +1,8 @@
 # Glass documentation
 
-These guides describe the current `0.3.2` local release candidate. `Local
-only` means the capability is present in this checkout but has not been
-published. Platform certification remains separate from source availability;
+These guides describe the published `0.3.2` release. `Local only` means a
+capability is present in this checkout but is not part of the published
+contract. Platform certification remains separate from source availability;
 see [cross-platform feature parity](feature-parity.md).
 
 ## Choose your path

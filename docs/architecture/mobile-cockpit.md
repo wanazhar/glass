@@ -1,6 +1,6 @@
 # Remote development cockpit
 
-Status: Implemented and verified for the local 0.3.2 candidate
+Status: Released in 0.3.2
 
 ## Purpose and boundaries
 

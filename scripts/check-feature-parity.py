@@ -148,7 +148,7 @@ def main() -> None:
         )
 
     required_text = {
-        "README.md": "| 0.3.2 | Current local release candidate |",
+        "README.md": "| 0.3.2 | Current published release |",
         "CHANGELOG.md": "## [0.3.0] - 2026-08-06",
         "docs/release-checklist.md": "release checkout is `glass-browser` and `glass-dev` version `0.3.2`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.7 published; source-only GitHub Release",

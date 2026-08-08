@@ -10,11 +10,12 @@ targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows is unsupported.
 
-## 0.3.2 local candidate checklist
+## 0.3.2 release record
 
-The source checkout is the local `0.3.2` candidate. Tagging, pushing, crates.io
-publication, and GitHub Release creation remain separate maintainer actions and
-have not been performed.
+Signed tag `v0.3.2` points to commit `4e548421abb6ed27ef1c91024379f7eb7abf3f90`.
+The ordered release workflow published `glass-browser 0.3.2`, then
+`glass-dev 0.3.2`, clean-installed both registry packages, and created the
+source-only GitHub Release on 2026-08-08.
 
 - [x] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2`.
 - [x] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.

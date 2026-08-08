@@ -10,7 +10,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.3.2 | Current local release candidate |",
+        "| 0.3.2 | Current published release |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
@@ -26,7 +26,7 @@ REQUIRED_MARKERS = {
     ],
     "docs/release-checklist.md": [
         "release checkout is `glass-browser` and `glass-dev` version `0.3.2`",
-        "## 0.3.2 local candidate checklist",
+        "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
     "docs/feature-parity.md": [
@@ -35,6 +35,9 @@ REQUIRED_MARKERS = {
         "feature parity matrix](feature-parity.json)",
     ],
     "docs/release-evidence.md": [
+        "## 0.3.2 publication evidence",
+        "Release workflow run 31254928934",
+        "GitHub Release v0.3.2",
         "## 0.3.2 local pre-publication evidence",
         "local `0.3.2` candidate metadata",
         "`feature-parity.json`",

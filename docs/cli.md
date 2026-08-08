@@ -20,6 +20,10 @@ installed version.
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--mcp` | off | Start the MCP stdio server. |
 | `--tui-layout auto\|desktop\|mobile` | `auto` | Select responsive terminal layout policy. |
+| `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require a detected native backend, or allow ANSI fallback. |
+| `--tui-live-backend auto\|herdr\|kitty\|ansi` | `auto` | Select the terminal-native renderer. |
+| `--tui-live-quality data\|balanced\|smooth` | `balanced` | Select the adaptive capture size and target frame rate. |
+| `--tui-live-fit contain\|cover\|actual` | `contain` | Select ANSI sampling; native image backends use contain. |
 
 Place global options before or after the subcommand.
 

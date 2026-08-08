@@ -110,12 +110,23 @@ often wider while retaining phone input constraints. `--tui-layout mobile`
 and `--tui-layout desktop` provide deterministic overrides.
 
 Phone mode is a single-pane stack with Home, Agent, App, Diff, and More views.
-Its browser worker does not start the screencast or screenshot fallback, so a
-semantic-only iOS terminal does not pay continuous visual capture and transfer
-cost. Explicit screenshot commands still write requested evidence. The
-`safari` local command renders an SSH local-forwarding recipe without changing
-server bindings or browser authority.
+Its browser worker does not start the screencast or screenshot fallback by
+default, so a semantic-only iOS terminal pays no continuous visual capture or
+transfer cost. Explicit screenshots still write requested evidence. An
+explicit `live auto|on` starts a bounded, pane-sized screencast with data,
+balanced, and smooth throttles. Delivery is latest-frame-only: Herdr uses a
+one-frame local-socket queue, Kitty uses the terminal graphics mailbox, and the
+ANSI renderer stores only sampled Ratatui cells. Live PNGs are never persisted.
 
-Herdr detection is informational. Glass reads Herdr's documented pane marker
-to label the active context, but process persistence and detach/reattach remain
-owned by Herdr rather than a duplicate multiplexer inside Glass.
+Backend negotiation is conservative: owned Herdr graphics, then a direct Kitty
+environment match or bounded terminal query, then ANSI only when `on` permits
+it. Mosh suppresses native image auto-detection because it synchronizes the
+terminal grid; ANSI remains available. Backend errors degrade in that same
+order and cannot terminate the browser worker. `live doctor` exposes the
+transport signals, selected backend, throughput, FPS, and drops. The `safari`
+command remains the stable full-fidelity SSH-forward path.
+
+Glass reads Herdr's documented pane markers for context and, when live pixels
+are explicitly enabled, can open Herdr's experimental owned pane-graphics
+stream. Process persistence and detach/reattach remain owned by Herdr rather
+than a duplicate multiplexer inside Glass.

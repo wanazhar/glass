@@ -23,7 +23,7 @@ views:
 |---|---|---|
 | `1` | Home | Connection, browser, runtime, test, and actor status |
 | `2` | Agent | Agent activity and attributed timeline |
-| `3` | App | Structured browser semantics and Safari handoff |
+| `3` | App | Structured semantics, opt-in terminal live view, and Safari handoff |
 | `4` | Diff | Current project and verification diff |
 | `5` | More | Files, editor state, processes, diagnostics, and actors |
 
@@ -33,10 +33,31 @@ while the command bar is empty, so commands and agent prompts can contain
 numbers normally. Function keys, pointer input, and control-key chords are not
 required for navigation.
 
-The phone layout is semantic-first. It does not start the continuous PNG
-screencast or allocate a terminal graphics pane. This saves Chrome encoding,
-network bandwidth, and terminal redraw work. `screenshot PATH` remains an
-explicit capture request.
+The phone layout remains semantic-first: continuous pixels are off by default,
+which saves Chrome encoding, network bandwidth, and terminal redraw work.
+`screenshot PATH` remains an explicit evidence capture. Enable an ephemeral
+terminal-native view when visual feedback is useful:
+
+```console
+glass --tui-layout mobile --tui-live on --tui-live-quality data
+```
+
+Or enter `live on` in the command bar. Glass switches to App, starts a bounded
+PNG screencast, retains at most the current/pending frame, and never persists
+those live pixels. Useful commands are `live status`, `live doctor`, `live
+off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
+data|balanced|smooth`, and `live fit contain|cover|actual`.
+
+Fit controls apply to ANSI sampling. Herdr and direct Kitty use aspect-safe
+contain placement so their native overlays and browser pointer geometry remain
+aligned.
+
+`auto` only enables a native Herdr or Kitty renderer that Glass can detect.
+`on` additionally permits the portable true-color ANSI half-block renderer.
+The data, balanced, and smooth profiles target approximately 3, 6, and 12 FPS
+and adapt the bounded capture dimensions to the current App pane. Use data on
+a cellular link; balanced is the general SSH default; smooth is intended for a
+fast LAN.
 
 ## Preserve work with Herdr
 
@@ -74,12 +95,21 @@ Mosh replaces the interactive SSH transport with a UDP session after login.
 Use an SSH client or a separate SSH connection for the TCP port forward needed
 by Safari.
 
-## Open the live application in Safari
+Herdr can also own Glass's live image layer. Enable Herdr's experimental Kitty
+graphics support in its configuration, then start Glass with `--tui-live auto`
+or `--tui-live-backend herdr`. Glass connects to the pane-local
+`HERDR_SOCKET_PATH`, opens one owned `pane.graphics.stream`, and sends raw PNG
+frames on a one-frame queue. Detaching does not write image escape sequences
+into shell history, and closing Glass releases the Herdr-owned layer. If the
+stream fails, Glass falls back to direct Kitty when detected, then ANSI for
+`live on`, and finally the semantic view.
 
-An iOS SSH terminal cannot provide a portable live pixel browser surface.
-Terminal image protocols vary by client, and a remote shell cannot launch the
-local iPhone Safari application. Use Glass semantics in the TUI and an SSH
-local port forward for the real application.
+## Open the full application in Safari
+
+The terminal-native view is designed for steering and verification, not as a
+replacement for a touch browser: terminal graphics support varies, ANSI frames
+trade fidelity for portability, and a remote shell cannot launch local iPhone
+Safari. The stable full-fidelity path is still an SSH local port forward.
 
 Configure `browserUrl` in `glass.toml`, or navigate to the application, then
 enter this in the Glass command bar:
@@ -109,6 +139,14 @@ private Safari tunnel.
 
 ## Terminal compatibility
 
+- Herdr is the preferred owned graphics path. Direct Kitty is selected after a
+  bounded capability probe; forcing `--tui-live-backend kitty` is available
+  when a compatible client does not identify itself.
+- Mosh synchronizes terminal cells rather than arbitrary image protocol state.
+  `live on` therefore selects ANSI automatically under Mosh; use Safari over a
+  separate SSH tunnel for full fidelity.
+- tmux and other multiplexers work with ANSI. Direct Kitty passthrough depends
+  on their configuration, so `live doctor` reports what Glass actually chose.
 - iOS terminal Smart Keys can still send arrows, `Esc`, and control keys, but
   Glass phone navigation does not depend on their arrangement.
 - Mouse or touch events are optional. The numbered navigation row accepts
@@ -117,3 +155,10 @@ private Safari tunnel.
   switches between phone, compact, and wide presentations in automatic mode.
 - Use a UTF-8 locale. Glass uses Unicode state markers but never relies on
   color alone for meaning.
+
+Run the browser-free renderer benchmark on the remote machine with:
+
+```console
+GLASS_LIVE_BENCH_ITERATIONS=100 \
+  cargo run -p glass-browser --release --example terminal_live_benchmark
+```

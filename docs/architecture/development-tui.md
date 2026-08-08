@@ -57,9 +57,10 @@ the default context.
   and Pi work run on bounded worker channels, so editor, render, and browser
   input continue to be polled.
 - **Phone**: at 72 columns or fewer, or through 96 columns in a remote shell,
-  one full-width view is visible. Continuous visual streaming is disabled and
-  browser context remains semantic. An explicit `--tui-layout mobile`
-  override is available.
+  one full-width view is visible. Browser context remains semantic and
+  continuous visual streaming is disabled by default. `--tui-live on` adds an
+  adaptive live App view without changing the single-pane navigation model.
+  An explicit `--tui-layout mobile` override is available.
 - **Compact**: terminals from 73 through 109 columns use a condensed workspace
   unless remote phone detection applies.
 - **Wide**: terminals at 110 columns or more use the complete development
@@ -77,6 +78,7 @@ recomputed against the live-app rectangle, never the editor rectangle.
 
 Herdr, tmux, and Mosh are transport and PTY-lifecycle layers rather than Glass
 browser authorities. Herdr is the recommended mobile development multiplexer
-because it combines persistent panes, agent state, remote attach, and a narrow
-terminal switcher. Glass detects a Herdr-managed pane for status display but
-does not invoke or control the Herdr server.
+because it combines persistent panes, agent state, remote attach, a narrow
+terminal switcher, and an owned experimental graphics layer. Glass may stream
+ephemeral live frames to that layer, but does not invoke or control the Herdr
+server. tmux and Mosh retain the ANSI/Ratatui path.

@@ -5,6 +5,20 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added an explicit terminal-native live browser for remote and phone TUI
+  sessions with Herdr-owned PNG streaming, direct Kitty capability probing,
+  true-color ANSI half-block fallback, adaptive data/balanced/smooth profiles,
+  fit controls, runtime diagnostics, and a browser-free renderer benchmark.
+
+### Changed
+
+- Kept structured browser semantics and explicit screenshots as the default;
+  live pixels now degrade from Herdr to Kitty to ANSI to semantics, select ANSI
+  automatically under Mosh, and retain Safari port forwarding as the stable
+  full-fidelity iPhone path.
+
 ## [0.3.2] - 2026-08-07
 
 ### Added

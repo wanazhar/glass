@@ -5,6 +5,23 @@ a cross-machine leaderboard: record the host OS/architecture, Chrome build,
 iteration count, and whether the browser was already warm whenever comparing
 runs.
 
+## Terminal live renderer
+
+The browser-free terminal benchmark isolates PNG decode and true-color ANSI
+half-block sampling. It alternates two 320x180 frames so terminal diff work is
+not optimized away:
+
+```sh
+GLASS_LIVE_BENCH_ITERATIONS=100 \
+  cargo run -p glass-browser --release --example terminal_live_benchmark
+```
+
+A 2026-08-08 diagnostic run on Linux 6.17 aarch64 with Rust 1.97.0 measured
+0.693 ms/frame at 40x12 cells (data), 0.836 ms/frame at 80x24 (balanced), and
+0.983 ms/frame at 120x36 (smooth). These figures establish ample local render
+headroom for the 3/6/12 FPS capture profiles; SSH throughput and PNG size still
+govern end-to-end performance and must be evaluated on the user's link.
+
 ## Task-success scorecard
 
 The versioned local corpus in `scenarios/v1.json` covers duplicate labels,

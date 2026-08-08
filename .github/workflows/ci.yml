@@ -33,6 +33,9 @@ jobs:
       - name: Validate release documentation
         run: python3 scripts/check-release-documentation.py
 
+      - name: Validate documentation inventories and links
+        run: python3 scripts/check-documentation-coverage.py
+
       - name: Validate deterministic reliability matrix
         run: python3 scripts/check-reliability-matrix.py
 
@@ -45,7 +48,11 @@ jobs:
       - name: Validate package and fuzz workspace
         run: |
           cargo package --package glass-browser --locked --allow-dirty --no-verify
-          cargo package --package glass-dev --locked --allow-dirty --no-verify
+          cargo package --package glass-dev --locked --allow-dirty --no-verify \
+            --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+          python3 scripts/check-packaged-dependency.py \
+            "target/package/glass-dev-${version}.crate" --version "$version"
           cargo fetch --manifest-path fuzz/Cargo.toml --locked
           cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
 

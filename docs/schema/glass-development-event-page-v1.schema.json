@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanazhar/glass/blob/main/docs/schema/glass-development-event-page-v1.schema.json",
+  "title": "Glass Development Event Page v1",
+  "type": "object",
+  "required": ["schemaVersion", "events", "hasMore", "cursorExpired"],
+  "properties": {
+    "schemaVersion": { "const": "glass.development.v1" },
+    "events": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/event" }
+    },
+    "cursor": { "type": ["string", "null"], "maxLength": 128 },
+    "oldestId": { "type": ["string", "null"], "maxLength": 128 },
+    "newestId": { "type": ["string", "null"], "maxLength": 128 },
+    "hasMore": { "type": "boolean" },
+    "cursorExpired": { "type": "boolean" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "required": ["id", "kind", "name", "session", "capabilities", "authority", "connection"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "kind": { "enum": ["human", "embeddedAgent", "externalAgent", "system", "observer"] },
+        "name": { "type": "string", "maxLength": 128 },
+        "session": { "type": "string", "maxLength": 128 },
+        "capabilities": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 128 } },
+        "authority": { "enum": ["owner", "mutate", "readOnly", "system"] },
+        "connection": { "enum": ["local", "embedded", "cli", "mcp", "daemon", "disconnected"] }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "occurredAtMs", "actor", "kind", "workspace", "payload"],
+      "properties": {
+        "schemaVersion": { "const": "glass.development.v1" },
+        "id": { "type": "string", "maxLength": 128 },
+        "occurredAtMs": { "type": "integer", "minimum": 0 },
+        "actor": { "$ref": "#/$defs/actor" },
+        "kind": {
+          "enum": [
+            "workspaceOpened", "fileOpened", "fileSaved", "processStarted", "processOutput",
+            "processExited", "agentPrompt", "agentSteered", "agentToolCalled", "agentToolResult",
+            "sourceRuntimeLinked", "verificationCompleted", "diagnosticsPublished",
+            "semanticBreakpointHit", "testStarted", "testCompleted", "hmrObserved", "actorJoined",
+            "actorLeft"
+          ]
+        },
+        "workspace": { "type": "string", "maxLength": 4096 },
+        "payload": {}
+      },
+      "additionalProperties": false
+    }
+  }
+}

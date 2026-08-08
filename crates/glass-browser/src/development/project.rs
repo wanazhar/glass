@@ -154,6 +154,24 @@ impl std::fmt::Debug for ProjectWorkspace {
 }
 
 impl ProjectWorkspace {
+    /// Read the persisted event feed without opening a workspace or recording
+    /// a synthetic `workspaceOpened` event. This keeps monitoring read-only.
+    pub fn event_page(
+        root: impl AsRef<Path>,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> DevelopmentResult<super::DevelopmentEventPage> {
+        let root = canonical_root(root.as_ref())?;
+        Ok(Timeline::for_project(&root)?.events_after(after_id, limit))
+    }
+
+    pub fn timeline_snapshot(
+        root: impl AsRef<Path>,
+    ) -> DevelopmentResult<Vec<super::DevelopmentEvent>> {
+        let root = canonical_root(root.as_ref())?;
+        Ok(Timeline::for_project(&root)?.events().cloned().collect())
+    }
+
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = canonical_root(root.as_ref())?;
         let detection = detect_project(&root)?;
@@ -1279,6 +1297,18 @@ mod tests {
         let detection = detect_project(&root).unwrap();
         assert_eq!(detection.languages, vec!["Rust"]);
         assert_eq!(detection.test_command.as_deref(), Some("cargo test"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn event_feed_reads_do_not_record_monitoring_activity() {
+        let root = fixture();
+        drop(ProjectWorkspace::open(&root).unwrap());
+        let before = ProjectWorkspace::timeline_snapshot(&root).unwrap();
+        let page = ProjectWorkspace::event_page(&root, None, 64).unwrap();
+        let after = ProjectWorkspace::timeline_snapshot(&root).unwrap();
+        assert_eq!(page.events, before);
+        assert_eq!(after, before);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -5,7 +5,8 @@
     "action": [1],
     "observation": [1],
     "workflow": [1],
-    "checkpoint": [1]
+    "checkpoint": [1],
+    "developmentEvents": [1]
   },
   "requiredCapabilities": ["action"],
   "tools": [
@@ -86,6 +87,7 @@
     "project.diagnostics",
     "project.diff",
     "project.edit",
+    "project.events",
     "project.experiment.create",
     "project.files",
     "project.graph",

@@ -42,7 +42,7 @@ pub use editor::{
 };
 pub use events::{
     Actor, ActorAuthority, ActorConnection, ActorKind, DevelopmentEvent, DevelopmentEventKind,
-    Timeline,
+    DevelopmentEventPage, Timeline,
 };
 pub use experiment::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentWorkspace,
@@ -59,6 +59,7 @@ pub use replay::{DevelopmentRevision, ReplayWindow, replay};
 pub use search::{SearchHit, SearchKind, fuzzy_score, rank};
 
 pub const DEVELOPMENT_SCHEMA_VERSION: &str = "glass.development.v1";
+pub const DEVELOPMENT_EVENT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 pub const MAX_BUFFER_BYTES: usize = 1024 * 1024;
 pub const MAX_FILE_ENTRIES: usize = 2_048;

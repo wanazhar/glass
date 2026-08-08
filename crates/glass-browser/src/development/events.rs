@@ -146,6 +146,18 @@ pub struct DevelopmentEvent {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentEventPage {
+    pub schema_version: String,
+    pub events: Vec<DevelopmentEvent>,
+    pub cursor: Option<String>,
+    pub oldest_id: Option<String>,
+    pub newest_id: Option<String>,
+    pub has_more: bool,
+    pub cursor_expired: bool,
+}
+
 impl DevelopmentEvent {
     pub fn new(
         actor: Actor,
@@ -223,6 +235,46 @@ impl Timeline {
 
     pub fn events(&self) -> impl DoubleEndedIterator<Item = &DevelopmentEvent> + ExactSizeIterator {
         self.events.iter()
+    }
+
+    /// Return one bounded page after an opaque event ID. If compaction removed
+    /// the requested cursor, return the oldest retained page and mark the
+    /// cursor expired so a subscriber can report the gap instead of silently
+    /// claiming continuity.
+    pub fn events_after(&self, after_id: Option<&str>, limit: usize) -> DevelopmentEventPage {
+        let limit = limit.clamp(1, 256);
+        let start = match after_id {
+            Some(after_id) => self
+                .events
+                .iter()
+                .position(|event| event.id == after_id)
+                .map(|index| index.saturating_add(1)),
+            None => Some(0),
+        };
+        let cursor_expired = after_id.is_some() && start.is_none();
+        let start = start.unwrap_or(0);
+        let events = self
+            .events
+            .iter()
+            .skip(start)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_more = self.events.len().saturating_sub(start) > events.len();
+        let cursor = events.last().map(|event| event.id.clone()).or_else(|| {
+            (!cursor_expired)
+                .then(|| after_id.map(str::to_string))
+                .flatten()
+        });
+        DevelopmentEventPage {
+            schema_version: DEVELOPMENT_SCHEMA_VERSION.into(),
+            events,
+            cursor,
+            oldest_id: self.events.front().map(|event| event.id.clone()),
+            newest_id: self.events.back().map(|event| event.id.clone()),
+            has_more,
+            cursor_expired,
+        }
     }
 
     pub fn record(
@@ -318,6 +370,40 @@ mod tests {
             fs::read_to_string(path).unwrap().lines().count(),
             MAX_TIMELINE_EVENTS
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn event_pages_are_cursor_bounded_and_report_compaction_gaps() {
+        let root = std::env::temp_dir().join(format!("glass-event-page-{}", std::process::id()));
+        let path = root.join("timeline.jsonl");
+        let _ = fs::remove_dir_all(&root);
+        let mut timeline = Timeline::open(&path).unwrap();
+        for ordinal in 0..3 {
+            timeline
+                .record(
+                    Actor::local(),
+                    DevelopmentEventKind::WorkspaceOpened,
+                    "/tmp/project",
+                    serde_json::json!({"ordinal": ordinal}),
+                )
+                .unwrap();
+        }
+        let first = timeline.events_after(None, 2);
+        assert_eq!(first.events.len(), 2);
+        assert!(first.has_more);
+        assert!(!first.cursor_expired);
+        let second = timeline.events_after(first.cursor.as_deref(), 2);
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].payload["ordinal"], 2);
+        assert!(!second.has_more);
+        let expired = timeline.events_after(Some("dev-expired"), 1);
+        assert!(expired.cursor_expired);
+        assert_eq!(expired.events[0].payload["ordinal"], 0);
+        let empty = Timeline::open(root.join("empty.jsonl")).unwrap();
+        let empty_expired = empty.events_after(Some("dev-expired"), 1);
+        assert!(empty_expired.cursor_expired);
+        assert_eq!(empty_expired.cursor, None);
         let _ = fs::remove_dir_all(root);
     }
 }

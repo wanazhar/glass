@@ -221,6 +221,11 @@ enum ToolInvocation<'a> {
     ProjectTimeline {
         root: std::path::PathBuf,
     },
+    ProjectEvents {
+        root: std::path::PathBuf,
+        after_id: Option<&'a str>,
+        limit: usize,
+    },
     ProjectReplay {
         root: std::path::PathBuf,
         start: usize,
@@ -1276,6 +1281,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "project.process.output"
             | "project.diff"
             | "project.timeline"
+            | "project.events"
             | "agent.hello"
     )
 }
@@ -1866,6 +1872,7 @@ async fn call_tool(
             | ToolInvocation::ProjectProcessOutput { .. }
             | ToolInvocation::ProjectDiff { .. }
             | ToolInvocation::ProjectTimeline { .. }
+            | ToolInvocation::ProjectEvents { .. }
             | ToolInvocation::ProjectReplay { .. }
             | ToolInvocation::ProjectGraph { .. }
             | ToolInvocation::ProjectBreakpoint { .. }
@@ -2553,6 +2560,7 @@ async fn call_tool(
         | ToolInvocation::ProjectProcessOutput { .. }
         | ToolInvocation::ProjectDiff { .. }
         | ToolInvocation::ProjectTimeline { .. }
+        | ToolInvocation::ProjectEvents { .. }
         | ToolInvocation::ProjectReplay { .. }
         | ToolInvocation::ProjectGraph { .. }
         | ToolInvocation::ProjectBreakpoint { .. }
@@ -2668,12 +2676,16 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
             let mut workspace = ProjectWorkspace::open(root)?;
             Ok(serde_json::to_value(workspace.diff()?)?)
         }
-        ToolInvocation::ProjectTimeline { root } => {
-            let workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(
-                workspace.timeline().events().collect::<Vec<_>>(),
-            )?)
-        }
+        ToolInvocation::ProjectTimeline { root } => Ok(serde_json::to_value(
+            ProjectWorkspace::timeline_snapshot(root)?,
+        )?),
+        ToolInvocation::ProjectEvents {
+            root,
+            after_id,
+            limit,
+        } => Ok(serde_json::to_value(ProjectWorkspace::event_page(
+            root, after_id, limit,
+        )?)?),
         ToolInvocation::ProjectReplay { root, start, limit } => {
             let workspace = ProjectWorkspace::open(root)?;
             Ok(serde_json::to_value(workspace.replay(start, limit)?)?)
@@ -3078,6 +3090,21 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "project.timeline" => Ok(ToolInvocation::ProjectTimeline {
             root: development_root(arguments)?,
         }),
+        "project.events" => {
+            let after_id = optional_string(arguments, "afterId")?;
+            if after_id.is_some_and(|value| value.len() > 128) {
+                return Err("afterId must be at most 128 bytes".into());
+            }
+            let limit = optional_u64(arguments, "limit", 64)?;
+            if !(1..=256).contains(&limit) {
+                return Err("limit must be between 1 and 256".into());
+            }
+            Ok(ToolInvocation::ProjectEvents {
+                root: development_root(arguments)?,
+                after_id,
+                limit: limit as usize,
+            })
+        }
         "project.replay" => Ok(ToolInvocation::ProjectReplay {
             root: development_root(arguments)?,
             start: optional_u64(arguments, "start", 0)? as usize,
@@ -3740,6 +3767,11 @@ fn tools() -> Vec<Tool> {
             name: "project.timeline",
             description: "Return the bounded actor-attributed local development timeline.",
             input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.events",
+            description: "Read one cursor-bounded page from the actor-attributed development event feed.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"afterId":{"type":"string","minLength":1,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":256,"default":64}},"additionalProperties":false}),
         },
         Tool {
             name: "project.replay",

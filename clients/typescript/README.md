@@ -88,3 +88,23 @@ Live PNG frames are deliberately not part of this feed. Use structured events
 for orchestration and a dedicated latest-frame side channel for visual clients.
 See [`examples/development-events.ts`](examples/development-events.ts) for a
 complete interruptible watcher.
+
+Project state is resident for the MCP server lifetime, so
+`projectRun("dev", "npm run dev", root, false)` can start a persistent PTY and
+later calls can inspect, read, or stop it. The cockpit helpers expose session
+status/detach, reconnect capsules, attention items, and verification cards:
+
+```typescript
+const process = await glass.runUntilHealthy("dev", "npm run dev", {
+  root: project.root,
+  signal: controller.signal,
+});
+const event = await glass.waitForEvent(e => e.kind === "testCompleted", project.root);
+const card = await glass.projectVerificationCard("Checkout fix", project.root);
+await glass.projectCapsuleSave(project.root, { eventCursor: event.id, mobileView: "diff" });
+```
+
+`withMutationLease()` releases only a lease it acquired itself.
+`onAttentionRequired()` deduplicates needs-attention IDs and stops through an
+`AbortSignal`. See
+[`examples/remote-cockpit.ts`](examples/remote-cockpit.ts).

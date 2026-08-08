@@ -8,7 +8,9 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable, Iterator
-from typing import Any, BinaryIO, Literal, Optional, TypedDict
+from typing import Any, BinaryIO, Literal, Optional, TypeVar, TypedDict
+
+T = TypeVar("T")
 
 
 class GlassError(RuntimeError):
@@ -347,6 +349,62 @@ class ProjectDiff(TypedDict):
     testImpact: dict[str, Any]
 
 
+class ProjectSessionStatus(TypedDict):
+    root: str
+    resident: bool
+    residentSessionCount: int
+    capacity: int
+
+
+class ReconnectCapsule(TypedDict):
+    schemaVersion: str
+    projectRoot: str
+    eventCursor: Optional[str]
+    mobileView: Optional[str]
+    browserTargetId: Optional[str]
+    browserRevision: Optional[int]
+    pendingAttention: Optional[str]
+    liveMode: Optional[str]
+    liveQuality: Optional[str]
+    savedAtMs: int
+
+
+class ReconnectCapsuleInput(TypedDict, total=False):
+    eventCursor: str
+    mobileView: Literal["home", "agent", "app", "diff", "project"]
+    browserTargetId: str
+    browserRevision: int
+    pendingAttention: str
+    liveMode: Literal["off", "auto", "on"]
+    liveQuality: Literal["auto", "data", "balanced", "smooth"]
+
+
+class AttentionItem(TypedDict):
+    id: str
+    state: Literal["needsAttention", "running", "recent"]
+    title: str
+    detail: str
+    occurredAtMs: int
+    eventId: str
+
+
+class VerificationCheck(TypedDict):
+    label: str
+    status: str
+    detail: str
+
+
+class VerificationCard(TypedDict):
+    schemaVersion: str
+    title: str
+    outcome: str
+    checks: list[VerificationCheck]
+    changedFiles: int
+    semanticRevision: Optional[int]
+    visualStatus: str
+    generatedAtMs: int
+
+
 class GlassClient:
     def __init__(
         self,
@@ -394,7 +452,7 @@ class GlassClient:
                 "protocolVersion": "2024-11-05",
                 "glass": {
                     "protocolVersion": 1,
-                    "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1], "developmentEvents": [1]},
+                    "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1], "developmentEvents": [1], "developmentCockpit": [1]},
                 },
                 "capabilities": {},
                 "clientInfo": {"name": "glass-python-client", "version": "0.3.2"},
@@ -511,8 +569,8 @@ class GlassClient:
     def project_diagnostics(self, path: str, root: str = ".") -> list[dict[str, Any]]:
         return self.call("project.diagnostics", {"root": root, "path": path})
 
-    def project_run(self, name: str, command: str, root: str = ".") -> ProjectProcess:
-        return self.call("project.run", {"root": root, "name": name, "command": command, "wait": True})
+    def project_run(self, name: str, command: str, root: str = ".", wait: bool = True) -> ProjectProcess:
+        return self.call("project.run", {"root": root, "name": name, "command": command, "wait": wait})
 
     def project_processes(self, root: str = ".") -> list[ProjectProcess]:
         return self.call("project.processes", {"root": root})
@@ -558,6 +616,130 @@ class GlassClient:
                 yield page
             if not page.get("hasMore", False):
                 time.sleep(interval)
+
+    def project_session_status(self, root: str = ".") -> ProjectSessionStatus:
+        return self.call("project.session.status", {"root": root})
+
+    def project_session_detach(self, *, confirmed: Literal[True], root: str = ".") -> dict[str, Any]:
+        return self.call("project.session.detach", {"root": root, "confirmed": confirmed})
+
+    def project_capsule_save(
+        self, root: str = ".", capsule: Optional[ReconnectCapsuleInput] = None
+    ) -> dict[str, Any]:
+        return self.call("project.capsule.save", {"root": root, **(capsule or {})})
+
+    def project_capsule_show(self, root: str = ".") -> dict[str, Optional[ReconnectCapsule]]:
+        return self.call("project.capsule.show", {"root": root})
+
+    def project_capsule_clear(self, *, confirmed: Literal[True], root: str = ".") -> dict[str, bool]:
+        return self.call("project.capsule.clear", {"root": root, "confirmed": confirmed})
+
+    def project_inbox(self, root: str = ".") -> list[AttentionItem]:
+        return self.call("project.inbox", {"root": root})
+
+    def project_verification_card(
+        self, title: str, root: str = ".", semantic_revision: Optional[int] = None
+    ) -> VerificationCard:
+        arguments: dict[str, Any] = {"root": root, "title": title}
+        if semantic_revision is not None:
+            arguments["semanticRevision"] = semantic_revision
+        return self.call("project.verification.card", arguments)
+
+    def wait_for_event(
+        self,
+        predicate: Callable[[DevelopmentEvent], bool],
+        root: str = ".",
+        *,
+        after_id: Optional[str] = None,
+        limit: int = 64,
+        timeout: float = 30.0,
+        poll_interval: float = 0.5,
+        stop: Optional[Callable[[], bool]] = None,
+    ) -> DevelopmentEvent:
+        deadline = time.monotonic() + min(300.0, max(0.001, timeout))
+        cursor = after_id
+        interval = min(60.0, max(0.05, poll_interval))
+        while (stop is None or not stop()) and time.monotonic() < deadline:
+            page = self.project_events(root, cursor, limit)
+            cursor = page["cursor"] if page["cursor"] is not None else (
+                None if page["cursorExpired"] else cursor
+            )
+            match = next((event for event in page["events"] if predicate(event)), None)
+            if match is not None:
+                return match
+            if not page["hasMore"]:
+                time.sleep(min(interval, max(0.001, deadline - time.monotonic())))
+        if stop is not None and stop():
+            raise GlassError("event wait aborted")
+        raise GlassError(f"timed out after {timeout:.3f}s waiting for a project event")
+
+    def run_until_healthy(
+        self,
+        name: str,
+        command: str,
+        root: str = ".",
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.25,
+        stop: Optional[Callable[[], bool]] = None,
+    ) -> ProjectProcess:
+        self.project_run(name, command, root, wait=False)
+        deadline = time.monotonic() + min(300.0, max(0.001, timeout))
+        interval = min(60.0, max(0.05, poll_interval))
+        while (stop is None or not stop()) and time.monotonic() < deadline:
+            process = next((item for item in self.project_processes(root) if item["name"] == name), None)
+            if process is None:
+                raise GlassError(f"resident process disappeared: {name}")
+            if process["health"] == "healthy":
+                return process
+            if process["health"] in {"failed", "exited", "stopped"}:
+                raise GlassError(f"process {name} became {process['health']} before reaching healthy")
+            time.sleep(min(interval, max(0.001, deadline - time.monotonic())))
+        if stop is not None and stop():
+            raise GlassError("process health wait aborted")
+        raise GlassError(f"timed out after {timeout:.3f}s waiting for process {name} to become healthy")
+
+    def with_mutation_lease(self, operation: Callable[[], T], ttl_ms: int = 60_000) -> T:
+        already_held = self._lease_token is not None
+        if not already_held:
+            self.acquire_mutation_lease(ttl_ms)
+        try:
+            return operation()
+        finally:
+            if not already_held:
+                self.release_mutation_lease()
+
+    def edit_and_verify(
+        self, path: str, content: str, root: str = ".", title: Optional[str] = None
+    ) -> VerificationCard:
+        self.project_edit(path, content, root)
+        return self.project_verification_card(title or f"Edit {path}", root)
+
+    def resume_from_cursor(
+        self, root: str = ".", cursor: Optional[str] = None, limit: int = 64
+    ) -> DevelopmentEventPage:
+        return self.project_events(root, cursor, limit)
+
+    def on_attention_required(
+        self,
+        callback: Callable[[AttentionItem], None],
+        root: str = ".",
+        *,
+        poll_interval: float = 0.5,
+        stop: Optional[Callable[[], bool]] = None,
+    ) -> None:
+        seen: set[str] = set()
+        seen_order: list[str] = []
+        interval = min(60.0, max(0.05, poll_interval))
+        while stop is None or not stop():
+            for item in self.project_inbox(root):
+                if item["state"] == "needsAttention" and item["id"] not in seen:
+                    seen.add(item["id"])
+                    seen_order.append(item["id"])
+                    if len(seen_order) > 256:
+                        seen.remove(seen_order.pop(0))
+                    callback(item)
+            time.sleep(interval)
 
     def project_replay(self, root: str = ".", start: int = 0, limit: int = 64) -> dict[str, Any]:
         return self.call("project.replay", {"root": root, "start": start, "limit": limit})

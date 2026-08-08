@@ -440,6 +440,68 @@ export interface ProjectEventWatchOptions {
   signal?: AbortSignal;
 }
 
+export interface ProjectSessionStatus {
+  root: string;
+  resident: boolean;
+  residentSessionCount: number;
+  capacity: number;
+}
+
+export interface ReconnectCapsule {
+  schemaVersion: string;
+  projectRoot: string;
+  eventCursor: string | null;
+  mobileView: string | null;
+  browserTargetId: string | null;
+  browserRevision: number | null;
+  pendingAttention: string | null;
+  liveMode: string | null;
+  liveQuality: string | null;
+  savedAtMs: number;
+}
+
+export interface ReconnectCapsuleInput {
+  eventCursor?: string;
+  mobileView?: "home" | "agent" | "app" | "diff" | "project";
+  browserTargetId?: string;
+  browserRevision?: number;
+  pendingAttention?: string;
+  liveMode?: "off" | "auto" | "on";
+  liveQuality?: "auto" | "data" | "balanced" | "smooth";
+}
+
+export interface AttentionItem {
+  id: string;
+  state: "needsAttention" | "running" | "recent";
+  title: string;
+  detail: string;
+  occurredAtMs: number;
+  eventId: string;
+}
+
+export interface VerificationCheck { label: string; status: string; detail: string; }
+export interface VerificationCard {
+  schemaVersion: string;
+  title: string;
+  outcome: string;
+  checks: VerificationCheck[];
+  changedFiles: number;
+  semanticRevision: number | null;
+  visualStatus: string;
+  generatedAtMs: number;
+}
+
+export interface WaitForEventOptions extends ProjectEventWatchOptions {
+  timeoutMs?: number;
+}
+
+export interface RunUntilHealthyOptions {
+  root?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  signal?: AbortSignal;
+}
+
 /** Small MCP client with typed helpers for the stable Glass surface. */
 export class GlassClient {
   private readonly input: Writable;
@@ -483,7 +545,7 @@ export class GlassClient {
       protocolVersion: "2024-11-05",
       glass: {
         protocolVersion: 1,
-        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1] },
+        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1], developmentCockpit: [1] },
       },
       capabilities: {},
       clientInfo: { name: "glass-typescript-client", version: "0.3.2" },
@@ -579,8 +641,8 @@ export class GlassClient {
   projectDiagnostics(path: string, root = "."): Promise<Array<Record<string, unknown>>> {
     return this.call("project.diagnostics", { root, path });
   }
-  projectRun(name: string, command: string, root = "."): Promise<ProjectProcess> {
-    return this.call<ProjectProcess>("project.run", { root, name, command, wait: true });
+  projectRun(name: string, command: string, root = ".", wait = true): Promise<ProjectProcess> {
+    return this.call<ProjectProcess>("project.run", { root, name, command, wait });
   }
   projectProcesses(root = "."): Promise<ProjectProcess[]> {
     return this.call<ProjectProcess[]>("project.processes", { root });
@@ -613,6 +675,106 @@ export class GlassClient {
       if (page.events.length > 0 || page.cursorExpired) yield page;
       if (page.hasMore) continue;
       await pollDelay(pollIntervalMs, options.signal);
+    }
+  }
+  projectSessionStatus(root = "."): Promise<ProjectSessionStatus> {
+    return this.call<ProjectSessionStatus>("project.session.status", { root });
+  }
+  projectSessionDetach(confirmed: true, root = "."): Promise<{ root: string; detached: boolean }> {
+    return this.call("project.session.detach", { root, confirmed });
+  }
+  projectCapsuleSave(root = ".", capsule: ReconnectCapsuleInput = {}): Promise<{ capsule: ReconnectCapsule; path: string }> {
+    return this.call("project.capsule.save", { root, ...capsule });
+  }
+  projectCapsuleShow(root = "."): Promise<{ capsule: ReconnectCapsule | null }> {
+    return this.call("project.capsule.show", { root });
+  }
+  projectCapsuleClear(confirmed: true, root = "."): Promise<{ cleared: boolean }> {
+    return this.call("project.capsule.clear", { root, confirmed });
+  }
+  projectInbox(root = "."): Promise<AttentionItem[]> {
+    return this.call<AttentionItem[]>("project.inbox", { root });
+  }
+  projectVerificationCard(title: string, root = ".", semanticRevision?: number): Promise<VerificationCard> {
+    return this.call<VerificationCard>("project.verification.card", {
+      root,
+      title,
+      ...(semanticRevision === undefined ? {} : { semanticRevision }),
+    });
+  }
+  async waitForEvent(
+    predicate: (event: DevelopmentEvent) => boolean,
+    root = ".",
+    options: WaitForEventOptions = {},
+  ): Promise<DevelopmentEvent> {
+    const timeoutMs = Math.min(300_000, Math.max(1, options.timeoutMs ?? 30_000));
+    const pollIntervalMs = Math.min(60_000, Math.max(50, options.pollIntervalMs ?? 500));
+    const deadline = Date.now() + timeoutMs;
+    let cursor = options.afterId;
+    while (!options.signal?.aborted && Date.now() < deadline) {
+      const page = await this.projectEvents(root, cursor, options.limit ?? 64);
+      cursor = page.cursor ?? (page.cursorExpired ? undefined : cursor);
+      const match = page.events.find(predicate);
+      if (match !== undefined) return match;
+      if (!page.hasMore) await pollDelay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal);
+    }
+    if (options.signal?.aborted) throw new Error("event wait aborted");
+    throw new Error(`timed out after ${timeoutMs}ms waiting for a project event`);
+  }
+  async runUntilHealthy(name: string, command: string, options: RunUntilHealthyOptions = {}): Promise<ProjectProcess> {
+    const root = options.root ?? ".";
+    await this.projectRun(name, command, root, false);
+    const timeoutMs = Math.min(300_000, Math.max(1, options.timeoutMs ?? 30_000));
+    const pollIntervalMs = Math.min(60_000, Math.max(50, options.pollIntervalMs ?? 250));
+    const deadline = Date.now() + timeoutMs;
+    while (!options.signal?.aborted && Date.now() < deadline) {
+      const process = (await this.projectProcesses(root)).find((candidate) => candidate.name === name);
+      if (process === undefined) throw new Error(`resident process disappeared: ${name}`);
+      if (process.health === "healthy") return process;
+      if (["failed", "exited", "stopped"].includes(process.health)) {
+        throw new Error(`process ${name} became ${process.health} before reaching healthy`);
+      }
+      await pollDelay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal);
+    }
+    if (options.signal?.aborted) throw new Error("process health wait aborted");
+    throw new Error(`timed out after ${timeoutMs}ms waiting for process ${name} to become healthy`);
+  }
+  async withMutationLease<T>(operation: () => Promise<T>, ttlMs = 60_000): Promise<T> {
+    const alreadyHeld = this.leaseToken !== undefined;
+    if (!alreadyHeld) await this.acquireMutationLease(ttlMs);
+    try {
+      return await operation();
+    } finally {
+      if (!alreadyHeld) await this.releaseMutationLease();
+    }
+  }
+  async editAndVerify(path: string, content: string, root = ".", title = `Edit ${path}`): Promise<VerificationCard> {
+    await this.projectEdit(path, content, root);
+    return await this.projectVerificationCard(title, root);
+  }
+  resumeFromCursor(root = ".", cursor?: string, limit = 64): Promise<DevelopmentEventPage> {
+    return this.projectEvents(root, cursor, limit);
+  }
+  async onAttentionRequired(
+    callback: (item: AttentionItem) => void | Promise<void>,
+    root = ".",
+    options: { pollIntervalMs?: number; signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const seen = new Set<string>();
+    const seenOrder: string[] = [];
+    const interval = Math.min(60_000, Math.max(50, options.pollIntervalMs ?? 500));
+    while (!options.signal?.aborted) {
+      for (const item of await this.projectInbox(root)) {
+        if (item.state === "needsAttention" && !seen.has(item.id)) {
+          seen.add(item.id);
+          seenOrder.push(item.id);
+          if (seenOrder.length > 256) {
+            seen.delete(seenOrder.shift()!);
+          }
+          await callback(item);
+        }
+      }
+      await pollDelay(interval, options.signal);
     }
   }
   projectReplay(root = ".", start = 0, limit = 64): Promise<Record<string, unknown>> {

@@ -81,3 +81,18 @@ for page in glass.watch_project_events("/srv/storefront", stop=lambda: done):
 Live PNG frames are deliberately separate from this structured event feed.
 See [`examples/development_events.py`](examples/development_events.py) for a
 complete interruptible watcher.
+
+Resident MCP sessions let `project_run(..., wait=False)` keep a bounded PTY
+available to later calls. Higher-level helpers include `wait_for_event()`,
+`run_until_healthy()`, `with_mutation_lease()`, `edit_and_verify()`,
+`resume_from_cursor()`, and `on_attention_required()`:
+
+```python
+process = glass.run_until_healthy("dev", "npm run dev", project["root"])
+event = glass.wait_for_event(lambda item: item["kind"] == "testCompleted", project["root"])
+card = glass.project_verification_card("Checkout fix", project["root"])
+glass.project_capsule_save(project["root"], {"eventCursor": event["id"], "mobileView": "diff"})
+```
+
+Session, capsule, attention, and verification primitives are also typed. See
+[`examples/remote_cockpit.py`](examples/remote_cockpit.py).

@@ -24,7 +24,9 @@ try {
   if (project.schemaVersion !== "glass.development.v1") throw new Error("unexpected project schema");
   const events = await client.projectEvents(projectRoot, undefined, 8);
   if (!Array.isArray(events.events) || events.events.length > 8) throw new Error("invalid bounded project event page");
-  await client.projectInspect(projectRoot);
+  const session = await client.projectSessionStatus(projectRoot);
+  if (!session.resident) throw new Error("project session did not remain resident");
+  await client.projectAttach("typescript-smoke", projectRoot);
   const controller = new AbortController();
   const subscription = client.watchProjectEvents(projectRoot, {
     afterId: events.cursor,
@@ -36,6 +38,26 @@ try {
   controller.abort();
   await subscription.return();
   if (firstPage.done || !Array.isArray(firstPage.value.events)) throw new Error("project event subscription did not yield");
+  await client.projectAttach("typescript-smoke-wait", projectRoot);
+  const joined = await client.waitForEvent(
+    (event) => event.kind === "actorJoined" && event.actor.name === "typescript-smoke-wait",
+    projectRoot,
+    { afterId: firstPage.value.cursor ?? undefined, timeoutMs: 2_000, pollIntervalMs: 50 },
+  );
+  if (joined.kind !== "actorJoined") throw new Error("waitForEvent returned the wrong event");
+  const healthy = await client.runUntilHealthy("typescript-smoke", "printf 'ready\\n'; sleep 5", {
+    root: projectRoot,
+    timeoutMs: 2_000,
+    pollIntervalMs: 50,
+  });
+  if (healthy.health !== "healthy") throw new Error("resident process did not become healthy");
+  await client.projectProcessStop("typescript-smoke", projectRoot);
+  const card = await client.projectVerificationCard("TypeScript smoke", projectRoot);
+  if (card.visualStatus !== "not-captured") throw new Error("verification card captured pixels implicitly");
+  await client.projectCapsuleSave(projectRoot, { eventCursor: firstPage.value.cursor ?? undefined, mobileView: "app" });
+  if ((await client.projectCapsuleShow(projectRoot)).capsule === null) throw new Error("reconnect capsule was not saved");
+  await client.projectCapsuleClear(true, projectRoot);
+  if (!Array.isArray(await client.projectInbox(projectRoot))) throw new Error("attention inbox was not an array");
 } finally {
   client.close();
 }

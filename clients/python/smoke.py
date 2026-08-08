@@ -36,6 +36,10 @@ try:
     project_root = str(Path(__file__).resolve().parents[2])
     project = client.project_inspect(project_root)
     assert project["schemaVersion"] == "glass.development.v1"
+    tree = client.project_files(project_root)
+    assert isinstance(tree["entries"], list)
+    assert isinstance(tree["truncated"], bool)
+    assert tree["limit"] >= len(tree["entries"])
     events = client.project_events(project_root, limit=8)
     assert len(events["events"]) <= 8
     assert client.project_session_status(project_root)["resident"]

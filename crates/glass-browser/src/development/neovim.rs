@@ -1,5 +1,10 @@
 use super::{DevelopmentError, DevelopmentResult, ProcessManager, ProcessSnapshot};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "development-runtime")]
+use std::{
+    io::{BufReader, Write},
+    process::{Child, ChildStdin, ChildStdout, Stdio},
+};
 use std::{path::Path, process::Command};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,15 +32,7 @@ pub fn probe_neovim() -> DevelopmentResult<NeovimCapability> {
         .next()
         .unwrap_or("Neovim")
         .to_string();
-    let rpc = Command::new("nvim")
-        .args([
-            "--headless",
-            "--clean",
-            "+lua io.write(vim.api.nvim_get_current_buf())",
-            "+qa!",
-        ])
-        .output()
-        .is_ok_and(|output| output.status.success());
+    let rpc = prove_embedded_rpc().is_ok();
     Ok(NeovimCapability {
         executable: "nvim".into(),
         version,
@@ -43,6 +40,119 @@ pub fn probe_neovim() -> DevelopmentResult<NeovimCapability> {
         rpc_prototype: rpc,
         architecture_decision: "Ship PTY compatibility as Mode A. Use Neovim's embedded Msgpack-RPC as an optional editing engine behind Glass-owned buffers and events; never make it the surrounding UI or runtime authority.".into(),
     })
+}
+
+#[cfg(feature = "development-runtime")]
+struct EmbeddedNeovim {
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+    next_id: i64,
+}
+
+#[cfg(feature = "development-runtime")]
+impl EmbeddedNeovim {
+    fn spawn() -> DevelopmentResult<Self> {
+        let mut child = Command::new("nvim")
+            .args(["--embed", "--headless", "--clean"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| DevelopmentError::Process(format!("Neovim embed failed: {error}")))?;
+        let input = child
+            .stdin
+            .take()
+            .ok_or_else(|| DevelopmentError::Process("Neovim RPC stdin unavailable".into()))?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or_else(|| DevelopmentError::Process("Neovim RPC stdout unavailable".into()))?;
+        Ok(Self {
+            child,
+            input,
+            output: BufReader::new(output),
+            next_id: 1,
+        })
+    }
+
+    fn call(&mut self, method: &str, params: Vec<rmpv::Value>) -> DevelopmentResult<rmpv::Value> {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let request = rmpv::Value::Array(vec![
+            0.into(),
+            id.into(),
+            method.into(),
+            rmpv::Value::Array(params),
+        ]);
+        rmpv::encode::write_value(&mut self.input, &request)
+            .map_err(|error| DevelopmentError::Serialization(error.to_string()))?;
+        self.input.flush()?;
+        loop {
+            let response = rmpv::decode::read_value(&mut self.output)
+                .map_err(|error| DevelopmentError::Serialization(error.to_string()))?;
+            let Some(values) = response.as_array() else {
+                continue;
+            };
+            if values.len() != 4 || values[0].as_i64() != Some(1) || values[1].as_i64() != Some(id)
+            {
+                continue;
+            }
+            if !values[2].is_nil() {
+                return Err(DevelopmentError::Process(format!(
+                    "Neovim RPC {method} failed: {}",
+                    values[2]
+                )));
+            }
+            return Ok(values[3].clone());
+        }
+    }
+}
+
+#[cfg(feature = "development-runtime")]
+impl Drop for EmbeddedNeovim {
+    fn drop(&mut self) {
+        let _ = self.call("nvim_command", vec!["qa!".into()]);
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(feature = "development-runtime")]
+fn prove_embedded_rpc() -> DevelopmentResult<()> {
+    let mut nvim = EmbeddedNeovim::spawn()?;
+    let buffer = nvim.call("nvim_create_buf", vec![false.into(), true.into()])?;
+    nvim.call(
+        "nvim_buf_set_lines",
+        vec![
+            buffer.clone(),
+            0.into(),
+            (-1).into(),
+            true.into(),
+            rmpv::Value::Array(vec!["glass-rpc-proof".into()]),
+        ],
+    )?;
+    let lines = nvim.call(
+        "nvim_buf_get_lines",
+        vec![buffer, 0.into(), (-1).into(), true.into()],
+    )?;
+    if lines
+        .as_array()
+        .and_then(|lines| lines.first())
+        .and_then(rmpv::Value::as_str)
+        != Some("glass-rpc-proof")
+    {
+        return Err(DevelopmentError::Process(
+            "Neovim RPC buffer round trip did not preserve text".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "development-runtime"))]
+fn prove_embedded_rpc() -> DevelopmentResult<()> {
+    Err(DevelopmentError::Process(
+        "Neovim Msgpack-RPC proof belongs to glass-dev; enable development-runtime".into(),
+    ))
 }
 
 pub fn start_neovim(

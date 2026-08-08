@@ -2,6 +2,7 @@ use super::{DevelopmentError, DevelopmentResult, read_bounded_utf8};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -41,6 +42,23 @@ pub struct LspClient {
     input: ChildStdin,
     output: Receiver<Value>,
     next_id: u64,
+    documents: BTreeMap<String, OpenDocument>,
+    shutdown: bool,
+}
+
+#[derive(Debug, Clone)]
+struct OpenDocument {
+    uri: String,
+    version: i64,
+    text: String,
+}
+
+/// Bounded, method-labelled response for interactive language operations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageResponse {
+    pub method: String,
+    pub result: Value,
 }
 
 impl std::fmt::Debug for LspClient {
@@ -86,6 +104,8 @@ impl LspClient {
             input,
             output: receiver,
             next_id: 1,
+            documents: BTreeMap::new(),
+            shutdown: false,
         };
         client.initialize()?;
         Ok(client)
@@ -104,24 +124,7 @@ impl LspClient {
         {
             return Err(DevelopmentError::PathOutsideWorkspace(relative.into()));
         }
-        let absolute = fs::canonicalize(self.root.join(relative))?;
-        if !absolute.starts_with(&self.root) {
-            return Err(DevelopmentError::PathOutsideWorkspace(absolute));
-        }
-        let text = read_bounded_utf8(&absolute, super::MAX_BUFFER_BYTES, "language document")?;
-        let uri = file_uri(&absolute)?;
-        self.notify(serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": language_id(&absolute),
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }))?;
+        let uri = self.sync_document(path)?.uri.clone();
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut empty_published_at = None;
         while Instant::now() < deadline {
@@ -172,6 +175,187 @@ impl LspClient {
         Err(DevelopmentError::Process(
             "language diagnostics timed out".into(),
         ))
+    }
+
+    /// Open a document once, then publish monotonic full-text changes.
+    pub fn sync_document(&mut self, path: &str) -> DevelopmentResult<LanguageDocument> {
+        let (absolute, normalized) = self.resolve_document(path)?;
+        let text = read_bounded_utf8(&absolute, super::MAX_BUFFER_BYTES, "language document")?;
+        if let Some(document) = self.documents.get_mut(&normalized) {
+            if document.text != text {
+                document.version = document.version.saturating_add(1);
+                document.text = text;
+                let notification = serde_json::json!({
+                    "jsonrpc": "2.0", "method": "textDocument/didChange",
+                    "params": {"textDocument": {"uri": document.uri, "version": document.version},
+                    "contentChanges": [{"text": document.text}]}
+                });
+                self.notify(notification)?;
+            }
+        } else {
+            let uri = file_uri(&absolute)?;
+            self.notify(serde_json::json!({
+                "jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "languageId": language_id(&absolute),
+                    "version": 1, "text": text}}
+            }))?;
+            self.documents.insert(
+                normalized.clone(),
+                OpenDocument {
+                    uri,
+                    version: 1,
+                    text,
+                },
+            );
+        }
+        let document = self.documents.get(&normalized).expect("inserted above");
+        Ok(LanguageDocument {
+            uri: document.uri.clone(),
+            version: document.version,
+        })
+    }
+
+    pub fn save_document(&mut self, path: &str) -> DevelopmentResult<()> {
+        let document = self.sync_document(path)?;
+        let uri = document.uri.clone();
+        self.notify(serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":uri}}}))
+    }
+
+    pub fn close_document(&mut self, path: &str) -> DevelopmentResult<()> {
+        let (_, normalized) = self.resolve_document(path)?;
+        let document = self
+            .documents
+            .remove(&normalized)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("open language document {path}")))?;
+        self.notify(serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":document.uri}}}))
+    }
+
+    pub fn hover(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request("textDocument/hover", path, line, character, Value::Null)
+    }
+
+    pub fn definition(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/definition",
+            path,
+            line,
+            character,
+            Value::Null,
+        )
+    }
+
+    pub fn references(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/references",
+            path,
+            line,
+            character,
+            serde_json::json!({"includeDeclaration": true}),
+        )
+    }
+
+    pub fn document_symbols(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document(path)?.uri.clone();
+        self.request_result(
+            "textDocument/documentSymbol",
+            serde_json::json!({"textDocument":{"uri":uri}}),
+        )
+    }
+
+    pub fn formatting(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document(path)?.uri.clone();
+        self.request_result("textDocument/formatting", serde_json::json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":true}}))
+    }
+
+    pub fn rename(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        if new_name.is_empty() || new_name.len() > 256 {
+            return Err(DevelopmentError::InvalidInput(
+                "rename target must be 1 to 256 bytes".into(),
+            ));
+        }
+        self.position_request(
+            "textDocument/rename",
+            path,
+            line,
+            character,
+            serde_json::json!({"newName":new_name}),
+        )
+    }
+
+    fn position_request(
+        &mut self,
+        method: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+        extra: Value,
+    ) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document(path)?.uri.clone();
+        let mut params = serde_json::json!({"textDocument":{"uri":uri},"position":{"line":line.saturating_sub(1),"character":character.saturating_sub(1)}});
+        if let (Some(target), Some(source)) = (params.as_object_mut(), extra.as_object()) {
+            target.extend(source.clone());
+        }
+        self.request_result(method, params)
+    }
+
+    fn request_result(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> DevelopmentResult<LanguageResponse> {
+        let response = self.call(method, params, Duration::from_secs(15))?;
+        if let Some(error) = response.get("error") {
+            return Err(DevelopmentError::Process(format!(
+                "{method} failed: {error}"
+            )));
+        }
+        let result = response.get("result").cloned().unwrap_or(Value::Null);
+        if serde_json::to_vec(&result)?.len() > MAX_LSP_MESSAGE_BYTES {
+            return Err(DevelopmentError::Serialization(
+                "language response exceeds the size limit".into(),
+            ));
+        }
+        Ok(LanguageResponse {
+            method: method.into(),
+            result,
+        })
+    }
+
+    fn resolve_document(&self, path: &str) -> DevelopmentResult<(PathBuf, String)> {
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(DevelopmentError::PathOutsideWorkspace(relative.into()));
+        }
+        let absolute = fs::canonicalize(self.root.join(relative))?;
+        if !absolute.starts_with(&self.root) {
+            return Err(DevelopmentError::PathOutsideWorkspace(absolute));
+        }
+        Ok((absolute, relative.to_string_lossy().into_owned()))
     }
 
     fn initialize(&mut self) -> DevelopmentResult<()> {
@@ -240,6 +424,10 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
+        if !self.shutdown {
+            let _ = self.call("shutdown", Value::Null, Duration::from_secs(2));
+            self.shutdown = true;
+        }
         let _ = self.notify(serde_json::json!({
             "jsonrpc": "2.0",
             "method": "exit",
@@ -248,6 +436,14 @@ impl Drop for LspClient {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Stable read-only view of an open document's protocol identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageDocument {
+    pub uri: String,
+    pub version: i64,
 }
 
 fn read_lsp_messages(output: impl Read, sender: mpsc::SyncSender<Value>) {
@@ -367,6 +563,11 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/lib.rs"), "pub fn broken( {\n").unwrap();
         let mut client = LspClient::rust_analyzer(&root).unwrap();
+        let server_pid = client.child.id();
+        assert_eq!(client.sync_document("src/lib.rs").unwrap().version, 1);
+        fs::write(root.join("src/lib.rs"), "pub fn broken( -> u8 {\n").unwrap();
+        assert_eq!(client.sync_document("src/lib.rs").unwrap().version, 2);
+        client.save_document("src/lib.rs").unwrap();
         let diagnostics = client.diagnostics("src/lib.rs").unwrap();
         assert!(
             !diagnostics.is_empty(),
@@ -377,6 +578,18 @@ mod tests {
                 .iter()
                 .all(|diagnostic| diagnostic.path == "src/lib.rs")
         );
+        client.close_document("src/lib.rs").unwrap();
+        drop(client);
+        #[cfg(unix)]
+        {
+            // SAFETY: signal zero performs a read-only existence probe.
+            let result = unsafe { libc::kill(server_pid as i32, 0) };
+            assert_ne!(result, 0, "language server survived client shutdown");
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 }

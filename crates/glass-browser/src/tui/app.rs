@@ -47,6 +47,9 @@ use crate::development::{
     ReconnectCapsule, ReconnectCapsuleStore, VerificationCard, attention_inbox,
 };
 
+use crate::browser::connection::{
+    EndpointClassification, EndpointProbe, probe_local_endpoint, reserve_loopback_port,
+};
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
@@ -55,11 +58,18 @@ use crate::browser::session::{
     SemanticIntentRequest, SemanticIntentResult, SemanticObservation, SemanticObservationLevel,
     SessionOptions, VisualFormat, WorkflowDefinition, default_knowledge_store_path,
 };
-use crate::cli::args::{Cli, TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
+use crate::cli::args::{
+    Cli, TuiGraphics, TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality,
+    TuiTransport,
+};
+use crate::connection::{
+    ActivityClass, ConnectionEnvironment, ConnectionMeasurements, ConnectionOverrides,
+    ConnectionSignals, GraphicsClass, LayoutClass, PixelIntent, PresentationPolicy, QualityIntent,
+    TransportClass,
+};
 use crate::presentation::{BrowserFrame, CaptureScale, PixelSize, TargetResourceIdentity};
 use crate::terminal_graphics::{
-    AnsiCanvas, FrameFit, GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult,
-    TerminalEnvironment, TerminalGraphics, negotiate,
+    AnsiCanvas, FrameFit, GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalGraphics,
 };
 use crate::tui::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
 const INPUT_CHANNEL_CAPACITY: usize = 64;
@@ -71,7 +81,6 @@ const TUI_PAGE_MAX_BYTES: usize = 24 * 1024;
 const TUI_HEADER_MAX_BYTES: usize = 512;
 const TUI_ACTIVITY_MAX_BYTES: usize = 512;
 const PHONE_MAX_COLUMNS: u16 = 72;
-const REMOTE_PHONE_MAX_COLUMNS: u16 = 96;
 const COMPACT_MAX_COLUMNS: u16 = 109;
 const LIVE_CAPTURE_MAX_WIDTH: u32 = 1280;
 const LIVE_CAPTURE_MAX_HEIGHT: u32 = 1024;
@@ -104,6 +113,7 @@ enum MobileView {
     App,
     Diff,
     Project,
+    Process,
 }
 
 impl MobileView {
@@ -114,16 +124,18 @@ impl MobileView {
             Self::App => 3,
             Self::Diff => 4,
             Self::Project => 5,
+            Self::Process => 6,
         }
     }
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Home => "Home",
+            Self::Home => "Overview",
             Self::Agent => "Agent",
-            Self::App => "App",
+            Self::App => "Browser",
             Self::Diff => "Diff",
             Self::Project => "Project",
+            Self::Process => "Process",
         }
     }
 
@@ -134,6 +146,7 @@ impl MobileView {
             3 => Some(Self::App),
             4 => Some(Self::Diff),
             5 => Some(Self::Project),
+            6 => Some(Self::Process),
             _ => None,
         }
     }
@@ -144,6 +157,8 @@ struct RemoteContext {
     ssh: bool,
     mosh: bool,
     herdr: bool,
+    tmux: bool,
+    screen: bool,
 }
 
 impl RemoteContext {
@@ -153,11 +168,9 @@ impl RemoteContext {
                 || std::env::var_os("SSH_TTY").is_some(),
             mosh: std::env::var_os("MOSH_CONNECTION").is_some(),
             herdr: std::env::var("HERDR_ENV").is_ok_and(|value| value == "1"),
+            tmux: std::env::var_os("TMUX").is_some(),
+            screen: std::env::var_os("STY").is_some(),
         }
-    }
-
-    const fn is_remote(self) -> bool {
-        self.ssh || self.mosh
     }
 
     fn label(self) -> &'static str {
@@ -190,12 +203,14 @@ impl ActiveLiveBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ScreencastConfig {
     enabled: bool,
     max_width: u32,
     max_height: u32,
     minimum_interval: Duration,
+    requested_fps: u16,
+    capture_scale: f32,
 }
 
 impl Default for ScreencastConfig {
@@ -205,6 +220,8 @@ impl Default for ScreencastConfig {
             max_width: 320,
             max_height: 240,
             minimum_interval: Duration::from_millis(333),
+            requested_fps: 0,
+            capture_scale: 0.5,
         }
     }
 }
@@ -213,12 +230,14 @@ impl Default for ScreencastConfig {
 struct LiveMetrics {
     window_started: Instant,
     bytes: u64,
-    frames: u64,
+    acquired_frames: u64,
+    presented_frames: u64,
     dropped: u64,
     window_dropped: u64,
     drop_ratio: f64,
     generation: u64,
-    fps: f64,
+    acquisition_fps: f64,
+    presentation_fps: f64,
     bytes_per_second: f64,
 }
 
@@ -227,12 +246,14 @@ impl Default for LiveMetrics {
         Self {
             window_started: Instant::now(),
             bytes: 0,
-            frames: 0,
+            acquired_frames: 0,
+            presented_frames: 0,
             dropped: 0,
             window_dropped: 0,
             drop_ratio: 0.0,
             generation: 0,
-            fps: 0.0,
+            acquisition_fps: 0.0,
+            presentation_fps: 0.0,
             bytes_per_second: 0.0,
         }
     }
@@ -241,7 +262,12 @@ impl Default for LiveMetrics {
 impl LiveMetrics {
     fn received(&mut self, bytes: usize) {
         self.bytes = self.bytes.saturating_add(bytes as u64);
-        self.frames = self.frames.saturating_add(1);
+        self.acquired_frames = self.acquired_frames.saturating_add(1);
+        self.refresh();
+    }
+
+    fn presented(&mut self) {
+        self.presented_frames = self.presented_frames.saturating_add(1);
         self.refresh();
     }
 
@@ -255,9 +281,10 @@ impl LiveMetrics {
         let elapsed = self.window_started.elapsed();
         if elapsed >= Duration::from_secs(1) {
             let seconds = elapsed.as_secs_f64();
-            self.fps = self.frames as f64 / seconds;
+            self.acquisition_fps = self.acquired_frames as f64 / seconds;
+            self.presentation_fps = self.presented_frames as f64 / seconds;
             self.bytes_per_second = self.bytes as f64 / seconds;
-            let attempts = self.frames.saturating_add(self.window_dropped);
+            let attempts = self.acquired_frames.saturating_add(self.window_dropped);
             self.drop_ratio = if attempts == 0 {
                 0.0
             } else {
@@ -266,7 +293,8 @@ impl LiveMetrics {
             self.generation = self.generation.saturating_add(1);
             self.window_started = Instant::now();
             self.bytes = 0;
-            self.frames = 0;
+            self.acquired_frames = 0;
+            self.presented_frames = 0;
             self.window_dropped = 0;
         }
     }
@@ -278,6 +306,7 @@ struct LiveViewState {
     quality: TuiLiveQuality,
     effective_quality: TuiLiveQuality,
     adaptive_quality: bool,
+    adaptive_scale_step: u8,
     stable_windows: u8,
     adapted_generation: u64,
     fit: TuiLiveFit,
@@ -324,6 +353,7 @@ impl LiveViewState {
             quality,
             effective_quality: quality,
             adaptive_quality: false,
+            adaptive_scale_step: 0,
             stable_windows: 0,
             adapted_generation: 0,
             fit,
@@ -410,16 +440,19 @@ impl LiveViewState {
         }
     }
 
-    fn diagnostics(&self) -> String {
+    fn diagnostics(&self, policy: &PresentationPolicy) -> String {
         match self.backend {
             Some(backend) => format!(
-                "LIVE · {} · {}{} · {:.1} FPS · {:.0} KiB/s · {} dropped",
+                "LIVE · {} · {:?} · req {} / cap {:.1} / out {:.1} FPS · SCALE {:.2}x · {:.0} KiB/s · {} dropped · {:?}",
                 backend.label(),
-                self.quality_label(),
-                if self.adaptive_quality { " auto" } else { "" },
-                self.metrics.fps,
+                policy.profile,
+                policy.requested_fps,
+                self.metrics.acquisition_fps,
+                self.metrics.presentation_fps,
+                policy.capture_scale,
                 self.metrics.bytes_per_second / 1024.0,
-                self.metrics.dropped
+                self.metrics.dropped,
+                policy.reasons,
             ),
             None => "LIVE off · semantic browser view · screenshot remains explicit".into(),
         }
@@ -437,6 +470,7 @@ impl LiveViewState {
         self.adaptive_quality = true;
         self.quality = TuiLiveQuality::Balanced;
         self.effective_quality = TuiLiveQuality::Balanced;
+        self.adaptive_scale_step = 0;
         self.stable_windows = 0;
         self.adapted_generation = self.metrics.generation;
     }
@@ -445,6 +479,7 @@ impl LiveViewState {
         self.quality = quality;
         self.effective_quality = quality;
         self.adaptive_quality = false;
+        self.adaptive_scale_step = 0;
         self.stable_windows = 0;
     }
 
@@ -454,18 +489,26 @@ impl LiveViewState {
         }
         self.adapted_generation = self.metrics.generation;
         if self.metrics.drop_ratio >= 0.20 {
-            self.effective_quality = match self.effective_quality {
-                TuiLiveQuality::Smooth => TuiLiveQuality::Balanced,
-                TuiLiveQuality::Balanced | TuiLiveQuality::Data => TuiLiveQuality::Data,
-            };
+            if self.adaptive_scale_step < 3 {
+                self.adaptive_scale_step += 1;
+            } else {
+                self.effective_quality = match self.effective_quality {
+                    TuiLiveQuality::Smooth => TuiLiveQuality::Balanced,
+                    TuiLiveQuality::Balanced | TuiLiveQuality::Data => TuiLiveQuality::Data,
+                };
+            }
             self.stable_windows = 0;
         } else if self.metrics.drop_ratio <= 0.02 {
             self.stable_windows = self.stable_windows.saturating_add(1);
             if self.stable_windows >= 3 {
-                self.effective_quality = match self.effective_quality {
-                    TuiLiveQuality::Data => TuiLiveQuality::Balanced,
-                    TuiLiveQuality::Balanced | TuiLiveQuality::Smooth => TuiLiveQuality::Smooth,
-                };
+                if self.adaptive_scale_step > 0 {
+                    self.adaptive_scale_step -= 1;
+                } else {
+                    self.effective_quality = match self.effective_quality {
+                        TuiLiveQuality::Data => TuiLiveQuality::Balanced,
+                        TuiLiveQuality::Balanced | TuiLiveQuality::Smooth => TuiLiveQuality::Smooth,
+                    };
+                }
                 self.stable_windows = 0;
             }
         } else {
@@ -480,17 +523,55 @@ impl Drop for LiveViewState {
     }
 }
 
-fn display_class(preference: TuiLayout, width: u16, remote: RemoteContext) -> DisplayClass {
+fn display_class(preference: TuiLayout, width: u16, _remote: RemoteContext) -> DisplayClass {
     match preference {
         TuiLayout::Mobile => DisplayClass::Phone,
         TuiLayout::Desktop => DisplayClass::Wide,
+        TuiLayout::Compact => DisplayClass::Compact,
         TuiLayout::Auto if width <= PHONE_MAX_COLUMNS => DisplayClass::Phone,
-        TuiLayout::Auto if remote.is_remote() && width <= REMOTE_PHONE_MAX_COLUMNS => {
-            DisplayClass::Phone
-        }
         TuiLayout::Auto if width <= COMPACT_MAX_COLUMNS => DisplayClass::Compact,
         TuiLayout::Auto => DisplayClass::Wide,
     }
+}
+
+fn connection_environment_for_context(
+    preference: TuiLayout,
+    columns: u16,
+    rows: u16,
+    remote: RemoteContext,
+    kitty_probed: bool,
+) -> ConnectionEnvironment {
+    let layout = match preference {
+        TuiLayout::Auto => None,
+        TuiLayout::Mobile => Some(LayoutClass::Phone),
+        TuiLayout::Compact => Some(LayoutClass::Compact),
+        TuiLayout::Desktop => Some(LayoutClass::Wide),
+    };
+    let graphics = if remote.herdr {
+        Some(GraphicsClass::Herdr)
+    } else if kitty_probed {
+        Some(GraphicsClass::Kitty)
+    } else {
+        None
+    };
+    ConnectionEnvironment::detect(
+        columns.max(1),
+        rows.max(1),
+        &ConnectionSignals {
+            ssh: remote.ssh,
+            mosh: remote.mosh,
+            tmux: remote.tmux,
+            screen: remote.screen,
+            herdr: remote.herdr,
+        },
+        graphics,
+        ConnectionMeasurements::default(),
+        ConnectionOverrides {
+            layout,
+            ..ConnectionOverrides::default()
+        },
+    )
+    .expect("bounded terminal connection environment is valid")
 }
 
 impl WorkspaceMode {
@@ -638,6 +719,7 @@ pub struct App {
     intent_selection: usize,
     knowledge_path: PathBuf,
     browser_state: BrowserState,
+    browser_recovery: Option<EndpointProbe>,
     busy: Option<BusyState>,
     next_operation_id: u64,
     graphics: TerminalGraphics,
@@ -649,6 +731,7 @@ pub struct App {
     mobile_help: bool,
     mobile_nav_area: Option<Rect>,
     remote_context: RemoteContext,
+    connection_environment: ConnectionEnvironment,
     mutation_lease: MutationLease,
     visual_revision: u64,
     visual_status: String,
@@ -656,6 +739,7 @@ pub struct App {
     development_enabled: bool,
     harness: LocalHarness,
     pi_command_tx: Option<std_mpsc::Sender<HarnessRequest>>,
+    lsp_command_tx: Option<std_mpsc::Sender<String>>,
     development_files: String,
     development_editor: String,
     development_runtime: String,
@@ -690,6 +774,8 @@ enum DevelopmentAsyncEvent {
 enum BrowserState {
     Connecting,
     Ready,
+    Recovery,
+    SemanticOnly,
     Unavailable,
     Stopped,
 }
@@ -743,6 +829,13 @@ impl App {
         activity.push_back("Glass started.".to_string());
         activity.push_back("Connecting to Chrome…".to_string());
         let display_class = display_class(layout_preference, terminal_width, remote_context);
+        let connection_environment = connection_environment_for_context(
+            layout_preference,
+            terminal_width,
+            32,
+            remote_context,
+            live_options.kitty_detected,
+        );
         let mut live = LiveViewState::new(
             live_options.mode,
             live_options.backend,
@@ -750,10 +843,10 @@ impl App {
             live_options.fit,
             live_options.kitty_detected,
         );
-        if remote_context.mosh && live.preference == TuiLiveBackend::Auto {
+        if remote_context.mosh {
             live.herdr_environment = None;
             live.kitty_detected = false;
-            live.select_backend();
+            live.backend = None;
         }
         let graphics_mode = if live.backend == Some(ActiveLiveBackend::Kitty) {
             GraphicsMode::Kitty
@@ -789,6 +882,7 @@ impl App {
             intent_selection: 0,
             knowledge_path: default_knowledge_store_path("default"),
             browser_state: BrowserState::Connecting,
+            browser_recovery: None,
             busy: None,
             next_operation_id: 1,
             graphics,
@@ -804,6 +898,7 @@ impl App {
             mobile_help: false,
             mobile_nav_area: None,
             remote_context,
+            connection_environment,
             mutation_lease: MutationLease::default(),
             visual_revision: 0,
             visual_status: "semantic browser view; live capture is explicit".to_string(),
@@ -811,6 +906,7 @@ impl App {
             development_enabled,
             harness: LocalHarness::default(),
             pi_command_tx: None,
+            lsp_command_tx: None,
             development_files: "Project detection pending.".into(),
             development_editor: "Open a file with `project open PATH`.".into(),
             development_runtime: "No managed processes.".into(),
@@ -904,7 +1000,7 @@ impl App {
         self.sync_live_graphics_mode();
         if self.live.enabled() {
             self.set_mobile_view(MobileView::App);
-            self.set_status(self.live.diagnostics());
+            self.set_status(self.live_diagnostics());
         } else {
             self.graphics.clear_pane().ok();
             self.set_status("Live view disabled; semantic browser view active.");
@@ -951,12 +1047,50 @@ impl App {
                 ));
                 self.live.fall_back_from(ActiveLiveBackend::Herdr);
                 self.sync_live_graphics_mode();
-                self.visual_status = self.live.diagnostics();
+                self.visual_status = self.live_diagnostics();
                 true
             }
             Some(HerdrEvent::Stopped) => false,
             None => false,
         }
+    }
+
+    fn live_policy(&self) -> PresentationPolicy {
+        let pixel_intent = match self.live.mode {
+            TuiLiveMode::Off => PixelIntent::Off,
+            TuiLiveMode::Auto => PixelIntent::Auto,
+            TuiLiveMode::On => PixelIntent::On,
+        };
+        let quality = match self.live.effective_quality {
+            TuiLiveQuality::Data => QualityIntent::Data,
+            TuiLiveQuality::Balanced => QualityIntent::Balanced,
+            TuiLiveQuality::Smooth => QualityIntent::Smooth,
+        };
+        let mut policy = PresentationPolicy::select(
+            &self.connection_environment,
+            ActivityClass::Interactive,
+            pixel_intent,
+            quality,
+        );
+        let adaptive_scale =
+            [1.0_f32, 0.75, 0.65, 0.5][usize::from(self.live.adaptive_scale_step.min(3))];
+        let next_scale = (policy.capture_scale * adaptive_scale).clamp(0.5, 1.0);
+        if next_scale < policy.capture_scale {
+            policy.capture_scale = next_scale;
+            if !policy
+                .reasons
+                .contains(&crate::connection::PolicyReason::CaptureScaleReduced)
+            {
+                policy
+                    .reasons
+                    .push(crate::connection::PolicyReason::CaptureScaleReduced);
+            }
+        }
+        policy
+    }
+
+    fn live_diagnostics(&self) -> String {
+        self.live.diagnostics(&self.live_policy())
     }
 
     fn live_capture_config(&self) -> ScreencastConfig {
@@ -966,26 +1100,25 @@ impl App {
         if !self.live.enabled() || area.width == 0 || area.height == 0 {
             return ScreencastConfig::default();
         }
-        let (horizontal_scale, vertical_scale, fps) = match self.live.effective_quality {
-            TuiLiveQuality::Data => (2_u32, 4_u32, 3_u64),
-            TuiLiveQuality::Balanced => (4, 8, 6),
-            TuiLiveQuality::Smooth => (8, 16, 12),
-        };
+        let policy = self.live_policy();
+        if policy.requested_fps == 0 {
+            return ScreencastConfig::default();
+        }
+        let scaled_width = (f32::from(area.width) * 8.0 * policy.capture_scale).round() as u32;
+        let scaled_height = (f32::from(area.height) * 16.0 * policy.capture_scale).round() as u32;
         ScreencastConfig {
             enabled: true,
-            max_width: u32::from(area.width)
-                .saturating_mul(horizontal_scale)
-                .clamp(64, LIVE_CAPTURE_MAX_WIDTH),
-            max_height: u32::from(area.height)
-                .saturating_mul(vertical_scale)
-                .clamp(64, LIVE_CAPTURE_MAX_HEIGHT),
-            minimum_interval: Duration::from_millis(1000 / fps),
+            max_width: scaled_width.clamp(64, LIVE_CAPTURE_MAX_WIDTH),
+            max_height: scaled_height.clamp(64, LIVE_CAPTURE_MAX_HEIGHT),
+            minimum_interval: Duration::from_micros(1_000_000 / u64::from(policy.requested_fps)),
+            requested_fps: policy.requested_fps,
+            capture_scale: policy.capture_scale,
         }
     }
 
     fn cycle_mobile_view(&mut self, delta: i8) {
         let current = i16::from(self.mobile_view.number()) - 1;
-        let next = (current + i16::from(delta)).rem_euclid(5) + 1;
+        let next = (current + i16::from(delta)).rem_euclid(6) + 1;
         if let Some(view) = MobileView::from_number(next as u8) {
             self.set_mobile_view(view);
         }
@@ -1030,9 +1163,10 @@ impl App {
         };
         self.mobile_view = match capsule.mobile_view.as_deref() {
             Some("agent") => MobileView::Agent,
-            Some("app") => MobileView::App,
+            Some("app") | Some("browser") => MobileView::App,
             Some("diff") => MobileView::Diff,
             Some("project") | Some("more") => MobileView::Project,
+            Some("process") | Some("logs") => MobileView::Process,
             _ => MobileView::Home,
         };
         self.browser_target_id = capsule.browser_target_id;
@@ -1061,11 +1195,16 @@ impl App {
             self.development_runtime = "Project runtime unavailable.".into();
             return;
         };
-        self.development_files = match project.list_files() {
-            Ok(files) => files
-                .into_iter()
-                .take(80)
-                .map(|file| {
+        self.development_files = match project.list_files_result() {
+            Ok(tree) => {
+                let mut lines = vec![format!(
+                    "{} entries · limit {} · truncated:{} · symlinks skipped:{}",
+                    tree.entries.len(),
+                    tree.limit,
+                    tree.truncated,
+                    tree.skipped_symlinks
+                )];
+                lines.extend(tree.entries.into_iter().take(79).map(|file| {
                     let git = file.git_status.as_deref().unwrap_or(" ");
                     let actor = file
                         .actor
@@ -1082,9 +1221,9 @@ impl App {
                         file.path,
                         actor
                     )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
+                }));
+                lines.join("\n")
+            }
             Err(error) => format!("File tree error: {error}"),
         };
         self.development_editor = self
@@ -1146,6 +1285,7 @@ impl App {
 
     fn handle_project_command(&mut self, command: &str) {
         self.set_mode(WorkspaceMode::Development);
+        let browser_agent_context = self.agent_browser_context();
         let command = command.trim();
         let operation_name = command
             .split_whitespace()
@@ -1162,7 +1302,7 @@ impl App {
             match operation.as_str() {
                 "inspect" => Ok(serde_json::to_string_pretty(project.detection())
                     .map_err(|error| error.to_string())?),
-                "files" => Ok(serde_json::to_string_pretty(&project.list_files().map_err(|error| error.to_string())?)
+                "files" => Ok(serde_json::to_string_pretty(&project.list_files_result().map_err(|error| error.to_string())?)
                     .map_err(|error| error.to_string())?),
                 "search" => {
                     let query = parts.next().ok_or_else(|| "project search requires QUERY".to_string())?;
@@ -1208,7 +1348,7 @@ impl App {
                     Ok(serde_json::to_string_pretty(&snapshot)
                         .map_err(|error| error.to_string())?)
                 }
-                "processes" => Ok(serde_json::to_string_pretty(&project.processes().list())
+                "processes" => Ok(serde_json::to_string_pretty(&project.processes().list_checked().map_err(|error| error.to_string())?)
                     .map_err(|error| error.to_string())?),
                 "restart" => {
                     let name = parts.next().ok_or_else(|| "project restart requires NAME".to_string())?;
@@ -1247,23 +1387,37 @@ impl App {
                     .map_err(|error| error.to_string())?),
                 "diagnostics" => {
                     let path = parts.next().ok_or_else(|| "project diagnostics requires PATH".to_string())?;
-                    let root = project.root().to_path_buf();
                     let path = path.to_string();
-                    let events = self.development_event_tx.clone();
                     let display_path = path.clone();
-                    std::thread::Builder::new()
-                        .name("glass-lsp-diagnostics".into())
-                        .spawn(move || {
-                            let result = ProjectWorkspace::open(root)
-                                .and_then(|mut project| project.publish_rust_diagnostics(&path))
-                                .and_then(|diagnostics| serde_json::to_string_pretty(&diagnostics).map_err(Into::into));
-                            let event = match result {
-                                Ok(output) => DevelopmentAsyncEvent::Completed(output),
-                                Err(error) => DevelopmentAsyncEvent::Failed(error.to_string()),
-                            };
-                            let _ = events.send(event);
-                        })
-                        .map_err(|error| error.to_string())?;
+                    if self.lsp_command_tx.is_none() {
+                        let root = project.root().to_path_buf();
+                        let events = self.development_event_tx.clone();
+                        let (sender, receiver) = std_mpsc::channel::<String>();
+                        std::thread::Builder::new()
+                            .name("glass-lsp-client".into())
+                            .spawn(move || {
+                                let mut client = match crate::development::LspClient::rust_analyzer(&root) {
+                                    Ok(client) => client,
+                                    Err(error) => {
+                                        let _ = events.send(DevelopmentAsyncEvent::Failed(error.to_string()));
+                                        return;
+                                    }
+                                };
+                                while let Ok(path) = receiver.recv() {
+                                    let result = client.diagnostics(&path)
+                                        .and_then(|diagnostics| serde_json::to_string_pretty(&diagnostics).map_err(Into::into));
+                                    let event = match result {
+                                        Ok(output) => DevelopmentAsyncEvent::Completed(output),
+                                        Err(error) => DevelopmentAsyncEvent::Failed(error.to_string()),
+                                    };
+                                    if events.send(event).is_err() { break; }
+                                }
+                            })
+                            .map_err(|error| error.to_string())?;
+                        self.lsp_command_tx = Some(sender);
+                    }
+                    self.lsp_command_tx.as_ref().expect("LSP worker initialized")
+                        .send(path).map_err(|error| error.to_string())?;
                     Ok(format!("Diagnostics started for {display_path}; input remains active."))
                 }
                 "graph" => Ok(serde_json::to_string_pretty(&project.discover_runtime_links().map_err(|error| error.to_string())?)
@@ -1283,7 +1437,11 @@ impl App {
                         "state" => HarnessRequest::State,
                         "models" => HarnessRequest::Models,
                         "prompt" if !payload.is_empty() => {
-                            let context = crate::development::resolve_context(project, payload)
+                            let context = crate::development::resolve_context_with_browser(
+                                project,
+                                payload,
+                                browser_agent_context.as_ref(),
+                            )
                                 .map_err(|error| error.to_string())?;
                             HarnessRequest::Prompt {
                                 text: format!(
@@ -1335,8 +1493,9 @@ impl App {
                     let prompt = parts
                         .next()
                         .ok_or_else(|| "project agent requires PROMPT".to_string())?;
-                    let events = self
-                        .harness
+                    self.harness
+                        .set_browser_context(browser_agent_context.clone());
+                    let events = self.harness
                         .handle(
                             project,
                             HarnessRequest::Prompt {
@@ -1359,9 +1518,9 @@ impl App {
                     let view = match operation_name.as_str() {
                         "agent" | "pi" | "timeline" | "replay" => MobileView::Agent,
                         "diff" => MobileView::Diff,
-                        "inspect" | "files" | "search" | "open" | "edit" | "run" | "processes"
-                        | "restart" | "stop" | "output" | "diagnostics" | "graph" | "neovim"
-                        | "attach" => MobileView::Project,
+                        "run" | "processes" | "restart" | "stop" | "output" => MobileView::Process,
+                        "inspect" | "files" | "search" | "open" | "edit" | "diagnostics"
+                        | "graph" | "neovim" | "attach" => MobileView::Project,
                         _ => MobileView::Home,
                     };
                     self.set_mobile_view(view);
@@ -1371,6 +1530,33 @@ impl App {
         }
         self.refresh_development_view();
         self.refresh_development_diff();
+    }
+
+    fn agent_browser_context(&self) -> Option<crate::development::BrowserAgentContext> {
+        let connected = self.browser_ready();
+        (connected || self.visual_revision > 0).then(|| {
+            let origin = url::Url::parse(&self.url).ok().and_then(|url| {
+                url.host_str().map(|host| match url.port() {
+                    Some(port) => format!("{}://{host}:{port}", url.scheme()),
+                    None => format!("{}://{host}", url.scheme()),
+                })
+            });
+            crate::development::BrowserAgentContext {
+                connected,
+                target_id: self.browser_target_id.clone(),
+                origin,
+                title: bounded_text(&self.title, 512),
+                browser_revision: self.visual_revision,
+                semantic_summary: bounded_text(&self.page_content, 16 * 1024),
+                workflow_state: if self.busy.is_some() {
+                    "active"
+                } else {
+                    "idle"
+                }
+                .into(),
+                memory_scope: "active-profile".into(),
+            }
+        })
     }
 
     fn poll_development_events(&mut self) -> bool {
@@ -1593,8 +1779,10 @@ impl App {
                 .mobile_nav_area
                 .expect("checked mobile navigation area");
             let relative = mouse.column.saturating_sub(area.x);
-            let segment = (u32::from(relative) * 5 / u32::from(area.width.max(1))) as u8 + 1;
-            if let Some(view) = MobileView::from_number(segment.min(5)) {
+            let row = mouse.row.saturating_sub(area.y).min(1);
+            let segment = (u32::from(relative) * 3 / u32::from(area.width.max(1))) as u8 + 1;
+            let number = segment.min(3).saturating_add((row as u8).saturating_mul(3));
+            if let Some(view) = MobileView::from_number(number.min(6)) {
                 self.set_mobile_view(view);
             }
             return UiIntent::None;
@@ -1712,7 +1900,7 @@ impl App {
 
         if self.display_class == DisplayClass::Phone && self.input.is_empty() {
             match key.code {
-                KeyCode::Char(character @ '1'..='5') if key.modifiers == KeyModifiers::NONE => {
+                KeyCode::Char(character @ '1'..='6') if key.modifiers == KeyModifiers::NONE => {
                     if let Some(view) = MobileView::from_number(character as u8 - b'0') {
                         self.set_mobile_view(view);
                     }
@@ -1754,6 +1942,16 @@ impl App {
         match key.code {
             KeyCode::Char('q' | 'c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 UiIntent::Quit
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.set_status("Screen redrawn");
+                UiIntent::None
+            }
+            KeyCode::Char(':' | '/')
+                if self.input.is_empty() && key.modifiers == KeyModifiers::NONE =>
+            {
+                self.set_status("Command palette · type help for the complete command index");
+                UiIntent::None
             }
             KeyCode::Char('q') if self.input.is_empty() => UiIntent::Quit,
             KeyCode::Esc => {
@@ -1947,21 +2145,70 @@ impl App {
         match event {
             BrowserEvent::Connecting => {
                 self.browser_state = BrowserState::Connecting;
+                self.visual_revision = 0;
+                self.browser_target_id = None;
+                self.page_content = "Browser connection changed; semantic state is invalid until a fresh observation completes.".into();
+                let _ = self.graphics.clear_pane();
                 self.set_status("Connecting to Chrome…");
                 self.add_activity("Browser worker is connecting.");
             }
             BrowserEvent::Ready { port } => {
                 self.browser_state = BrowserState::Ready;
+                self.browser_recovery = None;
                 self.set_status(format!("Connected on port {port}"));
                 self.add_activity("Connected to Chrome.");
-                return Ok(Some(BrowserOperation::Observe { fresh: false }));
+                return Ok(Some(BrowserOperation::Observe { fresh: true }));
             }
             BrowserEvent::StartupFailed { message } => {
-                self.browser_state = BrowserState::Unavailable;
+                self.browser_state = BrowserState::Recovery;
                 self.release_all_mutation_leases();
                 self.busy = None;
                 self.set_status("Browser unavailable");
                 self.report_error(message);
+            }
+            BrowserEvent::RecoveryRequired { probe } => {
+                self.browser_state = BrowserState::Recovery;
+                let action = match probe.classification {
+                    EndpointClassification::Free => "reconnect or launch with a chosen port",
+                    EndpointClassification::CompatibleBrowser => {
+                        "choose browser attach [TARGET], browser launch --port auto, or semantic-only"
+                    }
+                    EndpointClassification::UnrelatedService | EndpointClassification::Unknown => {
+                        "choose browser launch --port auto, reconnect, or semantic-only"
+                    }
+                };
+                self.set_page_content(format_recovery_probe(&probe));
+                self.set_status(format!("Browser recovery · {action}"));
+                self.add_activity(format!("Endpoint {}: {}", probe.port, probe.detail));
+                self.browser_recovery = Some(probe);
+                self.set_mobile_view(MobileView::App);
+            }
+            BrowserEvent::TargetsDiscovered { probe } => {
+                self.set_page_content(format_recovery_probe(&probe));
+                self.set_status(format!(
+                    "Browser targets · {} eligible on port {}",
+                    probe.targets.len(),
+                    probe.port
+                ));
+                self.add_activity(format!(
+                    "Refreshed bounded browser targets on port {}.",
+                    probe.port
+                ));
+                self.browser_recovery = Some(probe);
+                self.set_mobile_view(MobileView::App);
+            }
+            BrowserEvent::SemanticOnly { message } => {
+                self.browser_state = BrowserState::SemanticOnly;
+                self.release_all_mutation_leases();
+                self.busy = None;
+                self.set_status("Browser disconnected · project workspace remains active");
+                self.add_activity(message);
+            }
+            BrowserEvent::RemoteViewStatus { message } => {
+                self.set_page_content(message.clone());
+                self.set_status("Remote View");
+                self.add_activity(message);
+                self.set_mobile_view(MobileView::App);
             }
             BrowserEvent::OperationStarted { id, label } => {
                 if self.busy.as_ref().is_some_and(|busy| busy.id == id) {
@@ -2094,11 +2341,12 @@ impl App {
             .filter(|value| *value > 0)
             .unwrap_or(image_height);
         self.graphics.bind_browser_revision(browser_revision)?;
+        let capture_scale = CaptureScale::new(self.live_capture_config().capture_scale)?;
         self.graphics.resize(
             pane,
             PixelSize::new(viewport_width, viewport_height),
             PixelSize::new(viewport_width, viewport_height),
-            CaptureScale::FULL,
+            capture_scale,
             browser_revision,
         )?;
         self.visual_revision = browser_revision;
@@ -2144,11 +2392,14 @@ impl App {
                 });
                 if !queued {
                     self.live.metrics.dropped();
+                } else {
+                    self.live.metrics.presented();
                 }
             }
             Some(ActiveLiveBackend::Kitty) => match self.submit_graphics_frame(frame, &payload) {
                 Ok(SubmitResult::Stale | SubmitResult::Replaced) => self.live.metrics.dropped(),
-                Ok(SubmitResult::Queued | SubmitResult::Presented) => {}
+                Ok(SubmitResult::Presented) => self.live.metrics.presented(),
+                Ok(SubmitResult::Queued) => {}
                 Err(error) => {
                     self.add_activity(format!(
                         "Kitty graphics failed ({error}); selecting fallback."
@@ -2164,7 +2415,7 @@ impl App {
                     .update_png(&payload, pane.width, pane.height, self.live.fit())
                 {
                     Ok(update) if update.changed_cells == 0 => self.live.metrics.dropped(),
-                    Ok(_) => {}
+                    Ok(_) => self.live.metrics.presented(),
                     Err(error) => {
                         self.add_activity(format!(
                             "ANSI live renderer rejected a frame ({error}); semantic fallback active."
@@ -2176,7 +2427,7 @@ impl App {
             None => {}
         }
         self.live.adapt_quality();
-        self.apply_visual_status(self.live.diagnostics());
+        self.apply_visual_status(self.live_diagnostics());
         Ok(())
     }
 
@@ -2305,6 +2556,13 @@ impl App {
     }
     fn sync_graphics_geometry(&mut self, area: Rect) -> BrowserResult<bool> {
         let next_class = display_class(self.layout_preference, area.width, self.remote_context);
+        self.connection_environment.layout = match next_class {
+            DisplayClass::Phone => LayoutClass::Phone,
+            DisplayClass::Compact => LayoutClass::Compact,
+            DisplayClass::Wide => LayoutClass::Wide,
+        };
+        self.connection_environment.terminal_columns = area.width.max(1);
+        self.connection_environment.terminal_rows = area.height.max(1);
         if next_class != self.display_class {
             self.display_class = next_class;
             self.graphics.clear_pane()?;
@@ -2359,7 +2617,7 @@ impl App {
             ),
             PixelSize::new(image_width as u32, image_height as u32),
             PixelSize::new(image_width as u32, image_height as u32),
-            CaptureScale::FULL,
+            CaptureScale::new(self.live_policy().capture_scale)?,
             self.graphics.browser_revision(),
         )?;
         if changed {
@@ -2392,6 +2650,7 @@ impl App {
     }
 
     fn render_graphics(&mut self) -> BrowserResult<()> {
+        let presented_before = self.graphics.diagnostics().presented_frames;
         let rendered = match self.graphics.render_current(&self.page_content) {
             Ok(rendered) => rendered,
             Err(error) if self.live.backend == Some(ActiveLiveBackend::Kitty) => {
@@ -2419,6 +2678,9 @@ impl App {
                 return Ok(());
             }
             return Err(error.into());
+        }
+        if self.graphics.diagnostics().presented_frames > presented_before {
+            self.live.metrics.presented();
         }
         Ok(())
     }
@@ -2515,6 +2777,54 @@ enum LocalCommand {
     Knowledge(Option<String>),
     Daemon(DaemonView),
     Project(String),
+    BrowserControl(BrowserControlCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BrowserControlCommand {
+    Reconnect,
+    Launch(BrowserLaunchRequest),
+    Attach(BrowserAttachRequest),
+    Targets(Option<u16>),
+    Disconnect,
+    Status,
+    RemoteView(RemoteViewCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserAttachRequest {
+    port: Option<u16>,
+    target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserLaunchRequest {
+    port: BrowserPortChoice,
+    headed: Option<bool>,
+    profile: Option<String>,
+    incognito: Option<bool>,
+    /// Outer `None` keeps the current preference. `Some(None)` restores
+    /// executable auto-detection; `Some(Some(path))` selects a binary.
+    chrome_path: Option<Option<PathBuf>>,
+}
+
+impl Default for BrowserLaunchRequest {
+    fn default() -> Self {
+        Self {
+            port: BrowserPortChoice::Current,
+            headed: None,
+            profile: None,
+            incognito: None,
+            chrome_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserPortChoice {
+    Current,
+    Automatic,
+    Exact(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2643,6 +2953,81 @@ enum ParsedCommand {
     Browser(BrowserOperation),
 }
 
+fn parse_browser_port(value: &str) -> Result<u16, String> {
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| "browser port must be an integer from 1 through 65535".into())
+}
+
+fn parse_browser_attach(arguments: &str) -> Result<BrowserAttachRequest, String> {
+    let mut tokens = arguments.split_whitespace();
+    let mut request = BrowserAttachRequest {
+        port: None,
+        target: None,
+    };
+    while let Some(token) = tokens.next() {
+        if token.eq_ignore_ascii_case("--port") {
+            let value = tokens
+                .next()
+                .ok_or_else(|| "browser attach --port expects a port".to_string())?;
+            request.port = Some(parse_browser_port(value)?);
+        } else if request.target.is_none() {
+            request.target = Some(token.to_string());
+        } else {
+            return Err("browser attach accepts one target ID or target number".into());
+        }
+    }
+    Ok(request)
+}
+
+fn parse_browser_launch(arguments: &str) -> Result<BrowserLaunchRequest, String> {
+    let mut request = BrowserLaunchRequest::default();
+    let mut tokens = arguments.split_whitespace();
+    while let Some(token) = tokens.next() {
+        match token.to_ascii_lowercase().as_str() {
+            "--port" => {
+                let value = tokens
+                    .next()
+                    .ok_or_else(|| "browser launch --port expects auto or a port".to_string())?;
+                request.port = if value.eq_ignore_ascii_case("auto") {
+                    BrowserPortChoice::Automatic
+                } else {
+                    BrowserPortChoice::Exact(parse_browser_port(value)?)
+                };
+            }
+            "--headed" => request.headed = Some(true),
+            "--headless" => request.headed = Some(false),
+            "--incognito" | "--ephemeral" => request.incognito = Some(true),
+            "--persistent" => request.incognito = Some(false),
+            "--profile" => {
+                request.profile = Some(
+                    tokens
+                        .next()
+                        .ok_or_else(|| "browser launch --profile expects a name".to_string())?
+                        .to_string(),
+                );
+            }
+            "--chrome-path" => {
+                let value = tokens.next().ok_or_else(|| {
+                    "browser launch --chrome-path expects auto or an executable path".to_string()
+                })?;
+                request.chrome_path = Some(if value.eq_ignore_ascii_case("auto") {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                });
+            }
+            _ => return Err(format!("unknown browser launch option '{token}'")),
+        }
+    }
+    if request.incognito == Some(true) && request.profile.is_some() {
+        return Err("browser launch cannot combine --incognito with --profile".into());
+    }
+    Ok(request)
+}
+
 fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     let command = input.trim();
     if command.is_empty() {
@@ -2650,6 +3035,92 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     }
     if command.eq_ignore_ascii_case("help") {
         return Ok(ParsedCommand::Local(LocalCommand::Help));
+    }
+    if command.eq_ignore_ascii_case("browser") || command.eq_ignore_ascii_case("browser status") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Status,
+        )));
+    }
+    for (name, action) in [
+        ("browser remote-view open", RemoteViewCommand::Open),
+        ("browser remote-view close", RemoteViewCommand::Close),
+        ("browser remote-view status", RemoteViewCommand::Status),
+    ] {
+        if command.eq_ignore_ascii_case(name) {
+            return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::RemoteView(action),
+            )));
+        }
+    }
+    if command.eq_ignore_ascii_case("browser retry")
+        || command.eq_ignore_ascii_case("browser connect")
+        || command.eq_ignore_ascii_case("browser reconnect")
+    {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Reconnect,
+        )));
+    }
+    if command.eq_ignore_ascii_case("browser auto-port") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Launch(BrowserLaunchRequest {
+                port: BrowserPortChoice::Automatic,
+                ..BrowserLaunchRequest::default()
+            }),
+        )));
+    }
+    if command.eq_ignore_ascii_case("browser disconnect")
+        || command.eq_ignore_ascii_case("browser semantic-only")
+    {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Disconnect,
+        )));
+    }
+    if command.eq_ignore_ascii_case("browser launch") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Launch(BrowserLaunchRequest::default()),
+        )));
+    }
+    if let Some(arguments) = strip_ascii_prefix(command, "browser launch ") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Launch(parse_browser_launch(arguments)?),
+        )));
+    }
+    if command.eq_ignore_ascii_case("browser targets")
+        || command.eq_ignore_ascii_case("browser targets refresh")
+    {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Targets(None),
+        )));
+    }
+    if let Some(port) = strip_ascii_prefix(command, "browser targets ") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Targets(Some(parse_browser_port(port.trim())?)),
+        )));
+    }
+    if command.eq_ignore_ascii_case("browser attach") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Attach(BrowserAttachRequest {
+                port: None,
+                target: None,
+            }),
+        )));
+    }
+    if let Some(arguments) = strip_ascii_prefix(command, "browser attach ") {
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Attach(parse_browser_attach(arguments)?),
+        )));
+    }
+    if let Some(target) = strip_ascii_prefix(command, "browser target ") {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err("browser target expects a target ID or target number".into());
+        }
+        return Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+            BrowserControlCommand::Attach(BrowserAttachRequest {
+                port: None,
+                target: Some(target.to_string()),
+            }),
+        )));
     }
     if command.eq_ignore_ascii_case("inbox") {
         return Ok(ParsedCommand::Local(LocalCommand::Inbox));
@@ -3185,7 +3656,28 @@ enum BrowserCommand {
     Cancel {
         id: u64,
     },
+    Recover(BrowserRecovery),
+    InspectTargets(Option<u16>),
+    RemoteView(RemoteViewCommand),
     Shutdown,
+}
+
+#[derive(Debug, Clone)]
+enum BrowserRecovery {
+    Reconnect,
+    Launch(BrowserLaunchRequest),
+    Attach {
+        port: u16,
+        target_id: Option<String>,
+    },
+    Disconnect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteViewCommand {
+    Open,
+    Close,
+    Status,
 }
 
 #[derive(Debug)]
@@ -3195,6 +3687,18 @@ enum BrowserEvent {
         port: u16,
     },
     StartupFailed {
+        message: String,
+    },
+    RecoveryRequired {
+        probe: EndpointProbe,
+    },
+    TargetsDiscovered {
+        probe: EndpointProbe,
+    },
+    SemanticOnly {
+        message: String,
+    },
+    RemoteViewStatus {
         message: String,
     },
     OperationStarted {
@@ -3240,6 +3744,50 @@ enum PageUpdate {
     },
 }
 
+fn format_recovery_probe(probe: &EndpointProbe) -> String {
+    let mut lines = vec![
+        "Browser recovery".to_string(),
+        format!("Port {} · {:?}", probe.port, probe.classification),
+        probe.detail.clone(),
+        String::new(),
+    ];
+    match probe.classification {
+        EndpointClassification::CompatibleBrowser => {
+            lines.push(
+                "Verified CDP endpoint. Glass will never attach without your command.".into(),
+            );
+            if probe.targets.is_empty() {
+                lines.push("No selectable page targets were disclosed.".into());
+            } else {
+                lines.push("Targets (title and origin only):".into());
+                lines.extend(probe.targets.iter().enumerate().map(|(index, target)| {
+                    format!(
+                        "  {}. {} · {} · {}",
+                        index + 1,
+                        target.title,
+                        target.origin,
+                        target.id
+                    )
+                }));
+            }
+        }
+        EndpointClassification::Free => {
+            lines.push("The requested port is free; retry launch or allocate a fresh port.".into());
+        }
+        EndpointClassification::UnrelatedService => {
+            lines.push("Another service owns this port. Attach is intentionally disabled.".into());
+        }
+        EndpointClassification::Unknown => {
+            lines.push("Ownership is unknown. Glass will not attach automatically.".into());
+        }
+    }
+    lines.push(String::new());
+    lines.push(
+        "browser reconnect | browser launch [OPTIONS] | browser targets [PORT] | browser attach [--port PORT] [TARGET] | browser semantic-only".into(),
+    );
+    lines.join("\n")
+}
+
 #[derive(Debug)]
 struct OperationResult {
     activity: String,
@@ -3261,28 +3809,203 @@ async fn browser_worker(
     events: mpsc::Sender<BrowserEvent>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    if !send_browser_event(&events, BrowserEvent::Connecting).await {
-        return;
-    }
+    let mut options = options;
+    let mut automatic_port_retries = 0_u8;
+    loop {
+        if !send_browser_event(&events, BrowserEvent::Connecting).await {
+            return;
+        }
+        if let Some(session) = start_browser_session(
+            &options,
+            policy.clone(),
+            viewport,
+            &mut commands,
+            &events,
+            &mut shutdown,
+        )
+        .await
+        {
+            if !send_browser_event(&events, BrowserEvent::Ready { port: options.port }).await {
+                let _ = session.close().await;
+                return;
+            }
+            let exit = worker_loop(
+                session,
+                options.port,
+                &mut commands,
+                &events,
+                &mut shutdown,
+                visual_mode.clone(),
+            )
+            .await;
+            let WorkerLoopExit::Recover(mut recovery) = exit else {
+                return;
+            };
+            let mut announced_semantic_only = false;
+            loop {
+                if matches!(recovery, BrowserRecovery::Disconnect) {
+                    if !announced_semantic_only {
+                        let _ = send_browser_event(&events, BrowserEvent::SemanticOnly {
+                            message: "Browser disconnected cleanly; project, editor, processes, and agent remain active.".into(),
+                        }).await;
+                        announced_semantic_only = true;
+                    }
+                } else {
+                    let automatic = matches!(
+                        &recovery,
+                        BrowserRecovery::Launch(BrowserLaunchRequest {
+                            port: BrowserPortChoice::Automatic,
+                            ..
+                        })
+                    );
+                    if configure_browser_recovery(&mut options, recovery, &events).await {
+                        automatic_port_retries = if automatic { 2 } else { 0 };
+                        break;
+                    }
+                    // Invalid settings or an ambiguous attach must not silently
+                    // restart the previous target. Stay detached for another
+                    // explicit recovery choice.
+                    recovery = BrowserRecovery::Disconnect;
+                    continue;
+                }
+                match commands.recv().await {
+                    Some(BrowserCommand::Recover(BrowserRecovery::Disconnect)) => {}
+                    Some(BrowserCommand::Recover(next)) => {
+                        recovery = next;
+                        announced_semantic_only = false;
+                    }
+                    Some(BrowserCommand::Execute { id, .. }) => {
+                        let _ = send_browser_event(&events, BrowserEvent::OperationFailed { id, message: "browser is disconnected; use browser reconnect, launch, or attach".into() }).await;
+                    }
+                    Some(BrowserCommand::Cancel { id }) => {
+                        let _ =
+                            send_browser_event(&events, BrowserEvent::OperationCancelled { id })
+                                .await;
+                    }
+                    Some(BrowserCommand::InspectTargets(port)) => {
+                        let probe = probe_local_endpoint(port.unwrap_or(options.port)).await;
+                        let _ =
+                            send_browser_event(&events, BrowserEvent::TargetsDiscovered { probe })
+                                .await;
+                    }
+                    Some(BrowserCommand::RemoteView(_)) => {
+                        let _ = send_browser_event(
+                            &events,
+                            BrowserEvent::RemoteViewStatus {
+                                message:
+                                    "Remote View is closed because the browser is disconnected."
+                                        .into(),
+                            },
+                        )
+                        .await;
+                    }
+                    Some(BrowserCommand::Shutdown) | None => {
+                        let _ = send_browser_event(&events, BrowserEvent::WorkerStopped).await;
+                        return;
+                    }
+                }
+            }
+            continue;
+        }
+        if *shutdown.borrow() {
+            return;
+        }
 
-    let Some(session) = start_browser_session(
-        &options,
-        policy,
-        viewport,
-        &mut commands,
-        &events,
-        &mut shutdown,
-    )
-    .await
-    else {
-        return;
-    };
-    if !send_browser_event(&events, BrowserEvent::Ready { port: options.port }).await {
-        let _ = session.close().await;
-        return;
-    }
+        if automatic_port_retries > 0 {
+            match reserve_loopback_port() {
+                Ok((port, reservation)) => {
+                    options.port = port;
+                    automatic_port_retries -= 1;
+                    drop(reservation);
+                    continue;
+                }
+                Err(error) => {
+                    let _ = send_browser_event(
+                        &events,
+                        BrowserEvent::StartupFailed {
+                            message: format!(
+                                "automatic browser port retry could not reserve loopback: {error}"
+                            ),
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
 
-    worker_loop(session, &mut commands, &events, &mut shutdown, visual_mode).await;
+        let probe = probe_local_endpoint(options.port).await;
+        if !send_browser_event(
+            &events,
+            BrowserEvent::RecoveryRequired {
+                probe: probe.clone(),
+            },
+        )
+        .await
+        {
+            return;
+        }
+        let mut disconnected = false;
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        let _ = send_browser_event(&events, BrowserEvent::WorkerStopped).await;
+                        return;
+                    }
+                }
+                command = commands.recv() => match command {
+                    Some(BrowserCommand::Recover(recovery)) => {
+                        if matches!(recovery, BrowserRecovery::Disconnect) {
+                            disconnected = true;
+                            let _ = send_browser_event(&events, BrowserEvent::SemanticOnly {
+                                message: "Browser control disconnected; development state and commands remain available.".into(),
+                            }).await;
+                        } else {
+                            let automatic = matches!(
+                                &recovery,
+                                BrowserRecovery::Launch(BrowserLaunchRequest {
+                                    port: BrowserPortChoice::Automatic,
+                                    ..
+                                })
+                            );
+                            if configure_browser_recovery(&mut options, recovery, &events).await {
+                                automatic_port_retries = if automatic { 2 } else { 0 };
+                                break;
+                            }
+                        }
+                    }
+                    Some(BrowserCommand::Execute { id, .. }) => {
+                        let _ = send_browser_event(&events, BrowserEvent::OperationFailed {
+                            id,
+                            message: "browser recovery is required before browser operations can run".into(),
+                        }).await;
+                    }
+                    Some(BrowserCommand::Cancel { id }) => {
+                        let _ = send_browser_event(&events, BrowserEvent::OperationCancelled { id }).await;
+                    }
+                    Some(BrowserCommand::InspectTargets(port)) => {
+                        let refreshed = probe_local_endpoint(port.unwrap_or(options.port)).await;
+                        let _ = send_browser_event(
+                            &events,
+                            BrowserEvent::TargetsDiscovered { probe: refreshed },
+                        ).await;
+                    }
+                    Some(BrowserCommand::RemoteView(_)) => {
+                        let _ = send_browser_event(&events, BrowserEvent::RemoteViewStatus {
+                            message: "Remote View requires a connected browser; finish recovery first.".into(),
+                        }).await;
+                    }
+                    Some(BrowserCommand::Shutdown) | None => {
+                        let _ = send_browser_event(&events, BrowserEvent::WorkerStopped).await;
+                        return;
+                    }
+                }
+            }
+        }
+        if disconnected {
+            let _ = send_browser_event(&events, BrowserEvent::Connecting).await;
+        }
+    }
 }
 
 async fn start_browser_session(
@@ -3327,6 +4050,20 @@ async fn start_browser_session(
                         return None;
                     }
                 }
+                Some(BrowserCommand::InspectTargets(port)) => {
+                    let probe = probe_local_endpoint(port.unwrap_or(options.port)).await;
+                    let _ = send_browser_event(
+                        events,
+                        BrowserEvent::TargetsDiscovered { probe },
+                    )
+                    .await;
+                }
+                Some(BrowserCommand::Recover(_)) => {}
+                Some(BrowserCommand::RemoteView(_)) => {
+                    let _ = send_browser_event(events, BrowserEvent::RemoteViewStatus {
+                        message: "Remote View requires browser startup to complete.".into(),
+                    }).await;
+                }
             },
             result = &mut start => match result {
                 Ok(session) => return Some(session),
@@ -3343,13 +4080,151 @@ async fn start_browser_session(
     }
 }
 
+enum WorkerLoopExit {
+    Shutdown,
+    Recover(BrowserRecovery),
+}
+
+async fn configure_browser_recovery(
+    options: &mut SessionOptions,
+    recovery: BrowserRecovery,
+    events: &mpsc::Sender<BrowserEvent>,
+) -> bool {
+    let mut candidate = options.clone();
+    match recovery {
+        BrowserRecovery::Reconnect => {}
+        BrowserRecovery::Launch(request) => {
+            candidate.attach = false;
+            candidate.target_id = None;
+            candidate.frame_id = None;
+            match request.port {
+                BrowserPortChoice::Current => {}
+                BrowserPortChoice::Exact(port) => candidate.port = port,
+                BrowserPortChoice::Automatic => match reserve_loopback_port() {
+                    Ok((port, reservation)) => {
+                        candidate.port = port;
+                        drop(reservation);
+                    }
+                    Err(error) => {
+                        let _ = send_browser_event(
+                            events,
+                            BrowserEvent::StartupFailed {
+                                message: format!(
+                                    "could not reserve an automatic loopback port: {error}"
+                                ),
+                            },
+                        )
+                        .await;
+                        return false;
+                    }
+                },
+            }
+            if let Some(headed) = request.headed {
+                candidate.headed = headed;
+            }
+            if let Some(profile) = request.profile {
+                candidate.profile = profile;
+                candidate.incognito = false;
+            }
+            if let Some(incognito) = request.incognito {
+                candidate.incognito = incognito;
+                if incognito {
+                    candidate.profile = "default".into();
+                }
+            }
+            if let Some(chrome_path) = request.chrome_path {
+                candidate.chrome_path = chrome_path;
+            }
+        }
+        BrowserRecovery::Attach {
+            port,
+            mut target_id,
+        } => {
+            let probe = probe_local_endpoint(port).await;
+            if probe.classification != EndpointClassification::CompatibleBrowser {
+                let _ = send_browser_event(
+                    events,
+                    BrowserEvent::StartupFailed {
+                        message: format!(
+                            "attach rejected: port {port} is not a verified Chrome/Chromium DevTools endpoint"
+                        ),
+                    },
+                )
+                .await;
+                return false;
+            }
+            if let Some(selection) = target_id.as_deref()
+                && let Ok(number) = selection.parse::<usize>()
+            {
+                target_id = number
+                    .checked_sub(1)
+                    .and_then(|index| probe.targets.get(index))
+                    .map(|target| target.id.clone());
+                if target_id.is_none() {
+                    let _ = send_browser_event(
+                        events,
+                        BrowserEvent::StartupFailed {
+                            message:
+                                "attach rejected: target number is outside the current target list"
+                                    .into(),
+                        },
+                    )
+                    .await;
+                    return false;
+                }
+            }
+            if probe.targets.len() > 1 && target_id.is_none() {
+                let _ = send_browser_event(events, BrowserEvent::TargetsDiscovered { probe }).await;
+                return false;
+            }
+            if let Some(target_id) = target_id.as_ref()
+                && !probe.targets.iter().any(|target| &target.id == target_id)
+            {
+                let _ = send_browser_event(
+                    events,
+                    BrowserEvent::StartupFailed {
+                        message: format!(
+                            "attach rejected: target '{target_id}' was not in the fresh bounded probe"
+                        ),
+                    },
+                )
+                .await;
+                return false;
+            }
+            candidate.port = port;
+            candidate.attach = true;
+            candidate.target_id =
+                target_id.or_else(|| probe.targets.first().map(|target| target.id.clone()));
+            candidate.profile = "default".into();
+            candidate.incognito = false;
+            candidate.chrome_path = None;
+            candidate.headed = false;
+        }
+        BrowserRecovery::Disconnect => return false,
+    }
+    if let Err(error) = candidate.validate() {
+        let _ = send_browser_event(
+            events,
+            BrowserEvent::StartupFailed {
+                message: format!("browser connection settings rejected: {error}"),
+            },
+        )
+        .await;
+        return false;
+    }
+    *options = candidate;
+    true
+}
+
 async fn worker_loop(
     session: BrowserSession,
+    current_port: u16,
     commands: &mut mpsc::Receiver<BrowserCommand>,
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
     mut visual_mode: watch::Receiver<ScreencastConfig>,
-) {
+) -> WorkerLoopExit {
+    let mut remote_view = None::<crate::development::RemoteView>;
     let initial_revision = session
         .observe_fresh()
         .await
@@ -3370,8 +4245,11 @@ async fn worker_loop(
     };
     let mut fallback_tick = time::interval(Duration::from_millis(750));
     fallback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut remote_input_tick = time::interval(Duration::from_millis(40));
+    remote_input_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut visual_revision = initial_revision;
     let mut last_frame_sent = None::<Instant>;
+    let mut requested_recovery = None;
 
     loop {
         if *shutdown.borrow() {
@@ -3416,6 +4294,13 @@ async fn worker_loop(
                         let now = Instant::now();
                         if last_frame_sent.is_none_or(|last| now.duration_since(last) >= visual_config.minimum_interval) {
                             last_frame_sent = Some(now);
+                            if let Some(view) = remote_view.as_ref() {
+                                view.publish(crate::development::RemoteFrame {
+                                    browser_revision: visual_revision,
+                                    mime_type: "image/png".into(),
+                                    data: frame.data.clone(),
+                                });
+                            }
                             let _ = send_browser_event(events, BrowserEvent::VisualFrame {
                                 data: frame.data,
                                 metadata: frame.metadata,
@@ -3431,19 +4316,82 @@ async fn worker_loop(
                     }
                 }
             }
-            _ = fallback_tick.tick(), if visual_config.enabled && screencast.is_none() => {
+            _ = fallback_tick.tick(), if (visual_config.enabled || remote_view.is_some()) && screencast.is_none() => {
                 if let Ok(bytes) = session.screenshot_png().await {
                     let metadata = serde_json::json!({"source":"screenshot-fallback"});
-                    let _ = send_browser_event(events, BrowserEvent::VisualFrame {
-                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                        metadata,
-                        browser_revision: visual_revision,
-                    }).await;
+                    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    if let Some(view) = remote_view.as_ref() {
+                        view.publish(crate::development::RemoteFrame {
+                            browser_revision: visual_revision,
+                            mime_type: "image/png".into(),
+                            data: data.clone(),
+                        });
+                    }
+                    if visual_config.enabled {
+                        let _ = send_browser_event(events, BrowserEvent::VisualFrame {
+                            data,
+                            metadata,
+                            browser_revision: visual_revision,
+                        }).await;
+                    }
+                }
+            }
+            _ = remote_input_tick.tick(), if remote_view.is_some() => {
+                let input = remote_view.as_mut().and_then(|view| view.try_recv_input().ok());
+                if let Some(input) = input {
+                    let result = apply_remote_input(&session, input).await;
+                    let message = match result {
+                        Ok(()) => "Remote View input applied to the active BrowserSession".into(),
+                        Err(error) => format!("Remote View input rejected: {error}"),
+                    };
+                    let _ = send_browser_event(events, BrowserEvent::VisualStatus { message }).await;
                 }
             }
             command = commands.recv() => match command {
                 Some(BrowserCommand::Shutdown) | None => break,
                 Some(BrowserCommand::Cancel { .. }) => {}
+                Some(BrowserCommand::InspectTargets(port)) => {
+                    let probe = probe_local_endpoint(port.unwrap_or(current_port)).await;
+                    let _ = send_browser_event(
+                        events,
+                        BrowserEvent::TargetsDiscovered { probe },
+                    )
+                    .await;
+                }
+                Some(BrowserCommand::Recover(action)) => {
+                    requested_recovery = Some(action);
+                    break;
+                }
+                Some(BrowserCommand::RemoteView(action)) => {
+                    match action {
+                        RemoteViewCommand::Open if remote_view.is_none() => {
+                            match crate::development::RemoteView::bind().await {
+                                Ok(view) => {
+                                    let message = format!(
+                                        "Remote View ready (same BrowserSession)\nURL: {}\nForward: {}\nRevoke with: browser remote-view close",
+                                        view.local_url(), view.ssh_forward_hint()
+                                    );
+                                    remote_view = Some(view);
+                                    let _ = send_browser_event(events, BrowserEvent::RemoteViewStatus { message }).await;
+                                }
+                                Err(error) => {
+                                    let _ = send_browser_event(events, BrowserEvent::RemoteViewStatus { message: format!("Remote View failed: {error}") }).await;
+                                }
+                            }
+                        }
+                        RemoteViewCommand::Open | RemoteViewCommand::Status => {
+                            let message = remote_view.as_ref().map_or_else(
+                                || "Remote View is closed. Use browser remote-view open.".into(),
+                                |view| format!("Remote View active\nURL: {}\nForward: {}", view.local_url(), view.ssh_forward_hint()),
+                            );
+                            let _ = send_browser_event(events, BrowserEvent::RemoteViewStatus { message }).await;
+                        }
+                        RemoteViewCommand::Close => {
+                            if let Some(view) = remote_view.take() { view.revoke().await; }
+                            let _ = send_browser_event(events, BrowserEvent::RemoteViewStatus { message: "Remote View revoked; its token and connected clients are invalid.".into() }).await;
+                        }
+                    }
+                }
                 Some(BrowserCommand::Execute { id, operation }) => {
                     let label = operation.label().to_string();
                     if !send_browser_event(events, BrowserEvent::OperationStarted { id, label }).await {
@@ -3486,11 +4434,19 @@ async fn worker_loop(
     if let Some(scope) = screencast {
         let _ = scope.stop().await;
     }
+    if let Some(view) = remote_view {
+        view.revoke().await;
+    }
     let close_error = session.close().await.err().map(|error| error.to_string());
     if let Some(message) = close_error {
         let _ = send_browser_event(events, BrowserEvent::WorkerFailed { message }).await;
     }
-    let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+    if let Some(recovery) = requested_recovery {
+        WorkerLoopExit::Recover(recovery)
+    } else {
+        let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+        WorkerLoopExit::Shutdown
+    }
 }
 
 async fn start_tui_screencast(
@@ -3507,10 +4463,11 @@ async fn start_tui_screencast(
                 events,
                 BrowserEvent::VisualStatus {
                     message: format!(
-                        "event-driven PNG screencast active (max {}x{}, {:.0} FPS)",
+                        "event-driven PNG screencast active (max {}x{}, requested {} FPS, scale {:.2}x)",
                         config.max_width,
                         config.max_height,
-                        1.0 / config.minimum_interval.as_secs_f64()
+                        config.requested_fps,
+                        config.capture_scale,
                     ),
                 },
             )
@@ -3530,6 +4487,58 @@ async fn start_tui_screencast(
             None
         }
     }
+}
+
+async fn apply_remote_input(
+    session: &BrowserSession,
+    input: crate::development::RemoteInput,
+) -> BrowserResult<()> {
+    match input {
+        crate::development::RemoteInput::Click {
+            x,
+            y,
+            expected_revision,
+        } => {
+            let viewport = session
+                .evaluate("({width: innerWidth, height: innerHeight})")
+                .await?;
+            let width = viewport["width"]
+                .as_f64()
+                .ok_or("browser viewport width is unavailable")?;
+            let height = viewport["height"]
+                .as_f64()
+                .ok_or("browser viewport height is unavailable")?;
+            session
+                .click_at_with_revision(x * width, y * height, Some(expected_revision))
+                .await?;
+        }
+        crate::development::RemoteInput::Scroll {
+            dx,
+            dy,
+            expected_revision,
+        } => {
+            session
+                .scroll_with_revision(dx, dy, Some(expected_revision))
+                .await?;
+        }
+        crate::development::RemoteInput::Key {
+            key,
+            expected_revision,
+        } => {
+            session
+                .key_press_with_revision(&key, Some(expected_revision))
+                .await?;
+        }
+        crate::development::RemoteInput::Text {
+            text,
+            expected_revision,
+        } => {
+            session
+                .type_text_with_expected_revision(&text, None, Some(expected_revision))
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn await_active_operation<F>(
@@ -3568,6 +4577,21 @@ where
                     }
                 }
                 Some(BrowserCommand::Cancel { .. }) => {}
+                Some(BrowserCommand::InspectTargets(_)) => {
+                    let _ = send_browser_event(events, BrowserEvent::VisualStatus {
+                        message: "target refresh waits until the active browser operation completes".into(),
+                    }).await;
+                }
+                Some(BrowserCommand::Recover(_)) => {
+                    let _ = send_browser_event(events, BrowserEvent::VisualStatus {
+                        message: "browser lifecycle changes wait until the active operation completes".into(),
+                    }).await;
+                }
+                Some(BrowserCommand::RemoteView(_)) => {
+                    let _ = send_browser_event(events, BrowserEvent::VisualStatus {
+                        message: "Remote View changes wait until the active operation completes".into(),
+                    }).await;
+                }
             },
             result = &mut operation => return ActiveOperationState::Completed(result),
         }
@@ -3928,6 +4952,72 @@ fn dispatch_ui_intent(
     }
 }
 
+fn handle_browser_control(
+    app: &mut App,
+    commands: &mpsc::Sender<BrowserCommand>,
+    command: BrowserControlCommand,
+) {
+    if let BrowserControlCommand::RemoteView(action) = &command {
+        match commands.try_send(BrowserCommand::RemoteView(*action)) {
+            Ok(()) => app.set_status("Remote View command queued"),
+            Err(error) => {
+                app.report_error(format!("Browser command queue is unavailable: {error}"))
+            }
+        }
+        return;
+    }
+    if command == BrowserControlCommand::Status {
+        if let Some(probe) = app.browser_recovery.as_ref() {
+            app.set_page_content(format_recovery_probe(probe));
+            app.set_mobile_view(MobileView::App);
+        } else {
+            app.set_page_content(format!(
+                "Browser state: {:?}\n{}",
+                app.browser_state,
+                app.live_diagnostics()
+            ));
+        }
+        return;
+    }
+    if let BrowserControlCommand::Targets(port) = &command {
+        match commands.try_send(BrowserCommand::InspectTargets(*port)) {
+            Ok(()) => app.set_status("Refreshing bounded browser target list"),
+            Err(error) => {
+                app.report_error(format!("Browser command queue is unavailable: {error}"))
+            }
+        }
+        return;
+    }
+    let recovery = match command {
+        BrowserControlCommand::Reconnect => BrowserRecovery::Reconnect,
+        BrowserControlCommand::Launch(request) => BrowserRecovery::Launch(request),
+        BrowserControlCommand::Disconnect => BrowserRecovery::Disconnect,
+        BrowserControlCommand::Attach(request) => {
+            let port = match (request.port, app.browser_recovery.as_ref()) {
+                (Some(port), _) => port,
+                (None, Some(probe)) => probe.port,
+                (None, None) => {
+                    app.report_error(
+                        "Attach needs a discovered endpoint; use browser targets PORT or browser attach --port PORT.",
+                    );
+                    return;
+                }
+            };
+            BrowserRecovery::Attach {
+                port,
+                target_id: request.target,
+            }
+        }
+        BrowserControlCommand::Status => unreachable!(),
+        BrowserControlCommand::Targets(_) => unreachable!(),
+        BrowserControlCommand::RemoteView(_) => unreachable!(),
+    };
+    match commands.try_send(BrowserCommand::Recover(recovery)) {
+        Ok(()) => app.set_status("Browser recovery command queued"),
+        Err(error) => app.report_error(format!("Browser recovery queue is unavailable: {error}")),
+    }
+}
+
 fn handle_submission(
     app: &mut App,
     commands: &mpsc::Sender<BrowserCommand>,
@@ -3986,12 +5076,15 @@ fn handle_submission(
         Ok(ParsedCommand::Local(LocalCommand::Project(project_command))) => {
             app.handle_project_command(&project_command);
         }
+        Ok(ParsedCommand::Local(LocalCommand::BrowserControl(browser_command))) => {
+            handle_browser_control(app, commands, browser_command);
+        }
         Ok(ParsedCommand::Local(LocalCommand::Help)) => {
             app.add_activity(
                 "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "inbox | tap [N] | verify card | capsule [save|show|clear] | live [on|auto|off|status|doctor|backend NAME|quality auto|data|balanced|smooth|fit NAME] | project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "inbox | tap [N] | verify card | capsule [save|show|clear] | live [on|auto|off|status|doctor|backend NAME|quality auto|data|balanced|smooth|fit NAME] | browser [status|reconnect|launch OPTIONS|targets [PORT]|attach [--port PORT] [TARGET]|semantic-only|remote-view ACTION] | project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
         }
         Ok(ParsedCommand::Local(LocalCommand::Inbox)) => {
@@ -4093,7 +5186,7 @@ fn handle_submission(
             LiveCommand::Show => {
                 app.set_page_content(format!(
                     "TERMINAL LIVE BROWSER\n\n{}\n\nmode: {:?}\npreference: {:?}\nquality: {:?}\nfit: {:?}\nkitty detected: {}\nherdr stream: {}\ntransport: {}\n\nSafari forwarding remains the stable native-browser channel.",
-                    app.live.diagnostics(),
+                    app.live_diagnostics(),
                     app.live.mode,
                     app.live.preference,
                     app.live.quality,
@@ -4121,7 +5214,7 @@ fn handle_submission(
                     app.remote_context.mosh,
                     app.live.herdr_environment.is_some(),
                     app.live.kitty_detected,
-                    app.live.diagnostics(),
+                    app.live_diagnostics(),
                     recommendation,
                 ));
                 app.set_mobile_view(MobileView::App);
@@ -4131,7 +5224,7 @@ fn handle_submission(
             LiveCommand::Quality(quality) => app.configure_live(None, None, Some(quality), None),
             LiveCommand::AdaptiveQuality => {
                 app.live.enable_adaptive_quality();
-                app.set_status(app.live.diagnostics());
+                app.set_status(app.live_diagnostics());
             }
             LiveCommand::Fit(fit) => app.configure_live(None, None, None, Some(fit)),
         },
@@ -4454,13 +5547,14 @@ fn draw(frame: &mut Frame, app: &App) {
 
 fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
     let header = format!(
-        "{} · {} · {}",
+        "{} · {:?} · {:?} · {}",
         app.mode.label(),
-        app.remote_context.label(),
+        app.connection_environment.transport,
+        app.connection_environment.graphics,
         if app.browser_ready() {
-            "ready"
+            "browser attached"
         } else {
-            "starting"
+            "browser needs attention"
         }
     );
     frame.render_widget(
@@ -4475,7 +5569,7 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
     );
 
     let (title, content) = match app.mobile_view {
-        MobileView::Home => ("Home", mobile_home(app)),
+        MobileView::Home => ("Overview", mobile_home(app)),
         MobileView::Agent => (
             "Agent / Timeline",
             format!(
@@ -4485,7 +5579,7 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
             ),
         ),
         MobileView::App => (
-            "App · tap · live · safari",
+            "Browser · tap · visual assist · Remote View",
             if app.tap_mode {
                 format!("{}\n\n{}", app.tap_overlay(), app.page_content)
             } else {
@@ -4499,7 +5593,27 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
                 app.verification_summary, app.development_diff
             ),
         ),
-        MobileView::Project => ("Project / Editor / Runtime", mobile_project(app)),
+        MobileView::Project => ("Project / Editor / Diagnostics", mobile_project(app)),
+        MobileView::Process => (
+            "Process / Tests / Logs",
+            format!(
+                "{}
+
+RECENT ACTIVITY
+{}",
+                app.development_runtime,
+                app.activity
+                    .iter()
+                    .rev()
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        ),
     };
     if app.mobile_view == MobileView::App && app.live.enabled() {
         render_live_or_semantic(frame, app, title, &content, root.content);
@@ -4521,35 +5635,17 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
         root.command,
     );
 
-    let views = [
-        MobileView::Home,
-        MobileView::Agent,
-        MobileView::App,
-        MobileView::Diff,
-        MobileView::Project,
-    ];
-    let mut spans = Vec::new();
-    for (index, view) in views.into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw(" "));
-        }
-        let label = if view == MobileView::Project {
-            "More"
-        } else {
-            view.label()
-        };
-        let text = format!("{} {label}", view.number());
-        let style = if view == app.mobile_view {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        spans.push(Span::styled(text, style));
-    }
     if let Some(nav) = root.nav {
-        frame.render_widget(Paragraph::new(Line::from(spans)), nav);
+        frame.render_widget(
+            Paragraph::new(vec![
+                mobile_nav_line(app, [MobileView::Home, MobileView::Agent, MobileView::App]),
+                mobile_nav_line(
+                    app,
+                    [MobileView::Diff, MobileView::Project, MobileView::Process],
+                ),
+            ]),
+            nav,
+        );
     }
     frame.render_widget(
         Paragraph::new(format!(" {} | Tab: views | ?: help | q: quit", app.status))
@@ -4558,27 +5654,63 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
     );
 }
 
+fn mobile_nav_line(app: &App, views: [MobileView; 3]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, view) in views.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let style = if view == app.mobile_view {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(
+            format!("{} {}", view.number(), view.label()),
+            style,
+        ));
+    }
+    Line::from(spans)
+}
+
 fn mobile_home(app: &App) -> String {
     format!(
-        "{}\n\nSTATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n{}\n\nRUNTIME\n{}",
+        "{}\n\nAGENT\n{}\n\nLIVE APP\n{}\nrevision {} · {}\n{}\n\nUNDERSTANDING\n{}\n\nTESTS / PROCESS\n{}\n\nCONNECTION\n{:?} · {:?} · {:?}\nRTT {} · throughput {}",
         app.attention_summary,
         app.status,
-        app.remote_context.label(),
-        if app.remote_context.herdr {
-            " · pane persists after detach"
-        } else if app.remote_context.is_remote() {
-            " · use Herdr for detach/reattach"
-        } else {
-            ""
-        },
         if app.url.is_empty() {
             "No page loaded"
         } else {
             app.url.as_str()
         },
+        app.visual_revision,
+        if app.browser_ready() {
+            "fresh"
+        } else {
+            "unavailable"
+        },
         app.visual_status,
-        app.live.diagnostics(),
+        app.page_content
+            .lines()
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("\n"),
         app.development_runtime,
+        app.connection_environment.transport,
+        app.connection_environment.graphics,
+        app.connection_environment.multiplexer,
+        app.connection_environment
+            .measurements
+            .rtt_ms
+            .map(|value| format!("{value:.0}ms"))
+            .unwrap_or_else(|| "unknown".into()),
+        app.connection_environment
+            .measurements
+            .estimated_throughput_mbps
+            .map(|value| format!("{value:.1}Mbps"))
+            .unwrap_or_else(|| "unknown".into()),
     )
 }
 
@@ -4787,7 +5919,7 @@ fn render_live_or_semantic(
         let content = if app.live.enabled() {
             format!(
                 "{}\n\nWaiting for live browser frame…",
-                app.live.diagnostics()
+                app.live_diagnostics()
             )
         } else {
             semantic.to_string()
@@ -5005,21 +6137,68 @@ pub async fn run_tui(cli: &Cli) -> BrowserResult<()> {
 
 pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> BrowserResult<()> {
     let mut terminal_guard = TerminalGuard::enter()?;
-    let terminal_environment = TerminalEnvironment::from_process();
-    let environment_kitty = negotiate(terminal_environment.as_borrowed()) == GraphicsMode::Kitty;
     let remote_context = RemoteContext::from_process();
     let should_probe_kitty = cli.tui_live != TuiLiveMode::Off
+        && cli.tui_graphics == TuiGraphics::Auto
         && matches!(
             cli.tui_live_backend,
             TuiLiveBackend::Auto | TuiLiveBackend::Kitty
         )
         && !remote_context.herdr
         && !remote_context.mosh;
-    let kitty_detected = environment_kitty || (should_probe_kitty && probe_kitty_graphics());
+    let kitty_detected =
+        cli.tui_graphics == TuiGraphics::Kitty || (should_probe_kitty && probe_kitty_graphics());
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let initial_size = terminal.size()?;
+    let connection_environment = ConnectionEnvironment::detect(
+        initial_size.width.max(1),
+        initial_size.height.max(1),
+        &ConnectionSignals {
+            ssh: remote_context.ssh,
+            mosh: remote_context.mosh,
+            tmux: remote_context.tmux,
+            screen: remote_context.screen,
+            herdr: remote_context.herdr,
+        },
+        if remote_context.herdr {
+            Some(GraphicsClass::Herdr)
+        } else if kitty_detected {
+            Some(GraphicsClass::Kitty)
+        } else {
+            None
+        },
+        ConnectionMeasurements {
+            rtt_ms: cli.tui_rtt_ms,
+            estimated_throughput_mbps: cli.tui_throughput_mbps,
+            ..ConnectionMeasurements::default()
+        },
+        ConnectionOverrides {
+            layout: match cli.tui_layout {
+                TuiLayout::Auto => None,
+                TuiLayout::Mobile => Some(LayoutClass::Phone),
+                TuiLayout::Compact => Some(LayoutClass::Compact),
+                TuiLayout::Desktop => Some(LayoutClass::Wide),
+            },
+            transport: match cli.tui_transport {
+                TuiTransport::Auto => None,
+                TuiTransport::Local => Some(TransportClass::Local),
+                TuiTransport::RemoteFast => Some(TransportClass::RemoteFast),
+                TuiTransport::RemoteConstrained => Some(TransportClass::RemoteConstrained),
+                TuiTransport::Mosh => Some(TransportClass::Mosh),
+                TuiTransport::UnknownRemote => Some(TransportClass::UnknownRemote),
+            },
+            graphics: match cli.tui_graphics {
+                TuiGraphics::Auto => None,
+                TuiGraphics::Kitty => Some(GraphicsClass::Kitty),
+                TuiGraphics::Sixel => Some(GraphicsClass::Sixel),
+                TuiGraphics::ITermInline => Some(GraphicsClass::ITermInline),
+                TuiGraphics::Ansi => Some(GraphicsClass::Ansi),
+                TuiGraphics::SemanticOnly => Some(GraphicsClass::SemanticOnly),
+            },
+        },
+    )?;
     let mut app = App::new_for_product_with_context(
         development_enabled,
         cli.tui_layout,
@@ -5033,6 +6212,12 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             kitty_detected,
         },
     );
+    app.connection_environment = connection_environment;
+    app.display_class = match app.connection_environment.layout {
+        LayoutClass::Phone => DisplayClass::Phone,
+        LayoutClass::Compact => DisplayClass::Compact,
+        LayoutClass::Wide => DisplayClass::Wide,
+    };
     app.restore_reconnect_capsule();
 
     let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
@@ -5466,10 +6651,62 @@ mod tests {
                 DaemonView::Recovery
             )))
         ));
+        assert!(matches!(
+            parse_command("browser auto-port"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::Launch(BrowserLaunchRequest {
+                    port: BrowserPortChoice::Automatic,
+                    ..
+                })
+            )))
+        ));
+        assert!(matches!(
+            parse_command("browser attach 2"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::Attach(BrowserAttachRequest {
+                    port: None,
+                    target: Some(target),
+                })
+            ))) if target == "2"
+        ));
+        assert!(matches!(
+            parse_command("browser launch --port 9333 --headed --profile work --chrome-path /opt/chrome"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::Launch(BrowserLaunchRequest {
+                    port: BrowserPortChoice::Exact(9333),
+                    headed: Some(true),
+                    profile: Some(profile),
+                    incognito: None,
+                    chrome_path: Some(Some(path)),
+                })
+            ))) if profile == "work" && path == PathBuf::from("/opt/chrome")
+        ));
+        assert!(matches!(
+            parse_command("browser attach --port 9333 target-7"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::Attach(BrowserAttachRequest {
+                    port: Some(9333),
+                    target: Some(target),
+                })
+            ))) if target == "target-7"
+        ));
+        assert!(matches!(
+            parse_command("browser targets 9333"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::Targets(Some(9333))
+            )))
+        ));
+        assert!(parse_command("browser launch --profile work --incognito").is_err());
+        assert!(matches!(
+            parse_command("browser remote-view open"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::RemoteView(RemoteViewCommand::Open)
+            )))
+        ));
     }
 
     #[test]
-    fn responsive_layout_uses_phone_breakpoints_for_remote_sessions() {
+    fn responsive_layout_is_geometry_only_even_for_remote_sessions() {
         let local = RemoteContext::default();
         let remote = RemoteContext {
             ssh: true,
@@ -5486,7 +6723,7 @@ mod tests {
         );
         assert_eq!(
             display_class(TuiLayout::Auto, 80, remote),
-            DisplayClass::Phone
+            DisplayClass::Compact
         );
         assert_eq!(
             display_class(TuiLayout::Auto, 120, remote),
@@ -5500,6 +6737,70 @@ mod tests {
             display_class(TuiLayout::Desktop, 40, remote),
             DisplayClass::Wide
         );
+    }
+
+    #[tokio::test]
+    async fn live_browser_launch_reconfigures_session_without_restarting_the_tui() {
+        let mut options = SessionOptions {
+            port: 9222,
+            attach: true,
+            target_id: Some("old-target".into()),
+            ..SessionOptions::default()
+        };
+        let (events, _event_rx) = mpsc::channel(2);
+        let applied = configure_browser_recovery(
+            &mut options,
+            BrowserRecovery::Launch(BrowserLaunchRequest {
+                port: BrowserPortChoice::Exact(9333),
+                headed: Some(true),
+                profile: Some("mobile-work".into()),
+                incognito: None,
+                chrome_path: Some(Some(PathBuf::from("/opt/chrome"))),
+            }),
+            &events,
+        )
+        .await;
+
+        assert!(applied);
+        assert_eq!(options.port, 9333);
+        assert!(!options.attach);
+        assert_eq!(options.target_id, None);
+        assert!(options.headed);
+        assert_eq!(options.profile, "mobile-work");
+        assert!(!options.incognito);
+        assert_eq!(options.chrome_path, Some(PathBuf::from("/opt/chrome")));
+
+        assert!(
+            configure_browser_recovery(
+                &mut options,
+                BrowserRecovery::Launch(BrowserLaunchRequest {
+                    incognito: Some(true),
+                    chrome_path: Some(None),
+                    ..BrowserLaunchRequest::default()
+                }),
+                &events,
+            )
+            .await
+        );
+        assert!(options.incognito);
+        assert_eq!(options.profile, "default");
+        assert_eq!(options.chrome_path, None);
+
+        let stable_port = options.port;
+        assert!(
+            !configure_browser_recovery(
+                &mut options,
+                BrowserRecovery::Launch(BrowserLaunchRequest {
+                    port: BrowserPortChoice::Exact(9444),
+                    profile: Some("../outside".into()),
+                    ..BrowserLaunchRequest::default()
+                }),
+                &events,
+            )
+            .await
+        );
+        assert_eq!(options.port, stable_port);
+        assert_eq!(options.profile, "default");
     }
 
     #[test]
@@ -5539,9 +6840,23 @@ mod tests {
         live.metrics.drop_ratio = 0.5;
         live.metrics.generation = 1;
         live.adapt_quality();
-        assert_eq!(live.effective_quality, TuiLiveQuality::Balanced);
+        assert_eq!(live.effective_quality, TuiLiveQuality::Smooth);
+        assert_eq!(live.adaptive_scale_step, 1);
         for generation in 2..=4 {
+            live.metrics.drop_ratio = 0.5;
+            live.metrics.generation = generation;
+            live.adapt_quality();
+        }
+        assert_eq!(live.effective_quality, TuiLiveQuality::Balanced);
+        assert_eq!(live.adaptive_scale_step, 3);
+        for generation in 5..=13 {
             live.metrics.drop_ratio = 0.0;
+            live.metrics.generation = generation;
+            live.adapt_quality();
+        }
+        assert_eq!(live.effective_quality, TuiLiveQuality::Balanced);
+        assert_eq!(live.adaptive_scale_step, 0);
+        for generation in 14..=16 {
             live.metrics.generation = generation;
             live.adapt_quality();
         }
@@ -5611,8 +6926,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("1 Home"));
-        assert!(rendered.contains("5 More"));
+        assert!(rendered.contains("1 Overview"));
+        assert!(rendered.contains("6 Process"));
         assert!(rendered.contains("Command"));
     }
 
@@ -5639,8 +6954,9 @@ mod tests {
         app.sync_graphics_geometry(Rect::new(0, 0, 40, 20)).unwrap();
         let config = app.live_capture_config();
         assert!(config.enabled);
-        assert_eq!(config.minimum_interval, Duration::from_millis(333));
-        assert!(config.max_width <= 80);
+        assert_eq!(config.requested_fps, 3);
+        assert!(config.minimum_interval <= Duration::from_millis(334));
+        assert!(config.max_width <= 320);
         app.apply_visual_frame(
             base64::engine::general_purpose::STANDARD.encode(test_live_png()),
             serde_json::json!({"deviceWidth": 2, "deviceHeight": 2}),
@@ -5698,7 +7014,8 @@ mod tests {
                 ..LiveViewOptions::default()
             },
         );
-        assert_eq!(app.live.backend, Some(ActiveLiveBackend::Ansi));
+        assert_eq!(app.live.backend, None);
+        assert_eq!(app.live_capture_config().requested_fps, 0);
     }
 
     #[test]

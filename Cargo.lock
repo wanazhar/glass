@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "glass-browser"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "base64",
  "base64-simd",
@@ -809,12 +809,14 @@ dependencies = [
  "ed25519-dalek",
  "fs2",
  "futures-util",
+ "getrandom 0.3.4",
  "imagesize",
  "libc",
  "png",
  "portable-pty",
  "ratatui",
  "reqwest",
+ "rmpv",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -826,12 +828,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
 [[package]]
 name = "glass-dev"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "clap",
  "glass-browser",
@@ -1833,6 +1836,24 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmpv"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a4e1d4b9b938a26d2996af33229f0ca0956c652c1375067f0b45291c1df8417"
+dependencies = [
+ "rmp",
 ]
 
 [[package]]

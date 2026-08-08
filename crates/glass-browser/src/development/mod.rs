@@ -34,6 +34,7 @@ pub mod process;
 #[path = "process_disabled.rs"]
 pub mod process;
 pub mod project;
+pub mod remote_view;
 pub mod replay;
 pub mod search;
 
@@ -45,8 +46,9 @@ use std::{
 };
 
 pub use agent::{
-    AgentContextPacket, AgentToolGateway, HarnessEvent, HarnessRequest, LocalHarness, PiHarness,
-    ToolAuthorization, ToolCall, ToolDescriptor, ToolRegistry, resolve_context,
+    AgentAuthorityContext, AgentContextPacket, AgentToolGateway, BrowserAgentContext, HarnessEvent,
+    HarnessRequest, LocalHarness, PiHarness, ToolAuthorization, ToolCall, ToolDescriptor,
+    ToolRegistry, resolve_context, resolve_context_with_browser,
 };
 pub use cockpit::{
     AttentionItem, AttentionState, ReconnectCapsule, ReconnectCapsuleStore,
@@ -70,13 +72,16 @@ pub use experiment::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentWorkspace,
 };
 pub use graph::{DevelopmentGraph, LinkEvidence, LinkProvenance, RuntimeLink, SourceLocation};
-pub use language::{DiagnosticPosition, LanguageDiagnostic, LspClient};
+pub use language::{
+    DiagnosticPosition, LanguageDiagnostic, LanguageDocument, LanguageResponse, LspClient,
+};
 pub use neovim::{NeovimCapability, probe_neovim, start_neovim};
 pub use process::{ProcessHealth, ProcessManager, ProcessSnapshot, ProcessState};
 pub use project::{
     CommandConfig, EditorBuffer, FileEntry, FileKind, GlassProjectConfig, ProjectDetection,
-    ProjectWorkspace, detect_project,
+    ProjectTreeResult, ProjectWorkspace, detect_project,
 };
+pub use remote_view::{RemoteFrame, RemoteInput, RemoteView};
 pub use replay::{DevelopmentRevision, ReplayWindow, replay};
 pub use search::{SearchHit, SearchKind, fuzzy_score, rank};
 

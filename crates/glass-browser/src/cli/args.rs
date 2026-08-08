@@ -106,9 +106,25 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
-    /// Terminal workspace layout. Auto uses a phone layout for narrow remote terminals.
+    /// Terminal workspace layout. Auto uses terminal geometry only.
     #[arg(long = "tui-layout", global = true, value_enum, default_value_t = TuiLayout::Auto)]
     pub tui_layout: TuiLayout,
+
+    /// Connection transport policy. Auto keeps unmeasured SSH links unknown.
+    #[arg(long = "tui-transport", global = true, value_enum, default_value_t = TuiTransport::Auto)]
+    pub tui_transport: TuiTransport,
+
+    /// Graphics capability override. Auto requires an active protocol probe.
+    #[arg(long = "tui-graphics", global = true, value_enum, default_value_t = TuiGraphics::Auto)]
+    pub tui_graphics: TuiGraphics,
+
+    /// Measured/known round-trip latency for presentation policy diagnostics.
+    #[arg(long = "tui-rtt-ms", global = true)]
+    pub tui_rtt_ms: Option<f64>,
+
+    /// Measured/known effective terminal throughput in megabits per second.
+    #[arg(long = "tui-throughput-mbps", global = true)]
+    pub tui_throughput_mbps: Option<f64>,
 
     /// Terminal-native live browser policy. Off preserves semantic-only startup.
     #[arg(long = "tui-live", global = true, value_enum, default_value_t = TuiLiveMode::Off)]
@@ -152,13 +168,39 @@ pub enum McpClient {
 /// Responsive layout policy for the interactive terminal workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum TuiLayout {
-    /// Select from terminal width and remote-session signals.
+    /// Select from terminal geometry only.
     #[default]
     Auto,
     /// Force the multi-pane desktop workspace, including on narrow terminals.
     Desktop,
     /// Use a single-pane, phone-friendly workspace and semantic browser output.
     Mobile,
+    /// Force a condensed workspace independent of transport.
+    Compact,
+}
+
+/// Presentation transport classification. This is independent from layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiTransport {
+    #[default]
+    Auto,
+    Local,
+    RemoteFast,
+    RemoteConstrained,
+    Mosh,
+    UnknownRemote,
+}
+
+/// Terminal graphics evidence/override, independent from transport and layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiGraphics {
+    #[default]
+    Auto,
+    Kitty,
+    Sixel,
+    ITermInline,
+    Ansi,
+    SemanticOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]

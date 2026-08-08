@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +52,8 @@ struct RunningProcess {
     writer: Option<Box<dyn Write + Send>>,
     output: Arc<Mutex<VecDeque<u8>>>,
     _reader: Option<thread::JoinHandle<()>>,
+    #[cfg(windows)]
+    job: WindowsJob,
 }
 
 pub struct ProcessManager {
@@ -85,6 +87,11 @@ impl ProcessManager {
             ));
         }
         self.poll()?;
+        if self.processes.len() >= 32 {
+            return Err(DevelopmentError::Process(
+                "process manager is limited to 32 registered processes".into(),
+            ));
+        }
         if self.processes.contains_key(name) {
             return Err(DevelopmentError::Process(format!(
                 "process {name} is already registered"
@@ -104,7 +111,22 @@ impl ProcessManager {
             .slave
             .spawn_command(builder)
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        #[cfg(windows)]
+        let mut child = child;
         let pid = child.process_id();
+        #[cfg(windows)]
+        let job = match pid
+            .ok_or_else(|| std::io::Error::other("PTY child PID is unavailable"))
+            .and_then(WindowsJob::assign)
+        {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                return Err(DevelopmentError::Process(format!(
+                    "failed to place PTY process in a kill-on-close Windows Job Object: {error}"
+                )));
+            }
+        };
         let reader = pty
             .master
             .try_clone_reader()
@@ -140,6 +162,8 @@ impl ProcessManager {
                 writer: Some(writer),
                 output,
                 _reader: Some(reader_handle),
+                #[cfg(windows)]
+                job,
             },
         );
         Ok(snapshot)
@@ -190,10 +214,7 @@ impl ProcessManager {
             .processes
             .get_mut(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
-        process
-            .child
-            .kill()
-            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        terminate_process_tree(process)?;
         process.snapshot.state = ProcessState::Stopped;
         process.snapshot.health = ProcessHealth::Stopped;
         Ok(snapshot(process))
@@ -272,8 +293,24 @@ impl ProcessManager {
     }
 
     pub fn list(&mut self) -> Vec<ProcessSnapshot> {
-        let _ = self.poll();
-        self.processes.values().map(snapshot).collect()
+        self.list_checked().unwrap_or_else(|error| {
+            self.processes
+                .values_mut()
+                .map(|process| {
+                    process.snapshot.state = ProcessState::Failed;
+                    process.snapshot.health = ProcessHealth::Failed;
+                    let mut value = snapshot(process);
+                    value.output =
+                        format!("{}\n[process state unavailable: {error}]", value.output);
+                    value
+                })
+                .collect()
+        })
+    }
+
+    /// Return current process state without discarding polling failures.
+    pub fn list_checked(&mut self) -> DevelopmentResult<Vec<ProcessSnapshot>> {
+        self.poll()
     }
 
     pub fn output(&self, name: &str) -> DevelopmentResult<String> {
@@ -289,9 +326,160 @@ impl Drop for ProcessManager {
     fn drop(&mut self) {
         for process in self.processes.values_mut() {
             if matches!(process.snapshot.state, ProcessState::Running) {
-                let _ = process.child.kill();
+                let _ = terminate_process_tree(process);
             }
         }
+    }
+}
+
+fn terminate_process_tree(process: &mut RunningProcess) -> DevelopmentResult<()> {
+    #[cfg(unix)]
+    {
+        let pid = process.snapshot.pid.ok_or_else(|| {
+            DevelopmentError::Process("owned PTY process has no process-group ID".into())
+        })?;
+        // portable-pty creates a new session for the spawned command on Unix;
+        // its PID is therefore also the process-group ID. Signal the group so
+        // grandchildren cannot outlive the owning Glass workspace.
+        for (signal, grace) in [
+            (libc::SIGINT, Duration::from_millis(250)),
+            (libc::SIGTERM, Duration::from_millis(500)),
+        ] {
+            let result = unsafe { libc::kill(-(pid as i32), signal) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(DevelopmentError::Process(format!(
+                        "failed to signal process group {pid}: {error}"
+                    )));
+                }
+            }
+            let deadline = Instant::now() + grace;
+            while Instant::now() < deadline {
+                if process
+                    .child
+                    .try_wait()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let result = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(DevelopmentError::Process(format!(
+                "failed to kill process group {pid}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let _ = process.child.wait();
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        // SAFETY: the handle is created and exclusively owned by WindowsJob
+        // until this process record is dropped.
+        let terminated = unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(process.job.handle, 1)
+        };
+        if terminated == 0 {
+            return Err(DevelopmentError::Process(format!(
+                "failed to terminate Windows process job: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let _ = process.child.wait();
+        return Ok(());
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    process
+        .child
+        .kill()
+        .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+    #[cfg(not(any(unix, windows)))]
+    let _ = process.child.wait();
+    #[cfg(not(any(unix, windows)))]
+    Ok(())
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+// SAFETY: WindowsJob uniquely owns the kernel handle and only uses it through
+// thread-safe kernel object operations; Drop closes it exactly once.
+unsafe impl Send for WindowsJob {}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn assign(pid: u32) -> std::io::Result<Self> {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::{
+                JobObjects::{
+                    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                    SetInformationJobObject,
+                },
+                Threading::{
+                    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+                    PROCESS_TERMINATE,
+                },
+            },
+        };
+        // SAFETY: null security/name creates an unnamed job owned by this process.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: the information pointer and size match the requested class.
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        // SAFETY: requested rights are limited to job assignment and lifecycle.
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if configured == 0 || process.is_null() {
+            // SAFETY: non-null job handle is owned here.
+            unsafe { CloseHandle(handle) };
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: both handles are valid and owned for the duration of the call.
+        let assigned = unsafe { AssignProcessToJobObject(handle, process) };
+        // SAFETY: the temporary process handle is no longer needed.
+        unsafe { CloseHandle(process) };
+        if assigned == 0 {
+            // SAFETY: assignment failed; closing the owned job is sufficient cleanup.
+            unsafe { CloseHandle(handle) };
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        // SAFETY: this type exclusively owns the job handle.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
     }
 }
 
@@ -441,5 +629,45 @@ mod tests {
             manager.list()[0].state,
             ProcessState::Running | ProcessState::Exited { .. }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_owned_process_terminates_its_descendant_tree() {
+        let mut manager = ProcessManager::new(std::env::temp_dir());
+        manager
+            .start("tree", "sleep 30 & printf 'child=%s\\n' \"$!\"; wait")
+            .unwrap();
+        let child_pid = (0..100).find_map(|_| {
+            let _ = manager.poll();
+            let pid = manager.output("tree").ok().and_then(|output| {
+                output
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("child="))?
+                    .parse::<i32>()
+                    .ok()
+            });
+            if pid.is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            pid
+        });
+        let child_pid = child_pid.expect("descendant PID must be reported by the PTY process");
+
+        manager.stop("tree").unwrap();
+        let gone = (0..50).any(|_| {
+            // SAFETY: signal zero performs a read-only existence probe.
+            let result = unsafe { libc::kill(child_pid, 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(
+            gone,
+            "descendant process {child_pid} survived group shutdown"
+        );
     }
 }

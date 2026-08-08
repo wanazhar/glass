@@ -100,23 +100,16 @@ impl TerminalEnvironmentOwned {
     }
 }
 
-/// Capability negotiation is intentionally conservative: an explicit Kitty
-/// window marker or a known compatible terminal is required for pixel output.
+/// Conservative environment-only hint. `TERM` and `TERM_PROGRAM` are not
+/// capability probes and therefore never enable pixels by themselves. A
+/// direct frontend must still use an active query or explicit user
+/// configuration before constructing a Kitty renderer.
 pub fn negotiate(env: TerminalEnvironment<'_>) -> GraphicsMode {
     let term = env.term.unwrap_or_default().to_ascii_lowercase();
     if matches!(term.as_str(), "dumb" | "unknown") {
         return GraphicsMode::Semantic;
     }
-    if term == "xterm-kitty" {
-        return GraphicsMode::Kitty;
-    }
-    if env.kitty_window_id.is_some_and(|value| !value.is_empty()) {
-        return GraphicsMode::Kitty;
-    }
-    let program = env.term_program.unwrap_or_default().to_ascii_lowercase();
-    if matches!(program.as_str(), "kitty" | "wezterm" | "ghostty") {
-        return GraphicsMode::Kitty;
-    }
+    let _ = (env.term_program, env.kitty_window_id);
     GraphicsMode::Semantic
 }
 /// A bounded terminal cell rectangle. It is kept independent of Ratatui so
@@ -848,14 +841,14 @@ mod tests {
     }
 
     #[test]
-    fn capability_prefers_kitty_and_falls_back_semantically() {
+    fn environment_names_do_not_claim_kitty_without_capability_evidence() {
         assert_eq!(
             negotiate(TerminalEnvironment::new(None, Some("kitty"), None)),
-            GraphicsMode::Kitty
+            GraphicsMode::Semantic
         );
         assert_eq!(
             negotiate(TerminalEnvironment::new(Some("xterm-kitty"), None, None)),
-            GraphicsMode::Kitty
+            GraphicsMode::Semantic
         );
         assert_eq!(
             negotiate(TerminalEnvironment::new(
@@ -866,11 +859,7 @@ mod tests {
             GraphicsMode::Semantic
         );
         assert_eq!(
-            negotiate(TerminalEnvironment::new(
-                Some("dumb"),
-                Some("kitty"),
-                Some("1")
-            )),
+            negotiate(TerminalEnvironment::new(Some("xterm"), None, Some("1"))),
             GraphicsMode::Semantic
         );
     }

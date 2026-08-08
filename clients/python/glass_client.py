@@ -319,6 +319,14 @@ class ProjectFileEntry(TypedDict, total=False):
     actor: DevelopmentActor
 
 
+class ProjectTreeResult(TypedDict):
+    entries: list[ProjectFileEntry]
+    truncated: bool
+    limit: int
+    ignoredDirectories: list[str]
+    skippedSymlinks: int
+
+
 class ProjectSearchHit(TypedDict):
     kind: Literal["file", "browserEntity", "process", "event", "command"]
     label: str
@@ -455,7 +463,7 @@ class GlassClient:
                     "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1], "developmentEvents": [1], "developmentCockpit": [1]},
                 },
                 "capabilities": {},
-                "clientInfo": {"name": "glass-python-client", "version": "0.3.2"},
+                "clientInfo": {"name": "glass-python-client", "version": "0.3.3"},
             },
         )
         manifest = result.get("glass") if isinstance(result, dict) else None
@@ -545,7 +553,7 @@ class GlassClient:
     def project_inspect(self, root: str = ".") -> ProjectInspectResult:
         return self.call("project.inspect", {"root": root})
 
-    def project_files(self, root: str = ".") -> list[ProjectFileEntry]:
+    def project_files(self, root: str = ".") -> ProjectTreeResult:
         return self.call("project.files", {"root": root})
 
     def project_search(self, query: str, root: str = ".", limit: int = 64) -> list[ProjectSearchHit]:

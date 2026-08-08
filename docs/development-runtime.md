@@ -1,10 +1,10 @@
 # Development Runtime
 
-Glass `0.3.2` ships two products from one workspace:
+Glass `0.3.3` ships two products from one workspace:
 
 - `glass-browser` is the standalone browser control plane and Rust library;
-- `glass-dev` installs `glass`, the terminal-native development environment
-  that consumes `glass-browser`.
+- `glass-dev` installs both `glass` and `glass-browser`; the former enables the
+  development runtime and the latter preserves the browser-only entry point.
 
 Install the full environment and check a project without learning the crate
 layout:
@@ -22,7 +22,8 @@ actors, and the attributed timeline remain visible on the right. `F1` through
 `F6` retain the browser workspace views.
 
 On a narrow SSH or Mosh terminal, Glass starts directly in the single-pane
-Development workspace. Use `1` through `5` or `Tab` instead of function keys.
+Development workspace. Use `1` through `6` or `Tab` instead of function keys:
+Overview, Agent, Browser, Project, Diff, and Process.
 The phone workspace disables continuous pixel streaming and keeps structured
 browser semantics as the App view. See
 [Mobile and remote development](mobile-remote.md) for Herdr persistence and
@@ -39,7 +40,9 @@ glass project graph discover
 glass project diff
 ```
 
-Persistent interactive dev servers belong in the TUI or a resident MCP server.
+Project tree results explicitly report their 2,048-entry bound, truncation,
+ignored build/vendor directories, and skipped symlinks. Persistent interactive
+dev servers belong in the TUI or a resident MCP server.
 A one-shot CLI invocation must use `--wait`. MCP may use `wait: false`; the
 server's canonical-root session registry then owns the PTY until explicit
 detach, idle eviction, stdio server shutdown, or daemon shutdown.
@@ -116,15 +119,27 @@ Browser tools remain explicitly unavailable until a Browser Workspace is
 attached; the Pi adapter does not simulate browser state or request implicit
 screenshots.
 
+An attached TUI agent receives a bounded ephemeral context packet containing
+the project revision, browser target/origin, semantic summary, browser
+revision, workflow state, and memory scope. Context never waives the mutation
+lease: project and browser revisions still have to match and stale actions
+fail closed. Prompt text and page content are not written to the timeline.
+
 External agents can independently use `glass project ...`, MCP `project.*`
 tools, or `glass project attach AGENT`. Their actor and authority are recorded
 in the same timeline. Conflicting edit claims fail closed.
 
-`glass project neovim probe` checks both a normal Neovim executable and the
-headless RPC prototype. `glass project neovim start` runs compatibility Mode A
-in a managed PTY. The v0.3.2 architecture decision is to retain Glass-native
+`glass project neovim probe` checks both a normal executable and a real
+`nvim --embed --headless --clean` Msgpack-RPC create/set/get buffer round trip.
+It no longer treats headless Lua stdout as RPC proof. `glass project neovim
+start` runs compatibility Mode A in a managed PTY. The v0.3.3 architecture decision is to retain Glass-native
 rendering while using Neovim RPC as an optional editing engine, not as the
 owner of browser, process, collaboration, or development-graph state.
+
+The persistent LSP client owns initialize/initialized, monotonic
+didOpen/didChange/didSave/didClose document state, hover, definition,
+references, symbols, formatting, rename, bounded responses, and the required
+shutdown/exit sequence.
 
 See the [surface atlas](design/v0.3.2/development-surface-atlas.svg) for the
 coherent editor, live app, palette, process, review, diff, replay, graph,

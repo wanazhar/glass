@@ -1,7 +1,7 @@
 # Complete feature reference
 
 This reference maps shipped capability domains to their user-visible entry
-points. “Available” describes source implementation in `0.3.2`; it is not a
+points. “Available” describes source implementation in `0.3.3`; it is not a
 cross-platform certification claim. The machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 
@@ -26,7 +26,7 @@ cross-platform certification claim. The machine-readable target status is in
 | Policy/security | global policy options | effective policy status | startup policy and typed denials | `BrowserPolicy` and capability types | [Policy](policy.md) |
 | Workspaces/daemon | `workspace`, `daemon` | daemon status | workspace and lease tools | `workspace`, `daemon` modules | [Daemon](daemon.md) |
 | Development Runtime | `project`, `agent` | Development workspace | `project.*`, `agent.*` | `development` module | [Development Runtime](development-runtime.md) |
-| Terminal live browser | TUI live options | Herdr/Kitty/ANSI App view | metadata only; no pixel stream | `presentation`, `terminal_graphics` | [Mobile/remote](mobile-remote.md) |
+| Terminal/remote browser view | TUI live and Remote View commands | semantic-first Browser view; Herdr/Kitty/ANSI or tokenized loopback Safari | metadata only; no MCP pixel stream | `connection`, `presentation`, `terminal_graphics`, `development::remote_view` | [Mobile/remote](mobile-remote.md) |
 | Backends/surfaces/replay | `backend`, `surfaces`, `replay` | bounded status | corresponding tools | backend/surface/replay contracts | [Architecture](architecture/README.md) |
 | Extensions | `--experimental-extensions`, capabilities | negotiated status | negotiated experimental status | `extensions` module | [Extensions](extensions.md) |
 | Reliability/certification | `certify`, `smoke-sites` | compact status | scenario operations through core tools | reliability modules | [Reliability](reliability.md) |
@@ -171,7 +171,7 @@ clients, not browser runtimes. They negotiate capabilities, expose browser and
 Development Runtime helpers, maintain bounded request state, support
 cancellation, cursor-based project events, process-health waits, reconnect
 workflows, and mutation-lease scopes. They are not published to npm or PyPI in
-the `0.3.2` line.
+the `0.3.3` line.
 
 Run their browser-free conformance smokes:
 

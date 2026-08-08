@@ -15,11 +15,13 @@ use std::{
 mod support;
 
 #[test]
-fn tui_enters_and_leaves_a_real_terminal_cleanly() {
+fn phone_tui_renders_and_leaves_a_real_terminal_cleanly() {
     let (mut master, slave) = open_pty();
     let controlling_terminal = slave.as_raw_fd();
     let mut command = Command::new(support::glass_binary());
     command
+        .args(["--tui-layout", "mobile", "--tui-live", "off"])
+        .env("TERM", "xterm-256color")
         .stdin(Stdio::from(
             slave.try_clone().expect("PTY slave must clone"),
         ))
@@ -46,6 +48,7 @@ fn tui_enters_and_leaves_a_real_terminal_cleanly() {
         .spawn()
         .expect("Glass must start on the pseudo-terminal");
     drop(slave);
+    thread::sleep(Duration::from_millis(250));
     master
         .write_all(b"q")
         .expect("quit key must reach the pseudo-terminal");
@@ -72,6 +75,9 @@ fn tui_enters_and_leaves_a_real_terminal_cleanly() {
     let output = read_available(&mut master);
     assert_sequence(&output, b"\x1b[?1049h", "enter alternate screen");
     assert_sequence(&output, b"\x1b[?25l", "hide cursor");
+    assert_sequence(&output, b"Glass", "phone cockpit title");
+    assert_sequence(&output, b"Overview", "phone overview card");
+    assert_sequence(&output, b"Command", "printable command composer");
     assert_sequence(&output, b"\x1b[?1049l", "leave alternate screen");
     assert_sequence(&output, b"\x1b[?25h", "show cursor");
 }
@@ -80,8 +86,8 @@ fn open_pty() -> (File, File) {
     let mut master = -1;
     let mut slave = -1;
     let size = libc::winsize {
-        ws_row: 24,
-        ws_col: 80,
+        ws_row: 20,
+        ws_col: 40,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };

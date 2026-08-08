@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="844" viewBox="0 0 390 844">
+  <rect width="390" height="844" rx="42" fill="#080b10"/>
+  <rect x="14" y="14" width="362" height="816" rx="32" fill="#101722" stroke="#39485d"/>
+  <rect x="139" y="24" width="112" height="27" rx="14" fill="#05070a"/>
+  <g font-family="DejaVu Sans Mono" fill="#eaf2ff">
+    <text x="28" y="76" font-size="14" font-weight="700">GLASS DEV</text>
+    <text x="362" y="76" text-anchor="end" font-size="11" fill="#82d9b8">SSH · semantic</text>
+    <rect x="25" y="91" width="340" height="74" rx="12" fill="#172231"/>
+    <circle cx="43" cy="113" r="5" fill="#f2c66d"/>
+    <text x="56" y="118" font-size="12" font-weight="700">1 item needs attention</text>
+    <text x="39" y="141" font-size="10" fill="#aebdd0">test process exited · inspect Process</text>
+    <rect x="25" y="177" width="340" height="119" rx="12" fill="#172231"/>
+    <text x="39" y="201" font-size="11" fill="#82d9b8">AGENT</text>
+    <text x="39" y="224" font-size="13" font-weight="700">Refactor complete; awaiting review</text>
+    <text x="39" y="247" font-size="10" fill="#aebdd0">project r18 · browser r42 · lease available</text>
+    <text x="39" y="273" font-size="10" fill="#71849b">No prompt or page secret persisted</text>
+    <rect x="25" y="308" width="340" height="184" rx="12" fill="#172231"/>
+    <text x="39" y="332" font-size="11" fill="#82d9b8">BROWSER</text>
+    <text x="39" y="356" font-size="13" font-weight="700">Checkout · example.test</text>
+    <rect x="39" y="372" width="312" height="79" rx="8" fill="#0c121b" stroke="#33455c"/>
+    <text x="52" y="396" font-size="10" fill="#9fc7ff">structured observation · fresh r42</text>
+    <text x="52" y="418" font-size="10">[1] button “Continue”</text>
+    <text x="52" y="438" font-size="10">[2] link “Edit cart”</text>
+    <text x="39" y="474" font-size="10" fill="#f2c66d">Pixels off · Remote View available via loopback</text>
+    <rect x="25" y="504" width="340" height="94" rx="12" fill="#172231"/>
+    <text x="39" y="528" font-size="11" fill="#82d9b8">PROJECT</text>
+    <text x="39" y="551" font-size="11">main · 3 changed · diagnostics clean</text>
+    <text x="39" y="575" font-size="10" fill="#aebdd0">dev → healthy  test → failed(1)</text>
+    <rect x="25" y="613" width="340" height="54" rx="12" fill="#0c121b" stroke="#33455c"/>
+    <text x="39" y="646" font-size="11" fill="#71849b">: command palette</text>
+    <line x1="25" y1="689" x2="365" y2="689" stroke="#33455c"/>
+    <g font-size="9" text-anchor="middle">
+      <text x="59" y="718" fill="#82d9b8">1 Overview</text>
+      <text x="127" y="718">2 Agent</text>
+      <text x="195" y="718">3 Browser</text>
+      <text x="263" y="718">4 Project</text>
+      <text x="331" y="718">5 Diff</text>
+      <text x="195" y="747">6 Process</text>
+    </g>
+    <text x="195" y="789" text-anchor="middle" font-size="10" fill="#71849b">? help · Tab next · Ctrl-L redraw</text>
+  </g>
+</svg>

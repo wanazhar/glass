@@ -1,13 +1,13 @@
 # Remote development cockpit
 
-Status: Released in 0.3.2
+Status: Accepted 0.3.3 redesign
 
 ## Purpose and boundaries
 
-The cockpit makes Glass resilient and actionable in a narrow SSH terminal. It
-does not turn MCP into an image transport, expose a public relay, or replace
-Herdr/Mosh/SSH as the transport owner. Structured browser state remains the
-default and visual capture remains explicit.
+The cockpit is an intentionally remote presentation of the same Glass
+workspace. It preserves agent, semantic, project, test, process and command
+state without depending on browser pixels. It does not turn MCP into an image
+transport, expose a public relay, or replace Herdr/Mosh/SSH as transport owner.
 
 ## Runtime ownership
 
@@ -18,92 +18,142 @@ MCP/TUI/client
 ResidentDevelopmentSessions ── bounded LRU / idle expiry
      │ owns
      ├── ProjectWorkspace (buffers, revisions, actors, timeline)
-     ├── managed PTYs and process output
-     └── reconnect capsule (non-sensitive control state only)
+     ├── managed PTY jobs and bounded output
+     └── reconnect capsule (non-sensitive preferences/cursors only)
+             │
+             └── BrowserConnectionController (replaceable subsystem)
 ```
 
-A resident session is keyed by canonical project root. A registry owns at most
-eight sessions and expires idle sessions after 30 minutes. Eviction stops
-owned processes. Event and timeline reads remain direct, read-only persisted
-queries so observation never creates activity. Capsules persist only project
-identity, event cursor, selected mobile view, browser target/revision, pending
-approval summary, and live-view preferences. They never persist command input,
-prompt text, pixels, cookies, or page secrets.
+The resident project session survives browser disconnect/recovery. Capsules do
+not persist command input, prompts, pixels, cookies, temporary ports/tokens,
+browser PIDs or stale target IDs.
 
-## Phone layout
+## Overall phone layout
 
 ```text
-┌─ Glass / project ───────────────────┐
-│ NEEDS YOU (2)                       │
-│ ! Agent approval · review edit      │
-│ ! Tests failed · cargo test         │
-├─────────────────────────────────────┤
-│ RUNNING                             │
-│ ● dev :3000 · agent working         │
-├─────────────────────────────────────┤
-│ RECENT                              │
-│ ✓ semantic verification · rev 83    │
-├─────────────────────────────────────┤
-│ 1 Home  2 Agent  3 App  4 Diff  5… │
-│ command >                           │
-└─────────────────────────────────────┘
-
-Semantic tap mode replaces unreliable pixel targeting with a bounded action
-overlay in the App view:
-
-```text
-┌─ Semantic actions ──────────────────┐
-│ [1] Open menu                       │
-│ [2] Search                          │
-│ [3] Add to cart                     │
-│ [4] Continue checkout               │
-└─────────────────────────────────────┘
+┌─ glass / checkout ─ SSH · semantic ┐
+│ agent RUNNING · app ATTACHED · r83 │  sticky workspace/connection header
+├─ NEEDS YOU (1) ────────────────────┤
+│ ! browser port conflict      Enter │  urgent cards precede telemetry
+├─ AGENT ────────────────────────────┤
+│ observe → patch → HMR → verify     │
+│ editing src/cart.rs                │
+├─ LIVE APP ─────────────────────────┤
+│ /checkout · rev 83 · fresh         │
+│ visual assist: snapshot       Open │
+├─ UNDERSTANDING ────────────────────┤
+│ checkout.form · submit enabled     │
+├─ TESTS / PROCESS ──────────────────┤
+│ ✓ unit 81/81 · ● dev :3000         │
+├────────────────────────────────────┤
+│ 1 Overview 2 Agent 3 Browser       │
+│ 4 Diff 5 Project 6 Process   : cmd │
+└────────────────────────────────────┘
 ```
+
+The Overview is a vertically scrollable card stack. The compact header and
+command/navigation footer remain visible. Cards collapse/expand. Browser
+pixels are a preview or deliberate burst and cannot displace command input,
+agent state or process health.
+
+## Focused views
+
+```text
+Overview ─ summary cards and attention
+Agent    ─ current step, tools, approvals and reconciliation
+Browser  ─ semantic page, compact preview, recovery and Remote View
+Diff     ─ changed files and verification evidence
+Project  ─ files, editor buffer and diagnostics
+Process  ─ PTYs, tests, logs and lifecycle controls
+```
+
+Each view has loading, empty, busy, error and constrained states. Browser also
+has probing, recovery, target-picker, disconnected, semantic-only and Remote
+View-active states.
 
 ## Interaction contract
 
 | Input or command | Behavior |
 |---|---|
+| `1`–`6` | Select a focused view without function/control keys. |
+| `Tab` / `Shift-Tab` | Cycle focused views. |
+| `:` | Open a filtered command palette with browser lifecycle actions. |
+| `?` | Toggle contextual shortcut/help content. |
 | `inbox` | Open the bounded attention summary. |
-| `notify on\|off\|status` | Opt in to a deduplicated terminal bell for new attention items. |
-| `tap` | Show numbered actionable semantic targets. |
-| `tap N` or number in tap mode | Resolve the current revision-bound target and click it. |
-| `verify card` | Show the latest compact verification outcome. |
-| `capsule save\|show\|clear` | Manage the non-sensitive reconnect capsule. |
-| `live quality auto` | Adapt frame rate and size from delivery pressure. |
-| `Esc` | Close tap/help/error overlays before leaving the current view. |
+| `notify on\|off\|status` | Control deduplicated terminal-bell attention. |
+| `tap` / `tap N` | Show/activate bounded revision-bound semantic actions. |
+| `verify card` | Show compact code/runtime/semantic/visual evidence. |
+| `capsule save\|show\|clear` | Manage non-sensitive reconnect state. |
+| `live quality auto` | Apply connection-aware scale/rate adaptation and show its reason. |
+| `browser ...` | Probe, launch, attach, pick target, reconnect, disconnect or select semantic-only. |
+| `browser remote-view open` | Create scoped loopback view and SSH-forward guidance. |
+| `Esc` | Close the focused overlay/sheet before affecting background work. |
 
-The inbox has loading, empty, error, and bounded overflow states. Items are
-classified as `needsAttention`, `running`, or `recent`; no notification body
-contains prompt text, process output, source content, URLs with secret-like
-query values, or browser pixels. Optional terminal notification output is off
-by default.
+No essential action requires function keys, mouse reporting or a terminal image
+protocol. Touch/mouse may activate visible tabs/cards when the terminal emits
+events.
 
-## Verification cards
+## Semantic tap overlay
 
-A card is bounded structured evidence with a title, outcome, checks, changed
-file count, semantic revision, and explicit visual status. Visual status is
-`not-captured` until an explicit screenshot or comparison supplies evidence.
+```text
+┌─ Semantic actions · revision 83 ───┐
+│ [1] Open menu                      │
+│ [2] Search                         │
+│ [3] Add to cart                    │
+│ [4] Continue checkout              │
+└────────────────────────────────────┘
+```
+
+Selection is bound to browser and geometry revisions. Stale targets fail
+closed and prompt a fresh observation.
+
+## Browser recovery sheet
+
+```text
+┌─ BROWSER NEEDS ATTENTION ──────────┐
+│ Port 9222 is busy                  │
+│ unrelated listener detected       │
+│ project / agent / processes alive │
+│                                   │
+│ > Launch on automatic port        │
+│   Inspect / attach                │
+│   Choose port                     │
+│   Semantic only                   │
+│                                   │
+│ Enter choose · Esc later          │
+└───────────────────────────────────┘
+```
+
+The sheet closes without quitting Glass. Target selection is a bounded
+filterable list with privacy-aware URL projection. The same controller actions
+exist in compact/wide overlays and the command palette.
+
+## Attention, cards and privacy
+
+Attention is ordered: blocking confirmation/failure, current agent action,
+live-app health, semantic freshness, process/tests, diff, low-level telemetry.
+Items are deduplicated and bounded. Notification bodies contain no prompt,
+process output, source content, secret-bearing URL, frame or token.
+
+Verification cards contain bounded outcomes, changed-file count, semantic
+revision and explicit visual status. Visual status is `not-captured` until an
+explicit screenshot/comparison supplies evidence.
 
 ## Adaptive live view
 
-`auto` starts at the balanced profile and adjusts only within the existing
-data/balanced/smooth bounds. Sustained drops or slow delivery reduce quality;
-a stable window increases quality. Hidden App views suspend capture. A manual
-quality selection disables adaptation until `auto` is selected again.
-
-## SDK workflows
-
-TypeScript and Python expose bounded helpers for event waiting, health waits,
-mutation-lease scopes, edit-and-verify, cursor resume, and attention callbacks.
-Every helper accepts a deadline/cancellation mechanism and delegates actions to
-the existing typed tool methods; it does not create a second protocol.
+Auto mode begins with the profile selected from independent transport/graphics
+evidence. Pressure reduces capture scale before frame rate. Local
+balanced/smooth target 30/60 FPS; 3/6/12 FPS profiles are constrained remote
+visual-assist modes only. Hidden Browser views suspend terminal capture. A
+manual selection disables adaptation until auto is restored.
 
 ## Tests
 
-- Registry tests cover root identity, reuse, LRU capacity, expiry, and cleanup.
-- Capsule tests cover bounds, redaction-by-construction, atomic persistence,
-  versioning, and removal.
-- Inbox/card tests cover classification, limits, and sensitive payload refusal.
-- TUI reducer tests cover tap overlay, phone focus, and adaptive-quality state.
-- MCP and SDK integration tests traverse real resident state and cancellation.
+- Ratatui buffer snapshots cover 72x28, 78x34, 96x40 and compact/wide layouts.
+- Reducer tests cover every printable navigation route, overlay focus, help,
+  command filtering and semantic stale refusal.
+- Browser recovery tests cover compatible/unrelated/unknown listeners, target
+  selection, semantic-only and reconnect without project identity loss.
+- Design-asset validation verifies decodable images, and generated TUI
+  snapshots are reviewed against their information hierarchy.
+- Resident/capsule/inbox/card tests retain their bounds and privacy contracts.

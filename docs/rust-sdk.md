@@ -248,6 +248,7 @@ receive a local result ID rather than an unbounded transport payload.
 | `browser_backend` | Transport-neutral semantic backend contract and dispatcher |
 | `capabilities` | Versioned discovery and negotiation manifest |
 | `cli` | Clap types and shared command runner |
+| `connection` | Independent connection environment, presentation profiles, policy reasons, and observatory metrics |
 | `daemon` | Local socket, isolated MCP sessions, leases, and recovery |
 | `development` | Project files, buffers, PTYs, events, graph, replay, harnesses, collaboration |
 | `extensions` | Manifest, permission, registry, sandbox, and guarded-action boundary |

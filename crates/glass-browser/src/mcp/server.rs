@@ -2669,7 +2669,7 @@ fn call_development_tool(
         }
         ToolInvocation::ProjectFiles { root } => Ok(sessions
             .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.list_files()?)?)
+                Ok(serde_json::to_value(workspace.list_files_result()?)?)
             })?),
         ToolInvocation::ProjectSearch { root, query, limit } => Ok(sessions
             .with_workspace(root, |workspace| {
@@ -2741,7 +2741,7 @@ fn call_development_tool(
         })?),
         ToolInvocation::ProjectProcessList { root } => Ok(sessions
             .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.processes().list())?)
+                Ok(serde_json::to_value(workspace.processes().list_checked()?)?)
             })?),
         ToolInvocation::ProjectProcessStop { root, name } => Ok(sessions
             .with_workspace(root, |workspace| {

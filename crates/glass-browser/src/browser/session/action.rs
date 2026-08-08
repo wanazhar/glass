@@ -31,6 +31,17 @@ impl BrowserSession {
     /// control can be published. Coordinates are validated against the live
     /// viewport and are never adjusted to a nearby element.
     pub async fn click_at(&self, x: f64, y: f64) -> BrowserResult<CoordinateClickOutcome> {
+        self.click_at_with_revision(x, y, None).await
+    }
+
+    /// Click viewport coordinates only if the semantic observation revision is
+    /// still current. Remote View uses this to reject stale visual input.
+    pub async fn click_at_with_revision(
+        &self,
+        x: f64,
+        y: f64,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<CoordinateClickOutcome> {
         self.policy
             .require(crate::browser::policy::PolicyCapability::CoordinateClick)?;
         if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
@@ -39,6 +50,7 @@ impl BrowserSession {
 
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let hit = self
                     .evaluate_value(&format!(
                         "(() => {{ if ({x} >= innerWidth || {y} >= innerHeight) return null; const e = document.elementFromPoint({x}, {y}); if (!e) return null; return {{tag:e.tagName.toLowerCase(), role:e.getAttribute('role'), name:e.getAttribute('aria-label') || e.textContent?.trim().slice(0, 160) || null}}; }})()"

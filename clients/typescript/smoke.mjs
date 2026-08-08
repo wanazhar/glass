@@ -6,7 +6,7 @@ import { GlassClient } from "./dist/index.js";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const client = new GlassClient({
-  command: process.env.GLASS_BINARY ?? "glass",
+  command: process.env.GLASS_BINARY ?? path.join(repositoryRoot, "target", "debug", "glass"),
 });
 try {
   const manifest = await client.initialize();
@@ -22,6 +22,10 @@ try {
   const projectRoot = repositoryRoot;
   const project = await client.projectInspect(projectRoot);
   if (project.schemaVersion !== "glass.development.v1") throw new Error("unexpected project schema");
+  const tree = await client.projectFiles(projectRoot);
+  if (!Array.isArray(tree.entries) || typeof tree.truncated !== "boolean" || tree.limit < tree.entries.length) {
+    throw new Error("invalid bounded project tree result");
+  }
   const events = await client.projectEvents(projectRoot, undefined, 8);
   if (!Array.isArray(events.events) || events.events.length > 8) throw new Error("invalid bounded project event page");
   const session = await client.projectSessionStatus(projectRoot);

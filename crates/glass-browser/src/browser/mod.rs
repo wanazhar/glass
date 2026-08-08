@@ -31,6 +31,8 @@ pub mod bidi_backend;
 pub mod cdp;
 /// Chrome/Chromium process lifecycle, binary resolution, and health checks.
 pub mod chrome;
+/// Safe loopback CDP endpoint discovery for launch and attach recovery.
+pub mod connection;
 /// DOM and accessibility tree parsing with compact projection.
 pub mod dom;
 /// Mouse movement engine with bounded smooth pointer paths.

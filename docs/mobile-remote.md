@@ -7,38 +7,40 @@ several unreadable columns.
 
 ## Start on an iPhone
 
-The automatic layout uses the phone workspace at 72 columns or fewer. In an
-SSH or Mosh session it keeps that layout through 96 columns, which covers most
-portrait and landscape phone terminals. Force either presentation when needed:
+Automatic layout uses phone at 72 columns or fewer, compact at 73–109, and
+wide at 110 or more. Width is geometry only: SSH/Mosh never changes those
+breakpoints. Force a presentation when geometry is misleading:
 
 ```console
 glass --tui-layout mobile
+glass --tui-layout compact
 glass --tui-layout desktop
 ```
 
-The phone workspace starts in Development mode and provides five full-width
+The phone workspace starts in Development mode and provides six full-width
 views:
 
 | Key | View | Purpose |
 |---|---|---|
-| `1` | Home | Connection, browser, runtime, test, and actor status |
+| `1` | Overview | Connection, browser, runtime, test, and actor status |
 | `2` | Agent | Agent activity and attributed timeline |
-| `3` | App | Structured semantics, opt-in terminal live view, and Safari handoff |
-| `4` | Diff | Current project and verification diff |
-| `5` | More | Files, editor state, processes, diagnostics, and actors |
+| `3` | Browser | Structured semantics, live view, recovery, and Safari handoff |
+| `4` | Project | Files, editor state, diagnostics, and actors |
+| `5` | Diff | Current project and verification diff |
+| `6` | Process | PTY health and bounded output |
 
-`Tab` and `Shift-Tab` move between views. `Esc` returns to Home before it
+`Tab` and `Shift-Tab` move between views. `Esc` returns to Overview before it
 exits, and `?` shows the phone key guide. The number keys switch views only
 while the command bar is empty, so commands and agent prompts can contain
-numbers normally. Function keys, pointer input, and control-key chords are not
-required for navigation.
+numbers normally. `:` or `/` opens the command-palette hint, and `Ctrl-L`
+redraws. Function keys, pointer input, and control-key chords are not required.
 
-Home groups activity into `NEEDS YOU`, `RUNNING`, and `RECENT`. Enter `inbox`
+Overview groups activity into `NEEDS YOU`, `RUNNING`, and `RECENT`. Enter `inbox`
 from any view to return to it. `notify on` enables a deduplicated terminal bell
 for newly observed needs-attention items; notifications are off by default and
 contain no event payload.
 
-Enter `tap` in App to replace fragile pixel targeting with up to nine numbered,
+Enter `tap` in Browser to replace fragile pixel targeting with up to nine numbered,
 revision-bound semantic targets. Type or tap the number to execute through the
 normal verified browser action path. `Esc` closes the overlay.
 
@@ -51,14 +53,14 @@ terminal-native view when visual feedback is useful:
 glass --tui-layout mobile --tui-live on --tui-live-quality data
 ```
 
-Or enter `live on` in the command bar. Glass switches to App, starts a bounded
+Or enter `live on` in the command bar. Glass switches to Browser, starts a bounded
 PNG screencast, retains at most the current/pending frame, and never persists
 those live pixels. Useful commands are `live status`, `live doctor`, `live
 off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
 auto|data|balanced|smooth`, and `live fit contain|cover|actual`.
 
 `live quality auto` starts balanced, degrades under sustained frame drops, and
-recovers after stable delivery. Capture is suspended when App is hidden.
+recovers after stable delivery. Capture is suspended when Browser is hidden.
 
 Fit controls apply to ANSI sampling. Herdr and direct Kitty use aspect-safe
 contain placement so their native overlays and browser pointer geometry remain
@@ -66,18 +68,28 @@ aligned.
 
 `auto` only enables a native Herdr or Kitty renderer that Glass can detect.
 `on` additionally permits the portable true-color ANSI half-block renderer.
-The data, balanced, and smooth profiles target approximately 3, 6, and 12 FPS
-and adapt the bounded capture dimensions to the current App pane. Use data on
-a cellular link; balanced is the general SSH default; smooth is intended for a
-fast LAN.
+Local balanced and smooth target 30 and 60 FPS. Verified fast remote links use
+20/24/30 FPS; constrained or unknown remote links use 3/6/12. Auto quality
+reduces capture scale before rate, settled/idle states throttle to 5/3 FPS,
+and background acquisition pauses. Supply measured evidence or explicit
+overrides when auto detection cannot know:
+
+```console
+glass --tui-transport remote-fast --tui-rtt-ms 35 \
+  --tui-throughput-mbps 80 --tui-graphics kitty
+```
+
+Graphics requires an active probe or explicit configuration; terminal names
+alone are not evidence. Mosh is semantic-only because it synchronizes cell
+state rather than graphics-protocol state.
 
 ## Preserve work with Herdr
 
 [Herdr](https://herdr.dev/docs/how-to-work/) is the recommended multiplexer for
 Glass development sessions. Like tmux it owns persistent PTYs and supports
 detach/reattach, but it also exposes agent state and has its own responsive
-phone switcher. Glass detects `HERDR_ENV=1` and shows Herdr as the active
-transport context.
+phone switcher. Glass detects `HERDR_ENV=1` as a multiplexer signal. Herdr,
+shell transport, layout, and graphics remain independent in diagnostics.
 
 Install Herdr on the machine where the code and credentials live, then:
 
@@ -122,7 +134,53 @@ into shell history, and closing Glass releases the Herdr-owned layer. If the
 stream fails, Glass falls back to direct Kitty when detected, then ANSI for
 `live on`, and finally the semantic view.
 
+## Recover the browser without leaving the TUI
+
+A browser startup failure or disconnect becomes a Browser attention card; it
+does not stop files, PTYs, the agent, or project state. The same printable
+commands work in phone, compact, and wide layouts:
+
+```text
+browser status
+browser reconnect
+browser launch --port auto --headless
+browser launch --port 9333 --headed --profile work
+browser launch --incognito --chrome-path /opt/chrome
+browser launch --chrome-path auto
+browser targets 9222
+browser attach --port 9222 2
+browser target 2
+browser semantic-only
+```
+
+`browser targets [PORT]` performs a fresh bounded probe and shows title,
+origin, type, and target ID without retaining full URLs. Attach performs
+another probe immediately before use and refuses unrelated or unknown
+listeners. A number selects from the latest target list; an explicit ID is
+also accepted. `--chrome-path auto` restores detected-browser selection.
+`--incognito` and `--profile` are mutually exclusive in one launch request.
+`browser auto-port`, `browser retry`, `browser connect`, and `browser
+disconnect` remain compatibility aliases.
+
+On every connection transition Glass clears target, visual, and semantic
+revision state. A successful Ready transition performs a fresh observation
+before browser tools become current again.
+
 ## Open the full application in Safari
+
+There are two loopback-only Safari workflows:
+
+- `safari` forwards the application server and is the simplest stable path;
+- `browser remote-view open` serves the current Glass BrowserSession frames
+  and revision-bound input without exposing CDP.
+
+For Remote View, enter `browser remote-view open`. Glass prints a random-token
+loopback URL and an `ssh -L` hint. Forward that port in the iOS SSH app, open
+the printed URL in Safari, and keep the tunnel connected. The service accepts
+at most four clients, retains only the newest frame, bounds input, and rejects
+input whose displayed browser revision is stale. `browser remote-view close`
+revokes the token and clients. The existing browser worker owns it; it never
+launches a second browser.
 
 The terminal-native view is designed for steering and verification, not as a
 replacement for a touch browser: terminal graphics support varies, ANSI frames
@@ -161,8 +219,8 @@ private Safari tunnel.
   bounded capability probe; forcing `--tui-live-backend kitty` is available
   when a compatible client does not identify itself.
 - Mosh synchronizes terminal cells rather than arbitrary image protocol state.
-  `live on` therefore selects ANSI automatically under Mosh; use Safari over a
-  separate SSH tunnel for full fidelity.
+  It therefore remains semantic-only; use Safari over a separate SSH tunnel
+  for full fidelity.
 - tmux and other multiplexers work with ANSI. Direct Kitty passthrough depends
   on their configuration, so `live doctor` reports what Glass actually chose.
 - iOS terminal Smart Keys can still send arrows, `Esc`, and control keys, but

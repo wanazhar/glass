@@ -87,6 +87,10 @@ impl ProcessManager {
         Vec::new()
     }
 
+    pub fn list_checked(&mut self) -> DevelopmentResult<Vec<ProcessSnapshot>> {
+        self.unavailable()
+    }
+
     pub fn output(&self, _name: &str) -> DevelopmentResult<String> {
         self.unavailable()
     }

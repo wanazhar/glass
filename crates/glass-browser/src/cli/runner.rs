@@ -344,7 +344,7 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
         }
         ProjectCommand::Files { root } => {
             let workspace = ProjectWorkspace::open(root)?;
-            print_json(&workspace.list_files()?)?;
+            print_json(&workspace.list_files_result()?)?;
         }
         ProjectCommand::Search { root, query, limit } => {
             let mut workspace = ProjectWorkspace::open(root)?;
@@ -426,7 +426,7 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
         ProjectCommand::Process { root, action } => {
             let mut workspace = ProjectWorkspace::open(root)?;
             match action {
-                ProjectProcessCommand::List => print_json(&workspace.processes().list())?,
+                ProjectProcessCommand::List => print_json(&workspace.processes().list_checked()?)?,
                 ProjectProcessCommand::Start {
                     name,
                     command,

@@ -1,6 +1,6 @@
 # glass-dev
 
-`glass-dev` installs `glass`, the full terminal-native Glass environment. It
+`glass-dev` installs `glass` and `glass-browser`, the full terminal-native Glass environment. It
 combines the browser control plane from `glass-browser` with a bounded project
 runtime, Ratatui development workspace, local agent harness, MCP server, and
 phone-oriented remote cockpit.
@@ -14,6 +14,7 @@ library.
 cargo install glass-dev --locked
 glass doctor
 glass --help
+glass-browser --help
 ```
 
 Chrome or Chromium is needed only for browser-backed operations. Project
@@ -54,7 +55,7 @@ Narrow remote terminals automatically use the phone layout:
 glass --tui-layout mobile
 ```
 
-Use `1`–`5` or `Tab` for Home, Agent, App, Diff, and More. `tap` opens up to
+Use `1`–`6` or `Tab` for Overview, Agent, Browser, Project, Diff, and Process. `tap` opens up to
 nine revision-bound semantic targets. Continuous pixels remain off by default.
 
 `live on` enables an ephemeral terminal-native browser using Herdr-owned
@@ -62,10 +63,11 @@ graphics, direct Kitty, or true-color ANSI. `live quality data` is intended
 for constrained links. Herdr is optional but recommended as the persistent PTY
 owner for detach/reattach. tmux remains compatible.
 
-The `safari` command prints the stable full-fidelity iPhone workflow: configure
-an SSH local port forward to the loopback-bound development server, then open
-the local URL in Safari. Do not expose the development server or Chrome CDP
-publicly.
+The `safari` command prints the stable application-server iPhone workflow. For
+the active BrowserSession, `browser remote-view open` starts a tokenized,
+loopback-only, revocable view and prints its SSH-forward hint. Configure the
+matching SSH local forward, then open the printed local URL in Safari. Do not
+expose the application server, Remote View, or Chrome CDP publicly.
 
 ## MCP and clients
 
@@ -82,7 +84,7 @@ explicit detach, eviction, server shutdown, or daemon shutdown.
 Repository TypeScript and Python clients provide typed browser/project helpers,
 cursor-bounded event subscriptions, cancellation, process-health waits,
 reconnect workflows, and mutation-lease scopes. They are not published to npm
-or PyPI in the `0.3.2` line.
+or PyPI in the `0.3.3` line.
 
 ## Agents
 

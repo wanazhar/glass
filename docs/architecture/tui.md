@@ -103,13 +103,15 @@ render bounded JSON in the inspector pane without starting a browser operation.
 
 ## Remote and phone presentation
 
-Automatic presentation has three terminal-width classes: phone through 72
-columns, compact through 109 columns, and wide above that. SSH and Mosh extend
-the phone threshold through 96 columns because landscape mobile terminals are
-often wider while retaining phone input constraints. `--tui-layout mobile`
-and `--tui-layout desktop` provide deterministic overrides.
+Automatic layout has three terminal-geometry classes: phone through 72
+columns, compact through 109 columns, and wide above that. SSH, Mosh, RTT,
+throughput and graphics evidence do not change those breakpoints. Users can
+select phone layout explicitly on a wide mobile terminal, and can select wide
+layout over SSH. Connection-aware pixel policy is defined separately in
+[Connection-aware browser presentation](connection-presentation.md).
 
-Phone mode is a single-pane stack with Home, Agent, App, Diff, and More views.
+Phone mode is a single-pane stack with Overview, Agent, Browser, Project,
+Diff, and Process/Logs views plus an always-reachable command palette.
 Home is a bounded attention inbox. App supports a numbered semantic-target
 overlay, Diff supports compact verification cards, and normal shutdown writes
 a non-sensitive reconnect capsule. Terminal bell notification is explicit and
@@ -130,9 +132,16 @@ order and cannot terminate the browser worker. `live doctor` exposes the
 transport signals, selected backend, throughput, FPS, and drops. The `safari`
 command remains the stable full-fidelity SSH-forward path.
 
-Automatic quality uses only completed metric windows. A drop ratio of 20% or
-more degrades one profile; three stable windows at 2% or less recover one
-profile. Manual quality selection disables adaptation.
+Automatic quality uses only completed metric windows. It reduces capture scale
+before active frame rate and uses the floor/profile selected from connection
+evidence. Manual quality selection disables adaptation. The low 3/6/12 FPS
+tiers belong only to constrained visual-assist policy; healthy local profiles
+target 30 or 60 FPS.
+
+Browser startup and disconnect are subsystem states. The browser connection
+controller remains alive after failure and the TUI exposes probe, launch,
+attach, target selection, reconnect, disconnect and semantic-only operations.
+See [Browser connection controller and Remote View v1](browser-connection.md).
 
 Glass reads Herdr's documented pane markers for context and, when live pixels
 are explicitly enabled, can open Herdr's experimental owned pane-graphics

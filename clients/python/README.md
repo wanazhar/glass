@@ -14,7 +14,7 @@ python -m pip install .
 ```
 
 The client does not install Chrome or Chromium.
-It is a repository client for the `0.3.2` source line and is not currently
+It is a repository client for the `0.3.3` source line and is not currently
 published to PyPI. Install it from this checkout and pair it with the exact
 matching Glass executable.
 
@@ -71,7 +71,8 @@ source-link, and agent-harness operations have typed snake-case helpers:
 
 ```python
 project = glass.project_inspect("/srv/storefront")
-files = glass.project_files(project["root"])
+tree = glass.project_files(project["root"])
+files = tree["entries"]
 diff = glass.project_diff(project["root"])
 glass.agent_prompt("Explain the failing verification", project["root"])
 ```

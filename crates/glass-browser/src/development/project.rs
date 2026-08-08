@@ -14,6 +14,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -111,6 +112,17 @@ pub struct FileEntry {
     pub actor: Option<Actor>,
 }
 
+/// Explicit result envelope for a bounded project-tree traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTreeResult {
+    pub entries: Vec<FileEntry>,
+    pub truncated: bool,
+    pub limit: usize,
+    pub ignored_directories: Vec<String>,
+    pub skipped_symlinks: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorBuffer {
@@ -136,6 +148,8 @@ pub struct ProjectWorkspace {
     graph_path: PathBuf,
     collaboration: super::CollaborationBus,
     diagnostics: BTreeMap<String, Vec<LanguageDiagnostic>>,
+    language: Option<LspClient>,
+    tree_cache: Mutex<Option<(Instant, ProjectTreeResult)>>,
     actors: BTreeMap<String, Actor>,
     actor: Actor,
     revision: u64,
@@ -202,6 +216,8 @@ impl ProjectWorkspace {
             graph_path,
             collaboration: super::CollaborationBus::default(),
             diagnostics: BTreeMap::new(),
+            language: None,
+            tree_cache: Mutex::new(None),
             actors,
             actor,
             revision: 0,
@@ -241,6 +257,12 @@ impl ProjectWorkspace {
         &self.diagnostics
     }
 
+    fn invalidate_tree_cache(&self) {
+        if let Ok(mut cache) = self.tree_cache.lock() {
+            *cache = None;
+        }
+    }
+
     pub fn actors(&self) -> impl Iterator<Item = &Actor> {
         self.actors.values()
     }
@@ -269,18 +291,46 @@ impl ProjectWorkspace {
     }
 
     pub fn list_files(&self) -> DevelopmentResult<Vec<FileEntry>> {
-        let mut entries = Vec::new();
-        visit_files(&self.root, &self.root, &mut entries)?;
+        Ok(self.list_files_result()?.entries)
+    }
+
+    /// Traverse the project with explicit bounds and skip evidence.
+    pub fn list_files_result(&self) -> DevelopmentResult<ProjectTreeResult> {
+        {
+            let cache = self.tree_cache.lock().map_err(|_| {
+                DevelopmentError::Conflict("project tree cache is unavailable".into())
+            })?;
+            if let Some((created, result)) = cache.as_ref()
+                && created.elapsed() <= Duration::from_millis(250)
+            {
+                return Ok(result.clone());
+            }
+        }
+        let mut result = ProjectTreeResult {
+            entries: Vec::new(),
+            truncated: false,
+            limit: MAX_FILE_ENTRIES,
+            ignored_directories: Vec::new(),
+            skipped_symlinks: 0,
+        };
+        visit_files(&self.root, &self.root, &mut result)?;
         let git = git_statuses(&self.root);
-        for entry in &mut entries {
+        for entry in &mut result.entries {
             entry.git_status = git.get(&entry.path).cloned();
             if let Some(buffer) = self.buffers.get(&entry.path) {
                 entry.dirty = buffer.dirty;
                 entry.actor = Some(buffer.actor.clone());
             }
         }
-        entries.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(entries)
+        result
+            .entries
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        result.ignored_directories.sort();
+        result.ignored_directories.dedup();
+        *self.tree_cache.lock().map_err(|_| {
+            DevelopmentError::Conflict("project tree cache is unavailable".into())
+        })? = Some((Instant::now(), result.clone()));
+        Ok(result)
     }
 
     pub fn read_file(&mut self, path: &str) -> DevelopmentResult<String> {
@@ -362,6 +412,7 @@ impl ProjectWorkspace {
         buffer.dirty = hash(&buffer.content) != buffer.original_hash;
         buffer.actor = actor;
         self.revision = self.revision.saturating_add(1);
+        self.invalidate_tree_cache();
         Ok(())
     }
 
@@ -407,7 +458,9 @@ impl ProjectWorkspace {
             .push(std::mem::replace(&mut buffer.content, previous));
         buffer.dirty = hash(&buffer.content) != buffer.original_hash;
         self.revision = self.revision.saturating_add(1);
-        Ok(buffer.clone())
+        let result = buffer.clone();
+        self.invalidate_tree_cache();
+        Ok(result)
     }
 
     pub fn redo_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
@@ -426,7 +479,9 @@ impl ProjectWorkspace {
             .push(std::mem::replace(&mut buffer.content, next));
         buffer.dirty = hash(&buffer.content) != buffer.original_hash;
         self.revision = self.revision.saturating_add(1);
-        Ok(buffer.clone())
+        let result = buffer.clone();
+        self.invalidate_tree_cache();
+        Ok(result)
     }
 
     pub fn replace_in_buffer(
@@ -478,6 +533,7 @@ impl ProjectWorkspace {
     }
 
     pub fn rename_path(&mut self, from: &str, to: &str, actor: Actor) -> DevelopmentResult<()> {
+        self.invalidate_tree_cache();
         let (source, source_relative) = self.resolve_path(from, false)?;
         let (destination, destination_relative) = self.resolve_path(to, true)?;
         if destination.exists() {
@@ -508,6 +564,7 @@ impl ProjectWorkspace {
     }
 
     pub fn create_directory(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
+        self.invalidate_tree_cache();
         let (absolute, relative) = self.resolve_path(path, true)?;
         if absolute.exists() {
             return Err(DevelopmentError::Conflict(format!(
@@ -524,6 +581,7 @@ impl ProjectWorkspace {
     }
 
     pub fn delete_path(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
+        self.invalidate_tree_cache();
         let (absolute, relative) = self.resolve_path(path, false)?;
         let metadata = fs::symlink_metadata(&absolute)?;
         if metadata.is_dir() {
@@ -548,6 +606,7 @@ impl ProjectWorkspace {
     }
 
     pub fn write_file(&mut self, path: &str, content: &str, actor: Actor) -> DevelopmentResult<()> {
+        self.invalidate_tree_cache();
         if content.len() > MAX_FILE_BYTES {
             return Err(DevelopmentError::InvalidInput(format!(
                 "file exceeds the {} byte write limit",
@@ -590,7 +649,7 @@ impl ProjectWorkspace {
                 "afterHash": hash(content)
             }),
         )?;
-        if self.processes.list().iter().any(|process| {
+        if self.processes.list_checked()?.iter().any(|process| {
             matches!(process.state, super::ProcessState::Running)
                 && (process.name.contains("dev") || process.name.contains("server"))
         }) {
@@ -764,8 +823,14 @@ impl ProjectWorkspace {
         &mut self,
         path: &str,
     ) -> DevelopmentResult<Vec<LanguageDiagnostic>> {
-        let mut client = LspClient::rust_analyzer(&self.root)?;
-        let diagnostics = client.diagnostics(path)?;
+        if self.language.is_none() {
+            self.language = Some(LspClient::rust_analyzer(&self.root)?);
+        }
+        let diagnostics = self
+            .language
+            .as_mut()
+            .expect("language client initialized")
+            .diagnostics(path)?;
         self.diagnostics.insert(path.into(), diagnostics.clone());
         self.record(
             DevelopmentEventKind::DiagnosticsPublished,
@@ -821,7 +886,7 @@ impl ProjectWorkspace {
                 });
             }
         }
-        for process in self.processes.list() {
+        for process in self.processes.list_checked()? {
             if let Some(score) = super::fuzzy_score(query, &process.name) {
                 hits.push(SearchHit {
                     kind: SearchKind::Process,
@@ -1057,24 +1122,32 @@ pub(crate) fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {
     Ok(root)
 }
 
-fn visit_files(root: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> DevelopmentResult<()> {
-    if entries.len() >= MAX_FILE_ENTRIES {
+fn visit_files(
+    root: &Path,
+    current: &Path,
+    result: &mut ProjectTreeResult,
+) -> DevelopmentResult<()> {
+    if result.entries.len() >= MAX_FILE_ENTRIES {
+        result.truncated = true;
         return Ok(());
     }
     let mut children =
         fs::read_dir(current).map(|entries| entries.collect::<Result<Vec<_>, _>>())??;
     children.sort_by_key(|entry| entry.file_name());
     for entry in children {
-        if entries.len() >= MAX_FILE_ENTRIES {
+        if result.entries.len() >= MAX_FILE_ENTRIES {
+            result.truncated = true;
             break;
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == ".git" || name == "target" || name == "node_modules" || name == ".glass" {
+            result.ignored_directories.push(name);
             continue;
         }
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
+            result.skipped_symlinks = result.skipped_symlinks.saturating_add(1);
             continue;
         }
         let relative = path
@@ -1083,7 +1156,7 @@ fn visit_files(root: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> Dev
             .to_string_lossy()
             .into_owned();
         if metadata.is_dir() {
-            entries.push(FileEntry {
+            result.entries.push(FileEntry {
                 path: relative,
                 kind: FileKind::Directory,
                 bytes: None,
@@ -1091,9 +1164,9 @@ fn visit_files(root: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> Dev
                 dirty: false,
                 actor: None,
             });
-            visit_files(root, &path, entries)?;
+            visit_files(root, &path, result)?;
         } else if metadata.is_file() {
-            entries.push(FileEntry {
+            result.entries.push(FileEntry {
                 path: relative,
                 kind: FileKind::File,
                 bytes: Some(metadata.len()),
@@ -1376,6 +1449,28 @@ mod tests {
             .unwrap();
         project.delete_path("nested", Actor::local()).unwrap();
         assert!(!root.join("nested").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_tree_reports_ignore_and_symlink_semantics() {
+        let root = fixture();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::write(root.join("target/debug/ignored"), "ignored").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("linked.rs")).unwrap();
+        let project = ProjectWorkspace::open(&root).unwrap();
+        let tree = project.list_files_result().unwrap();
+        assert_eq!(tree.limit, MAX_FILE_ENTRIES);
+        assert!(tree.ignored_directories.contains(&"target".to_string()));
+        assert!(
+            !tree
+                .entries
+                .iter()
+                .any(|entry| entry.path.contains("ignored"))
+        );
+        #[cfg(unix)]
+        assert_eq!(tree.skipped_symlinks, 1);
         let _ = fs::remove_dir_all(root);
     }
 }

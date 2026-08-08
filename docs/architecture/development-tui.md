@@ -1,6 +1,6 @@
 # Development workspace TUI layout
 
-Status: Implemented 0.3.2 contract
+Status: Accepted 0.3.3 contract
 
 The Development mode is a native Ratatui view layered beside the existing
 Browser Workspace. It does not replace browser authority or make screenshots
@@ -27,9 +27,10 @@ the default context.
 |---|---|---|
 | `F7` | desktop | enter Development mode |
 | `F1`–`F6` | global | return to the existing browser surfaces |
-| `1`–`5` | phone, empty command | switch Home, Agent, App, Diff, and More |
+| `1`–`6` | phone, empty command | switch Overview, Agent, Browser, Project, Diff, and Process |
 | `Tab` / `Shift-Tab` | phone | cycle the single-pane phone views |
 | `?` | phone | show or hide the phone control guide |
+| `:` | global | open the filtered command palette |
 | `safari` | command area | show private SSH port-forwarding instructions |
 | `inbox` / `notify on` | command area | show attention groups or opt into a deduplicated terminal bell |
 | `tap` / `tap N` | App | show and activate bounded revision-bound semantic actions |
@@ -60,18 +61,22 @@ the default context.
 - **Busy**: browser operations retain cancellation and mutation leases. LSP
   and Pi work run on bounded worker channels, so editor, render, and browser
   input continue to be polled.
-- **Phone**: at 72 columns or fewer, or through 96 columns in a remote shell,
-  one full-width view is visible. Browser context remains semantic and
+- **Phone**: at 72 columns or fewer, or by explicit user preference, one
+  full-width view is visible. Browser context remains semantic and
   continuous visual streaming is disabled by default. `--tui-live on` adds an
   adaptive live App view without changing the single-pane navigation model.
   An explicit `--tui-layout mobile` override is available.
   Home prioritizes needs-attention items. App can layer a numbered semantic
   action overlay above semantics or live pixels; the target reference retains
   the observation revision and fails closed when stale.
-- **Compact**: terminals from 73 through 109 columns use a condensed workspace
-  unless remote phone detection applies.
+- **Compact**: terminals from 73 through 109 columns use a condensed workspace.
 - **Wide**: terminals at 110 columns or more use the complete development
   composition below. `--tui-layout desktop` forces this presentation.
+
+Transport and graphics policy never select the layout. A phone layout may use
+local graphics; a wide SSH layout may use semantic-only browser presentation.
+Browser recovery appears as a focused dialog on compact/wide layouts and as an
+attention decision sheet on phone layouts. It never destroys project state.
 
 The runtime panel distinguishes confirmed state (`◆`, `→`, `✓`) from inferred
 source/runtime links. A link never becomes certain merely because it is shown

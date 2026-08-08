@@ -145,6 +145,8 @@
 //!   errors, and mandatory dispatcher.
 //! - [`capabilities`] — versioned discovery and negotiation manifest.
 //! - [`cli`] — Clap argument definitions and command dispatch.
+//! - [`connection`] — independent layout, transport, graphics, shell,
+//!   multiplexer, presentation-policy, and observatory contracts.
 //! - [`daemon`] — local Unix-socket lifecycle, isolated MCP children, leases,
 //!   logs, and interrupted-run recovery.
 //! - [`development`] — project files, buffers, PTYs, events, graph, replay,
@@ -185,6 +187,8 @@ pub mod browser_backend;
 pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.
 pub mod cli;
+/// Independent connection-environment and presentation-policy contracts.
+pub mod connection;
 /// Local Unix-socket daemon lifecycle and MCP bridge.
 pub mod daemon;
 /// Terminal-native project development runtime contracts.

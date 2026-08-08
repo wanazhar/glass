@@ -31,7 +31,7 @@ all-features = true
 default = []
 visual-compare = []
 fuzzing = []
-development-runtime = ["dep:portable-pty", "dep:toml"]
+development-runtime = ["dep:portable-pty", "dep:toml", "dep:rmpv", "dep:windows-sys"]
 
 [dependencies]
 base64 = "0.22"
@@ -54,6 +54,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
 futures-util = "0.3"
+getrandom = "0.3"
 libc = "0.2"
 fs2 = "0.4"
 imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
@@ -63,6 +64,10 @@ png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 portable-pty = { version = "0.9", optional = true }
 toml = { version = "0.9", optional = true }
+rmpv = { version = "1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 base64-simd = "0.8"

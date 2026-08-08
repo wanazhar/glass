@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names every tool in the `0.3.2` client-conformance inventory.
+This catalog names every tool in the `0.3.3` client-conformance inventory.
 The server's `tools/list` response is authoritative for exact JSON Schema,
 required fields, and additive descriptions in the installed version. Use this
 catalog for discovery and [MCP integration](mcp.md) for framing, negotiation,
@@ -18,7 +18,7 @@ retained content is bounded, and mutations are actor-attributed.
 | Tool | Use |
 |---|---|
 | `project.inspect` | Detect project type, commands, configuration, and runtime state. |
-| `project.files` | List bounded files and directories. |
+| `project.files` | List bounded files and directories with explicit truncation, ignored-directory, and skipped-symlink metadata. |
 | `project.search` | Search files, entities, processes, events, and commands. |
 | `project.read` | Read one bounded UTF-8 project file. |
 | `project.edit` | Replace and atomically save one file with external-agent provenance. |

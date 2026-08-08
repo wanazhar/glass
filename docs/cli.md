@@ -29,7 +29,11 @@ installed version.
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--response-mode minimal\|normal\|diagnostic` | `minimal` | Select the bounded agent-facing result projection. |
 | `--mcp` | off | Start the MCP stdio server. |
-| `--tui-layout auto\|desktop\|mobile` | `auto` | Select responsive terminal layout policy. |
+| `--tui-layout auto\|desktop\|compact\|mobile` | `auto` | Select geometry-only terminal layout. |
+| `--tui-transport auto\|local\|remote-fast\|remote-constrained\|mosh\|unknown-remote` | `auto` | Override independently measured transport policy. |
+| `--tui-graphics auto\|kitty\|sixel\|i-term-inline\|ansi\|semantic-only` | `auto` | Override graphics capability; auto requires active evidence. |
+| `--tui-rtt-ms MS` | unknown | Supply measured round-trip latency. |
+| `--tui-throughput-mbps MBPS` | unknown | Supply measured terminal-link throughput. |
 | `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require a detected native backend, or allow ANSI fallback. |
 | `--tui-live-backend auto\|herdr\|kitty\|ansi` | `auto` | Select the terminal-native renderer. |
 | `--tui-live-quality data\|balanced\|smooth` | `balanced` | Select the adaptive capture size and target frame rate. |

@@ -399,6 +399,14 @@ export interface ProjectFileEntry {
   actor?: DevelopmentActor;
 }
 
+export interface ProjectTreeResult {
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+  limit: number;
+  ignoredDirectories: string[];
+  skippedSymlinks: number;
+}
+
 export interface ProjectSearchHit {
   kind: "file" | "browserEntity" | "process" | "event" | "command";
   label: string;
@@ -548,7 +556,7 @@ export class GlassClient {
         schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1], developmentCockpit: [1] },
       },
       capabilities: {},
-      clientInfo: { name: "glass-typescript-client", version: "0.3.2" },
+      clientInfo: { name: "glass-typescript-client", version: "0.3.3" },
     });
     const manifest = (result as { glass?: GlassCapabilityManifest }).glass;
     if (!manifest) throw new Error("Glass capability manifest missing from initialize response");
@@ -617,8 +625,8 @@ export class GlassClient {
   projectInspect(root = "."): Promise<ProjectInspectResult> {
     return this.call<ProjectInspectResult>("project.inspect", { root });
   }
-  projectFiles(root = "."): Promise<ProjectFileEntry[]> {
-    return this.call<ProjectFileEntry[]>("project.files", { root });
+  projectFiles(root = "."): Promise<ProjectTreeResult> {
+    return this.call<ProjectTreeResult>("project.files", { root });
   }
   projectSearch(query: string, root = ".", limit = 64): Promise<ProjectSearchHit[]> {
     return this.call<ProjectSearchHit[]>("project.search", { root, query, limit });

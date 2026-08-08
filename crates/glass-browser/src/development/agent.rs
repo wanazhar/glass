@@ -33,11 +33,43 @@ pub struct AgentContextPacket {
     pub processes: Value,
     pub recent_events: Value,
     pub resolved: Value,
+    pub browser: Option<BrowserAgentContext>,
+    pub authority: AgentAuthorityContext,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserAgentContext {
+    pub connected: bool,
+    pub target_id: Option<String>,
+    pub origin: Option<String>,
+    pub title: String,
+    pub browser_revision: u64,
+    pub semantic_summary: String,
+    pub workflow_state: String,
+    pub memory_scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAuthorityContext {
+    pub project_revision: u64,
+    pub browser_revision: Option<u64>,
+    pub mutation_lease_required: bool,
+    pub stale_context_rejected: bool,
 }
 
 pub fn resolve_context(
     workspace: &mut ProjectWorkspace,
     prompt: &str,
+) -> DevelopmentResult<AgentContextPacket> {
+    resolve_context_with_browser(workspace, prompt, None)
+}
+
+pub fn resolve_context_with_browser(
+    workspace: &mut ProjectWorkspace,
+    prompt: &str,
+    browser: Option<&BrowserAgentContext>,
 ) -> DevelopmentResult<AgentContextPacket> {
     if prompt.len() > 8 * 1024 {
         return Err(DevelopmentError::InvalidInput(
@@ -74,10 +106,9 @@ pub fn resolve_context(
                 .map(serde_json::to_value)
                 .transpose()?
                 .unwrap_or(Value::Null),
-            "@page" | "@browser" => serde_json::json!({
-                "status": "requires-attached-browser-workspace",
-                "defaultObservation": "structured"
-            }),
+            "@page" | "@browser" => browser.map(serde_json::to_value).transpose()?.unwrap_or_else(|| serde_json::json!({
+                "status": "requires-attached-browser-workspace", "defaultObservation": "structured"
+            })),
             value if value.starts_with("@entity:") => {
                 serde_json::to_value(workspace.graph().links_for(&value[8..]))?
             }
@@ -92,9 +123,9 @@ pub fn resolve_context(
                 })?;
                 serde_json::to_value(workspace.replay(index, 1)?)?
             }
-            "@selection" | "@file" | "@symbol" | "@workflow" | "@memory" => {
-                serde_json::json!({"status": "not-selected"})
-            }
+            "@workflow" => browser.map(|value| serde_json::json!({"state":value.workflow_state,"browserRevision":value.browser_revision})).unwrap_or_else(|| serde_json::json!({"status":"not-attached"})),
+            "@memory" => browser.map(|value| serde_json::json!({"scope":value.memory_scope,"authoritative":false})).unwrap_or_else(|| serde_json::json!({"status":"not-attached"})),
+            "@selection" | "@file" | "@symbol" => serde_json::json!({"status": "not-selected"}),
             value => {
                 return Err(DevelopmentError::InvalidInput(format!(
                     "unsupported agent context reference: {value}"
@@ -103,13 +134,14 @@ pub fn resolve_context(
         };
         resolved.insert(reference.clone(), value);
     }
-    let processes = workspace.processes().list();
+    let processes = workspace.processes().list_checked()?;
     let events = workspace
         .timeline()
         .events()
         .rev()
         .take(32)
         .collect::<Vec<_>>();
+    let project_revision = workspace.revision();
     Ok(AgentContextPacket {
         schema_version: "glass.agent-context.v1".into(),
         references,
@@ -118,6 +150,13 @@ pub fn resolve_context(
         processes: serde_json::to_value(processes)?,
         recent_events: serde_json::to_value(events)?,
         resolved: Value::Object(resolved),
+        browser: browser.cloned(),
+        authority: AgentAuthorityContext {
+            project_revision,
+            browser_revision: browser.map(|value| value.browser_revision),
+            mutation_lease_required: true,
+            stale_context_rejected: true,
+        },
     })
 }
 
@@ -150,6 +189,7 @@ impl ToolAuthorization {
 pub struct AgentToolGateway {
     registry: ToolRegistry,
     descriptors: Vec<ToolDescriptor>,
+    browser_context: Option<BrowserAgentContext>,
 }
 
 impl Default for AgentToolGateway {
@@ -159,11 +199,39 @@ impl Default for AgentToolGateway {
         Self {
             registry,
             descriptors,
+            browser_context: None,
         }
     }
 }
 
 impl AgentToolGateway {
+    pub fn set_browser_context(&mut self, context: Option<BrowserAgentContext>) {
+        self.browser_context = context;
+        for descriptor in &mut self.descriptors {
+            let available = match descriptor.name.as_str() {
+                "glass.browser.observe" | "glass.memory.retrieve" => self
+                    .browser_context
+                    .as_ref()
+                    .is_some_and(|value| value.connected),
+                "glass.workflow.pause" | "glass.workflow.resume" => self
+                    .browser_context
+                    .as_ref()
+                    .is_some_and(|value| value.connected && value.workflow_state == "active"),
+                _ => continue,
+            };
+            descriptor.available = available;
+            descriptor.unavailable_reason = (!available).then(|| match descriptor.name.as_str() {
+                "glass.memory.retrieve" => {
+                    "Requires an attached profile-scoped semantic memory store".into()
+                }
+                name if name.starts_with("glass.workflow") => {
+                    "Requires an active browser workflow run".into()
+                }
+                _ => "Requires an attached Browser Workspace".into(),
+            });
+        }
+    }
+
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.descriptors.clone()
     }
@@ -200,9 +268,10 @@ impl AgentToolGateway {
             DevelopmentEventKind::AgentToolCalled,
             tool_call_evidence(call, descriptor.mutating, &argument_evidence),
         )?;
-        let result = self
-            .registry
-            .execute_unchecked(workspace, call, authorization.actor.clone());
+        let result = self.execute_attached(call).unwrap_or_else(|| {
+            self.registry
+                .execute_unchecked(workspace, call, authorization.actor.clone())
+        });
         let (ok, bytes) = match &result {
             Ok(value) => {
                 let mut counter = BoundedJsonWriter::new(MAX_TOOL_RESULT_BYTES);
@@ -228,6 +297,32 @@ impl AgentToolGateway {
             serde_json::json!({"id": call.id, "name": call.name, "ok": ok, "bytes": bytes}),
         )?;
         result
+    }
+
+    fn execute_attached(&self, call: &ToolCall) -> Option<DevelopmentResult<Value>> {
+        let context = self.browser_context.as_ref()?;
+        match call.name.as_str() {
+            "glass.browser.observe" => Some(Ok(serde_json::json!({
+                "structured": true,
+                "targetId": context.target_id,
+                "origin": context.origin,
+                "title": context.title,
+                "browserRevision": context.browser_revision,
+                "semanticSummary": context.semantic_summary,
+                "freshness": "current-context-packet"
+            }))),
+            "glass.memory.retrieve" => Some(Ok(serde_json::json!({
+                "scope": context.memory_scope,
+                "authoritative": false,
+                "requiresFreshSemanticEvidence": true
+            }))),
+            "glass.workflow.pause" | "glass.workflow.resume" => Some(Ok(serde_json::json!({
+                "workflowState": context.workflow_state,
+                "browserRevision": context.browser_revision,
+                "requiresMutationLease": true
+            }))),
+            _ => None,
+        }
     }
 }
 
@@ -397,7 +492,7 @@ impl ToolRegistry {
             "glass.file.read" => {
                 Ok(serde_json::json!({"content": workspace.read_file(string("path")?)?}))
             }
-            "glass.file.list" => Ok(serde_json::to_value(workspace.list_files()?)?),
+            "glass.file.list" => Ok(serde_json::to_value(workspace.list_files_result()?)?),
             "glass.file.search" => Ok(serde_json::to_value(
                 workspace.search(string("query")?, 64)?,
             )?),
@@ -426,7 +521,9 @@ impl ToolRegistry {
             "glass.process.logs" => {
                 Ok(serde_json::json!({"output": workspace.processes().output(string("name")?)?}))
             }
-            "glass.process.list" => Ok(serde_json::to_value(workspace.processes().list())?),
+            "glass.process.list" => {
+                Ok(serde_json::to_value(workspace.processes().list_checked()?)?)
+            }
             "glass.git.status" => Ok(serde_json::to_value(workspace.diff()?)?),
             "glass.semantic.inspect" => Ok(serde_json::to_value(
                 workspace.graph().links_for(string("entity")?),
@@ -438,7 +535,7 @@ impl ToolRegistry {
             )?)?),
             "glass.runtime.inspect" => Ok(serde_json::json!({
                 "project": workspace.detection(),
-                "processes": workspace.processes().list(),
+                "processes": workspace.processes().list_checked()?,
                 "actors": workspace.actors().collect::<Vec<_>>(),
                 "diagnostics": workspace.diagnostics(),
                 "revision": workspace.revision()
@@ -737,6 +834,7 @@ pub struct LocalHarness {
     gateway: AgentToolGateway,
     next_tool_id: u64,
     state: String,
+    browser_context: Option<BrowserAgentContext>,
 }
 
 impl Default for LocalHarness {
@@ -746,11 +844,16 @@ impl Default for LocalHarness {
             gateway: AgentToolGateway::default(),
             next_tool_id: 1,
             state: "idle".into(),
+            browser_context: None,
         }
     }
 }
 
 impl LocalHarness {
+    pub fn set_browser_context(&mut self, context: Option<BrowserAgentContext>) {
+        self.browser_context = context.clone();
+        self.gateway.set_browser_context(context);
+    }
     pub fn actor(&self) -> &Actor {
         &self.actor
     }
@@ -841,7 +944,8 @@ impl LocalHarness {
         }];
         let lower = text.to_ascii_lowercase();
         if text.split_whitespace().any(|token| token.starts_with('@')) {
-            let packet = resolve_context(workspace, &text)?;
+            let packet =
+                resolve_context_with_browser(workspace, &text, self.browser_context.as_ref())?;
             events.push(HarnessEvent::Text {
                 text: serde_json::to_string(&packet)?,
             });
@@ -1304,6 +1408,53 @@ mod tests {
                 .is_err()
         );
         assert_eq!(descriptor_storage, gateway.descriptors.as_ptr());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn attached_browser_enables_structured_observation_without_mutation_authority() {
+        let root = std::env::temp_dir().join(format!("glass-tool-browser-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let mut gateway = AgentToolGateway::default();
+        gateway.set_browser_context(Some(BrowserAgentContext {
+            connected: true,
+            target_id: Some("page-1".into()),
+            origin: Some("https://example.test".into()),
+            title: "Example".into(),
+            browser_revision: 42,
+            semantic_summary: "button Continue".into(),
+            workflow_state: "idle".into(),
+            memory_scope: "profile/default".into(),
+        }));
+        let descriptor = gateway
+            .descriptors()
+            .into_iter()
+            .find(|item| item.name == "glass.browser.observe")
+            .unwrap();
+        assert!(descriptor.available);
+        let result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "observe-1".into(),
+                    name: "glass.browser.observe".into(),
+                    arguments: serde_json::json!({}),
+                },
+                &ToolAuthorization::read_only(Actor::embedded()),
+            )
+            .unwrap();
+        assert_eq!(result["browserRevision"], 42);
+        assert_eq!(result["structured"], true);
+        assert!(
+            !gateway
+                .descriptors()
+                .into_iter()
+                .find(|item| item.name == "glass.browser.act")
+                .unwrap()
+                .available
+        );
         let _ = fs::remove_dir_all(root);
     }
 

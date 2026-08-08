@@ -11,6 +11,8 @@ marked `Local only` is part of an unreleased development build.
 - [CLI reference](cli.md) — global options, commands, targets, and output.
 - [Development Runtime](development-runtime.md) — project onboarding, native
   editing, PTYs, diagnostics, agents, evidence, and Neovim integration.
+- [Mobile and Remote Development](mobile-remote.md) — responsive phone TUI,
+  Herdr persistence, Mosh transport, and private Safari handoff.
 - [Live-site smoke testing](site-smoke.md) — bounded multi-site navigation,
   observation, safe preflight probes, metrics, and policy classifications.
 - [Actions and revisions](actions.md) — guarded actions, typed outcomes, and

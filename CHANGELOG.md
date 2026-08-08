@@ -9,6 +9,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added a single-pane mobile TUI with phone-safe navigation, automatic
+  SSH/Mosh breakpoints, Herdr context detection, semantic-only remote browser
+  presentation, and private Safari port-forwarding guidance.
 - Added a bounded local development runtime for project detection, optional
   `glass.toml` configuration, workspace-confined files and native buffers,
   atomic saves, PTY processes, actor-attributed events, timelines, runtime
@@ -27,6 +30,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Disabled continuous visual capture in phone mode while preserving explicit
+  screenshots and the structured browser observation contract.
 - Kept structured browser observation, explicit screenshot escalation, browser
   policy, MCP framing, and existing v0.3.1 browser contracts unchanged.
 - Require live browser revision evidence before confirming a build/live-update

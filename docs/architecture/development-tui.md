@@ -25,8 +25,12 @@ the default context.
 
 | Input | Scope | Behavior |
 |---|---|---|
-| `F7` | global | enter Development mode |
+| `F7` | desktop | enter Development mode |
 | `F1`–`F6` | global | return to the existing browser surfaces |
+| `1`–`5` | phone, empty command | switch Home, Agent, App, Diff, and More |
+| `Tab` / `Shift-Tab` | phone | cycle the single-pane phone views |
+| `?` | phone | show or hide the phone control guide |
+| `safari` | command area | show private SSH port-forwarding instructions |
 | `project` | command area | show detected project configuration |
 | `project open PATH` | command area | open a bounded native buffer |
 | arrows/type/`Ctrl-S` | editor | navigate, edit, and atomically save |
@@ -52,8 +56,14 @@ the default context.
 - **Busy**: browser operations retain cancellation and mutation leases. LSP
   and Pi work run on bounded worker channels, so editor, render, and browser
   input continue to be polled.
-- **Constrained**: the Development view uses bounded file and source previews;
-  the existing two-pane browser view remains available on smaller terminals.
+- **Phone**: at 72 columns or fewer, or through 96 columns in a remote shell,
+  one full-width view is visible. Continuous visual streaming is disabled and
+  browser context remains semantic. An explicit `--tui-layout mobile`
+  override is available.
+- **Compact**: terminals from 73 through 109 columns use a condensed workspace
+  unless remote phone detection applies.
+- **Wide**: terminals at 110 columns or more use the complete development
+  composition below. `--tui-layout desktop` forces this presentation.
 
 The runtime panel distinguishes confirmed state (`◆`, `→`, `✓`) from inferred
 source/runtime links. A link never becomes certain merely because it is shown
@@ -64,3 +74,9 @@ and live app, and 25% to runtime/tests/actors. The lower 24% is the agent and
 attributed timeline. On constrained terminals, content stays bounded and the
 browser-only modes remain one key away. The browser graphical geometry is
 recomputed against the live-app rectangle, never the editor rectangle.
+
+Herdr, tmux, and Mosh are transport and PTY-lifecycle layers rather than Glass
+browser authorities. Herdr is the recommended mobile development multiplexer
+because it combines persistent panes, agent state, remote attach, and a narrow
+terminal switcher. Glass detects a Herdr-managed pane for status display but
+does not invoke or control the Herdr server.

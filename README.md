@@ -78,6 +78,21 @@ glass
 glass tui
 ```
 
+For an iPhone or another narrow SSH terminal, Glass automatically selects a
+single-pane phone workspace. Force it when terminal dimensions are misleading:
+
+```console
+glass --tui-layout mobile
+```
+
+Use `1` through `5` or `Tab` to switch Home, Agent, App, Diff, and More views.
+The mobile workspace uses structured browser semantics and does not start the
+continuous terminal graphics stream. Run Glass inside
+[Herdr](https://herdr.dev/) for agent-aware detach/reattach persistence. Enter
+`safari` in the TUI for private SSH port-forwarding guidance; Glass never
+publicly exposes the dev server or Chrome CDP to make an iPhone browser view
+work. See [Mobile and remote development](docs/mobile-remote.md).
+
 Enter these commands in the TUI:
 
 ```text

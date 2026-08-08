@@ -100,3 +100,22 @@ Unit tests cover reducer state transitions and command parsing. A worker integra
 The TUI also provides read-only local daemon inspection commands: `daemon status`,
 `daemon doctor`, `daemon logs`, and `daemon recovery`. These commands
 render bounded JSON in the inspector pane without starting a browser operation.
+
+## Remote and phone presentation
+
+Automatic presentation has three terminal-width classes: phone through 72
+columns, compact through 109 columns, and wide above that. SSH and Mosh extend
+the phone threshold through 96 columns because landscape mobile terminals are
+often wider while retaining phone input constraints. `--tui-layout mobile`
+and `--tui-layout desktop` provide deterministic overrides.
+
+Phone mode is a single-pane stack with Home, Agent, App, Diff, and More views.
+Its browser worker does not start the screencast or screenshot fallback, so a
+semantic-only iOS terminal does not pay continuous visual capture and transfer
+cost. Explicit screenshot commands still write requested evidence. The
+`safari` local command renders an SSH local-forwarding recipe without changing
+server bindings or browser authority.
+
+Herdr detection is informational. Glass reads Herdr's documented pane marker
+to label the active context, but process persistence and detach/reattach remain
+owned by Herdr rather than a duplicate multiplexer inside Glass.

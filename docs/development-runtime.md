@@ -21,6 +21,13 @@ editor and live application share the center, and processes, diagnostics,
 actors, and the attributed timeline remain visible on the right. `F1` through
 `F6` retain the browser workspace views.
 
+On a narrow SSH or Mosh terminal, Glass starts directly in the single-pane
+Development workspace. Use `1` through `5` or `Tab` instead of function keys.
+The phone workspace disables continuous pixel streaming and keeps structured
+browser semantics as the App view. See
+[Mobile and remote development](mobile-remote.md) for Herdr persistence and
+the private Safari tunnel workflow.
+
 ## First live loop
 
 ```console

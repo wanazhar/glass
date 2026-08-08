@@ -19,6 +19,7 @@ installed version.
 | `--chrome-path PATH` | discovered | Select the browser executable. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--mcp` | off | Start the MCP stdio server. |
+| `--tui-layout auto\|desktop\|mobile` | `auto` | Select responsive terminal layout policy. |
 
 Place global options before or after the subcommand.
 

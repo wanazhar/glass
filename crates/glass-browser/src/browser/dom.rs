@@ -71,6 +71,9 @@ pub struct CompactInteractiveElement {
     /// HTML input type for form controls (text, email, password, checkbox, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
+    /// HTML autocomplete token used only for conservative sensitivity labels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autocomplete: Option<String>,
     // --- Form value fields (populated only when includeFormValues is set) ---
     /// Current value of the form control, bounded to 256 bytes. Redacted for passwords.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,6 +81,9 @@ pub struct CompactInteractiveElement {
     /// Checked state for checkbox/radio controls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
+    /// Whether the control is disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
     /// Selected option label for `<select>` elements, bounded to 128 bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_option: Option<String>,
@@ -505,8 +511,10 @@ fn project_compact_node(
                 ancestor_path: ancestors.to_vec(),
                 shadow_host_path: None,
                 input_type: node.input_type.clone(),
+                autocomplete: None,
                 value: None,
                 checked: None,
+                disabled: None,
                 selected_option: None,
                 empty: false,
                 read_only: false,

@@ -161,6 +161,16 @@ pub struct SemanticTarget {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty: Option<bool>,
 }
 
 /// One bounded semantic table row or repeated collection item.
@@ -1461,6 +1471,11 @@ fn append_semantic_target(
             .input_type
             .as_deref()
             .map(|value| bounded_semantic_text(value, MAX_ROLE_BYTES)),
+        disabled: control.disabled,
+        read_only: Some(control.read_only),
+        required: Some(control.required),
+        checked: control.checked,
+        empty: Some(control.empty),
     });
 }
 
@@ -2057,6 +2072,11 @@ mod tests {
             role: "button".into(),
             name: "Continue".into(),
             input_type: None,
+            disabled: None,
+            read_only: None,
+            required: None,
+            checked: None,
+            empty: None,
         });
 
         let mut current = previous.clone();
@@ -2158,8 +2178,10 @@ mod tests {
                 ancestor_path: vec!["search:Site search".into()],
                 shadow_host_path: None,
                 input_type: Some("search".into()),
+                autocomplete: None,
                 value: None,
                 checked: None,
+                disabled: None,
                 selected_option: None,
                 empty: false,
                 read_only: false,

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "suite": "glass-web-ir-adversarial-v1",
+  "cases": [
+    {"id":"duplicate-labels-different-forms","mutation":"duplicateSemanticLabelAcrossOwnershipScopes","expected":"relationshipScoped"},
+    {"id":"unrelated-evidence","mutation":"moveFormsEvidenceToUnselectedEntity","expected":"rejected"},
+    {"id":"irrelevant-order","mutation":"reverseEntityAndRelationshipVectors","expected":"canonicalUnchanged"},
+    {"id":"scope-reorder","mutation":"changeRevisionLocalIdsWithinSameGraphScope","expected":"rebound"},
+    {"id":"scope-crossing","mutation":"moveEntityToDifferentFormScope","expected":"removedOrAmbiguous"},
+    {"id":"duplicate-rebound","mutation":"createTwoIdentityCompatibleCandidates","expected":"ambiguous"},
+    {"id":"privacy-token-boundary","mutation":"labelDiscardChanges","expected":"notFinancial"},
+    {"id":"privacy-sensitive-input","mutation":"emailPasswordPaymentAutocomplete","expected":"nonPublic"},
+    {"id":"state-disabled","mutation":"disablePreviouslyActionableField","expected":"mutationActionsRemoved"}
+  ]
+}

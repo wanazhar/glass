@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     io::{BufRead, BufReader, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
@@ -124,6 +124,96 @@ pub fn resolve_context(
 #[derive(Debug, Clone, Default)]
 pub struct ToolRegistry;
 
+const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
+const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct ToolAuthorization {
+    pub actor: Actor,
+    pub allow_mutation: bool,
+    pub confirmed: bool,
+}
+
+impl ToolAuthorization {
+    pub fn read_only(actor: Actor) -> Self {
+        Self {
+            actor,
+            allow_mutation: false,
+            confirmed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentToolGateway {
+    registry: ToolRegistry,
+}
+
+impl AgentToolGateway {
+    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+        self.registry.descriptors()
+    }
+
+    pub fn execute(
+        &self,
+        workspace: &mut ProjectWorkspace,
+        call: &ToolCall,
+        authorization: &ToolAuthorization,
+    ) -> DevelopmentResult<Value> {
+        let descriptor = self
+            .registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == call.name)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
+        if !descriptor.available {
+            return Err(DevelopmentError::InvalidInput(
+                descriptor
+                    .unavailable_reason
+                    .unwrap_or_else(|| format!("tool {} is unavailable", descriptor.name)),
+            ));
+        }
+        validate_tool_arguments(&descriptor, &call.arguments)?;
+        if descriptor.mutating && (!authorization.allow_mutation || !authorization.confirmed) {
+            return Err(DevelopmentError::Conflict(format!(
+                "tool {} requires explicit mutation authority and confirmation",
+                descriptor.name
+            )));
+        }
+        workspace.record_as(
+            authorization.actor.clone(),
+            DevelopmentEventKind::AgentToolCalled,
+            tool_call_evidence(call, descriptor.mutating),
+        )?;
+        let result = self
+            .registry
+            .execute_unchecked(workspace, call, authorization.actor.clone());
+        let (ok, bytes) = match &result {
+            Ok(value) => {
+                let bytes = serde_json::to_vec(value)?.len();
+                if bytes > MAX_TOOL_RESULT_BYTES {
+                    workspace.record_as(
+                        authorization.actor.clone(),
+                        DevelopmentEventKind::AgentToolResult,
+                        serde_json::json!({"id": call.id, "name": call.name, "ok": false, "reason": "result-limit", "bytes": bytes}),
+                    )?;
+                    return Err(DevelopmentError::InvalidInput(format!(
+                        "tool result exceeds the {MAX_TOOL_RESULT_BYTES} byte limit"
+                    )));
+                }
+                (true, bytes)
+            }
+            Err(_) => (false, 0),
+        };
+        workspace.record_as(
+            authorization.actor.clone(),
+            DevelopmentEventKind::AgentToolResult,
+            serde_json::json!({"id": call.id, "name": call.name, "ok": ok, "bytes": bytes}),
+        )?;
+        result
+    }
+}
+
 impl ToolRegistry {
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
         let schema = |properties: Value, required: &[&str]| serde_json::json!({"type":"object", "properties": properties, "required": required, "additionalProperties": false});
@@ -132,6 +222,12 @@ impl ToolRegistry {
                 "glass.file.read",
                 "Read one bounded project file",
                 schema(serde_json::json!({"path":{"type":"string"}}), &["path"]),
+                false,
+            ),
+            descriptor(
+                "glass.file.list",
+                "List bounded project files",
+                schema(serde_json::json!({}), &[]),
                 false,
             ),
             descriptor(
@@ -171,6 +267,12 @@ impl ToolRegistry {
                 false,
             ),
             descriptor(
+                "glass.process.list",
+                "List managed processes",
+                schema(serde_json::json!({}), &[]),
+                false,
+            ),
+            descriptor(
                 "glass.git.status",
                 "Inspect code and runtime impact",
                 schema(serde_json::json!({}), &[]),
@@ -195,6 +297,39 @@ impl ToolRegistry {
                 "glass.runtime.inspect",
                 "Inspect project, processes, actors, and diagnostics",
                 schema(serde_json::json!({}), &[]),
+                false,
+            ),
+            descriptor(
+                "glass.web_ir.inspect",
+                "Validate and inspect one bounded Web IR document",
+                schema(serde_json::json!({"ir":{"type":"object"}}), &["ir"]),
+                false,
+            ),
+            descriptor(
+                "glass.web_ir.diff",
+                "Summarize a validated Web IR revision transition",
+                schema(
+                    serde_json::json!({"before":{"type":"object"},"after":{"type":"object"}}),
+                    &["before", "after"],
+                ),
+                false,
+            ),
+            descriptor(
+                "glass.web_ir.continuity",
+                "Classify graph-scoped entity continuity across two Web IR revisions",
+                schema(
+                    serde_json::json!({"before":{"type":"object"},"after":{"type":"object"},"entityId":{"type":"string"}}),
+                    &["before", "after", "entityId"],
+                ),
+                false,
+            ),
+            descriptor(
+                "glass.task.plan",
+                "Compile a value-free task and return a compact explanation",
+                schema(
+                    serde_json::json!({"task":{"type":"object"},"ir":{"type":"object"}}),
+                    &["task", "ir"],
+                ),
                 false,
             ),
             unavailable_descriptor(
@@ -224,7 +359,7 @@ impl ToolRegistry {
         ]
     }
 
-    pub fn execute(
+    fn execute_unchecked(
         &self,
         workspace: &mut ProjectWorkspace,
         call: &ToolCall,
@@ -245,6 +380,7 @@ impl ToolRegistry {
             "glass.file.read" => {
                 Ok(serde_json::json!({"content": workspace.read_file(string("path")?)?}))
             }
+            "glass.file.list" => Ok(serde_json::to_value(workspace.list_files()?)?),
             "glass.file.search" => Ok(serde_json::to_value(
                 workspace.search(string("query")?, 64)?,
             )?),
@@ -273,6 +409,7 @@ impl ToolRegistry {
             "glass.process.logs" => {
                 Ok(serde_json::json!({"output": workspace.processes().output(string("name")?)?}))
             }
+            "glass.process.list" => Ok(serde_json::to_value(workspace.processes().list())?),
             "glass.git.status" => Ok(serde_json::to_value(workspace.diff()?)?),
             "glass.semantic.inspect" => Ok(serde_json::to_value(
                 workspace.graph().links_for(string("entity")?),
@@ -289,6 +426,69 @@ impl ToolRegistry {
                 "diagnostics": workspace.diagnostics(),
                 "revision": workspace.revision()
             })),
+            "glass.web_ir.inspect" => {
+                let ir: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["ir"].clone())?;
+                ir.validate().map_err(|error| {
+                    DevelopmentError::InvalidInput(format!("invalid Web IR: {error}"))
+                })?;
+                Ok(serde_json::to_value(
+                    crate::protocol::WebIrInspectionResult::from_ir(&ir),
+                )?)
+            }
+            "glass.web_ir.diff" => {
+                let before: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["before"].clone())?;
+                let after: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["after"].clone())?;
+                let diff = before.diff(&after).map_err(|error| {
+                    DevelopmentError::InvalidInput(format!("invalid Web IR transition: {error}"))
+                })?;
+                Ok(serde_json::json!({
+                    "fromRevision": diff.from_revision,
+                    "toRevision": diff.to_revision,
+                    "entityChanges": diff.entity_changes.len(),
+                    "relationshipChanges": diff.relationship_changes.len(),
+                    "coverageChanged": diff.coverage_changed,
+                    "limitsChanged": diff.limits_changed
+                }))
+            }
+            "glass.web_ir.continuity" => {
+                let before: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["before"].clone())?;
+                let after: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["after"].clone())?;
+                let entity_id = string("entityId")?;
+                Ok(serde_json::to_value(
+                    before
+                        .classify_entity_continuity(&after, entity_id)
+                        .map_err(|error| {
+                            DevelopmentError::InvalidInput(format!(
+                                "invalid Web IR transition: {error}"
+                            ))
+                        })?,
+                )?)
+            }
+            "glass.task.plan" => {
+                let task: crate::task_protocol::GlassTask =
+                    serde_json::from_value(call.arguments["task"].clone())?;
+                let ir: crate::web_ir::GlassWebIrV1 =
+                    serde_json::from_value(call.arguments["ir"].clone())?;
+                let plan = crate::task_compiler::compile_task(&task, &ir).map_err(|error| {
+                    DevelopmentError::InvalidInput(format!("task compilation failed: {error}"))
+                })?;
+                Ok(serde_json::json!({
+                    "sourceRevision": plan.source_ir_revision,
+                    "task": plan.task,
+                    "risk": plan.risk,
+                    "confirmationRequired": plan.confirmation_required,
+                    "selectedEntityIds": plan.selected_entity_ids,
+                    "requiredRuntimeCapabilities": plan.required_runtime_capabilities,
+                    "entityEvidenceRequirements": plan.entity_evidence_requirements,
+                    "steps": plan.steps,
+                    "postconditions": plan.postconditions
+                }))
+            }
             name if self
                 .descriptors()
                 .iter()
@@ -301,6 +501,70 @@ impl ToolRegistry {
             _ => Err(DevelopmentError::NotFound(format!("tool {}", call.name))),
         }
     }
+}
+
+fn validate_tool_arguments(
+    descriptor: &ToolDescriptor,
+    arguments: &Value,
+) -> DevelopmentResult<()> {
+    let bytes = serde_json::to_vec(arguments)?.len();
+    if bytes > MAX_TOOL_ARGUMENT_BYTES {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "tool arguments exceed the {MAX_TOOL_ARGUMENT_BYTES} byte limit"
+        )));
+    }
+    let object = arguments.as_object().ok_or_else(|| {
+        DevelopmentError::InvalidInput(format!("{} arguments must be an object", descriptor.name))
+    })?;
+    let properties = descriptor.input_schema["properties"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    for required in descriptor.input_schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !object.contains_key(required) {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "{} requires argument {required}",
+                descriptor.name
+            )));
+        }
+    }
+    for (name, value) in object {
+        let Some(property) = properties.get(name) else {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "{} does not accept argument {name}",
+                descriptor.name
+            )));
+        };
+        let valid = match property["type"].as_str() {
+            Some("string") => value.is_string(),
+            Some("object") => value.is_object(),
+            _ => true,
+        };
+        if !valid {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "{}.{} has the wrong type",
+                descriptor.name, name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn tool_call_evidence(call: &ToolCall, mutating: bool) -> Value {
+    let encoded = serde_json::to_vec(&call.arguments).unwrap_or_default();
+    let digest = Sha256::digest(&encoded);
+    serde_json::json!({
+        "id": call.id,
+        "name": call.name,
+        "mutating": mutating,
+        "argumentBytes": encoded.len(),
+        "argumentSha256": digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    })
 }
 
 fn descriptor(
@@ -380,6 +644,7 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct LocalHarness {
     actor: Actor,
+    gateway: AgentToolGateway,
     next_tool_id: u64,
     state: String,
 }
@@ -388,6 +653,7 @@ impl Default for LocalHarness {
     fn default() -> Self {
         Self {
             actor: Actor::embedded(),
+            gateway: AgentToolGateway::default(),
             next_tool_id: 1,
             state: "idle".into(),
         }
@@ -496,20 +762,13 @@ impl LocalHarness {
         {
             let call = self.tool_call("glass.file.read", serde_json::json!({"path": path}));
             let id = call.id.clone();
-            workspace.record_as(
-                self.actor.clone(),
-                DevelopmentEventKind::AgentToolCalled,
-                serde_json::to_value(&call)?,
-            )?;
-            events.push(HarnessEvent::ToolCall(call));
-            match workspace.read_file(path) {
-                Ok(content) => {
-                    let result = serde_json::json!({"path": path, "content": content});
-                    workspace.record_as(
-                        self.actor.clone(),
-                        DevelopmentEventKind::AgentToolResult,
-                        serde_json::json!({"id": id, "ok": true}),
-                    )?;
+            events.push(HarnessEvent::ToolCall(call.clone()));
+            match self.gateway.execute(
+                workspace,
+                &call,
+                &ToolAuthorization::read_only(self.actor.clone()),
+            ) {
+                Ok(result) => {
                     events.push(HarnessEvent::ToolResult { id, result });
                 }
                 Err(error) => events.push(HarnessEvent::Error {
@@ -519,20 +778,32 @@ impl LocalHarness {
         } else if lower == "files" || lower == "list files" {
             let call = self.tool_call("glass.file.list", serde_json::json!({}));
             let id = call.id.clone();
-            events.push(HarnessEvent::ToolCall(call));
-            let result = serde_json::to_value(workspace.list_files()?)?;
+            events.push(HarnessEvent::ToolCall(call.clone()));
+            let result = self.gateway.execute(
+                workspace,
+                &call,
+                &ToolAuthorization::read_only(self.actor.clone()),
+            )?;
             events.push(HarnessEvent::ToolResult { id, result });
         } else if lower == "process list" || lower == "processes" {
             let call = self.tool_call("glass.process.list", serde_json::json!({}));
             let id = call.id.clone();
-            events.push(HarnessEvent::ToolCall(call));
-            let result = serde_json::to_value(workspace.processes().list())?;
+            events.push(HarnessEvent::ToolCall(call.clone()));
+            let result = self.gateway.execute(
+                workspace,
+                &call,
+                &ToolAuthorization::read_only(self.actor.clone()),
+            )?;
             events.push(HarnessEvent::ToolResult { id, result });
         } else if lower == "diff" {
-            let call = self.tool_call("glass.diff", serde_json::json!({}));
+            let call = self.tool_call("glass.git.status", serde_json::json!({}));
             let id = call.id.clone();
-            events.push(HarnessEvent::ToolCall(call));
-            let result = serde_json::to_value(workspace.diff()?)?;
+            events.push(HarnessEvent::ToolCall(call.clone()));
+            let result = self.gateway.execute(
+                workspace,
+                &call,
+                &ToolAuthorization::read_only(self.actor.clone()),
+            )?;
             events.push(HarnessEvent::ToolResult { id, result });
         } else {
             events.push(HarnessEvent::Text {
@@ -566,6 +837,7 @@ pub struct PiHarness {
     input: ChildStdin,
     output: Receiver<Value>,
     next_id: u64,
+    extension_path: PathBuf,
 }
 
 impl std::fmt::Debug for PiHarness {
@@ -580,6 +852,18 @@ impl std::fmt::Debug for PiHarness {
 
 impl PiHarness {
     pub fn spawn(root: &Path) -> DevelopmentResult<Self> {
+        static NEXT_EXTENSION_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let extension_id = NEXT_EXTENSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let extension_path = std::env::temp_dir().join(format!(
+            "glass-pi-tools-{}-{extension_id}.ts",
+            std::process::id()
+        ));
+        std::fs::write(
+            &extension_path,
+            include_str!("../../assets/pi-glass-tools.ts"),
+        )?;
+        let broker = std::env::current_exe().map_err(DevelopmentError::Io)?;
         let mut child = Command::new("pi")
             .args([
                 "--mode",
@@ -588,7 +872,15 @@ impl PiHarness {
                 "--no-approve",
                 "--no-context-files",
                 "--no-session",
+                "--no-builtin-tools",
+                "--extension",
             ])
+            .arg(&extension_path)
+            .args([
+                "--tools",
+                "glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan",
+            ])
+            .env("GLASS_PI_BROKER_BIN", broker)
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -628,6 +920,7 @@ impl PiHarness {
             input,
             output: receiver,
             next_id: 1,
+            extension_path,
         })
     }
 
@@ -705,6 +998,7 @@ impl Drop for PiHarness {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.extension_path);
     }
 }
 
@@ -792,8 +1086,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
-        let registry = ToolRegistry;
-        let result = registry
+        let gateway = AgentToolGateway::default();
+        let result = gateway
             .execute(
                 &mut workspace,
                 &ToolCall {
@@ -801,7 +1095,11 @@ mod tests {
                     name: "glass.file.patch".into(),
                     arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after"}),
                 },
-                Actor::embedded(),
+                &ToolAuthorization {
+                    actor: Actor::embedded(),
+                    allow_mutation: true,
+                    confirmed: true,
+                },
             )
             .unwrap();
         assert_eq!(result["replacements"], 1);
@@ -810,7 +1108,7 @@ mod tests {
             "after\n"
         );
         assert!(
-            registry
+            gateway
                 .execute(
                     &mut workspace,
                     &ToolCall {
@@ -818,10 +1116,63 @@ mod tests {
                         name: "glass.browser.observe".into(),
                         arguments: serde_json::json!({}),
                     },
-                    Actor::embedded(),
+                    &ToolAuthorization::read_only(Actor::embedded()),
                 )
                 .is_err()
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tool_gateway_rejects_unconfirmed_mutation_and_unknown_arguments_without_audit_leaks() {
+        let root = std::env::temp_dir().join(format!("glass-tool-policy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "private-before\n").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let mutating = ToolCall {
+            id: "denied".into(),
+            name: "glass.file.patch".into(),
+            arguments: serde_json::json!({
+                "path":"note.txt",
+                "search":"private-before",
+                "replace":"private-after"
+            }),
+        };
+        assert!(
+            gateway
+                .execute(
+                    &mut workspace,
+                    &mutating,
+                    &ToolAuthorization::read_only(Actor::embedded()),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("note.txt")).unwrap(),
+            "private-before\n"
+        );
+
+        let invalid = ToolCall {
+            id: "invalid".into(),
+            name: "glass.file.list".into(),
+            arguments: serde_json::json!({"unexpected":"private-value"}),
+        };
+        assert!(
+            gateway
+                .execute(
+                    &mut workspace,
+                    &invalid,
+                    &ToolAuthorization::read_only(Actor::embedded()),
+                )
+                .is_err()
+        );
+        let audit =
+            serde_json::to_string(&workspace.timeline().events().collect::<Vec<_>>()).unwrap();
+        assert!(!audit.contains("private-before"));
+        assert!(!audit.contains("private-after"));
+        assert!(!audit.contains("private-value"));
         let _ = fs::remove_dir_all(root);
     }
 

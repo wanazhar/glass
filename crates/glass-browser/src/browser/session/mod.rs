@@ -134,7 +134,9 @@ pub use snapshot::{
     SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,
     default_session_snapshot_path,
 };
-pub use task::{TaskExecutionResult, TaskStepResult};
+pub use task::{
+    TaskExecutionReceipt, TaskExecutionResult, TaskPostconditionReceipt, TaskStepResult,
+};
 pub use types::*;
 pub use webauthn::{WebAuthnGuard, WebAuthnOptions};
 mod action;

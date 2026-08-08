@@ -1,0 +1,79 @@
+import { Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import { writeFile, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+export default function (pi: ExtensionAPI) {
+  const broker = process.env.GLASS_PI_BROKER_BIN;
+  if (!broker) return;
+
+  const register = (name: string, glassName: string, description: string, parameters: any) => {
+    pi.registerTool({
+      name,
+      label: glassName,
+      description,
+      promptSnippet: description,
+      parameters,
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
+        const call = JSON.stringify({ id: toolCallId, name: glassName, arguments: params });
+        const requestPath = join(tmpdir(), `glass-pi-call-${randomUUID()}.json`);
+        await writeFile(requestPath, call, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        let result;
+        try {
+          result = await pi.exec(
+            broker,
+            ["agent", "tool-file", requestPath, "--root", ctx.cwd],
+            { cwd: ctx.cwd, signal, timeout: 15000 },
+          );
+        } finally {
+          await unlink(requestPath).catch(() => {});
+        }
+        if (result.code !== 0) {
+          throw new Error(result.stderr.trim() || `Glass broker exited ${result.code}`);
+        }
+        const value = JSON.parse(result.stdout);
+        return {
+          content: [{ type: "text", text: JSON.stringify(value) }],
+          details: { broker: "glass", bytes: result.stdout.length },
+        };
+      },
+    });
+  };
+
+  register(
+    "glass_web_ir_inspect",
+    "glass.web_ir.inspect",
+    "Validate and inspect bounded Glass Web IR without requesting a screenshot",
+    Type.Object({ ir: Type.Object({}, { additionalProperties: true }) }),
+  );
+  register(
+    "glass_web_ir_diff",
+    "glass.web_ir.diff",
+    "Summarize a bounded Web IR revision transition",
+    Type.Object({
+      before: Type.Object({}, { additionalProperties: true }),
+      after: Type.Object({}, { additionalProperties: true }),
+    }),
+  );
+  register(
+    "glass_web_ir_continuity",
+    "glass.web_ir.continuity",
+    "Classify graph-scoped entity continuity across Web IR revisions",
+    Type.Object({
+      before: Type.Object({}, { additionalProperties: true }),
+      after: Type.Object({}, { additionalProperties: true }),
+      entityId: Type.String(),
+    }),
+  );
+  register(
+    "glass_task_plan",
+    "glass.task.plan",
+    "Compile a Task Protocol request into a value-free compact explanation",
+    Type.Object({
+      task: Type.Object({}, { additionalProperties: true }),
+      ir: Type.Object({}, { additionalProperties: true }),
+    }),
+  );
+}

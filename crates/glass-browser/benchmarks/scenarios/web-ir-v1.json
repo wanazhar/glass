@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "corpus": "glass-semantic-execution-v1",
-  "baselineType": "fixture-inventory",
+  "baselineType": "live-extraction-corpus",
   "purpose": "Static baseline contract before native Web IR extraction",
   "measurement": {
     "command": "python3 scripts/check-web-ir-corpus.py --output benchmarks/results/web-ir-v1.json",

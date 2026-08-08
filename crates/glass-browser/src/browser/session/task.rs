@@ -3,9 +3,8 @@
 use super::{
     BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
     InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
-    SemanticTarget, StructuredExtractionLimits, StructuredExtractionProvenance,
-    StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
-    parse_revisioned_reference,
+    StructuredExtractionLimits, StructuredExtractionProvenance, StructuredExtractionRecord,
+    StructuredExtractionRequest, StructuredExtractionResult, parse_revisioned_reference,
 };
 use crate::browser::session::{
     KnowledgeLearningPolicy, KnowledgeLearningRequest, KnowledgeLearningResult,
@@ -19,14 +18,15 @@ use crate::extraction::{
 };
 use crate::protocol::{RetryClassification, RetryGuidance};
 use crate::task_compiler::{
-    TaskCompilationOptions, TaskExecutionPlan, TaskPlanOperation, compile_task,
-    compile_task_with_options, effective_postconditions,
+    TaskCompilationOptions, TaskExecutionPlan, TaskPlanOperation, TaskRuntimeCapability,
+    compile_task, compile_task_with_options, effective_postconditions,
 };
 use crate::task_protocol::{
     GlassTask, TaskKind, TaskPostconditionKind, TaskRevisionPolicy, TaskRiskClass,
 };
 use serde::Serialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,7 @@ pub struct TaskExecutionResult {
     pub current_revision: u64,
     pub steps: Vec<TaskStepResult>,
     pub retry: RetryGuidance,
+    pub receipt: TaskExecutionReceipt,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form: Option<FillFormOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,6 +51,62 @@ pub struct TaskExecutionResult {
     pub dialog: Option<PendingDialog>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alerts: Vec<String>,
+}
+
+/// Compact, value-free explanation of why a task was allowed and whether its
+/// verification obligations held.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskExecutionReceipt {
+    pub source_revision: u64,
+    pub selected_entity_ids: Vec<String>,
+    /// Entities for which the plan required an ephemeral, revision-bound
+    /// browser reference. This is deliberately not called `bound`: a
+    /// preflight-failure receipt must not imply that binding succeeded.
+    pub binding_candidate_entity_ids: Vec<String>,
+    pub required_runtime_capabilities: Vec<TaskRuntimeCapability>,
+    pub evidence_requirements: Vec<crate::task_compiler::TaskEntityEvidenceRequirement>,
+    pub confirmation_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub postconditions: Vec<TaskPostconditionReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPostconditionReceipt {
+    pub kind: TaskPostconditionKind,
+    pub held: bool,
+}
+
+impl TaskExecutionReceipt {
+    fn from_plan(plan: &TaskExecutionPlan) -> Self {
+        let binding_candidate_entity_ids = plan
+            .entity_binding_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    key.kind,
+                    crate::web_ir::WebIrEntityKind::Field
+                        | crate::web_ir::WebIrEntityKind::Action
+                        | crate::web_ir::WebIrEntityKind::Link
+                        | crate::web_ir::WebIrEntityKind::NavigationItem
+                        | crate::web_ir::WebIrEntityKind::Tab
+                        | crate::web_ir::WebIrEntityKind::PaginationControl
+                        | crate::web_ir::WebIrEntityKind::UnknownInteractive
+                )
+            })
+            .map(|key| key.entity_id.clone())
+            .collect();
+        Self {
+            source_revision: plan.source_ir_revision,
+            selected_entity_ids: plan.selected_entity_ids.clone(),
+            binding_candidate_entity_ids,
+            required_runtime_capabilities: plan.required_runtime_capabilities.clone(),
+            evidence_requirements: plan.entity_evidence_requirements.clone(),
+            confirmation_required: plan.confirmation_required,
+            postconditions: Vec::new(),
+        }
+    }
 }
 
 /// Outcome of one plan step without exposing authored input values.
@@ -61,6 +118,116 @@ pub struct TaskStepResult {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Ephemeral browser references resolved from a compiled semantic key at the
+/// exact source revision. These bindings never cross the process boundary.
+struct LiveTaskBindings {
+    revision: u64,
+    references: BTreeMap<String, String>,
+}
+
+impl LiveTaskBindings {
+    fn resolve(
+        plan: &TaskExecutionPlan,
+        regions: &[&SemanticRegion],
+        revision: u64,
+    ) -> Result<Self, String> {
+        if revision != plan.source_ir_revision {
+            return Err("cannot bind a plan against a different page revision".into());
+        }
+        let mut references = BTreeMap::new();
+        for key in &plan.entity_binding_keys {
+            if !matches!(
+                key.kind,
+                crate::web_ir::WebIrEntityKind::Field
+                    | crate::web_ir::WebIrEntityKind::Action
+                    | crate::web_ir::WebIrEntityKind::Link
+                    | crate::web_ir::WebIrEntityKind::NavigationItem
+                    | crate::web_ir::WebIrEntityKind::Tab
+                    | crate::web_ir::WebIrEntityKind::PaginationControl
+                    | crate::web_ir::WebIrEntityKind::UnknownInteractive
+            ) {
+                continue;
+            }
+            let candidates = regions
+                .iter()
+                .flat_map(|region| region.targets.iter())
+                .filter(|target| {
+                    key.role
+                        .as_deref()
+                        .is_none_or(|role| target.role.eq_ignore_ascii_case(role))
+                        && key
+                            .name
+                            .as_deref()
+                            .is_none_or(|name| target.name.eq_ignore_ascii_case(name))
+                })
+                .collect::<Vec<_>>();
+            let [target] = candidates.as_slice() else {
+                return Err(format!(
+                    "selected entity {} did not resolve to exactly one revision-bound browser target",
+                    key.entity_id
+                ));
+            };
+            let parsed = parse_revisioned_reference(&target.reference)
+                .map_err(|error| format!("invalid live binding reference: {error}"))?
+                .ok_or_else(|| "live binding is not revisioned".to_string())?;
+            if parsed.revision != revision {
+                return Err(format!(
+                    "selected entity {} resolved to a stale browser target",
+                    key.entity_id
+                ));
+            }
+            references.insert(key.entity_id.clone(), target.reference.clone());
+        }
+        Ok(Self {
+            revision,
+            references,
+        })
+    }
+
+    fn reference_for_name<'a>(
+        &'a self,
+        plan: &TaskExecutionPlan,
+        name: &str,
+    ) -> Result<&'a str, String> {
+        let candidates = plan
+            .entity_binding_keys
+            .iter()
+            .filter(|key| {
+                key.name
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+                    && self.references.contains_key(&key.entity_id)
+            })
+            .collect::<Vec<_>>();
+        let [key] = candidates.as_slice() else {
+            return Err(format!(
+                "compiled entity named {name:?} does not have one live binding"
+            ));
+        };
+        self.references
+            .get(&key.entity_id)
+            .map(String::as_str)
+            .ok_or_else(|| "live binding disappeared before dispatch".into())
+    }
+
+    fn bound_fields(
+        &self,
+        plan: &TaskExecutionPlan,
+        inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        if self.revision != plan.source_ir_revision {
+            return Err("live field bindings are stale".into());
+        }
+        inputs
+            .iter()
+            .map(|(name, value)| {
+                self.reference_for_name(plan, name)
+                    .map(|reference| (reference.to_string(), name.clone(), value.clone()))
+            })
+            .collect()
+    }
 }
 
 fn live_task_evidence_sources() -> Vec<EvidenceSource> {
@@ -167,9 +334,12 @@ impl BrowserSession {
                     role: Some("dialog".into()),
                     name: Some("Pending dialog".into()),
                     input_type: None,
+                    autocomplete: None,
                     required: None,
                     read_only: None,
                     empty: None,
+                    checked: None,
+                    disabled: None,
                     geometry_present: None,
                     parent_role: None,
                     relationship_hint: None,
@@ -242,7 +412,7 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = self.compile_live_task(task).await?;
-        if let Some(detail) = unsupported_postcondition(task) {
+        if let Some(detail) = unsupported_runtime_capability(&plan) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
         if !matches!(
@@ -312,6 +482,13 @@ impl BrowserSession {
                 ));
             }
         };
+        let live_bindings =
+            match LiveTaskBindings::resolve(&plan, &scoped_regions, observation.revision) {
+                Ok(bindings) => bindings,
+                Err(detail) => {
+                    return Ok(preflight_result(task, &plan, observation.revision, &detail));
+                }
+            };
         let mut steps = vec![step(
             &plan,
             TaskPlanOperation::ObserveScope,
@@ -321,7 +498,7 @@ impl BrowserSession {
 
         match task.task {
             TaskKind::NavigationOpenMenu => {
-                Box::pin(self.execute_open_menu_task(task, &plan, &observation, &scoped_regions))
+                Box::pin(self.execute_open_menu_task(task, &plan, &observation, &live_bindings))
                     .await
             }
             TaskKind::NavigationSelectTab => {
@@ -333,27 +510,14 @@ impl BrowserSession {
                         "navigation.selectTab requires the semantic tab input",
                     ));
                 };
-                let target = match unique_target(&scoped_regions, tab_name) {
-                    Ok(target) if target.role.eq_ignore_ascii_case("tab") => target,
-                    Ok(_) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            "navigation.selectTab target is not a semantic tab",
-                        ));
-                    }
+                let target_reference = match live_bindings.reference_for_name(&plan, tab_name) {
+                    Ok(reference) => reference,
                     Err(error) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            &error.to_string(),
-                        ));
+                        return Ok(preflight_result(task, &plan, observation.revision, &error));
                     }
                 };
                 let outcome = bounded(
-                    self.click_with_revision(&target.reference, observation.revision),
+                    self.click_with_revision(target_reference, observation.revision),
                     task.limits.timeout_ms,
                 )
                 .await;
@@ -377,7 +541,7 @@ impl BrowserSession {
                 let succeeded = outcome.is_ok()
                     && wait_for_aria_true(
                         self,
-                        &target.reference,
+                        target_reference,
                         "aria-selected",
                         task.limits.timeout_ms,
                     )
@@ -394,6 +558,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if succeeded {
                         "succeeded"
                     } else {
@@ -513,10 +678,24 @@ impl BrowserSession {
                         task.limits.max_items as usize,
                         64 * 1024,
                     );
+                    let initial_reference = (completed == 0)
+                        .then(|| live_bindings.reference_for_name(&plan, next_name))
+                        .transpose();
+                    let initial_reference = match initial_reference {
+                        Ok(reference) => reference,
+                        Err(error) => {
+                            return Ok(preflight_result(task, &plan, current.revision, &error));
+                        }
+                    };
                     let candidates = region
                         .targets
                         .iter()
-                        .filter(|target| target.name.eq_ignore_ascii_case(next_name))
+                        .filter(|target| {
+                            initial_reference.map_or_else(
+                                || target.name.eq_ignore_ascii_case(next_name),
+                                |reference| target.reference == reference,
+                            )
+                        })
                         .collect::<Vec<_>>();
                     if candidates.is_empty() {
                         stopped = true;
@@ -623,6 +802,7 @@ impl BrowserSession {
                     if !succeeded {
                         return Ok(TaskExecutionResult {
                             task: task.task,
+                            receipt: TaskExecutionReceipt::from_plan(&plan),
                             status: "indeterminate".into(),
                             phase: "pagination-collection".into(),
                             mutation_possible: true,
@@ -685,6 +865,7 @@ impl BrowserSession {
                 }
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if unsafe_until_reconciled {
                         "indeterminate"
                     } else {
@@ -723,29 +904,14 @@ impl BrowserSession {
                         "pagination.next requires the semantic next control input",
                     ));
                 };
-                let target = match unique_target(&scoped_regions, next_name) {
-                    Ok(target) if matches!(target.role.as_str(), "button" | "link" | "tab") => {
-                        target
-                    }
-                    Ok(_) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            "pagination.next target is not a semantic navigation control",
-                        ));
-                    }
+                let target_reference = match live_bindings.reference_for_name(&plan, next_name) {
+                    Ok(reference) => reference,
                     Err(error) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            &error.to_string(),
-                        ));
+                        return Ok(preflight_result(task, &plan, observation.revision, &error));
                     }
                 };
                 let outcome = bounded(
-                    self.click_with_revision(&target.reference, observation.revision),
+                    self.click_with_revision(target_reference, observation.revision),
                     task.limits.timeout_ms,
                 )
                 .await;
@@ -803,6 +969,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if succeeded {
                         "succeeded"
                     } else {
@@ -837,12 +1004,23 @@ impl BrowserSession {
                         "field.read requires the semantic field name in inputs.field",
                     ));
                 };
-                let target = match unique_target(&scoped_regions, field_name) {
-                    Ok(target) => target,
+                let target_reference = match live_bindings.reference_for_name(&plan, field_name) {
+                    Ok(reference) => reference,
                     Err(error) => {
-                        let detail = error.to_string();
-                        return Ok(preflight_result(task, &plan, observation.revision, &detail));
+                        return Ok(preflight_result(task, &plan, observation.revision, &error));
                     }
+                };
+                let Some(target) = scoped_regions
+                    .iter()
+                    .flat_map(|region| region.targets.iter())
+                    .find(|target| target.reference == target_reference)
+                else {
+                    return Ok(preflight_result(
+                        task,
+                        &plan,
+                        observation.revision,
+                        "compiled field binding disappeared before dispatch",
+                    ));
                 };
                 let semantic = bounded(
                     self.semantic_observe(SemanticObservationLevel::Structured),
@@ -898,6 +1076,7 @@ impl BrowserSession {
                 steps.push(step(&plan, TaskPlanOperation::ReadField, "succeeded", None));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "succeeded".into(),
                     phase: "field-read".into(),
                     mutation_possible: false,
@@ -975,6 +1154,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "succeeded".into(),
                     phase: "extraction".into(),
                     mutation_possible: false,
@@ -1030,6 +1210,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "succeeded".into(),
                     phase: "extraction".into(),
                     mutation_possible: false,
@@ -1078,6 +1259,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "succeeded".into(),
                     phase: "extraction".into(),
                     mutation_possible: false,
@@ -1101,6 +1283,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "succeeded".into(),
                     phase: "inspection".into(),
                     mutation_possible: false,
@@ -1128,6 +1311,7 @@ impl BrowserSession {
                             ));
                             return Ok(TaskExecutionResult {
                                 task: task.task,
+                                receipt: TaskExecutionReceipt::from_plan(&plan),
                                 status: "verification-failed".into(),
                                 phase: "validation".into(),
                                 mutation_possible: false,
@@ -1159,6 +1343,7 @@ impl BrowserSession {
                     ));
                     return Ok(TaskExecutionResult {
                         task: task.task,
+                        receipt: TaskExecutionReceipt::from_plan(&plan),
                         status: "stale".into(),
                         phase: "validation".into(),
                         mutation_possible: false,
@@ -1225,6 +1410,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if valid {
                         "succeeded"
                     } else {
@@ -1254,7 +1440,7 @@ impl BrowserSession {
                 })
             }
             TaskKind::FormFill => {
-                let fields = match resolved_fields(&scoped_regions, &task.inputs) {
+                let fields = match live_bindings.bound_fields(&plan, &task.inputs) {
                     Ok(fields) => fields,
                     Err(error) => {
                         return Ok(preflight_result(
@@ -1342,6 +1528,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if verified {
                         "succeeded"
                     } else {
@@ -1373,16 +1560,8 @@ impl BrowserSession {
                         "form.submit requires the semantic submit target in inputs.submit",
                     ));
                 };
-                let target = match unique_target(&scoped_regions, submit_name) {
-                    Ok(target) if is_semantic_submit_control(target) => target,
-                    Ok(_) => {
-                        return Ok(preflight_result(
-                            task,
-                            &plan,
-                            observation.revision,
-                            "form.submit target is not a semantic submit control",
-                        ));
-                    }
+                let target_reference = match live_bindings.reference_for_name(&plan, submit_name) {
+                    Ok(reference) => reference,
                     Err(error) => {
                         return Ok(preflight_result(
                             task,
@@ -1393,7 +1572,7 @@ impl BrowserSession {
                     }
                 };
                 let outcome = bounded(
-                    self.click_with_revision(&target.reference, observation.revision),
+                    self.click_with_revision(target_reference, observation.revision),
                     task.limits.timeout_ms,
                 )
                 .await;
@@ -1427,6 +1606,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if succeeded {
                         "succeeded"
                     } else {
@@ -1466,7 +1646,7 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = self.compile_live_task(task).await?;
-        if let Some(detail) = unsupported_postcondition(task) {
+        if let Some(detail) = unsupported_runtime_capability(&plan) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
         if task.task != TaskKind::NavigationFollow {
@@ -1538,6 +1718,7 @@ impl BrowserSession {
                 ));
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: if verified {
                         "succeeded"
                     } else {
@@ -1572,6 +1753,7 @@ impl BrowserSession {
                     .load(std::sync::atomic::Ordering::Relaxed);
                 Ok(TaskExecutionResult {
                     task: task.task,
+                    receipt: TaskExecutionReceipt::from_plan(&plan),
                     status: "indeterminate".into(),
                     phase: "navigation-verification".into(),
                     mutation_possible: true,
@@ -1636,14 +1818,26 @@ impl BrowserSession {
                 }
             };
             let pending_dialog = self.pending_dialog().await;
-            if !postconditions_hold(
-                task,
-                &observation,
-                &regions,
-                result.source_revision,
-                result.extraction.as_ref(),
-                pending_dialog.as_ref(),
-            ) {
+            result.receipt.postconditions = effective_postconditions(task)
+                .iter()
+                .map(|postcondition| TaskPostconditionReceipt {
+                    kind: postcondition.kind,
+                    held: postcondition_holds(
+                        postcondition,
+                        &observation,
+                        &regions,
+                        result.source_revision,
+                        result.extraction.as_ref(),
+                        pending_dialog.as_ref(),
+                    ),
+                })
+                .collect();
+            if result
+                .receipt
+                .postconditions
+                .iter()
+                .any(|postcondition| !postcondition.held)
+            {
                 result.status = "indeterminate".into();
                 result.phase = "postcondition-verification".into();
                 result.current_revision = self
@@ -1724,7 +1918,7 @@ impl BrowserSession {
         confirmed: bool,
     ) -> BrowserResult<TaskExecutionResult> {
         let plan = self.compile_live_task(task).await?;
-        if let Some(detail) = unsupported_postcondition(task) {
+        if let Some(detail) = unsupported_runtime_capability(&plan) {
             return Ok(preflight_result(task, &plan, expected_revision, detail));
         }
         if !matches!(
@@ -1777,6 +1971,7 @@ impl BrowserSession {
             ));
             return Ok(TaskExecutionResult {
                 task: task.task,
+                receipt: TaskExecutionReceipt::from_plan(&plan),
                 status: "succeeded".into(),
                 phase: "dialog-inspection".into(),
                 mutation_possible: false,
@@ -1829,6 +2024,7 @@ impl BrowserSession {
             .load(std::sync::atomic::Ordering::Relaxed);
         Ok(TaskExecutionResult {
             task: task.task,
+            receipt: TaskExecutionReceipt::from_plan(&plan),
             status: if succeeded {
                 "succeeded"
             } else {
@@ -1908,6 +2104,7 @@ fn form_fill_failure_result(
     ));
     TaskExecutionResult {
         task: task.task,
+        receipt: TaskExecutionReceipt::from_plan(plan),
         status: "indeterminate".into(),
         phase: "mutation-verification".into(),
         mutation_possible: true,
@@ -1947,6 +2144,7 @@ fn mutation_failure_result(
     steps.push(step(plan, operation, "indeterminate", Some(detail.into())));
     TaskExecutionResult {
         task: task.task,
+        receipt: TaskExecutionReceipt::from_plan(plan),
         status: "indeterminate".into(),
         phase: phase.into(),
         mutation_possible: true,
@@ -2024,10 +2222,6 @@ async fn aria_boolean_state(
     result
         .as_ref()
         .and_then(|value| value["result"]["value"].as_bool())
-}
-
-fn is_semantic_submit_control(target: &SemanticTarget) -> bool {
-    target.role.eq_ignore_ascii_case("button")
 }
 
 fn navigation_destination_matches(requested: &str, actual: &str) -> bool {
@@ -2152,6 +2346,7 @@ fn preflight_result(
 ) -> TaskExecutionResult {
     TaskExecutionResult {
         task: task.task,
+        receipt: TaskExecutionReceipt::from_plan(plan),
         status: "preflight-failed".into(),
         phase: "preflight".into(),
         mutation_possible: false,
@@ -2181,7 +2376,7 @@ impl BrowserSession {
         task: &GlassTask,
         plan: &TaskExecutionPlan,
         observation: &InspectPageResult,
-        scoped_regions: &[&SemanticRegion],
+        live_bindings: &LiveTaskBindings,
     ) -> BrowserResult<TaskExecutionResult> {
         let Some(menu_name) = task.inputs.get("menu") else {
             return Ok(preflight_result(
@@ -2191,34 +2386,14 @@ impl BrowserSession {
                 "navigation.openMenu requires the semantic menu input",
             ));
         };
-        let target = match unique_target(scoped_regions, menu_name) {
-            Ok(target)
-                if target.role.eq_ignore_ascii_case("button")
-                    || target.role.eq_ignore_ascii_case("link")
-                    || target.role.eq_ignore_ascii_case("menuitem")
-                    || target.role.eq_ignore_ascii_case("menu") =>
-            {
-                target
-            }
-            Ok(_) => {
-                return Ok(preflight_result(
-                    task,
-                    plan,
-                    observation.revision,
-                    "navigation.openMenu target is not a semantic menu control",
-                ));
-            }
+        let target_reference = match live_bindings.reference_for_name(plan, menu_name) {
+            Ok(reference) => reference,
             Err(error) => {
-                return Ok(preflight_result(
-                    task,
-                    plan,
-                    observation.revision,
-                    &error.to_string(),
-                ));
+                return Ok(preflight_result(task, plan, observation.revision, &error));
             }
         };
         let outcome = bounded(
-            self.click_with_revision(&target.reference, observation.revision),
+            self.click_with_revision(target_reference, observation.revision),
             task.limits.timeout_ms,
         )
         .await;
@@ -2246,7 +2421,7 @@ impl BrowserSession {
         };
         let menu_open = wait_for_aria_true(
             self,
-            &target.reference,
+            target_reference,
             "aria-expanded",
             task.limits.timeout_ms,
         )
@@ -2274,6 +2449,7 @@ impl BrowserSession {
         ];
         Ok(TaskExecutionResult {
             task: task.task,
+            receipt: TaskExecutionReceipt::from_plan(plan),
             status: if succeeded {
                 "succeeded"
             } else {
@@ -2471,38 +2647,6 @@ fn merge_pagination_extraction(
     result.limits.truncated = result.truncated;
 }
 
-fn resolved_fields(
-    regions: &[&SemanticRegion],
-    inputs: &std::collections::BTreeMap<String, String>,
-) -> BrowserResult<Vec<(String, String, String)>> {
-    inputs
-        .iter()
-        .map(|(name, value)| {
-            Ok((
-                unique_target(regions, name)?.reference.clone(),
-                name.clone(),
-                value.clone(),
-            ))
-        })
-        .collect()
-}
-
-fn unique_target<'a>(
-    regions: &[&'a SemanticRegion],
-    name: &str,
-) -> BrowserResult<&'a SemanticTarget> {
-    let matches = regions
-        .iter()
-        .flat_map(|region| region.targets.iter())
-        .filter(|target| target.name.eq_ignore_ascii_case(name))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [target] => Ok(target),
-        [] => Err(format!("semantic form target not found: {name}").into()),
-        _ => Err(format!("semantic form target is ambiguous: {name}").into()),
-    }
-}
-
 fn extraction_matches_observation(
     extraction: &StructuredExtractionResult,
     observation: &InspectPageResult,
@@ -2570,56 +2714,95 @@ where
         .map(|region| region.label.clone())
         .collect()
 }
-fn unsupported_postcondition(task: &GlassTask) -> Option<&'static str> {
-    if task
-        .postconditions
+fn unsupported_runtime_capability(plan: &TaskExecutionPlan) -> Option<&'static str> {
+    const SUPPORTED: &[TaskRuntimeCapability] = &[
+        TaskRuntimeCapability::Observe,
+        TaskRuntimeCapability::Read,
+        TaskRuntimeCapability::Mutate,
+        TaskRuntimeCapability::Navigate,
+        TaskRuntimeCapability::Extract,
+        TaskRuntimeCapability::Dialog,
+        TaskRuntimeCapability::Pagination,
+        TaskRuntimeCapability::VerifyEntityState,
+    ];
+    plan.required_runtime_capabilities
         .iter()
-        .any(|postcondition| postcondition.kind == TaskPostconditionKind::EntityState)
-    {
-        return Some("entityState postconditions are not supported by the browser executor");
-    }
-    None
+        .find(|capability| !SUPPORTED.contains(capability))
+        .map(|_| "compiled plan requires a capability unsupported by this browser runtime")
 }
 
-fn postconditions_hold(
-    task: &GlassTask,
+fn postcondition_holds(
+    postcondition: &crate::task_protocol::TaskPostcondition,
     observation: &InspectPageResult,
     _regions: &[&SemanticRegion],
     source_revision: u64,
     extraction: Option<&StructuredExtractionResult>,
     dialog: Option<&PendingDialog>,
 ) -> bool {
-    effective_postconditions(task)
+    match postcondition.kind {
+        TaskPostconditionKind::ValidationClear => {
+            alert_labels(observation.regions.iter()).is_empty()
+        }
+        TaskPostconditionKind::RegionPresent => {
+            postcondition.expected.as_ref().is_some_and(|expected| {
+                observation
+                    .regions
+                    .iter()
+                    .any(|region| region.label.eq_ignore_ascii_case(expected))
+            })
+        }
+        TaskPostconditionKind::NavigationOccurred => observation.revision > source_revision,
+        TaskPostconditionKind::PageKind => postcondition.expected.as_ref().is_none_or(|expected| {
+            format!("{:?}", observation.page.kind).eq_ignore_ascii_case(expected)
+        }),
+        TaskPostconditionKind::DialogClosed => dialog.is_none(),
+        TaskPostconditionKind::RecordsExtracted => extraction.is_some_and(|result| {
+            postcondition.expected.as_ref().is_none_or(|expected| {
+                expected
+                    .parse::<usize>()
+                    .ok()
+                    .is_some_and(|minimum| result.record_items.len() >= minimum)
+            })
+        }),
+        TaskPostconditionKind::EntityState => postcondition
+            .expected
+            .as_deref()
+            .is_some_and(|expected| entity_state_holds(observation, expected)),
+    }
+}
+
+fn entity_state_holds(observation: &InspectPageResult, expected: &str) -> bool {
+    let Some((selector, expected_value)) = expected.rsplit_once('=') else {
+        return false;
+    };
+    let Some((entity_name, state)) = selector.rsplit_once('.') else {
+        return false;
+    };
+    let Some(expected_value) = (match expected_value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let candidates = observation
+        .regions
         .iter()
-        .all(|postcondition| match postcondition.kind {
-            TaskPostconditionKind::ValidationClear => {
-                alert_labels(observation.regions.iter()).is_empty()
-            }
-            TaskPostconditionKind::RegionPresent => {
-                postcondition.expected.as_ref().is_some_and(|expected| {
-                    observation
-                        .regions
-                        .iter()
-                        .any(|region| region.label.eq_ignore_ascii_case(expected))
-                })
-            }
-            TaskPostconditionKind::NavigationOccurred => observation.revision > source_revision,
-            TaskPostconditionKind::PageKind => {
-                postcondition.expected.as_ref().is_none_or(|expected| {
-                    format!("{:?}", observation.page.kind).eq_ignore_ascii_case(expected)
-                })
-            }
-            TaskPostconditionKind::DialogClosed => dialog.is_none(),
-            TaskPostconditionKind::RecordsExtracted => extraction.is_some_and(|result| {
-                postcondition.expected.as_ref().is_none_or(|expected| {
-                    expected
-                        .parse::<usize>()
-                        .ok()
-                        .is_some_and(|minimum| result.record_items.len() >= minimum)
-                })
-            }),
-            TaskPostconditionKind::EntityState => false,
-        })
+        .flat_map(|region| &region.targets)
+        .filter(|target| target.name.eq_ignore_ascii_case(entity_name))
+        .collect::<Vec<_>>();
+    let [target] = candidates.as_slice() else {
+        return false;
+    };
+    let observed = match state {
+        "disabled" => target.disabled,
+        "readOnly" => target.read_only,
+        "required" => target.required,
+        "checked" => target.checked,
+        "empty" => target.empty,
+        _ => None,
+    };
+    observed == Some(expected_value)
 }
 fn remaining_timeout(deadline: tokio::time::Instant) -> u64 {
     deadline
@@ -2647,7 +2830,7 @@ mod tests {
     use super::*;
     use crate::browser::session::{
         SemanticConfidence, SemanticPage, SemanticPageKind, SemanticRegionKind,
-        SemanticStructuredRecord,
+        SemanticStructuredRecord, SemanticTarget,
     };
     use crate::task_protocol::{
         TASK_PROTOCOL_SCHEMA_VERSION, TaskAmbiguityPolicy, TaskLimits, TaskRiskClass, TaskScope,
@@ -2660,6 +2843,11 @@ mod tests {
             role: "textbox".into(),
             name: name.into(),
             input_type: Some("text".into()),
+            disabled: None,
+            read_only: None,
+            required: None,
+            checked: None,
+            empty: None,
         }
     }
 
@@ -2675,6 +2863,25 @@ mod tests {
             evidence: Vec::new(),
             targets,
             expansion: None,
+        }
+    }
+
+    fn observation(revision: u64, regions: Vec<SemanticRegion>) -> InspectPageResult {
+        InspectPageResult {
+            page: SemanticPage {
+                kind: SemanticPageKind::Form,
+                title: "Checkout".into(),
+                url: "https://example.test/checkout".into(),
+                target_id: "page".into(),
+                frame_id: "frame".into(),
+                confidence: SemanticConfidence::Exact,
+                evidence: Vec::new(),
+            },
+            revision,
+            regions,
+            limits: Default::default(),
+            focused_target: None,
+            alerts: Vec::new(),
         }
     }
 
@@ -2730,40 +2937,18 @@ mod tests {
     }
 
     #[test]
-    fn entity_state_postcondition_fails_closed() {
+    fn entity_state_postcondition_is_verified_from_one_unique_target() {
         let mut authored = task();
         authored.postconditions = vec![crate::task_protocol::TaskPostcondition {
             kind: TaskPostconditionKind::EntityState,
-            expected: Some("ready".into()),
+            expected: Some("Email.checked=true".into()),
         }];
-        assert_eq!(
-            unsupported_postcondition(&authored),
-            Some("entityState postconditions are not supported by the browser executor")
-        );
-    }
-
-    #[test]
-    fn form_targets_are_resolved_by_unique_semantic_name() {
-        let form = region("Checkout", vec![target("Email", "target-1")]);
-        let fields = resolved_fields(&[&form], &task().inputs).unwrap();
-        assert_eq!(
-            fields,
-            vec![(
-                String::from("target-1"),
-                String::from("Email"),
-                String::from("a@example.test")
-            )]
-        );
-    }
-
-    #[test]
-    fn ambiguous_form_targets_fail_before_dispatch() {
-        let form = region(
-            "Checkout",
-            vec![target("Email", "target-1"), target("Email", "target-2")],
-        );
-        let error = resolved_fields(&[&form], &task().inputs).unwrap_err();
-        assert!(error.to_string().contains("ambiguous"));
+        authored.validate().unwrap();
+        let mut checked = target("Email", "r7:b1");
+        checked.checked = Some(true);
+        let observation = observation(7, vec![region("Checkout", vec![checked])]);
+        assert!(entity_state_holds(&observation, "Email.checked=true"));
+        assert!(!entity_state_holds(&observation, "Email.checked=false"));
     }
 
     #[test]
@@ -2801,6 +2986,18 @@ mod tests {
     }
 
     #[test]
+    fn execution_receipt_never_serializes_authored_values_or_browser_references() {
+        let mut task = task();
+        task.inputs
+            .insert("Email".into(), "private@example.test".into());
+        let plan = compile_task(&task, &crate::task_compiler::test_compiler_ir()).unwrap();
+        let encoded = serde_json::to_string(&TaskExecutionReceipt::from_plan(&plan)).unwrap();
+        assert!(!encoded.contains("private@example.test"));
+        assert!(!encoded.contains("r7:"));
+        assert!(encoded.contains("bindingCandidateEntityIds"));
+    }
+
+    #[test]
     fn stale_dialog_action_is_indeterminate_without_dialog_payload() {
         let action: BrowserResult<()> = Err("stale revision".into());
         assert!(!dialog_action_succeeded(&action, true));
@@ -2824,7 +3021,7 @@ mod tests {
         assert!(result.dialog.is_none());
         let serialized = serde_json::to_string(&result).unwrap();
         assert!(!serialized.contains("secret dialog message"));
-        assert!(!serialized.contains("\"dialog\""));
+        assert!(!serialized.contains("\"dialog\":"));
     }
 
     #[test]
@@ -2902,14 +3099,6 @@ mod tests {
         };
         let error = scoped_regions_for_observation(&observation, &task()).unwrap_err();
         assert!(error.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn submit_target_requires_button_role() {
-        let mut submit = target("Submit", "submit");
-        submit.role = "button".into();
-        assert!(is_semantic_submit_control(&submit));
-        assert!(!is_semantic_submit_control(&target("Email", "email")));
     }
 
     #[test]

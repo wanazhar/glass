@@ -240,15 +240,20 @@ fn checked_in_protocol_golden_scenarios_round_trip_on_the_canonical_envelopes() 
             .unwrap_or_else(|| panic!("response requestId must match a fixture request"));
         match operation {
             "task.compile" => {
-                assert_eq!(
-                    response
-                        .decode_task_compile_result()
-                        .unwrap()
-                        .plan
-                        .steps
-                        .len(),
-                    2
-                );
+                let expected = response.decode_task_compile_result().unwrap().plan;
+                assert_eq!(expected.steps.len(), 2);
+                let request_value = fixture["requests"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|request| request["requestId"] == response.request_id)
+                    .unwrap()
+                    .clone();
+                let request: GlassRequest = serde_json::from_value(request_value).unwrap();
+                let actual = glass_browser::protocol::compile_task_result(&request)
+                    .unwrap()
+                    .plan;
+                assert_eq!(expected, actual, "compiled-plan golden drifted");
             }
             "task.validate" => {
                 assert!(response.decode_task_validation_result().unwrap().valid);

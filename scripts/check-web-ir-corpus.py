@@ -137,6 +137,30 @@ def main() -> None:
         if len(expected_relationships) > 512:
             fail(f"{path}.expectedRelationships exceeds the 512-relationship baseline bound")
 
+        runtime_entities = fixture.get("runtimeExpectedEntities")
+        if not isinstance(runtime_entities, dict) or not runtime_entities:
+            fail(f"{path}.runtimeExpectedEntities must be a non-empty object")
+        if any(
+            not isinstance(kind, str)
+            or not kind
+            or not isinstance(count, int)
+            or count < 1
+            or count > 256
+            for kind, count in runtime_entities.items()
+        ):
+            fail(f"{path}.runtimeExpectedEntities contains an invalid kind/count")
+        runtime_relationships = fixture.get("runtimeExpectedRelationships")
+        if not isinstance(runtime_relationships, list) or not runtime_relationships:
+            fail(f"{path}.runtimeExpectedRelationships must be a non-empty array")
+        runtime_relationships = [
+            require_string(value, f"{path}.runtimeExpectedRelationships[]")
+            for value in runtime_relationships
+        ]
+        require_unique(runtime_relationships, f"{path}.runtimeExpectedRelationships")
+        runtime_opaque = fixture.get("runtimeExpectedOpaqueRegions")
+        if not isinstance(runtime_opaque, int) or not 0 <= runtime_opaque <= 64:
+            fail(f"{path}.runtimeExpectedOpaqueRegions must be between 0 and 64")
+
         expected_hint_diagnostics = fixture.get("expectedHintDiagnostics", [])
         if not isinstance(expected_hint_diagnostics, list):
             fail(f"{path}.expectedHintDiagnostics must be an array")
@@ -208,8 +232,8 @@ def main() -> None:
     scenarios = load_json(SCENARIO_PATH)
     if scenarios.get("schemaVersion") != 1 or scenarios.get("corpus") != corpus["corpus"]:
         fail("scenario manifest must use corpus schema version 1")
-    if scenarios.get("baselineType") != "fixture-inventory":
-        fail("scenario manifest baselineType must be fixture-inventory")
+    if scenarios.get("baselineType") != "live-extraction-corpus":
+        fail("scenario manifest baselineType must be live-extraction-corpus")
     scenario_values = scenarios.get("scenarios")
     if not isinstance(scenario_values, list) or not scenario_values:
         fail("scenario manifest scenarios must be a non-empty array")
@@ -247,7 +271,7 @@ def main() -> None:
     baseline = {
         "schemaVersion": 1,
         "corpus": corpus["corpus"],
-        "baselineType": "fixture-inventory",
+        "baselineType": "live-extraction-corpus",
         "runtimeClaims": False,
         "fixtureCount": len(reports),
         "scenarioCount": len(scenario_values),
@@ -268,10 +292,21 @@ def main() -> None:
         except ValueError:
             fail("--baseline must stay inside the repository")
         try:
-            expected = baseline_path.read_text(encoding="utf-8")
+            expected = load_json(baseline_path)
         except OSError as error:
             fail(f"--baseline could not be read: {error}")
-        if expected != serialized:
+        runtime_evidence = expected.get("runtimeEvidence")
+        if expected.get("runtimeClaims") is not True or not isinstance(runtime_evidence, dict):
+            fail("runtime baseline must contain runtimeClaims=true and runtimeEvidence")
+        if runtime_evidence.get("fixturesPassed") != len(reports) or runtime_evidence.get("fixturesFailed") != 0:
+            fail("runtimeEvidence fixture results do not cover the complete corpus")
+        require_string(runtime_evidence.get("recordedAt"), "runtimeEvidence.recordedAt")
+        require_string(runtime_evidence.get("browser"), "runtimeEvidence.browser")
+        require_string(runtime_evidence.get("command"), "runtimeEvidence.command")
+        comparable = dict(expected)
+        comparable.pop("runtimeEvidence", None)
+        comparable["runtimeClaims"] = False
+        if comparable != baseline:
             fail(f"deterministic baseline mismatch: {baseline_path}")
 
     if args.output:
@@ -286,7 +321,8 @@ def main() -> None:
         print(serialized, end="")
     print(
         f"web-ir corpus validated: {len(reports)} fixtures, {len(scenario_values)} scenarios, "
-        f"{len(category_coverage)} categories; baseline is inventory-only"
+        f"{len(category_coverage)} categories; runtime goldens declared"
+        + (" and recorded live evidence verified" if args.baseline else "")
     )
 
 

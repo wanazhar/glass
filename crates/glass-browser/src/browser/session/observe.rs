@@ -648,6 +648,7 @@ impl BrowserSession {
             result.empty = !result.value && !result.selectedOption && !result.checked;
             result.readOnly = !!el.readOnly;
             result.required = !!el.required;
+            result.disabled = !!el.disabled;
             result.autocomplete = el.getAttribute('autocomplete') || '';
             result.name = el.getAttribute('name') || '';
             result.id = el.getAttribute('id') || '';
@@ -735,6 +736,8 @@ impl BrowserSession {
             control.empty = parsed["empty"].as_bool().unwrap_or(true);
             control.read_only = parsed["readOnly"].as_bool().unwrap_or(false);
             control.required = parsed["required"].as_bool().unwrap_or(false);
+            control.disabled = parsed["disabled"].as_bool();
+            control.autocomplete = (!autocomplete.is_empty()).then(|| autocomplete.to_string());
 
             if !input_type.is_empty() {
                 control.input_type = Some(input_type);

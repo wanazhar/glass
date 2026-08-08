@@ -577,7 +577,48 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
 }
 
 fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
+    if matches!(
+        action,
+        AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. }
+    ) {
+        let (call, root, allow_mutation, yes) = match action {
+            AgentCommand::Tool {
+                call,
+                root,
+                allow_mutation,
+                yes,
+            } => (serde_json::from_str(call)?, root, *allow_mutation, *yes),
+            AgentCommand::ToolFile {
+                path,
+                root,
+                allow_mutation,
+                yes,
+            } => (
+                read_private_agent_tool_call(path)?,
+                root,
+                *allow_mutation,
+                *yes,
+            ),
+            _ => unreachable!(),
+        };
+        let mut workspace = ProjectWorkspace::open(root)?;
+        let authorization = crate::development::ToolAuthorization {
+            actor: Actor::external("pi"),
+            allow_mutation,
+            confirmed: yes,
+        };
+        let result = crate::development::AgentToolGateway::default().execute(
+            &mut workspace,
+            &call,
+            &authorization,
+        )?;
+        print_json(&result)?;
+        return Ok(());
+    }
     let (root, request, adapter) = match action {
+        AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => {
+            unreachable!("handled above")
+        }
         AgentCommand::Hello { root, harness } => (root, HarnessRequest::Hello, *harness),
         AgentCommand::Prompt {
             root,
@@ -633,6 +674,40 @@ fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
         }
     }
     Ok(())
+}
+
+fn read_private_agent_tool_call(
+    path: &std::path::Path,
+) -> BrowserResult<crate::development::ToolCall> {
+    const MAX_CALL_BYTES: u64 = 256 * 1024;
+    let canonical = path.canonicalize()?;
+    let temporary_root = std::env::temp_dir().canonicalize()?;
+    if canonical.parent() != Some(temporary_root.as_path())
+        || !canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("glass-pi-call-") && name.ends_with(".json"))
+    {
+        return Err("Pi broker requests must use a Glass-owned temporary request file".into());
+    }
+    let metadata = std::fs::metadata(&canonical)?;
+    if !metadata.is_file() || metadata.len() > MAX_CALL_BYTES {
+        return Err("Pi broker request is not a bounded regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(
+                "Pi broker request must be owned by the current user with mode 0600".into(),
+            );
+        }
+    }
+    let encoded = std::fs::read_to_string(&canonical)?;
+    std::fs::remove_file(&canonical)?;
+    Ok(serde_json::from_str(&encoded)?)
 }
 
 fn detected_command(
@@ -3008,5 +3083,29 @@ mod tests {
         ));
         let error = read_json_input(Some(&missing)).unwrap_err().to_string();
         assert!(error.contains("could not read JSON input"));
+    }
+
+    #[test]
+    fn private_agent_tool_call_is_bounded_and_consumed_once() {
+        let path = std::env::temp_dir().join(format!(
+            "glass-pi-call-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(
+            &path,
+            r#"{"id":"private","name":"glass.web_ir.inspect","arguments":{"ir":{}}}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let call = read_private_agent_tool_call(&path).unwrap();
+        assert_eq!(call.id, "private");
+        assert_eq!(call.name, "glass.web_ir.inspect");
+        assert!(!path.exists());
     }
 }

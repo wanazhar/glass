@@ -28,8 +28,8 @@ pub mod search;
 use std::{fmt, io, path::PathBuf};
 
 pub use agent::{
-    AgentContextPacket, HarnessEvent, HarnessRequest, LocalHarness, PiHarness, ToolCall,
-    ToolDescriptor, ToolRegistry, resolve_context,
+    AgentContextPacket, AgentToolGateway, HarnessEvent, HarnessRequest, LocalHarness, PiHarness,
+    ToolAuthorization, ToolCall, ToolDescriptor, ToolRegistry, resolve_context,
 };
 pub use cockpit::{
     AttentionItem, AttentionState, ReconnectCapsule, ReconnectCapsuleStore,

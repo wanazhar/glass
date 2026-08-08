@@ -11,7 +11,7 @@ use crate::task_protocol::{
 };
 use crate::web_ir::{
     GlassWebIrV1, WEB_IR_SCHEMA_VERSION, WebIrAction, WebIrEntity, WebIrEntityDetails,
-    WebIrEntityKind,
+    WebIrEntityKind, WebIrRelationshipKind,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -50,7 +50,10 @@ pub enum TaskPlanOperation {
 }
 
 /// Version of the compiler logic recorded in every execution plan.
-pub const TASK_COMPILER_VERSION: u32 = 1;
+/// Version 2 adds entity-scoped evidence, revision-bound semantic binding
+/// keys, and explicit runtime capability requirements. Version-1 plans must
+/// be recompiled from their authored task and current Web IR before execution.
+pub const TASK_COMPILER_VERSION: u32 = 2;
 
 /// Evidence floor required before a compiled operation may execute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +62,44 @@ pub struct TaskEvidenceRequirements {
     pub minimum_quality: EvidenceQuality,
     pub required_sources: Vec<EvidenceSource>,
     pub require_complete: bool,
+}
+
+/// Evidence required from one selected entity. This prevents unrelated page
+/// evidence from satisfying an executable operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskEntityEvidenceRequirement {
+    pub entity_id: String,
+    pub minimum_quality: EvidenceQuality,
+    pub required_sources: Vec<EvidenceSource>,
+}
+
+/// Stable semantic key used by a live runtime to create an ephemeral browser
+/// binding from the exact compiled revision. It intentionally contains no
+/// browser or DOM handle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskEntityBindingKey {
+    pub entity_id: String,
+    pub kind: WebIrEntityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Runtime features required to interpret a compiled plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskRuntimeCapability {
+    Observe,
+    Read,
+    Mutate,
+    Navigate,
+    Extract,
+    Dialog,
+    Pagination,
+    VerifyEntityState,
 }
 
 /// Memory output is deliberately separated from executable plan fields. It
@@ -141,6 +182,12 @@ pub struct TaskExecutionPlan {
     pub confirmation_required: bool,
     pub selected_entity_ids: Vec<String>,
     pub evidence_requirements: TaskEvidenceRequirements,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_evidence_requirements: Vec<TaskEntityEvidenceRequirement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_binding_keys: Vec<TaskEntityBindingKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_runtime_capabilities: Vec<TaskRuntimeCapability>,
     pub preconditions: Vec<TaskPlanPrecondition>,
     pub steps: Vec<TaskPlanStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +255,56 @@ impl TaskExecutionPlan {
             return Err(TaskCompilationError::new(
                 "evidenceRequirements.requiredSources",
                 "required evidence sources must be non-empty, sorted, and unique",
+            ));
+        }
+        if self.entity_evidence_requirements.len() != self.selected_entity_ids.len()
+            || self
+                .entity_evidence_requirements
+                .iter()
+                .map(|requirement| requirement.entity_id.as_str())
+                .collect::<BTreeSet<_>>()
+                != selected
+        {
+            return Err(TaskCompilationError::new(
+                "entityEvidenceRequirements",
+                "every selected entity must have exactly one evidence requirement",
+            ));
+        }
+        if self.entity_binding_keys.len() != self.selected_entity_ids.len()
+            || self
+                .entity_binding_keys
+                .iter()
+                .map(|binding| binding.entity_id.as_str())
+                .collect::<BTreeSet<_>>()
+                != selected
+        {
+            return Err(TaskCompilationError::new(
+                "entityBindingKeys",
+                "every selected entity must have exactly one semantic binding key",
+            ));
+        }
+        for (index, requirement) in self.entity_evidence_requirements.iter().enumerate() {
+            if requirement.required_sources.is_empty()
+                || requirement
+                    .required_sources
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(TaskCompilationError::new(
+                    format!("entityEvidenceRequirements[{index}].requiredSources"),
+                    "entity evidence sources must be non-empty, sorted, and unique",
+                ));
+            }
+        }
+        if self.required_runtime_capabilities.is_empty()
+            || self
+                .required_runtime_capabilities
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TaskCompilationError::new(
+                "requiredRuntimeCapabilities",
+                "runtime capabilities must be non-empty, sorted, and unique",
             ));
         }
         if !self.preconditions.iter().any(|precondition| {
@@ -503,19 +600,26 @@ pub fn compile_task_with_options(
             ));
         }
     }
-    let available_sources = ir
-        .entities
-        .iter()
-        .flat_map(|entity| entity.evidence_sources.iter().copied())
-        .collect::<BTreeSet<_>>();
-    for source in &required_sources {
-        if !available_sources.contains(source) {
-            return Err(TaskCompilationError::new(
-                "ir.entities.evidenceSources",
-                format!("source Web IR lacks required {source:?} evidence"),
-            ));
+    let mut entity_evidence_requirements = Vec::with_capacity(selected.len());
+    for entity in &selected {
+        let mut entity_sources = required_sources_for_selected_entity(task.task, entity);
+        entity_sources.sort();
+        entity_sources.dedup();
+        for source in &entity_sources {
+            if !entity.evidence_sources.contains(source) {
+                return Err(TaskCompilationError::new(
+                    format!("ir.entities.{}.evidenceSources", entity.id),
+                    format!("selected entity lacks required {source:?} evidence"),
+                ));
+            }
         }
+        entity_evidence_requirements.push(TaskEntityEvidenceRequirement {
+            entity_id: entity.id.clone(),
+            minimum_quality,
+            required_sources: entity_sources,
+        });
     }
+    entity_evidence_requirements.sort_by(|left, right| left.entity_id.cmp(&right.entity_id));
 
     let mut selected_entity_ids = selected
         .iter()
@@ -632,6 +736,17 @@ pub fn compile_task_with_options(
         _ => None,
     };
     let task_fingerprint = task_fingerprint(task, ir, &selected_entity_ids)?;
+    let required_runtime_capabilities = runtime_capabilities_for(task);
+    let mut entity_binding_keys = selected
+        .iter()
+        .map(|entity| TaskEntityBindingKey {
+            entity_id: entity.id.clone(),
+            kind: entity.kind,
+            role: entity.role.clone(),
+            name: entity.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    entity_binding_keys.sort_by(|left, right| left.entity_id.cmp(&right.entity_id));
     let plan = TaskExecutionPlan {
         schema_version: TASK_PLAN_SCHEMA_VERSION,
         task_schema_version: task.schema_version,
@@ -652,6 +767,9 @@ pub fn compile_task_with_options(
             required_sources,
             require_complete,
         },
+        entity_evidence_requirements,
+        entity_binding_keys,
+        required_runtime_capabilities,
         preconditions,
         steps,
         memory_advisory,
@@ -659,6 +777,54 @@ pub fn compile_task_with_options(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn required_sources_for_selected_entity(
+    task: TaskKind,
+    entity: &WebIrEntity,
+) -> Vec<EvidenceSource> {
+    if matches!(
+        task,
+        TaskKind::DialogInspect | TaskKind::DialogConfirm | TaskKind::DialogCancel
+    ) {
+        return vec![EvidenceSource::Dialogs];
+    }
+    if matches!(task, TaskKind::FormFill | TaskKind::FormValidate)
+        && entity.kind == WebIrEntityKind::Field
+    {
+        return vec![EvidenceSource::Accessibility, EvidenceSource::Forms];
+    }
+    vec![EvidenceSource::Accessibility]
+}
+
+fn runtime_capabilities_for(task: &GlassTask) -> Vec<TaskRuntimeCapability> {
+    let mut capabilities = vec![TaskRuntimeCapability::Observe];
+    capabilities.push(match task.task {
+        TaskKind::FormInspect
+        | TaskKind::FormValidate
+        | TaskKind::FieldRead
+        | TaskKind::DialogInspect => TaskRuntimeCapability::Read,
+        TaskKind::TableExtract | TaskKind::CollectionExtract | TaskKind::RegionExtract => {
+            TaskRuntimeCapability::Extract
+        }
+        TaskKind::NavigationFollow => TaskRuntimeCapability::Navigate,
+        TaskKind::DialogConfirm | TaskKind::DialogCancel => TaskRuntimeCapability::Dialog,
+        TaskKind::PaginationNext | TaskKind::PaginationCollect => TaskRuntimeCapability::Pagination,
+        TaskKind::FormFill
+        | TaskKind::FormSubmit
+        | TaskKind::NavigationSelectTab
+        | TaskKind::NavigationOpenMenu => TaskRuntimeCapability::Mutate,
+    });
+    if task
+        .postconditions
+        .iter()
+        .any(|postcondition| postcondition.kind == TaskPostconditionKind::EntityState)
+    {
+        capabilities.push(TaskRuntimeCapability::VerifyEntityState);
+    }
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
 }
 
 /// Convenience entry point for an explicitly enabled knowledge-assisted
@@ -758,6 +924,10 @@ fn select_entities<'a>(
         ));
     }
     let mut selected = candidates;
+    let selected_scope_ids = selected
+        .iter()
+        .map(|entity| entity.id.as_str())
+        .collect::<BTreeSet<_>>();
 
     if task.task == TaskKind::FormFill {
         for input_name in task.inputs.keys() {
@@ -766,15 +936,50 @@ fn select_entities<'a>(
                 .iter()
                 .filter(|entity| {
                     entity.kind == WebIrEntityKind::Field
+                        && selected_scope_ids
+                            .iter()
+                            .any(|form_id| entity_is_scoped_to(ir, form_id, entity.id.as_str()))
                         && entity.name.as_deref().is_some_and(|name| {
                             normalized_name(name) == normalized_name(input_name)
                         })
                 })
                 .collect::<Vec<_>>();
             if fields.len() != 1 {
+                let candidates = ir
+                    .entities
+                    .iter()
+                    .filter(|entity| {
+                        entity.kind == WebIrEntityKind::Field
+                            && entity.name.as_deref().is_some_and(|name| {
+                                normalized_name(name) == normalized_name(input_name)
+                            })
+                    })
+                    .take(8)
+                    .map(|entity| {
+                        let parents = ir
+                            .relationships
+                            .iter()
+                            .filter(|relationship| relationship.to == entity.id)
+                            .map(|relationship| relationship.from.as_str())
+                            .take(4)
+                            .collect::<Vec<_>>()
+                            .join("|");
+                        format!("{}<-{}", entity.id, parents)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
                 return Err(TaskCompilationError::new(
                     format!("inputs.{input_name}"),
-                    "form input must resolve to exactly one source Web IR field",
+                    format!(
+                        "form input must resolve to exactly one source Web IR field (found {}; scope {}; candidates {})",
+                        fields.len(),
+                        selected_scope_ids
+                            .iter()
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join("|"),
+                        candidates
+                    ),
                 ));
             }
             selected.push(fields[0]);
@@ -782,19 +987,21 @@ fn select_entities<'a>(
     }
     if task.task == TaskKind::FormSubmit {
         let submit_name = &task.inputs["submit"];
-        let submitters = ir
-            .entities
-            .iter()
-            .filter(|entity| {
-                matches!(
-                    entity.kind,
-                    WebIrEntityKind::Action | WebIrEntityKind::UnknownInteractive
-                ) && entity
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| normalized_name(name) == normalized_name(submit_name))
-            })
-            .collect::<Vec<_>>();
+        let submitters =
+            ir.entities
+                .iter()
+                .filter(|entity| {
+                    matches!(
+                        entity.kind,
+                        WebIrEntityKind::Action | WebIrEntityKind::UnknownInteractive
+                    ) && selected_scope_ids
+                        .iter()
+                        .any(|form_id| entity_is_scoped_to(ir, form_id, entity.id.as_str()))
+                        && entity.name.as_deref().is_some_and(|name| {
+                            normalized_name(name) == normalized_name(submit_name)
+                        })
+                })
+                .collect::<Vec<_>>();
         if submitters.len() != 1 {
             return Err(TaskCompilationError::new(
                 "inputs.submit",
@@ -806,6 +1013,41 @@ fn select_entities<'a>(
     selected.sort_by_key(|entity| entity.id.as_str());
     selected.dedup_by_key(|entity| entity.id.as_str());
     Ok(selected)
+}
+
+fn entity_is_scoped_to(ir: &GlassWebIrV1, scope_id: &str, entity_id: &str) -> bool {
+    let mut frontier = vec![scope_id];
+    let mut visited = BTreeSet::new();
+    while let Some(parent) = frontier.pop() {
+        if !visited.insert(parent) {
+            continue;
+        }
+        for relationship in &ir.relationships {
+            if !matches!(
+                relationship.kind,
+                WebIrRelationshipKind::Contains
+                    | WebIrRelationshipKind::Owns
+                    | WebIrRelationshipKind::Submits
+                    | WebIrRelationshipKind::ScopedTo
+            ) {
+                continue;
+            }
+            if relationship.from == parent {
+                if relationship.to == entity_id {
+                    return true;
+                }
+                frontier.push(relationship.to.as_str());
+            } else if relationship.kind == WebIrRelationshipKind::ScopedTo
+                && relationship.to == parent
+            {
+                if relationship.from == entity_id {
+                    return true;
+                }
+                frontier.push(relationship.from.as_str());
+            }
+        }
+    }
+    false
 }
 
 fn entity_kind_matches_task(entity: &WebIrEntity, task: TaskKind) -> bool {
@@ -1089,11 +1331,14 @@ pub(crate) fn test_compiler_ir() -> GlassWebIrV1 {
         role: Some(role.into()),
         name: Some(name.into()),
         input_type: (role == "textbox").then(|| "email".into()),
+        autocomplete: (role == "textbox").then(|| "email".into()),
         required: (role == "textbox").then_some(true),
         read_only: (role == "textbox").then_some(false),
         empty: (role == "textbox").then_some(true),
+        checked: None,
+        disabled: Some(false),
         geometry_present: None,
-        parent_role: None,
+        parent_role: matches!(name, "Email" | "Submit").then(|| "form".into()),
         relationship_hint: None,
     })
     .collect();
@@ -1297,14 +1542,17 @@ mod tests {
     }
 
     #[test]
-    fn compiler_rejects_unsupported_postcondition() {
+    fn compiler_declares_entity_state_runtime_capability() {
         let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
         authored.postconditions = vec![TaskPostcondition {
             kind: TaskPostconditionKind::EntityState,
-            expected: None,
+            expected: Some("Email.empty=false".into()),
         }];
-        let error = compile_task(&authored, &test_compiler_ir()).unwrap_err();
-        assert_eq!(error.path, "postconditions[0].kind");
+        let plan = compile_task(&authored, &test_compiler_ir()).unwrap();
+        assert!(
+            plan.required_runtime_capabilities
+                .contains(&TaskRuntimeCapability::VerifyEntityState)
+        );
     }
 
     #[test]
@@ -1376,6 +1624,81 @@ mod tests {
             error.reason,
             "no compatible entity exists in the source Glass Web IR"
         );
+    }
+
+    #[test]
+    fn form_compilation_scopes_duplicate_fields_to_the_selected_form() {
+        let mut ir = test_compiler_ir();
+        let original_form = ir
+            .entities
+            .iter()
+            .find(|entity| entity.kind == WebIrEntityKind::Form)
+            .unwrap()
+            .clone();
+        let original_field = ir
+            .entities
+            .iter()
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
+            .unwrap()
+            .clone();
+        let mut other_form = original_form.clone();
+        other_form.id = "other-form".into();
+        other_form.name = Some("Other".into());
+        let mut other_field = original_field.clone();
+        other_field.id = "other-email".into();
+        ir.entity_details.insert(
+            other_form.id.clone(),
+            ir.entity_details[&original_form.id].clone(),
+        );
+        ir.entity_details.insert(
+            other_field.id.clone(),
+            ir.entity_details[&original_field.id].clone(),
+        );
+        ir.entities
+            .extend([other_form.clone(), other_field.clone()]);
+        ir.relationships.push(crate::web_ir::WebIrRelationship {
+            from: other_form.id,
+            to: other_field.id,
+            kind: WebIrRelationshipKind::Owns,
+        });
+        ir.entities.sort_by(|left, right| left.id.cmp(&right.id));
+        ir.relationships.sort_by_key(|relationship| {
+            (
+                relationship.from.clone(),
+                relationship.to.clone(),
+                relationship.kind,
+            )
+        });
+        ir.validate().unwrap();
+        let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        authored.scope.entity_name = Some("Checkout".into());
+        authored.scope.entity_kind = Some(WebIrEntityKind::Form);
+
+        let plan = compile_task(&authored, &ir).unwrap();
+
+        assert!(plan.selected_entity_ids.contains(&original_field.id));
+        assert!(
+            !plan
+                .selected_entity_ids
+                .contains(&"other-email".to_string())
+        );
+    }
+
+    #[test]
+    fn unrelated_form_evidence_cannot_satisfy_the_selected_field() {
+        let mut ir = test_compiler_ir();
+        let field = ir
+            .entities
+            .iter_mut()
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
+            .unwrap();
+        field
+            .evidence_sources
+            .retain(|source| *source != EvidenceSource::Forms);
+        let error =
+            compile_task(&task(TaskKind::FormFill, TaskRiskClass::LocalMutation), &ir).unwrap_err();
+        assert!(error.path.ends_with("evidenceSources"));
+        assert!(error.reason.contains("Forms"));
     }
 
     #[test]

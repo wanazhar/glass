@@ -154,6 +154,8 @@ pub struct WebIrEntityDetails {
     #[serde(default)]
     pub sensitivity: WebIrSensitivity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_stability_key: Option<String>,
     /// Surface metadata is retained on the revision-local boundary entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -836,11 +838,12 @@ impl GlassWebIrV1 {
         };
 
         if let Some(current) = next.entities.iter().find(|entity| entity.id == entity_id) {
-            let status = if source.semantic_identity_key() == current.semantic_identity_key() {
-                WebIrEntityContinuityStatus::Unchanged
-            } else {
-                WebIrEntityContinuityStatus::Changed
-            };
+            let status =
+                if self.continuity_fingerprint(source) == next.continuity_fingerprint(current) {
+                    WebIrEntityContinuityStatus::Unchanged
+                } else {
+                    WebIrEntityContinuityStatus::Changed
+                };
             return Ok(WebIrEntityContinuity {
                 requested_id,
                 status,
@@ -857,7 +860,7 @@ impl GlassWebIrV1 {
             });
         }
 
-        let Some(identity_key) = source.semantic_identity_key() else {
+        let Some(identity_key) = self.continuity_fingerprint(source) else {
             return Ok(WebIrEntityContinuity {
                 requested_id,
                 status: WebIrEntityContinuityStatus::Removed,
@@ -868,8 +871,25 @@ impl GlassWebIrV1 {
         let candidates = next
             .entities
             .iter()
-            .filter(|entity| entity.semantic_identity_key().as_deref() == Some(&identity_key))
+            .filter(|entity| next.continuity_fingerprint(entity).as_ref() == Some(&identity_key))
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            let fallback_count = source.semantic_identity_key().map_or(0, |semantic_key| {
+                next.entities
+                    .iter()
+                    .filter(|entity| entity.semantic_identity_key().as_ref() == Some(&semantic_key))
+                    .take(2)
+                    .count()
+            });
+            if fallback_count > 1 {
+                return Ok(WebIrEntityContinuity {
+                    requested_id,
+                    status: WebIrEntityContinuityStatus::Ambiguous,
+                    current_id: None,
+                    reason: "semantic identity exists in multiple graph contexts".into(),
+                });
+            }
+        }
         match candidates.as_slice() {
             [] => Ok(WebIrEntityContinuity {
                 requested_id,
@@ -890,6 +910,65 @@ impl GlassWebIrV1 {
                 reason: "multiple compatible semantic identities were observed".into(),
             }),
         }
+    }
+
+    fn continuity_fingerprint(&self, entity: &WebIrEntity) -> Option<String> {
+        let identity = entity.semantic_identity_key()?;
+        let details = self.entity_details.get(&entity.id);
+        let mut context = self
+            .relationships
+            .iter()
+            .filter_map(|relationship| {
+                if relationship.to == entity.id {
+                    self.entities
+                        .iter()
+                        .find(|candidate| candidate.id == relationship.from)
+                        .map(|parent| {
+                            format!(
+                                "in:{:?}:{}",
+                                relationship.kind,
+                                parent.semantic_identity_key().unwrap_or_default()
+                            )
+                        })
+                } else if relationship.from == entity.id
+                    && matches!(
+                        relationship.kind,
+                        WebIrRelationshipKind::ScopedTo | WebIrRelationshipKind::Submits
+                    )
+                {
+                    self.entities
+                        .iter()
+                        .find(|candidate| candidate.id == relationship.to)
+                        .map(|parent| {
+                            format!(
+                                "out:{:?}:{}",
+                                relationship.kind,
+                                parent.semantic_identity_key().unwrap_or_default()
+                            )
+                        })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        context.sort();
+        context.dedup();
+        Some(format!(
+            "{}|input={}|scope={:?}:{}|region={}|context={}",
+            identity,
+            details
+                .and_then(|value| value.input_type.as_deref())
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            details.map(|value| value.scope).unwrap_or_default(),
+            details
+                .and_then(|value| value.scope_id.as_deref())
+                .unwrap_or_default(),
+            details
+                .and_then(|value| value.region_id.as_deref())
+                .unwrap_or_default(),
+            context.join(",")
+        ))
     }
 
     /// Serialize validated Web IR deterministically, independent of vector
@@ -1710,27 +1789,17 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
     };
     supported_actions.sort();
     supported_actions.dedup();
-    let input_type = fact.input_type.as_deref().unwrap_or_default();
-    let name = fact
-        .name
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let sensitivity = if input_type.eq_ignore_ascii_case("password") {
-        WebIrSensitivity::Secret
-    } else if input_type.eq_ignore_ascii_case("file") {
-        WebIrSensitivity::Personal
-    } else if name.contains("card") || name.contains("payment") {
-        WebIrSensitivity::Financial
-    } else {
-        WebIrSensitivity::Public
-    };
+    let sensitivity = classify_sensitivity(kind, fact);
+    if fact.disabled == Some(true) || fact.read_only == Some(true) {
+        supported_actions
+            .retain(|action| matches!(action, WebIrAction::Read | WebIrAction::Extract));
+    }
     WebIrEntityDetails {
         state: WebIrEntityState {
-            disabled: None,
+            disabled: fact.disabled,
             read_only: fact.read_only,
             required: fact.required,
-            checked: None,
+            checked: fact.checked,
             empty: fact.empty,
             visible: fact.geometry_present,
             hit_testable: None,
@@ -1740,6 +1809,7 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
         scope: WebIrScopeKind::Document,
         scope_id: None,
         sensitivity,
+        input_type: fact.input_type.clone(),
         semantic_stability_key: Some(canonical_key(
             kind,
             fact.role.as_deref(),
@@ -1754,10 +1824,15 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
 }
 
 fn merge_entity_details(current: &mut WebIrEntityDetails, incoming: &WebIrEntityDetails) {
-    current.state.read_only = current.state.read_only.or(incoming.state.read_only);
-    current.state.required = current.state.required.or(incoming.state.required);
-    current.state.empty = current.state.empty.or(incoming.state.empty);
-    current.state.visible = current.state.visible.or(incoming.state.visible);
+    current.state.disabled =
+        merge_restrictive_boolean_state(current.state.disabled, incoming.state.disabled);
+    current.state.read_only =
+        merge_restrictive_boolean_state(current.state.read_only, incoming.state.read_only);
+    current.state.required =
+        merge_restrictive_boolean_state(current.state.required, incoming.state.required);
+    current.state.empty = merge_boolean_state(current.state.empty, incoming.state.empty);
+    current.state.checked = merge_boolean_state(current.state.checked, incoming.state.checked);
+    current.state.visible = merge_boolean_state(current.state.visible, incoming.state.visible);
     current
         .supported_actions
         .extend(incoming.supported_actions.iter().copied());
@@ -1774,7 +1849,93 @@ fn merge_entity_details(current: &mut WebIrEntityDetails, incoming: &WebIrEntity
         (WebIrSensitivity::Public, WebIrSensitivity::Public) => WebIrSensitivity::Public,
         _ => WebIrSensitivity::Unknown,
     };
+    current.input_type = match (&current.input_type, &incoming.input_type) {
+        (Some(left), Some(right)) if !left.eq_ignore_ascii_case(right) => None,
+        (Some(value), _) | (_, Some(value)) => Some(value.clone()),
+        (None, None) => None,
+    };
+    if current.state.disabled == Some(true) || current.state.read_only == Some(true) {
+        current
+            .supported_actions
+            .retain(|action| matches!(action, WebIrAction::Read | WebIrAction::Extract));
+    }
     current.truncated |= incoming.truncated;
+}
+
+fn merge_boolean_state(current: Option<bool>, incoming: Option<bool>) -> Option<bool> {
+    match (current, incoming) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(value), _) | (_, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn merge_restrictive_boolean_state(current: Option<bool>, incoming: Option<bool>) -> Option<bool> {
+    match (current, incoming) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        (Some(false), None) | (None, Some(false)) => Some(false),
+        (None, None) => None,
+    }
+}
+
+fn classify_sensitivity(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrSensitivity {
+    let input_type = fact
+        .input_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let autocomplete = fact
+        .autocomplete
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let tokens = fact
+        .name
+        .as_deref()
+        .unwrap_or_default()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<BTreeSet<_>>();
+    let has_token = |values: &[&str]| values.iter().any(|value| tokens.contains(*value));
+
+    if input_type == "password"
+        || matches!(
+            autocomplete.as_str(),
+            "current-password" | "new-password" | "one-time-code"
+        )
+    {
+        WebIrSensitivity::Secret
+    } else if autocomplete.starts_with("cc-")
+        || has_token(&["payment", "cardholder", "cvv", "cvc", "iban", "routing"])
+        || (has_token(&["credit", "debit"]) && has_token(&["card"]))
+    {
+        WebIrSensitivity::Financial
+    } else if matches!(input_type.as_str(), "email" | "tel" | "file")
+        || matches!(
+            autocomplete.as_str(),
+            "name"
+                | "given-name"
+                | "family-name"
+                | "email"
+                | "tel"
+                | "street-address"
+                | "address-line1"
+                | "address-line2"
+                | "postal-code"
+                | "bday"
+        )
+        || has_token(&["email", "phone", "address", "passport", "birthday"])
+    {
+        WebIrSensitivity::Personal
+    } else if kind == WebIrEntityKind::Field
+        && matches!(input_type.as_str(), "" | "text" | "search" | "textarea")
+    {
+        WebIrSensitivity::Unknown
+    } else {
+        WebIrSensitivity::Public
+    }
 }
 
 fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
@@ -2039,9 +2200,12 @@ mod tests {
                     role: Some("textbox".into()),
                     name: Some("Email".into()),
                     input_type: Some("email".into()),
+                    autocomplete: Some("email".into()),
                     required: None,
                     read_only: None,
                     empty: None,
+                    checked: None,
+                    disabled: Some(false),
                     geometry_present: None,
                     parent_role: None,
                     relationship_hint: None,
@@ -2053,9 +2217,12 @@ mod tests {
                     role: Some("textbox".into()),
                     name: Some("Email".into()),
                     input_type: Some("email".into()),
+                    autocomplete: Some("email".into()),
                     required: None,
                     read_only: None,
                     empty: None,
+                    checked: None,
+                    disabled: Some(false),
                     geometry_present: None,
                     parent_role: None,
                     relationship_hint: None,
@@ -2067,9 +2234,12 @@ mod tests {
                     role: Some("textbox".into()),
                     name: Some("Email".into()),
                     input_type: Some("email".into()),
+                    autocomplete: Some("email".into()),
                     required: Some(true),
                     read_only: Some(false),
                     empty: Some(true),
+                    checked: None,
+                    disabled: Some(false),
                     geometry_present: None,
                     parent_role: None,
                     relationship_hint: None,
@@ -2106,6 +2276,70 @@ mod tests {
     }
 
     #[test]
+    fn sensitivity_is_token_aware_and_conservative_for_fields() {
+        let base = EvidenceFact {
+            source: EvidenceSource::Forms,
+            kind: "control".into(),
+            quality: EvidenceQuality::Strong,
+            role: Some("textbox".into()),
+            name: Some("Discard changes".into()),
+            parent_role: None,
+            relationship_hint: None,
+            input_type: Some("text".into()),
+            autocomplete: None,
+            required: None,
+            read_only: None,
+            empty: None,
+            checked: None,
+            disabled: None,
+            geometry_present: None,
+        };
+        assert_eq!(
+            classify_sensitivity(WebIrEntityKind::Field, &base),
+            WebIrSensitivity::Unknown
+        );
+        let mut email = base.clone();
+        email.input_type = Some("email".into());
+        assert_eq!(
+            classify_sensitivity(WebIrEntityKind::Field, &email),
+            WebIrSensitivity::Personal
+        );
+        let mut card = base.clone();
+        card.name = Some("Credit card number".into());
+        assert_eq!(
+            classify_sensitivity(WebIrEntityKind::Field, &card),
+            WebIrSensitivity::Financial
+        );
+        let mut password = base;
+        password.autocomplete = Some("current-password".into());
+        assert_eq!(
+            classify_sensitivity(WebIrEntityKind::Field, &password),
+            WebIrSensitivity::Secret
+        );
+    }
+
+    #[test]
+    fn reconciliation_preserves_checked_and_disabled_state() {
+        let mut evidence = evidence();
+        evidence.facts[2].checked = Some(true);
+        evidence.facts[2].disabled = Some(true);
+        let ir = reconcile_evidence(&evidence).unwrap();
+        let field = ir
+            .entities
+            .iter()
+            .find(|entity| {
+                ir.entity_details
+                    .get(&entity.id)
+                    .is_some_and(|details| details.state.checked == Some(true))
+            })
+            .unwrap();
+        let details = &ir.entity_details[&field.id];
+        assert_eq!(details.state.checked, Some(true));
+        assert_eq!(details.state.disabled, Some(true));
+        assert!(!details.supported_actions.contains(&WebIrAction::Type));
+    }
+
+    #[test]
     fn reconciliation_links_children_to_observed_regions_only() {
         let mut evidence = evidence();
         evidence.facts.push(EvidenceFact {
@@ -2115,9 +2349,12 @@ mod tests {
             role: Some("search".into()),
             name: Some("Site search".into()),
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: None,
             parent_role: None,
             relationship_hint: None,
@@ -2145,9 +2382,12 @@ mod tests {
             role: Some("form".into()),
             name: Some("Account".into()),
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: None,
             parent_role: None,
             relationship_hint: None,
@@ -2183,9 +2423,12 @@ mod tests {
             role: Some("form".into()),
             name: Some("Account".into()),
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: None,
             parent_role: None,
             relationship_hint: None,
@@ -2458,6 +2701,25 @@ mod tests {
                 .entity_details
                 .insert(rebound_id.clone(), details.clone());
         }
+        rebound_draft.relationships.extend(
+            source
+                .relationships
+                .iter()
+                .filter(|relationship| {
+                    relationship.from == target_id || relationship.to == target_id
+                })
+                .cloned()
+                .map(|mut relationship| {
+                    if relationship.from == target_id {
+                        relationship.from = rebound_id.clone();
+                    }
+                    if relationship.to == target_id {
+                        relationship.to = rebound_id.clone();
+                    }
+                    relationship
+                }),
+        );
+        rebound_draft.relationships.sort_by_key(relationship_key);
         let rebound = source
             .classify_entity_continuity(&rebound_draft, &target_id)
             .unwrap();
@@ -2576,7 +2838,7 @@ mod tests {
         assert!(details.supported_actions.contains(&WebIrAction::Read));
         assert!(details.supported_actions.contains(&WebIrAction::Type));
         assert_eq!(details.state.required, Some(true));
-        assert_eq!(details.sensitivity, WebIrSensitivity::Public);
+        assert_eq!(details.sensitivity, WebIrSensitivity::Personal);
         assert!(details.semantic_stability_key.is_some());
     }
 

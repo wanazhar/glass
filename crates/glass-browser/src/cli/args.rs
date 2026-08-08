@@ -974,6 +974,28 @@ pub enum ProjectProcessCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
+    /// Execute one schema-validated call through the Glass agent-tool broker.
+    #[command(hide = true)]
+    Tool {
+        call: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        allow_mutation: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Execute a one-use broker request from a private temporary file.
+    #[command(hide = true)]
+    ToolFile {
+        path: PathBuf,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        allow_mutation: bool,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Negotiate the Glass-owned harness protocol.
     Hello {
         #[arg(long, default_value = ".")]

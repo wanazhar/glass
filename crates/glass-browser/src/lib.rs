@@ -109,13 +109,13 @@ pub use browser::{
     KnowledgeStoreStats, KnowledgeSurfaceCoverage, KnowledgeSurfaceKind,
     KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
     KnowledgeVerifiedWorkflowEvidence, MAX_KNOWLEDGE_RECORDS, NavigationOutcome, PageInfo,
-    ProofBackend, SessionOptions, SessionOptionsBuilder, StartedBackend, TaskExecutionResult,
-    TaskStepResult, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
-    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutput,
-    WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError, WorkflowResumePlan,
-    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
-    WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
-    WorkflowValidationError, WorkflowValueType,
+    ProofBackend, SessionOptions, SessionOptionsBuilder, StartedBackend, TaskExecutionReceipt,
+    TaskExecutionResult, TaskPostconditionReceipt, TaskStepResult, WorkflowBudgets,
+    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
+    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
+    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
+    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
 };
 
 pub use task_protocol::{
@@ -126,14 +126,15 @@ pub use task_protocol::{
 
 pub use task_compiler::{
     TASK_COMPILER_VERSION, TASK_PLAN_SCHEMA_VERSION, TaskCompilationError, TaskCompilationOptions,
-    TaskEvidenceRequirements, TaskExecutionPlan, TaskPlanOperation, TaskPlanPrecondition,
-    TaskPlanStep, compile_task, compile_task_with_knowledge, compile_task_with_options,
+    TaskEntityBindingKey, TaskEntityEvidenceRequirement, TaskEvidenceRequirements,
+    TaskExecutionPlan, TaskPlanOperation, TaskPlanPrecondition, TaskPlanStep,
+    TaskRuntimeCapability, compile_task, compile_task_with_knowledge, compile_task_with_options,
 };
 
 pub use protocol::{
     GLASS_PROTOCOL_VERSION, TASK_COMPILE_OPERATION, TASK_VALIDATE_OPERATION, TaskCompilePayload,
     TaskCompileResult, TaskValidationPayload, TaskValidationResult, WEB_IR_CONTINUITY_OPERATION,
-    WEB_IR_DIFF_OPERATION, WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION,
+    WEB_IR_DIFF_OPERATION, WEB_IR_INSPECT_OPERATION, WEB_IR_VALIDATE_OPERATION, WebIrCompactEntity,
     WebIrContinuityPayload, WebIrContinuityResult, WebIrDiffPayload, WebIrDiffResult,
     WebIrInspectionResult, WebIrPayload, WebIrValidationResult, compile_task_request,
     compile_task_result, validate_task_result, web_ir_continuity_result, web_ir_diff_result,

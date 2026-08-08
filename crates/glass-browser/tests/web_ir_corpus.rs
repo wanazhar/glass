@@ -67,6 +67,9 @@ fn web_ir_corpus_paths_and_bounds_are_deterministic() {
         assert!(fixture["expectedEntities"].as_array().is_some());
         assert!(fixture["expectedRelationships"].as_array().is_some());
         assert!(fixture["opaqueRegions"].as_u64().is_some());
+        assert!(fixture["runtimeExpectedEntities"].as_object().is_some());
+        assert!(fixture["runtimeExpectedRelationships"].as_array().is_some());
+        assert!(fixture["runtimeExpectedOpaqueRegions"].as_u64().is_some());
     }
 }
 
@@ -93,7 +96,7 @@ fn web_ir_scenario_manifest_references_known_fixtures() {
     let scenarios = manifest("benchmarks/scenarios/web-ir-v1.json");
     assert_eq!(scenarios["schemaVersion"], 1);
     assert_eq!(scenarios["corpus"], corpus["corpus"]);
-    assert_eq!(scenarios["baselineType"], "fixture-inventory");
+    assert_eq!(scenarios["baselineType"], "live-extraction-corpus");
 
     let fixture_ids = corpus["fixtures"]
         .as_array()
@@ -141,5 +144,27 @@ fn web_ir_revision_fixture_covers_compatible_stale_and_ambiguous_cases() {
         case["id"] == "ambiguous-continuity"
             && case["expected"] == "ambiguous"
             && case["status"] == "ambiguous"
+    }));
+}
+
+#[test]
+fn adversarial_corpus_declares_semantic_and_metamorphic_outcomes() {
+    let suite = manifest("tests/fixtures/web-ir/adversarial-v1.json");
+    assert_eq!(suite["schemaVersion"], 1);
+    assert_eq!(suite["suite"], "glass-web-ir-adversarial-v1");
+    let cases = suite["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 9);
+    let ids = cases
+        .iter()
+        .map(|case| case["id"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids.len(), cases.len());
+    assert!(cases.iter().all(|case| {
+        case["mutation"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+            && case["expected"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
     }));
 }

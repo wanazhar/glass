@@ -6,6 +6,7 @@ use glass_browser::browser::session::{
     WorkflowOutputSource, WorkflowRunStatus, WorkflowStep, WorkflowStepState, WorkflowTrace,
     WorkflowTransactionClass,
 };
+#[cfg(feature = "development-runtime")]
 use glass_browser::development::{Actor, ProjectWorkspace};
 use glass_browser::reliability::{
     ReliabilityFixtureManifest, ReliabilityRunClassification, ReliabilityScenario,
@@ -816,6 +817,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
 }
 
 #[tokio::test]
+#[cfg(feature = "development-runtime")]
 async fn development_edit_reaches_live_browser_and_semantic_revision() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping live development loop; set GLASS_E2E=1 to run it");
@@ -2859,6 +2861,119 @@ async fn browser_session_extracts_live_page_into_stable_web_ir() {
     );
     session.close().await.unwrap();
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn browser_session_executes_the_versioned_web_ir_corpus() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping executable Web IR corpus; set GLASS_E2E=1 to run it");
+        return;
+    }
+    let chrome_path = required_chrome();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let session = BrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(chrome_path),
+        profile: "web-ir-corpus-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    let manifest: Value =
+        serde_json::from_str(include_str!("fixtures/web-ir/corpus-v1.json")).unwrap();
+    let request = ExtractionRequest {
+        schema_version: 1,
+        scope: ExtractionScope::Document,
+        sources: vec![
+            EvidenceSource::Accessibility,
+            EvidenceSource::Dom,
+            EvidenceSource::Forms,
+            EvidenceSource::Layout,
+            EvidenceSource::Navigation,
+            EvidenceSource::Tables,
+            EvidenceSource::Collections,
+            EvidenceSource::Dialogs,
+            EvidenceSource::Frames,
+            EvidenceSource::ShadowDom,
+            EvidenceSource::Svg,
+            EvidenceSource::CanvasDetection,
+            EvidenceSource::MediaMetadata,
+            EvidenceSource::EmbeddedDocument,
+            EvidenceSource::Pdf,
+            EvidenceSource::BrowserNative,
+            EvidenceSource::Bridge,
+            EvidenceSource::BoundedProbe,
+        ],
+        budgets: ExtractionBudgets::default(),
+    };
+    for fixture in manifest["fixtures"].as_array().unwrap() {
+        let id = fixture["id"].as_str().unwrap();
+        let relative = fixture["path"].as_str().unwrap();
+        let html =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)).unwrap();
+        let server = FixtureServer::start(Box::leak(html.into_boxed_str())).await;
+        session.navigate(&server.url).await.unwrap();
+        let ir = session.extract_web_ir(&request).await.unwrap();
+        ir.validate().unwrap();
+
+        let mut actual_entities = BTreeMap::<String, usize>::new();
+        for entity in &ir.entities {
+            let kind = serde_json::to_value(entity.kind).unwrap();
+            *actual_entities
+                .entry(kind.as_str().unwrap().into())
+                .or_default() += 1;
+        }
+        if let Some(runtime_expected_entities) = fixture["runtimeExpectedEntities"].as_object() {
+            assert_eq!(
+                serde_json::to_value(&actual_entities).unwrap(),
+                Value::Object(runtime_expected_entities.clone()),
+                "fixture {id} entity golden changed"
+            );
+        }
+
+        let actual_relationships = ir
+            .relationships
+            .iter()
+            .map(|relationship| {
+                serde_json::to_value(relationship.kind)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(runtime_expected_relationships) =
+            fixture["runtimeExpectedRelationships"].as_array()
+        {
+            let runtime_expected_relationships = runtime_expected_relationships
+                .iter()
+                .map(|kind| kind.as_str().unwrap().to_string())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual_relationships, runtime_expected_relationships,
+                "fixture {id} relationship golden changed"
+            );
+        }
+        if let Some(runtime_expected_opaque_regions) =
+            fixture["runtimeExpectedOpaqueRegions"].as_u64()
+        {
+            assert_eq!(
+                ir.coverage.opaque_regions, runtime_expected_opaque_regions as u32,
+                "fixture {id} opaque-region golden changed"
+            );
+        }
+        server.close().await;
+    }
+    session.close().await.unwrap();
 }
 
 #[tokio::test]

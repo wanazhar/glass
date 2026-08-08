@@ -616,7 +616,9 @@
         "truncated": false,
         "opaqueRegions": 0,
         "diagnosticCount": 0,
-        "relationshipHintDiagnosticCount": 0
+        "relationshipHintDiagnosticCount": 0,
+        "entityKindCounts": {"page": 1},
+        "actionableEntities": []
       }
     },
     {
@@ -637,10 +639,10 @@
         "plan": {
           "schemaVersion": 1,
           "taskSchemaVersion": 1,
-          "compilerVersion": 1,
+          "compilerVersion": 2,
           "sourceIrSchemaVersion": 1,
           "sourceIrRevision": 7,
-          "taskFingerprint": "e5e76e0298e2f36738b5f984c4284323210a35569748581ed2eaa56c46b32065",
+          "taskFingerprint": "d4d977e82af330f15113373f6afb1d0ee05193fc372ed6c1aff6b4a35e0e11eb",
           "task": "navigation.follow",
           "scope": {"entityKind": "page"},
           "limits": {"maxActions": 4, "timeoutMs": 2000, "maxItems": 16},
@@ -654,6 +656,17 @@
             "requiredSources": ["accessibility"],
             "requireComplete": true
           },
+          "entityEvidenceRequirements": [
+            {
+              "entityId": "page",
+              "minimumQuality": "strong",
+              "requiredSources": ["accessibility"]
+            }
+          ],
+          "entityBindingKeys": [
+            {"entityId": "page", "kind": "page"}
+          ],
+          "requiredRuntimeCapabilities": ["observe", "navigate"],
           "preconditions": [
             {"kind": "revisionEquals", "revision": 7},
             {"kind": "entityPresent", "entityId": "page"},

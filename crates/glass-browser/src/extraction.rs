@@ -263,11 +263,17 @@ pub struct EvidenceFact {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autocomplete: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry_present: Option<bool>,
 }
@@ -477,11 +483,7 @@ pub fn extract_page_context(
                         if !collector.allow_node(0) {
                             break;
                         }
-                        let parent_role = control
-                            .ancestor_path
-                            .last()
-                            .and_then(|value| value.split(':').next())
-                            .and_then(safe_parent_role);
+                        let parent_role = nearest_safe_parent_role(&control.ancestor_path);
                         collector.push(EvidenceFact {
                             source: *source,
                             kind: "control".into(),
@@ -489,9 +491,12 @@ pub fn extract_page_context(
                             role: Some(control.role.clone()),
                             name: Some(control.name.clone()),
                             input_type: control.input_type.clone(),
+                            autocomplete: control.autocomplete.clone(),
                             required: Some(control.required),
                             read_only: Some(control.read_only),
                             empty: Some(control.empty),
+                            checked: control.checked,
+                            disabled: control.disabled,
                             geometry_present: None,
                             relationship_hint: custom_form_control_hint(
                                 &control.role,
@@ -747,9 +752,12 @@ pub fn extract_semantic_bridge(
             parent_role: None,
             relationship_hint: None,
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: Some(true),
         });
     }
@@ -1353,6 +1361,15 @@ fn safe_parent_role(value: &str) -> Option<String> {
     known_role.then(|| role.to_owned())
 }
 
+fn nearest_safe_parent_role(ancestor_path: &[String]) -> Option<String> {
+    ancestor_path.iter().rev().find_map(|value| {
+        let role = value
+            .split_once(':')
+            .map_or(value.as_str(), |(role, _)| role);
+        safe_parent_role(role)
+    })
+}
+
 fn is_form_control_role(role: &str) -> bool {
     matches!(
         role,
@@ -1440,9 +1457,12 @@ fn collect_semantic_source(
             role: Some(node.role.clone()),
             name: Some(node.name.clone()),
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: None,
             parent_role: parent_role.map(str::to_owned),
             relationship_hint: None,
@@ -1480,9 +1500,12 @@ fn push_boundary_fact(
         role: Some(role.into()),
         name: Some(name),
         input_type: None,
+        autocomplete: None,
         required: None,
         read_only: None,
         empty: None,
+        checked: None,
+        disabled: None,
         geometry_present: None,
         parent_role: None,
         relationship_hint: None,
@@ -1506,9 +1529,12 @@ fn collect_accessibility(
             role: Some(node.role.clone()),
             name: Some(node.name.clone()),
             input_type: None,
+            autocomplete: None,
             required: None,
             read_only: None,
             empty: None,
+            checked: None,
+            disabled: None,
             geometry_present: None,
             parent_role: parent_role.map(str::to_owned),
             relationship_hint: None,
@@ -1538,15 +1564,7 @@ fn collect_accessibility_control(
     ) {
         return;
     }
-    let parent_role = control
-        .ancestor_path
-        .last()
-        .map(|value| {
-            value
-                .split_once(':')
-                .map_or(value.as_str(), |(role, _)| role)
-        })
-        .and_then(safe_parent_role);
+    let parent_role = nearest_safe_parent_role(&control.ancestor_path);
     collector.push(EvidenceFact {
         source: EvidenceSource::Accessibility,
         kind: "control".into(),
@@ -1554,9 +1572,12 @@ fn collect_accessibility_control(
         role: Some(control.role.clone()),
         name: Some(control.name.clone()),
         input_type: control.input_type.clone(),
+        autocomplete: control.autocomplete.clone(),
         required: Some(control.required),
         read_only: Some(control.read_only),
         empty: Some(control.empty),
+        checked: control.checked,
+        disabled: control.disabled,
         geometry_present: None,
         parent_role,
         relationship_hint: None,
@@ -1619,9 +1640,12 @@ fn collect_svg_semantics(
                 parent_role: None,
                 relationship_hint: None,
                 input_type: None,
+                autocomplete: None,
                 required: None,
                 read_only: None,
                 empty: None,
+                checked: None,
+                disabled: None,
                 geometry_present: Some(node.bounding_box.is_some()),
             });
         }
@@ -1646,9 +1670,12 @@ fn collect_dom(node: &DomNode, collector: &mut EvidenceCollector, depth: u16) {
         role: None,
         name: Some(node.node_name.clone()),
         input_type: None,
+        autocomplete: None,
         required: None,
         read_only: None,
         empty: None,
+        checked: None,
+        disabled: None,
         geometry_present: None,
         parent_role: None,
         relationship_hint: None,
@@ -1678,9 +1705,12 @@ fn collect_layout(
         role: None,
         name: Some(node.node_name.clone()),
         input_type: None,
+        autocomplete: None,
         required: None,
         read_only: None,
         empty: None,
+        checked: None,
+        disabled: None,
         geometry_present: Some(node.bounding_box.is_some()),
         parent_role: None,
         relationship_hint: None,
@@ -1929,8 +1959,10 @@ mod tests {
                 ancestor_path: Vec::new(),
                 shadow_host_path: None,
                 input_type: Some("text".into()),
+                autocomplete: Some("name".into()),
                 value: Some("secret-value".into()),
                 checked: None,
+                disabled: None,
                 selected_option: None,
                 empty: true,
                 read_only: false,
@@ -2173,7 +2205,10 @@ mod tests {
 
         let mut context = page_context();
         context.accessibility.interactive[0].role = "combobox".into();
-        context.accessibility.interactive[0].ancestor_path = vec!["form:Example form".into()];
+        context.accessibility.interactive[0].ancestor_path = vec![
+            "form:Example form".into(),
+            "label:Nested field label".into(),
+        ];
         let mut request = request();
         request.sources = vec![EvidenceSource::Forms];
         let evidence = extract_page_context(&context, &request).unwrap();

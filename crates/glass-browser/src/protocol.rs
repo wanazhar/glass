@@ -6,6 +6,7 @@
 //! outside this contract.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Version of the canonical Glass operation envelope.
 pub const GLASS_PROTOCOL_VERSION: u32 = 1;
@@ -204,11 +205,52 @@ pub struct WebIrInspectionResult {
     pub opaque_regions: u32,
     pub diagnostic_count: usize,
     pub relationship_hint_diagnostic_count: usize,
+    #[serde(default)]
+    pub entity_kind_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub actionable_entities: Vec<WebIrCompactEntity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebIrCompactEntity {
+    pub id: String,
+    pub kind: crate::web_ir::WebIrEntityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub sensitivity: crate::web_ir::WebIrSensitivity,
+    pub supported_actions: Vec<crate::web_ir::WebIrAction>,
 }
 
 impl WebIrInspectionResult {
     /// Build a bounded summary after an IR has passed graph validation.
     pub fn from_ir(ir: &crate::web_ir::GlassWebIrV1) -> Self {
+        let mut entity_kind_counts = BTreeMap::new();
+        for entity in &ir.entities {
+            let kind = serde_json::to_value(entity.kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".into());
+            *entity_kind_counts.entry(kind).or_default() += 1;
+        }
+        let actionable_entities = ir
+            .entities
+            .iter()
+            .filter_map(|entity| {
+                let details = ir.entity_details.get(&entity.id)?;
+                (!details.supported_actions.is_empty()).then(|| WebIrCompactEntity {
+                    id: entity.id.clone(),
+                    kind: entity.kind,
+                    role: entity.role.clone(),
+                    name: entity.name.clone(),
+                    sensitivity: details.sensitivity,
+                    supported_actions: details.supported_actions.clone(),
+                })
+            })
+            .take(16)
+            .collect();
         Self {
             schema_version: ir.schema_version,
             revision: ir.revision,
@@ -219,6 +261,8 @@ impl WebIrInspectionResult {
             opaque_regions: ir.coverage.opaque_regions,
             diagnostic_count: ir.diagnostics.len(),
             relationship_hint_diagnostic_count: ir.relationship_hint_diagnostics.len(),
+            entity_kind_counts,
+            actionable_entities,
         }
     }
 }

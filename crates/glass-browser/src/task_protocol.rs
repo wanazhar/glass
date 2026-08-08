@@ -175,6 +175,38 @@ impl TaskPostcondition {
                     )?;
                 }
             }
+            TaskPostconditionKind::EntityState => {
+                let Some(expected) = self.expected.as_deref() else {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "entityState requires '<entity-name>.<state>=<true|false>'",
+                    ));
+                };
+                let Some((selector, expected_value)) = expected.rsplit_once('=') else {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "entityState requires '<entity-name>.<state>=<true|false>'",
+                    ));
+                };
+                let Some((entity_name, state)) = selector.rsplit_once('.') else {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "entityState requires '<entity-name>.<state>=<true|false>'",
+                    ));
+                };
+                if entity_name.trim().is_empty()
+                    || !matches!(
+                        state,
+                        "disabled" | "readOnly" | "required" | "checked" | "empty"
+                    )
+                    || !matches!(expected_value, "true" | "false")
+                {
+                    return Err(TaskProtocolError::new(
+                        format!("postconditions[{index}].expected"),
+                        "entityState selector, state, or boolean value is invalid",
+                    ));
+                }
+            }
             _ => {}
         }
 
@@ -471,21 +503,29 @@ pub(crate) fn postcondition_allowed_for(task: TaskKind, kind: TaskPostconditionK
     use TaskPostconditionKind::*;
     match task {
         TaskKind::FormInspect | TaskKind::FormFill | TaskKind::FormValidate => {
-            matches!(kind, ValidationClear | RegionPresent | PageKind)
+            matches!(
+                kind,
+                ValidationClear | RegionPresent | PageKind | EntityState
+            )
         }
         TaskKind::FormSubmit => matches!(
             kind,
-            NavigationOccurred | ValidationClear | RegionPresent | PageKind | DialogClosed
+            NavigationOccurred
+                | ValidationClear
+                | RegionPresent
+                | PageKind
+                | DialogClosed
+                | EntityState
         ),
         TaskKind::NavigationFollow => matches!(kind, NavigationOccurred | RegionPresent | PageKind),
         TaskKind::NavigationSelectTab | TaskKind::NavigationOpenMenu => {
-            matches!(kind, RegionPresent | PageKind)
+            matches!(kind, RegionPresent | PageKind | EntityState)
         }
 
         TaskKind::TableExtract | TaskKind::CollectionExtract | TaskKind::RegionExtract => {
             matches!(kind, RecordsExtracted | RegionPresent | PageKind)
         }
-        TaskKind::FieldRead => matches!(kind, RegionPresent | PageKind),
+        TaskKind::FieldRead => matches!(kind, RegionPresent | PageKind | EntityState),
         TaskKind::DialogInspect => matches!(kind, DialogClosed | RegionPresent | PageKind),
         TaskKind::DialogConfirm | TaskKind::DialogCancel => {
             matches!(kind, DialogClosed | PageKind)
@@ -646,6 +686,29 @@ mod tests {
         invalid.task = TaskKind::FieldRead;
         invalid.scope.entity_kind = Some(WebIrEntityKind::Field);
         assert_eq!(invalid.validate().unwrap_err().path, "inputs.field");
+    }
+
+    #[test]
+    fn entity_state_postconditions_require_a_bounded_boolean_predicate() {
+        let mut authored = task();
+        authored.postconditions = vec![TaskPostcondition {
+            kind: TaskPostconditionKind::EntityState,
+            expected: Some("Email.disabled=false".into()),
+        }];
+        authored.validate().unwrap();
+
+        for invalid in [
+            "Email.disabled",
+            "Email.value=private",
+            "Email.unknown=true",
+            ".disabled=true",
+        ] {
+            authored.postconditions[0].expected = Some(invalid.into());
+            assert_eq!(
+                authored.validate().unwrap_err().path,
+                "postconditions[0].expected"
+            );
+        }
     }
 
     #[test]

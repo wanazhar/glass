@@ -1,8 +1,15 @@
 {
   "schemaVersion": 1,
   "corpus": "glass-semantic-execution-v1",
-  "baselineType": "fixture-inventory",
-  "runtimeClaims": false,
+  "baselineType": "live-extraction-corpus",
+  "runtimeClaims": true,
+  "runtimeEvidence": {
+    "recordedAt": "2026-08-08",
+    "browser": "Chromium 150.0.7871.128 snap",
+    "command": "GLASS_E2E=1 CHROME_PATH=/snap/bin/chromium cargo test -p glass-browser --test browser_smoke browser_session_executes_the_versioned_web_ir_corpus -- --nocapture --test-threads=1",
+    "fixturesPassed": 8,
+    "fixturesFailed": 0
+  },
   "fixtureCount": 8,
   "scenarioCount": 8,
   "categoryCount": 11,

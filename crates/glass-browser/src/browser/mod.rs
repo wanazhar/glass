@@ -163,7 +163,9 @@ pub use session::{
     default_session_snapshot_path,
 };
 /// Bounded browser-backed Task Protocol execution results.
-pub use session::{TaskExecutionResult, TaskStepResult};
+pub use session::{
+    TaskExecutionReceipt, TaskExecutionResult, TaskPostconditionReceipt, TaskStepResult,
+};
 /// Versioned declarative workflow definition and validation types.
 pub use session::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,

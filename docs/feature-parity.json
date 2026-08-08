@@ -6,7 +6,7 @@
     "tag": "v0.3.0",
     "source_commit": "10139a5c4a599092eab796cda2b4486255ebacbd"
   },
-  "next_release": "0.3.2",
+  "next_release": "0.3.3",
   "targets": [
     {
       "id": "linux-x86_64",

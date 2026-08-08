@@ -20,7 +20,8 @@ loop.
 | Linux arm64 | Declared target; native runtime certification pending |
 | macOS x86-64 | Declared target; native runtime certification pending |
 | macOS arm64 | Declared target; native runtime certification pending |
-| Windows | Unsupported |
+| Windows | Browser-free contracts checked in CI; native PTY certification pending |
+| 0.3.3 | Current source release candidate |
 | 0.3.2 | Current published release |
 | 0.3.1 | Previous source release |
 | 0.3.0 | Previous published release |
@@ -49,10 +50,15 @@ cargo install --path crates/glass-dev --locked
 glass --help
 ```
 
-The command installs the full `glass` environment from `glass-dev`. For the
-independent browser control plane, install `glass-browser`; it owns the
-non-conflicting `glass-browser` executable and the `glass_browser` Rust
-library.
+The command installs both `glass` and `glass-browser` from `glass-dev`. For the
+independent browser control plane and Rust library without the development
+runtime, install `glass-browser` instead. If an older standalone executable
+exists in the same Cargo root, uninstall that package before installing
+`glass-dev` so Cargo can complete the intentional executable transition.
+The reverse transition is `cargo uninstall glass-dev` followed by
+`cargo install glass-browser --locked`; normal full-suite upgrades use
+`cargo install glass-dev --locked --force`. See the
+[installation guide](docs/installation.md) for the tested transition matrix.
 
 The latest published package can be installed with:
 
@@ -85,8 +91,8 @@ single-pane phone workspace. Force it when terminal dimensions are misleading:
 glass --tui-layout mobile
 ```
 
-Use `1` through `5` or `Tab` to switch Home, Agent, App, Diff, and More views.
-Home is an attention inbox rather than a raw log. Enter `tap` to select one of
+Use `1` through `6` or `Tab` to switch Overview, Agent, Browser, Project, Diff,
+and Process views. Overview is an attention inbox rather than a raw log. Enter `tap` to select one of
 the current revision-bound semantic actions by number, `verify card` for a
 compact evidence summary, `notify on` for opt-in terminal alerts, and
 `capsule save|show|clear` to manage restart continuity. Clean TUI exits save a
@@ -99,8 +105,20 @@ for agent-aware detach/reattach persistence. Enter `safari` for the stable,
 full-fidelity private SSH port-forwarding path; Glass never publicly exposes the
 dev server or Chrome CDP. See [Mobile and remote development](docs/mobile-remote.md).
 
-`live quality auto` adapts within the bounded data/balanced/smooth profiles
-using delivery pressure while the App view is visible.
+`live quality auto` reduces capture scale before frame rate. Local balanced and
+smooth request 30 and 60 FPS; unknown SSH links fail closed to constrained
+rates, idle/background views throttle aggressively, and Mosh stays
+semantic-only. Width affects layout, not transport or graphics capability.
+Override those dimensions independently with `--tui-layout`,
+`--tui-transport`, and `--tui-graphics`; measured RTT and throughput can be
+supplied with `--tui-rtt-ms` and `--tui-throughput-mbps`.
+
+For an explicit full-fidelity iOS Safari view backed by the same
+`BrowserSession`, enter `browser remote-view open`. Glass binds a random-token
+endpoint to loopback and prints an SSH forwarding command. Input carries the
+displayed browser revision, so stale input fails closed. Revoke the token and
+clients with `browser remote-view close`. Structured observation remains the
+default and terminal pixels remain optional.
 
 Enter these commands in the TUI:
 
@@ -277,7 +295,7 @@ backend abstractions, reliability evidence, and the MCP server. Read the
 `glass-browser` crate with all Cargo features enabled.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) remain experimental repository clients for the 0.3.2
+client](clients/python) remain experimental repository clients for the 0.3.3
 release line. They are not published as npm or PyPI packages, do not
 include a browser runtime, and do not change the primary Cargo installation
 path. Both expose typed browser and Development Runtime helpers plus a bounded,
@@ -287,7 +305,9 @@ cursor-based project event subscription API.
 
 Glass requires a local Chrome or Chromium process. The primary backend uses a
 local CDP connection; the bounded WebDriver BiDi backend remains experimental.
-Glass does not provide a hosted browser service or Windows support.
+Glass does not provide a hosted browser service. Browser-free core and
+Development Runtime paths are checked on Windows; native browser automation
+release evidence is currently Linux-only.
 
 Use a dedicated browser profile. Keep the CDP endpoint local. Treat profiles,
 screenshots, DOM output, cookies, and logs as sensitive. Read the

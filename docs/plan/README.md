@@ -1,5 +1,30 @@
 # Glass delivery plans
 
+## Completed plan: Glass v0.3.3 issue #33
+
+Status: Complete local release candidate — no tag, push, crates.io
+publication, GitHub Release, or issue closure was performed.
+
+Issue #33 and its authoritative amendment define 15 integration pillars, 53
+mandatory release checkboxes, scenarios A–K, full-suite command exposure and
+zero-exit browser recovery. The complete defect baseline, integration chains,
+TUI inspiration decisions and evidence matrix are in
+[analysis/release-033.md](analysis/release-033.md); the auditable 53/53 mapping
+is in [reviews/release-033-gates.md](reviews/release-033-gates.md).
+
+Delivery order:
+
+1. [presentation-033-001](tasks/presentation-033-001.md) — independent
+   connection dimensions, policy matrix, observatory and correct local pacing.
+2. [tui-recovery-033-002](tasks/tui-recovery-033-002.md) — phone shell,
+   command palette, browser controller, recovery sheet and target picker.
+3. [remote-agent-033-003](tasks/remote-agent-033-003.md) — secure Remote View
+   and live attachment-aware agent context.
+4. [runtime-033-004](tasks/runtime-033-004.md) — process trees, project tree,
+   persistent LSP and real embedded Neovim proof.
+5. [release-033-005](tasks/release-033-005.md) — full-suite binaries,
+   cross-platform/tool CI, black-box demonstrations, docs and final validation.
+
 ## Completed plan: complete public documentation and docs.rs revamp
 
 Status: Completed and verified locally — no remote mutation.

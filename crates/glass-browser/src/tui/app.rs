@@ -6679,7 +6679,7 @@ mod tests {
                     incognito: None,
                     chrome_path: Some(Some(path)),
                 })
-            ))) if profile == "work" && path == PathBuf::from("/opt/chrome")
+            ))) if profile == "work" && path.as_os_str() == "/opt/chrome"
         ));
         assert!(matches!(
             parse_command("browser attach --port 9333 target-7"),
@@ -6928,6 +6928,53 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("1 Overview"));
         assert!(rendered.contains("6 Process"));
+        assert!(rendered.contains("Command"));
+    }
+
+    #[test]
+    fn phone_recovery_card_preserves_development_state_and_actions() {
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                ..RemoteContext::default()
+            },
+            40,
+            LiveViewOptions::default(),
+        );
+        app.development_files = "project-tree-still-present".into();
+        app.development_runtime = "process-still-running".into();
+        app.apply_browser_event(BrowserEvent::RecoveryRequired {
+            probe: EndpointProbe {
+                port: 9222,
+                classification: EndpointClassification::UnrelatedService,
+                product: None,
+                targets: Vec::new(),
+                detail: "another local service owns the port".into(),
+            },
+        })
+        .unwrap();
+
+        assert_eq!(app.browser_state, BrowserState::Recovery);
+        assert_eq!(app.development_files, "project-tree-still-present");
+        assert_eq!(app.development_runtime, "process-still-running");
+        assert!(app.page_content.contains("browser launch [OPTIONS]"));
+        assert!(app.page_content.contains("semantic-only"));
+
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Browser recovery"));
         assert!(rendered.contains("Command"));
     }
 

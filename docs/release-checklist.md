@@ -4,11 +4,32 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.2`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.3`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
-Windows is unsupported.
+Windows receives browser-free source checks; native browser/PTY support is not
+certified.
+
+## 0.3.3 local candidate record
+
+- [x] Map all 53 mandatory issue #33 checkboxes, including the authoritative
+      amendment, to integrated evidence.
+- [x] Verify the responsive phone/compact/wide TUI, real 40x20 PTY behavior,
+      browser recovery, target selection, same-session Remote View and dynamic
+      agent context.
+- [x] Verify process-tree cleanup, bounded project snapshots, persistent LSP,
+      and real embedded Neovim RPC evidence.
+- [x] Run formatting, all-feature workspace tests, 19 serial Chromium
+      scenarios, warnings-denied Clippy/rustdoc, minimal-core compilation,
+      dependency/security/fuzz checks, and separate release builds.
+- [x] Package and dry-run both crates without upload; validate the exact
+      normalized `glass-browser =0.3.3` dependency.
+- [x] Clean-install core and full packages and exercise core-to-full,
+      full-to-full and full-to-core ownership transitions.
+- [x] Keep macOS and Windows claims bounded to browser-free CI definitions.
+- [ ] Obtain explicit approval before pushing, tagging, publishing, closing
+      issue #33, or creating the GitHub Release.
 
 ## 0.3.2 release record
 
@@ -87,7 +108,7 @@ cargo publish --package glass-dev --locked --dry-run --no-verify
 cargo deny check
 cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
-GLASS_PREVIOUS_VERSION=0.2.7 scripts/smoke-clean-install.sh
+GLASS_PREVIOUS_VERSION=0.3.2 scripts/smoke-clean-install.sh
 ```
 
 Then complete these release checks:

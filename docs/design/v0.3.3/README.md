@@ -19,12 +19,16 @@ against both cell and real-terminal output.
 
 Interaction references applied to the final design:
 
-- Claude Code: persistent composer, `?` help, `Ctrl-L` redraw, visible
-  background work, mouse-optional operation;
-- Codex TUI: slash-command discoverability, status composition, bounded
-  background terminals, and task-safe command availability;
-- Lazygit: numbered panels, contextual help, Enter/Escape predictability, and
-  a focused full-width panel on constrained terminals.
+- [Claude Code interactive mode](https://code.claude.com/docs/en/interactive-mode):
+  persistent composer, `?` help, `Ctrl-L` redraw, visible background work,
+  and mouse-optional operation;
+- [Codex CLI](https://developers.openai.com/codex/cli/features) and its
+  [developer commands](https://developers.openai.com/codex/cli/slash-commands):
+  command discovery, status composition, bounded background terminals, and
+  task-safe command availability;
+- [Lazygit keybindings](https://github.com/jesseduffield/lazygit/blob/master/docs/keybindings/Keybindings_en.md):
+  numbered panels, contextual help, Enter/Escape predictability, and a focused
+  full-width panel on constrained terminals.
 
 Glass keeps its own identity: semantic state and revision evidence lead;
 pixels are an explicit assist; recovery is a first-class Browser view; and

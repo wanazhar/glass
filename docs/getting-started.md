@@ -9,7 +9,7 @@ the bounded operation, and returns verification or recovery data.
 
 | Package | Installs | Use it for |
 |---|---|---|
-| `glass-dev` | `glass` | Full CLI, TUI, MCP server, project runtime, mobile workspace, and browser control |
+| `glass-dev` | `glass`, `glass-browser` | Full CLI, TUI, MCP server, project runtime, mobile workspace, and browser control |
 | `glass-browser` | `glass-browser` and Rust crate `glass_browser` | Standalone browser control plane and embeddable Rust API |
 
 Install the full environment from a checkout:

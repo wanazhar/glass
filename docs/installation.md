@@ -21,14 +21,15 @@ Build both release executables:
 cargo build --release --locked
 ```
 
-The executables are `target/release/glass` from `glass-dev` and
-`target/release/glass-browser` from `glass-browser`.
+The executables are `target/release/glass` and
+`target/release/glass-browser`; `glass-dev` packages both entry points.
 
 Install the local checkout:
 
 ```console
 cargo install --path crates/glass-dev --locked
 glass --help
+glass-browser --help
 
 # Browser control plane only
 cargo install --path crates/glass-browser --locked
@@ -42,10 +43,32 @@ cargo install glass-dev --locked
 cargo install glass-browser --locked
 ```
 
-The names do not compete: `glass-dev` owns `glass`; `glass-browser` owns
-`glass-browser` and exports the `glass_browser` Rust library. `glass-dev`
-depends one-way on the exact matching browser crate version. Installing the
-browser package never installs Pi or Node.
+`glass-dev` owns both installed executable names for the complete product;
+`glass-browser` independently owns `glass-browser` for core-only installs and
+exports the `glass_browser` Rust library. Cargo therefore rejects installing
+both packages into the same root. Choose one product, or uninstall the old
+owner before switching. `glass-dev` depends one-way on the exact matching
+browser crate version. Neither package installs Pi or Node.
+
+Use these explicit ownership transitions; `cargo install --list` shows the
+current owner before you change it:
+
+```console
+# core only -> full suite
+cargo uninstall glass-browser
+cargo install glass-dev --locked
+
+# full suite -> newer full suite
+cargo install glass-dev --locked --force
+
+# full suite -> core only
+cargo uninstall glass-dev
+cargo install glass-browser --locked
+```
+
+The release smoke additionally exercises Cargo's direct `--force` replacement
+in both directions in an isolated root. Uninstall/install is the clearest
+interactive route because it leaves no stale package-ownership record.
 
 ## Diagnose an installation
 

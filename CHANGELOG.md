@@ -5,6 +5,45 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-08
+
+### Added
+
+- Added independent layout, transport, graphics, shell, and multiplexer
+  classification with conservative unknown states, measured overrides, typed
+  presentation profiles, policy reasons, and requested/acquired/presented
+  observability.
+- Added a six-view phone cockpit (Overview, Agent, Browser, Project, Diff, and
+  Process), printable navigation, command-palette hints, browser recovery, and
+  privacy-preserving target selection.
+- Added loopback-only, random-token Remote View for the active BrowserSession,
+  newest-frame delivery, bounded clients/input, revision-guarded browser input,
+  SSH-forward guidance, and explicit revocation.
+- Added explicit project-tree truncation/ignore evidence, checked process-state
+  reads, process-group shutdown escalation, persistent LSP document lifecycle
+  and language operations, and a real Neovim `--embed` Msgpack-RPC proof.
+- Added attached-agent browser/project revision context and Linux, macOS, and
+  Windows browser-free CI coverage.
+
+### Changed
+
+- Restored local interactive targets to 30 FPS balanced and 60 FPS smooth;
+  adaptive mode reduces resolution before rate and aggressively throttles
+  settled, idle, and background work.
+- Stopped inferring graphics support or phone layout from terminal/SSH names.
+  Mosh now remains semantic-only and unknown remote links fail closed.
+- `cargo install glass-dev` now installs both `glass` and `glass-browser` while
+  `cargo install glass-browser` remains the independent core installation.
+- Browser startup failure no longer terminates the TUI worker; free,
+  compatible, unrelated, and unknown endpoints produce explicit recovery
+  choices without silently attaching.
+
+### Fixed
+
+- Fixed the corrupt iOS design artifact, silent 2,048-entry project-tree
+  truncation, discarded PTY polling errors, child-only Unix termination,
+  repeated one-shot LSP startup, and the false headless-Lua Neovim RPC claim.
+
 ## [0.3.2] - 2026-08-08
 
 ### Added

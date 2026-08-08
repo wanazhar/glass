@@ -1,5 +1,62 @@
 # Release evidence
 
+## 0.3.3 local release-candidate evidence
+
+This checkout is a local candidate only. No tag, push, crates.io publication,
+or GitHub Release is implied by this section.
+
+- Workspace, TypeScript, Python, and exact inter-crate versions are `0.3.3`.
+- `glass-dev` packages both `glass` and `glass-browser`; the core
+  `glass-browser` package remains independently installable. Clean-install
+  validation must execute `--help` for both full-suite binaries and the core
+  binary in separate Cargo roots.
+- Issue #33 maps its 15 pillars, scenarios A–K, and Gates 1–10 to
+  [the release analysis](plan/analysis/release-033.md) and focused task files.
+- Connection/presentation tests cover independent dimensions, conservative
+  unknowns, active graphics evidence, local 30/60 FPS, remote profiles,
+  adaptive scale/rate, idle/background suspension, and bounded observability.
+- Recovery evidence covers free, verified CDP, unrelated, and unknown
+  endpoints; attach always requires a user decision and target ambiguity is
+  explicit. Remote View is loopback-only, tokenized, revocable, newest-frame,
+  and revision-guarded.
+- Runtime evidence covers explicit tree truncation, checked PTY state,
+  process-group termination, persistent LSP lifecycle, real Neovim embed RPC,
+  attached-agent revision context, and browser-free platform CI.
+- The iOS and Android concept JPEGs decode successfully; the iOS source SVG
+  is retained alongside the rendered asset.
+
+### Completed 0.3.3 validation
+
+- `cargo test --workspace --all-targets --all-features --locked`: 783 library
+  tests passed, one installed-tool availability test was intentionally ignored,
+  and every binary, integration test, example and 40x20 real-PTY target passed.
+- `GLASS_E2E=1 cargo test -p glass-browser --all-features --test
+  browser_smoke --locked -- --nocapture --test-threads=1`: all 19 Chromium
+  scenarios passed on Linux 6.17 ARM64 with Chromium 150.0.7871.128.
+- Formatting, warnings-denied Clippy, warnings-denied workspace rustdoc,
+  browser-core no-default-feature compilation, and separate optimized builds
+  of both packages passed on Rust 1.97.0 (`aarch64-unknown-linux-gnu`).
+- Documentation validation covers 348 Markdown files, 133 MCP tools, 17
+  examples and 22 public modules. Version, feature-parity, reliability,
+  read-only-adapter and eight-fixture Web IR corpus checks passed.
+- TypeScript build/typecheck/smoke and Python compile/smoke passed against the
+  checkout's 0.3.3 executable. `cargo deny`, `cargo audit`, and the locked fuzz
+  all-target build passed.
+- `glass-browser` packages 186 files (4.2 MiB; 811.6 KiB compressed) and
+  `glass-dev` packages 8 files (89.7 KiB; 25.5 KiB compressed). Both package
+  verification and publication dry runs passed without upload; the normalized
+  development package retains the exact `glass-browser =0.3.3` dependency.
+- `scripts/smoke-clean-install.sh` passed isolated core-only and full-suite
+  installs plus core-to-full, full-to-full reinstall, and full-to-core command
+  ownership transitions. Installed `--version` and `--help` behavior was
+  checked for both commands.
+- [The issue #33 gate review](plan/reviews/release-033-gates.md) records 53/53
+  mandatory checkboxes with their implementation evidence.
+
+This is host-specific native evidence, not a native-platform claim for macOS
+or Windows. Those platforms have browser-free CI definitions only in this
+candidate.
+
 ## 0.3.2 publication evidence
 
 - Signed annotated tag `v0.3.2` points to
@@ -98,8 +155,9 @@ cargo publish --package glass-browser --locked --dry-run --no-verify
 cargo package --package glass-browser --locked --list
 cargo package --package glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 cargo publish --package glass-dev --locked --dry-run --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
-python3 scripts/check-packaged-dependency.py target/package/glass-dev-0.3.2.crate --version 0.3.2
+python3 scripts/check-packaged-dependency.py target/package/glass-dev-0.3.3.crate --version 0.3.3
 cargo package --package glass-dev --locked --list
+scripts/smoke-clean-install.sh
 ```
 
 Run the native browser check in the target environment:

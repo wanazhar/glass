@@ -5,6 +5,21 @@ on:
   pull_request:
 
 jobs:
+  browser-free-platforms:
+    name: Browser-free ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check both product packages
+        run: cargo check --workspace --all-targets --all-features --locked
+      - name: Run browser-free contract tests
+        run: cargo test --workspace --all-targets --locked
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -23,6 +38,17 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
+
+      - name: Install native development fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes neovim
+          rustup component add rust-analyzer
+
+      - name: Prove real LSP and Neovim embed paths
+        run: |
+          cargo test --package glass-browser --features development-runtime development::language::tests::rust_analyzer_publishes_real_diagnostics_when_available -- --exact
+          cargo test --package glass-browser --features development-runtime development::neovim::tests::real_neovim_probe_proves_pty_and_rpc_modes_when_available -- --exact
 
       - name: Check package version synchronization
         run: python3 scripts/check-version-sync.py

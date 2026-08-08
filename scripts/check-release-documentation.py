@@ -15,6 +15,7 @@ REQUIRED_MARKERS = {
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
+        "## [0.3.3] - 2026-08-08",
         "## [0.3.2] - 2026-08-08",
         "## [Unreleased]",
     ],
@@ -25,7 +26,7 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.2`",
+        "release checkout is `glass-browser` and `glass-dev` version `0.3.3`",
         "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
@@ -36,6 +37,7 @@ REQUIRED_MARKERS = {
     ],
     "docs/release-evidence.md": [
         "## 0.3.2 publication evidence",
+        "## 0.3.3 local release-candidate evidence",
         "Release workflow run 31254928934",
         "GitHub Release v0.3.2",
         "## 0.3.2 local pre-publication evidence",
@@ -122,8 +124,8 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
-    if package_version != "0.3.2":
-        fail(f"release checkout must use local candidate package version 0.3.2, not {package_version}")
+    if package_version != "0.3.3":
+        fail(f"release checkout must use local candidate package version 0.3.3, not {package_version}")
     marker_sets = REQUIRED_MARKERS
     failures = []
     for relative, markers in marker_sets.items():

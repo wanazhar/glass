@@ -126,6 +126,10 @@ this supported and how do I invoke it?”
 - [Terminal UI](architecture/tui.md), [Development TUI](architecture/development-tui.md),
   and [remote cockpit](architecture/mobile-cockpit.md) — layouts, interaction,
   workers, phone states, live frames, and SDK orchestration.
+- [Connection-aware presentation](architecture/connection-presentation.md) and
+  [browser connection/Remote View](architecture/browser-connection.md) — the
+  0.3.3 environment-policy matrix, recovery controller, target picker, and
+  secure same-session visual plane.
 - [Semantic core hardening](architecture/semantic-core-hardening.md) — corpus,
   scoped evidence, live binding, state, continuity, privacy, and agent tools.
 - [Ownership and compatibility](ownership.md) — module ownership and
@@ -133,6 +137,8 @@ this supported and how do I invoke it?”
 - [v0.3.2 development surface atlas](design/v0.3.2/development-surface-atlas.svg)
   — editor, live app, search, process, review, diff, replay, graph, workflow,
   experiment, and collaboration wireframes.
+- [v0.3.3 remote cockpit design evidence](design/v0.3.3/README.md) — pinned
+  phone concepts, renderer validation, and interaction-reference rationale.
 
 ## Maintainer and release guides
 

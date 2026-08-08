@@ -80,8 +80,8 @@ def main() -> None:
     source_commit = baseline.get("source_commit", "")
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
         fail("release baseline source_commit must be a full lowercase commit SHA")
-    if matrix.get("next_release") != "0.3.2":
-        fail("next_release must be 0.3.2")
+    if matrix.get("next_release") != "0.3.3":
+        fail("next_release must be 0.3.3")
 
     targets = matrix.get("targets")
     if not isinstance(targets, list) or {target.get("id") for target in targets} != set(EXPECTED_TARGETS):
@@ -150,7 +150,7 @@ def main() -> None:
     required_text = {
         "README.md": "| 0.3.2 | Current published release |",
         "CHANGELOG.md": "## [0.3.0] - 2026-08-06",
-        "docs/release-checklist.md": "release checkout is `glass-browser` and `glass-dev` version `0.3.2`",
+        "docs/release-checklist.md": "release checkout is `glass-browser` and `glass-dev` version `0.3.3`",
         "docs/plan/analysis/release-audit-028.md": "`0.2.7 published; source-only GitHub Release",
     }
     for relative_path, expected in required_text.items():

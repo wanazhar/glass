@@ -120,6 +120,21 @@ jobs:
           cargo install --path "$root/source/glass-browser-${version}" --locked --root "$root/install"
           "$root/install/bin/glass-browser" --help >/dev/null
 
+      - name: Smoke-test packaged full-suite installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          mkdir -p "$root/source"
+          tar -xzf "target/package/glass-browser-${version}.crate" -C "$root/source"
+          tar -xzf "target/package/glass-dev-${version}.crate" -C "$root/source"
+          cargo install --path "$root/source/glass-dev-${version}" --locked --root "$root/install" \
+            --config "patch.crates-io.glass-browser.path='$root/source/glass-browser-${version}'"
+          "$root/install/bin/glass" --help >/dev/null
+          "$root/install/bin/glass-browser" --help >/dev/null
+
       - name: Dry-run crates.io publication
         run: |
           cargo publish --package glass-browser --locked --dry-run --no-verify
@@ -212,6 +227,7 @@ jobs:
           cargo install glass-dev --version "=$version" --locked --root "$root/dev"
           "$root/browser/bin/glass-browser" --help >/dev/null
           "$root/dev/bin/glass" --help >/dev/null
+          "$root/dev/bin/glass-browser" --help >/dev/null
 
       - name: Confirm existing crates.io publication
         if: needs.validate.outputs.already_published == 'true'

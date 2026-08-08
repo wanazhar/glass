@@ -1,4 +1,4 @@
-use super::{DevelopmentError, DevelopmentResult, MAX_FILE_BYTES};
+use super::{DevelopmentError, DevelopmentResult, MAX_FILE_BYTES, read_bounded_utf8};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -225,7 +225,7 @@ fn discover_in_directory(
             ) {
                 continue;
             }
-            let Ok(content) = fs::read_to_string(&path) else {
+            let Ok(content) = read_bounded_utf8(&path, MAX_FILE_BYTES, "graph source file") else {
                 continue;
             };
             for (index, line) in content.lines().enumerate() {

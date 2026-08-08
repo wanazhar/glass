@@ -25,7 +25,12 @@ pub mod project;
 pub mod replay;
 pub mod search;
 
-use std::{fmt, io, path::PathBuf};
+use std::{
+    fmt,
+    fs::OpenOptions,
+    io::{self, Read},
+    path::{Path, PathBuf},
+};
 
 pub use agent::{
     AgentContextPacket, AgentToolGateway, HarnessEvent, HarnessRequest, LocalHarness, PiHarness,
@@ -71,6 +76,41 @@ pub const MAX_BUFFER_BYTES: usize = 1024 * 1024;
 pub const MAX_FILE_ENTRIES: usize = 2_048;
 pub const MAX_TIMELINE_EVENTS: usize = 512;
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 32 * 1024;
+
+pub(crate) fn read_bounded_utf8(
+    path: &Path,
+    limit: usize,
+    description: &str,
+) -> DevelopmentResult<String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "{description} is not a regular file"
+        )));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "{description} exceeds the {limit} byte limit"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(limit as u64) as usize);
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "{description} exceeds the {limit} byte limit"
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| DevelopmentError::InvalidInput(format!("{description} is not valid UTF-8")))
+}
 
 pub type DevelopmentResult<T> = Result<T, DevelopmentError>;
 
@@ -120,5 +160,37 @@ impl From<io::Error> for DevelopmentError {
 impl From<serde_json::Error> for DevelopmentError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_utf8_reader_rejects_oversized_and_invalid_files() {
+        let root =
+            std::env::temp_dir().join(format!("glass-bounded-reader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("input");
+
+        std::fs::write(&path, b"bounded").unwrap();
+        assert_eq!(read_bounded_utf8(&path, 7, "fixture").unwrap(), "bounded");
+        std::fs::write(&path, b"oversized").unwrap();
+        assert!(read_bounded_utf8(&path, 8, "fixture").is_err());
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(read_bounded_utf8(&path, 1, "fixture").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let target = root.join("target");
+            let link = root.join("link");
+            std::fs::write(&target, b"bounded").unwrap();
+            symlink(&target, &link).unwrap();
+            assert!(read_bounded_utf8(&link, 7, "fixture").is_err());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

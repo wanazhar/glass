@@ -690,9 +690,21 @@ fn read_private_agent_tool_call(
     {
         return Err("Pi broker requests must use a Glass-owned temporary request file".into());
     }
-    let metadata = std::fs::metadata(&canonical)?;
-    if !metadata.is_file() || metadata.len() > MAX_CALL_BYTES {
-        return Err("Pi broker request is not a bounded regular file".into());
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(&canonical)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err("Pi broker request is not a regular file".into());
+    }
+    if metadata.len() > MAX_CALL_BYTES {
+        std::fs::remove_file(&canonical)?;
+        return Err("Pi broker request exceeds the 262144 byte limit".into());
     }
     #[cfg(unix)]
     {
@@ -705,9 +717,15 @@ fn read_private_agent_tool_call(
             );
         }
     }
-    let encoded = std::fs::read_to_string(&canonical)?;
-    std::fs::remove_file(&canonical)?;
-    Ok(serde_json::from_str(&encoded)?)
+    let mut encoded = Vec::with_capacity(metadata.len().min(MAX_CALL_BYTES) as usize);
+    let read_result = file.take(MAX_CALL_BYTES + 1).read_to_end(&mut encoded);
+    let remove_result = std::fs::remove_file(&canonical);
+    read_result?;
+    remove_result?;
+    if encoded.len() as u64 > MAX_CALL_BYTES {
+        return Err("Pi broker request exceeds the 262144 byte limit".into());
+    }
+    Ok(serde_json::from_slice(&encoded)?)
 }
 
 fn detected_command(
@@ -3106,6 +3124,24 @@ mod tests {
         let call = read_private_agent_tool_call(&path).unwrap();
         assert_eq!(call.id, "private");
         assert_eq!(call.name, "glass.web_ir.inspect");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn oversized_private_agent_tool_call_is_rejected_and_consumed() {
+        let path = std::env::temp_dir().join(format!(
+            "glass-pi-call-{}-oversized.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, vec![b'x'; 256 * 1024 + 1]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let error = read_private_agent_tool_call(&path).unwrap_err().to_string();
+        assert!(error.contains("262144 byte limit"));
         assert!(!path.exists());
     }
 }

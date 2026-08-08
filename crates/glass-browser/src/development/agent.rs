@@ -126,6 +126,8 @@ pub struct ToolRegistry;
 
 const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
+const MAX_TOOL_CALL_ID_BYTES: usize = 128;
+const MAX_TOOL_NAME_BYTES: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct ToolAuthorization {
@@ -144,14 +146,26 @@ impl ToolAuthorization {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AgentToolGateway {
     registry: ToolRegistry,
+    descriptors: Vec<ToolDescriptor>,
+}
+
+impl Default for AgentToolGateway {
+    fn default() -> Self {
+        let registry = ToolRegistry;
+        let descriptors = registry.descriptors();
+        Self {
+            registry,
+            descriptors,
+        }
+    }
 }
 
 impl AgentToolGateway {
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
-        self.registry.descriptors()
+        self.descriptors.clone()
     }
 
     pub fn execute(
@@ -160,20 +174,21 @@ impl AgentToolGateway {
         call: &ToolCall,
         authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        validate_tool_call_envelope(call)?;
         let descriptor = self
-            .registry
-            .descriptors()
-            .into_iter()
+            .descriptors
+            .iter()
             .find(|descriptor| descriptor.name == call.name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
         if !descriptor.available {
             return Err(DevelopmentError::InvalidInput(
                 descriptor
                     .unavailable_reason
+                    .clone()
                     .unwrap_or_else(|| format!("tool {} is unavailable", descriptor.name)),
             ));
         }
-        validate_tool_arguments(&descriptor, &call.arguments)?;
+        let argument_evidence = validate_tool_arguments(descriptor, &call.arguments)?;
         if descriptor.mutating && (!authorization.allow_mutation || !authorization.confirmed) {
             return Err(DevelopmentError::Conflict(format!(
                 "tool {} requires explicit mutation authority and confirmation",
@@ -183,25 +198,27 @@ impl AgentToolGateway {
         workspace.record_as(
             authorization.actor.clone(),
             DevelopmentEventKind::AgentToolCalled,
-            tool_call_evidence(call, descriptor.mutating),
+            tool_call_evidence(call, descriptor.mutating, &argument_evidence),
         )?;
         let result = self
             .registry
             .execute_unchecked(workspace, call, authorization.actor.clone());
         let (ok, bytes) = match &result {
             Ok(value) => {
-                let bytes = serde_json::to_vec(value)?.len();
-                if bytes > MAX_TOOL_RESULT_BYTES {
+                let mut counter = BoundedJsonWriter::new(MAX_TOOL_RESULT_BYTES);
+                let serialized = serde_json::to_writer(&mut counter, value);
+                if counter.exceeded {
                     workspace.record_as(
                         authorization.actor.clone(),
                         DevelopmentEventKind::AgentToolResult,
-                        serde_json::json!({"id": call.id, "name": call.name, "ok": false, "reason": "result-limit", "bytes": bytes}),
+                        serde_json::json!({"id": call.id, "name": call.name, "ok": false, "reason": "result-limit", "bytes": counter.bytes}),
                     )?;
                     return Err(DevelopmentError::InvalidInput(format!(
                         "tool result exceeds the {MAX_TOOL_RESULT_BYTES} byte limit"
                     )));
                 }
-                (true, bytes)
+                serialized?;
+                (true, counter.bytes)
             }
             Err(_) => (false, 0),
         };
@@ -489,30 +506,95 @@ impl ToolRegistry {
                     "postconditions": plan.postconditions
                 }))
             }
-            name if self
-                .descriptors()
-                .iter()
-                .any(|descriptor| descriptor.name == name && !descriptor.available) =>
-            {
-                Err(DevelopmentError::InvalidInput(format!(
-                    "tool {name} is unavailable without its required runtime attachment"
-                )))
-            }
             _ => Err(DevelopmentError::NotFound(format!("tool {}", call.name))),
         }
     }
 }
 
+struct ToolArgumentEvidence {
+    bytes: usize,
+    sha256: String,
+}
+
+struct BoundedJsonWriter {
+    limit: usize,
+    bytes: usize,
+    exceeded: bool,
+    digest: Sha256,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            bytes: 0,
+            exceeded: false,
+            digest: Sha256::new(),
+        }
+    }
+
+    fn evidence(self) -> ToolArgumentEvidence {
+        let digest = self.digest.finalize();
+        ToolArgumentEvidence {
+            bytes: self.bytes,
+            sha256: digest_hex(&digest),
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes);
+        if buffer.len() > remaining {
+            self.bytes = self.bytes.saturating_add(buffer.len());
+            self.exceeded = true;
+            return Err(std::io::Error::other("bounded JSON limit exceeded"));
+        }
+        self.bytes += buffer.len();
+        self.digest.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_tool_call_envelope(call: &ToolCall) -> DevelopmentResult<()> {
+    if call.id.is_empty()
+        || call.id.len() > MAX_TOOL_CALL_ID_BYTES
+        || call.id.chars().any(char::is_control)
+    {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "tool call id must contain 1 to {MAX_TOOL_CALL_ID_BYTES} non-control bytes"
+        )));
+    }
+    if call.name.is_empty()
+        || call.name.len() > MAX_TOOL_NAME_BYTES
+        || !call
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "tool name must contain 1 to {MAX_TOOL_NAME_BYTES} ASCII identifier bytes"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_tool_arguments(
     descriptor: &ToolDescriptor,
     arguments: &Value,
-) -> DevelopmentResult<()> {
-    let bytes = serde_json::to_vec(arguments)?.len();
-    if bytes > MAX_TOOL_ARGUMENT_BYTES {
+) -> DevelopmentResult<ToolArgumentEvidence> {
+    let mut writer = BoundedJsonWriter::new(MAX_TOOL_ARGUMENT_BYTES);
+    let serialized = serde_json::to_writer(&mut writer, arguments);
+    if writer.exceeded {
         return Err(DevelopmentError::InvalidInput(format!(
             "tool arguments exceed the {MAX_TOOL_ARGUMENT_BYTES} byte limit"
         )));
     }
+    serialized?;
     let object = arguments.as_object().ok_or_else(|| {
         DevelopmentError::InvalidInput(format!("{} arguments must be an object", descriptor.name))
     })?;
@@ -552,19 +634,27 @@ fn validate_tool_arguments(
             )));
         }
     }
-    Ok(())
+    Ok(writer.evidence())
 }
 
-fn tool_call_evidence(call: &ToolCall, mutating: bool) -> Value {
-    let encoded = serde_json::to_vec(&call.arguments).unwrap_or_default();
-    let digest = Sha256::digest(&encoded);
+fn tool_call_evidence(call: &ToolCall, mutating: bool, evidence: &ToolArgumentEvidence) -> Value {
     serde_json::json!({
         "id": call.id,
         "name": call.name,
         "mutating": mutating,
-        "argumentBytes": encoded.len(),
-        "argumentSha256": digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        "argumentBytes": evidence.bytes,
+        "argumentSha256": evidence.sha256
     })
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(DIGITS[(byte >> 4) as usize] as char);
+        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn descriptor(
@@ -1174,6 +1264,68 @@ mod tests {
         assert!(!audit.contains("private-after"));
         assert!(!audit.contains("private-value"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tool_gateway_bounds_envelopes_and_reuses_its_descriptor_catalog() {
+        let root = std::env::temp_dir().join(format!("glass-tool-envelope-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let descriptor_storage = gateway.descriptors.as_ptr();
+
+        for (id, name) in [("", "glass.file.list"), ("valid", "bad name")] {
+            let error = gateway
+                .execute(
+                    &mut workspace,
+                    &ToolCall {
+                        id: id.into(),
+                        name: name.into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    &ToolAuthorization::read_only(Actor::embedded()),
+                )
+                .unwrap_err();
+            assert!(matches!(error, DevelopmentError::InvalidInput(_)));
+        }
+        let oversized_id = "x".repeat(MAX_TOOL_CALL_ID_BYTES + 1);
+        assert!(
+            gateway
+                .execute(
+                    &mut workspace,
+                    &ToolCall {
+                        id: oversized_id,
+                        name: "glass.file.list".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    &ToolAuthorization::read_only(Actor::embedded()),
+                )
+                .is_err()
+        );
+        assert_eq!(descriptor_storage, gateway.descriptors.as_ptr());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tool_argument_evidence_is_streamed_once_and_stays_canonical() {
+        let registry = ToolRegistry;
+        let descriptor = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.file.read")
+            .unwrap();
+        let arguments = serde_json::json!({"path":"src/lib.rs"});
+        let evidence = validate_tool_arguments(&descriptor, &arguments).unwrap();
+        let canonical = serde_json::to_vec(&arguments).unwrap();
+        assert_eq!(evidence.bytes, canonical.len());
+        assert_eq!(evidence.sha256, digest_hex(&Sha256::digest(&canonical)));
+
+        let oversized = serde_json::json!({"path":"x".repeat(MAX_TOOL_ARGUMENT_BYTES)});
+        let error = validate_tool_arguments(&descriptor, &oversized)
+            .err()
+            .expect("oversized arguments must fail");
+        assert!(error.to_string().contains("tool arguments exceed"));
     }
 
     #[test]

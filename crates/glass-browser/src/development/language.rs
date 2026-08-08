@@ -1,4 +1,4 @@
-use super::{DevelopmentError, DevelopmentResult};
+use super::{DevelopmentError, DevelopmentResult, read_bounded_utf8};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -108,12 +108,7 @@ impl LspClient {
         if !absolute.starts_with(&self.root) {
             return Err(DevelopmentError::PathOutsideWorkspace(absolute));
         }
-        let text = fs::read_to_string(&absolute)?;
-        if text.len() > super::MAX_BUFFER_BYTES {
-            return Err(DevelopmentError::InvalidInput(
-                "language document exceeds the editor buffer limit".into(),
-            ));
-        }
+        let text = read_bounded_utf8(&absolute, super::MAX_BUFFER_BYTES, "language document")?;
         let uri = file_uri(&absolute)?;
         self.notify(serde_json::json!({
             "jsonrpc": "2.0",

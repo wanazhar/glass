@@ -150,7 +150,7 @@ impl LiveTaskBindings {
             ) {
                 continue;
             }
-            let candidates = regions
+            let mut candidates = regions
                 .iter()
                 .flat_map(|region| region.targets.iter())
                 .filter(|target| {
@@ -161,14 +161,19 @@ impl LiveTaskBindings {
                             .name
                             .as_deref()
                             .is_none_or(|name| target.name.eq_ignore_ascii_case(name))
-                })
-                .collect::<Vec<_>>();
-            let [target] = candidates.as_slice() else {
+                });
+            let Some(target) = candidates.next() else {
                 return Err(format!(
                     "selected entity {} did not resolve to exactly one revision-bound browser target",
                     key.entity_id
                 ));
             };
+            if candidates.next().is_some() {
+                return Err(format!(
+                    "selected entity {} resolved to multiple revision-bound browser targets",
+                    key.entity_id
+                ));
+            }
             let parsed = parse_revisioned_reference(&target.reference)
                 .map_err(|error| format!("invalid live binding reference: {error}"))?
                 .ok_or_else(|| "live binding is not revisioned".to_string())?;
@@ -191,21 +196,22 @@ impl LiveTaskBindings {
         plan: &TaskExecutionPlan,
         name: &str,
     ) -> Result<&'a str, String> {
-        let candidates = plan
-            .entity_binding_keys
-            .iter()
-            .filter(|key| {
-                key.name
-                    .as_deref()
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
-                    && self.references.contains_key(&key.entity_id)
-            })
-            .collect::<Vec<_>>();
-        let [key] = candidates.as_slice() else {
+        let mut candidates = plan.entity_binding_keys.iter().filter(|key| {
+            key.name
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+                && self.references.contains_key(&key.entity_id)
+        });
+        let Some(key) = candidates.next() else {
             return Err(format!(
                 "compiled entity named {name:?} does not have one live binding"
             ));
         };
+        if candidates.next().is_some() {
+            return Err(format!(
+                "compiled entity named {name:?} has multiple live bindings"
+            ));
+        }
         self.references
             .get(&key.entity_id)
             .map(String::as_str)
@@ -2960,6 +2966,33 @@ mod tests {
         .unwrap();
         assert_eq!(value["classification"], "unsafeUntilReconciled");
         assert_eq!(value["recommendedOperation"], "recover_run");
+    }
+
+    #[test]
+    fn live_bindings_fail_closed_without_collecting_duplicate_candidates() {
+        let authored = task();
+        let plan = compile_task(&authored, &crate::task_compiler::test_compiler_ir()).unwrap();
+        let unique = region("Checkout", vec![target("Email", "r7:b1")]);
+        let bindings = LiveTaskBindings::resolve(&plan, &[&unique], 7).unwrap();
+        assert_eq!(
+            bindings.reference_for_name(&plan, "Email").unwrap(),
+            "r7:b1"
+        );
+
+        let duplicate = region(
+            "Checkout",
+            vec![target("Email", "r7:b1"), target("Email", "r7:b2")],
+        );
+        let error = LiveTaskBindings::resolve(&plan, &[&duplicate], 7)
+            .err()
+            .expect("duplicate binding must fail");
+        assert!(error.contains("multiple revision-bound browser targets"));
+
+        let missing = region("Checkout", Vec::new());
+        let error = LiveTaskBindings::resolve(&plan, &[&missing], 7)
+            .err()
+            .expect("missing binding must fail");
+        assert!(error.contains("did not resolve to exactly one"));
     }
 
     #[test]

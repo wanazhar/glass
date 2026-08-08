@@ -2,7 +2,7 @@ use super::{
     Actor, DevelopmentError, DevelopmentEventKind, DevelopmentGraph, DevelopmentResult,
     LanguageDiagnostic, LspClient, MAX_BUFFER_BYTES, MAX_FILE_BYTES, MAX_FILE_ENTRIES,
     ProcessManager, ReplayWindow, SearchHit, SearchKind, SemanticBreakpoint, SemanticBreakpointHit,
-    SemanticSnapshot, SourceLocation, Timeline,
+    SemanticSnapshot, SourceLocation, Timeline, read_bounded_utf8,
 };
 use crate::development::diff::{ProjectDiff, build_diff};
 use crate::development::graph::{LinkEvidence, LinkProvenance, RuntimeLink};
@@ -285,19 +285,7 @@ impl ProjectWorkspace {
 
     pub fn read_file(&mut self, path: &str) -> DevelopmentResult<String> {
         let (absolute, relative) = self.resolve_path(path, false)?;
-        let metadata = fs::metadata(&absolute)?;
-        if !metadata.is_file() {
-            return Err(DevelopmentError::InvalidInput(format!(
-                "not a regular file: {path}"
-            )));
-        }
-        if metadata.len() > MAX_FILE_BYTES as u64 {
-            return Err(DevelopmentError::InvalidInput(format!(
-                "file exceeds the {} byte read limit: {path}",
-                MAX_FILE_BYTES
-            )));
-        }
-        let content = fs::read_to_string(&absolute)?;
+        let content = read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file")?;
         self.record(
             DevelopmentEventKind::FileOpened,
             serde_json::json!({"path": relative}),
@@ -1120,13 +1108,7 @@ fn visit_files(root: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> Dev
 
 fn read_existing(root: &Path, path: &str) -> DevelopmentResult<String> {
     let absolute = root.join(path);
-    let metadata = fs::metadata(&absolute)?;
-    if metadata.len() > MAX_BUFFER_BYTES as u64 {
-        return Err(DevelopmentError::InvalidInput(
-            "existing file exceeds buffer limit".into(),
-        ));
-    }
-    Ok(fs::read_to_string(absolute)?)
+    read_bounded_utf8(&absolute, MAX_BUFFER_BYTES, "existing editor file")
 }
 
 fn hash(content: &str) -> String {

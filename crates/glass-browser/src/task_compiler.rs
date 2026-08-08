@@ -15,7 +15,7 @@ use crate::web_ir::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -928,22 +928,30 @@ fn select_entities<'a>(
         .iter()
         .map(|entity| entity.id.as_str())
         .collect::<BTreeSet<_>>();
+    let scoped_entity_ids = matches!(task.task, TaskKind::FormFill | TaskKind::FormSubmit)
+        .then(|| entities_scoped_to(ir, selected_scope_ids.iter().copied()));
 
     if task.task == TaskKind::FormFill {
+        let mut scoped_fields_by_name = BTreeMap::<String, Vec<&WebIrEntity>>::new();
+        for entity in ir.entities.iter().filter(|entity| {
+            entity.kind == WebIrEntityKind::Field
+                && scoped_entity_ids
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(entity.id.as_str()))
+        }) {
+            if let Some(name) = entity.name.as_deref() {
+                scoped_fields_by_name
+                    .entry(normalized_name(name))
+                    .or_default()
+                    .push(entity);
+            }
+        }
         for input_name in task.inputs.keys() {
-            let fields = ir
-                .entities
-                .iter()
-                .filter(|entity| {
-                    entity.kind == WebIrEntityKind::Field
-                        && selected_scope_ids
-                            .iter()
-                            .any(|form_id| entity_is_scoped_to(ir, form_id, entity.id.as_str()))
-                        && entity.name.as_deref().is_some_and(|name| {
-                            normalized_name(name) == normalized_name(input_name)
-                        })
-                })
-                .collect::<Vec<_>>();
+            let normalized_input_name = normalized_name(input_name);
+            let fields = scoped_fields_by_name
+                .get(&normalized_input_name)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             if fields.len() != 1 {
                 let candidates = ir
                     .entities
@@ -994,9 +1002,9 @@ fn select_entities<'a>(
                     matches!(
                         entity.kind,
                         WebIrEntityKind::Action | WebIrEntityKind::UnknownInteractive
-                    ) && selected_scope_ids
-                        .iter()
-                        .any(|form_id| entity_is_scoped_to(ir, form_id, entity.id.as_str()))
+                    ) && scoped_entity_ids
+                        .as_ref()
+                        .is_some_and(|ids| ids.contains(entity.id.as_str()))
                         && entity.name.as_deref().is_some_and(|name| {
                             normalized_name(name) == normalized_name(submit_name)
                         })
@@ -1015,39 +1023,43 @@ fn select_entities<'a>(
     Ok(selected)
 }
 
-fn entity_is_scoped_to(ir: &GlassWebIrV1, scope_id: &str, entity_id: &str) -> bool {
-    let mut frontier = vec![scope_id];
+fn entities_scoped_to<'a>(
+    ir: &'a GlassWebIrV1,
+    scope_ids: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<&'a str> {
+    let mut adjacency = BTreeMap::<&str, Vec<&str>>::new();
+    for relationship in &ir.relationships {
+        if !matches!(
+            relationship.kind,
+            WebIrRelationshipKind::Contains
+                | WebIrRelationshipKind::Owns
+                | WebIrRelationshipKind::Submits
+                | WebIrRelationshipKind::ScopedTo
+        ) {
+            continue;
+        }
+        adjacency
+            .entry(relationship.from.as_str())
+            .or_default()
+            .push(relationship.to.as_str());
+        if relationship.kind == WebIrRelationshipKind::ScopedTo {
+            adjacency
+                .entry(relationship.to.as_str())
+                .or_default()
+                .push(relationship.from.as_str());
+        }
+    }
+    let mut frontier = scope_ids.into_iter().collect::<Vec<_>>();
     let mut visited = BTreeSet::new();
     while let Some(parent) = frontier.pop() {
         if !visited.insert(parent) {
             continue;
         }
-        for relationship in &ir.relationships {
-            if !matches!(
-                relationship.kind,
-                WebIrRelationshipKind::Contains
-                    | WebIrRelationshipKind::Owns
-                    | WebIrRelationshipKind::Submits
-                    | WebIrRelationshipKind::ScopedTo
-            ) {
-                continue;
-            }
-            if relationship.from == parent {
-                if relationship.to == entity_id {
-                    return true;
-                }
-                frontier.push(relationship.to.as_str());
-            } else if relationship.kind == WebIrRelationshipKind::ScopedTo
-                && relationship.to == parent
-            {
-                if relationship.from == entity_id {
-                    return true;
-                }
-                frontier.push(relationship.from.as_str());
-            }
+        if let Some(children) = adjacency.get(parent) {
+            frontier.extend(children.iter().copied());
         }
     }
-    false
+    visited
 }
 
 fn entity_kind_matches_task(entity: &WebIrEntity, task: TaskKind) -> bool {
@@ -1531,6 +1543,57 @@ mod tests {
             .to_canonical_json()
             .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn maximum_form_inputs_compile_deterministically_from_one_scope_walk() {
+        let mut ir = test_compiler_ir();
+        let original_field = ir
+            .entities
+            .iter()
+            .find(|entity| entity.kind == WebIrEntityKind::Field)
+            .unwrap()
+            .clone();
+        let original_details = ir.entity_details[&original_field.id].clone();
+        let ownership = ir
+            .relationships
+            .iter()
+            .find(|relationship| relationship.to == original_field.id)
+            .unwrap()
+            .clone();
+        let mut authored = task(TaskKind::FormFill, TaskRiskClass::LocalMutation);
+        authored.inputs.clear();
+
+        for index in 0..MAX_INPUTS {
+            let name = format!("Field{index:02}");
+            authored.inputs.insert(name.clone(), "value".into());
+            if index == 0 {
+                let field = ir
+                    .entities
+                    .iter_mut()
+                    .find(|entity| entity.id == original_field.id)
+                    .unwrap();
+                field.name = Some(name);
+                continue;
+            }
+            let id = format!("field-{index:02}");
+            let mut field = original_field.clone();
+            field.id.clone_from(&id);
+            field.name = Some(name);
+            ir.entities.push(field);
+            ir.entity_details
+                .insert(id.clone(), original_details.clone());
+            let mut relationship = ownership.clone();
+            relationship.to = id;
+            ir.relationships.push(relationship);
+        }
+        ir.validate().unwrap();
+
+        let first = compile_task(&authored, &ir).unwrap();
+        let second = compile_task(&authored, &ir).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.steps[1].input_names.len(), MAX_INPUTS);
+        assert_eq!(first.selected_entity_ids.len(), MAX_INPUTS + 1);
     }
 
     #[test]

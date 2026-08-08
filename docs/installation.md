@@ -192,7 +192,20 @@ These capabilities require policy decisions:
 - `upload`;
 - `download`;
 - `screenshot`; and
-- `raw-cdp`.
+- `raw-cdp`;
+- `read-form-values`;
+- `read-sensitive-form-values`;
+- `read-sensitive-extraction`;
+- `coordinate-click`;
+- `consent-dismissal`; and
+- `declared-agent-identity`.
+
+Use `glass capabilities` for the installed version's status and constraints.
+Allow only the capability needed by the operation. Reading form values,
+sensitive fields, cookies/storage, or extracted records can expose secrets;
+coordinate clicks have no semantic target; consent dismissal supports only
+recognized consent UX and is not an anti-bot bypass. Declared agent identity
+records identity metadata but does not expand browser authority.
 
 Request one confirmed screenshot:
 

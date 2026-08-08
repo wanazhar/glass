@@ -1,3 +1,26 @@
+//! Browser lifecycle, transport adapters, policy, profiles, and sessions.
+//!
+//! [`session`](crate::browser::session) is the primary embedded API. An owned session launches Chrome,
+//! owns its process and profile flush, and must be closed explicitly. An
+//! attached session selects an existing CDP endpoint and never owns that
+//! browser process. [`SessionOptions`](crate::browser::session::SessionOptions) validates the
+//! distinction before connection.
+//!
+//! The production path is raw CDP through [`cdp`](crate::browser::cdp);
+//! [`bidi_backend`](crate::browser::bidi_backend) is a
+//! bounded experimental adapter. Callers should depend on semantic requests
+//! and responses from [`crate::browser_backend`] instead of transport IDs.
+//! [`policy`](crate::browser::policy) gates privileged capabilities,
+//! [`dom`](crate::browser::dom) builds compact structured evidence,
+//! [`mouse`](crate::browser::mouse) implements human/fast pointer modes, and
+//! [`profile`](crate::browser::profile) owns persistent and disposable profile
+//! paths.
+//!
+//! Browser observations do not implicitly capture screenshots, full DOM, or
+//! form values. Mutations require a unique current target and can be guarded by
+//! an observation revision. An indeterminate mutation must be reconciled; it
+//! must not be blindly retried.
+
 /// Typed CDP adapter implementing the transport-neutral browser backend boundary.
 pub mod backend_adapter;
 /// Deterministic backend registration, profile selection, and startup.

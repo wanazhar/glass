@@ -6,6 +6,14 @@ semantic observations, knowledge, targets, frames, storage, checkpoints,
 diagnostics, browser controls, and the complete local Development Runtime.
 
 The client does not include Chrome, Chromium, or another browser runtime.
+It is a repository client for the `0.3.2` source line and is not currently
+published to npm. Install/build it from this checkout and pair it with the
+exact matching Glass executable.
+
+For server policy, framing, and the complete negotiated inventory, read the
+[MCP integration guide](../../docs/mcp.md) and
+[tool catalog](../../docs/mcp-tools.md). Browser behavior and safety contracts
+remain defined by the server, not this convenience client.
 
 ## Build
 

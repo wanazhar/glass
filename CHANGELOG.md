@@ -33,6 +33,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Reorganized public documentation by user role and added complete feature,
+  CLI-family, MCP-tool, Rust SDK, runnable-example, package, and docs.rs entry
+  references backed by generated inventory and local-link validation.
+
 - Reduced maximum-width semantic form compilation by indexing graph scope and
   normalized field names once, removed per-binding candidate allocations, and
   retained the embedded-agent tool catalog for gateway lifetime.

@@ -71,6 +71,7 @@ Run the static inventory checks from the repository root:
 
 ```console
 python3 scripts/check-release-documentation.py
+python3 scripts/check-documentation-coverage.py
 python3 scripts/check-feature-parity.py
 python3 scripts/check-reliability-matrix.py
 python3 scripts/check-public-readonly-adapters.py

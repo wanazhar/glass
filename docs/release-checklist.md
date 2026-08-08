@@ -18,7 +18,8 @@ have not been performed.
 
 - [x] Synchronize Rust, Python, and TypeScript package metadata at `0.3.2`.
 - [x] Validate both publishable Rust packages: `glass-browser` and `glass-dev`.
-- [x] Run version-sync, feature-parity, and release-documentation validators.
+- [x] Run version-sync, feature-parity, release-documentation, and complete
+      documentation inventory/link validators.
 - [x] Run formatting and all-target workspace tests.
 - [x] Run the opt-in 18-scenario Chromium smoke suite in the recorded
       validation environment.

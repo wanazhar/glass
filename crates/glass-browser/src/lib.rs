@@ -1,47 +1,181 @@
-//! Glass — lightweight local browser control for Chrome and Chromium.
+//! Local, revision-safe browser intelligence for Chrome and Chromium.
 //!
-//! Drives Chrome or Chromium directly through the Chrome DevTools Protocol
-//! (CDP), without Playwright, WebDriver, or an embedded browser runtime.
+//! `glass-browser` provides an owned/attached browser [`BrowserSession`],
+//! structured semantic observation, guarded actions, stable Web IR, Task
+//! Protocol compilation/execution, workflows, advisory knowledge, policy,
+//! MCP, daemon, TUI, backend, surface, presentation, reliability, and optional
+//! terminal-native development contracts.
 //!
-//! # Quick start
+//! Glass does not bundle a browser, host a browser service, or infer an
+//! autonomous plan. Callers select operations; Glass validates current
+//! evidence, policy, capabilities, revisions, unique targeting, and bounded
+//! postconditions. CDP is the production backend. WebDriver BiDi remains an
+//! experimental bounded adapter.
 //!
-//! Build a session with [`SessionOptions`], start Chrome, navigate, and close
-//! the session when the work is complete:
+//! # Choose an entry point
+//!
+//! | Goal | Entry point |
+//! |---|---|
+//! | Drive an owned or attached browser | [`BrowserSession`] and [`SessionOptions`] |
+//! | Collect stable evidence | [`extraction`] and [`web_ir`] |
+//! | Compile/execute semantic tasks | [`task_protocol`] and [`task_compiler`] |
+//! | Run typed workflows | [`browser::session::WorkflowDefinition`] |
+//! | Assess scoped historical knowledge | [`KnowledgeStore`] |
+//! | Implement/select a backend | [`browser_backend`] and [`browser::BackendFactory`] |
+//! | Expose MCP or canonical requests | [`mcp`] and [`protocol`] |
+//! | Embed project development | [`development`] with feature `development-runtime` |
+//! | Present terminal frames | [`presentation`] and [`terminal_graphics`] |
+//!
+//! # Browser lifecycle
+//!
+//! Start, navigate, observe, and explicitly close an owned session:
 //!
 //! ```rust,no_run
 //! use glass_browser::{BrowserSession, SessionOptions};
 //!
 //! # async fn run() -> glass_browser::BrowserResult<()> {
-//! let options = SessionOptions::builder().build()?;
+//! let options = SessionOptions::builder().incognito(true).build()?;
 //! let session = BrowserSession::start(&options).await?;
 //! let page = session.navigate("https://example.com").await?;
-//! println!("{}", page.url);
+//! let observation = session.observe().await?;
+//! println!("{} revision={}", page.url, observation.accessibility.revision);
 //! session.close().await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! The [`browser`] module contains the reusable Rust API. The [`cli`] module
-//! backs the `glass-dev` executable, [`mcp`] exposes the MCP stdio server, and
-//! [`tui`] provides the terminal interface. User-facing guides are available
-//! in the repository's [`docs`](https://github.com/wanazhar/glass/tree/main/docs).
+//! `close` sends `Browser.close` before process fallback so owned profile state
+//! can flush. Attach mode does not own or close the external Chrome process.
+//! [`SessionOptions::validate`] rejects incompatible attach/launch settings.
+//!
+//! # Structured observation and guarded action
+//!
+//! Compact observation is the default low-cost context. Semantic observation
+//! exposes typed page, region, target, record, route, and revision state:
+//!
+//! ```rust,no_run
+//! use glass_browser::browser::session::SemanticObservationLevel;
+//! use glass_browser::{BrowserSession, SessionOptions};
+//!
+//! # async fn run() -> glass_browser::BrowserResult<()> {
+//! let session = BrowserSession::start(&SessionOptions::builder().build()?).await?;
+//! let semantic = session
+//!     .semantic_observe(SemanticObservationLevel::Interactive)
+//!     .await?;
+//! println!("regions={}", semantic.regions.len());
+//!
+//! let current = session.observe().await?;
+//! let outcome = session
+//!     .click_with_revision(
+//!         "role=button[name=Save]",
+//!         current.accessibility.revision,
+//!     )
+//!     .await?;
+//! println!("status={:?}", outcome.status);
+//! session.close().await
+//! # }
+//! ```
+//!
+//! Normal observation does not request a screenshot, full DOM, or form values.
+//! Those evidence paths are explicit and policy-sensitive. A locator must
+//! resolve exactly one actionable current target. A stale expected revision
+//! fails before input.
+//!
+//! # Evidence, Web IR, and tasks
+//!
+//! [`ExtractionRequest`] selects source-labelled evidence and hard budgets.
+//! [`BrowserSession::extract_web_ir`] reconciles it into stable
+//! [`GlassWebIrV1`]. Offline callers can validate, diff, and classify
+//! continuity without starting Chrome.
+//!
+//! [`GlassTask::from_json`] validates a strict authored semantic task.
+//! [`compile_task`] compiles it against Web IR without browser access or side
+//! effects. Plans and receipts contain input names but never authored input
+//! values or live browser references. Live execution re-extracts evidence,
+//! binds every semantic key to exactly one current revisioned target, applies
+//! confirmation/lease rules, and verifies postconditions.
+//! The offline JSON example uses the application's direct `serde_json`
+//! dependency; typed session APIs do not require callers to serialize
+//! intermediate contracts.
+//!
+//! ```rust,no_run
+//! use glass_browser::{compile_task, GlassTask, GlassWebIrV1};
+//!
+//! fn compile(task_json: &str, ir_json: &str)
+//!     -> Result<String, Box<dyn std::error::Error>>
+//! {
+//!     let task = GlassTask::from_json(task_json)?;
+//!     let ir: GlassWebIrV1 = serde_json::from_str(ir_json)?;
+//!     ir.validate()?;
+//!     Ok(compile_task(&task, &ir)?.to_canonical_json()?)
+//! }
+//! ```
+//!
+//! Historical knowledge is advisory. It may explain or rank current evidence,
+//! but cannot supply an executable reference or authorize mutation.
 //!
 //! # Cargo features
 //!
-//! - `visual-compare` enables PNG comparison helpers for screenshot checks.
-//! - `fuzzing` enables test-oriented fuzzing hooks and is not needed by normal
-//!   applications.
 //! - `development-runtime` enables the PTY and `glass.toml` implementation
-//!   consumed by `glass-dev`; standalone browser installs leave it disabled.
+//!   consumed by `glass-dev`; it is disabled by default.
+//! - `visual-compare` enables PNG comparison helpers for explicit screenshot
+//!   checks.
+//! - `fuzzing` enables test-only fuzz hooks and is not for normal applications.
 //!
-//! # Modules
+//! docs.rs builds all features. The default library remains browser-focused.
+//!
+//! # Failure and privacy rules
+//!
+//! Unknown variants/fields, oversized input, stale revisions, ambiguous
+//! targets, unsafe paths, unsupported capabilities, and incompatible backend
+//! responses fail explicitly. An `indeterminate` mutation result means Chrome
+//! may have accepted input; reconcile current state instead of retrying
+//! blindly.
+//!
+//! Treat DOM, screenshots, PDFs, cookies, storage, evaluated values, profiles,
+//! and diagnostics as sensitive. MCP stdout is protocol-only. Structured
+//! audit and execution receipts omit typed values, raw selectors, raw CDP
+//! errors, and browser handles.
+//!
+//! # Module map
 //!
 //! - [`browser`] — Chrome lifecycle, CDP client, DOM/accessibility parsing,
-//!   mouse movement, security policy, profiles, and the central
-//!   [`BrowserSession`].
+//!   policy, profiles, actions, observations, workflows, and knowledge.
+//! - [`browser_backend`] — semantic backend capabilities, requests, responses,
+//!   errors, and mandatory dispatcher.
+//! - [`capabilities`] — versioned discovery and negotiation manifest.
 //! - [`cli`] — Clap argument definitions and command dispatch.
-//! - [`mcp`] — JSON-RPC/MCP stdio server for MCP-compatible clients.
-//! - [`tui`] — Ratatui terminal interface.
+//! - [`daemon`] — local Unix-socket lifecycle, isolated MCP children, leases,
+//!   logs, and interrupted-run recovery.
+//! - [`development`] — project files, buffers, PTYs, events, graph, replay,
+//!   collaboration, Neovim, experiments, and agent harnesses.
+//! - [`extensions`] — bounded manifests, permissions, registry, sandbox, and
+//!   guarded action boundary.
+//! - [`extraction`] — strict bounded evidence requests and source-labelled facts.
+//! - [`mcp`] — JSON-RPC/MCP stdio server, prompts, resources, and tools.
+//! - [`presentation`] — browser-neutral frame metadata, geometry, mailbox,
+//!   ownership, and metrics.
+//! - [`protocol`] — canonical versioned request/response operations.
+//! - [`reliability`] / [`reliability_runner`] — scenarios, replay evidence,
+//!   scorecards, gates, and bounded browser execution.
+//! - [`results`] — agent-facing response projections and local diagnostic
+//!   artifacts.
+//! - [`surfaces`] — nested surface evidence, coverage, provenance, and grants.
+//! - [`task_protocol`] / [`task_compiler`] — strict authored tasks and
+//!   deterministic execution plans.
+//! - [`terminal_graphics`] — Herdr, Kitty, ANSI, and semantic render adapters.
+//! - [`tui`] — Ratatui reducer, browser worker, layouts, and remote live view.
+//! - [`web_ir`] — stable reconciliation, validation, diff, and continuity.
+//! - [`workspace`] — identity, ownership, lifecycle, attachments, and
+//!   persistence.
+//!
+//! # Guides and examples
+//!
+//! - [Rust SDK](https://github.com/wanazhar/glass/blob/main/docs/rust-sdk.md)
+//! - [Runnable examples](https://github.com/wanazhar/glass/blob/main/docs/examples.md)
+//! - [Complete feature reference](https://github.com/wanazhar/glass/blob/main/docs/features.md)
+//! - [MCP tool catalog](https://github.com/wanazhar/glass/blob/main/docs/mcp-tools.md)
+//! - [Security policy](https://github.com/wanazhar/glass/blob/main/SECURITY.md)
 
 /// Browser control modules and the reusable [`browser::BrowserSession`] API.
 pub mod browser;

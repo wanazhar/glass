@@ -1,5 +1,14 @@
 # Glass delivery plans
 
+## Completed plan: complete public documentation and docs.rs revamp
+
+Status: Completed and verified locally — no remote mutation.
+
+The [documentation audit](analysis/documentation-revamp-034.md) and
+[implementation task](tasks/documentation-034-001.md) cover every current
+user, operator, SDK, MCP, TUI, package, rustdoc, example, and release-reference
+surface, with generated drift checks against the implementation.
+
 ## Completed plan: semantic resource and correctness audit
 
 Status: Completed and verified locally — no remote mutation.

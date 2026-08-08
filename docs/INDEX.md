@@ -1,115 +1,149 @@
 # Glass documentation
 
-The guides use [the project documentation style](documentation-style.md).
-They describe the current `0.3.2` local release candidate. A feature
-marked `Local only` is part of an unreleased development build.
+These guides describe the current `0.3.2` local release candidate. `Local
+only` means the capability is present in this checkout but has not been
+published. Platform certification remains separate from source availability;
+see [cross-platform feature parity](feature-parity.md).
 
-## User guides
+## Choose your path
 
-- [Installation and operations](installation.md) — build, browser discovery,
-  profiles, attach mode, logging, and production deployment.
-- [CLI reference](cli.md) — global options, commands, targets, and output.
-- [Development Runtime](development-runtime.md) — project onboarding, native
-  editing, PTYs, diagnostics, agents, evidence, and Neovim integration.
-- [Mobile and Remote Development](mobile-remote.md) — responsive phone TUI,
-  Herdr persistence, Mosh transport, and private Safari handoff.
-- [Live-site smoke testing](site-smoke.md) — bounded multi-site navigation,
-  observation, safe preflight probes, metrics, and policy classifications.
-- [Actions and revisions](actions.md) — guarded actions, typed outcomes, and
-  bounded verification evidence.
-- [Workflow definitions](workflows.md) — versioned declarative workflows,
-  typed inputs, budgets, and pre-execution validation.
-- [Workflow authoring](workflow-authoring.md) — YAML compilation, diagnostics,
-  safe input inference, preview, diff, and the semantic recorder boundary.
-- [Action contract](action-contract.md) — the compatibility execution
-  envelope, failure phases, and explicit recovery policies.
-- [Schema compatibility](schema-compatibility.md) — additive cross-interface
-  field and versioning rules.
-- [MCP integration](mcp.md) — stdio configuration, tools, session behavior,
-  and security.
-- [Ownership and compatibility](ownership.md) — module ownership, artifact
-  redaction, and cross-interface change rules.
-- [Local daemon](daemon.md) — Unix-socket lifecycle, status, isolated client
-  boundaries, and mutation leases.
-- [Extensions](extensions.md) — versioned manifests, bounded hosts, native
-  sandboxing, and guarded action boundaries.
-- [Experimental capabilities](experimental-capabilities.md) — opt-in commands,
-  status meanings, safety expectations, and future capability guidance.
-- [Semantic observations](semantic-observation.md) — bounded page and region
-  state, levels, expansion, revisions, diffs, and privacy boundaries.
-- [Semantic execution](semantic-execution.md) — stable Web IR and Task
-  contracts, deterministic compilation, guarded execution, limits, failures,
-  and migration.
-- [Intent resolution](intent-resolution.md) — bounded candidate resolution,
-  confidence policies, guarded execution, semantic workflow steps, and TUI
-  review.
-- [Persistent knowledge](knowledge.md) — scoped records, freshness,
-  lifecycle management, privacy boundaries, CLI/MCP operations, and fixtures.
-- [Persistent knowledge contract](schema/knowledge-v1.schema.json) — the
-  machine-readable v1 record and snapshot schema.
-- [MCP schema budget](mcp-schema-budget.md) — tool inventory, schema sizes,
-  and design principles for keeping the surface lean.
-- [Logged-in session ergonomics](profile-ergonomics.md) — using persistent
-  profiles to carry authenticated state without pasting credentials.
-- [Policy reference](policy.md) — named presets, capabilities, confirmation
-  tokens, and host allowlisting.
-- [Positioning](positioning.md) — where Glass fits: control plane vs planner
-  vs cloud browser, and when to use each tool.
-- [Category metric](category-metric.md) — wrong-action count, runner RSS,
-  and observe-bytes scoreboard.
-- [Reliability metrics](reliability-metrics.md) — versioned action, verification,
-  recovery, latency, and resource evidence.
-- [Reliability laboratory](reliability.md) — versioned scenarios, adversarial
-  fixtures, replay validation, and the release gate.
-- [Cross-platform feature parity](feature-parity.md) — machine-readable
-  target inventory and certification status definitions.
-- [Read-only real-site certification](reliability-real-site.md) — safe
-  operator boundaries for live evidence without credentials or destructive
-  actions.
-- [Production canary](production-canary.md) — hardened, non-destructive live-site
-  probe procedure and evidence requirements.
-- [Bot-protection & consent walls](bot-protection.md) — legitimate access paths
-  when sites challenge CDP automation.
-- [Detection-surface report](detection-surface.md) — what stock CDP-driven
-  Chrome exposes and what Glass does (and does not) attempt to hide.
+| You are… | Start here | Then read |
+|---|---|---|
+| Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
+| Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
+| Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
+| Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [docs.rs](https://docs.rs/glass-browser) |
+| Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
+| Operating authenticated sessions | [Profiles](profile-ergonomics.md) | [Security](../SECURITY.md), [policy](policy.md) |
+| Maintaining or releasing Glass | [Contributing](../CONTRIBUTING.md) | [Release checklist](release-checklist.md), [release evidence](release-evidence.md) |
+
+The [complete feature reference](features.md) maps every implemented domain to
+its CLI, TUI, MCP, and Rust entry points. It is the fastest way to answer “is
+this supported and how do I invoke it?”
+
+## Core user guides
+
+- [Getting started](getting-started.md) — select an interface, run diagnostics,
+  observe a page, perform a guarded action, and close cleanly.
+- [Installation and operations](installation.md) — packages, browser discovery,
+  profiles, attach mode, logging, policy, and deployment.
+- [CLI reference](cli.md) — every command family, global option, locator,
+  revision guard, input, and output convention.
+- [Complete feature reference](features.md) — exhaustive capability-to-interface
+  and capability-to-guide map.
+- [Mobile and remote development](mobile-remote.md) — phone workspace, Herdr,
+  Mosh, terminal-native pixels, semantic tap, and private Safari forwarding.
+- [Development Runtime](development-runtime.md) — bounded files, editing, PTYs,
+  diagnostics, graph, replay, experiments, collaboration, agents, and Neovim.
+- [Actions and revisions](actions.md) and [action contract](action-contract.md) —
+  unique targeting, execution phases, verification, failure, and recovery.
+- [Semantic observations](semantic-observation.md) — levels, regions, records,
+  revisions, deltas, explicit deep DOM, screenshots, and privacy.
+- [Semantic execution](semantic-execution.md) — extraction evidence, stable Web
+  IR, Task Protocol, deterministic compilation, live binding, and receipts.
+- [Intent resolution](intent-resolution.md) — bounded candidates, policies,
+  fingerprints, selection, and guarded execution.
+- [Workflow definitions](workflows.md) and [workflow authoring](workflow-authoring.md)
+  — validation, budgets, conditions, outputs, checkpoints, resume, recorder,
+  formatting, linting, preview, and diff.
+- [Persistent knowledge](knowledge.md) — profile/workspace scoping, freshness,
+  lifecycle, advisory retrieval, migration, and management.
+- [Local daemon](daemon.md) — Unix-socket lifecycle, isolated clients,
+  resident MCP sessions, recovery, and mutation leases.
+- [Extensions](extensions.md) and [experimental capabilities](experimental-capabilities.md)
+  — manifests, permissions, sandbox gates, opt-in, and fail-closed availability.
+
+## Interface references
+
+- [Rust SDK](rust-sdk.md) — crate setup, ownership, common API flows, modules,
+  Cargo features, errors, privacy, and shutdown.
+- [Runnable examples](examples.md) — all checked-in Cargo examples, inputs,
+  environment requirements, and output/claim boundaries.
+- [MCP integration](mcp.md) — framing, initialization, agreement negotiation,
+  cancellation, concurrency, errors, security, and response modes.
+- [MCP tool catalog](mcp-tools.md) — every tool in the negotiated `0.3.2`
+  conformance inventory grouped by domain.
+- [MCP schema budget](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+  — inventory-size policy and distribution metadata.
+- [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —
+  canonical request/response envelopes and additive version rules.
+- [Experience Layer CLI](cli/experience.md) — shared response projections and
+  local diagnostic result artifacts.
+- [Knowledge schema](schema/knowledge-v1.schema.json) — machine-readable stored
+  knowledge contract.
+
+## Browser operations and safety
+
+- [Policy reference](policy.md) — presets, capabilities, confirmation tokens,
+  exact host rules, and denial behavior.
+- [Persistent profile ergonomics](profile-ergonomics.md) — logged-in state,
+  cookie import/export, ownership, and deletion.
+- [Targets, actions, and revisions](actions.md) — locator forms and stale-target
+  recovery.
+- [Live-site smoke testing](site-smoke.md) — bounded manifests and safe probes.
+- [Read-only real-site certification](reliability-real-site.md) and
+  [production canary](production-canary.md) — operator boundaries for live
+  evidence.
+- [Bot protection and consent](bot-protection.md) and
+  [detection-surface report](detection-surface.md) — legitimate access paths
+  and transparent CDP behavior.
 - [Security policy](../SECURITY.md) — trust boundaries and vulnerability
   reporting.
-- [Changelog](../CHANGELOG.md) — user-visible release changes.
 
-## Maintainer guides
+## Reliability, support, and performance
 
-- [Contributing](../CONTRIBUTING.md) — development workflow and checks.
-- [Release checklist](release-checklist.md) — repeatable `0.x` release process.
-- [Platform support and target certification](ci-platform-certification.md) —
-  declared targets and target-specific validation boundaries.
-- [Recorded platform evidence](local-platform.md) — Linux ARM64 validation
-  environment, browser, sandbox, and crates.io dry-run checks.
-- [Release evidence](release-evidence.md) — crates.io package and source-only
-  GitHub Release validation and publication boundaries.
-- [Benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks) — performance methodology.
-
-## Design
-
-- [Architecture](architecture/README.md) — shared browser, session,
-  observation, MCP, and TUI contracts.
-- [Browser data plane](architecture/browser.md) — CDP, observation, action,
-  and profile rules.
-- [Automation contracts](architecture/automation.md) — correctness,
-  waiting, targeting, safety, and resource-budget contracts for the next
-  generation.
-- [Semantic core hardening](architecture/semantic-core-hardening.md) —
-  executable corpus, scoped evidence, live bindings, capabilities, privacy,
-  continuity, agent tools, and explanation receipts.
+- [Reliability laboratory](reliability.md) and
+  [reliability metrics](reliability-metrics.md) — scenarios, fixtures,
+  forbidden outcomes, replay evidence, gates, and measurements.
+- [Browser automation measurements](category-metric.md) — wrong-action count,
+  runner RSS, observation bytes, and comparative rules.
+- [Cross-platform feature parity](feature-parity.md) and
+  [machine-readable parity matrix](feature-parity.json) — source inventory
+  versus target certification.
+- [Platform certification](ci-platform-certification.md) and
+  [recorded platform evidence](local-platform.md) — evidence boundaries and
+  reproduction.
+- [Positioning](positioning.md) — Glass versus planners, hosted browsers,
+  WebDriver frameworks, and raw CDP.
 - [Semantic resource budgets](architecture/semantic-resource-budgets.md) —
-  compiler graph work, binding allocation, tool-envelope limits, and private
-  broker-file reads.
-- [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
-  lifecycle.
-- [Development workspace TUI](architecture/development-tui.md) — files,
-  native buffers, PTY processes, actors, and the local harness view.
-- [Remote development cockpit](architecture/mobile-cockpit.md) — resident
-  sessions, reconnect capsules, attention, semantic tap, verification cards,
-  adaptive live view, and SDK workflow contracts.
+  compiler, binding, tool gateway, broker, and file-read budgets.
+- [Benchmark suite](../benchmarks/README.md) — methodology and reproducible
+  commands.
+
+## Architecture and design
+
+- [Architecture overview](architecture/README.md) — ownership, lifecycle,
+  state boundaries, cross-module flow, and module index.
+- [Browser data plane](architecture/browser.md) — Chrome lifecycle, CDP,
+  observation, action, profiles, errors, and tests.
+- [Browser Host RFC](browser-host-rfc.md) and
+  [backend capability matrix](backend-capability-matrix.json) — backend
+  registration, capability evidence, BiDi boundary, and survivability.
+- [Automation contracts](architecture/automation.md) — targeting, waiting,
+  topology, input, safety, evidence, visual capture, and resource rules.
+- [Experience Layer](architecture/experience.md) — shared user-facing result,
+  reference, ownership, and recording contracts.
+- [Terminal UI](architecture/tui.md), [Development TUI](architecture/development-tui.md),
+  and [remote cockpit](architecture/mobile-cockpit.md) — layouts, interaction,
+  workers, phone states, live frames, and SDK orchestration.
+- [Semantic core hardening](architecture/semantic-core-hardening.md) — corpus,
+  scoped evidence, live binding, state, continuity, privacy, and agent tools.
+- [Ownership and compatibility](ownership.md) — module ownership and
+  cross-interface change rules.
 - [v0.3.2 development surface atlas](design/v0.3.2/development-surface-atlas.svg)
-  — the requested editor, live app, search, process, review, diff, replay,
-  graph, workflow, experiment, and collaboration wireframes.
+  — editor, live app, search, process, review, diff, replay, graph, workflow,
+  experiment, and collaboration wireframes.
+
+## Maintainer and release guides
+
+- [Documentation style](documentation-style.md) — terminology, procedure, and
+  status conventions.
+- [Contributing](../CONTRIBUTING.md) — source workflow, checks, security, and
+  review expectations.
+- [Release checklist](release-checklist.md) — repeatable two-package release.
+- [Release evidence](release-evidence.md) — package, source release, platform,
+  client, and validation evidence.
+- [Changelog](../CHANGELOG.md) — user-visible changes.
+- [30-second demo](demo.md) — short operator demonstration.
+- [Delivery plans](plan/README.md) — implementation history and active work;
+  these records are not substitutes for current user references.

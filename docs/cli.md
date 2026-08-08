@@ -7,6 +7,13 @@ installed version.
 
 | Option | Default | Function |
 |---|---|---|
+| `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
+| `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
+| `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |
+| `--policy-confirm-once CAPABILITY` | none | Supply one consumable approval token; repeatable. |
+| `--policy-allow-host HOST` | none | Allow an exact host in hardened mode; repeatable. |
+| `--policy-deny-host HOST` | none | Deny an exact host in hardened mode; repeatable. |
+| `--experimental-extensions` | off | Opt into the separately gated extension loader. |
 | `--profile NAME` | `default` | Use a persistent browser profile. |
 | `--incognito` | off | Use a disposable browser profile. |
 | `--attach` | off | Connect to an existing CDP endpoint. |
@@ -14,10 +21,13 @@ installed version.
 | `--frame-id ID` | main frame | Select a frame. |
 | `--port PORT` | `9222` | Set the local CDP port. |
 | `--headed` | off | Show the Chrome window. |
+| `--viewport WIDTHxHEIGHT` | browser default | Set CSS viewport dimensions before navigation. |
 | `--interaction human\|fast` | `human` | Select pointer event mode. |
+| `--audit` | off | Record bounded high-risk operation metadata. |
 | `--trace-on-error` | off | Write one bounded failure trace to stderr. |
 | `--chrome-path PATH` | discovered | Select the browser executable. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
+| `--response-mode minimal\|normal\|diagnostic` | `minimal` | Select the bounded agent-facing result projection. |
 | `--mcp` | off | Start the MCP stdio server. |
 | `--tui-layout auto\|desktop\|mobile` | `auto` | Select responsive terminal layout policy. |
 | `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require a detected native backend, or allow ANSI fallback. |
@@ -36,11 +46,13 @@ environment.
 
 ## Browser commands
 
-The main commands are:
+The complete browser command inventory is:
 
 ```text
 navigate URL
 click TARGET
+preflight TARGET
+click-at X Y
 click-expect-popup TARGET
 double-click TARGET
 hover TARGET
@@ -60,11 +72,18 @@ screenshot
 text
 dom
 observe
+observe-delta
+inspect-page
+find-target
+act-and-verify
+extract-structured
+recover-run
 scroll
 wait CONDITION
 diagnostics
 accept-dialog
 dismiss-dialog
+dismiss-consent
 download DIRECTORY
 targets
 new-target URL
@@ -73,16 +92,24 @@ close-target ID
 frames
 select-frame ID
 evaluate EXPRESSION
+cookies
+export-cookies FILE
+import-cookies FILE
+pdf FILE
 batch [JSON_FILE|-]
 smoke-sites MANIFEST
 workflow [JSON_FILE]
+workflow-resume WORKFLOW CHECKPOINT
+task SUBCOMMAND
+ir SUBCOMMAND
 verify PREDICATE_JSON
 resolve-intent [JSON_FILE]
 execute-intent [JSON_FILE]
-knowledge SUBCOMMAND
-capabilities
-doctor
-tui
+reconcile-refs INPUT
+checkpoint SUBCOMMAND
+snapshot SUBCOMMAND
+clipboard-read
+clipboard-write TEXT
 ```
 
 Use `glass --help` for options and defaults for each command.
@@ -97,6 +124,43 @@ Important defaults:
 
 Glass does not collect deep DOM, screenshots, or form values during a normal
 observation. Request those operations explicitly.
+
+## Command families
+
+These top-level families are browser-free unless a row explicitly says
+otherwise. Run `glass FAMILY SUBCOMMAND --help` for required files, bounds,
+confirmation flags, and output schemas.
+
+| Family | Subcommands |
+|---|---|
+| `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
+| `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
+| `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach` |
+| `agent` | `tool`, `tool-file`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
+| `surfaces` | `inspect`, `coverage` |
+| `backend` | `status`, `capabilities`, `test` |
+| `daemon` | `start`, `status`, `stop`, `doctor`, `logs`, `acknowledge-recovery`, `serve` |
+| `replay` | `inspect`, `diff`, `attach` |
+| `profiles` | `list`, `create`, `delete` |
+| `knowledge` | `list`, `show`, `explain`, `stats`, `export`, `import`, `invalidate`, `purge` |
+| `result` | `show`, `purge` |
+| `workflow` | run a workflow, or `compile`, `format`, `preview`, `diff`, `record`, `validate`, `lint`, `templates`, `init` |
+| `task` | `validate`, `compile`, `execute` (execution starts/uses a browser) |
+| `ir` | `validate`, `inspect`, `diff`, `continuity`, `canonical` |
+| `checkpoint` | `export`, `import` |
+| `snapshot` | `create` (browser-backed), `list`, `inspect`, `diff`, `purge` |
+
+Nested development families are `project process list|start|stop|restart|remove|input|resize|output`,
+`project graph discover|entity|source`, `project neovim probe|start`, and
+`project experiment create`. Project mutations remain confined to the
+canonical root. Certification and replay inspect evidence; they do not replay
+browser input as an unguarded command stream.
+
+Standalone utility commands are `install-chromium`, `capabilities`, `doctor`,
+`mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`
+opens the TUI. The `glass-browser` executable exposes the browser-control
+subset; use its own `--help` as the installed-version authority.
 
 ## Semantic observations
 
@@ -293,8 +357,12 @@ interpreter. Use explicit subcommands in scripts.
 ## Output
 
 Navigation, action, observation, DOM, scroll, and evaluation results use JSON on
-stdout. `text` emits plain text. `screenshot` writes a PNG and prints its
-path.
+stdout. `text` emits plain text. `screenshot` writes PNG by default, accepts
+`--format png|jpeg|webp`, and prints the output path. JPEG/WebP accept quality
+`0`–`100`; PNG rejects a quality value. Scale is finite `0.1`–`4.0`, and
+`--full-page`, `--clip`, and `--target` are mutually exclusive. The output
+extension is not silently rewritten, so keep it consistent with the selected
+format.
 
 Diagnostics use stderr. With `--trace-on-error`, Glass writes a bounded
 failure trace to stderr. The trace includes compact observation and target and

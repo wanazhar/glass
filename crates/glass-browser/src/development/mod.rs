@@ -4,6 +4,18 @@
 //! and embedded harness. Browser authority remains in the existing browser
 //! runtime: project state can coordinate a live application without duplicating
 //! browser control logic.
+//!
+//! Enable Cargo feature `development-runtime` for the concrete project, editor,
+//! PTY, language-server, graph, replay, Neovim, experiment, and agent harness
+//! implementations used by `glass-dev`. Without the feature, the public
+//! browser library retains only the stable shared contracts needed by its
+//! normal surfaces.
+//!
+//! Project paths are resolved beneath one canonical root; reads, output tails,
+//! event logs, and retained buffers have hard bounds. Writes are atomic and
+//! actor-attributed. Runtime claims such as live-update provenance remain
+//! pending until explicit source/runtime evidence or browser revision evidence
+//! supports them. A project session never implies browser mutation authority.
 
 pub mod agent;
 pub mod cockpit;

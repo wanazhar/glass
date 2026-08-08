@@ -268,9 +268,13 @@ After publication, add the crate as `glass`:
 glass = { package = "glass-browser", version = "0.3" }
 ```
 
-The library provides `BrowserSession`, session options, policies, observations,
-revision-safe actions, target and frame management, storage, downloads,
-screenshots, PDFs, semantic observations, and the MCP server.
+The library provides `BrowserSession`, session options, policies, structured
+observations, revision-safe actions, stable Web IR, Task Protocol compilation,
+workflows, advisory knowledge, project-development contracts, presentation and
+backend abstractions, reliability evidence, and the MCP server. Read the
+[Rust SDK guide](docs/rust-sdk.md), [feature reference](docs/features.md), and
+[runnable example catalog](docs/examples.md); API docs are published from the
+`glass-browser` crate with all Cargo features enabled.
 
 The repository-only [TypeScript client](clients/typescript) and [Python
 client](clients/python) remain experimental repository clients for the 0.3.2
@@ -292,9 +296,13 @@ mode.
 
 ## Documentation
 
-Start with the [documentation index](docs/INDEX.md). It links to installation,
-CLI, actions, workflows, MCP, daemon mode, policy, security, architecture,
-and release guides.
+Start with the role-based [documentation index](docs/INDEX.md), then use
+[Getting started](docs/getting-started.md) for the first safe session. The
+[feature reference](docs/features.md) maps every capability to CLI, MCP, TUI,
+Rust, TypeScript, and Python surfaces; the [CLI reference](docs/cli.md) and
+[complete MCP catalog](docs/mcp-tools.md) enumerate the command interfaces.
+Architecture, operations, policy, security, benchmarking, maintenance, and
+release evidence remain indexed from the same page.
 
 ## Development
 

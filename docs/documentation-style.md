@@ -77,5 +77,24 @@ Use explicit status labels:
 Review this file and the [documentation index](INDEX.md) when a public command,
 capability, platform, or release process changes.
 
+## Validation
+
+Build both debug binaries, then run the inventory/link gate whenever a public
+command, MCP tool, example, module, package README, or Markdown path changes:
+
+```console
+cargo build --workspace --all-features --locked
+python3 scripts/check-documentation-coverage.py
+python3 scripts/check-release-documentation.py
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+cargo test --workspace --all-features --doc --locked
+```
+
+The coverage gate derives CLI names from both binaries, MCP names from the
+pinned client-conformance fixture, examples from Cargo source, and modules
+from the crate root. It also resolves repository-local links across current
+guides and historical plan evidence. Keep `tools/list` and installed `--help`
+as the exact-version schema and syntax authority.
+
 For the standard definition, see the [official ASD-STE100
 site](https://www.asd-ste100.org/).

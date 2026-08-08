@@ -51,7 +51,16 @@ Check documentation changes with:
 
 ```console
 git diff --check
+python3 scripts/check-documentation-coverage.py
+python3 scripts/check-release-documentation.py
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+cargo test --workspace --all-features --doc --locked
 ```
+
+Build both debug binaries before the coverage check. Update the complete CLI,
+MCP, example, or Rust module reference in the same change that alters its
+inventory. Historical files under `docs/plan/` preserve delivery evidence;
+amend current behavior in the role-based guides linked from `docs/INDEX.md`.
 
 ## Commit and review
 

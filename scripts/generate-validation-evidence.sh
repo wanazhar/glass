@@ -23,6 +23,8 @@ clippy_status=passed
 if ! cargo clippy --workspace --all-targets --all-features --locked -- -D warnings >/dev/null; then clippy_status=failed; fi
 docs_status=passed
 if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked >/dev/null; then docs_status=failed; fi
+documentation_coverage_status=passed
+if ! python3 scripts/check-documentation-coverage.py >/dev/null; then documentation_coverage_status=failed; fi
 build_status=passed
 if ! cargo build --package glass-dev --release --locked >/dev/null; then build_status=failed; fi
 package_status=passed
@@ -38,7 +40,7 @@ if ! cargo fetch --manifest-path fuzz/Cargo.toml --locked >/dev/null || \
     fuzz_status=failed
 fi
 
-python3 - "$output_dir" "$revision" "$version" "$host_target" "$installed_targets" "$platform_target" "$platform_smoke_passed" "$platform_raw_report" "$test_status" "$fmt_status" "$clippy_status" "$docs_status" "$build_status" "$package_status" "$deny_status" "$audit_status" "$fuzz_status" <<'PY'
+python3 - "$output_dir" "$revision" "$version" "$host_target" "$installed_targets" "$platform_target" "$platform_smoke_passed" "$platform_raw_report" "$test_status" "$fmt_status" "$clippy_status" "$docs_status" "$documentation_coverage_status" "$build_status" "$package_status" "$deny_status" "$audit_status" "$fuzz_status" <<'PY'
 import json
 import os
 import pathlib
@@ -46,8 +48,8 @@ import sys
 
 (
     out, revision, version, host, targets, platform_target, platform_smoke,
-    platform_report, tests, fmt, clippy, docs, build, package, deny, audit,
-    fuzz,
+    platform_report, tests, fmt, clippy, docs, documentation_coverage, build,
+    package, deny, audit, fuzz,
 ) = sys.argv[1:]
 target_list = targets.splitlines() if targets else []
 required = [
@@ -61,6 +63,7 @@ release_statuses = {
     "test": tests,
     "clippy": clippy,
     "docs": docs,
+    "documentation-coverage": documentation_coverage,
     "build": build,
     "package": package,
     "deny": deny,
@@ -85,6 +88,7 @@ check_commands = {
     "test": "cargo test --workspace --all-targets --locked",
     "clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
     "docs": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --locked",
+    "documentation-coverage": "python3 scripts/check-documentation-coverage.py",
     "build": "cargo build --package glass-dev --release --locked",
     "package": "cargo package --package glass-browser --locked --allow-dirty --no-verify && cargo package --package glass-dev --locked --allow-dirty --no-verify",
     "deny": "cargo deny check",

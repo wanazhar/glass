@@ -3,6 +3,11 @@
 Glass runs an MCP server over standard input and standard output. It starts
 Chrome when the first browser tool needs it.
 
+The [complete MCP tool catalog](mcp-tools.md) lists every tool in the pinned
+client-conformance inventory by domain. Treat the server's negotiated
+`tools/list` response as authoritative for exact input schemas in the installed
+version; the catalog explains purpose, authority, and privacy boundaries.
+
 Glass negotiates MCP protocol version `2024-11-05`. The client must send
 `notifications/initialized` after `initialize`. Glass rejects normal
 requests before that notification. A second `initialize` request is invalid.
@@ -184,7 +189,7 @@ remain browser-free and do not start Chrome.
 | `drag` | Drag between two verified targets. |
 | `fillForm` | Fill up to 16 fields. |
 | `upload` | Set 1 to 16 regular local files. |
-| `screenshot` | Return a PNG image. |
+| `screenshot` | Return explicit PNG, JPEG, or WebP image evidence; PNG is the default. |
 | `observe` | Return compact or semantic page state. |
 | `observeBootstrap` | Return bounded advisory URL/title/readiness/text/revision evidence without action targets. |
 | `getDOM`, `getText` | Return DOM or visible text. |

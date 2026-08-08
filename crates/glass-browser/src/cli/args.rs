@@ -106,6 +106,10 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
+    /// Terminal workspace layout. Auto uses a phone layout for narrow remote terminals.
+    #[arg(long = "tui-layout", global = true, value_enum, default_value_t = TuiLayout::Auto)]
+    pub tui_layout: TuiLayout,
+
     /// Override the per-profile persistent knowledge snapshot path.
     #[arg(long, global = true)]
     pub knowledge_store: Option<PathBuf>,
@@ -127,6 +131,18 @@ pub enum McpClient {
     Generic,
     ClaudeCode,
     Codex,
+}
+
+/// Responsive layout policy for the interactive terminal workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TuiLayout {
+    /// Select from terminal width and remote-session signals.
+    #[default]
+    Auto,
+    /// Force the multi-pane desktop workspace, including on narrow terminals.
+    Desktop,
+    /// Use a single-pane, phone-friendly workspace and semantic browser output.
+    Mobile,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1297,6 +1313,15 @@ mod tests {
             Cli::try_parse_from(["glass", "tui"]).unwrap().command,
             Some(Commands::Tui)
         ));
+    }
+
+    #[test]
+    fn tui_layout_defaults_to_auto_and_accepts_mobile_override() {
+        let default = Cli::try_parse_from(["glass", "tui"]).unwrap();
+        assert_eq!(default.tui_layout, TuiLayout::Auto);
+
+        let mobile = Cli::try_parse_from(["glass", "--tui-layout", "mobile", "tui"]).unwrap();
+        assert_eq!(mobile.tui_layout, TuiLayout::Mobile);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use serde_json::Value;
@@ -50,14 +50,15 @@ use crate::browser::policy::BrowserPolicy;
 use crate::browser::profile::ProfileManager;
 use crate::browser::session::{
     ActionOutcome, BrowserResult, BrowserSession, KnowledgeStore, PageContext, PageInfo,
-    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentRequest,
-    SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SessionOptions,
-    VisualFormat, WorkflowDefinition, default_knowledge_store_path,
+    ScreencastScope, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
+    SemanticIntentRequest, SemanticIntentResult, SemanticObservation, SemanticObservationLevel,
+    SessionOptions, VisualFormat, WorkflowDefinition, default_knowledge_store_path,
 };
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, TuiLayout};
 use crate::presentation::{BrowserFrame, CaptureScale, PixelSize, TargetResourceIdentity};
 use crate::terminal_graphics::{
-    MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics, negotiate,
+    GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalEnvironment, TerminalGraphics,
+    negotiate,
 };
 const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
@@ -67,6 +68,9 @@ const ACTIVITY_LIMIT: usize = 100;
 const TUI_PAGE_MAX_BYTES: usize = 24 * 1024;
 const TUI_HEADER_MAX_BYTES: usize = 512;
 const TUI_ACTIVITY_MAX_BYTES: usize = 512;
+const PHONE_MAX_COLUMNS: u16 = 72;
+const REMOTE_PHONE_MAX_COLUMNS: u16 = 96;
+const COMPACT_MAX_COLUMNS: u16 = 109;
 /// Visible Browser Workspace presentation modes. Each mode changes the
 /// inspection surface, but never changes browser authority or policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,6 +83,103 @@ pub enum WorkspaceMode {
     Inspect,
     Takeover,
     Development,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayClass {
+    Phone,
+    Compact,
+    Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MobileView {
+    #[default]
+    Home,
+    Agent,
+    App,
+    Diff,
+    Project,
+}
+
+impl MobileView {
+    const fn number(self) -> u8 {
+        match self {
+            Self::Home => 1,
+            Self::Agent => 2,
+            Self::App => 3,
+            Self::Diff => 4,
+            Self::Project => 5,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Agent => "Agent",
+            Self::App => "App",
+            Self::Diff => "Diff",
+            Self::Project => "Project",
+        }
+    }
+
+    const fn from_number(number: u8) -> Option<Self> {
+        match number {
+            1 => Some(Self::Home),
+            2 => Some(Self::Agent),
+            3 => Some(Self::App),
+            4 => Some(Self::Diff),
+            5 => Some(Self::Project),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RemoteContext {
+    ssh: bool,
+    mosh: bool,
+    herdr: bool,
+}
+
+impl RemoteContext {
+    fn from_process() -> Self {
+        Self {
+            ssh: std::env::var_os("SSH_CONNECTION").is_some()
+                || std::env::var_os("SSH_TTY").is_some(),
+            mosh: std::env::var_os("MOSH_CONNECTION").is_some(),
+            herdr: std::env::var("HERDR_ENV").is_ok_and(|value| value == "1"),
+        }
+    }
+
+    const fn is_remote(self) -> bool {
+        self.ssh || self.mosh
+    }
+
+    fn label(self) -> &'static str {
+        if self.herdr {
+            "Herdr"
+        } else if self.mosh {
+            "Mosh"
+        } else if self.ssh {
+            "SSH"
+        } else {
+            "local"
+        }
+    }
+}
+
+fn display_class(preference: TuiLayout, width: u16, remote: RemoteContext) -> DisplayClass {
+    match preference {
+        TuiLayout::Mobile => DisplayClass::Phone,
+        TuiLayout::Desktop => DisplayClass::Wide,
+        TuiLayout::Auto if width <= PHONE_MAX_COLUMNS => DisplayClass::Phone,
+        TuiLayout::Auto if remote.is_remote() && width <= REMOTE_PHONE_MAX_COLUMNS => {
+            DisplayClass::Phone
+        }
+        TuiLayout::Auto if width <= COMPACT_MAX_COLUMNS => DisplayClass::Compact,
+        TuiLayout::Auto => DisplayClass::Wide,
+    }
 }
 
 impl WorkspaceMode {
@@ -227,6 +328,12 @@ pub struct App {
     next_operation_id: u64,
     graphics: TerminalGraphics,
     mode: WorkspaceMode,
+    layout_preference: TuiLayout,
+    display_class: DisplayClass,
+    mobile_view: MobileView,
+    mobile_help: bool,
+    mobile_nav_area: Option<Rect>,
+    remote_context: RemoteContext,
     mutation_lease: MutationLease,
     visual_revision: u64,
     visual_status: String,
@@ -237,6 +344,7 @@ pub struct App {
     development_files: String,
     development_editor: String,
     development_runtime: String,
+    development_diff: String,
     active_buffer: Option<String>,
     editor_focus: bool,
     editor_cursor: usize,
@@ -286,14 +394,35 @@ impl App {
         Self::new_for_product(true)
     }
 
+    #[cfg(test)]
     fn new_for_product(development_enabled: bool) -> Self {
+        Self::new_for_product_with_context(
+            development_enabled,
+            TuiLayout::Desktop,
+            RemoteContext::default(),
+            120,
+        )
+    }
+
+    fn new_for_product_with_context(
+        development_enabled: bool,
+        layout_preference: TuiLayout,
+        remote_context: RemoteContext,
+        terminal_width: u16,
+    ) -> Self {
         let (development_event_tx, development_event_rx) = std_mpsc::channel();
         let mut activity = VecDeque::new();
         activity.push_back("Glass started.".to_string());
         activity.push_back("Connecting to Chrome…".to_string());
         let environment = TerminalEnvironment::from_process();
+        let display_class = display_class(layout_preference, terminal_width, remote_context);
+        let graphics_mode = if display_class == DisplayClass::Phone {
+            GraphicsMode::Semantic
+        } else {
+            negotiate(environment.as_borrowed())
+        };
         let graphics = TerminalGraphics::new(
-            negotiate(environment.as_borrowed()),
+            graphics_mode,
             TargetResourceIdentity::new("tui", Some("terminal".to_string()))
                 .expect("static TUI graphics identity is valid"),
         )
@@ -321,10 +450,24 @@ impl App {
             busy: None,
             next_operation_id: 1,
             graphics,
-            mode: WorkspaceMode::Browser,
+            mode: if development_enabled && display_class == DisplayClass::Phone {
+                WorkspaceMode::Development
+            } else {
+                WorkspaceMode::Browser
+            },
+            layout_preference,
+            display_class,
+            mobile_view: MobileView::Home,
+            mobile_help: false,
+            mobile_nav_area: None,
+            remote_context,
             mutation_lease: MutationLease::default(),
             visual_revision: 0,
-            visual_status: "visual stream pending".to_string(),
+            visual_status: if display_class == DisplayClass::Phone {
+                "semantic mobile view; visual capture is explicit".to_string()
+            } else {
+                "visual stream pending".to_string()
+            },
             development,
             development_enabled,
             harness: LocalHarness::default(),
@@ -332,6 +475,7 @@ impl App {
             development_files: "Project detection pending.".into(),
             development_editor: "Open a file with `project open PATH`.".into(),
             development_runtime: "No managed processes.".into(),
+            development_diff: "No project diff available.".into(),
             active_buffer: None,
             editor_focus: false,
             editor_cursor: 0,
@@ -341,6 +485,7 @@ impl App {
             development_event_rx,
         };
         app.refresh_development_view();
+        app.refresh_development_diff();
         app
     }
 
@@ -382,6 +527,21 @@ impl App {
             self.mode = mode;
             self.graphics.clear_pane().ok();
             self.add_activity(format!("Workspace mode: {}.", mode.label()));
+        }
+    }
+
+    fn set_mobile_view(&mut self, view: MobileView) {
+        self.mobile_view = view;
+        self.mobile_help = false;
+        self.page_scroll = 0;
+        self.set_status(format!("Mobile view: {}", view.label()));
+    }
+
+    fn cycle_mobile_view(&mut self, delta: i8) {
+        let current = i16::from(self.mobile_view.number()) - 1;
+        let next = (current + i16::from(delta)).rem_euclid(5) + 1;
+        if let Some(view) = MobileView::from_number(next as u8) {
+            self.set_mobile_view(view);
         }
     }
 
@@ -430,9 +590,25 @@ impl App {
         self.development_runtime = format_runtime_panel(project);
     }
 
+    fn refresh_development_diff(&mut self) {
+        let Some(project) = self.development.as_mut() else {
+            self.development_diff = "Project diff unavailable.".into();
+            return;
+        };
+        self.development_diff = project
+            .diff()
+            .and_then(|diff| serde_json::to_string_pretty(&diff).map_err(Into::into))
+            .unwrap_or_else(|error| format!("Project diff unavailable: {error}"));
+    }
+
     fn handle_project_command(&mut self, command: &str) {
         self.set_mode(WorkspaceMode::Development);
         let command = command.trim();
+        let operation_name = command
+            .split_whitespace()
+            .next()
+            .unwrap_or("inspect")
+            .to_ascii_lowercase();
         let result = (|| -> Result<String, String> {
             let mut parts = command.splitn(3, char::is_whitespace);
             let operation = parts.next().unwrap_or("inspect").to_ascii_lowercase();
@@ -636,10 +812,22 @@ impl App {
                 self.set_page_content(content);
                 self.set_status("Development workspace");
                 self.add_activity("Development command completed.");
+                if self.display_class == DisplayClass::Phone {
+                    let view = match operation_name.as_str() {
+                        "agent" | "pi" | "timeline" | "replay" => MobileView::Agent,
+                        "diff" => MobileView::Diff,
+                        "inspect" | "files" | "search" | "open" | "edit" | "run" | "processes"
+                        | "restart" | "stop" | "output" | "diagnostics" | "graph" | "neovim"
+                        | "attach" => MobileView::Project,
+                        _ => MobileView::Home,
+                    };
+                    self.set_mobile_view(view);
+                }
             }
             Err(error) => self.report_error(error),
         }
         self.refresh_development_view();
+        self.refresh_development_diff();
     }
 
     fn poll_development_events(&mut self) -> bool {
@@ -766,6 +954,7 @@ impl App {
                     Err(error) => self.report_error(error),
                 }
                 self.refresh_development_view();
+                self.refresh_development_diff();
             }
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(project) = self.development.as_mut() {
@@ -848,6 +1037,25 @@ impl App {
         self.refresh_development_view();
     }
     fn mouse_intent(&mut self, mouse: MouseEvent) -> UiIntent {
+        if self.display_class == DisplayClass::Phone
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.mobile_nav_area.is_some_and(|area| {
+                mouse.column >= area.x
+                    && mouse.column < area.x.saturating_add(area.width)
+                    && mouse.row >= area.y
+                    && mouse.row < area.y.saturating_add(area.height)
+            })
+        {
+            let area = self
+                .mobile_nav_area
+                .expect("checked mobile navigation area");
+            let relative = mouse.column.saturating_sub(area.x);
+            let segment = (u32::from(relative) * 5 / u32::from(area.width.max(1))) as u8 + 1;
+            if let Some(view) = MobileView::from_number(segment.min(5)) {
+                self.set_mobile_view(view);
+            }
+            return UiIntent::None;
+        }
         if self.mode == WorkspaceMode::Development
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.editor_area.is_some_and(|area| {
@@ -939,6 +1147,30 @@ impl App {
             return self.reduce_editor_key(key);
         }
 
+        if self.display_class == DisplayClass::Phone && self.input.is_empty() {
+            match key.code {
+                KeyCode::Char(character @ '1'..='5') if key.modifiers == KeyModifiers::NONE => {
+                    if let Some(view) = MobileView::from_number(character as u8 - b'0') {
+                        self.set_mobile_view(view);
+                    }
+                    return UiIntent::None;
+                }
+                KeyCode::Tab => {
+                    self.cycle_mobile_view(1);
+                    return UiIntent::None;
+                }
+                KeyCode::BackTab => {
+                    self.cycle_mobile_view(-1);
+                    return UiIntent::None;
+                }
+                KeyCode::Char('?') if key.modifiers == KeyModifiers::NONE => {
+                    self.mobile_help = !self.mobile_help;
+                    return UiIntent::None;
+                }
+                _ => {}
+            }
+        }
+
         if let KeyCode::F(number) = key.code {
             let mode = match number {
                 1 => Some(WorkspaceMode::Browser),
@@ -978,6 +1210,14 @@ impl App {
                     UiIntent::None
                 } else if self.error_msg.is_some() {
                     self.clear_error();
+                    UiIntent::None
+                } else if self.mobile_help {
+                    self.mobile_help = false;
+                    UiIntent::None
+                } else if self.display_class == DisplayClass::Phone
+                    && self.mobile_view != MobileView::Home
+                {
+                    self.set_mobile_view(MobileView::Home);
                     UiIntent::None
                 } else {
                     UiIntent::Quit
@@ -1216,7 +1456,7 @@ impl App {
     }
 
     fn apply_page_update(&mut self, update: PageUpdate) -> BrowserResult<()> {
-        match update {
+        let result = match update {
             PageUpdate::Context(context) => self.apply_context(&context),
             PageUpdate::Semantic(observation) => self.apply_semantic(&observation),
             PageUpdate::IntentResolution { request, result } => {
@@ -1228,7 +1468,11 @@ impl App {
                 self.set_page_content(text);
                 Ok(())
             }
+        };
+        if result.is_ok() && self.display_class == DisplayClass::Phone {
+            self.set_mobile_view(MobileView::App);
         }
+        result
     }
     fn apply_visual_frame(
         &mut self,
@@ -1366,40 +1610,33 @@ impl App {
         self.page_scroll = 0;
     }
     fn sync_graphics_geometry(&mut self, area: Rect) -> BrowserResult<bool> {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(10),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(area);
+        let next_class = display_class(self.layout_preference, area.width, self.remote_context);
+        if next_class != self.display_class {
+            self.display_class = next_class;
+            self.graphics.clear_pane()?;
+            if next_class == DisplayClass::Phone && self.development_enabled {
+                self.set_mode(WorkspaceMode::Development);
+            }
+            self.add_activity(format!("Responsive layout: {:?}.", next_class));
+        }
+        let root = root_regions(area, self.display_class);
+        self.mobile_nav_area = root.nav;
+        if self.display_class != DisplayClass::Wide {
+            self.editor_area = None;
+            self.live_area = None;
+            return Ok(self.graphics.clear_pane()?);
+        }
+
         let pane = if self.mode == WorkspaceMode::Development {
-            let development = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(76), Constraint::Percentage(24)])
-                .split(chunks[1]);
-            let main = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(21),
-                    Constraint::Percentage(54),
-                    Constraint::Percentage(25),
-                ])
-                .split(development[0]);
-            let work = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-                .split(main[1]);
-            self.editor_area = Some(work[0]);
-            self.live_area = Some(work[1]);
-            work[1]
+            let regions = wide_development_regions(root.content);
+            self.editor_area = Some(regions.editor);
+            self.live_area = Some(regions.app);
+            regions.app
         } else {
             let content = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(chunks[1]);
+                .split(root.content);
             self.editor_area = None;
             self.live_area = Some(content[1]);
             content[1]
@@ -1546,6 +1783,7 @@ impl Drop for InputWorker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalCommand {
     Help,
+    Safari,
     Profiles,
     Knowledge(Option<String>),
     Daemon(DaemonView),
@@ -1667,6 +1905,12 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     }
     if command.eq_ignore_ascii_case("help") {
         return Ok(ParsedCommand::Local(LocalCommand::Help));
+    }
+    if matches!(
+        command.to_ascii_lowercase().as_str(),
+        "safari" | "phone" | "open phone"
+    ) {
+        return Ok(ParsedCommand::Local(LocalCommand::Safari));
     }
     if command.eq_ignore_ascii_case("project") {
         return Ok(ParsedCommand::Local(LocalCommand::Project(
@@ -1865,6 +2109,73 @@ fn required_command_argument(value: &str, name: &str) -> Result<String, String> 
     } else {
         Ok(value.to_string())
     }
+}
+
+fn safari_handoff(value: &str) -> Result<String, String> {
+    let mut remote = url::Url::parse(value.trim()).map_err(|_| "app URL must be absolute")?;
+    if !matches!(remote.scheme(), "http" | "https") {
+        return Err("Safari handoff supports HTTP and HTTPS app URLs".into());
+    }
+    let _ = remote.set_username("");
+    let _ = remote.set_password(None);
+    let query = remote
+        .query_pairs()
+        .map(|(name, value)| {
+            let lower = name.to_ascii_lowercase();
+            let sensitive = [
+                "password",
+                "passwd",
+                "token",
+                "secret",
+                "cookie",
+                "authorization",
+                "api_key",
+                "apikey",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker));
+            (
+                name.into_owned(),
+                if sensitive { "[redacted]" } else { &value }.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    remote.set_query(None);
+    if !query.is_empty() {
+        remote
+            .query_pairs_mut()
+            .extend_pairs(query.iter().map(|(name, value)| (name, value)));
+    }
+    if remote.fragment().is_some_and(|fragment| {
+        let lower = fragment.to_ascii_lowercase();
+        ["token", "secret", "password", "authorization"]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    }) {
+        remote.set_fragment(None);
+    }
+    let port = remote
+        .port_or_known_default()
+        .ok_or_else(|| "app URL must include a usable port".to_string())?;
+    let mut local = remote.clone();
+    local
+        .set_host(Some("127.0.0.1"))
+        .map_err(|_| "app URL host is invalid".to_string())?;
+    local
+        .set_port(Some(port))
+        .map_err(|_| "app URL port is invalid".to_string())?;
+
+    Ok(format!(
+        "SAFARI HANDOFF (private by default)\n\n\
+         Glass cannot open Safari from the remote shell. In the iPhone SSH app, add a local port forward:\n\n\
+           local port:  {port}\n\
+           remote host: 127.0.0.1\n\
+           remote port: {port}\n\n\
+         Keep that SSH tunnel connected, then open:\n\n\
+           {local}\n\n\
+         Remote app: {remote}\n\n\
+         Do not bind Chrome CDP or the dev server publicly just to reach it. Herdr can preserve the Glass pane; the SSH client owns this Safari tunnel."
+    ))
 }
 
 fn parse_scroll(values: &str) -> Result<BrowserOperation, String> {
@@ -2099,6 +2410,7 @@ async fn browser_worker(
     viewport: Option<(i64, i64)>,
     options: SessionOptions,
     policy: BrowserPolicy,
+    visual_mode: watch::Receiver<bool>,
     mut commands: mpsc::Receiver<BrowserCommand>,
     events: mpsc::Sender<BrowserEvent>,
     mut shutdown: watch::Receiver<bool>,
@@ -2124,7 +2436,7 @@ async fn browser_worker(
         return;
     }
 
-    worker_loop(session, &mut commands, &events, &mut shutdown).await;
+    worker_loop(session, &mut commands, &events, &mut shutdown, visual_mode).await;
 }
 
 async fn start_browser_session(
@@ -2190,38 +2502,25 @@ async fn worker_loop(
     commands: &mut mpsc::Receiver<BrowserCommand>,
     events: &mpsc::Sender<BrowserEvent>,
     shutdown: &mut watch::Receiver<bool>,
+    mut visual_mode: watch::Receiver<bool>,
 ) {
     let initial_revision = session
         .observe_fresh()
         .await
         .map(|observation| observation.accessibility.revision)
         .unwrap_or(1);
-    let mut screencast = match session
-        .start_screencast(VisualFormat::Png, 80, 4096, 4096)
-        .await
-    {
-        Ok(scope) => {
-            let _ = send_browser_event(
-                events,
-                BrowserEvent::VisualStatus {
-                    message: "event-driven screencast active".into(),
-                },
-            )
-            .await;
-            Some(scope)
-        }
-        Err(error) => {
-            let _ = send_browser_event(
-                events,
-                BrowserEvent::VisualStatus {
-                    message: format!(
-                        "screencast unavailable; bounded screenshot fallback: {error}"
-                    ),
-                },
-            )
-            .await;
-            None
-        }
+    let mut visual_stream_enabled = *visual_mode.borrow();
+    let mut screencast = if visual_stream_enabled {
+        start_tui_screencast(&session, events).await
+    } else {
+        let _ = send_browser_event(
+            events,
+            BrowserEvent::VisualStatus {
+                message: "semantic mobile view; use screenshot explicitly".into(),
+            },
+        )
+        .await;
+        None
     };
     let mut fallback_tick = time::interval(Duration::from_millis(750));
     fallback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -2238,12 +2537,32 @@ async fn worker_loop(
                     break;
                 }
             }
+            changed = visual_mode.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let requested = *visual_mode.borrow();
+                if requested == visual_stream_enabled {
+                    continue;
+                }
+                visual_stream_enabled = requested;
+                if visual_stream_enabled {
+                    screencast = start_tui_screencast(&session, events).await;
+                } else {
+                    if let Some(scope) = screencast.take() {
+                        let _ = scope.stop().await;
+                    }
+                    let _ = send_browser_event(events, BrowserEvent::VisualStatus {
+                        message: "semantic mobile view; use screenshot explicitly".into(),
+                    }).await;
+                }
+            }
             frame = async {
                 match screencast.as_mut() {
                     Some(scope) => scope.next_frame().await,
                     None => std::future::pending().await,
                 }
-            }, if screencast.is_some() => {
+            }, if visual_stream_enabled && screencast.is_some() => {
                 match frame {
                     Some(frame) => {
                         let _ = send_browser_event(events, BrowserEvent::VisualFrame {
@@ -2260,7 +2579,7 @@ async fn worker_loop(
                     }
                 }
             }
-            _ = fallback_tick.tick(), if screencast.is_none() => {
+            _ = fallback_tick.tick(), if visual_stream_enabled && screencast.is_none() => {
                 if let Ok(bytes) = session.screenshot_png().await {
                     let metadata = serde_json::json!({"source":"screenshot-fallback"});
                     let _ = send_browser_event(events, BrowserEvent::VisualFrame {
@@ -2320,6 +2639,39 @@ async fn worker_loop(
         let _ = send_browser_event(events, BrowserEvent::WorkerFailed { message }).await;
     }
     let _ = send_browser_event(events, BrowserEvent::WorkerStopped).await;
+}
+
+async fn start_tui_screencast(
+    session: &BrowserSession,
+    events: &mpsc::Sender<BrowserEvent>,
+) -> Option<ScreencastScope> {
+    match session
+        .start_screencast(VisualFormat::Png, 80, 4096, 4096)
+        .await
+    {
+        Ok(scope) => {
+            let _ = send_browser_event(
+                events,
+                BrowserEvent::VisualStatus {
+                    message: "event-driven screencast active".into(),
+                },
+            )
+            .await;
+            Some(scope)
+        }
+        Err(error) => {
+            let _ = send_browser_event(
+                events,
+                BrowserEvent::VisualStatus {
+                    message: format!(
+                        "screencast unavailable; bounded screenshot fallback: {error}"
+                    ),
+                },
+            )
+            .await;
+            None
+        }
+    }
 }
 
 async fn await_active_operation<F>(
@@ -2772,8 +3124,27 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Safari)) => {
+            let configured = app
+                .development
+                .as_ref()
+                .and_then(|project| project.detection().browser_url.as_deref());
+            let candidate = (!app.url.trim().is_empty())
+                .then_some(app.url.as_str())
+                .or(configured);
+            match candidate.and_then(|url| safari_handoff(url).ok()) {
+                Some(guidance) => {
+                    app.set_page_content(guidance);
+                    app.set_mobile_view(MobileView::App);
+                    app.add_activity("Prepared secure Safari tunnel guidance.");
+                }
+                None => app.report_error(
+                    "No HTTP app URL is available. Configure browserUrl in glass.toml or navigate first.",
+                ),
+            }
         }
         Ok(ParsedCommand::Local(LocalCommand::Profiles)) => {
             if let Err(error) =
@@ -2932,129 +3303,270 @@ fn queue_browser_operation(
     }
 }
 
-fn draw(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
+#[derive(Debug, Clone, Copy)]
+struct RootRegions {
+    header: Rect,
+    content: Rect,
+    command: Rect,
+    nav: Option<Rect>,
+    footer: Rect,
+}
 
+fn root_regions(area: Rect, class: DisplayClass) -> RootRegions {
+    if class == DisplayClass::Phone {
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(5),
+                Constraint::Length(3),
+                Constraint::Length(2),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        RootRegions {
+            header: regions[0],
+            content: regions[1],
+            command: regions[2],
+            nav: Some(regions[3]),
+            footer: regions[4],
+        }
+    } else {
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        RootRegions {
+            header: regions[0],
+            content: regions[1],
+            command: regions[2],
+            nav: None,
+            footer: regions[3],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WideDevelopmentRegions {
+    files: Rect,
+    editor: Rect,
+    app: Rect,
+    runtime: Rect,
+    timeline: Rect,
+}
+
+fn wide_development_regions(area: Rect) -> WideDevelopmentRegions {
+    let development = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(76), Constraint::Percentage(24)])
+        .split(area);
+    let main = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(21),
+            Constraint::Percentage(54),
+            Constraint::Percentage(25),
+        ])
+        .split(development[0]);
+    let work = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(main[1]);
+    WideDevelopmentRegions {
+        files: main[0],
+        editor: work[0],
+        app: work[1],
+        runtime: main[2],
+        timeline: development[1],
+    }
+}
+
+fn draw(frame: &mut Frame, app: &App) {
+    let root = root_regions(frame.area(), app.display_class);
+    match app.display_class {
+        DisplayClass::Phone => draw_phone(frame, app, root),
+        DisplayClass::Compact => draw_desktop(frame, app, root, true),
+        DisplayClass::Wide => draw_desktop(frame, app, root, false),
+    }
+    draw_overlays(frame, app);
+}
+
+fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
+    let header = format!(
+        "{} · {} · {}",
+        app.mode.label(),
+        app.remote_context.label(),
+        if app.browser_ready() {
+            "ready"
+        } else {
+            "starting"
+        }
+    );
+    frame.render_widget(
+        Paragraph::new(header)
+            .block(Block::default().borders(Borders::ALL).title("Glass"))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        root.header,
+    );
+
+    let (title, content) = match app.mobile_view {
+        MobileView::Home => ("Home", mobile_home(app)),
+        MobileView::Agent => (
+            "Agent / Timeline",
+            format!(
+                "{}\n\nLATEST RESULT\n{}",
+                app.activity.iter().cloned().collect::<Vec<_>>().join("\n"),
+                app.page_content
+            ),
+        ),
+        MobileView::App => (
+            "App / Semantics · command: safari",
+            app.page_content.clone(),
+        ),
+        MobileView::Diff => ("Diff / Verification", app.development_diff.clone()),
+        MobileView::Project => ("Project / Editor / Runtime", mobile_project(app)),
+    };
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .scroll((app.page_scroll, 0))
+            .wrap(Wrap { trim: true }),
+        root.content,
+    );
+    frame.render_widget(
+        Paragraph::new(app.input.as_str()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command · agent PROMPT"),
+        ),
+        root.command,
+    );
+
+    let views = [
+        MobileView::Home,
+        MobileView::Agent,
+        MobileView::App,
+        MobileView::Diff,
+        MobileView::Project,
+    ];
+    let mut spans = Vec::new();
+    for (index, view) in views.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let label = if view == MobileView::Project {
+            "More"
+        } else {
+            view.label()
+        };
+        let text = format!("{} {label}", view.number());
+        let style = if view == app.mobile_view {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(text, style));
+    }
+    if let Some(nav) = root.nav {
+        frame.render_widget(Paragraph::new(Line::from(spans)), nav);
+    }
+    frame.render_widget(
+        Paragraph::new(format!(" {} | Tab: views | ?: help | q: quit", app.status))
+            .style(Style::default().fg(Color::DarkGray)),
+        root.footer,
+    );
+}
+
+fn mobile_home(app: &App) -> String {
+    format!(
+        "STATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n\nRUNTIME\n{}",
+        app.status,
+        app.remote_context.label(),
+        if app.remote_context.herdr {
+            " · pane persists after detach"
+        } else if app.remote_context.is_remote() {
+            " · use Herdr for detach/reattach"
+        } else {
+            ""
+        },
+        if app.url.is_empty() {
+            "No page loaded"
+        } else {
+            app.url.as_str()
+        },
+        app.visual_status,
+        app.development_runtime,
+    )
+}
+
+fn mobile_project(app: &App) -> String {
+    format!(
+        "FILES / GIT\n{}\n\nEDITOR\n{}\n\nRUNTIME / TESTS / ACTORS\n{}",
+        app.development_files, app.development_editor, app.development_runtime
+    )
+}
+
+fn draw_desktop(frame: &mut Frame, app: &App, root: RootRegions, compact: bool) {
     let header = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[0]);
+        .split(root.header);
+    frame.render_widget(
+        Paragraph::new(format!("{} — {}", app.title, app.mode.label()))
+            .block(Block::default().borders(Borders::ALL).title("Glass"))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        header[0],
+    );
+    frame.render_widget(
+        Paragraph::new(app.url.as_str())
+            .block(Block::default().borders(Borders::ALL).title("URL"))
+            .style(Style::default().fg(Color::Yellow)),
+        header[1],
+    );
 
-    let title_text = format!("{} — {}", app.title, app.mode.label());
-    let title = Paragraph::new(title_text)
-        .block(Block::default().borders(Borders::ALL).title("Glass"))
-        .style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-    frame.render_widget(title, header[0]);
-
-    let url = Paragraph::new(app.url.as_str())
-        .block(Block::default().borders(Borders::ALL).title("URL"))
-        .style(Style::default().fg(Color::Yellow));
-    frame.render_widget(url, header[1]);
-
-    let activity = app
-        .activity
-        .iter()
-        .map(|entry| ListItem::new(Line::from(entry.as_str())))
-        .collect::<Vec<_>>();
-    let content_title = match app.mode {
-        WorkspaceMode::Browser => "Browser / Structured Observation",
-        WorkspaceMode::Split => "Split / Browser + Status",
-        WorkspaceMode::Workflow => "Workflow Verification",
-        WorkspaceMode::Semantic => "Semantic Inspector",
-        WorkspaceMode::Inspect => "Inspect / Memory + Backend",
-        WorkspaceMode::Takeover => "Takeover / Reconciliation",
-        WorkspaceMode::Development => "Development / Live Runtime",
-    };
     if app.mode == WorkspaceMode::Development {
-        let development = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(76), Constraint::Percentage(24)])
-            .split(chunks[1]);
-        let main = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(21),
-                Constraint::Percentage(54),
-                Constraint::Percentage(25),
-            ])
-            .split(development[0]);
-        let work = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(main[1]);
-        frame.render_widget(
-            Paragraph::new(app.development_files.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Project / Git"),
-                )
-                .wrap(Wrap { trim: true }),
-            main[0],
-        );
-        frame.render_widget(
-            Paragraph::new(app.development_editor.as_str())
-                .block(Block::default().borders(Borders::ALL).title("Glass Editor"))
-                .scroll((app.page_scroll, 0))
-                .wrap(Wrap { trim: true }),
-            work[0],
-        );
-        frame.render_widget(
-            Paragraph::new(app.page_content.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Live App / Semantics"),
-                )
-                .wrap(Wrap { trim: true }),
-            work[1],
-        );
-        frame.render_widget(
-            Paragraph::new(app.development_runtime.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Runtime / Tests / Actors"),
-                )
-                .wrap(Wrap { trim: true }),
-            main[2],
-        );
-        frame.render_widget(
-            List::new(activity)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Glass Agent / Timeline"),
-                )
-                .style(Style::default().fg(Color::Green)),
-            development[1],
-        );
+        if compact {
+            draw_compact_development(frame, app, root.content);
+        } else {
+            draw_wide_development(frame, app, root.content);
+        }
     } else {
         let content = Layout::default()
-            .direction(Direction::Horizontal)
+            .direction(if compact {
+                Direction::Vertical
+            } else {
+                Direction::Horizontal
+            })
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-            .split(chunks[1]);
+            .split(root.content);
         frame.render_widget(
-            List::new(activity)
+            List::new(activity_items(app))
                 .block(Block::default().borders(Borders::ALL).title("Activity"))
                 .style(Style::default().fg(Color::Green)),
             content[0],
         );
         frame.render_widget(
             Paragraph::new(app.page_content.as_str())
-                .block(Block::default().borders(Borders::ALL).title(content_title))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(workspace_content_title(app.mode)),
+                )
                 .scroll((app.page_scroll, 0))
                 .wrap(Wrap { trim: true }),
             content[1],
@@ -3064,16 +3576,16 @@ fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(
         Paragraph::new(app.input.as_str())
             .block(Block::default().borders(Borders::ALL).title("Command")),
-        chunks[2],
+        root.command,
     );
-    let escape_hint = if app.is_busy() {
-        "Esc: cancel"
+    let hint = if compact {
+        format!(
+            " {} | F1-F7 modes | Enter execute | Esc cancel/back",
+            app.status
+        )
     } else {
-        "Esc: close error/quit"
-    };
-    frame.render_widget(
-        Paragraph::new(format!(
-            " {} | mode:{} lease:{:?}@{} | {} | {} | {}   PgUp/PgDn: observation   F1-F7: workspace modes   q/Ctrl-C: quit   Enter: execute   {escape_hint}   {}",
+        format!(
+            " {} | mode:{} lease:{:?}@{} | {} | {} | {}   PgUp/PgDn: observation   F1-F7: workspace modes   q/Ctrl-C: quit   Enter: execute   Esc: cancel/back   {}",
             app.status,
             app.mode.label(),
             app.mutation_lease.state(),
@@ -3082,11 +3594,122 @@ fn draw(frame: &mut Frame, app: &App) {
             app.capability_summary,
             app.graphics.diagnostics_label(),
             app.input.chars().count()
-        ))
-        .style(Style::default().fg(Color::DarkGray)),
-        chunks[3],
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+        root.footer,
     );
+}
 
+fn draw_wide_development(frame: &mut Frame, app: &App, area: Rect) {
+    let regions = wide_development_regions(area);
+    render_development_panel(
+        frame,
+        "Project / Git",
+        &app.development_files,
+        regions.files,
+    );
+    render_development_panel(
+        frame,
+        "Glass Editor",
+        &app.development_editor,
+        regions.editor,
+    );
+    render_development_panel(
+        frame,
+        "Live App / Semantics",
+        &app.page_content,
+        regions.app,
+    );
+    render_development_panel(
+        frame,
+        "Runtime / Tests / Actors",
+        &app.development_runtime,
+        regions.runtime,
+    );
+    frame.render_widget(
+        List::new(activity_items(app))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Glass Agent / Timeline"),
+            )
+            .style(Style::default().fg(Color::Green)),
+        regions.timeline,
+    );
+}
+
+fn draw_compact_development(frame: &mut Frame, app: &App, area: Rect) {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(area);
+    let main = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(vertical[0]);
+    let work = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(main[1]);
+    let lower = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(vertical[1]);
+    render_development_panel(frame, "Project / Git", &app.development_files, main[0]);
+    render_development_panel(frame, "Editor", &app.development_editor, work[0]);
+    render_development_panel(frame, "App / Semantics", &app.page_content, work[1]);
+    render_development_panel(frame, "Runtime", &app.development_runtime, lower[0]);
+    frame.render_widget(
+        List::new(activity_items(app))
+            .block(Block::default().borders(Borders::ALL).title("Agent"))
+            .style(Style::default().fg(Color::Green)),
+        lower[1],
+    );
+}
+
+fn render_development_panel(frame: &mut Frame, title: &'static str, content: &str, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn activity_items(app: &App) -> Vec<ListItem<'_>> {
+    app.activity
+        .iter()
+        .map(|entry| ListItem::new(Line::from(entry.as_str())))
+        .collect()
+}
+
+const fn workspace_content_title(mode: WorkspaceMode) -> &'static str {
+    match mode {
+        WorkspaceMode::Browser => "Browser / Structured Observation",
+        WorkspaceMode::Split => "Split / Browser + Status",
+        WorkspaceMode::Workflow => "Workflow Verification",
+        WorkspaceMode::Semantic => "Semantic Inspector",
+        WorkspaceMode::Inspect => "Inspect / Memory + Backend",
+        WorkspaceMode::Takeover => "Takeover / Reconciliation",
+        WorkspaceMode::Development => "Development / Live Runtime",
+    }
+}
+
+fn draw_overlays(frame: &mut Frame, app: &App) {
+    if app.mobile_help {
+        let popup = centered_popup_sized(frame.area(), 38, 12);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(
+                "1-5  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nagent PROMPT\nproject open PATH\nproject diff\nsafari  tunnel guidance\nscreenshot PATH  explicit visual",
+            )
+            .block(Block::default().borders(Borders::ALL).title("Phone controls"))
+            .wrap(Wrap { trim: true }),
+            popup,
+        );
+    }
     if let Some(error) = &app.error_msg {
         let popup = centered_popup(frame.area());
         frame.render_widget(Clear, popup);
@@ -3106,6 +3729,19 @@ fn centered_popup(area: Rect) -> Rect {
     Rect {
         x: area.width.saturating_sub(width) / 2,
         y: area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn centered_popup_sized(area: Rect, preferred_width: u16, preferred_height: u16) -> Rect {
+    let width = preferred_width.min(area.width).max(1);
+    let height = preferred_height.min(area.height).max(1);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     }
@@ -3156,11 +3792,16 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let initial_size = terminal.size()?;
+    let remote_context = RemoteContext::from_process();
+    let initial_display = display_class(cli.tui_layout, initial_size.width, remote_context);
+    let visual_stream_enabled = initial_display != DisplayClass::Phone;
 
     let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
     let (browser_commands, browser_command_rx) = mpsc::channel(BROWSER_COMMAND_CHANNEL_CAPACITY);
     let (browser_event_tx, mut browser_events) = mpsc::channel(BROWSER_EVENT_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (visual_mode_tx, visual_mode_rx) = watch::channel(visual_stream_enabled);
 
     let viewport = cli
         .viewport
@@ -3191,12 +3832,18 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         viewport,
         options,
         policy.clone(),
+        visual_mode_rx,
         browser_command_rx,
         browser_event_tx,
         shutdown_rx,
     ));
     let mut input_worker = InputWorker::spawn(input_tx);
-    let mut app = App::new_for_product(development_enabled);
+    let mut app = App::new_for_product_with_context(
+        development_enabled,
+        cli.tui_layout,
+        remote_context,
+        initial_size.width,
+    );
     let manifest = GlassCapabilityManifest::for_policy_with_experimental_extensions(
         &policy,
         cli.experimental_extensions,
@@ -3223,6 +3870,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             &mut input_events,
             &mut browser_events,
             &policy,
+            &visual_mode_tx,
         ))
         .await;
 
@@ -3253,6 +3901,7 @@ async fn run_tui_loop(
     input_events: &mut mpsc::Receiver<InputEvent>,
     browser_events: &mut mpsc::Receiver<BrowserEvent>,
     policy: &BrowserPolicy,
+    visual_mode: &watch::Sender<bool>,
 ) -> BrowserResult<()> {
     let mut redraw = true;
     let mut browser_events_open = true;
@@ -3263,6 +3912,15 @@ async fn run_tui_loop(
         if redraw {
             let area = terminal.size()?;
             app.sync_graphics_geometry(area.into())?;
+            let _ = visual_mode.send_if_modified(|enabled| {
+                let next = app.display_class != DisplayClass::Phone;
+                if *enabled == next {
+                    false
+                } else {
+                    *enabled = next;
+                    true
+                }
+            });
             terminal.draw(|frame| draw(frame, app))?;
             app.render_graphics()?;
         }
@@ -3467,6 +4125,10 @@ mod tests {
     #[test]
     fn command_parser_preserves_browser_actions_and_rejects_bad_scroll() {
         assert!(matches!(
+            parse_command("safari"),
+            Ok(ParsedCommand::Local(LocalCommand::Safari))
+        ));
+        assert!(matches!(
             parse_command("double click r7:b42"),
             Ok(ParsedCommand::Browser(BrowserOperation::DoubleClick(target))) if target == "r7:b42"
         ));
@@ -3531,6 +4193,122 @@ mod tests {
                 DaemonView::Recovery
             )))
         ));
+    }
+
+    #[test]
+    fn responsive_layout_uses_phone_breakpoints_for_remote_sessions() {
+        let local = RemoteContext::default();
+        let remote = RemoteContext {
+            ssh: true,
+            ..RemoteContext::default()
+        };
+
+        assert_eq!(
+            display_class(TuiLayout::Auto, 40, local),
+            DisplayClass::Phone
+        );
+        assert_eq!(
+            display_class(TuiLayout::Auto, 80, local),
+            DisplayClass::Compact
+        );
+        assert_eq!(
+            display_class(TuiLayout::Auto, 80, remote),
+            DisplayClass::Phone
+        );
+        assert_eq!(
+            display_class(TuiLayout::Auto, 120, remote),
+            DisplayClass::Wide
+        );
+        assert_eq!(
+            display_class(TuiLayout::Mobile, 200, local),
+            DisplayClass::Phone
+        );
+        assert_eq!(
+            display_class(TuiLayout::Desktop, 40, remote),
+            DisplayClass::Wide
+        );
+    }
+
+    #[test]
+    fn phone_navigation_is_reachable_without_function_or_control_keys() {
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                herdr: true,
+                ..RemoteContext::default()
+            },
+            40,
+        );
+        assert_eq!(app.mode, WorkspaceMode::Development);
+        assert_eq!(app.graphics.mode(), GraphicsMode::Semantic);
+
+        assert_eq!(app.reduce_key(key(KeyCode::Char('3'))), UiIntent::None);
+        assert_eq!(app.mobile_view, MobileView::App);
+        assert!(app.input.is_empty());
+        assert_eq!(app.reduce_key(key(KeyCode::Tab)), UiIntent::None);
+        assert_eq!(app.mobile_view, MobileView::Diff);
+        assert_eq!(app.reduce_key(key(KeyCode::Esc)), UiIntent::None);
+        assert_eq!(app.mobile_view, MobileView::Home);
+
+        app.reduce_key(key(KeyCode::Char('a')));
+        app.reduce_key(key(KeyCode::Char('3')));
+        assert_eq!(app.input, "a3");
+
+        app.input.clear();
+        app.handle_project_command("diff");
+        assert_eq!(app.mobile_view, MobileView::Diff);
+        app.handle_project_command("files");
+        assert_eq!(app.mobile_view, MobileView::Project);
+    }
+
+    #[test]
+    fn phone_layout_renders_at_portrait_size_and_has_no_graphics_pane() {
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                ..RemoteContext::default()
+            },
+            40,
+        );
+        app.sync_graphics_geometry(Rect::new(0, 0, 40, 20)).unwrap();
+        assert!(app.graphics.geometry().is_none());
+        assert!(app.mobile_nav_area.is_some());
+
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("1 Home"));
+        assert!(rendered.contains("5 More"));
+        assert!(rendered.contains("Command"));
+    }
+
+    #[test]
+    fn safari_handoff_keeps_the_app_private_and_preserves_the_route() {
+        let guidance = safari_handoff("http://0.0.0.0:3000/orders?state=open").unwrap();
+        assert!(guidance.contains("remote host: 127.0.0.1"));
+        assert!(guidance.contains("http://127.0.0.1:3000/orders?state=open"));
+        assert!(guidance.contains("Do not bind Chrome CDP"));
+        let secret =
+            safari_handoff("https://user:password@localhost:3443/orders?token=secret&state=open")
+                .unwrap();
+        assert!(!secret.contains("password"));
+        assert!(!secret.contains("token=secret"));
+        assert!(secret.contains("token=%5Bredacted%5D"));
+        assert!(secret.contains("state=open"));
+        assert!(safari_handoff("file:///tmp/index.html").is_err());
     }
 
     #[test]

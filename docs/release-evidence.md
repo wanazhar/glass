@@ -42,8 +42,8 @@ or GitHub Release is implied by this section.
 - TypeScript build/typecheck/smoke and Python compile/smoke passed against the
   checkout's 0.3.3 executable. `cargo deny`, `cargo audit`, and the locked fuzz
   all-target build passed.
-- `glass-browser` packages 186 files (4.2 MiB; 811.6 KiB compressed) and
-  `glass-dev` packages 8 files (89.7 KiB; 25.5 KiB compressed). Both package
+- `glass-browser` packages 186 files (4.2 MiB; 811.9 KiB compressed) and
+  `glass-dev` packages 8 files (89.7 KiB; 25.4 KiB compressed). Both package
   verification and publication dry runs passed without upload; the normalized
   development package retains the exact `glass-browser =0.3.3` dependency.
 - `scripts/smoke-clean-install.sh` passed isolated core-only and full-suite

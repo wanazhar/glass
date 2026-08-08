@@ -1,5 +1,14 @@
 # Glass delivery plans
 
+## Completed plan: semantic resource and correctness audit
+
+Status: Completed and verified locally — no remote mutation.
+
+The [resource audit](analysis/semantic-resource-audit.md) and atomic
+[implementation task](tasks/semantic-resource-033-002.md) optimize the task
+compiler, live binding, agent gateway, and private Pi request boundary while
+preserving the completed semantic-core contracts.
+
 ## Completed plan: semantic core hardening
 
 Status: Completed and verified locally — no remote mutation.

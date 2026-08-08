@@ -33,6 +33,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Reduced maximum-width semantic form compilation by indexing graph scope and
+  normalized field names once, removed per-binding candidate allocations, and
+  retained the embedded-agent tool catalog for gateway lifetime.
+- Enforced open-handle byte limits for Pi broker, project, editor, graph, and
+  language-server file reads; tool JSON evidence and result sizing now stream
+  without duplicate payload buffers.
 - Propagate checked and disabled control state into Web IR, remove mutation
   actions from disabled/read-only entities, classify sensitive fields
   conservatively with token-aware rules, and scope continuity by graph context.

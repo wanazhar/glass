@@ -100,6 +100,9 @@ marked `Local only` is part of an unreleased development build.
 - [Semantic core hardening](architecture/semantic-core-hardening.md) —
   executable corpus, scoped evidence, live bindings, capabilities, privacy,
   continuity, agent tools, and explanation receipts.
+- [Semantic resource budgets](architecture/semantic-resource-budgets.md) —
+  compiler graph work, binding allocation, tool-envelope limits, and private
+  broker-file reads.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
   lifecycle.
 - [Development workspace TUI](architecture/development-tui.md) — files,

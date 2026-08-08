@@ -5,59 +5,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- Added executable Chromium goldens for the Web IR corpus, an adversarial and
-  metamorphic semantic suite, relationship-scoped task compilation,
-  revision-bound live bindings, runtime capability declarations,
-  `entityState` verification, compact Web IR projections, and value-free
-  execution receipts.
-- Added a shared schema-validating Local/Pi tool gateway with explicit mutation
-  authority, bounded outputs, metadata-only audit events, and read-only Web IR
-  inspection, diff, continuity, and task-planning tools for Pi.
-
-- Added a remote development cockpit with bounded resident project sessions,
-  persistent MCP PTYs, non-sensitive reconnect capsules, a mobile attention
-  inbox, opt-in terminal alerts, revision-bound semantic tap actions, compact
-  verification cards, adaptive live quality, and higher-level TypeScript and
-  Python orchestration workflows.
-
-- Added complete typed Development Runtime helpers to the repository
-  TypeScript and Python clients, plus a negotiated, cursor-bounded project
-  event feed that reports timeline-compaction gaps without streaming pixels
-  through MCP.
-- Added an explicit terminal-native live browser for remote and phone TUI
-  sessions with Herdr-owned PNG streaming, direct Kitty capability probing,
-  true-color ANSI half-block fallback, adaptive data/balanced/smooth profiles,
-  fit controls, runtime diagnostics, and a browser-free renderer benchmark.
-
-### Changed
-
-- Reorganized public documentation by user role and added complete feature,
-  CLI-family, MCP-tool, Rust SDK, runnable-example, package, and docs.rs entry
-  references backed by generated inventory and local-link validation.
-
-- Reduced maximum-width semantic form compilation by indexing graph scope and
-  normalized field names once, removed per-binding candidate allocations, and
-  retained the embedded-agent tool catalog for gateway lifetime.
-- Enforced open-handle byte limits for Pi broker, project, editor, graph, and
-  language-server file reads; tool JSON evidence and result sizing now stream
-  without duplicate payload buffers.
-- Propagate checked and disabled control state into Web IR, remove mutation
-  actions from disabled/read-only entities, classify sensitive fields
-  conservatively with token-aware rules, and scope continuity by graph context.
-- Bumped deterministic task compilation to compiler version 2; version-1 plans
-  must be recompiled before execution. Live execution now uses scoped semantic
-  bindings throughout, and nested form ancestry is preserved through labels.
-- Pi semantic-tool calls now cross the process boundary through private,
-  size-bounded, one-use request files instead of process arguments.
-
-- Kept structured browser semantics and explicit screenshots as the default;
-  live pixels now degrade from Herdr to Kitty to ANSI to semantics, select ANSI
-  automatically under Mosh, and retain Safari port forwarding as the stable
-  full-fidelity iPhone path.
-
-## [0.3.2] - 2026-08-07
+## [0.3.2] - 2026-08-08
 
 ### Added
 
@@ -79,6 +27,27 @@ and intends to use [Semantic Versioning](https://semver.org/).
   experiments, collaboration claims, global search, and Neovim PTY/RPC probes.
 - Split distribution into the `glass-browser` crate and `glass-browser`
   executable plus the exact-version `glass-dev` package that owns `glass`.
+- Added executable Chromium goldens for the Web IR corpus, an adversarial and
+  metamorphic semantic suite, relationship-scoped task compilation,
+  revision-bound live bindings, runtime capability declarations,
+  `entityState` verification, compact Web IR projections, and value-free
+  execution receipts.
+- Added a shared schema-validating Local/Pi tool gateway with explicit mutation
+  authority, bounded outputs, metadata-only audit events, and read-only Web IR
+  inspection, diff, continuity, and task-planning tools for Pi.
+- Added a remote development cockpit with bounded resident project sessions,
+  persistent MCP PTYs, non-sensitive reconnect capsules, a mobile attention
+  inbox, opt-in terminal alerts, revision-bound semantic tap actions, compact
+  verification cards, adaptive live quality, and higher-level TypeScript and
+  Python orchestration workflows.
+- Added complete typed Development Runtime helpers to the repository
+  TypeScript and Python clients, plus a negotiated, cursor-bounded project
+  event feed that reports timeline-compaction gaps without streaming pixels
+  through MCP.
+- Added an explicit terminal-native live browser for remote and phone TUI
+  sessions with Herdr-owned PNG streaming, direct Kitty capability probing,
+  true-color ANSI half-block fallback, adaptive data/balanced/smooth profiles,
+  fit controls, runtime diagnostics, and a browser-free renderer benchmark.
 
 ### Changed
 
@@ -88,6 +57,27 @@ and intends to use [Semantic Versioning](https://semver.org/).
   policy, MCP framing, and existing v0.3.1 browser contracts unchanged.
 - Require live browser revision evidence before confirming a build/live-update
   event, and keep inferred framework source maps explicitly uncertain.
+- Reorganized public documentation by user role and added complete feature,
+  CLI-family, MCP-tool, Rust SDK, runnable-example, package, and docs.rs entry
+  references backed by generated inventory and local-link validation.
+- Reduced maximum-width semantic form compilation by indexing graph scope and
+  normalized field names once, removed per-binding candidate allocations, and
+  retained the embedded-agent tool catalog for gateway lifetime.
+- Enforced open-handle byte limits for Pi broker, project, editor, graph, and
+  language-server file reads; tool JSON evidence and result sizing now stream
+  without duplicate payload buffers.
+- Propagated checked and disabled control state into Web IR, removed mutation
+  actions from disabled/read-only entities, classified sensitive fields
+  conservatively with token-aware rules, and scoped continuity by graph context.
+- Bumped deterministic task compilation to compiler version 2; version-1 plans
+  must be recompiled before execution. Live execution now uses scoped semantic
+  bindings throughout, and nested form ancestry is preserved through labels.
+- Moved Pi semantic-tool calls across the process boundary through private,
+  size-bounded, one-use request files instead of process arguments.
+- Kept structured browser semantics and explicit screenshots as the default;
+  live pixels now degrade from Herdr to Kitty to ANSI to semantics, select ANSI
+  automatically under Mosh, and retain Safari port forwarding as the stable
+  full-fidelity iPhone path.
 
 ## [0.3.1] - 2026-08-07
 

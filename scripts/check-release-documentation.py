@@ -15,7 +15,7 @@ REQUIRED_MARKERS = {
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
-        "## [0.3.2] - 2026-08-07",
+        "## [0.3.2] - 2026-08-08",
         "## [Unreleased]",
     ],
     "docs/plan/README.md": [

@@ -28,7 +28,7 @@ have not been performed.
 - [x] Inspect both package file lists; validate the exact normalized dev
       dependency with a local patch source; complete dry-runs without upload.
 - [x] Record bounded issue #32 implementation evidence and target boundaries.
-- [ ] Obtain explicit approval before any stable tag, push, crates.io
+- [x] Obtain explicit approval before any stable tag, push, crates.io
       publication, or GitHub Release.
 
 Every version tag must have a matching, published, non-draft GitHub Release

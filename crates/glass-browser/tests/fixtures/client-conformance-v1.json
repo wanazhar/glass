@@ -6,7 +6,8 @@
     "observation": [1],
     "workflow": [1],
     "checkpoint": [1],
-    "developmentEvents": [1]
+    "developmentEvents": [1],
+    "developmentCockpit": [1]
   },
   "requiredCapabilities": ["action"],
   "tools": [
@@ -83,6 +84,9 @@
     "printToPdf",
     "project.attach",
     "project.breakpoint",
+    "project.capsule.clear",
+    "project.capsule.save",
+    "project.capsule.show",
     "project.delete",
     "project.diagnostics",
     "project.diff",
@@ -91,6 +95,7 @@
     "project.experiment.create",
     "project.files",
     "project.graph",
+    "project.inbox",
     "project.inspect",
     "project.link",
     "project.mkdir",
@@ -103,7 +108,10 @@
     "project.replay",
     "project.run",
     "project.search",
+    "project.session.detach",
+    "project.session.status",
     "project.timeline",
+    "project.verification.card",
     "reconcileReferences",
     "recoverRun",
     "replayAttach",

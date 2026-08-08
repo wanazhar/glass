@@ -39,9 +39,15 @@ glass project graph discover
 glass project diff
 ```
 
-Persistent interactive dev servers belong in the TUI. A one-shot CLI or MCP
-invocation must use `--wait`/`wait: true`; Glass rejects a detached request
-because the calling process would no longer own its PTY.
+Persistent interactive dev servers belong in the TUI or a resident MCP server.
+A one-shot CLI invocation must use `--wait`. MCP may use `wait: false`; the
+server's canonical-root session registry then owns the PTY until explicit
+detach, idle eviction, stdio server shutdown, or daemon shutdown.
+
+The registry retains at most eight projects and expires an idle project after
+30 minutes. Daemon clients share the daemon's registry while normal stdio MCP
+clients share it for that server process. `project.session.status` and
+`project.session.detach` expose and clean up this lifecycle explicitly.
 
 Inside the TUI command bar:
 
@@ -73,6 +79,21 @@ cursor; clicks in the live pane remain browser input.
 - Structured semantic observation is the browser context default. A visual
   diff says `not-captured` until a caller explicitly asks for a screenshot.
 - Local harness events store prompt byte counts and hashes, not prompt text.
+- Reconnect capsules store only control-plane identity, cursor, view, target,
+  revision, attention title, and live preferences. They never store source,
+  command input, prompts, process output, cookies, secrets, or pixels.
+
+## Remote cockpit
+
+The mobile cockpit derives `needsAttention`, `running`, and `recent` items from
+the persisted timeline. `project.inbox` exposes the same bounded projection to
+clients. `project.verification.card` combines code, process, semantic-link, and
+explicit visual status; it reports `not-captured` until visual evidence is
+requested separately.
+
+TypeScript and Python clients add deadline-aware event waits, resident process
+health waits, mutation-lease scopes, edit-and-verify, cursor resume, and
+attention callbacks on top of these primitives.
 
 ## Agents and Neovim
 

@@ -6,6 +6,7 @@
 //! browser control logic.
 
 pub mod agent;
+pub mod cockpit;
 pub mod collaboration;
 pub mod debug;
 pub mod diff;
@@ -29,6 +30,10 @@ use std::{fmt, io, path::PathBuf};
 pub use agent::{
     AgentContextPacket, HarnessEvent, HarnessRequest, LocalHarness, PiHarness, ToolCall,
     ToolDescriptor, ToolRegistry, resolve_context,
+};
+pub use cockpit::{
+    AttentionItem, AttentionState, ReconnectCapsule, ReconnectCapsuleStore,
+    ResidentDevelopmentSessions, VerificationCard, VerificationCheck, attention_inbox,
 };
 pub use collaboration::{CollaborationBus, CollaborationEvent, EditAccess, EditClaim};
 pub use debug::{
@@ -60,6 +65,7 @@ pub use search::{SearchHit, SearchKind, fuzzy_score, rank};
 
 pub const DEVELOPMENT_SCHEMA_VERSION: &str = "glass.development.v1";
 pub const DEVELOPMENT_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const DEVELOPMENT_COCKPIT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 pub const MAX_BUFFER_BYTES: usize = 1024 * 1024;
 pub const MAX_FILE_ENTRIES: usize = 2_048;

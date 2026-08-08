@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanazhar/glass/blob/main/docs/schema/glass-development-cockpit-v1.schema.json",
+  "title": "Glass Development Cockpit v1",
+  "oneOf": [
+    { "$ref": "#/$defs/reconnectCapsule" },
+    { "$ref": "#/$defs/attentionItem" },
+    { "$ref": "#/$defs/verificationCard" }
+  ],
+  "$defs": {
+    "nullableShortString": { "type": ["string", "null"], "maxLength": 256 },
+    "reconnectCapsule": {
+      "type": "object",
+      "required": ["schemaVersion", "projectRoot", "eventCursor", "mobileView", "browserTargetId", "browserRevision", "pendingAttention", "liveMode", "liveQuality", "savedAtMs"],
+      "properties": {
+        "schemaVersion": { "const": "glass.development.v1" },
+        "projectRoot": { "type": "string", "maxLength": 4096 },
+        "eventCursor": { "type": ["string", "null"], "maxLength": 128 },
+        "mobileView": { "type": ["string", "null"], "enum": ["home", "agent", "app", "diff", "project", null] },
+        "browserTargetId": { "type": ["string", "null"], "maxLength": 128 },
+        "browserRevision": { "type": ["integer", "null"], "minimum": 0 },
+        "pendingAttention": { "$ref": "#/$defs/nullableShortString" },
+        "liveMode": { "type": ["string", "null"], "enum": ["off", "auto", "on", null] },
+        "liveQuality": { "type": ["string", "null"], "enum": ["auto", "data", "balanced", "smooth", null] },
+        "savedAtMs": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "attentionItem": {
+      "type": "object",
+      "required": ["id", "state", "title", "detail", "occurredAtMs", "eventId"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 256 },
+        "state": { "enum": ["needsAttention", "running", "recent"] },
+        "title": { "type": "string", "maxLength": 128 },
+        "detail": { "type": "string", "maxLength": 256 },
+        "occurredAtMs": { "type": "integer", "minimum": 0 },
+        "eventId": { "type": "string", "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "verificationCard": {
+      "type": "object",
+      "required": ["schemaVersion", "title", "outcome", "checks", "changedFiles", "semanticRevision", "visualStatus", "generatedAtMs"],
+      "properties": {
+        "schemaVersion": { "const": "glass.development.v1" },
+        "title": { "type": "string", "maxLength": 128 },
+        "outcome": { "type": "string", "maxLength": 64 },
+        "checks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["label", "status", "detail"],
+            "properties": {
+              "label": { "type": "string", "maxLength": 128 },
+              "status": { "type": "string", "maxLength": 64 },
+              "detail": { "type": "string", "maxLength": 512 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "changedFiles": { "type": "integer", "minimum": 0 },
+        "semanticRevision": { "type": ["integer", "null"], "minimum": 0 },
+        "visualStatus": { "type": "string", "maxLength": 64 },
+        "generatedAtMs": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -79,6 +79,7 @@ client must inspect the manifest and policy-sensitive capability flags.
 - [workflow trace v1](schema/glass-workflow-trace-v1.schema.json);
 - [semantic observation v1](schema/semantic-observation-v1.schema.json);
 - [development event page v1](schema/glass-development-event-page-v1.schema.json);
+- [development cockpit v1](schema/glass-development-cockpit-v1.schema.json);
 - [intent v1](schema/intent-resolution-v1.schema.json);
 - [knowledge v1](schema/knowledge-v1.schema.json);
 - [workflow v1](schema/workflow-v1.schema.json);

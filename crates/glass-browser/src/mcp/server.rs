@@ -38,8 +38,9 @@ use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
 use crate::development::{
-    Actor, ExperimentManager, HarnessRequest, LinkProvenance, ProcessState, ProjectWorkspace,
-    SemanticBreakpoint, SemanticSnapshot,
+    Actor, DevelopmentError, ExperimentManager, HarnessRequest, LinkProvenance, ProcessState,
+    ProjectWorkspace, ReconnectCapsule, ReconnectCapsuleStore, ResidentDevelopmentSessions,
+    SemanticBreakpoint, SemanticSnapshot, VerificationCard, attention_inbox,
 };
 const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
 use crate::browser_backend::{BackendProfile, BrowserCapability};
@@ -225,6 +226,38 @@ enum ToolInvocation<'a> {
         root: std::path::PathBuf,
         after_id: Option<&'a str>,
         limit: usize,
+    },
+    ProjectSessionStatus {
+        root: std::path::PathBuf,
+    },
+    ProjectSessionDetach {
+        root: std::path::PathBuf,
+        confirmed: bool,
+    },
+    ProjectCapsuleSave {
+        root: std::path::PathBuf,
+        event_cursor: Option<&'a str>,
+        mobile_view: Option<&'a str>,
+        browser_target_id: Option<&'a str>,
+        browser_revision: Option<u64>,
+        pending_attention: Option<&'a str>,
+        live_mode: Option<&'a str>,
+        live_quality: Option<&'a str>,
+    },
+    ProjectCapsuleShow {
+        root: std::path::PathBuf,
+    },
+    ProjectCapsuleClear {
+        root: std::path::PathBuf,
+        confirmed: bool,
+    },
+    ProjectInbox {
+        root: std::path::PathBuf,
+    },
+    ProjectVerificationCard {
+        root: std::path::PathBuf,
+        title: &'a str,
+        semantic_revision: Option<u64>,
     },
     ProjectReplay {
         root: std::path::PathBuf,
@@ -594,6 +627,7 @@ struct Outbound {
 }
 
 type CancellationMap = Arc<StdMutex<HashMap<String, oneshot::Sender<()>>>>;
+pub type DevelopmentSessionStore = Arc<StdMutex<ResidentDevelopmentSessions>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
@@ -666,6 +700,10 @@ where
         policy: None,
     };
     let policy = crate::cli::runner::policy_from_cli(cli)?;
+    let development_sessions = lease_context
+        .as_ref()
+        .map(|context| Arc::clone(&context.development_sessions))
+        .unwrap_or_else(|| Arc::new(StdMutex::new(ResidentDevelopmentSessions::default())));
     let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
     let permits = lease_context
@@ -930,6 +968,7 @@ where
         let task_policy = policy.clone();
         let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
+        let task_development_sessions = Arc::clone(&development_sessions);
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
@@ -947,6 +986,7 @@ where
                     &task_policy,
                     task_viewport,
                     task_knowledge_store.as_deref(),
+                    &task_development_sessions,
                 )
                 .await
             };
@@ -1282,6 +1322,10 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "project.diff"
             | "project.timeline"
             | "project.events"
+            | "project.session.status"
+            | "project.capsule.show"
+            | "project.inbox"
+            | "project.verification.card"
             | "agent.hello"
     )
 }
@@ -1426,6 +1470,7 @@ async fn handle_request(
     policy: &BrowserPolicy,
     knowledge_store_path: Option<&Path>,
 ) -> Option<JsonRpcResponse> {
+    let development_sessions = Arc::new(StdMutex::new(ResidentDevelopmentSessions::default()));
     handle_request_with_viewport(
         request,
         session,
@@ -1433,6 +1478,7 @@ async fn handle_request(
         policy,
         None,
         knowledge_store_path,
+        &development_sessions,
     )
     .await
 }
@@ -1444,6 +1490,7 @@ async fn handle_request_with_viewport(
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -1513,6 +1560,7 @@ async fn handle_request_with_viewport(
             policy,
             viewport,
             knowledge_store_path,
+            development_sessions,
         )
         .await
         {
@@ -1736,6 +1784,7 @@ async fn call_tool(
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
@@ -1873,6 +1922,13 @@ async fn call_tool(
             | ToolInvocation::ProjectDiff { .. }
             | ToolInvocation::ProjectTimeline { .. }
             | ToolInvocation::ProjectEvents { .. }
+            | ToolInvocation::ProjectSessionStatus { .. }
+            | ToolInvocation::ProjectSessionDetach { .. }
+            | ToolInvocation::ProjectCapsuleSave { .. }
+            | ToolInvocation::ProjectCapsuleShow { .. }
+            | ToolInvocation::ProjectCapsuleClear { .. }
+            | ToolInvocation::ProjectInbox { .. }
+            | ToolInvocation::ProjectVerificationCard { .. }
             | ToolInvocation::ProjectReplay { .. }
             | ToolInvocation::ProjectGraph { .. }
             | ToolInvocation::ProjectBreakpoint { .. }
@@ -1884,7 +1940,19 @@ async fn call_tool(
             | ToolInvocation::AgentPrompt { .. }
             | ToolInvocation::AgentSteer { .. }
     ) {
-        return call_development_tool(invocation);
+        if matches!(
+            &invocation,
+            ToolInvocation::ProjectTimeline { .. }
+                | ToolInvocation::ProjectEvents { .. }
+                | ToolInvocation::ProjectCapsuleShow { .. }
+                | ToolInvocation::ProjectInbox { .. }
+        ) {
+            return call_persisted_development_read(invocation);
+        }
+        let mut sessions = development_sessions
+            .lock()
+            .map_err(|_| "development session registry poisoned")?;
+        return call_development_tool(invocation, &mut sessions);
     }
     let session = ensure_session(session, options, policy, viewport).await?;
 
@@ -2561,6 +2629,13 @@ async fn call_tool(
         | ToolInvocation::ProjectDiff { .. }
         | ToolInvocation::ProjectTimeline { .. }
         | ToolInvocation::ProjectEvents { .. }
+        | ToolInvocation::ProjectSessionStatus { .. }
+        | ToolInvocation::ProjectSessionDetach { .. }
+        | ToolInvocation::ProjectCapsuleSave { .. }
+        | ToolInvocation::ProjectCapsuleShow { .. }
+        | ToolInvocation::ProjectCapsuleClear { .. }
+        | ToolInvocation::ProjectInbox { .. }
+        | ToolInvocation::ProjectVerificationCard { .. }
         | ToolInvocation::ProjectReplay { .. }
         | ToolInvocation::ProjectGraph { .. }
         | ToolInvocation::ProjectBreakpoint { .. }
@@ -2576,48 +2651,53 @@ async fn call_tool(
     }
 }
 
-fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value> {
+fn call_development_tool(
+    invocation: ToolInvocation<'_>,
+    sessions: &mut ResidentDevelopmentSessions,
+) -> BrowserResult<Value> {
     match invocation {
         ToolInvocation::ProjectInspect { root } => {
-            let workspace = ProjectWorkspace::open(root)?;
-            Ok(json!({
-                "schemaVersion": crate::development::DEVELOPMENT_SCHEMA_VERSION,
-                "root": workspace.root(),
-                "detection": workspace.detection(),
-                "config": workspace.config(),
-                "revision": workspace.revision(),
-            }))
+            Ok(sessions.with_workspace(root, |workspace| {
+                Ok(json!({
+                    "schemaVersion": crate::development::DEVELOPMENT_SCHEMA_VERSION,
+                    "root": workspace.root(),
+                    "detection": workspace.detection(),
+                    "config": workspace.config(),
+                    "revision": workspace.revision(),
+                }))
+            })?)
         }
-        ToolInvocation::ProjectFiles { root } => {
-            let workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(workspace.list_files()?)?)
-        }
-        ToolInvocation::ProjectSearch { root, query, limit } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(workspace.search(query, limit)?)?)
-        }
-        ToolInvocation::ProjectRead { root, path } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(json!({"path": path, "content": workspace.read_file(path)?}))
-        }
+        ToolInvocation::ProjectFiles { root } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.list_files()?)?)
+            })?),
+        ToolInvocation::ProjectSearch { root, query, limit } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.search(query, limit)?)?)
+            })?),
+        ToolInvocation::ProjectRead { root, path } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(json!({"path": path, "content": workspace.read_file(path)?}))
+            })?),
         ToolInvocation::ProjectEdit {
             root,
             path,
             content,
-        } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
+        } => Ok(sessions.with_workspace(root, |workspace| {
             workspace.edit_buffer(path, content.into(), Actor::external("mcp"))?;
             Ok(serde_json::to_value(workspace.save_buffer(path)?)?)
-        }
+        })?),
         ToolInvocation::ProjectMkdir { root, path } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            workspace.create_directory(path, Actor::external("mcp"))?;
-            Ok(json!({"path": path, "created": true}))
+            Ok(sessions.with_workspace(root, |workspace| {
+                workspace.create_directory(path, Actor::external("mcp"))?;
+                Ok(json!({"path": path, "created": true}))
+            })?)
         }
         ToolInvocation::ProjectRename { root, from, to } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            workspace.rename_path(from, to, Actor::external("mcp"))?;
-            Ok(json!({"from": from, "to": to, "renamed": true}))
+            Ok(sessions.with_workspace(root, |workspace| {
+                workspace.rename_path(from, to, Actor::external("mcp"))?;
+                Ok(json!({"from": from, "to": to, "renamed": true}))
+            })?)
         }
         ToolInvocation::ProjectDelete {
             root,
@@ -2627,55 +2707,53 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
             if !confirmed {
                 return Err("project.delete requires confirmed=true".into());
             }
-            let mut workspace = ProjectWorkspace::open(root)?;
-            workspace.delete_path(path, Actor::external("mcp"))?;
-            Ok(json!({"path": path, "deleted": true}))
+            Ok(sessions.with_workspace(root, |workspace| {
+                workspace.delete_path(path, Actor::external("mcp"))?;
+                Ok(json!({"path": path, "deleted": true}))
+            })?)
         }
         ToolInvocation::ProjectDiagnostics { root, path } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(
-                workspace.publish_rust_diagnostics(path)?,
-            )?)
+            Ok(sessions.with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(
+                    workspace.publish_rust_diagnostics(path)?,
+                )?)
+            })?)
         }
         ToolInvocation::ProjectRun {
             root,
             name,
             command,
             wait,
-        } => {
-            if !wait {
-                return Err("MCP project.run requires wait=true because this invocation does not own a persistent process session".into());
-            }
-            let mut workspace = ProjectWorkspace::open(root)?;
+        } => Ok(sessions.with_workspace(root, |workspace| {
             workspace.start_process(name, command)?;
             let snapshot = if wait {
-                wait_for_development_process(&mut workspace, name)?
+                wait_for_development_process(workspace, name)
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?
             } else {
                 workspace
                     .processes()
                     .list()
                     .into_iter()
                     .find(|process| process.name == name)
-                    .ok_or_else(|| format!("process {name} disappeared"))?
+                    .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?
             };
             Ok(serde_json::to_value(snapshot)?)
-        }
-        ToolInvocation::ProjectProcessList { root } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(workspace.processes().list())?)
-        }
-        ToolInvocation::ProjectProcessStop { root, name } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(workspace.stop_process(name)?)?)
-        }
-        ToolInvocation::ProjectProcessOutput { root, name } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            Ok(json!({"name": name, "output": workspace.processes().output(name)?}))
-        }
-        ToolInvocation::ProjectDiff { root } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
+        })?),
+        ToolInvocation::ProjectProcessList { root } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.processes().list())?)
+            })?),
+        ToolInvocation::ProjectProcessStop { root, name } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.stop_process(name)?)?)
+            })?),
+        ToolInvocation::ProjectProcessOutput { root, name } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(json!({"name": name, "output": workspace.processes().output(name)?}))
+            })?),
+        ToolInvocation::ProjectDiff { root } => Ok(sessions.with_workspace(root, |workspace| {
             Ok(serde_json::to_value(workspace.diff()?)?)
-        }
+        })?),
         ToolInvocation::ProjectTimeline { root } => Ok(serde_json::to_value(
             ProjectWorkspace::timeline_snapshot(root)?,
         )?),
@@ -2686,32 +2764,98 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
         } => Ok(serde_json::to_value(ProjectWorkspace::event_page(
             root, after_id, limit,
         )?)?),
-        ToolInvocation::ProjectReplay { root, start, limit } => {
-            let workspace = ProjectWorkspace::open(root)?;
-            Ok(serde_json::to_value(workspace.replay(start, limit)?)?)
+        ToolInvocation::ProjectSessionStatus { root } => Ok(json!({
+            "root": std::fs::canonicalize(&root)?,
+            "resident": sessions.contains(&root),
+            "residentSessionCount": sessions.len(),
+            "capacity": sessions.capacity(),
+        })),
+        ToolInvocation::ProjectSessionDetach { root, confirmed } => {
+            if !confirmed {
+                return Err("project.session.detach requires confirmed=true".into());
+            }
+            Ok(json!({"root": std::fs::canonicalize(&root)?, "detached": sessions.detach(root)?}))
         }
+        ToolInvocation::ProjectCapsuleSave {
+            root,
+            event_cursor,
+            mobile_view,
+            browser_target_id,
+            browser_revision,
+            pending_attention,
+            live_mode,
+            live_quality,
+        } => {
+            let mut capsule = ReconnectCapsule::new(root)?;
+            capsule.event_cursor = event_cursor.map(str::to_string);
+            capsule.mobile_view = mobile_view.map(str::to_string);
+            capsule.browser_target_id = browser_target_id.map(str::to_string);
+            capsule.browser_revision = browser_revision;
+            capsule.pending_attention = pending_attention.map(str::to_string);
+            capsule.live_mode = live_mode.map(str::to_string);
+            capsule.live_quality = live_quality.map(str::to_string);
+            capsule.saved_at_ms = current_time_ms();
+            let path = ReconnectCapsuleStore::save(&capsule)?;
+            Ok(json!({"capsule": capsule, "path": path}))
+        }
+        ToolInvocation::ProjectCapsuleShow { root } => Ok(json!({
+            "capsule": ReconnectCapsuleStore::load(root)?,
+        })),
+        ToolInvocation::ProjectCapsuleClear { root, confirmed } => {
+            if !confirmed {
+                return Err("project.capsule.clear requires confirmed=true".into());
+            }
+            Ok(json!({"cleared": ReconnectCapsuleStore::clear(root)?}))
+        }
+        ToolInvocation::ProjectInbox { root } => {
+            let events = ProjectWorkspace::timeline_snapshot(root)?;
+            Ok(serde_json::to_value(attention_inbox(events.into_iter()))?)
+        }
+        ToolInvocation::ProjectVerificationCard {
+            root,
+            title,
+            semantic_revision,
+        } => Ok(sessions.with_workspace(root, |workspace| {
+            let diff = workspace.diff()?;
+            Ok(serde_json::to_value(VerificationCard::from_diff(
+                title,
+                &diff,
+                semantic_revision,
+            )?)?)
+        })?),
+        ToolInvocation::ProjectReplay { root, start, limit } => Ok(sessions
+            .with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.replay(start, limit)?)?)
+            })?),
         ToolInvocation::ProjectGraph {
             root,
             operation,
             entity,
             path,
             line,
-        } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            match operation {
-                "discover" => Ok(serde_json::to_value(workspace.discover_runtime_links()?)?),
-                "entity" => Ok(serde_json::to_value(workspace.graph().links_for(
-                    entity.ok_or("project.graph entity operation requires entity")?,
-                ))?),
-                "source" => Ok(serde_json::to_value(
-                    workspace.graph().entities_for_source(
-                        path.ok_or("project.graph source operation requires path")?,
-                        line,
-                    ),
-                )?),
-                _ => Err("project.graph operation must be discover, entity, or source".into()),
-            }
-        }
+        } => Ok(sessions.with_workspace(root, |workspace| match operation {
+            "discover" => Ok(serde_json::to_value(workspace.discover_runtime_links()?)?),
+            "entity" => Ok(serde_json::to_value(workspace.graph().links_for(
+                entity.ok_or_else(|| {
+                    DevelopmentError::InvalidInput(
+                        "project.graph entity operation requires entity".into(),
+                    )
+                })?,
+            ))?),
+            "source" => Ok(serde_json::to_value(
+                workspace.graph().entities_for_source(
+                    path.ok_or_else(|| {
+                        DevelopmentError::InvalidInput(
+                            "project.graph source operation requires path".into(),
+                        )
+                    })?,
+                    line,
+                ),
+            )?),
+            _ => Err(DevelopmentError::InvalidInput(
+                "project.graph operation must be discover, entity, or source".into(),
+            )),
+        })?),
         ToolInvocation::ProjectBreakpoint {
             root,
             kind,
@@ -2719,8 +2863,6 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
             before,
             after,
         } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            workspace.discover_runtime_links()?;
             let before: SemanticSnapshot = serde_json::from_value(before.clone())?;
             let after: SemanticSnapshot = serde_json::from_value(after.clone())?;
             let breakpoint = match kind {
@@ -2730,9 +2872,12 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
                 "actionability-lost" => SemanticBreakpoint::ActionabilityLost { entity_id: entity.into() },
                 _ => return Err("breakpoint kind must be disappears, name-missing, role-changes, or actionability-lost".into()),
             };
-            Ok(serde_json::to_value(
-                workspace.evaluate_semantic_breakpoints(&[breakpoint], &before, &after)?,
-            )?)
+            Ok(sessions.with_workspace(root, |workspace| {
+                workspace.discover_runtime_links()?;
+                Ok(serde_json::to_value(
+                    workspace.evaluate_semantic_breakpoints(&[breakpoint], &before, &after)?,
+                )?)
+            })?)
         }
         ToolInvocation::ProjectNeovimProbe => {
             Ok(serde_json::to_value(crate::development::probe_neovim()?)?)
@@ -2741,10 +2886,11 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
             ExperimentManager::new(&root)?.create(name, port)?,
         )?),
         ToolInvocation::ProjectAttach { root, actor } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
             let actor = Actor::external(actor);
-            workspace.attach_actor(actor.clone())?;
-            Ok(serde_json::to_value(actor)?)
+            Ok(sessions.with_workspace(root, |workspace| {
+                workspace.attach_actor(actor.clone())?;
+                Ok(serde_json::to_value(actor)?)
+            })?)
         }
         ToolInvocation::ProjectLink {
             root,
@@ -2756,43 +2902,67 @@ fn call_development_tool(invocation: ToolInvocation<'_>) -> BrowserResult<Value>
             confidence,
             detail,
         } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
             let provenance = parse_development_provenance(provenance)?;
-            Ok(serde_json::to_value(workspace.link_runtime_source(
-                entity,
-                path,
-                start_line,
-                end_line,
-                provenance,
-                detail,
-                confidence,
-                Actor::external("mcp"),
-            )?)?)
+            Ok(sessions.with_workspace(root, |workspace| {
+                Ok(serde_json::to_value(workspace.link_runtime_source(
+                    entity,
+                    path,
+                    start_line,
+                    end_line,
+                    provenance,
+                    detail,
+                    confidence,
+                    Actor::external("mcp"),
+                )?)?)
+            })?)
         }
         ToolInvocation::AgentHello { root } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            let mut harness = crate::development::LocalHarness::default();
-            Ok(serde_json::to_value(
-                harness.handle(&mut workspace, HarnessRequest::Hello)?,
-            )?)
+            Ok(sessions.with_runtime(root, |workspace, harness| {
+                Ok(serde_json::to_value(
+                    harness.handle(workspace, HarnessRequest::Hello)?,
+                )?)
+            })?)
         }
         ToolInvocation::AgentPrompt { root, text } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            let mut harness = crate::development::LocalHarness::default();
-            Ok(serde_json::to_value(harness.handle(
-                &mut workspace,
-                HarnessRequest::Prompt { text: text.into() },
-            )?)?)
+            Ok(sessions.with_runtime(root, |workspace, harness| {
+                Ok(serde_json::to_value(harness.handle(
+                    workspace,
+                    HarnessRequest::Prompt { text: text.into() },
+                )?)?)
+            })?)
         }
         ToolInvocation::AgentSteer { root, text } => {
-            let mut workspace = ProjectWorkspace::open(root)?;
-            let mut harness = crate::development::LocalHarness::default();
-            Ok(serde_json::to_value(harness.handle(
-                &mut workspace,
-                HarnessRequest::Steer { text: text.into() },
-            )?)?)
+            Ok(sessions.with_runtime(root, |workspace, harness| {
+                Ok(serde_json::to_value(harness.handle(
+                    workspace,
+                    HarnessRequest::Steer { text: text.into() },
+                )?)?)
+            })?)
         }
         _ => Err("non-development tool passed to development dispatcher".into()),
+    }
+}
+
+fn call_persisted_development_read(invocation: ToolInvocation<'_>) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::ProjectTimeline { root } => Ok(serde_json::to_value(
+            ProjectWorkspace::timeline_snapshot(root)?,
+        )?),
+        ToolInvocation::ProjectEvents {
+            root,
+            after_id,
+            limit,
+        } => Ok(serde_json::to_value(ProjectWorkspace::event_page(
+            root, after_id, limit,
+        )?)?),
+        ToolInvocation::ProjectCapsuleShow { root } => Ok(json!({
+            "capsule": ReconnectCapsuleStore::load(root)?,
+        })),
+        ToolInvocation::ProjectInbox { root } => {
+            let events = ProjectWorkspace::timeline_snapshot(root)?;
+            Ok(serde_json::to_value(attention_inbox(events.into_iter()))?)
+        }
+        _ => Err("stateful development tool passed to persisted read dispatcher".into()),
     }
 }
 
@@ -3105,6 +3275,38 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
                 limit: limit as usize,
             })
         }
+        "project.session.status" => Ok(ToolInvocation::ProjectSessionStatus {
+            root: development_root(arguments)?,
+        }),
+        "project.session.detach" => Ok(ToolInvocation::ProjectSessionDetach {
+            root: development_root(arguments)?,
+            confirmed: optional_bool(arguments, "confirmed")?,
+        }),
+        "project.capsule.save" => Ok(ToolInvocation::ProjectCapsuleSave {
+            root: development_root(arguments)?,
+            event_cursor: optional_string(arguments, "eventCursor")?,
+            mobile_view: optional_string(arguments, "mobileView")?,
+            browser_target_id: optional_string(arguments, "browserTargetId")?,
+            browser_revision: optional_u64_value(arguments, "browserRevision")?,
+            pending_attention: optional_string(arguments, "pendingAttention")?,
+            live_mode: optional_string(arguments, "liveMode")?,
+            live_quality: optional_string(arguments, "liveQuality")?,
+        }),
+        "project.capsule.show" => Ok(ToolInvocation::ProjectCapsuleShow {
+            root: development_root(arguments)?,
+        }),
+        "project.capsule.clear" => Ok(ToolInvocation::ProjectCapsuleClear {
+            root: development_root(arguments)?,
+            confirmed: optional_bool(arguments, "confirmed")?,
+        }),
+        "project.inbox" => Ok(ToolInvocation::ProjectInbox {
+            root: development_root(arguments)?,
+        }),
+        "project.verification.card" => Ok(ToolInvocation::ProjectVerificationCard {
+            root: development_root(arguments)?,
+            title: required_string(arguments, "title")?,
+            semantic_revision: optional_u64_value(arguments, "semanticRevision")?,
+        }),
         "project.replay" => Ok(ToolInvocation::ProjectReplay {
             root: development_root(arguments)?,
             start: optional_u64(arguments, "start", 0)? as usize,
@@ -3772,6 +3974,41 @@ fn tools() -> Vec<Tool> {
             name: "project.events",
             description: "Read one cursor-bounded page from the actor-attributed development event feed.",
             input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"afterId":{"type":"string","minLength":1,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":256,"default":64}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.session.status",
+            description: "Inspect whether a canonical project has a resident development session.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.session.detach",
+            description: "Detach and clean up one resident project session after explicit confirmation.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"confirmed":{"type":"boolean","const":true}},"required":["confirmed"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.capsule.save",
+            description: "Atomically save a bounded, non-sensitive reconnect capsule for one project.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","agent","app","diff","project"]},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.capsule.show",
+            description: "Read the bounded reconnect capsule for one project when present.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.capsule.clear",
+            description: "Remove one reconnect capsule after explicit confirmation.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"confirmed":{"type":"boolean","const":true}},"required":["confirmed"],"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.inbox",
+            description: "Return the bounded mobile attention inbox derived from actor-attributed events.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
+        },
+        Tool {
+            name: "project.verification.card",
+            description: "Build a compact verification card from the resident project diff without implicit screenshots.",
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"title":{"type":"string","minLength":1,"maxLength":128},"semanticRevision":{"type":"integer","minimum":0}},"required":["title"],"additionalProperties":false}),
         },
         Tool {
             name: "project.replay",
@@ -7331,5 +7568,51 @@ mod tests {
         assert!(Arc::clone(&semaphore).try_acquire_owned().is_err());
         drop(permits);
         assert!(Arc::clone(&semaphore).try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn development_dispatch_reuses_resident_workspace_state() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-mcp-resident-{}-{}",
+            std::process::id(),
+            current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='resident'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let mut sessions = ResidentDevelopmentSessions::default();
+        call_development_tool(
+            ToolInvocation::ProjectAttach {
+                root: root.clone(),
+                actor: "sdk",
+            },
+            &mut sessions,
+        )
+        .unwrap();
+        let actors = sessions
+            .with_workspace(&root, |workspace| {
+                Ok(workspace
+                    .actors()
+                    .map(|actor| actor.id.clone())
+                    .collect::<Vec<_>>())
+            })
+            .unwrap();
+        assert!(actors.iter().any(|actor| actor == "external:sdk"));
+        let opened = ProjectWorkspace::timeline_snapshot(&root)
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    crate::development::DevelopmentEventKind::WorkspaceOpened
+                )
+            })
+            .count();
+        assert_eq!(opened, 1);
+        assert!(sessions.detach(&root).unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

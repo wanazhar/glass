@@ -1054,7 +1054,7 @@ fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectCon
     Ok(GlassProjectConfig::default())
 }
 
-fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {
+pub(crate) fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {
     let root = if root.is_file() {
         root.parent().unwrap_or(root)
     } else {

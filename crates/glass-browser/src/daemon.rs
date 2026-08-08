@@ -26,8 +26,8 @@ pub const MAX_DAEMON_CONCURRENT_REQUESTS: usize = 16;
 pub const MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS: usize = 4;
 /// Maximum number of workflow requests retained in the daemon status record.
 pub const MAX_DAEMON_ACTIVE_RUNS: usize = 16;
-/// Prefix for the per-client session namespaces owned by the daemon.
-pub const DAEMON_SESSION_ID_PREFIX: &str = "daemon-session-";
+/// Shared mutation-lease namespace for the local daemon.
+pub const DAEMON_SESSION_ID: &str = "daemon-default";
 const MIN_LEASE_TTL_MS: u64 = 100;
 const MAX_LEASE_TTL_MS: u64 = 15 * 60 * 1_000;
 const MAX_DAEMON_LOG_BYTES: u64 = 64 * 1024;
@@ -84,6 +84,7 @@ pub struct DaemonLeaseContext {
     pub request_permits: Arc<tokio::sync::Semaphore>,
     pub client_request_permits: Arc<tokio::sync::Semaphore>,
     pub status: Arc<DaemonStatusState>,
+    pub development_sessions: crate::mcp::server::DevelopmentSessionStore,
 }
 
 impl MutationLeaseManager {
@@ -766,6 +767,9 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
     let request_permits = Arc::new(tokio::sync::Semaphore::new(MAX_DAEMON_CONCURRENT_REQUESTS));
+    let development_sessions = Arc::new(std::sync::Mutex::new(
+        crate::development::ResidentDevelopmentSessions::default(),
+    ));
     let next_owner_id = std::sync::atomic::AtomicU64::new(0);
     let mut terminate = signal(SignalKind::terminate())?;
     let mut clients = Vec::new();
@@ -792,16 +796,16 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         let cli = Cli::parse_from(["glass", "--mcp"]);
         let client_number = next_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let owner_id = format!("daemon-client-{client_number}");
-        let session_id = format!("{DAEMON_SESSION_ID_PREFIX}{client_number}");
         let lease_context = Arc::new(DaemonLeaseContext {
             manager: Arc::clone(&lease_manager),
-            session_id,
+            session_id: DAEMON_SESSION_ID.into(),
             owner_id,
             request_permits: Arc::clone(&request_permits),
             client_request_permits: Arc::new(tokio::sync::Semaphore::new(
                 MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS,
             )),
             status: Arc::clone(&status_state),
+            development_sessions: Arc::clone(&development_sessions),
         });
         clients.push(tokio::task::spawn_local(async move {
             let (socket_read, socket_write) = stream.into_split();
@@ -1027,23 +1031,20 @@ mod tests {
     }
 
     #[test]
-    fn independent_client_sessions_have_independent_mutation_leases() {
+    fn daemon_clients_share_one_mutation_lease() {
         let mut manager = MutationLeaseManager::default();
         let first = manager
-            .acquire("daemon-session-1", "daemon-client-1", 1_000, 1_000)
-            .unwrap();
-        let second = manager
-            .acquire("daemon-session-2", "daemon-client-2", 1_000, 1_000)
+            .acquire(DAEMON_SESSION_ID, "daemon-client-1", 1_000, 1_000)
             .unwrap();
 
-        assert_ne!(first.session_id, second.session_id);
+        assert_eq!(first.session_id, DAEMON_SESSION_ID);
         assert_eq!(
-            manager.current_owner("daemon-session-1", 1_100).as_deref(),
-            Some("daemon-client-1")
+            manager.acquire(DAEMON_SESSION_ID, "daemon-client-2", 1_000, 1_000),
+            Err(LeaseError::AlreadyHeld)
         );
         assert_eq!(
-            manager.current_owner("daemon-session-2", 1_100).as_deref(),
-            Some("daemon-client-2")
+            manager.current_owner(DAEMON_SESSION_ID, 1_100).as_deref(),
+            Some("daemon-client-1")
         );
     }
 

@@ -147,12 +147,17 @@ and TUI:
 | `project.rename` | Rename/move one workspace-confined path. |
 | `project.delete` | Delete a file/empty directory with explicit confirmation. |
 | `project.diagnostics` | Request real bounded rust-analyzer diagnostics. |
-| `project.run` | Run a named command in a bounded PTY; `wait: true` is required. |
+| `project.run` | Run a named command in a resident bounded PTY; `wait: false` returns after start. |
 | `project.processes` | List managed PTY processes. |
 | `project.process.stop` | Stop one managed process. |
 | `project.process.output` | Read one process's bounded output tail. |
 | `project.diff` | Project code, runtime, semantic, and workflow impact. |
 | `project.timeline` | Read the bounded actor-attributed event timeline. |
+| `project.events` | Read a cursor-bounded event page with explicit gap reporting. |
+| `project.session.status` / `project.session.detach` | Inspect or explicitly clean up resident state. |
+| `project.capsule.save` / `.show` / `.clear` | Manage a bounded non-sensitive reconnect capsule. |
+| `project.inbox` | Read the bounded mobile attention projection. |
+| `project.verification.card` | Build compact evidence without implicit screenshots. |
 | `project.replay` | Replay a bounded attributed revision window. |
 | `project.graph` | Discover or navigate source/runtime links in either direction. |
 | `project.breakpoint` | Evaluate a semantic regression breakpoint. |

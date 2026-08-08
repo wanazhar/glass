@@ -13,7 +13,7 @@ use crate::browser::session::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, WORKFLOW_AUTHORING_SCHEMA_VERSION,
     WORKFLOW_SCHEMA_VERSION,
 };
-use crate::development::DEVELOPMENT_EVENT_SCHEMA_VERSION;
+use crate::development::{DEVELOPMENT_COCKPIT_SCHEMA_VERSION, DEVELOPMENT_EVENT_SCHEMA_VERSION};
 use crate::extensions::{ExtensionSandbox, experimental_extension_target_supported};
 use crate::reliability::{
     RELIABILITY_FIXTURE_SCHEMA_VERSION, RELIABILITY_REPLAY_SCHEMA_VERSION,
@@ -416,6 +416,10 @@ fn supported_schemas() -> BTreeMap<String, Vec<u32>> {
         (
             "developmentEvents".into(),
             vec![DEVELOPMENT_EVENT_SCHEMA_VERSION],
+        ),
+        (
+            "developmentCockpit".into(),
+            vec![DEVELOPMENT_COCKPIT_SCHEMA_VERSION],
         ),
         (
             "reliabilityScenario".into(),

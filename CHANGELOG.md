@@ -7,6 +7,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added executable Chromium goldens for the Web IR corpus, an adversarial and
+  metamorphic semantic suite, relationship-scoped task compilation,
+  revision-bound live bindings, runtime capability declarations,
+  `entityState` verification, compact Web IR projections, and value-free
+  execution receipts.
+- Added a shared schema-validating Local/Pi tool gateway with explicit mutation
+  authority, bounded outputs, metadata-only audit events, and read-only Web IR
+  inspection, diff, continuity, and task-planning tools for Pi.
+
 - Added a remote development cockpit with bounded resident project sessions,
   persistent MCP PTYs, non-sensitive reconnect capsules, a mobile attention
   inbox, opt-in terminal alerts, revision-bound semantic tap actions, compact
@@ -23,6 +32,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
   fit controls, runtime diagnostics, and a browser-free renderer benchmark.
 
 ### Changed
+
+- Propagate checked and disabled control state into Web IR, remove mutation
+  actions from disabled/read-only entities, classify sensitive fields
+  conservatively with token-aware rules, and scope continuity by graph context.
+- Bumped deterministic task compilation to compiler version 2; version-1 plans
+  must be recompiled before execution. Live execution now uses scoped semantic
+  bindings throughout, and nested form ancestry is preserved through labels.
+- Pi semantic-tool calls now cross the process boundary through private,
+  size-bounded, one-use request files instead of process arguments.
 
 - Kept structured browser semantics and explicit screenshots as the default;
   live pixels now degrade from Herdr to Kitty to ANSI to semantics, select ANSI

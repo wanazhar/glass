@@ -26,9 +26,14 @@ policy, and optional postconditions.
 `compile_task(task, ir)` validates both documents and emits a
 `TaskExecutionPlan`. The plan records compiler and source versions, source
 revision, a redacted task fingerprint, selected entity IDs, evidence
-requirements, revision and action preconditions, risk, confirmation gates,
-bounded operations, and generated or authored postconditions. Compilation is
-browser-free and side-effect-free.
+requirements for every selected entity, value-free semantic binding keys,
+runtime capability requirements, revision and action preconditions, risk,
+confirmation gates, bounded operations, and generated or authored
+postconditions. Compilation is browser-free and side-effect-free.
+
+Compiler version 2 adds entity-scoped evidence, semantic binding keys, and
+runtime capability requirements. Persisted version-1 plans must be recompiled
+from their authored task against a current Web IR revision before execution.
 
 The same contracts are exposed through the Rust crate, `glass task` and
 `glass ir`, MCP `task.*` and `webIr.*` operations, and daemon-isolated MCP child
@@ -38,9 +43,17 @@ contract.
 ## Runtime safety
 
 Browser-backed task execution extracts fresh Web IR, compiles once, then uses
-the existing guarded session actions and verification paths. A successful
-result means the operation-specific effect and the compiled postconditions were
-observed. Post-dispatch uncertainty is `indeterminate`, never success.
+the existing guarded session actions and verification paths. Actionable
+entities are resolved once into ephemeral browser references from the exact
+compiled revision. Those references are never serialized or accepted from a
+caller. Zero, multiple, or stale binding candidates fail before dispatch. A
+successful result means the operation-specific effect and compiled
+postconditions were observed. Post-dispatch uncertainty is `indeterminate`,
+never success.
+
+Every execution result includes a compact, value-free receipt containing
+selected and binding-candidate entity IDs, per-entity evidence requirements, runtime
+capabilities, the confirmation decision, and postcondition outcomes.
 
 Revision policies are fail-closed:
 
@@ -70,9 +83,34 @@ explicit opaque entities. Mutating compilation rejects truncated required
 evidence; selected entities must meet the evidence quality floor, include every
 required source, and advertise the compiled action.
 
+Checked and disabled state flow from live form evidence. Disabled or read-only
+entities do not advertise mutation actions. `entityState` postconditions use
+the bounded `<entity-name>.<state>=<true|false>` syntax and require one unique
+fresh semantic target. Supported states are `disabled`, `readOnly`, `required`,
+`checked`, and `empty`.
+
+Sensitivity is conservative and token-aware. Password and one-time-code fields
+are secret; payment tokens are financial; email, telephone, address, identity,
+and file fields are personal. Unknown free-text fields remain unknown instead
+of defaulting to public.
+
 Large MCP diagnostics use bounded summaries or artifact references. Stable Task
 and Web IR contracts never contain cookies, credentials, form values, raw DOM,
 CDP node IDs, evaluated source, or screenshots.
+
+`webIr.inspect` is the compact agent projection. It includes entity-kind counts
+and at most 16 actionable entity summaries with sensitivity and supported
+actions; requesting full canonical Web IR remains explicit.
+
+## Executable corpus
+
+`tests/fixtures/web-ir/corpus-v1.json` contains pinned live-extraction goldens
+for every fixture. `browser_session_executes_the_versioned_web_ir_corpus` loads
+all eight pages in Chromium and checks entity multisets, relationship kinds,
+schema validity, and opacity. `adversarial-v1.json` records duplicate-label,
+unrelated-evidence, reordering, continuity, privacy, and state mutations covered
+by deterministic compiler and reconciliation tests. Static inventory numbers
+are fixture metadata, not runtime evidence.
 
 ## Examples and failure behavior
 

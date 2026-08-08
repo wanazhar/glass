@@ -103,6 +103,19 @@ The adapter supports prompt, model list,
 model selection, thinking level, follow-up, steer, abort, and new-session
 requests. Pi is optional; normal project and browser use does not require it.
 
+Pi `0.84` is launched with built-in tools disabled and a Glass-owned extension
+that exposes bounded `glass_web_ir_inspect`, `glass_web_ir_diff`,
+`glass_web_ir_continuity`, and `glass_task_plan` tools. They route back through
+the same Rust gateway as the local harness. The gateway validates schemas,
+caps arguments and results, records only argument digests and result metadata,
+and requires both mutation authority and confirmation for mutating tools.
+Requests cross the process boundary in mode-0600, size-bounded, one-use files,
+so authored task values do not appear in process arguments; the broker removes
+each file immediately after reading it.
+Browser tools remain explicitly unavailable until a Browser Workspace is
+attached; the Pi adapter does not simulate browser state or request implicit
+screenshots.
+
 External agents can independently use `glass project ...`, MCP `project.*`
 tools, or `glass project attach AGENT`. Their actor and authority are recorded
 in the same timeline. Conflicting edit claims fail closed.

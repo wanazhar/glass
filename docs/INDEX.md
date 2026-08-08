@@ -97,6 +97,9 @@ marked `Local only` is part of an unreleased development build.
 - [Automation contracts](architecture/automation.md) — correctness,
   waiting, targeting, safety, and resource-budget contracts for the next
   generation.
+- [Semantic core hardening](architecture/semantic-core-hardening.md) —
+  executable corpus, scoped evidence, live bindings, capabilities, privacy,
+  continuity, agent tools, and explanation receipts.
 - [Terminal UI](architecture/tui.md) — responsive TUI layout and worker
   lifecycle.
 - [Development workspace TUI](architecture/development-tui.md) — files,

@@ -23,8 +23,8 @@ those are explicit maintainer publication steps. The published
   read-only-adapter, and Web IR corpus checks pass.
 - `cargo test --workspace --all-targets --locked` passes the complete source
   suite.
-- `GLASS_E2E=1 cargo test -p glass-browser --test browser_smoke --locked --
-  --nocapture --test-threads=1` passes all 18 Chromium scenarios on the current Linux ARM64
+- `GLASS_E2E=1 cargo test -p glass-browser --all-features --test browser_smoke --locked --
+  --nocapture --test-threads=1` passes all 19 Chromium scenarios on the current Linux ARM64
   host. This is host evidence, not a cross-platform certification claim.
 - Clippy with warnings denied, warning-free workspace rustdoc, `cargo deny`,
   `cargo audit`, and the fuzz-crate all-target check pass.
@@ -89,7 +89,7 @@ cargo package --package glass-dev --locked --list
 Run the native browser check in the target environment:
 
 ```console
-GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threads=1
+GLASS_E2E=1 cargo test -p glass-browser --all-features --test browser_smoke --locked -- --nocapture --test-threads=1
 ```
 
 Record the target environment and browser details with the result. Do not

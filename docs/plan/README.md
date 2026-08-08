@@ -1,5 +1,14 @@
 # Glass delivery plans
 
+## Completed plan: semantic core hardening
+
+Status: Completed and verified locally — no remote mutation.
+
+The [delivery analysis](analysis/semantic-core-hardening.md) and atomic
+[implementation task](tasks/semantic-core-033-001.md) cover executable Web IR
+evidence, relationship-scoped compilation, revision-bound execution,
+capability and state fidelity, continuity, and bounded Local/Pi semantic tools.
+
 ## Active post-0.1.18 roadmap
 
 Issue #21 was delivered as a serial workflow-runtime sprint. Issues #25 and

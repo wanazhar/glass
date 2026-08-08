@@ -74,4 +74,5 @@ Chrome lifecycle owns only processes started by Glass.
 - [Browser data plane](browser.md)
 - [Automation contracts](automation.md)
 - [Semantic execution](../semantic-execution.md)
+- [Semantic core hardening](semantic-core-hardening.md)
 - [Terminal UI](tui.md)

@@ -31,6 +31,10 @@ the default context.
 | `Tab` / `Shift-Tab` | phone | cycle the single-pane phone views |
 | `?` | phone | show or hide the phone control guide |
 | `safari` | command area | show private SSH port-forwarding instructions |
+| `inbox` / `notify on` | command area | show attention groups or opt into a deduplicated terminal bell |
+| `tap` / `tap N` | App | show and activate bounded revision-bound semantic actions |
+| `verify card` | Diff | show compact code/runtime/semantic/visual evidence |
+| `capsule save\|show\|clear` | command area | manage non-sensitive restart continuity |
 | `project` | command area | show detected project configuration |
 | `project open PATH` | command area | open a bounded native buffer |
 | arrows/type/`Ctrl-S` | editor | navigate, edit, and atomically save |
@@ -61,6 +65,9 @@ the default context.
   continuous visual streaming is disabled by default. `--tui-live on` adds an
   adaptive live App view without changing the single-pane navigation model.
   An explicit `--tui-layout mobile` override is available.
+  Home prioritizes needs-attention items. App can layer a numbered semantic
+  action overlay above semantics or live pixels; the target reference retains
+  the observation revision and fails closed when stale.
 - **Compact**: terminals from 73 through 109 columns use a condensed workspace
   unless remote phone detection applies.
 - **Wide**: terminals at 110 columns or more use the complete development

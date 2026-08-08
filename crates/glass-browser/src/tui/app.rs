@@ -21,7 +21,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
@@ -43,7 +43,8 @@ use tokio::{
 
 use crate::capabilities::GlassCapabilityManifest;
 use crate::development::{
-    Actor, HarnessRequest, LocalHarness, PiHarness, ProcessState, ProjectWorkspace,
+    Actor, AttentionState, HarnessRequest, LocalHarness, PiHarness, ProcessState, ProjectWorkspace,
+    ReconnectCapsule, ReconnectCapsuleStore, VerificationCard, attention_inbox,
 };
 
 use crate::browser::policy::BrowserPolicy;
@@ -214,6 +215,9 @@ struct LiveMetrics {
     bytes: u64,
     frames: u64,
     dropped: u64,
+    window_dropped: u64,
+    drop_ratio: f64,
+    generation: u64,
     fps: f64,
     bytes_per_second: f64,
 }
@@ -225,6 +229,9 @@ impl Default for LiveMetrics {
             bytes: 0,
             frames: 0,
             dropped: 0,
+            window_dropped: 0,
+            drop_ratio: 0.0,
+            generation: 0,
             fps: 0.0,
             bytes_per_second: 0.0,
         }
@@ -240,6 +247,7 @@ impl LiveMetrics {
 
     fn dropped(&mut self) {
         self.dropped = self.dropped.saturating_add(1);
+        self.window_dropped = self.window_dropped.saturating_add(1);
         self.refresh();
     }
 
@@ -249,9 +257,17 @@ impl LiveMetrics {
             let seconds = elapsed.as_secs_f64();
             self.fps = self.frames as f64 / seconds;
             self.bytes_per_second = self.bytes as f64 / seconds;
+            let attempts = self.frames.saturating_add(self.window_dropped);
+            self.drop_ratio = if attempts == 0 {
+                0.0
+            } else {
+                self.window_dropped as f64 / attempts as f64
+            };
+            self.generation = self.generation.saturating_add(1);
             self.window_started = Instant::now();
             self.bytes = 0;
             self.frames = 0;
+            self.window_dropped = 0;
         }
     }
 }
@@ -260,6 +276,10 @@ struct LiveViewState {
     mode: TuiLiveMode,
     preference: TuiLiveBackend,
     quality: TuiLiveQuality,
+    effective_quality: TuiLiveQuality,
+    adaptive_quality: bool,
+    stable_windows: u8,
+    adapted_generation: u64,
     fit: TuiLiveFit,
     backend: Option<ActiveLiveBackend>,
     kitty_detected: bool,
@@ -302,6 +322,10 @@ impl LiveViewState {
             mode,
             preference,
             quality,
+            effective_quality: quality,
+            adaptive_quality: false,
+            stable_windows: 0,
+            adapted_generation: 0,
             fit,
             backend: None,
             kitty_detected,
@@ -389,13 +413,63 @@ impl LiveViewState {
     fn diagnostics(&self) -> String {
         match self.backend {
             Some(backend) => format!(
-                "LIVE · {} · {:.1} FPS · {:.0} KiB/s · {} dropped",
+                "LIVE · {} · {}{} · {:.1} FPS · {:.0} KiB/s · {} dropped",
                 backend.label(),
+                self.quality_label(),
+                if self.adaptive_quality { " auto" } else { "" },
                 self.metrics.fps,
                 self.metrics.bytes_per_second / 1024.0,
                 self.metrics.dropped
             ),
             None => "LIVE off · semantic browser view · screenshot remains explicit".into(),
+        }
+    }
+
+    fn quality_label(&self) -> &'static str {
+        match self.effective_quality {
+            TuiLiveQuality::Data => "data",
+            TuiLiveQuality::Balanced => "balanced",
+            TuiLiveQuality::Smooth => "smooth",
+        }
+    }
+
+    fn enable_adaptive_quality(&mut self) {
+        self.adaptive_quality = true;
+        self.quality = TuiLiveQuality::Balanced;
+        self.effective_quality = TuiLiveQuality::Balanced;
+        self.stable_windows = 0;
+        self.adapted_generation = self.metrics.generation;
+    }
+
+    fn set_manual_quality(&mut self, quality: TuiLiveQuality) {
+        self.quality = quality;
+        self.effective_quality = quality;
+        self.adaptive_quality = false;
+        self.stable_windows = 0;
+    }
+
+    fn adapt_quality(&mut self) {
+        if !self.adaptive_quality || self.adapted_generation == self.metrics.generation {
+            return;
+        }
+        self.adapted_generation = self.metrics.generation;
+        if self.metrics.drop_ratio >= 0.20 {
+            self.effective_quality = match self.effective_quality {
+                TuiLiveQuality::Smooth => TuiLiveQuality::Balanced,
+                TuiLiveQuality::Balanced | TuiLiveQuality::Data => TuiLiveQuality::Data,
+            };
+            self.stable_windows = 0;
+        } else if self.metrics.drop_ratio <= 0.02 {
+            self.stable_windows = self.stable_windows.saturating_add(1);
+            if self.stable_windows >= 3 {
+                self.effective_quality = match self.effective_quality {
+                    TuiLiveQuality::Data => TuiLiveQuality::Balanced,
+                    TuiLiveQuality::Balanced | TuiLiveQuality::Smooth => TuiLiveQuality::Smooth,
+                };
+                self.stable_windows = 0;
+            }
+        } else {
+            self.stable_windows = 0;
         }
     }
 }
@@ -547,8 +621,11 @@ const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct App {
     url: String,
     title: String,
+    browser_target_id: Option<String>,
     activity: VecDeque<String>,
     page_content: String,
+    tap_targets: Vec<SemanticTapTarget>,
+    tap_mode: bool,
     page_scroll: u16,
     input: String,
     cursor_pos: usize,
@@ -583,6 +660,10 @@ pub struct App {
     development_editor: String,
     development_runtime: String,
     development_diff: String,
+    attention_summary: String,
+    attention_notifications: bool,
+    notified_attention: VecDeque<String>,
+    verification_summary: String,
     active_buffer: Option<String>,
     editor_focus: bool,
     editor_cursor: usize,
@@ -590,6 +671,13 @@ pub struct App {
     live_area: Option<Rect>,
     development_event_tx: std_mpsc::Sender<DevelopmentAsyncEvent>,
     development_event_rx: std_mpsc::Receiver<DevelopmentAsyncEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticTapTarget {
+    reference: String,
+    role: String,
+    name: String,
 }
 
 #[derive(Debug)]
@@ -684,8 +772,11 @@ impl App {
         let mut app = Self {
             url: String::new(),
             title: "Glass — Browser Agent".to_string(),
+            browser_target_id: None,
             activity,
             page_content: "No page loaded.".to_string(),
+            tap_targets: Vec::new(),
+            tap_mode: false,
             page_scroll: 0,
             input: String::new(),
             cursor_pos: 0,
@@ -724,6 +815,10 @@ impl App {
             development_editor: "Open a file with `project open PATH`.".into(),
             development_runtime: "No managed processes.".into(),
             development_diff: "No project diff available.".into(),
+            attention_summary: "No items need attention.".into(),
+            attention_notifications: false,
+            notified_attention: VecDeque::new(),
+            verification_summary: "No verification card available.".into(),
             active_buffer: None,
             editor_focus: false,
             editor_cursor: 0,
@@ -799,7 +894,7 @@ impl App {
             self.live.preference = backend;
         }
         if let Some(quality) = quality {
-            self.live.quality = quality;
+            self.live.set_manual_quality(quality);
         }
         if let Some(fit) = fit {
             self.live.fit = fit;
@@ -871,7 +966,7 @@ impl App {
         if !self.live.enabled() || area.width == 0 || area.height == 0 {
             return ScreencastConfig::default();
         }
-        let (horizontal_scale, vertical_scale, fps) = match self.live.quality {
+        let (horizontal_scale, vertical_scale, fps) = match self.live.effective_quality {
             TuiLiveQuality::Data => (2_u32, 4_u32, 3_u64),
             TuiLiveQuality::Balanced => (4, 8, 6),
             TuiLiveQuality::Smooth => (8, 16, 12),
@@ -894,6 +989,69 @@ impl App {
         if let Some(view) = MobileView::from_number(next as u8) {
             self.set_mobile_view(view);
         }
+    }
+
+    fn save_reconnect_capsule(&self) -> crate::development::DevelopmentResult<PathBuf> {
+        let project = self.development.as_ref().ok_or_else(|| {
+            crate::development::DevelopmentError::NotFound("project workspace".into())
+        })?;
+        let mut capsule = ReconnectCapsule::new(project.root())?;
+        capsule.event_cursor = project
+            .timeline()
+            .events()
+            .next_back()
+            .map(|event| event.id.clone());
+        capsule.mobile_view = Some(self.mobile_view.label().to_ascii_lowercase());
+        capsule.browser_target_id = self.browser_target_id.clone();
+        capsule.browser_revision = Some(self.visual_revision);
+        capsule.pending_attention = attention_inbox(project.timeline().events().cloned())
+            .into_iter()
+            .find(|item| item.state == AttentionState::NeedsAttention)
+            .map(|item| item.title);
+        capsule.live_mode = Some(format!("{:?}", self.live.mode).to_ascii_lowercase());
+        capsule.live_quality = Some(if self.live.adaptive_quality {
+            "auto".into()
+        } else {
+            self.live.quality_label().into()
+        });
+        ReconnectCapsuleStore::save(&capsule)
+    }
+
+    fn restore_reconnect_capsule(&mut self) {
+        let Some(root) = self
+            .development
+            .as_ref()
+            .map(|project| project.root().to_path_buf())
+        else {
+            return;
+        };
+        let Ok(Some(capsule)) = ReconnectCapsuleStore::load(root) else {
+            return;
+        };
+        self.mobile_view = match capsule.mobile_view.as_deref() {
+            Some("agent") => MobileView::Agent,
+            Some("app") => MobileView::App,
+            Some("diff") => MobileView::Diff,
+            Some("project") | Some("more") => MobileView::Project,
+            _ => MobileView::Home,
+        };
+        self.browser_target_id = capsule.browser_target_id;
+        self.visual_revision = capsule.browser_revision.unwrap_or(0);
+        match capsule.live_mode.as_deref() {
+            Some("on") => self.live.mode = TuiLiveMode::On,
+            Some("auto") => self.live.mode = TuiLiveMode::Auto,
+            Some("off") => self.live.mode = TuiLiveMode::Off,
+            _ => {}
+        }
+        match capsule.live_quality.as_deref() {
+            Some("auto") => self.live.enable_adaptive_quality(),
+            Some("data") => self.live.set_manual_quality(TuiLiveQuality::Data),
+            Some("balanced") => self.live.set_manual_quality(TuiLiveQuality::Balanced),
+            Some("smooth") => self.live.set_manual_quality(TuiLiveQuality::Smooth),
+            _ => {}
+        }
+        self.live.select_backend();
+        self.add_activity("Restored non-sensitive reconnect capsule.");
     }
 
     fn refresh_development_view(&mut self) {
@@ -939,6 +1097,27 @@ impl App {
             })
             .unwrap_or_else(|| "No open buffer.\n\nproject open PATH".into());
         self.development_runtime = format_runtime_panel(project);
+        let inbox = attention_inbox(project.timeline().events().cloned());
+        if self.attention_notifications {
+            let unseen = inbox
+                .iter()
+                .filter(|item| item.state == AttentionState::NeedsAttention)
+                .filter(|item| !self.notified_attention.contains(&item.id))
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>();
+            if !unseen.is_empty() {
+                let _ = io::stdout()
+                    .write_all(b"\x07")
+                    .and_then(|()| io::stdout().flush());
+                for id in unseen {
+                    if self.notified_attention.len() == 64 {
+                        self.notified_attention.pop_front();
+                    }
+                    self.notified_attention.push_back(id);
+                }
+            }
+        }
+        self.attention_summary = format_attention_inbox(inbox);
     }
 
     fn refresh_development_diff(&mut self) {
@@ -946,10 +1125,23 @@ impl App {
             self.development_diff = "Project diff unavailable.".into();
             return;
         };
-        self.development_diff = project
-            .diff()
-            .and_then(|diff| serde_json::to_string_pretty(&diff).map_err(Into::into))
-            .unwrap_or_else(|error| format!("Project diff unavailable: {error}"));
+        match project.diff() {
+            Ok(diff) => {
+                self.verification_summary = VerificationCard::from_diff(
+                    "Current project verification",
+                    &diff,
+                    Some(self.visual_revision),
+                )
+                .and_then(|card| serde_json::to_string_pretty(&card).map_err(Into::into))
+                .unwrap_or_else(|error| format!("Verification card unavailable: {error}"));
+                self.development_diff = serde_json::to_string_pretty(&diff)
+                    .unwrap_or_else(|error| format!("Project diff unavailable: {error}"));
+            }
+            Err(error) => {
+                self.development_diff = format!("Project diff unavailable: {error}");
+                self.verification_summary = "Verification card unavailable.".into();
+            }
+        }
     }
 
     fn handle_project_command(&mut self, command: &str) {
@@ -1498,6 +1690,26 @@ impl App {
             return self.reduce_editor_key(key);
         }
 
+        if self.tap_mode && self.input.is_empty() {
+            match key.code {
+                KeyCode::Char(character @ '1'..='9') if key.modifiers == KeyModifiers::NONE => {
+                    return match self.tap_operation(character as usize - '0' as usize) {
+                        Ok(operation) => UiIntent::Pointer(operation),
+                        Err(error) => {
+                            self.report_error(error);
+                            UiIntent::None
+                        }
+                    };
+                }
+                KeyCode::Esc => {
+                    self.tap_mode = false;
+                    self.set_status("Semantic tap mode closed");
+                    return UiIntent::None;
+                }
+                _ => {}
+            }
+        }
+
         if self.display_class == DisplayClass::Phone && self.input.is_empty() {
             match key.code {
                 KeyCode::Char(character @ '1'..='5') if key.modifiers == KeyModifiers::NONE => {
@@ -1963,6 +2175,7 @@ impl App {
             }
             None => {}
         }
+        self.live.adapt_quality();
         self.apply_visual_status(self.live.diagnostics());
         Ok(())
     }
@@ -1972,6 +2185,17 @@ impl App {
             return Err("TUI worker must not retain screenshot data".into());
         }
         self.apply_page_header(&context.page);
+        self.tap_targets = context
+            .accessibility
+            .interactive
+            .iter()
+            .take(9)
+            .map(|target| SemanticTapTarget {
+                reference: target.reference.clone(),
+                role: bounded_text(&target.role, 64),
+                name: bounded_text(&target.name, 128),
+            })
+            .collect();
         self.set_page_content(serde_json::to_string_pretty(context)?);
         Ok(())
     }
@@ -1982,8 +2206,49 @@ impl App {
             &format!("Glass — {}", observation.page.title),
             TUI_HEADER_MAX_BYTES,
         );
+        self.tap_targets = observation
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .take(9)
+            .map(|target| SemanticTapTarget {
+                reference: target.reference.clone(),
+                role: bounded_text(&target.role, 64),
+                name: bounded_text(&target.name, 128),
+            })
+            .collect();
         self.set_page_content(serde_json::to_string_pretty(observation)?);
         Ok(())
+    }
+
+    fn tap_overlay(&self) -> String {
+        if self.tap_targets.is_empty() {
+            return "SEMANTIC ACTIONS\nNo actionable targets. Run `observe` and try again.".into();
+        }
+        let mut lines = vec!["SEMANTIC ACTIONS · tap N · Esc closes".to_string()];
+        lines.extend(self.tap_targets.iter().enumerate().map(|(index, target)| {
+            let label = if target.name.is_empty() {
+                target.role.as_str()
+            } else {
+                target.name.as_str()
+            };
+            format!("[{}] {} · {}", index + 1, label, target.role)
+        }));
+        lines.join("\n")
+    }
+
+    fn tap_operation(&mut self, number: usize) -> Result<BrowserOperation, String> {
+        let target = self
+            .tap_targets
+            .get(number.saturating_sub(1))
+            .ok_or_else(|| {
+                format!(
+                    "tap target must be between 1 and {}",
+                    self.tap_targets.len()
+                )
+            })?;
+        self.tap_mode = false;
+        Ok(BrowserOperation::Click(target.reference.clone()))
     }
 
     fn apply_intent_resolution(
@@ -2030,6 +2295,7 @@ impl App {
 
     fn apply_page_header(&mut self, page: &PageInfo) {
         self.url = bounded_text(&page.url, TUI_HEADER_MAX_BYTES);
+        self.browser_target_id = (!page.target_id.is_empty()).then(|| page.target_id.clone());
         self.title = bounded_text(&format!("Glass — {}", page.title), TUI_HEADER_MAX_BYTES);
     }
 
@@ -2239,6 +2505,11 @@ impl Drop for InputWorker {
 enum LocalCommand {
     Help,
     Safari,
+    Inbox,
+    Notifications(Option<bool>),
+    Tap(Option<usize>),
+    VerificationCard,
+    Capsule(CapsuleCommand),
     Live(LiveCommand),
     Profiles,
     Knowledge(Option<String>),
@@ -2252,8 +2523,16 @@ enum LiveCommand {
     Mode(TuiLiveMode),
     Backend(TuiLiveBackend),
     Quality(TuiLiveQuality),
+    AdaptiveQuality,
     Fit(TuiLiveFit),
     Doctor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapsuleCommand {
+    Save,
+    Show,
+    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2372,6 +2651,45 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
     if command.eq_ignore_ascii_case("help") {
         return Ok(ParsedCommand::Local(LocalCommand::Help));
     }
+    if command.eq_ignore_ascii_case("inbox") {
+        return Ok(ParsedCommand::Local(LocalCommand::Inbox));
+    }
+    if command.eq_ignore_ascii_case("notify") || command.eq_ignore_ascii_case("notify status") {
+        return Ok(ParsedCommand::Local(LocalCommand::Notifications(None)));
+    }
+    if let Some(value) = strip_ascii_prefix(command, "notify ") {
+        return match value.trim().to_ascii_lowercase().as_str() {
+            "on" => Ok(ParsedCommand::Local(LocalCommand::Notifications(Some(
+                true,
+            )))),
+            "off" => Ok(ParsedCommand::Local(LocalCommand::Notifications(Some(
+                false,
+            )))),
+            _ => Err("notify expects on, off, or status".into()),
+        };
+    }
+    if command.eq_ignore_ascii_case("tap") {
+        return Ok(ParsedCommand::Local(LocalCommand::Tap(None)));
+    }
+    if let Some(number) = strip_ascii_prefix(command, "tap ") {
+        let number = number
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| "tap requires a target number".to_string())?;
+        return Ok(ParsedCommand::Local(LocalCommand::Tap(Some(number))));
+    }
+    if command.eq_ignore_ascii_case("verify card") {
+        return Ok(ParsedCommand::Local(LocalCommand::VerificationCard));
+    }
+    for (name, operation) in [
+        ("capsule save", CapsuleCommand::Save),
+        ("capsule show", CapsuleCommand::Show),
+        ("capsule clear", CapsuleCommand::Clear),
+    ] {
+        if command.eq_ignore_ascii_case(name) {
+            return Ok(ParsedCommand::Local(LocalCommand::Capsule(operation)));
+        }
+    }
     if command.eq_ignore_ascii_case("live") || command.eq_ignore_ascii_case("live status") {
         return Ok(ParsedCommand::Local(LocalCommand::Live(LiveCommand::Show)));
     }
@@ -2393,11 +2711,16 @@ fn parse_command(input: &str) -> Result<ParsedCommand, String> {
         )));
     }
     if let Some(value) = strip_ascii_prefix(command, "live quality ") {
+        if value.trim().eq_ignore_ascii_case("auto") {
+            return Ok(ParsedCommand::Local(LocalCommand::Live(
+                LiveCommand::AdaptiveQuality,
+            )));
+        }
         let quality = match value.trim().to_ascii_lowercase().as_str() {
             "data" => TuiLiveQuality::Data,
             "balanced" => TuiLiveQuality::Balanced,
             "smooth" => TuiLiveQuality::Smooth,
-            _ => return Err("live quality must be data, balanced, or smooth".into()),
+            _ => return Err("live quality must be auto, data, balanced, or smooth".into()),
         };
         return Ok(ParsedCommand::Local(LocalCommand::Live(
             LiveCommand::Quality(quality),
@@ -3612,6 +3935,15 @@ fn handle_submission(
     command: String,
 ) {
     app.add_activity(format!("> {command}"));
+    if app.tap_mode
+        && let Ok(number) = command.trim().parse::<usize>()
+    {
+        match app.tap_operation(number) {
+            Ok(operation) => queue_browser_operation(app, commands, operation),
+            Err(error) => app.report_error(error),
+        }
+        return;
+    }
     if command.eq_ignore_ascii_case("intent execute")
         || strip_ascii_prefix(&command, "intent execute ").is_some()
     {
@@ -3659,8 +3991,103 @@ fn handle_submission(
                 "navigate URL | click TARGET | double click TARGET | hover TARGET | type TEXT | clear TARGET | check TARGET | uncheck TARGET | select TARGET VALUE",
             );
             app.add_activity(
-                "live [on|auto|off|status|doctor|backend NAME|quality NAME|fit NAME] | project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
+                "inbox | tap [N] | verify card | capsule [save|show|clear] | live [on|auto|off|status|doctor|backend NAME|quality auto|data|balanced|smooth|fit NAME] | project [inspect|files|open PATH|edit PATH CONTENT|run NAME COMMAND|processes|stop NAME|output NAME|diff|timeline|agent PROMPT] | safari | profiles | knowledge [show RECORD_ID] | daemon [status|doctor|logs|recovery] | JavaScript",
             );
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Inbox)) => {
+            app.set_page_content(app.attention_summary.clone());
+            app.set_mobile_view(MobileView::Home);
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Notifications(enabled))) => {
+            if let Some(enabled) = enabled {
+                app.attention_notifications = enabled;
+                if !enabled {
+                    app.notified_attention.clear();
+                }
+            }
+            app.set_status(format!(
+                "Attention terminal notifications: {}",
+                if app.attention_notifications {
+                    "on"
+                } else {
+                    "off"
+                }
+            ));
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Tap(number))) => {
+            if let Some(number) = number {
+                match app.tap_operation(number) {
+                    Ok(operation) => queue_browser_operation(app, commands, operation),
+                    Err(error) => app.report_error(error),
+                }
+            } else {
+                app.tap_mode = true;
+                if app.display_class != DisplayClass::Phone {
+                    app.set_page_content(app.tap_overlay());
+                }
+                app.set_mobile_view(MobileView::App);
+                app.set_status("Semantic tap mode · choose 1-9 · Esc closes");
+            }
+        }
+        Ok(ParsedCommand::Local(LocalCommand::VerificationCard)) => {
+            app.set_mobile_view(MobileView::Diff);
+        }
+        Ok(ParsedCommand::Local(LocalCommand::Capsule(operation))) => {
+            let Some(project) = app.development.as_ref() else {
+                app.report_error("Project workspace is unavailable.");
+                return;
+            };
+            let root = project.root().to_path_buf();
+            let result = match operation {
+                CapsuleCommand::Save => {
+                    let mut capsule = match ReconnectCapsule::new(&root) {
+                        Ok(capsule) => capsule,
+                        Err(error) => {
+                            app.report_error(error.to_string());
+                            return;
+                        }
+                    };
+                    capsule.event_cursor = project
+                        .timeline()
+                        .events()
+                        .next_back()
+                        .map(|event| event.id.clone());
+                    capsule.mobile_view = Some(app.mobile_view.label().to_ascii_lowercase());
+                    capsule.browser_target_id = app.browser_target_id.clone();
+                    capsule.browser_revision = Some(app.visual_revision);
+                    capsule.pending_attention =
+                        attention_inbox(project.timeline().events().cloned())
+                            .into_iter()
+                            .find(|item| item.state == AttentionState::NeedsAttention)
+                            .map(|item| item.title);
+                    capsule.live_mode = Some(format!("{:?}", app.live.mode).to_ascii_lowercase());
+                    capsule.live_quality = Some(if app.live.adaptive_quality {
+                        "auto".into()
+                    } else {
+                        app.live.quality_label().into()
+                    });
+                    ReconnectCapsuleStore::save(&capsule).and_then(|path| {
+                        serde_json::to_string_pretty(&json!({"capsule": capsule, "path": path}))
+                            .map_err(Into::into)
+                    })
+                }
+                CapsuleCommand::Show => ReconnectCapsuleStore::load(&root).and_then(|capsule| {
+                    serde_json::to_string_pretty(&json!({"capsule": capsule})).map_err(Into::into)
+                }),
+                CapsuleCommand::Clear => ReconnectCapsuleStore::clear(&root).and_then(|cleared| {
+                    serde_json::to_string_pretty(&json!({"cleared": cleared})).map_err(Into::into)
+                }),
+            };
+            match result {
+                Ok(content) => {
+                    app.set_page_content(content);
+                    if app.display_class == DisplayClass::Phone {
+                        app.set_mobile_view(MobileView::Agent);
+                    }
+                    app.set_status("Reconnect capsule updated");
+                }
+                Err(error) => app.report_error(error.to_string()),
+            }
         }
         Ok(ParsedCommand::Local(LocalCommand::Live(command))) => match command {
             LiveCommand::Show => {
@@ -3702,6 +4129,10 @@ fn handle_submission(
             LiveCommand::Mode(mode) => app.configure_live(Some(mode), None, None, None),
             LiveCommand::Backend(backend) => app.configure_live(None, Some(backend), None, None),
             LiveCommand::Quality(quality) => app.configure_live(None, None, Some(quality), None),
+            LiveCommand::AdaptiveQuality => {
+                app.live.enable_adaptive_quality();
+                app.set_status(app.live.diagnostics());
+            }
             LiveCommand::Fit(fit) => app.configure_live(None, None, None, Some(fit)),
         },
         Ok(ParsedCommand::Local(LocalCommand::Safari)) => {
@@ -4053,8 +4484,21 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
                 app.page_content
             ),
         ),
-        MobileView::App => ("App · live on/off · safari", app.page_content.clone()),
-        MobileView::Diff => ("Diff / Verification", app.development_diff.clone()),
+        MobileView::App => (
+            "App · tap · live · safari",
+            if app.tap_mode {
+                format!("{}\n\n{}", app.tap_overlay(), app.page_content)
+            } else {
+                app.page_content.clone()
+            },
+        ),
+        MobileView::Diff => (
+            "Diff / Verification",
+            format!(
+                "VERIFICATION CARD\n{}\n\nPROJECT DIFF\n{}",
+                app.verification_summary, app.development_diff
+            ),
+        ),
         MobileView::Project => ("Project / Editor / Runtime", mobile_project(app)),
     };
     if app.mobile_view == MobileView::App && app.live.enabled() {
@@ -4116,7 +4560,8 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
 
 fn mobile_home(app: &App) -> String {
     format!(
-        "STATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n{}\n\nRUNTIME\n{}",
+        "{}\n\nSTATUS\n{}\n\nCONNECTION\n{}{}\n\nAPP\n{}\n{}\n{}\n\nRUNTIME\n{}",
+        app.attention_summary,
         app.status,
         app.remote_context.label(),
         if app.remote_context.herdr {
@@ -4135,6 +4580,35 @@ fn mobile_home(app: &App) -> String {
         app.live.diagnostics(),
         app.development_runtime,
     )
+}
+
+fn format_attention_inbox(items: Vec<crate::development::AttentionItem>) -> String {
+    if items.is_empty() {
+        return "NEEDS YOU (0)\nNo items need attention.".into();
+    }
+    let mut output = Vec::new();
+    for (state, heading, marker) in [
+        (AttentionState::NeedsAttention, "NEEDS YOU", "!"),
+        (AttentionState::Running, "RUNNING", "●"),
+        (AttentionState::Recent, "RECENT", "✓"),
+    ] {
+        let matching = items
+            .iter()
+            .filter(|item| item.state == state)
+            .take(8)
+            .collect::<Vec<_>>();
+        output.push(format!("{heading} ({})", matching.len()));
+        if matching.is_empty() {
+            output.push("  none".into());
+        } else {
+            output.extend(
+                matching
+                    .into_iter()
+                    .map(|item| format!("{marker} {} · {}", item.title, item.detail)),
+            );
+        }
+    }
+    output.join("\n")
 }
 
 fn mobile_project(app: &App) -> String {
@@ -4559,6 +5033,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             kitty_detected,
         },
     );
+    app.restore_reconnect_capsule();
 
     let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
     let (browser_commands, browser_command_rx) = mpsc::channel(BROWSER_COMMAND_CHANNEL_CAPACITY);
@@ -4633,6 +5108,11 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
 
     drop(input_events);
     drop(browser_events);
+    if app.development.is_some()
+        && let Err(error) = app.save_reconnect_capsule()
+    {
+        tracing::warn!(%error, "failed to save TUI reconnect capsule");
+    }
     app.release_all_mutation_leases();
     let _ = shutdown_tx.send(true);
     let _ = browser_commands.try_send(BrowserCommand::Shutdown);
@@ -4902,6 +5382,26 @@ mod tests {
         ));
         assert!(parse_command("live quality enormous").is_err());
         assert!(matches!(
+            parse_command("live quality auto"),
+            Ok(ParsedCommand::Local(LocalCommand::Live(
+                LiveCommand::AdaptiveQuality
+            )))
+        ));
+        assert!(matches!(
+            parse_command("tap 3"),
+            Ok(ParsedCommand::Local(LocalCommand::Tap(Some(3))))
+        ));
+        assert!(matches!(
+            parse_command("inbox"),
+            Ok(ParsedCommand::Local(LocalCommand::Inbox))
+        ));
+        assert!(matches!(
+            parse_command("capsule save"),
+            Ok(ParsedCommand::Local(LocalCommand::Capsule(
+                CapsuleCommand::Save
+            )))
+        ));
+        assert!(matches!(
             parse_command("double click r7:b42"),
             Ok(ParsedCommand::Browser(BrowserOperation::DoubleClick(target))) if target == "r7:b42"
         ));
@@ -5000,6 +5500,52 @@ mod tests {
             display_class(TuiLayout::Desktop, 40, remote),
             DisplayClass::Wide
         );
+    }
+
+    #[test]
+    fn phone_semantic_tap_uses_revisioned_reference_before_navigation_keys() {
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext::default(),
+            60,
+            LiveViewOptions::default(),
+        );
+        app.tap_targets = vec![SemanticTapTarget {
+            reference: "r9:b42".into(),
+            role: "button".into(),
+            name: "Continue".into(),
+        }];
+        app.tap_mode = true;
+        assert!(matches!(
+            app.reduce_key(key(KeyCode::Char('1'))),
+            UiIntent::Pointer(BrowserOperation::Click(reference)) if reference == "r9:b42"
+        ));
+        assert!(!app.tap_mode);
+        assert_eq!(app.mobile_view, MobileView::Home);
+    }
+
+    #[test]
+    fn adaptive_live_quality_degrades_on_pressure_and_recovers_after_stability() {
+        let mut live = LiveViewState::new(
+            TuiLiveMode::On,
+            TuiLiveBackend::Ansi,
+            TuiLiveQuality::Smooth,
+            TuiLiveFit::Contain,
+            false,
+        );
+        live.enable_adaptive_quality();
+        live.effective_quality = TuiLiveQuality::Smooth;
+        live.metrics.drop_ratio = 0.5;
+        live.metrics.generation = 1;
+        live.adapt_quality();
+        assert_eq!(live.effective_quality, TuiLiveQuality::Balanced);
+        for generation in 2..=4 {
+            live.metrics.drop_ratio = 0.0;
+            live.metrics.generation = generation;
+            live.adapt_quality();
+        }
+        assert_eq!(live.effective_quality, TuiLiveQuality::Smooth);
     }
 
     #[test]

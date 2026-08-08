@@ -86,6 +86,11 @@ glass --tui-layout mobile
 ```
 
 Use `1` through `5` or `Tab` to switch Home, Agent, App, Diff, and More views.
+Home is an attention inbox rather than a raw log. Enter `tap` to select one of
+the current revision-bound semantic actions by number, `verify card` for a
+compact evidence summary, `notify on` for opt-in terminal alerts, and
+`capsule save|show|clear` to manage restart continuity. Clean TUI exits save a
+non-sensitive capsule automatically.
 The mobile workspace is structured-first and leaves continuous pixels off by
 default. Add `--tui-live on` (or enter `live on`) for an adaptive terminal-native
 view: Glass prefers Herdr-owned graphics, then direct Kitty, and uses true-color
@@ -93,6 +98,9 @@ ANSI as the SSH/Mosh-safe fallback. Run Glass inside [Herdr](https://herdr.dev/)
 for agent-aware detach/reattach persistence. Enter `safari` for the stable,
 full-fidelity private SSH port-forwarding path; Glass never publicly exposes the
 dev server or Chrome CDP. See [Mobile and remote development](docs/mobile-remote.md).
+
+`live quality auto` adapts within the bounded data/balanced/smooth profiles
+using delivery pressure while the App view is visible.
 
 Enter these commands in the TUI:
 

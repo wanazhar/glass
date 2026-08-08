@@ -110,6 +110,10 @@ often wider while retaining phone input constraints. `--tui-layout mobile`
 and `--tui-layout desktop` provide deterministic overrides.
 
 Phone mode is a single-pane stack with Home, Agent, App, Diff, and More views.
+Home is a bounded attention inbox. App supports a numbered semantic-target
+overlay, Diff supports compact verification cards, and normal shutdown writes
+a non-sensitive reconnect capsule. Terminal bell notification is explicit and
+off by default.
 Its browser worker does not start the screencast or screenshot fallback by
 default, so a semantic-only iOS terminal pays no continuous visual capture or
 transfer cost. Explicit screenshots still write requested evidence. An
@@ -125,6 +129,10 @@ terminal grid; ANSI remains available. Backend errors degrade in that same
 order and cannot terminate the browser worker. `live doctor` exposes the
 transport signals, selected backend, throughput, FPS, and drops. The `safari`
 command remains the stable full-fidelity SSH-forward path.
+
+Automatic quality uses only completed metric windows. A drop ratio of 20% or
+more degrades one profile; three stable windows at 2% or less recover one
+profile. Manual quality selection disables adaptation.
 
 Glass reads Herdr's documented pane markers for context and, when live pixels
 are explicitly enabled, can open Herdr's experimental owned pane-graphics

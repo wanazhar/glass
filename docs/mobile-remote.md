@@ -33,6 +33,15 @@ while the command bar is empty, so commands and agent prompts can contain
 numbers normally. Function keys, pointer input, and control-key chords are not
 required for navigation.
 
+Home groups activity into `NEEDS YOU`, `RUNNING`, and `RECENT`. Enter `inbox`
+from any view to return to it. `notify on` enables a deduplicated terminal bell
+for newly observed needs-attention items; notifications are off by default and
+contain no event payload.
+
+Enter `tap` in App to replace fragile pixel targeting with up to nine numbered,
+revision-bound semantic targets. Type or tap the number to execute through the
+normal verified browser action path. `Esc` closes the overlay.
+
 The phone layout remains semantic-first: continuous pixels are off by default,
 which saves Chrome encoding, network bandwidth, and terminal redraw work.
 `screenshot PATH` remains an explicit evidence capture. Enable an ephemeral
@@ -46,7 +55,10 @@ Or enter `live on` in the command bar. Glass switches to App, starts a bounded
 PNG screencast, retains at most the current/pending frame, and never persists
 those live pixels. Useful commands are `live status`, `live doctor`, `live
 off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
-data|balanced|smooth`, and `live fit contain|cover|actual`.
+auto|data|balanced|smooth`, and `live fit contain|cover|actual`.
+
+`live quality auto` starts balanced, degrades under sustained frame drops, and
+recovers after stable delivery. Capture is suspended when App is hidden.
 
 Fit controls apply to ANSI sampling. Herdr and direct Kitty use aspect-safe
 contain placement so their native overlays and browser pointer geometry remain
@@ -94,6 +106,12 @@ herdr
 Mosh replaces the interactive SSH transport with a UDP session after login.
 Use an SSH client or a separate SSH connection for the TCP port forward needed
 by Safari.
+
+Glass also writes a bounded reconnect capsule on clean TUI exit and restores
+the mobile view, browser target metadata/revision, and live preferences on the
+next start. `capsule save|show|clear` manages it explicitly. Running PTYs remain
+owned by the resident process or Herdr; a capsule never pretends a process
+survived a machine or Glass process crash.
 
 Herdr can also own Glass's live image layer. Enable Herdr's experimental Kitty
 graphics support in its configuration, then start Glass with `--tui-live auto`

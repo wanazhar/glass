@@ -270,6 +270,18 @@ private Safari tunnel.
   every destination remains available through printable keys or commands.
 - Orientation changes are handled through terminal resize events. The layout
   switches between phone, compact, and wide presentations in automatic mode.
+  Resize bursts are coalesced, avoiding a full frame for every intermediate
+  geometry reported while rotating a phone or dragging a local window.
+- Glass applies transport-aware presentation pacing: up to 60 cell frames per
+  second locally, 30 on a measured fast remote, and 20 on constrained, unknown,
+  or Mosh links. State and input are processed immediately between frames; the
+  cap removes redundant layout and SSH writes rather than delaying commands.
+- Held keys use terminal repeat events, key releases do not trigger redraws, and
+  bracketed command paste is inserted in one bounded operation. This keeps
+  editing responsive without increasing the 4 KiB command limit.
+- Mouse movement, release, and drag noise is discarded. On phone layouts the
+  wheel scrolls cockpit content; it controls the page only while the pointer is
+  inside the live browser pane.
 - Use a UTF-8 locale. Glass uses Unicode state markers but never relies on
   color alone for meaning.
 

@@ -113,6 +113,25 @@ No essential action requires function keys, mouse reporting or a terminal image
 protocol. Touch/mouse may activate visible tabs/cards when the terminal emits
 events.
 
+## Render scheduling
+
+The event reducer and renderer are deliberately decoupled. Input, browser,
+development, resize, focus and live-frame events update state immediately, but
+bursts are coalesced before the next presentation deadline. Local terminals are
+capped at 60 cell frames per second, measured fast remotes at 30, and
+constrained, unknown or Mosh transports at 20. The deadline branch has priority
+once due, so continuous input cannot starve presentation. Ratatui then diffs the
+complete new buffer against the previous frame and writes only changed cells.
+
+This pacing affects terminal presentation, not browser authority or event
+processing. Browser and development events are still consumed while a frame is
+pending, bounded channels retain backpressure, and the newest state appears on
+the next frame. Resize notifications use a coalescing channel path. Key-release
+events never enter the reducer, while press and repeat events do. Mouse move,
+release and drag noise is dropped before the channel because the cockpit has no
+hover or drag authority. Bracketed command paste is validated and inserted in
+one bounded pass instead of one layout-invalidating edit per character.
+
 ## Semantic tap overlay
 
 ```text

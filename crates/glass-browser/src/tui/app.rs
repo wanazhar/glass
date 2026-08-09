@@ -95,6 +95,9 @@ const PHONE_CYAN: Color = Color::Rgb(83, 219, 238);
 const PHONE_BLUE: Color = Color::Rgb(76, 166, 255);
 const PHONE_GREEN: Color = Color::Rgb(116, 226, 112);
 const PHONE_PURPLE: Color = Color::Rgb(198, 112, 255);
+const LOCAL_RENDER_INTERVAL: Duration = Duration::from_micros(16_667);
+const REMOTE_RENDER_INTERVAL: Duration = Duration::from_micros(33_333);
+const CONSTRAINED_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 /// Visible Browser Workspace presentation modes. Each mode changes the
 /// inspection surface, but never changes browser authority or policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -261,6 +264,43 @@ impl RemoteContext {
         } else {
             "local"
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderPacer {
+    minimum_interval: Duration,
+    maximum_fps: u16,
+    last_presented: Option<Instant>,
+}
+
+impl RenderPacer {
+    fn new(transport: TransportClass) -> Self {
+        let (minimum_interval, maximum_fps) = match transport {
+            TransportClass::Local => (LOCAL_RENDER_INTERVAL, 60),
+            TransportClass::RemoteFast => (REMOTE_RENDER_INTERVAL, 30),
+            TransportClass::RemoteConstrained
+            | TransportClass::Mosh
+            | TransportClass::UnknownRemote => (CONSTRAINED_RENDER_INTERVAL, 20),
+        };
+        Self {
+            minimum_interval,
+            maximum_fps,
+            last_presented: None,
+        }
+    }
+
+    fn wait_from(self, now: Instant) -> Duration {
+        self.last_presented
+            .map(|last| {
+                self.minimum_interval
+                    .saturating_sub(now.saturating_duration_since(last))
+            })
+            .unwrap_or(Duration::ZERO)
+    }
+
+    fn presented(&mut self, now: Instant) {
+        self.last_presented = Some(now);
     }
 }
 
@@ -1260,6 +1300,10 @@ impl App {
         self.live.diagnostics(&self.live_policy())
     }
 
+    fn render_fps_cap(&self) -> u16 {
+        RenderPacer::new(self.connection_environment.transport).maximum_fps
+    }
+
     fn live_capture_config(&self) -> ScreencastConfig {
         if !self.terminal_focused {
             return ScreencastConfig::default();
@@ -1815,6 +1859,28 @@ impl App {
         true
     }
 
+    fn insert_text(&mut self, text: &str) -> bool {
+        self.history_cursor = None;
+        let available = TUI_INPUT_MAX_BYTES.saturating_sub(self.input.len());
+        let mut accepted_bytes = 0;
+        let mut accepted_chars = 0;
+        for character in text.chars() {
+            let next = accepted_bytes + character.len_utf8();
+            if next > available {
+                break;
+            }
+            accepted_bytes = next;
+            accepted_chars += 1;
+        }
+        if accepted_bytes == 0 {
+            return false;
+        }
+        let index = self.cursor_byte_index();
+        self.input.insert_str(index, &text[..accepted_bytes]);
+        self.cursor_pos += accepted_chars;
+        true
+    }
+
     fn remove_before_cursor(&mut self) {
         if self.cursor_pos == 0 {
             return;
@@ -2131,6 +2197,25 @@ impl App {
             self.focus_editor_cell(mouse.column, mouse.row);
             return UiIntent::None;
         }
+        if self.display_class == DisplayClass::Phone
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+            && !self.live_area.is_some_and(|area| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            })
+        {
+            self.page_scroll = match mouse.kind {
+                MouseEventKind::ScrollUp => self.page_scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => self.page_scroll.saturating_add(3),
+                _ => self.page_scroll,
+            };
+            return UiIntent::None;
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp => UiIntent::Pointer(BrowserOperation::ScrollAt {
                 dx: 0.0,
@@ -2166,10 +2251,6 @@ impl App {
                         UiIntent::None
                     }
                 }
-            }
-            MouseEventKind::Moved => {
-                self.set_status(format!("Hover cell {},{}.", mouse.column, mouse.row));
-                UiIntent::None
             }
             _ => UiIntent::None,
         }
@@ -2222,7 +2303,7 @@ impl App {
     }
 
     fn reduce_key(&mut self, key: KeyEvent) -> UiIntent {
-        if key.kind != KeyEventKind::Press {
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return UiIntent::None;
         }
 
@@ -3270,13 +3351,22 @@ enum InputEvent {
     Mouse(MouseEvent),
     Paste(String),
     Focus(bool),
-    Redraw,
+    Resize,
     Error(String),
 }
 
 struct InputWorker {
     shutdown: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
+}
+
+fn actionable_mouse_event(mouse: &MouseEvent) -> bool {
+    matches!(
+        mouse.kind,
+        MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+    )
 }
 
 impl InputWorker {
@@ -3288,16 +3378,18 @@ impl InputWorker {
                 match event::poll(INPUT_POLL) {
                     Ok(false) => {}
                     Ok(true) => match event::read() {
-                        Ok(Event::Key(key)) => {
+                        Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                             if events.blocking_send(InputEvent::Key(key)).is_err() {
                                 break;
                             }
                         }
-                        Ok(Event::Mouse(mouse)) => {
+                        Ok(Event::Key(_)) => {}
+                        Ok(Event::Mouse(mouse)) if actionable_mouse_event(&mouse) => {
                             if events.blocking_send(InputEvent::Mouse(mouse)).is_err() {
                                 break;
                             }
                         }
+                        Ok(Event::Mouse(_)) => {}
                         Ok(Event::Paste(text)) => {
                             if events.blocking_send(InputEvent::Paste(text)).is_err() {
                                 break;
@@ -3313,8 +3405,8 @@ impl InputWorker {
                                 break;
                             }
                         }
-                        Ok(_) => {
-                            if events.blocking_send(InputEvent::Redraw).is_err() {
+                        Ok(Event::Resize(_, _)) => {
+                            if events.try_send(InputEvent::Resize).is_err() && events.is_closed() {
                                 break;
                             }
                         }
@@ -5775,7 +5867,7 @@ fn handle_submission(
         Ok(ParsedCommand::Local(LocalCommand::Live(command))) => match command {
             LiveCommand::Show => {
                 app.set_page_content(format!(
-                    "TERMINAL LIVE BROWSER\n\n{}\n\nmode: {:?}\npreference: {:?}\nquality: {:?}\nfit: {:?}\nkitty detected: {}\nherdr stream: {}\ntransport: {}\n\nSafari forwarding remains the stable native-browser channel.",
+                    "TERMINAL LIVE BROWSER\n\n{}\n\nmode: {:?}\npreference: {:?}\nquality: {:?}\nfit: {:?}\nkitty detected: {}\nherdr stream: {}\ntransport: {}\ncell presentation cap: {} fps (event-coalesced)\n\nSafari forwarding remains the stable native-browser channel.",
                     app.live_diagnostics(),
                     app.live.mode,
                     app.live.preference,
@@ -5784,6 +5876,7 @@ fn handle_submission(
                     app.live.kitty_detected,
                     if app.live.herdr_environment.is_some() { "available" } else { "unavailable" },
                     app.remote_context.label(),
+                    app.render_fps_cap(),
                 ));
                 app.set_mobile_view(MobileView::App);
             }
@@ -5798,12 +5891,13 @@ fn handle_submission(
                     "No native pixel backend was detected; `live on` will use portable ANSI half blocks."
                 };
                 app.set_page_content(format!(
-                    "LIVE VIEW DOCTOR\n\ntransport: {}\nSSH: {}\nMosh: {}\nHerdr environment: {}\nKitty capability: {}\nactive: {}\n\n{}\n\nCommands:\n  live on\n  live backend ansi\n  live quality data|balanced|smooth\n  live fit contain|cover|actual",
+                    "LIVE VIEW DOCTOR\n\ntransport: {}\nSSH: {}\nMosh: {}\nHerdr environment: {}\nKitty capability: {}\ncell presentation cap: {} fps (event-coalesced)\nactive: {}\n\n{}\n\nCommands:\n  live on\n  live backend ansi\n  live quality data|balanced|smooth\n  live fit contain|cover|actual",
                     app.remote_context.label(),
                     app.remote_context.ssh,
                     app.remote_context.mosh,
                     app.live.herdr_environment.is_some(),
                     app.live.kitty_detected,
+                    app.render_fps_cap(),
                     app.live_diagnostics(),
                     recommendation,
                 ));
@@ -7844,13 +7938,19 @@ async fn run_tui_loop(
 ) -> BrowserResult<()> {
     let mut redraw = true;
     let mut browser_events_open = true;
+    let mut render_pacer = RenderPacer::new(app.connection_environment.transport);
     let mut busy_tick = time::interval(BUSY_TICK);
     busy_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while !app.should_quit {
-        if redraw {
-            let area = terminal.size()?;
-            app.sync_graphics_geometry(area.into())?;
+        if redraw && render_pacer.wait_from(Instant::now()).is_zero() {
+            app.poll_live_worker();
+            terminal.try_draw(|frame| -> io::Result<()> {
+                app.sync_graphics_geometry(frame.area())
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                draw(frame, app);
+                Ok(())
+            })?;
             let next = app.live_capture_config();
             let _ = visual_mode.send_if_modified(|config| {
                 if *config == next {
@@ -7860,13 +7960,15 @@ async fn run_tui_loop(
                     true
                 }
             });
-            app.poll_live_worker();
-            terminal.draw(|frame| draw(frame, app))?;
             app.render_graphics()?;
+            render_pacer.presented(Instant::now());
+            redraw = false;
         }
 
-        redraw = tokio::select! {
+        let render_wait = render_pacer.wait_from(Instant::now());
+        let changed = tokio::select! {
             biased;
+            _ = time::sleep(render_wait), if redraw => false,
             input = input_events.recv() => match input {
                 Some(InputEvent::Key(key)) => {
                     let intent = app.reduce_key(key);
@@ -7881,12 +7983,10 @@ async fn run_tui_loop(
                 Some(InputEvent::Paste(text)) => {
                     if app.mode == WorkspaceMode::Development && app.editor_focus {
                         app.insert_editor_text(&text);
+                        true
                     } else {
-                        for character in text.chars() {
-                            app.insert_char(character);
-                        }
+                        app.insert_text(&text)
                     }
-                    true
                 }
                 Some(InputEvent::Focus(focused)) => {
                     let regained = focused && !app.terminal_focused;
@@ -7901,7 +8001,7 @@ async fn run_tui_loop(
                     }
                     true
                 }
-                Some(InputEvent::Redraw) => true,
+                Some(InputEvent::Resize) => true,
                 Some(InputEvent::Error(error)) => return Err(error.into()),
                 None => return Err("TUI input worker stopped".into()),
             },
@@ -7933,6 +8033,7 @@ async fn run_tui_loop(
                 app.poll_development_events() || app.is_busy() || live_changed || toast_changed
             },
         };
+        redraw |= changed;
     }
     Ok(())
 }
@@ -8276,6 +8377,84 @@ mod tests {
             display_class(TuiLayout::Desktop, 40, remote),
             DisplayClass::Wide
         );
+    }
+
+    #[test]
+    fn render_pacer_coalesces_bursts_by_transport_without_starving_frames() {
+        let now = Instant::now();
+        let mut local = RenderPacer::new(TransportClass::Local);
+        assert_eq!(local.wait_from(now), Duration::ZERO);
+        local.presented(now);
+        assert_eq!(local.wait_from(now), LOCAL_RENDER_INTERVAL);
+        assert_eq!(local.wait_from(now + LOCAL_RENDER_INTERVAL), Duration::ZERO);
+
+        let remote = RenderPacer::new(TransportClass::RemoteFast);
+        let constrained = RenderPacer::new(TransportClass::UnknownRemote);
+        assert_eq!(remote.minimum_interval, REMOTE_RENDER_INTERVAL);
+        assert_eq!(remote.maximum_fps, 30);
+        assert_eq!(constrained.minimum_interval, CONSTRAINED_RENDER_INTERVAL);
+        assert_eq!(constrained.maximum_fps, 20);
+    }
+
+    #[test]
+    fn command_paste_is_single_pass_bounded_and_key_repeat_remains_responsive() {
+        let mut app = App::new();
+        app.input = "ac".into();
+        app.cursor_pos = 1;
+        assert!(app.insert_text("🙂b"));
+        assert_eq!(app.input, "a🙂bc");
+        assert_eq!(app.cursor_pos, 3);
+
+        let remaining = TUI_INPUT_MAX_BYTES - app.input.len();
+        assert!(app.insert_text(&"x".repeat(remaining + 10)));
+        assert_eq!(app.input.len(), TUI_INPUT_MAX_BYTES);
+
+        app.input.clear();
+        app.cursor_pos = 0;
+        let mut repeated = key(KeyCode::Char('z'));
+        repeated.kind = KeyEventKind::Repeat;
+        assert_eq!(app.reduce_key(repeated), UiIntent::None);
+        assert_eq!(app.input, "z");
+
+        let mut released = key(KeyCode::Char('x'));
+        released.kind = KeyEventKind::Release;
+        assert_eq!(app.reduce_key(released), UiIntent::None);
+        assert_eq!(app.input, "z");
+    }
+
+    #[test]
+    fn mouse_noise_is_dropped_and_phone_scroll_targets_the_visible_surface() {
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(!actionable_mouse_event(&mouse(MouseEventKind::Moved, 1, 1)));
+        assert!(!actionable_mouse_event(&mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            1,
+            1
+        )));
+        assert!(actionable_mouse_event(&mouse(
+            MouseEventKind::ScrollDown,
+            1,
+            1
+        )));
+
+        let mut app = mock_remote_phone_app(46);
+        assert_eq!(
+            app.mouse_intent(mouse(MouseEventKind::ScrollDown, 1, 1)),
+            UiIntent::None
+        );
+        assert_eq!(app.page_scroll, 3);
+
+        app.live_area = Some(Rect::new(2, 2, 20, 10));
+        assert!(matches!(
+            app.mouse_intent(mouse(MouseEventKind::ScrollDown, 4, 4)),
+            UiIntent::Pointer(BrowserOperation::ScrollAt { dy: 480.0, .. })
+        ));
+        assert_eq!(app.page_scroll, 3);
     }
 
     #[tokio::test]

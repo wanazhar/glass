@@ -27,6 +27,8 @@ certified.
       normalized `glass-browser =0.3.3` dependency.
 - [x] Clean-install core and full packages and exercise core-to-full,
       full-to-full and full-to-core ownership transitions.
+- [x] Document complete uninstallation for both package owners, custom Cargo
+      roots, retained state, external MCP entries, and experiment worktrees.
 - [x] Keep macOS and Windows claims bounded to browser-free CI definitions.
 - [ ] Obtain explicit approval before pushing, tagging, publishing, closing
       issue #33, or creating the GitHub Release.

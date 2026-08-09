@@ -30,6 +30,11 @@ glass-browser doctor
 profiles, stores, daemon state, extension status, and remediation without
 starting Chrome.
 
+To remove Glass, uninstall both possible Cargo package owners and decide
+separately whether to purge authenticated profiles and other retained state.
+Follow [Fully uninstall Glass](installation.md#fully-uninstall-glass); deleting
+only the executable does not remove persistent browser data.
+
 ## Select an interface
 
 ```text

@@ -30,6 +30,12 @@ REQUIRED_MARKERS = {
         "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
+    "docs/installation.md": [
+        "## Fully uninstall Glass",
+        "cargo uninstall glass-dev",
+        "cargo uninstall glass-browser",
+        "`$GLASS_CONFIG_HOME/glass`",
+    ],
     "docs/feature-parity.md": [
         "0.3.0 release baseline",
         "runtime verification",

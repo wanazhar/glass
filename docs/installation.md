@@ -70,6 +70,108 @@ The release smoke additionally exercises Cargo's direct `--force` replacement
 in both directions in an isolated root. Uninstall/install is the clearest
 interactive route because it leaves no stale package-ownership record.
 
+## Fully uninstall Glass
+
+Stop any running TUI, CLI, MCP clients, and owned browser sessions first. If
+the local daemon is running, stop it while the full command is still present:
+
+```console
+glass daemon stop
+```
+
+Inspect Cargo's package records, then uninstall both possible package owners:
+
+```console
+cargo install --list
+cargo uninstall glass-dev
+cargo uninstall glass-browser
+```
+
+Normally only one uninstall succeeds because the packages intentionally
+compete for the `glass-browser` executable in a Cargo root. “package ... is not
+installed” is therefore expected for the other command. If Glass was installed
+with `cargo install --root /exact/root`, repeat both uninstall commands with
+the same `--root /exact/root`. Repeat this for every custom root used on the
+machine.
+
+Refresh the shell's command cache and verify that neither executable resolves:
+
+```console
+hash -r
+command -v glass
+command -v glass-browser
+```
+
+Both `command -v` calls should produce no path. PowerShell users can verify
+with `Get-Command glass, glass-browser -ErrorAction SilentlyContinue`.
+
+`cargo uninstall` removes package records and installed executables. It does
+not remove Glass profiles, knowledge, snapshots, workspaces, results,
+development timelines, daemon state, or a managed Chrome for Testing build.
+Those may contain authenticated browser data or project history. Back them up
+if needed, inspect each resolved path, and only then remove the complete
+`glass` directory at each applicable location:
+
+| State class | Linux default | macOS default | Windows default |
+|---|---|---|---|
+| Configuration and persistent browser profiles | `${XDG_CONFIG_HOME:-$HOME/.config}/glass` | `$HOME/Library/Application Support/glass` | `%APPDATA%\glass` |
+| Local data, daemon state, timelines, managed Chromium | `${XDG_DATA_HOME:-$HOME/.local/share}/glass` | `$HOME/Library/Application Support/glass` | `%LOCALAPPDATA%\glass` |
+| Diagnostic/result cache | `${XDG_CACHE_HOME:-$HOME/.cache}/glass` | `$HOME/Library/Caches/glass` | `%LOCALAPPDATA%\glass` |
+| Abandoned disposable profiles and launch locks | `${TMPDIR:-/tmp}/glass` | `$TMPDIR/glass` | `%TEMP%\glass` |
+
+`GLASS_CONFIG_HOME` changes the first row to
+`$GLASS_CONFIG_HOME/glass`. Platform directories can overlap; remove a
+resolved path once. Example Linux purge after inspection:
+
+```console
+rm -rf -- "${GLASS_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}}/glass"
+rm -rf -- "${XDG_DATA_HOME:-$HOME/.local/share}/glass"
+rm -rf -- "${XDG_CACHE_HOME:-$HOME/.cache}/glass"
+rm -rf -- "${TMPDIR:-/tmp}/glass"
+```
+
+Equivalent macOS purge:
+
+```console
+rm -rf -- "${GLASS_CONFIG_HOME:-$HOME/Library/Application Support}/glass"
+rm -rf -- "$HOME/Library/Application Support/glass"
+rm -rf -- "$HOME/Library/Caches/glass"
+rm -rf -- "${TMPDIR:-/tmp}/glass"
+```
+
+Equivalent PowerShell purge on Windows:
+
+```powershell
+$glassPaths = @(
+    if ($env:GLASS_CONFIG_HOME) {
+        Join-Path $env:GLASS_CONFIG_HOME "glass"
+    } else {
+        Join-Path $env:APPDATA "glass"
+    }
+    Join-Path $env:LOCALAPPDATA "glass"
+    Join-Path $env:TEMP "glass"
+) | Select-Object -Unique
+
+$glassPaths | ForEach-Object {
+    if (Test-Path -LiteralPath $_) {
+        Remove-Item -LiteralPath $_ -Recurse -Force
+    }
+}
+```
+
+Also remove Glass MCP entries from Claude Code, Codex, or other clients that
+were created from `glass mcp-config`; uninstalling a binary cannot edit those
+external client configurations. Experiments may have Git worktrees under a
+sibling `.glass-worktrees/REPOSITORY` directory. Inspect them with
+`git worktree list` and remove each unwanted worktree with
+`git worktree remove /exact/worktree` before deleting the empty directory.
+Glass does not automatically remove experiment branches.
+
+Do not delete the shared Cargo registry/cache, a system Chrome installation,
+source checkouts, `glass.toml`, or `.glass.toml`: Cargo and other projects may
+own them. Removing the local-data directory above does remove Chromium that was
+installed specifically by `glass install-chromium`.
+
 ## Diagnose an installation
 
 Run the browser-free diagnostic before starting an agent session:

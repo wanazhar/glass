@@ -72,6 +72,9 @@ Use `glass install-chromium` when no supported system browser is available.
 
 Read [Installation and operations](docs/installation.md) for browser
 discovery, profiles, attach mode, logging, policy, and deployment.
+Its [full uninstall procedure](docs/installation.md#fully-uninstall-glass)
+removes both possible Cargo package owners and explains the separate,
+destructive purge of retained profiles, managed Chromium, and runtime state.
 See [Experimental capabilities](docs/experimental-capabilities.md) before
 enabling opt-in features.
 

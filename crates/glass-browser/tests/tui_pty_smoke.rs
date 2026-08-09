@@ -74,11 +74,13 @@ fn phone_tui_renders_and_leaves_a_real_terminal_cleanly() {
 
     let output = read_available(&mut master);
     assert_sequence(&output, b"\x1b[?1049h", "enter alternate screen");
+    assert_sequence(&output, b"\x1b[?1000h", "enable mouse capture");
     assert_sequence(&output, b"\x1b[?25l", "hide cursor");
     assert_sequence(&output, b"GLASS", "phone cockpit title");
     assert_sequence(&output, b"Overview", "phone overview card");
     assert_sequence(&output, b"COMMAND", "printable command composer");
     assert_sequence(&output, b"\x1b[?1049l", "leave alternate screen");
+    assert_sequence(&output, b"\x1b[?1000l", "disable mouse capture");
     assert_sequence(&output, b"\x1b[?25h", "show cursor");
 }
 

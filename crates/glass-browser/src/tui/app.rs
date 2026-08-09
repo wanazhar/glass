@@ -7,8 +7,8 @@ use base64::Engine as _;
 use crossterm::{
     cursor::{Hide, Show},
     event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -356,6 +356,10 @@ struct LiveViewState {
     herdr_environment: Option<HerdrEnvironment>,
     herdr_worker: Option<HerdrGraphicsWorker>,
     ansi: AnsiCanvas,
+    thumbnail_png: Vec<u8>,
+    thumbnail_revision: Option<u64>,
+    thumbnail_canvas_revision: Option<u64>,
+    thumbnail_grid: Option<(u16, u16)>,
     metrics: LiveMetrics,
 }
 
@@ -403,6 +407,10 @@ impl LiveViewState {
             herdr_environment: HerdrEnvironment::from_process(),
             herdr_worker: None,
             ansi: AnsiCanvas::default(),
+            thumbnail_png: Vec::new(),
+            thumbnail_revision: None,
+            thumbnail_canvas_revision: None,
+            thumbnail_grid: None,
             metrics: LiveMetrics::default(),
         };
         state.select_backend();
@@ -416,6 +424,10 @@ impl LiveViewState {
     fn select_backend(&mut self) {
         self.stop_herdr();
         self.ansi.clear();
+        self.thumbnail_png.clear();
+        self.thumbnail_revision = None;
+        self.thumbnail_canvas_revision = None;
+        self.thumbnail_grid = None;
         self.backend = if self.mode == TuiLiveMode::Off {
             None
         } else {
@@ -449,6 +461,10 @@ impl LiveViewState {
     fn fall_back_from(&mut self, failed: ActiveLiveBackend) {
         self.stop_herdr();
         self.ansi.clear();
+        self.thumbnail_png.clear();
+        self.thumbnail_revision = None;
+        self.thumbnail_canvas_revision = None;
+        self.thumbnail_grid = None;
         self.backend = match failed {
             ActiveLiveBackend::Herdr if self.kitty_detected => Some(ActiveLiveBackend::Kitty),
             ActiveLiveBackend::Herdr | ActiveLiveBackend::Kitty if self.mode == TuiLiveMode::On => {
@@ -771,11 +787,15 @@ pub struct App {
     mobile_view: MobileView,
     mobile_help: bool,
     mobile_nav_area: Option<Rect>,
+    mobile_card_areas: Vec<(PhoneOverviewCard, Rect)>,
+    mobile_remote_view_area: Option<Rect>,
     remote_context: RemoteContext,
     connection_environment: ConnectionEnvironment,
     mutation_lease: MutationLease,
     visual_revision: u64,
     visual_status: String,
+    semantic_revision: Option<u64>,
+    semantic_consistent: Option<bool>,
     development: Option<ProjectWorkspace>,
     development_enabled: bool,
     harness: LocalHarness,
@@ -806,10 +826,22 @@ struct SemanticTapTarget {
     name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevelopmentAsyncKind {
+    Agent,
+    Diagnostics,
+}
+
 #[derive(Debug)]
 enum DevelopmentAsyncEvent {
-    Completed(String),
-    Failed(String),
+    Completed {
+        kind: DevelopmentAsyncKind,
+        output: String,
+    },
+    Failed {
+        kind: DevelopmentAsyncKind,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -939,11 +971,15 @@ impl App {
             mobile_view: MobileView::Home,
             mobile_help: false,
             mobile_nav_area: None,
+            mobile_card_areas: Vec::new(),
+            mobile_remote_view_area: None,
             remote_context,
             connection_environment,
             mutation_lease: MutationLease::default(),
             visual_revision: 0,
             visual_status: "semantic browser view; live capture is explicit".to_string(),
+            semantic_revision: None,
+            semantic_consistent: None,
             development,
             development_enabled,
             harness: LocalHarness::default(),
@@ -1445,7 +1481,10 @@ impl App {
                                 let mut client = match crate::development::LspClient::rust_analyzer(&root) {
                                     Ok(client) => client,
                                     Err(error) => {
-                                        let _ = events.send(DevelopmentAsyncEvent::Failed(error.to_string()));
+                                        let _ = events.send(DevelopmentAsyncEvent::Failed {
+                                            kind: DevelopmentAsyncKind::Diagnostics,
+                                            error: error.to_string(),
+                                        });
                                         return;
                                     }
                                 };
@@ -1453,8 +1492,14 @@ impl App {
                                     let result = client.diagnostics(&path)
                                         .and_then(|diagnostics| serde_json::to_string_pretty(&diagnostics).map_err(Into::into));
                                     let event = match result {
-                                        Ok(output) => DevelopmentAsyncEvent::Completed(output),
-                                        Err(error) => DevelopmentAsyncEvent::Failed(error.to_string()),
+                                        Ok(output) => DevelopmentAsyncEvent::Completed {
+                                            kind: DevelopmentAsyncKind::Diagnostics,
+                                            output,
+                                        },
+                                        Err(error) => DevelopmentAsyncEvent::Failed {
+                                            kind: DevelopmentAsyncKind::Diagnostics,
+                                            error: error.to_string(),
+                                        },
                                     };
                                     if events.send(event).is_err() { break; }
                                 }
@@ -1512,7 +1557,10 @@ impl App {
                                 let mut harness = match PiHarness::spawn(&root) {
                                     Ok(harness) => harness,
                                     Err(error) => {
-                                        let _ = events.send(DevelopmentAsyncEvent::Failed(error.to_string()));
+                                        let _ = events.send(DevelopmentAsyncEvent::Failed {
+                                            kind: DevelopmentAsyncKind::Agent,
+                                            error: error.to_string(),
+                                        });
                                         return;
                                     }
                                 };
@@ -1520,8 +1568,14 @@ impl App {
                                     let event = match harness.request(request)
                                         .and_then(|values| serde_json::to_string_pretty(&values).map_err(Into::into))
                                     {
-                                        Ok(output) => DevelopmentAsyncEvent::Completed(output),
-                                        Err(error) => DevelopmentAsyncEvent::Failed(error.to_string()),
+                                        Ok(output) => DevelopmentAsyncEvent::Completed {
+                                            kind: DevelopmentAsyncKind::Agent,
+                                            output,
+                                        },
+                                        Err(error) => DevelopmentAsyncEvent::Failed {
+                                            kind: DevelopmentAsyncKind::Agent,
+                                            error: error.to_string(),
+                                        },
                                     };
                                     if events.send(event).is_err() {
                                         break;
@@ -1618,16 +1672,20 @@ impl App {
         while let Ok(event) = self.development_event_rx.try_recv() {
             changed = true;
             match event {
-                DevelopmentAsyncEvent::Completed(output) => {
-                    if self.agent_phase == AgentPhase::Working {
+                DevelopmentAsyncEvent::Completed { kind, output } => {
+                    if kind == DevelopmentAsyncKind::Agent
+                        && self.agent_phase == AgentPhase::Working
+                    {
                         self.agent_phase = AgentPhase::Complete;
                     }
                     self.set_page_content(output);
                     self.set_status("Development operation completed");
                     self.add_activity("Asynchronous development operation completed.");
                 }
-                DevelopmentAsyncEvent::Failed(error) => {
-                    if self.agent_phase == AgentPhase::Working {
+                DevelopmentAsyncEvent::Failed { kind, error } => {
+                    if kind == DevelopmentAsyncKind::Agent
+                        && self.agent_phase == AgentPhase::Working
+                    {
                         self.agent_phase = AgentPhase::Failed;
                     }
                     self.report_error(error);
@@ -1848,6 +1906,38 @@ impl App {
                 self.set_mobile_view(view);
             }
             return UiIntent::None;
+        }
+        if self.display_class == DisplayClass::Phone
+            && self.mobile_view == MobileView::Home
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            if self.mobile_remote_view_area.is_some_and(|area| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            }) {
+                return UiIntent::Submit("browser remote-view open".into());
+            }
+            if let Some(card) = self
+                .mobile_card_areas
+                .iter()
+                .find(|(_, area)| {
+                    mouse.column >= area.x
+                        && mouse.column < area.right()
+                        && mouse.row >= area.y
+                        && mouse.row < area.bottom()
+                })
+                .map(|(card, _)| *card)
+            {
+                if card == PhoneOverviewCard::Attention {
+                    return UiIntent::Submit("inbox".into());
+                }
+                if let Some(view) = card.target_view() {
+                    self.set_mobile_view(view);
+                }
+                return UiIntent::None;
+            }
         }
         if self.mode == WorkspaceMode::Development
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -2208,7 +2298,14 @@ impl App {
             BrowserEvent::Connecting => {
                 self.browser_state = BrowserState::Connecting;
                 self.visual_revision = 0;
+                self.semantic_revision = None;
+                self.semantic_consistent = None;
                 self.browser_target_id = None;
+                self.live.ansi.clear();
+                self.live.thumbnail_png.clear();
+                self.live.thumbnail_revision = None;
+                self.live.thumbnail_canvas_revision = None;
+                self.live.thumbnail_grid = None;
                 self.page_content = "Browser connection changed; semantic state is invalid until a fresh observation completes.".into();
                 let _ = self.graphics.clear_pane();
                 self.set_status("Connecting to Chrome…");
@@ -2439,6 +2536,8 @@ impl App {
             geometry_revision: geometry.geometry_revision,
             dropped: Default::default(),
         };
+        self.live.thumbnail_png.clone_from(&payload);
+        self.live.thumbnail_revision = Some(browser_revision);
         match self.live.backend {
             Some(ActiveLiveBackend::Herdr) => {
                 let queued = self.live.herdr_worker.as_ref().is_some_and(|worker| {
@@ -2498,6 +2597,9 @@ impl App {
             return Err("TUI worker must not retain screenshot data".into());
         }
         self.apply_page_header(&context.page);
+        self.visual_revision = context.accessibility.revision;
+        self.semantic_revision = Some(context.accessibility.revision);
+        self.semantic_consistent = Some(context.consistency.consistent);
         self.tap_targets = context
             .accessibility
             .interactive
@@ -2519,6 +2621,9 @@ impl App {
             &format!("Glass — {}", observation.page.title),
             TUI_HEADER_MAX_BYTES,
         );
+        self.visual_revision = observation.revision;
+        self.semantic_revision = Some(observation.revision);
+        self.semantic_consistent = None;
         self.tap_targets = observation
             .regions
             .iter()
@@ -2635,6 +2740,51 @@ impl App {
         }
         let root = root_regions(area, self.display_class);
         self.mobile_nav_area = root.nav;
+        self.mobile_card_areas.clear();
+        self.mobile_remote_view_area = None;
+        if self.display_class == DisplayClass::Phone && self.mobile_view == MobileView::Home {
+            self.mobile_card_areas = phone_overview_layout(self, root.content);
+            self.mobile_remote_view_area = self
+                .mobile_card_areas
+                .iter()
+                .find(|(card, _)| *card == PhoneOverviewCard::Browser)
+                .and_then(|(_, area)| phone_remote_view_hit_area(*area));
+            if let Some((_, browser_area)) = self
+                .mobile_card_areas
+                .iter()
+                .find(|(card, _)| *card == PhoneOverviewCard::Browser)
+            {
+                let grid = (
+                    (browser_area.width.saturating_mul(48) / 100)
+                        .saturating_sub(2)
+                        .max(1),
+                    browser_area.height.saturating_sub(3).max(1),
+                );
+                let needs_thumbnail = !self.live.thumbnail_png.is_empty()
+                    && (self.live.thumbnail_canvas_revision != self.live.thumbnail_revision
+                        || self.live.thumbnail_grid != Some(grid));
+                if needs_thumbnail {
+                    let fit = self.live.fit();
+                    match self
+                        .live
+                        .ansi
+                        .update_png(&self.live.thumbnail_png, grid.0, grid.1, fit)
+                    {
+                        Ok(_) => {
+                            self.live.thumbnail_canvas_revision = self.live.thumbnail_revision;
+                            self.live.thumbnail_grid = Some(grid);
+                        }
+                        Err(error) => {
+                            self.live.ansi.clear();
+                            self.live.thumbnail_canvas_revision = None;
+                            self.add_activity(format!(
+                                "Overview thumbnail unavailable ({error}); semantic preview active."
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         self.editor_area = if self.display_class == DisplayClass::Wide
             && self.mode == WorkspaceMode::Development
         {
@@ -5797,7 +5947,10 @@ fn draw_phone_header(frame: &mut Frame, app: &App, area: Rect) {
     ])];
     if inner.height > 1 {
         lines.push(Line::from(vec![
-            phone_chip(agent_phase_label(app.agent_phase), PHONE_GREEN),
+            phone_chip(
+                agent_phase_label(app.agent_phase),
+                agent_phase_color(app.agent_phase),
+            ),
             Span::raw(" "),
             phone_chip(&format!("rev {}", app.visual_revision), PHONE_CYAN),
             Span::raw(" "),
@@ -5829,7 +5982,24 @@ enum PhoneOverviewCard {
     Process,
 }
 
+impl PhoneOverviewCard {
+    const fn target_view(self) -> Option<MobileView> {
+        match self {
+            Self::Attention => None,
+            Self::Browser | Self::Semantic => Some(MobileView::App),
+            Self::Agent => Some(MobileView::Agent),
+            Self::Process => Some(MobileView::Process),
+        }
+    }
+}
+
 fn draw_phone_overview(frame: &mut Frame, app: &App, area: Rect) {
+    for (card, region) in phone_overview_layout(app, area) {
+        draw_phone_overview_card(frame, app, card, region);
+    }
+}
+
+fn phone_overview_layout(app: &App, area: Rect) -> Vec<(PhoneOverviewCard, Rect)> {
     let urgent = phone_attention_lines(app).is_some();
     let mut cards = Vec::new();
     if urgent {
@@ -5881,16 +6051,30 @@ fn draw_phone_overview(frame: &mut Frame, app: &App, area: Rect) {
         constraints.push(Constraint::Length(height));
     }
     let regions = Layout::vertical(constraints).split(area);
+    let mut layout = Vec::with_capacity(visible.len());
     let mut region_index = 0;
     for (index, card) in visible.into_iter().enumerate() {
         if index > 0 && area.height >= 20 {
             region_index += 1;
         }
         if let Some(region) = regions.get(region_index).copied() {
-            draw_phone_overview_card(frame, app, card, region);
+            layout.push((card, region));
         }
         region_index += 1;
     }
+    layout
+}
+
+fn phone_remote_view_hit_area(area: Rect) -> Option<Rect> {
+    (area.width >= 16 && area.height >= 3).then(|| {
+        let width = area.width.saturating_sub(2).min(12);
+        Rect::new(
+            area.right().saturating_sub(width).saturating_sub(1),
+            area.bottom().saturating_sub(2),
+            width,
+            1,
+        )
+    })
 }
 
 fn draw_phone_overview_card(frame: &mut Frame, app: &App, card: PhoneOverviewCard, area: Rect) {
@@ -5948,61 +6132,57 @@ fn draw_phone_attention_card(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_phone_browser_card(frame: &mut Frame, app: &App, area: Rect) {
-    let status = if app.browser_ready() {
-        "LIVE ●"
-    } else {
-        "needs attention"
-    };
-    let block = phone_panel(
-        "◎ LIVE APP",
-        status,
-        if app.browser_ready() {
-            PHONE_GREEN
-        } else {
-            PHONE_BLUE
-        },
-    );
+    let (status, accent) = phone_live_status(app);
+    let block = phone_panel("◎ LIVE APP", status, accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
         return;
     }
     let path = phone_url_path(&app.url);
+    let revision = app
+        .live
+        .thumbnail_revision
+        .or(app.semantic_revision)
+        .unwrap_or(app.visual_revision);
     let details = vec![
         Line::from(Span::styled(
             one_line(&path, 28),
             Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
+            Span::styled(format!("rev {revision}"), Style::default().fg(PHONE_BLUE)),
             Span::styled(
-                format!("rev {}", app.visual_revision),
-                Style::default().fg(PHONE_BLUE),
-            ),
-            Span::styled(
-                if app.browser_ready() {
-                    "  fresh"
+                if app.live.thumbnail_revision.is_some() {
+                    "  frame"
+                } else if app.semantic_revision.is_some() {
+                    "  semantic"
                 } else {
                     "  unavailable"
                 },
-                Style::default().fg(if app.browser_ready() {
-                    PHONE_GREEN
-                } else {
-                    PHONE_MUTED
-                }),
+                Style::default().fg(
+                    if app.live.thumbnail_revision.is_some() || app.semantic_revision.is_some() {
+                        PHONE_GREEN
+                    } else {
+                        PHONE_MUTED
+                    },
+                ),
             ),
         ]),
         Line::from(Span::styled(
             one_line(&app.visual_status, 32),
             Style::default().fg(PHONE_MUTED),
         )),
-        Line::from(Span::styled(
-            "3 Browser · tap to expand",
-            Style::default().fg(PHONE_TEXT),
-        )),
     ];
+    let details_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
     if inner.width >= 42 && inner.height >= 5 {
         let columns = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
-            .split(inner);
+            .split(details_area);
         let preview = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -6036,7 +6216,19 @@ fn draw_phone_browser_card(frame: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(details)
                 .style(Style::default().bg(PHONE_PANEL))
                 .wrap(Wrap { trim: true }),
-            inner,
+            details_area,
+        );
+    }
+    if inner.height > 0 {
+        let action_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("tap card: open", Style::default().fg(PHONE_CYAN)),
+                Span::styled("   [ remote ]", Style::default().fg(PHONE_PURPLE)),
+            ]))
+            .alignment(Alignment::Right)
+            .style(Style::default().bg(PHONE_PANEL)),
+            action_area,
         );
     }
 }
@@ -6062,7 +6254,7 @@ fn draw_phone_agent_card(frame: &mut Frame, app: &App, area: Rect) {
             .block(phone_panel(
                 "◆ AGENT",
                 agent_phase_label(app.agent_phase),
-                PHONE_PURPLE,
+                agent_phase_color(app.agent_phase),
             ))
             .style(Style::default().bg(PHONE_PANEL))
             .wrap(Wrap { trim: true }),
@@ -6098,25 +6290,23 @@ fn agent_pipeline(phase: AgentPhase) -> Line<'static> {
 
 fn draw_phone_semantic_card(frame: &mut Frame, app: &App, area: Rect) {
     let summary = semantic_preview(&app.page_content, 3);
+    let (semantic_state, semantic_color) = match (app.semantic_revision, app.semantic_consistent) {
+        (Some(_), _) if !app.browser_ready() => ("stale", Color::Yellow),
+        (Some(_), Some(true)) => ("consistent", PHONE_GREEN),
+        (Some(_), Some(false)) => ("unstable", Color::LightRed),
+        (Some(_), None) => ("observed", PHONE_CYAN),
+        (None, _) if app.browser_ready() => ("pending", PHONE_BLUE),
+        (None, _) => ("unavailable", PHONE_MUTED),
+    };
     let mut lines = vec![Line::from(vec![
         Span::styled("revision  ", Style::default().fg(PHONE_MUTED)),
         Span::styled(
-            app.visual_revision.to_string(),
+            app.semantic_revision
+                .map_or_else(|| "—".into(), |revision| revision.to_string()),
             Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  state  ", Style::default().fg(PHONE_MUTED)),
-        Span::styled(
-            if app.browser_ready() {
-                "confirmed"
-            } else {
-                "unavailable"
-            },
-            Style::default().fg(if app.browser_ready() {
-                PHONE_GREEN
-            } else {
-                PHONE_MUTED
-            }),
-        ),
+        Span::styled(semantic_state, Style::default().fg(semantic_color)),
     ])];
     lines.extend(summary.into_iter().map(|line| {
         Line::from(Span::styled(
@@ -6300,6 +6490,28 @@ const fn agent_phase_label(phase: AgentPhase) -> &'static str {
         AgentPhase::Working => "agent active",
         AgentPhase::Complete => "complete",
         AgentPhase::Failed => "needs attention",
+    }
+}
+
+const fn agent_phase_color(phase: AgentPhase) -> Color {
+    match phase {
+        AgentPhase::Idle | AgentPhase::Complete => PHONE_GREEN,
+        AgentPhase::Working => PHONE_PURPLE,
+        AgentPhase::Failed => Color::LightRed,
+    }
+}
+
+fn phone_live_status(app: &App) -> (&'static str, Color) {
+    if app.live.thumbnail_revision.is_some() && !app.browser_ready() {
+        ("stale frame", Color::Yellow)
+    } else if app.live.enabled() && app.live.thumbnail_revision.is_some() {
+        ("FRAME ●", PHONE_GREEN)
+    } else if app.live.enabled() && app.browser_ready() {
+        ("waiting for frame", PHONE_BLUE)
+    } else if app.browser_ready() {
+        ("browser connected", PHONE_CYAN)
+    } else {
+        ("needs attention", Color::LightRed)
     }
 }
 
@@ -6626,7 +6838,7 @@ fn draw_overlays(frame: &mut Frame, app: &App) {
         };
         frame.render_widget(
             Paragraph::new(
-                "1-5  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nlive on / live off\nlive doctor\nagent PROMPT\nproject open PATH\nproject diff\nsafari  native tunnel\nscreenshot PATH  explicit evidence",
+                "1-6  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nlive on / live off\nlive doctor\nagent PROMPT\nproject open PATH\nproject diff\nsafari  native tunnel\nscreenshot PATH  explicit evidence",
             )
             .block(block)
             .style(if app.display_class == DisplayClass::Phone {
@@ -6694,7 +6906,8 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide) {
+            let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -6708,7 +6921,7 @@ impl TerminalGuard {
         self.active = false;
         let raw_result = disable_raw_mode();
         let mut stdout = io::stdout();
-        let screen_result = execute!(stdout, LeaveAlternateScreen, Show);
+        let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
         match (raw_result, screen_result) {
             (Err(error), _) | (_, Err(error)) => Err(error),
             (Ok(()), Ok(())) => Ok(()),
@@ -7190,6 +7403,15 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn left_click(area: Rect) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x.saturating_add(area.width / 2),
+            row: area.y.saturating_add(area.height / 2),
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     #[test]
     fn command_parser_preserves_browser_actions_and_rejects_bad_scroll() {
         assert!(matches!(
@@ -7589,6 +7811,8 @@ mod tests {
         app.browser_state = BrowserState::Ready;
         app.url = "http://127.0.0.1:3000/checkout".into();
         app.visual_revision = 942;
+        app.semantic_revision = Some(942);
+        app.semantic_consistent = Some(true);
         app.visual_status = "visual assist: semantic preview".into();
         app.status = "Ready to patch CheckoutButton.tsx".into();
         app.agent_phase = AgentPhase::Working;
@@ -7642,8 +7866,10 @@ mod tests {
             "preview",
             "AGENT",
             "UNDERSTANDING",
+            "consistent",
             "TESTS & PROCESS",
             "COMMAND",
+            "remote",
             "Overview",
             "Browser",
             "Process",
@@ -7664,6 +7890,92 @@ mod tests {
             "agent and browser state need mock-inspired accent color"
         );
         assert!(panel_cells > 40, "cards need a distinct panel surface");
+    }
+
+    #[test]
+    fn phone_overview_cards_and_remote_view_affordance_are_actionable() {
+        let mut app = mock_remote_phone_app(46);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+
+        for (card, expected) in [
+            (PhoneOverviewCard::Browser, MobileView::App),
+            (PhoneOverviewCard::Agent, MobileView::Agent),
+            (PhoneOverviewCard::Semantic, MobileView::App),
+            (PhoneOverviewCard::Process, MobileView::Process),
+        ] {
+            app.set_mobile_view(MobileView::Home);
+            app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+            let area = app
+                .mobile_card_areas
+                .iter()
+                .find(|(candidate, _)| *candidate == card)
+                .map(|(_, area)| *area)
+                .unwrap();
+            assert_eq!(app.mouse_intent(left_click(area)), UiIntent::None);
+            assert_eq!(app.mobile_view, expected);
+        }
+
+        app.set_mobile_view(MobileView::Home);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        let remote = app.mobile_remote_view_area.unwrap();
+        assert_eq!(
+            app.mouse_intent(left_click(remote)),
+            UiIntent::Submit("browser remote-view open".into())
+        );
+        assert!(matches!(
+            parse_command("browser remote-view open"),
+            Ok(ParsedCommand::Local(LocalCommand::BrowserControl(
+                BrowserControlCommand::RemoteView(RemoteViewCommand::Open)
+            )))
+        ));
+    }
+
+    #[test]
+    fn phone_statuses_report_actual_frame_semantic_and_agent_evidence() {
+        let mut app = mock_remote_phone_app(46);
+        app.live.mode = TuiLiveMode::Off;
+        app.live.backend = None;
+        app.live.thumbnail_revision = None;
+        assert_eq!(phone_live_status(&app), ("browser connected", PHONE_CYAN));
+
+        app.live.mode = TuiLiveMode::On;
+        app.live.backend = Some(ActiveLiveBackend::Ansi);
+        assert_eq!(phone_live_status(&app), ("waiting for frame", PHONE_BLUE));
+        app.live.thumbnail_revision = Some(942);
+        assert_eq!(phone_live_status(&app), ("FRAME ●", PHONE_GREEN));
+        assert_eq!(agent_phase_color(AgentPhase::Failed), Color::LightRed);
+
+        app.semantic_revision = None;
+        let (pending, _, _) = rendered_phone(&app, 46, 50);
+        assert!(pending.contains("pending"));
+        assert!(!pending.contains("confirmed"));
+        app.semantic_revision = Some(943);
+        app.semantic_consistent = Some(false);
+        let (unstable, _, _) = rendered_phone(&app, 46, 50);
+        assert!(unstable.contains("unstable"));
+    }
+
+    #[test]
+    fn diagnostics_completion_cannot_complete_an_active_agent() {
+        let mut app = mock_remote_phone_app(46);
+        app.agent_phase = AgentPhase::Working;
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::Completed {
+                kind: DevelopmentAsyncKind::Diagnostics,
+                output: "diagnostics ready".into(),
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert_eq!(app.agent_phase, AgentPhase::Working);
+
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::Completed {
+                kind: DevelopmentAsyncKind::Agent,
+                output: "agent ready".into(),
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert_eq!(app.agent_phase, AgentPhase::Complete);
     }
 
     #[test]
@@ -7812,6 +8124,46 @@ mod tests {
                 .iter()
                 .any(|cell| cell.symbol() == "▀")
         );
+    }
+
+    #[test]
+    fn phone_overview_builds_a_portable_thumbnail_from_a_kitty_frame() {
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                ..RemoteContext::default()
+            },
+            46,
+            LiveViewOptions {
+                mode: TuiLiveMode::On,
+                backend: TuiLiveBackend::Kitty,
+                quality: TuiLiveQuality::Data,
+                ..LiveViewOptions::default()
+            },
+        );
+        app.browser_state = BrowserState::Ready;
+        app.set_mobile_view(MobileView::App);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        app.apply_visual_frame(
+            base64::engine::general_purpose::STANDARD.encode(test_live_png()),
+            serde_json::json!({"deviceWidth": 2, "deviceHeight": 2}),
+            11,
+        )
+        .unwrap();
+        assert_eq!(app.live.backend, Some(ActiveLiveBackend::Kitty));
+        assert_eq!(app.live.thumbnail_revision, Some(11));
+        assert!(!app.live.thumbnail_png.is_empty());
+
+        app.set_mobile_view(MobileView::Home);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        assert!(!app.live_capture_config().enabled);
+        assert_eq!(app.live.thumbnail_canvas_revision, Some(11));
+        assert!(!app.live.ansi.cells().is_empty());
+        let (rendered, _, _) = rendered_phone(&app, 46, 50);
+        assert!(rendered.contains("FRAME ●"));
+        assert!(rendered.contains('▀'));
     }
 
     #[test]

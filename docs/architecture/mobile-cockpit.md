@@ -154,7 +154,10 @@ Auto mode begins with the profile selected from independent transport/graphics
 evidence. Pressure reduces capture scale before frame rate. Local
 balanced/smooth target 30/60 FPS; 3/6/12 FPS profiles are constrained remote
 visual-assist modes only. Hidden Browser views suspend terminal capture. A
-manual selection disables adaptation until auto is restored.
+manual selection disables adaptation until auto is restored. Overview retains
+one bounded newest PNG and materializes a small ANSI thumbnail only when needed,
+so Herdr and Kitty sessions retain a portable card preview without continuing
+background capture.
 
 ## Tests
 
@@ -163,7 +166,9 @@ manual selection disables adaptation until auto is restored.
   verifies bounded Overview paging, and existing compact/wide tests guard the
   shared responsive reducer.
 - Reducer tests cover every printable navigation route, overlay focus, help,
-  command filtering and semantic stale refusal.
+  command filtering, clickable Overview destinations, the Remote View action,
+  evidence-derived status labels, async agent attribution and semantic stale
+  refusal.
 - Browser recovery tests cover compatible/unrelated/unknown listeners, target
   selection, semantic-only and reconnect without project identity loss.
 - Design-asset validation verifies decodable images; the populated phone buffer

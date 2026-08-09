@@ -23,6 +23,14 @@ geometry-only breakpoints. The issue designs are therefore checked against
 both styled cells and a real terminal lifecycle, not by testing title text
 alone.
 
+The cards are an interaction contract as well as a visual hierarchy. Portrait
+tests click Browser, Agent, Understanding and Process hit regions, route the
+nested Remote View control through the real command parser, distinguish an
+actual received frame from a merely connected browser, reject browser readiness
+as semantic-confidence evidence, prevent diagnostics from completing an agent
+task, and build the Overview thumbnail from a Kitty-backed frame. The PTY test
+also proves mouse capture is enabled on entry and disabled on restoration.
+
 Interaction references applied to the final design:
 
 - [Claude Code interactive mode](https://code.claude.com/docs/en/interactive-mode):

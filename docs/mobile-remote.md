@@ -41,7 +41,10 @@ project the latest browser, agent, semantic, and process evidence; the bordered
 composer and six navigation pills remain reachable at the bottom. Needs-attention
 state takes priority above those cards. On very short terminals, `PageUp` and
 `PageDown` move through a bounded card window instead of crushing every card into
-unreadable rows. Enter `inbox` from any view to return to Overview. `notify on`
+unreadable rows. With terminal mouse reporting, tapping the Browser, Agent,
+Understanding, or Process card opens its full view. The Browser card's
+`[ remote ]` action queues the same loopback-only `browser remote-view open`
+operation as the command bar. Enter `inbox` from any view to return to Overview. `notify on`
 enables a deduplicated terminal bell for newly observed needs-attention items;
 notifications are off by default and contain no event payload.
 
@@ -59,11 +62,12 @@ glass --tui-layout mobile --tui-live on --tui-live-quality data
 ```
 
 Or enter `live on` in the command bar. Glass switches to Browser, starts a bounded
-PNG screencast, retains at most the current/pending frame, and never persists
-those live pixels. Returning to Overview suspends capture but keeps the one
-already-decoded bounded ANSI frame as the Live App thumbnail; disabling live,
-changing backend, or leaving the phone Overview releases it. Useful commands are
-`live status`, `live doctor`, `live
+PNG screencast, and never persists those live pixels. Returning to Overview
+suspends capture. Glass retains only the newest bounded PNG for the preview and
+decodes one small ANSI canvas on demand, including when the focused renderer was
+Herdr or Kitty; leaving Overview releases the decoded canvas while retaining the
+newest bounded source frame for a later return. Disabling live or changing
+backend releases both. Useful commands are `live status`, `live doctor`, `live
 off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
 auto|data|balanced|smooth`, and `live fit contain|cover|actual`.
 
@@ -234,8 +238,10 @@ private Safari tunnel.
   on their configuration, so `live doctor` reports what Glass actually chose.
 - iOS terminal Smart Keys can still send arrows, `Esc`, and control keys, but
   Glass phone navigation does not depend on their arrangement.
-- Mouse or touch events are optional. The numbered navigation row accepts
-  clicks when the client reports mouse events.
+- Mouse or touch events are optional. Glass enables terminal mouse capture while
+  the TUI owns the screen and disables it during cleanup. The numbered navigation
+  row and Overview cards accept clicks when the client forwards mouse events;
+  every destination remains available through printable keys or commands.
 - Orientation changes are handled through terminal resize events. The layout
   switches between phone, compact, and wide presentations in automatic mode.
 - Use a UTF-8 locale. Glass uses Unicode state markers but never relies on

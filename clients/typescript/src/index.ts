@@ -470,7 +470,7 @@ export interface ReconnectCapsule {
 
 export interface ReconnectCapsuleInput {
   eventCursor?: string;
-  mobileView?: "home" | "agent" | "app" | "diff" | "project";
+  mobileView?: "home" | "overview" | "agent" | "app" | "browser" | "diff" | "project" | "process" | "logs";
   browserTargetId?: string;
   browserRevision?: number;
   pendingAttention?: string;

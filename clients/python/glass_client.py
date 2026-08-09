@@ -379,7 +379,17 @@ class ReconnectCapsule(TypedDict):
 
 class ReconnectCapsuleInput(TypedDict, total=False):
     eventCursor: str
-    mobileView: Literal["home", "agent", "app", "diff", "project"]
+    mobileView: Literal[
+        "home",
+        "overview",
+        "agent",
+        "app",
+        "browser",
+        "diff",
+        "project",
+        "process",
+        "logs",
+    ]
     browserTargetId: str
     browserRevision: int
     pendingAttention: str

@@ -499,7 +499,7 @@ selection are not yet stabilised.
 
 The current 0.3.3 `glass` source binary negotiates 133 browser, semantic, and
 Development Runtime tools. The reproducible probe measures the serialized
-`tools` array at 42,918 UTF-8 bytes, or 10,730 tokens using the documented
+`tools` array at 42,956 UTF-8 bytes, or 10,739 tokens using the documented
 four-bytes-per-token estimate. JSON-RPC framing is excluded.
 
 ```console

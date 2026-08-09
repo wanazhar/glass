@@ -16,10 +16,10 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use serde_json::{Value, json};
 use std::{
@@ -84,6 +84,16 @@ const PHONE_MAX_COLUMNS: u16 = 72;
 const COMPACT_MAX_COLUMNS: u16 = 109;
 const LIVE_CAPTURE_MAX_WIDTH: u32 = 1280;
 const LIVE_CAPTURE_MAX_HEIGHT: u32 = 1024;
+const PHONE_BACKGROUND: Color = Color::Rgb(5, 10, 18);
+const PHONE_PANEL: Color = Color::Rgb(9, 17, 29);
+const PHONE_PANEL_ACTIVE: Color = Color::Rgb(13, 27, 43);
+const PHONE_BORDER: Color = Color::Rgb(48, 67, 88);
+const PHONE_TEXT: Color = Color::Rgb(224, 232, 240);
+const PHONE_MUTED: Color = Color::Rgb(126, 140, 163);
+const PHONE_CYAN: Color = Color::Rgb(83, 219, 238);
+const PHONE_BLUE: Color = Color::Rgb(76, 166, 255);
+const PHONE_GREEN: Color = Color::Rgb(116, 226, 112);
+const PHONE_PURPLE: Color = Color::Rgb(198, 112, 255);
 /// Visible Browser Workspace presentation modes. Each mode changes the
 /// inspection surface, but never changes browser authority or policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,6 +149,28 @@ impl MobileView {
         }
     }
 
+    const fn capsule_key(self) -> &'static str {
+        match self {
+            Self::Home => "home",
+            Self::Agent => "agent",
+            Self::App => "app",
+            Self::Diff => "diff",
+            Self::Project => "project",
+            Self::Process => "process",
+        }
+    }
+
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Home => "⌂",
+            Self::Agent => "◆",
+            Self::App => "◎",
+            Self::Diff => "Δ",
+            Self::Project => "▣",
+            Self::Process => ">_",
+        }
+    }
+
     const fn from_number(number: u8) -> Option<Self> {
         match number {
             1 => Some(Self::Home),
@@ -150,6 +182,15 @@ impl MobileView {
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AgentPhase {
+    #[default]
+    Idle,
+    Working,
+    Complete,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -738,6 +779,7 @@ pub struct App {
     development: Option<ProjectWorkspace>,
     development_enabled: bool,
     harness: LocalHarness,
+    agent_phase: AgentPhase,
     pi_command_tx: Option<std_mpsc::Sender<HarnessRequest>>,
     lsp_command_tx: Option<std_mpsc::Sender<String>>,
     development_files: String,
@@ -905,6 +947,7 @@ impl App {
             development,
             development_enabled,
             harness: LocalHarness::default(),
+            agent_phase: AgentPhase::Idle,
             pi_command_tx: None,
             lsp_command_tx: None,
             development_files: "Project detection pending.".into(),
@@ -1134,7 +1177,7 @@ impl App {
             .events()
             .next_back()
             .map(|event| event.id.clone());
-        capsule.mobile_view = Some(self.mobile_view.label().to_ascii_lowercase());
+        capsule.mobile_view = Some(self.mobile_view.capsule_key().into());
         capsule.browser_target_id = self.browser_target_id.clone();
         capsule.browser_revision = Some(self.visual_revision);
         capsule.pending_attention = attention_inbox(project.timeline().events().cloned())
@@ -1292,6 +1335,9 @@ impl App {
             .next()
             .unwrap_or("inspect")
             .to_ascii_lowercase();
+        if matches!(operation_name.as_str(), "agent" | "pi") {
+            self.agent_phase = AgentPhase::Working;
+        }
         let result = (|| -> Result<String, String> {
             let mut parts = command.splitn(3, char::is_whitespace);
             let operation = parts.next().unwrap_or("inspect").to_ascii_lowercase();
@@ -1511,6 +1557,9 @@ impl App {
         })();
         match result {
             Ok(content) => {
+                if operation_name == "agent" {
+                    self.agent_phase = AgentPhase::Complete;
+                }
                 self.set_page_content(content);
                 self.set_status("Development workspace");
                 self.add_activity("Development command completed.");
@@ -1526,7 +1575,12 @@ impl App {
                     self.set_mobile_view(view);
                 }
             }
-            Err(error) => self.report_error(error),
+            Err(error) => {
+                if matches!(operation_name.as_str(), "agent" | "pi") {
+                    self.agent_phase = AgentPhase::Failed;
+                }
+                self.report_error(error);
+            }
         }
         self.refresh_development_view();
         self.refresh_development_diff();
@@ -1565,11 +1619,19 @@ impl App {
             changed = true;
             match event {
                 DevelopmentAsyncEvent::Completed(output) => {
+                    if self.agent_phase == AgentPhase::Working {
+                        self.agent_phase = AgentPhase::Complete;
+                    }
                     self.set_page_content(output);
                     self.set_status("Development operation completed");
                     self.add_activity("Asynchronous development operation completed.");
                 }
-                DevelopmentAsyncEvent::Failed(error) => self.report_error(error),
+                DevelopmentAsyncEvent::Failed(error) => {
+                    if self.agent_phase == AgentPhase::Working {
+                        self.agent_phase = AgentPhase::Failed;
+                    }
+                    self.report_error(error);
+                }
             }
         }
         if changed {
@@ -2588,7 +2650,15 @@ impl App {
             self.live.enabled(),
         ) else {
             self.live_area = None;
-            self.live.ansi.clear();
+            // The phone Overview deliberately keeps one already-decoded frame so its
+            // Live App card can act as a visual thumbnail. Capture remains suspended
+            // because there is no live pane, and AnsiCanvas is bounded to one frame.
+            let retain_phone_thumbnail = self.display_class == DisplayClass::Phone
+                && self.mobile_view == MobileView::Home
+                && self.live.enabled();
+            if !retain_phone_thumbnail {
+                self.live.ansi.clear();
+            }
             self.live.stop_herdr();
             return Ok(self.graphics.clear_pane()?);
         };
@@ -5145,7 +5215,7 @@ fn handle_submission(
                         .events()
                         .next_back()
                         .map(|event| event.id.clone());
-                    capsule.mobile_view = Some(app.mobile_view.label().to_ascii_lowercase());
+                    capsule.mobile_view = Some(app.mobile_view.capsule_key().into());
                     capsule.browser_target_id = app.browser_target_id.clone();
                     capsule.browser_revision = Some(app.visual_revision);
                     capsule.pending_attention =
@@ -5415,10 +5485,11 @@ struct RootRegions {
 
 fn root_regions(area: Rect, class: DisplayClass) -> RootRegions {
     if class == DisplayClass::Phone {
+        let header_height = if area.height >= 24 { 4 } else { 3 };
         let regions = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(header_height),
                 Constraint::Min(5),
                 Constraint::Length(3),
                 Constraint::Length(2),
@@ -5546,32 +5617,16 @@ fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
-    let header = format!(
-        "{} · {:?} · {:?} · {}",
-        app.mode.label(),
-        app.connection_environment.transport,
-        app.connection_environment.graphics,
-        if app.browser_ready() {
-            "browser attached"
-        } else {
-            "browser needs attention"
-        }
-    );
     frame.render_widget(
-        Paragraph::new(header)
-            .block(Block::default().borders(Borders::ALL).title("Glass"))
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        root.header,
+        Block::default().style(Style::default().bg(PHONE_BACKGROUND)),
+        frame.area(),
     );
+    draw_phone_header(frame, app, root.header);
 
     let (title, content) = match app.mobile_view {
-        MobileView::Home => ("Overview", mobile_home(app)),
+        MobileView::Home => ("Overview", String::new()),
         MobileView::Agent => (
-            "Agent / Timeline",
+            "◆ AGENT / TIMELINE",
             format!(
                 "{}\n\nLATEST RESULT\n{}",
                 app.activity.iter().cloned().collect::<Vec<_>>().join("\n"),
@@ -5579,7 +5634,7 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
             ),
         ),
         MobileView::App => (
-            "Browser · tap · visual assist · Remote View",
+            "◎ BROWSER",
             if app.tap_mode {
                 format!("{}\n\n{}", app.tap_overlay(), app.page_content)
             } else {
@@ -5587,15 +5642,15 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
             },
         ),
         MobileView::Diff => (
-            "Diff / Verification",
+            "Δ DIFF / VERIFICATION",
             format!(
                 "VERIFICATION CARD\n{}\n\nPROJECT DIFF\n{}",
                 app.verification_summary, app.development_diff
             ),
         ),
-        MobileView::Project => ("Project / Editor / Diagnostics", mobile_project(app)),
+        MobileView::Project => ("▣ PROJECT / EDITOR", mobile_project(app)),
         MobileView::Process => (
-            "Process / Tests / Logs",
+            ">_ PROCESS / TESTS / LOGS",
             format!(
                 "{}
 
@@ -5615,22 +5670,47 @@ RECENT ACTIVITY
             ),
         ),
     };
-    if app.mobile_view == MobileView::App && app.live.enabled() {
-        render_live_or_semantic(frame, app, title, &content, root.content);
+    if app.mobile_view == MobileView::Home {
+        draw_phone_overview(frame, app, root.content);
+    } else if app.mobile_view == MobileView::App && app.live.enabled() {
+        draw_phone_live_view(frame, app, title, &content, root.content);
     } else {
+        let accent = mobile_view_accent(app.mobile_view);
         frame.render_widget(
             Paragraph::new(content)
-                .block(Block::default().borders(Borders::ALL).title(title))
+                .block(phone_panel(title, mobile_view_status(app), accent))
+                .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL))
                 .scroll((app.page_scroll, 0))
                 .wrap(Wrap { trim: true }),
             root.content,
         );
     }
+
+    let before = app.input.chars().take(app.cursor_pos).collect::<String>();
+    let after = app.input.chars().skip(app.cursor_pos).collect::<String>();
     frame.render_widget(
-        Paragraph::new(app.input.as_str()).block(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "› ",
+                Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(before, Style::default().fg(PHONE_TEXT)),
+            Span::styled("▏", Style::default().fg(PHONE_CYAN)),
+            Span::styled(after, Style::default().fg(PHONE_TEXT)),
+        ]))
+        .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Command · agent PROMPT"),
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PHONE_BLUE))
+                .style(Style::default().bg(PHONE_PANEL))
+                .title(Line::from(vec![
+                    Span::styled(
+                        " >_ COMMAND ",
+                        Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("  Enter send ", Style::default().fg(PHONE_MUTED)),
+                ])),
         ),
         root.command,
     );
@@ -5648,8 +5728,15 @@ RECENT ACTIVITY
         );
     }
     frame.render_widget(
-        Paragraph::new(format!(" {} | Tab: views | ?: help | q: quit", app.status))
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(" : ", Style::default().fg(PHONE_CYAN)),
+            Span::styled("palette", Style::default().fg(PHONE_MUTED)),
+            Span::styled("  ? ", Style::default().fg(PHONE_CYAN)),
+            Span::styled("help", Style::default().fg(PHONE_MUTED)),
+            Span::styled("  ·  ", Style::default().fg(PHONE_BORDER)),
+            Span::styled(one_line(&app.status, 30), Style::default().fg(PHONE_MUTED)),
+        ]))
+        .style(Style::default().bg(PHONE_BACKGROUND)),
         root.footer,
     );
 }
@@ -5658,60 +5745,586 @@ fn mobile_nav_line(app: &App, views: [MobileView; 3]) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, view) in views.into_iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("│", Style::default().fg(PHONE_BORDER)));
         }
         let style = if view == app.mobile_view {
             Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .fg(PHONE_CYAN)
+                .bg(PHONE_PANEL_ACTIVE)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(PHONE_MUTED).bg(PHONE_PANEL)
         };
         spans.push(Span::styled(
-            format!("{} {}", view.number(), view.label()),
+            format!(" {} {} {} ", view.number(), view.glyph(), view.label()),
             style,
         ));
     }
     Line::from(spans)
 }
 
-fn mobile_home(app: &App) -> String {
-    format!(
-        "{}\n\nAGENT\n{}\n\nLIVE APP\n{}\nrevision {} · {}\n{}\n\nUNDERSTANDING\n{}\n\nTESTS / PROCESS\n{}\n\nCONNECTION\n{:?} · {:?} · {:?}\nRTT {} · throughput {}",
-        app.attention_summary,
-        app.status,
-        if app.url.is_empty() {
-            "No page loaded"
-        } else {
-            app.url.as_str()
-        },
-        app.visual_revision,
-        if app.browser_ready() {
-            "fresh"
-        } else {
-            "unavailable"
-        },
-        app.visual_status,
-        app.page_content
-            .lines()
-            .take(5)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        app.development_runtime,
-        app.connection_environment.transport,
-        app.connection_environment.graphics,
-        app.connection_environment.multiplexer,
-        app.connection_environment
-            .measurements
-            .rtt_ms
-            .map(|value| format!("{value:.0}ms"))
-            .unwrap_or_else(|| "unknown".into()),
-        app.connection_environment
-            .measurements
-            .estimated_throughput_mbps
-            .map(|value| format!("{value:.1}Mbps"))
-            .unwrap_or_else(|| "unknown".into()),
+fn draw_phone_header(frame: &mut Frame, app: &App, area: Rect) {
+    let project = phone_project_name(app);
+    let branch = phone_runtime_value(app, "branch:").unwrap_or_else(|| "detached".into());
+    let connection = if app.remote_context.ssh || app.remote_context.mosh {
+        format!("● {} · mobile", app.remote_context.label())
+    } else {
+        "● local · mobile".into()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PHONE_BORDER))
+        .style(Style::default().bg(PHONE_BACKGROUND))
+        .title(Span::styled(
+            " ◈ GLASS REMOTE ",
+            Style::default().fg(PHONE_TEXT).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            one_line(&project, 18),
+            Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(one_line(&branch, 18), Style::default().fg(PHONE_MUTED)),
+        Span::styled("  ", Style::default()),
+        Span::styled(connection, Style::default().fg(PHONE_GREEN)),
+    ])];
+    if inner.height > 1 {
+        lines.push(Line::from(vec![
+            phone_chip(agent_phase_label(app.agent_phase), PHONE_GREEN),
+            Span::raw(" "),
+            phone_chip(&format!("rev {}", app.visual_revision), PHONE_CYAN),
+            Span::raw(" "),
+            phone_chip(browser_state_label(app), PHONE_PURPLE),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PHONE_BACKGROUND)),
+        inner,
+    );
+}
+
+fn phone_chip(label: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(color)
+            .bg(PHONE_PANEL_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhoneOverviewCard {
+    Attention,
+    Browser,
+    Agent,
+    Semantic,
+    Process,
+}
+
+fn draw_phone_overview(frame: &mut Frame, app: &App, area: Rect) {
+    let urgent = phone_attention_lines(app).is_some();
+    let mut cards = Vec::new();
+    if urgent {
+        cards.push(PhoneOverviewCard::Attention);
+    }
+    cards.extend([
+        PhoneOverviewCard::Browser,
+        PhoneOverviewCard::Agent,
+        PhoneOverviewCard::Semantic,
+        PhoneOverviewCard::Process,
+    ]);
+
+    let visible = if area.height >= 28 {
+        cards
+    } else {
+        let count = if area.height >= 16 { 3 } else { 2 };
+        let start = (usize::from(app.page_scroll) / 10).min(cards.len().saturating_sub(1));
+        cards.into_iter().cycle().skip(start).take(count).collect()
+    };
+    let gap_count = if area.height >= 20 {
+        visible.len().saturating_sub(1) as u16
+    } else {
+        0
+    };
+    let card_space = area.height.saturating_sub(gap_count);
+    let count = visible.len() as u16;
+    let base = card_space / count.max(1);
+    let remainder = card_space % count.max(1);
+    let mut heights = (0..visible.len())
+        .map(|index| base + u16::from((index as u16) < remainder))
+        .collect::<Vec<_>>();
+    if visible.len() == 4
+        && let Some(browser) = visible
+            .iter()
+            .position(|card| *card == PhoneOverviewCard::Browser)
+        && let Some(process) = visible
+            .iter()
+            .position(|card| *card == PhoneOverviewCard::Process)
+        && heights[process] > 5
+    {
+        heights[browser] += 1;
+        heights[process] -= 1;
+    }
+    let mut constraints = Vec::new();
+    for (index, height) in heights.into_iter().enumerate() {
+        if index > 0 && area.height >= 20 {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Length(height));
+    }
+    let regions = Layout::vertical(constraints).split(area);
+    let mut region_index = 0;
+    for (index, card) in visible.into_iter().enumerate() {
+        if index > 0 && area.height >= 20 {
+            region_index += 1;
+        }
+        if let Some(region) = regions.get(region_index).copied() {
+            draw_phone_overview_card(frame, app, card, region);
+        }
+        region_index += 1;
+    }
+}
+
+fn draw_phone_overview_card(frame: &mut Frame, app: &App, card: PhoneOverviewCard, area: Rect) {
+    match card {
+        PhoneOverviewCard::Attention => draw_phone_attention_card(frame, app, area),
+        PhoneOverviewCard::Browser => draw_phone_browser_card(frame, app, area),
+        PhoneOverviewCard::Agent => draw_phone_agent_card(frame, app, area),
+        PhoneOverviewCard::Semantic => draw_phone_semantic_card(frame, app, area),
+        PhoneOverviewCard::Process => draw_phone_process_card(frame, app, area),
+    }
+}
+
+fn phone_panel(title: &str, status: &str, accent: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PHONE_BORDER))
+        .style(Style::default().bg(PHONE_PANEL))
+        .title(Line::from(vec![
+            Span::styled(
+                format!(" {title} "),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("· {status} "), Style::default().fg(PHONE_MUTED)),
+        ]))
+}
+
+fn draw_phone_attention_card(frame: &mut Frame, app: &App, area: Rect) {
+    let lines =
+        phone_attention_lines(app).unwrap_or_else(|| vec!["No items need attention.".into()]);
+    frame.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .map(|line| {
+                    Line::from(vec![
+                        Span::styled(
+                            "! ",
+                            Style::default()
+                                .fg(Color::LightRed)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            one_line(&line, area.width.saturating_sub(5) as usize),
+                            Style::default().fg(PHONE_TEXT),
+                        ),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+        )
+        .block(phone_panel("NEEDS YOU", "action required", Color::LightRed))
+        .style(Style::default().bg(PHONE_PANEL)),
+        area,
+    );
+}
+
+fn draw_phone_browser_card(frame: &mut Frame, app: &App, area: Rect) {
+    let status = if app.browser_ready() {
+        "LIVE ●"
+    } else {
+        "needs attention"
+    };
+    let block = phone_panel(
+        "◎ LIVE APP",
+        status,
+        if app.browser_ready() {
+            PHONE_GREEN
+        } else {
+            PHONE_BLUE
+        },
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    let path = phone_url_path(&app.url);
+    let details = vec![
+        Line::from(Span::styled(
+            one_line(&path, 28),
+            Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled(
+                format!("rev {}", app.visual_revision),
+                Style::default().fg(PHONE_BLUE),
+            ),
+            Span::styled(
+                if app.browser_ready() {
+                    "  fresh"
+                } else {
+                    "  unavailable"
+                },
+                Style::default().fg(if app.browser_ready() {
+                    PHONE_GREEN
+                } else {
+                    PHONE_MUTED
+                }),
+            ),
+        ]),
+        Line::from(Span::styled(
+            one_line(&app.visual_status, 32),
+            Style::default().fg(PHONE_MUTED),
+        )),
+        Line::from(Span::styled(
+            "3 Browser · tap to expand",
+            Style::default().fg(PHONE_TEXT),
+        )),
+    ];
+    if inner.width >= 42 && inner.height >= 5 {
+        let columns = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(inner);
+        let preview = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(PHONE_BORDER))
+            .title(Span::styled(" preview ", Style::default().fg(PHONE_MUTED)));
+        let preview_inner = preview.inner(columns[0]);
+        frame.render_widget(preview, columns[0]);
+        if !app.live.ansi.cells().is_empty() {
+            render_ansi_cells(frame, app, preview_inner);
+        } else {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled("structured", Style::default().fg(PHONE_CYAN))),
+                    Line::from(Span::styled(
+                        "visual assist",
+                        Style::default().fg(PHONE_MUTED),
+                    )),
+                ])
+                .alignment(Alignment::Center),
+                preview_inner,
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(details)
+                .style(Style::default().bg(PHONE_PANEL))
+                .wrap(Wrap { trim: true }),
+            columns[1],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(details)
+                .style(Style::default().bg(PHONE_PANEL))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+    }
+}
+
+fn draw_phone_agent_card(frame: &mut Frame, app: &App, area: Rect) {
+    let recent = app
+        .activity
+        .iter()
+        .rev()
+        .find(|line| !line.starts_with("Connecting") && line.as_str() != "Glass started.")
+        .map(|line| one_line(line, area.width.saturating_sub(4) as usize))
+        .unwrap_or_else(|| "Ready for an explicit task.".into());
+    let lines = vec![
+        agent_pipeline(app.agent_phase),
+        Line::from(Span::styled(recent, Style::default().fg(PHONE_TEXT))),
+        Line::from(Span::styled(
+            one_line(&app.status, area.width.saturating_sub(4) as usize),
+            Style::default().fg(PHONE_CYAN),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(phone_panel(
+                "◆ AGENT",
+                agent_phase_label(app.agent_phase),
+                PHONE_PURPLE,
+            ))
+            .style(Style::default().bg(PHONE_PANEL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn agent_pipeline(phase: AgentPhase) -> Line<'static> {
+    let (context, tools, verify) = match phase {
+        AgentPhase::Idle => (("○", PHONE_MUTED), ("○", PHONE_MUTED), ("○", PHONE_MUTED)),
+        AgentPhase::Working => (("✓", PHONE_GREEN), ("◉", PHONE_PURPLE), ("○", PHONE_MUTED)),
+        AgentPhase::Complete => (("✓", PHONE_GREEN), ("✓", PHONE_GREEN), ("✓", PHONE_GREEN)),
+        AgentPhase::Failed => (
+            ("✓", PHONE_GREEN),
+            ("!", Color::LightRed),
+            ("○", PHONE_MUTED),
+        ),
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{} context", context.0),
+            Style::default().fg(context.1),
+        ),
+        Span::styled("  →  ", Style::default().fg(PHONE_MUTED)),
+        Span::styled(format!("{} tools", tools.0), Style::default().fg(tools.1)),
+        Span::styled("  →  ", Style::default().fg(PHONE_MUTED)),
+        Span::styled(
+            format!("{} verify", verify.0),
+            Style::default().fg(verify.1),
+        ),
+    ])
+}
+
+fn draw_phone_semantic_card(frame: &mut Frame, app: &App, area: Rect) {
+    let summary = semantic_preview(&app.page_content, 3);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("revision  ", Style::default().fg(PHONE_MUTED)),
+        Span::styled(
+            app.visual_revision.to_string(),
+            Style::default().fg(PHONE_CYAN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  state  ", Style::default().fg(PHONE_MUTED)),
+        Span::styled(
+            if app.browser_ready() {
+                "confirmed"
+            } else {
+                "unavailable"
+            },
+            Style::default().fg(if app.browser_ready() {
+                PHONE_GREEN
+            } else {
+                PHONE_MUTED
+            }),
+        ),
+    ])];
+    lines.extend(summary.into_iter().map(|line| {
+        Line::from(Span::styled(
+            one_line(&line, area.width.saturating_sub(4) as usize),
+            Style::default().fg(PHONE_TEXT),
+        ))
+    }));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(phone_panel("◈ UNDERSTANDING", "semantic state", PHONE_CYAN))
+            .style(Style::default().bg(PHONE_PANEL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn draw_phone_process_card(frame: &mut Frame, app: &App, area: Rect) {
+    let branch = phone_runtime_value(app, "branch:").unwrap_or_else(|| "detached".into());
+    let process = phone_runtime_section_line(app, "PROCESSES")
+        .unwrap_or_else(|| "○ no managed process".into());
+    let (changed, visual) = verification_card_summary(app);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("branch  ", Style::default().fg(PHONE_MUTED)),
+            Span::styled(one_line(&branch, 24), Style::default().fg(PHONE_CYAN)),
+        ]),
+        Line::from(Span::styled(
+            one_line(&process, area.width.saturating_sub(4) as usize),
+            Style::default().fg(if process.contains("running") {
+                PHONE_GREEN
+            } else {
+                PHONE_TEXT
+            }),
+        )),
+        Line::from(vec![
+            Span::styled(format!("{changed} files"), Style::default().fg(PHONE_GREEN)),
+            Span::styled("  ·  visual ", Style::default().fg(PHONE_MUTED)),
+            Span::styled(visual, Style::default().fg(PHONE_BLUE)),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(phone_panel(">_ TESTS & PROCESS", "workspace", PHONE_GREEN))
+            .style(Style::default().bg(PHONE_PANEL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn draw_phone_live_view(frame: &mut Frame, app: &App, title: &str, semantic: &str, area: Rect) {
+    let block = phone_panel(title, mobile_view_status(app), PHONE_BLUE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.live.ansi.cells().is_empty() || app.live.backend != Some(ActiveLiveBackend::Ansi) {
+        frame.render_widget(
+            Paragraph::new(if app.live.ansi.cells().is_empty() {
+                format!(
+                    "{}\n\nWaiting for live browser frame…",
+                    app.live_diagnostics()
+                )
+            } else {
+                semantic.to_string()
+            })
+            .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL))
+            .wrap(Wrap { trim: true }),
+            inner,
+        );
+    } else {
+        render_ansi_cells(frame, app, inner);
+    }
+}
+
+fn phone_project_name(app: &App) -> String {
+    app.development
+        .as_ref()
+        .and_then(|project| project.root().file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace")
+        .to_string()
+}
+
+fn phone_runtime_value(app: &App, prefix: &str) -> Option<String> {
+    app.development_runtime
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix).map(str::trim).map(str::to_string))
+}
+
+fn phone_runtime_section_line(app: &App, heading: &str) -> Option<String> {
+    app.development_runtime
+        .lines()
+        .skip_while(|line| *line != heading)
+        .skip(1)
+        .find(|line| !line.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn phone_attention_lines(app: &App) -> Option<Vec<String>> {
+    let mut lines = app.attention_summary.lines();
+    let heading = lines.next()?;
+    if heading.contains("(0)") || !heading.starts_with("NEEDS YOU") {
+        return None;
+    }
+    let items = lines
+        .take_while(|line| !line.starts_with("RUNNING"))
+        .filter(|line| !line.trim().is_empty() && line.trim() != "none")
+        .take(2)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then_some(items)
+}
+
+fn semantic_preview(content: &str, limit: usize) -> Vec<String> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !matches!(*line, "{" | "}" | "[" | "]"))
+        .take(limit)
+        .map(str::to_string)
+        .collect()
+}
+
+fn verification_card_summary(app: &App) -> (usize, String) {
+    serde_json::from_str::<Value>(&app.verification_summary)
+        .ok()
+        .map(|value| {
+            (
+                value
+                    .get("changedFiles")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                value
+                    .get("visualStatus")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not-captured")
+                    .to_string(),
+            )
+        })
+        .unwrap_or_else(|| (0, "not-captured".into()))
+}
+
+fn phone_url_path(url: &str) -> String {
+    if url.trim().is_empty() {
+        return "No page loaded".into();
+    }
+    url::Url::parse(url)
+        .ok()
+        .map(|url| {
+            let path = url.path();
+            if path.is_empty() {
+                "/".into()
+            } else {
+                path.into()
+            }
+        })
+        .unwrap_or_else(|| url.into())
+}
+
+const fn mobile_view_accent(view: MobileView) -> Color {
+    match view {
+        MobileView::Home | MobileView::Project => PHONE_CYAN,
+        MobileView::Agent => PHONE_PURPLE,
+        MobileView::App => PHONE_BLUE,
+        MobileView::Diff | MobileView::Process => PHONE_GREEN,
+    }
+}
+
+fn mobile_view_status(app: &App) -> &'static str {
+    match app.mobile_view {
+        MobileView::Home => "live workspace",
+        MobileView::Agent => agent_phase_label(app.agent_phase),
+        MobileView::App => browser_state_label(app),
+        MobileView::Diff => "verification",
+        MobileView::Project => "source",
+        MobileView::Process => "runtime",
+    }
+}
+
+const fn agent_phase_label(phase: AgentPhase) -> &'static str {
+    match phase {
+        AgentPhase::Idle => "agent ready",
+        AgentPhase::Working => "agent active",
+        AgentPhase::Complete => "complete",
+        AgentPhase::Failed => "needs attention",
+    }
+}
+
+fn browser_state_label(app: &App) -> &'static str {
+    match app.browser_state {
+        BrowserState::Ready => "browser attached",
+        BrowserState::Connecting => "connecting",
+        BrowserState::Recovery => "recovery",
+        BrowserState::SemanticOnly => "semantic only",
+        BrowserState::Unavailable => "unavailable",
+        BrowserState::Stopped => "stopped",
+    }
+}
+
+fn one_line(value: &str, max_chars: usize) -> String {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    if max_chars <= 1 {
+        return "…".chars().take(max_chars).collect();
+    }
+    let mut output = value.chars().take(max_chars - 1).collect::<String>();
+    output.push('…');
+    output
 }
 
 fn format_attention_inbox(items: Vec<crate::development::AttentionItem>) -> String {
@@ -5939,6 +6552,13 @@ fn render_live_or_semantic(
         );
         return;
     }
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_ansi_cells(frame, app, inner);
+}
+
+fn render_ansi_cells(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::with_capacity(usize::from(app.live.ansi.height()));
     for row in app
         .live
@@ -5969,7 +6589,7 @@ fn render_live_or_semantic(
         lines.push(Line::from(spans));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(lines).style(Style::default().bg(PHONE_PANEL)),
         area,
     );
 }
@@ -5997,11 +6617,23 @@ fn draw_overlays(frame: &mut Frame, app: &App) {
     if app.mobile_help {
         let popup = centered_popup_sized(frame.area(), 38, 15);
         frame.render_widget(Clear, popup);
+        let block = if app.display_class == DisplayClass::Phone {
+            phone_panel("? PHONE CONTROLS", "Esc closes", PHONE_CYAN)
+        } else {
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Phone controls")
+        };
         frame.render_widget(
             Paragraph::new(
                 "1-5  switch views\nTab  next view\nEsc  home / cancel\n?    close help\n\nlive on / live off\nlive doctor\nagent PROMPT\nproject open PATH\nproject diff\nsafari  native tunnel\nscreenshot PATH  explicit evidence",
             )
-            .block(Block::default().borders(Borders::ALL).title("Phone controls"))
+            .block(block)
+            .style(if app.display_class == DisplayClass::Phone {
+                Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL)
+            } else {
+                Style::default()
+            })
             .wrap(Wrap { trim: true }),
             popup,
         );
@@ -6009,10 +6641,21 @@ fn draw_overlays(frame: &mut Frame, app: &App) {
     if let Some(error) = &app.error_msg {
         let popup = centered_popup(frame.area());
         frame.render_widget(Clear, popup);
+        let block = if app.display_class == DisplayClass::Phone {
+            phone_panel("! NEEDS YOU", "error", Color::LightRed)
+        } else {
+            Block::default().borders(Borders::ALL).title("Error")
+        };
         frame.render_widget(
             Paragraph::new(error.as_str())
-                .block(Block::default().borders(Borders::ALL).title("Error"))
-                .style(Style::default().fg(Color::Red))
+                .block(block)
+                .style(Style::default().fg(Color::LightRed).bg(
+                    if app.display_class == DisplayClass::Phone {
+                        PHONE_PANEL
+                    } else {
+                        Color::Reset
+                    },
+                ))
                 .wrap(Wrap { trim: true }),
             popup,
         );
@@ -6926,9 +7569,136 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("1 Overview"));
-        assert!(rendered.contains("6 Process"));
-        assert!(rendered.contains("Command"));
+        assert!(rendered.contains("1 ⌂"));
+        assert!(rendered.contains("6 >_"));
+        assert!(rendered.contains("COMMAND"));
+    }
+
+    fn mock_remote_phone_app(width: u16) -> App {
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Mobile,
+            RemoteContext {
+                ssh: true,
+                herdr: true,
+                ..RemoteContext::default()
+            },
+            width,
+            LiveViewOptions::default(),
+        );
+        app.browser_state = BrowserState::Ready;
+        app.url = "http://127.0.0.1:3000/checkout".into();
+        app.visual_revision = 942;
+        app.visual_status = "visual assist: semantic preview".into();
+        app.status = "Ready to patch CheckoutButton.tsx".into();
+        app.agent_phase = AgentPhase::Working;
+        app.page_content = "selected: action.checkout.submit\nsource: CheckoutButton.tsx:46-51\nworkflow: checkout.guest PASS".into();
+        app.development_runtime = "branch: feat/checkout-flow\nlanguages: TypeScript\nbrowser: http://127.0.0.1:3000\n\nACTORS\n◆ Human [ReadWrite]\n◆ Glass Agent [ReadWrite]\n\nPROCESSES\n→ running pnpm-dev [Healthy]\n\nDIAGNOSTICS\n○ none published\n\nrevision: 942".into();
+        app.verification_summary = serde_json::json!({
+            "changedFiles": 1,
+            "visualStatus": "not-captured"
+        })
+        .to_string();
+        app.activity
+            .push_back("Found the loading bug in CheckoutButton.tsx.".into());
+        app
+    }
+
+    fn rendered_phone(app: &App, width: u16, height: u16) -> (String, usize, usize) {
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let purple_cells = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.fg == PHONE_PURPLE)
+            .count();
+        let panel_cells = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.bg == PHONE_PANEL)
+            .count();
+        (text, purple_cells, panel_cells)
+    }
+
+    #[test]
+    fn phone_overview_matches_remote_mock_hierarchy_at_ios_portrait() {
+        let app = mock_remote_phone_app(46);
+        let (rendered, purple_cells, panel_cells) = rendered_phone(&app, 46, 50);
+
+        for marker in [
+            "GLASS REMOTE",
+            "agent active",
+            "rev 942",
+            "LIVE APP",
+            "preview",
+            "AGENT",
+            "UNDERSTANDING",
+            "TESTS & PROCESS",
+            "COMMAND",
+            "Overview",
+            "Browser",
+            "Process",
+        ] {
+            assert!(rendered.contains(marker), "phone render omits {marker}");
+        }
+        let browser = rendered.find("LIVE APP").unwrap();
+        let agent = rendered.find("AGENT").unwrap();
+        let semantic = rendered.find("UNDERSTANDING").unwrap();
+        let process = rendered.find("TESTS & PROCESS").unwrap();
+        assert!(browser < agent && agent < semantic && semantic < process);
+        assert!(
+            rendered.matches('╭').count() >= 6,
+            "mock hierarchy needs distinct rounded cards"
+        );
+        assert!(
+            purple_cells > 0,
+            "agent and browser state need mock-inspired accent color"
+        );
+        assert!(panel_cells > 40, "cards need a distinct panel surface");
+    }
+
+    #[test]
+    fn phone_overview_compacts_into_a_paged_priority_window() {
+        let mut app = mock_remote_phone_app(40);
+        let (first, _, _) = rendered_phone(&app, 40, 20);
+        assert!(first.contains("LIVE APP"));
+        assert!(first.contains("AGENT"));
+        assert!(!first.contains("TESTS & PROCESS"));
+
+        app.page_scroll = 20;
+        let (later, _, _) = rendered_phone(&app, 40, 20);
+        assert!(later.contains("UNDERSTANDING"));
+        assert!(later.contains("TESTS & PROCESS"));
+        assert!(!later.contains("LIVE APP"));
+    }
+
+    #[test]
+    fn all_phone_views_have_stable_reconnect_capsule_keys() {
+        let mut app = mock_remote_phone_app(46);
+        for view in [
+            MobileView::Home,
+            MobileView::Agent,
+            MobileView::App,
+            MobileView::Diff,
+            MobileView::Project,
+            MobileView::Process,
+        ] {
+            app.mobile_view = view;
+            let mut capsule =
+                ReconnectCapsule::new(app.development.as_ref().expect("project workspace").root())
+                    .unwrap();
+            capsule.mobile_view = Some(view.capsule_key().into());
+            capsule.validate().unwrap();
+        }
     }
 
     #[test]
@@ -6975,7 +7745,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Browser recovery"));
-        assert!(rendered.contains("Command"));
+        assert!(rendered.contains("COMMAND"));
     }
 
     #[test]
@@ -7014,6 +7784,24 @@ mod tests {
         assert_eq!(app.graphics.browser_revision(), 7);
 
         let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() == "▀")
+        );
+
+        app.set_mobile_view(MobileView::Home);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        assert!(!app.live_capture_config().enabled);
+        assert!(app.live_area.is_none());
+        assert!(!app.live.ansi.cells().is_empty());
+
+        let backend = TestBackend::new(46, 50);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
         assert!(

@@ -3988,7 +3988,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "project.capsule.save",
             description: "Atomically save a bounded, non-sensitive reconnect capsule for one project.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","agent","app","diff","project"]},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","overview","agent","app","browser","diff","project","process","logs"]},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
         },
         Tool {
             name: "project.capsule.show",

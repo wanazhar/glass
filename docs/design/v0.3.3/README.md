@@ -5,17 +5,23 @@ mockups. Both decode in the release gate. The iOS JPEG is rendered from
 `remote-ios-concept.svg`; retaining the source prevents another opaque or
 truncated binary from being accepted.
 
-The implemented hierarchy is validated twice at 40×20. The deterministic
-`phone_layout_renders_at_portrait_size_and_has_no_graphics_pane` test renders
-through Ratatui's cell backend and verifies the Overview and Process endpoints,
-composer, and absence of a graphics pane. The Linux
+The implemented hierarchy is validated at both constrained and full portrait
+sizes. The deterministic
+`phone_overview_matches_remote_mock_hierarchy_at_ios_portrait` test renders a
+populated 46×50 Ratatui buffer and verifies the mock ordering, rounded card
+separation, status chips, preview inset, colored agent surface, panel
+background, composer, and navigation. A 40×20 test verifies that the Overview
+collapses into a page-bounded priority window and that later semantic/process
+cards remain reachable. The Linux
 `phone_tui_renders_and_leaves_a_real_terminal_cleanly` integration test then
 starts the packaged executable on a real 40×20 pseudo-terminal, captures its
-actual ANSI render, checks the title, Overview card and printable Command
-composer, and proves terminal restoration. Adjacent tests cover printable 1–6
-navigation, semantic tap priority, portrait ANSI bounds, stale pointer
-rejection, and geometry-only breakpoints. The issue designs were checked
-against both cell and real-terminal output.
+actual ANSI render, checks the title, Overview surface and printable Command
+composer, and proves terminal restoration. Adjacent tests cover all six
+reconnect keys, current/legacy capsule aliases, printable 1–6 navigation,
+semantic tap priority, portrait ANSI bounds, stale pointer rejection, and
+geometry-only breakpoints. The issue designs are therefore checked against
+both styled cells and a real terminal lifecycle, not by testing title text
+alone.
 
 Interaction references applied to the final design:
 

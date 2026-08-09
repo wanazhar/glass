@@ -36,7 +36,7 @@ release: 0.3.3
 
 Completed by direct serial work. Documentation coverage validates 350 Markdown
 files, exact CLI inventories, 133 MCP tools, 17 examples, 22 public modules,
-and the live 42,918-byte MCP schema. The 16 depth contracts and complete
+and the then-live 42,918-byte MCP schema. The 16 depth contracts and complete
 current-guide routing pass. Strict workspace rustdoc/doctests, TypeScript and
 Python client builds/smokes, formatting, release truth, version parity,
 feature parity, reliability inventories, Web IR corpus, shell syntax, and both

@@ -22,7 +22,7 @@ views:
 
 | Key | View | Purpose |
 |---|---|---|
-| `1` | Overview | Connection, browser, runtime, test, and actor status |
+| `1` | Overview | Connection chips plus Live App, Agent, Understanding, and Tests & Process cards |
 | `2` | Agent | Agent activity and attributed timeline |
 | `3` | Browser | Structured semantics, live view, recovery, and Safari handoff |
 | `4` | Project | Files, editor state, diagnostics, and actors |
@@ -35,10 +35,15 @@ while the command bar is empty, so commands and agent prompts can contain
 numbers normally. `:` or `/` opens the command-palette hint, and `Ctrl-L`
 redraws. Function keys, pointer input, and control-key chords are not required.
 
-Overview groups activity into `NEEDS YOU`, `RUNNING`, and `RECENT`. Enter `inbox`
-from any view to return to it. `notify on` enables a deduplicated terminal bell
-for newly observed needs-attention items; notifications are off by default and
-contain no event payload.
+Overview mirrors a native mobile cockpit without inventing state: the header
+shows project, revision, connection, agent, and browser status; rounded cards
+project the latest browser, agent, semantic, and process evidence; the bordered
+composer and six navigation pills remain reachable at the bottom. Needs-attention
+state takes priority above those cards. On very short terminals, `PageUp` and
+`PageDown` move through a bounded card window instead of crushing every card into
+unreadable rows. Enter `inbox` from any view to return to Overview. `notify on`
+enables a deduplicated terminal bell for newly observed needs-attention items;
+notifications are off by default and contain no event payload.
 
 Enter `tap` in Browser to replace fragile pixel targeting with up to nine numbered,
 revision-bound semantic targets. Type or tap the number to execute through the
@@ -55,7 +60,10 @@ glass --tui-layout mobile --tui-live on --tui-live-quality data
 
 Or enter `live on` in the command bar. Glass switches to Browser, starts a bounded
 PNG screencast, retains at most the current/pending frame, and never persists
-those live pixels. Useful commands are `live status`, `live doctor`, `live
+those live pixels. Returning to Overview suspends capture but keeps the one
+already-decoded bounded ANSI frame as the Live App thumbnail; disabling live,
+changing backend, or leaving the phone Overview releases it. Useful commands are
+`live status`, `live doctor`, `live
 off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
 auto|data|balanced|smooth`, and `live fit contain|cover|actual`.
 
@@ -71,7 +79,8 @@ aligned.
 Local balanced and smooth target 30 and 60 FPS. Verified fast remote links use
 20/24/30 FPS; constrained or unknown remote links use 3/6/12. Auto quality
 reduces capture scale before rate, settled/idle states throttle to 5/3 FPS,
-and background acquisition pauses. Supply measured evidence or explicit
+and background acquisition pauses. The Overview thumbnail does not keep
+background acquisition alive. Supply measured evidence or explicit
 overrides when auto detection cannot know:
 
 ```console

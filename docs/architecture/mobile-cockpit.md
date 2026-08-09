@@ -51,10 +51,19 @@ browser PIDs or stale target IDs.
 └────────────────────────────────────┘
 ```
 
-The Overview is a vertically scrollable card stack. The compact header and
-command/navigation footer remain visible. Cards collapse/expand. Browser
-pixels are a preview or deliberate burst and cannot displace command input,
-agent state or process health.
+The Overview is an adaptive card stack. At normal phone heights it renders
+separate needs-attention, live-app, agent, understanding, and process cards.
+At short terminal heights it collapses to a two- or three-card priority window;
+`PageUp` and `PageDown` page through the remaining cards. The project/status
+header, command composer, navigation, and help/status footer remain visible.
+Browser pixels are a preview or deliberate burst and cannot displace command
+input, agent state, or process health.
+
+The terminal-native rendering approximates the issue-pinned iOS/Android visual
+language with rounded Unicode card borders, dark panel surfaces, cyan browser
+and semantic state, purple agent state, green runtime/verification state,
+status chips, a preview inset, and a visible command cursor. It does not claim
+pixel identity with native phone controls.
 
 ## Focused views
 
@@ -149,11 +158,15 @@ manual selection disables adaptation until auto is restored.
 
 ## Tests
 
-- Ratatui buffer snapshots cover 72x28, 78x34, 96x40 and compact/wide layouts.
+- A populated 46x50 Ratatui buffer test verifies the reference hierarchy,
+  rounded cards, preview inset, palette, composer and navigation; a 40x20 test
+  verifies bounded Overview paging, and existing compact/wide tests guard the
+  shared responsive reducer.
 - Reducer tests cover every printable navigation route, overlay focus, help,
   command filtering and semantic stale refusal.
 - Browser recovery tests cover compatible/unrelated/unknown listeners, target
   selection, semantic-only and reconnect without project identity loss.
-- Design-asset validation verifies decodable images, and generated TUI
-  snapshots are reviewed against their information hierarchy.
+- Design-asset validation verifies decodable images; the populated phone buffer
+  is asserted against their information hierarchy and a real 40x20 PTY test
+  covers executable rendering and terminal restoration.
 - Resident/capsule/inbox/card tests retain their bounds and privacy contracts.

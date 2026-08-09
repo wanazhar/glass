@@ -188,11 +188,20 @@ impl ReconnectCapsule {
                 )));
             }
         }
-        if self
-            .mobile_view
-            .as_deref()
-            .is_some_and(|value| !matches!(value, "home" | "agent" | "app" | "diff" | "project"))
-        {
+        if self.mobile_view.as_deref().is_some_and(|value| {
+            !matches!(
+                value,
+                "home"
+                    | "overview"
+                    | "agent"
+                    | "app"
+                    | "browser"
+                    | "diff"
+                    | "project"
+                    | "process"
+                    | "logs"
+            )
+        }) {
             return Err(DevelopmentError::InvalidInput(
                 "reconnect capsule mobileView is not recognized".into(),
             ));
@@ -600,6 +609,22 @@ mod tests {
         assert_eq!(ReconnectCapsuleStore::load(&root).unwrap(), Some(capsule));
         assert!(ReconnectCapsuleStore::clear(&root).unwrap());
         assert_eq!(ReconnectCapsuleStore::load(&root).unwrap(), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconnect_capsule_accepts_current_and_legacy_mobile_views() {
+        let root = fixture("capsule-mobile-views");
+        for view in [
+            "home", "overview", "agent", "app", "browser", "diff", "project", "process", "logs",
+        ] {
+            let mut capsule = ReconnectCapsule::new(&root).unwrap();
+            capsule.mobile_view = Some(view.into());
+            capsule.validate().unwrap();
+        }
+        let mut capsule = ReconnectCapsule::new(&root).unwrap();
+        capsule.mobile_view = Some("unknown".into());
+        assert!(capsule.validate().is_err());
         let _ = fs::remove_dir_all(root);
     }
 

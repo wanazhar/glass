@@ -287,14 +287,31 @@ discovery, and session persistence disabled. The embedded
 evidence, privacy, narrow-terminal output, and truthful effect reporting part
 of every turn without importing arbitrary user or project Pi configuration.
 
-A Glass-owned extension exposes nine read-only tools: bounded file read/list/
+A Glass-owned extension exposes twelve read-only tools: bounded file read/list/
 search, Git/runtime-impact status, semantic entity links, Web IR inspect/diff/
-continuity, and value-free Task Protocol compilation. Each call crosses the
+continuity, value-free Task Protocol compilation, managed-process list/logs,
+and aggregate runtime inspection. It also exposes four
+mutating tools—file patch, process start, process stop, and test run—only through
+the approval exchange described below. Each call crosses the
 same Rust gateway used by the local harness. Cross-process requests use
 mode-0600, size-bounded, one-use files that the broker removes immediately
-after reading. Arguments and results are schema-validated and capped. Pi file
-or process mutation tools are intentionally absent until a per-call approval
-can be represented in the Glass TUI; a model response is not confirmation.
+after reading. Arguments and results are schema-validated and capped.
+
+For a mutation, the trusted extension serializes the complete tool call before
+asking. Pi's RPC `extension_ui_request` blocks that tool while Glass shows the
+tool name and bounded effect evidence: path/name, redacted command preview, byte
+counts, and short SHA-256 evidence for content or commands. `Y`/Enter or the
+Approve once button sends the matching `extension_ui_response`; only then does
+the extension invoke the broker with mutation authority using the same frozen
+call. `N`/Esc denies. Requests expire after 120 seconds, duplicate/concurrent
+and stale responses fail closed, and an approval is consumed once. It does not
+authorize a retry, changed arguments, another tool, or another session. The
+one-shot CLI adapter has no interactive host, so it immediately denies every UI
+request instead of hanging. Raw patch content and secret-looking environment
+assignment values are not placed in status or audit messages. Each mutation
+must include the `expectedRevision` from current Glass context; the Rust gateway
+compares it immediately before recording or applying the effect, so an approval
+cannot cross a workspace revision change.
 
 Pi's prompt response only acknowledges queueing. Glass therefore continues
 consuming JSONL events until `agent_settled` (an earlier `agent_end` may still

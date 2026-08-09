@@ -94,6 +94,7 @@ const PHONE_PURPLE: Color = Color::Rgb(198, 112, 255);
 const LOCAL_RENDER_INTERVAL: Duration = Duration::from_micros(16_667);
 const REMOTE_RENDER_INTERVAL: Duration = Duration::from_micros(33_333);
 const CONSTRAINED_RENDER_INTERVAL: Duration = Duration::from_millis(50);
+const PI_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Visible Browser Workspace presentation modes. Each mode changes the
 /// inspection surface, but never changes browser authority or policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -218,6 +219,7 @@ enum AgentPhase {
     #[default]
     Idle,
     Working,
+    Waiting,
     Complete,
     Failed,
 }
@@ -872,6 +874,7 @@ pub struct App {
     palette_area: Option<Rect>,
     palette_item_areas: Vec<Rect>,
     pending_confirmation: Option<PhoneAction>,
+    pi_tool_approval: Option<PiToolApproval>,
     confirm_yes_area: Option<Rect>,
     confirm_no_area: Option<Rect>,
     terminal_focused: bool,
@@ -887,7 +890,7 @@ pub struct App {
     development_enabled: bool,
     harness: LocalHarness,
     agent_phase: AgentPhase,
-    pi_command_tx: Option<std_mpsc::Sender<HarnessRequest>>,
+    pi_command_tx: Option<std_mpsc::Sender<PiWorkerCommand>>,
     lsp_command_tx: Option<std_mpsc::Sender<String>>,
     development_files: String,
     development_editor: String,
@@ -934,6 +937,25 @@ enum DevelopmentAsyncEvent {
         kind: DevelopmentAsyncKind,
         error: String,
     },
+    ApprovalRequested {
+        id: String,
+        title: String,
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+enum PiWorkerCommand {
+    Request(HarnessRequest),
+    Approval { id: String, confirmed: bool },
+}
+
+#[derive(Debug, Clone)]
+struct PiToolApproval {
+    id: String,
+    title: String,
+    message: String,
+    requested_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1076,6 +1098,7 @@ impl App {
             palette_area: None,
             palette_item_areas: Vec::new(),
             pending_confirmation: None,
+            pi_tool_approval: None,
             confirm_yes_area: None,
             confirm_no_area: None,
             terminal_focused: true,
@@ -1707,8 +1730,18 @@ impl App {
                                 while commands_open {
                                     loop {
                                         match receiver.try_recv() {
-                                            Ok(request) => {
+                                            Ok(PiWorkerCommand::Request(request)) => {
                                                 if let Err(error) = harness.start_request(request)
+                                                    && events.send(DevelopmentAsyncEvent::Failed {
+                                                        kind: DevelopmentAsyncKind::Agent,
+                                                        error: error.to_string(),
+                                                    }).is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                            Ok(PiWorkerCommand::Approval { id, confirmed }) => {
+                                                if let Err(error) = harness.respond_extension_ui(&id, confirmed)
                                                     && events.send(DevelopmentAsyncEvent::Failed {
                                                         kind: DevelopmentAsyncKind::Agent,
                                                         error: error.to_string(),
@@ -1726,6 +1759,26 @@ impl App {
                                     }
                                     match harness.recv_event_timeout(Duration::from_millis(50)) {
                                         Ok(Some(value)) => {
+                                            match crate::development::agent::pi_ui_request(&value) {
+                                                Ok(Some(request)) => {
+                                                    if events.send(DevelopmentAsyncEvent::ApprovalRequested {
+                                                        id: request.id,
+                                                        title: request.title,
+                                                        message: request.message,
+                                                    }).is_err() {
+                                                        break;
+                                                    }
+                                                    continue;
+                                                }
+                                                Ok(None) => {}
+                                                Err(error) => {
+                                                    let _ = events.send(DevelopmentAsyncEvent::Failed {
+                                                        kind: DevelopmentAsyncKind::Agent,
+                                                        error: error.to_string(),
+                                                    });
+                                                    break;
+                                                }
+                                            }
                                             if !crate::development::agent::pi_event_visible(&value) {
                                                 continue;
                                             }
@@ -1761,7 +1814,7 @@ impl App {
                         self.pi_command_tx = Some(sender);
                     }
                     self.pi_command_tx.as_ref().expect("Pi harness initialized")
-                        .send(request).map_err(|error| error.to_string())?;
+                        .send(PiWorkerCommand::Request(request)).map_err(|error| error.to_string())?;
                     Ok("Pi request queued; editor and browser input remain active.".into())
                 }
                 "agent" => {
@@ -1843,7 +1896,7 @@ impl App {
     }
 
     fn poll_development_events(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.expire_pi_approval();
         while let Ok(event) = self.development_event_rx.try_recv() {
             changed = true;
             match event {
@@ -1891,12 +1944,72 @@ impl App {
                     }
                     self.report_error(error);
                 }
+                DevelopmentAsyncEvent::ApprovalRequested { id, title, message } => {
+                    if self.pi_tool_approval.is_some() {
+                        let _ = self.send_pi_approval(id, false);
+                        self.report_error(
+                            "Pi requested a second approval while one was pending; denied.",
+                        );
+                    } else {
+                        self.pi_tool_approval = Some(PiToolApproval {
+                            id,
+                            title,
+                            message,
+                            requested_at: Instant::now(),
+                        });
+                        self.agent_phase = AgentPhase::Waiting;
+                        self.set_status("Pi tool paused for one-call approval · Y allow · N deny");
+                        self.push_phone_toast("Tool approval required", true);
+                    }
+                }
             }
         }
         if changed {
             self.refresh_development_view();
         }
         changed
+    }
+
+    fn send_pi_approval(&self, id: String, confirmed: bool) -> Result<(), String> {
+        self.pi_command_tx
+            .as_ref()
+            .ok_or_else(|| "Pi approval channel is unavailable".to_string())?
+            .send(PiWorkerCommand::Approval { id, confirmed })
+            .map_err(|error| error.to_string())
+    }
+
+    fn decide_pi_approval(&mut self, confirmed: bool) {
+        let Some(approval) = self.pi_tool_approval.take() else {
+            return;
+        };
+        match self.send_pi_approval(approval.id, confirmed) {
+            Ok(()) => {
+                self.agent_phase = AgentPhase::Working;
+                self.set_status(if confirmed {
+                    "Approved this exact Pi tool call once"
+                } else {
+                    "Denied Pi tool call"
+                });
+                self.add_activity(if confirmed {
+                    "Human approved one exact Pi mutation call."
+                } else {
+                    "Human denied a Pi mutation call."
+                });
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    fn expire_pi_approval(&mut self) -> bool {
+        let expired = self
+            .pi_tool_approval
+            .as_ref()
+            .is_some_and(|approval| approval.requested_at.elapsed() >= PI_APPROVAL_TIMEOUT);
+        if expired {
+            self.decide_pi_approval(false);
+            self.set_status("Pi tool approval expired and was denied");
+        }
+        expired
     }
 
     fn apply_visual_status(&mut self, status: impl Into<String>) {
@@ -2110,6 +2223,22 @@ impl App {
         self.refresh_development_view();
     }
     fn mouse_intent(&mut self, mouse: MouseEvent) -> UiIntent {
+        if self.pi_tool_approval.is_some()
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            let contains = |area: Rect| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            };
+            if self.confirm_yes_area.is_some_and(contains) {
+                self.decide_pi_approval(true);
+            } else if self.confirm_no_area.is_some_and(contains) {
+                self.decide_pi_approval(false);
+            }
+            return UiIntent::None;
+        }
         if let Some(action) = self.pending_confirmation
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
         {
@@ -2367,6 +2496,15 @@ impl App {
 
     fn reduce_key(&mut self, key: KeyEvent) -> UiIntent {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return UiIntent::None;
+        }
+
+        if self.pi_tool_approval.is_some() {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y' | 'Y') => self.decide_pi_approval(true),
+                KeyCode::Esc | KeyCode::Char('n' | 'N') => self.decide_pi_approval(false),
+                _ => {}
+            }
             return UiIntent::None;
         }
 
@@ -3208,8 +3346,20 @@ impl App {
         self.palette_area = self.palette_open.then(|| phone_palette_rect(area));
         self.confirm_yes_area = None;
         self.confirm_no_area = None;
-        if self.pending_confirmation.is_some() {
-            let popup = centered_popup_sized(area, 38, 7);
+        if self.pending_confirmation.is_some() || self.pi_tool_approval.is_some() {
+            let popup = centered_popup_sized(
+                area,
+                if self.pi_tool_approval.is_some() {
+                    60
+                } else {
+                    38
+                },
+                if self.pi_tool_approval.is_some() {
+                    12
+                } else {
+                    7
+                },
+            );
             let button_y = popup.bottom().saturating_sub(2);
             let half = popup.width.saturating_sub(2) / 2;
             self.confirm_no_area = Some(Rect::new(popup.x + 1, button_y, half, 1));
@@ -6857,6 +7007,7 @@ fn agent_pipeline(phase: AgentPhase) -> Line<'static> {
     let (context, tools, verify) = match phase {
         AgentPhase::Idle => (("○", PHONE_MUTED), ("○", PHONE_MUTED), ("○", PHONE_MUTED)),
         AgentPhase::Working => (("✓", PHONE_GREEN), ("◉", PHONE_PURPLE), ("○", PHONE_MUTED)),
+        AgentPhase::Waiting => (("✓", PHONE_GREEN), ("!", Color::Yellow), ("○", PHONE_MUTED)),
         AgentPhase::Complete => (("✓", PHONE_GREEN), ("✓", PHONE_GREEN), ("✓", PHONE_GREEN)),
         AgentPhase::Failed => (
             ("✓", PHONE_GREEN),
@@ -7097,6 +7248,7 @@ const fn agent_phase_label(phase: AgentPhase) -> &'static str {
     match phase {
         AgentPhase::Idle => "agent ready",
         AgentPhase::Working => "agent active",
+        AgentPhase::Waiting => "approval needed",
         AgentPhase::Complete => "complete",
         AgentPhase::Failed => "needs attention",
     }
@@ -7106,6 +7258,7 @@ const fn agent_phase_color(phase: AgentPhase) -> Color {
     match phase {
         AgentPhase::Idle | AgentPhase::Complete => PHONE_GREEN,
         AgentPhase::Working => PHONE_PURPLE,
+        AgentPhase::Waiting => Color::Yellow,
         AgentPhase::Failed => Color::LightRed,
     }
 }
@@ -7519,7 +7672,38 @@ fn draw_overlays(frame: &mut Frame, app: &App) {
             popup,
         );
     }
-    if app.pending_confirmation.is_some() {
+    if let Some(approval) = &app.pi_tool_approval {
+        let popup = centered_popup_sized(frame.area(), 60, 12);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(approval.message.as_str())
+                .block(phone_panel(
+                    &format!("! {}", approval.title),
+                    "Y/Enter once · N/Esc deny · expires in 120s",
+                    Color::Yellow,
+                ))
+                .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL))
+                .wrap(Wrap { trim: true }),
+            popup,
+        );
+        if let Some(no) = app.confirm_no_area {
+            frame.render_widget(
+                Paragraph::new(" Deny ")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL_ACTIVE)),
+                no,
+            );
+        }
+        if let Some(yes) = app.confirm_yes_area {
+            frame.render_widget(
+                Paragraph::new(" Approve once ")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(PHONE_BACKGROUND).bg(Color::Yellow)),
+                yes,
+            );
+        }
+    }
+    if app.pending_confirmation.is_some() && app.pi_tool_approval.is_none() {
         let popup = centered_popup_sized(frame.area(), 38, 7);
         frame.render_widget(Clear, popup);
         frame.render_widget(
@@ -8954,6 +9138,86 @@ mod tests {
         assert!(app.poll_development_events());
         assert_eq!(app.agent_phase, AgentPhase::Complete);
         assert_eq!(app.page_content, "answer complete");
+    }
+
+    #[test]
+    fn pi_tool_approval_is_exact_once_and_keyboard_driven() {
+        let mut app = mock_remote_phone_app(46);
+        let (commands, received) = std_mpsc::channel();
+        app.pi_command_tx = Some(commands);
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::ApprovalRequested {
+                id: "approval-9".into(),
+                title: "Approve glass.file.patch?".into(),
+                message: "File: src/main.rs\nMatch: 4 bytes · sha256 abc".into(),
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert_eq!(app.agent_phase, AgentPhase::Waiting);
+        assert_eq!(
+            app.pi_tool_approval.as_ref().map(|value| value.id.as_str()),
+            Some("approval-9")
+        );
+        app.sync_graphics_geometry(Rect::new(0, 0, 60, 30)).unwrap();
+        let (rendered, _, _) = rendered_phone(&app, 60, 30);
+        assert!(rendered.contains("Approve glass.file.patch?"));
+        assert!(rendered.contains("File: src/main.rs"));
+        assert!(rendered.contains("Approve once"));
+
+        assert_eq!(
+            app.reduce_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            UiIntent::None
+        );
+        assert!(app.pi_tool_approval.is_none());
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            PiWorkerCommand::Approval { id, confirmed }
+                if id == "approval-9" && confirmed
+        ));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn pi_tool_approval_timeout_and_concurrent_request_fail_closed() {
+        let mut app = mock_remote_phone_app(46);
+        let (commands, received) = std_mpsc::channel();
+        app.pi_command_tx = Some(commands);
+        app.pi_tool_approval = Some(PiToolApproval {
+            id: "approval-old".into(),
+            title: "Approve?".into(),
+            message: "one exact call".into(),
+            requested_at: Instant::now() - PI_APPROVAL_TIMEOUT,
+        });
+        assert!(app.expire_pi_approval());
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            PiWorkerCommand::Approval { id, confirmed }
+                if id == "approval-old" && !confirmed
+        ));
+
+        app.pi_tool_approval = Some(PiToolApproval {
+            id: "approval-active".into(),
+            title: "Approve?".into(),
+            message: "active".into(),
+            requested_at: Instant::now(),
+        });
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::ApprovalRequested {
+                id: "approval-concurrent".into(),
+                title: "Approve another?".into(),
+                message: "another".into(),
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            PiWorkerCommand::Approval { id, confirmed }
+                if id == "approval-concurrent" && !confirmed
+        ));
+        assert_eq!(
+            app.pi_tool_approval.as_ref().map(|value| value.id.as_str()),
+            Some("approval-active")
+        );
     }
 
     #[test]

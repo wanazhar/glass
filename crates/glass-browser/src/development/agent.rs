@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
@@ -268,6 +268,22 @@ impl AgentToolGateway {
                 descriptor.name
             )));
         }
+        if descriptor.mutating {
+            let expected_revision =
+                call.arguments["expectedRevision"].as_u64().ok_or_else(|| {
+                    DevelopmentError::InvalidInput(format!(
+                        "tool {} requires unsigned integer argument expectedRevision",
+                        descriptor.name
+                    ))
+                })?;
+            let current_revision = workspace.revision();
+            if expected_revision != current_revision {
+                return Err(DevelopmentError::Conflict(format!(
+                    "tool {} was approved for stale project revision {expected_revision}; current revision is {current_revision}",
+                    descriptor.name
+                )));
+            }
+        }
         workspace.record_as(
             authorization.actor.clone(),
             DevelopmentEventKind::AgentToolCalled,
@@ -357,8 +373,8 @@ impl ToolRegistry {
                 "glass.file.patch",
                 "Replace bounded text through an attributed editor buffer",
                 schema(
-                    serde_json::json!({"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}}),
-                    &["path", "search", "replace"],
+                    serde_json::json!({"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
+                    &["path", "search", "replace", "expectedRevision"],
                 ),
                 true,
             ),
@@ -366,15 +382,18 @@ impl ToolRegistry {
                 "glass.process.start",
                 "Start a named PTY process",
                 schema(
-                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"}}),
-                    &["name", "command"],
+                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
+                    &["name", "command", "expectedRevision"],
                 ),
                 true,
             ),
             descriptor(
                 "glass.process.stop",
                 "Stop a named managed process",
-                schema(serde_json::json!({"name":{"type":"string"}}), &["name"]),
+                schema(
+                    serde_json::json!({"name":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
+                    &["name", "expectedRevision"],
+                ),
                 true,
             ),
             descriptor(
@@ -405,8 +424,8 @@ impl ToolRegistry {
                 "glass.test.run",
                 "Run a command as attributed verification",
                 schema(
-                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"}}),
-                    &["name", "command"],
+                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
+                    &["name", "command", "expectedRevision"],
                 ),
                 true,
             ),
@@ -727,6 +746,7 @@ fn validate_tool_arguments(
         let valid = match property["type"].as_str() {
             Some("string") => value.is_string(),
             Some("object") => value.is_object(),
+            Some("integer") => value.as_u64().is_some(),
             _ => true,
         };
         if !valid {
@@ -1037,6 +1057,7 @@ pub struct PiHarness {
     output: Receiver<Value>,
     next_id: u64,
     extension_path: PathBuf,
+    pending_ui_requests: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for PiHarness {
@@ -1083,7 +1104,7 @@ impl PiHarness {
             .arg(&extension_path)
             .args([
                 "--tools",
-                "glass_file_read,glass_file_list,glass_file_search,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan",
+                "glass_file_read,glass_file_list,glass_file_search,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan,glass_process_logs,glass_process_list,glass_runtime_inspect,glass_file_patch,glass_process_start,glass_process_stop,glass_test_run",
             ])
             .env("GLASS_PI_BROKER_BIN", broker)
             .current_dir(root)
@@ -1126,6 +1147,7 @@ impl PiHarness {
             output: receiver,
             next_id: 1,
             extension_path,
+            pending_ui_requests: BTreeSet::new(),
         })
     }
 
@@ -1154,6 +1176,12 @@ impl PiHarness {
             let failed =
                 is_response && value.get("success").and_then(Value::as_bool) == Some(false);
             let settled = pi_agent_settled(&value);
+            if let Some(request) = pi_ui_request(&value)? {
+                // A one-shot/non-interactive caller has nowhere safe to ask a
+                // human. Deny immediately instead of hanging or inheriting
+                // ambient authority.
+                self.respond_extension_ui(&request.id, false)?;
+            }
             if pi_event_visible(&value) {
                 if events.len() == MAX_PI_BUFFERED_EVENTS {
                     events.pop_front();
@@ -1231,15 +1259,92 @@ impl PiHarness {
         Ok(id)
     }
 
-    pub(crate) fn recv_event_timeout(&self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
+    pub(crate) fn respond_extension_ui(
+        &mut self,
+        id: &str,
+        confirmed: bool,
+    ) -> DevelopmentResult<()> {
+        if !self.pending_ui_requests.remove(id) {
+            return Err(DevelopmentError::Conflict(format!(
+                "stale or unknown Pi UI request: {id}"
+            )));
+        }
+        let encoded = serde_json::to_vec(&serde_json::json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "confirmed": confirmed,
+        }))?;
+        self.input.write_all(&encoded)?;
+        self.input.write_all(b"\n")?;
+        self.input.flush()?;
+        Ok(())
+    }
+
+    pub(crate) fn recv_event_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> DevelopmentResult<Option<Value>> {
         match self.output.recv_timeout(timeout) {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => {
+                if let Some(request) = pi_ui_request(&value)?
+                    && !self.pending_ui_requests.insert(request.id.clone())
+                {
+                    return Err(DevelopmentError::Conflict(format!(
+                        "duplicate Pi UI request: {}",
+                        request.id
+                    )));
+                }
+                if self.pending_ui_requests.len() > 8 {
+                    return Err(DevelopmentError::Conflict(
+                        "too many pending Pi UI requests".into(),
+                    ));
+                }
+                Ok(Some(value))
+            }
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(
                 "Pi RPC event stream closed".into(),
             )),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PiUiRequest {
+    pub id: String,
+    pub title: String,
+    pub message: String,
+}
+
+pub(crate) fn pi_ui_request(value: &Value) -> DevelopmentResult<Option<PiUiRequest>> {
+    if value.get("type").and_then(Value::as_str) != Some("extension_ui_request") {
+        return Ok(None);
+    }
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))
+        .ok_or_else(|| DevelopmentError::InvalidInput("invalid Pi UI request id".into()))?;
+    let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+    if method != "confirm" {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "unsupported Pi UI request method: {method}"
+        )));
+    }
+    let bounded_field = |name: &str, limit: usize| -> DevelopmentResult<String> {
+        let field = value.get(name).and_then(Value::as_str).unwrap_or("");
+        if field.len() > limit || field.chars().any(|character| character == '\0') {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "invalid Pi UI request {name}"
+            )));
+        }
+        Ok(field.to_string())
+    };
+    Ok(Some(PiUiRequest {
+        id: id.to_string(),
+        title: bounded_field("title", 256)?,
+        message: bounded_field("message", 2048)?,
+    }))
 }
 
 pub(crate) fn pi_response_matches(value: &Value, id: &str) -> bool {
@@ -1415,12 +1520,12 @@ mod tests {
     }
 
     #[test]
-    fn pi_contract_is_glass_specific_read_only_and_event_bounded() {
+    fn pi_contract_is_glass_specific_approved_and_event_bounded() {
         let prompt = include_str!("../../assets/pi-glass-system.md");
         let tools = include_str!("../../assets/pi-glass-tools.ts");
         assert!(prompt.contains("embedded inside Glass Dev"));
         assert!(prompt.contains("Structured browser observation is the default"));
-        assert!(prompt.contains("read-only unless Glass explicitly exposes"));
+        assert!(prompt.contains("per-call approval"));
         for tool in [
             "glass_file_read",
             "glass_file_list",
@@ -1431,10 +1536,19 @@ mod tests {
             "glass_web_ir_diff",
             "glass_web_ir_continuity",
             "glass_task_plan",
+            "glass_process_logs",
+            "glass_process_list",
+            "glass_runtime_inspect",
+            "glass_file_patch",
+            "glass_process_start",
+            "glass_process_stop",
+            "glass_test_run",
         ] {
             assert!(tools.contains(tool), "missing Pi tool {tool}");
         }
-        assert!(!tools.contains("--allow-mutation"));
+        assert!(tools.contains("ctx.ui.confirm"));
+        assert!(tools.contains("--allow-mutation"));
+        assert!(tools.contains("exact serialized call once"));
 
         let response = serde_json::json!({
             "type": "response",
@@ -1466,12 +1580,44 @@ mod tests {
     }
 
     #[test]
+    fn pi_ui_requests_accept_only_bounded_confirm_dialogs() {
+        let request = serde_json::json!({
+            "type":"extension_ui_request",
+            "id":"approval-7",
+            "method":"confirm",
+            "title":"Approve glass.file.patch?",
+            "message":"File: src/main.rs"
+        });
+        assert_eq!(
+            pi_ui_request(&request).unwrap(),
+            Some(PiUiRequest {
+                id: "approval-7".into(),
+                title: "Approve glass.file.patch?".into(),
+                message: "File: src/main.rs".into(),
+            })
+        );
+        assert!(
+            pi_ui_request(&serde_json::json!({
+                "type":"extension_ui_request", "id":"x", "method":"input"
+            }))
+            .is_err()
+        );
+        assert!(
+            pi_ui_request(&serde_json::json!({
+                "type":"extension_ui_request", "id":"bad\nid", "method":"confirm"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn tool_registry_executes_attributed_file_patch_and_fails_closed_for_unattached_browser() {
         let root = std::env::temp_dir().join(format!("glass-tools-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let expected_revision = workspace.revision();
         let gateway = AgentToolGateway::default();
         let result = gateway
             .execute(
@@ -1479,7 +1625,7 @@ mod tests {
                 &ToolCall {
                     id: "tool-1".into(),
                     name: "glass.file.patch".into(),
-                    arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after"}),
+                    arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after","expectedRevision":expected_revision}),
                 },
                 &ToolAuthorization {
                     actor: Actor::embedded(),
@@ -1493,6 +1639,26 @@ mod tests {
             fs::read_to_string(root.join("note.txt")).unwrap(),
             "after\n"
         );
+        let stale = ToolCall {
+            id: "tool-stale".into(),
+            name: "glass.file.patch".into(),
+            arguments: serde_json::json!({
+                "path":"note.txt", "search":"after", "replace":"stale",
+                "expectedRevision":expected_revision
+            }),
+        };
+        assert!(matches!(
+            gateway.execute(
+                &mut workspace,
+                &stale,
+                &ToolAuthorization {
+                    actor: Actor::embedded(),
+                    allow_mutation: true,
+                    confirmed: true,
+                },
+            ),
+            Err(DevelopmentError::Conflict(_))
+        ));
         assert!(
             gateway
                 .execute(
@@ -1516,6 +1682,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "private-before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let expected_revision = workspace.revision();
         let gateway = AgentToolGateway::default();
         let mutating = ToolCall {
             id: "denied".into(),
@@ -1523,7 +1690,8 @@ mod tests {
             arguments: serde_json::json!({
                 "path":"note.txt",
                 "search":"private-before",
-                "replace":"private-after"
+                "replace":"private-after",
+                "expectedRevision":expected_revision
             }),
         };
         assert!(

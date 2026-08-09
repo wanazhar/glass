@@ -1,6 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,56 @@ export default function (pi: ExtensionAPI) {
   const broker = process.env.GLASS_PI_BROKER_BIN;
   if (!broker) return;
 
-  const register = (name: string, glassName: string, description: string, parameters: any) => {
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  const bounded = (value: string, limit = 160) =>
+    value.length <= limit ? value : `${value.slice(0, limit)}…`;
+  const redactCommand = (command: string) => bounded(command
+    .replace(
+      /\b([A-Z_][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Z0-9_]*)=([^\s]+)/giu,
+      "$1=<redacted>",
+    )
+    .replace(
+      /(--(?:token|secret|password|passwd|api[_-]?key))(?:=|\s+)([^\s]+)/giu,
+      "$1=<redacted>",
+    )
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/giu, "$1<redacted>@"));
+  const approvalSummary = (glassName: string, params: Record<string, unknown>) => {
+    const revision = `Project revision: ${String(params.expectedRevision ?? "missing")}`;
+    if (glassName === "glass.file.patch") {
+      const search = String(params.search ?? "");
+      const replace = String(params.replace ?? "");
+      return [
+        `File: ${bounded(String(params.path ?? ""))}`,
+        `Match: ${search.length} bytes · sha256 ${digest(search)}`,
+        `Replacement: ${replace.length} bytes · sha256 ${digest(replace)}`,
+        revision,
+        "This approval is valid for this exact serialized call once.",
+      ].join("\n");
+    }
+    if (glassName === "glass.process.start" || glassName === "glass.test.run") {
+      const command = String(params.command ?? "");
+      return [
+        `Name: ${bounded(String(params.name ?? ""))}`,
+        `Command: ${redactCommand(command)}`,
+        `Command evidence: ${command.length} bytes · sha256 ${digest(command)}`,
+        revision,
+        "This approval is valid for this exact serialized call once.",
+      ].join("\n");
+    }
+    return [
+      `Process: ${bounded(String(params.name ?? ""))}`,
+      revision,
+      "This approval is valid for this exact serialized call once.",
+    ].join("\n");
+  };
+
+  const register = (
+    name: string,
+    glassName: string,
+    description: string,
+    parameters: any,
+    mutating = false,
+  ) => {
     pi.registerTool({
       name,
       label: glassName,
@@ -18,13 +67,24 @@ export default function (pi: ExtensionAPI) {
       parameters,
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         const call = JSON.stringify({ id: toolCallId, name: glassName, arguments: params });
+        if (mutating) {
+          const confirmed = await ctx.ui.confirm(
+            `Approve ${glassName}?`,
+            approvalSummary(glassName, params as Record<string, unknown>),
+            { timeout: 120000 },
+          );
+          if (!confirmed) throw new Error(`Glass denied ${glassName}`);
+        }
         const requestPath = join(tmpdir(), `glass-pi-call-${randomUUID()}.json`);
         await writeFile(requestPath, call, { encoding: "utf8", mode: 0o600, flag: "wx" });
         let result;
         try {
           result = await pi.exec(
             broker,
-            ["agent", "tool-file", requestPath, "--root", ctx.cwd],
+            [
+              "agent", "tool-file", requestPath, "--root", ctx.cwd,
+              ...(mutating ? ["--allow-mutation", "--yes"] : []),
+            ],
             { cwd: ctx.cwd, signal, timeout: 15000 },
           );
         } finally {
@@ -106,5 +166,58 @@ export default function (pi: ExtensionAPI) {
       task: Type.Object({}, { additionalProperties: true }),
       ir: Type.Object({}, { additionalProperties: true }),
     }),
+  );
+  register(
+    "glass_file_patch",
+    "glass.file.patch",
+    "Replace one exact bounded text occurrence after per-call human approval",
+    Type.Object({
+      path: Type.String(), search: Type.String(), replace: Type.String(),
+      expectedRevision: Type.Integer({ minimum: 0 }),
+    }),
+    true,
+  );
+  register(
+    "glass_process_start",
+    "glass.process.start",
+    "Start one named PTY process after per-call human approval",
+    Type.Object({
+      name: Type.String(), command: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }),
+    }),
+    true,
+  );
+  register(
+    "glass_process_stop",
+    "glass.process.stop",
+    "Stop one named managed process after per-call human approval",
+    Type.Object({ name: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }) }),
+    true,
+  );
+  register(
+    "glass_test_run",
+    "glass.test.run",
+    "Run one named verification command after per-call human approval",
+    Type.Object({
+      name: Type.String(), command: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }),
+    }),
+    true,
+  );
+  register(
+    "glass_process_logs",
+    "glass.process.logs",
+    "Read a bounded output tail from one Glass-managed process",
+    Type.Object({ name: Type.String() }),
+  );
+  register(
+    "glass_process_list",
+    "glass.process.list",
+    "List Glass-managed processes and their checked state",
+    Type.Object({}),
+  );
+  register(
+    "glass_runtime_inspect",
+    "glass.runtime.inspect",
+    "Inspect bounded project, process, actor, diagnostic, and revision state",
+    Type.Object({}),
   );
 }

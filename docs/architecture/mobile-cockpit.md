@@ -107,6 +107,7 @@ and scroll projection joins the existing target/revision/live preferences.
 | `live quality auto` | Apply connection-aware scale/rate adaptation and show its reason. |
 | `browser ...` | Probe, launch, attach, pick target, reconnect, disconnect or select semantic-only. |
 | `browser remote-view open` | Create scoped loopback view and SSH-forward guidance. |
+| `Y`/Enter or `N`/Esc | Approve one exact Pi mutation call or deny it; unanswered sheets expire after 120 seconds. |
 | `Esc` | Close the focused overlay/sheet before affecting background work. |
 
 No essential action requires function keys, mouse reporting or a terminal image

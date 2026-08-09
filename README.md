@@ -242,7 +242,10 @@ glass agent prompt "Explain the failing diagnostic" --harness pi --root .
 Tool availability follows live dependencies. Browser tools do not appear
 until an authoritative Browser Workspace is attached. Mutations require the
 current project/browser revision, the shared mutation lease, applicable
-policy, and confirmation. Prompt text, page content, secrets, and process
+policy, and confirmation. In the resident TUI, each Pi mutation pauses on a
+Glass-owned approval sheet; `Y`/Enter approves that exact serialized call once
+and `N`/Esc denies it. Unanswered requests expire after 120 seconds, while
+non-interactive Pi CLI requests deny them immediately. Prompt text, page content, secrets, and process
 output are not copied into the persisted timeline.
 
 External agents can use the CLI or MCP project tools and attach an attributed

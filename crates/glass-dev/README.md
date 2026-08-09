@@ -101,13 +101,18 @@ tools stay unavailable until an attached Browser Workspace exists.
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
 
-The optional resident Pi adapter uses a Glass-specific system prompt and nine
-bounded read-only project/Web IR/task tools. It streams completed message and
+The optional resident Pi adapter uses a Glass-specific system prompt, twelve
+bounded read-only project/runtime/Web IR/task tools, and four approval-gated mutation
+tools for file patches, process start/stop, and test runs. It streams completed message and
 tool events through the Agent view while dropping token-level redraw noise;
 steer and abort remain responsive during a running turn. Ambient Pi extensions,
 skills, context files, and sessions are disabled for deterministic local-first
-behavior. Pi mutation tools remain unavailable until Glass receives per-call
-human confirmation.
+behavior. Every mutation pauses on a Glass-owned confirmation sheet. `Y` or
+Enter grants one use for the already serialized call; `N` or Esc denies it.
+Requests expire after 120 seconds, concurrent requests fail closed, and the
+one-shot/non-interactive Pi path always denies UI requests. Every mutation also
+names the expected project revision; stale approvals are rejected before any
+effect.
 
 ## Browser usage
 

@@ -353,12 +353,17 @@ glass agent prompt "Explain @diagnostic" --harness pi --root .
 glass agent steer "focus on the failing test" --root .
 ```
 
-The Pi path uses Glass's embedded system prompt and nine bounded read-only
-tools rather than Pi's built-in filesystem/shell tools. A one-shot Pi prompt
+The Pi path uses Glass's embedded system prompt and sixteen bounded tools
+rather than Pi's built-in filesystem/shell tools: twelve read-only tools plus
+approval-gated file patch, process start/stop, and test-run tools. A one-shot Pi prompt
 waits for `agent_settled`; steer, follow-up, and abort are useful in
-the resident TUI where the same Pi RPC process remains active. Tool-level file
-or process mutations are not exposed until Glass can collect an explicit
-per-call approval.
+the resident TUI where the same Pi RPC process remains active. A mutation
+freezes and privately serializes its exact arguments, then pauses on a Glass
+approval sheet. `Y`/Enter approves once; `N`/Esc denies. The approval expires
+after 120 seconds and cannot authorize a retry or reshaped call. One-shot CLI
+Pi requests have no interactive approval host and therefore deny mutations.
+Each mutation requires the project revision from current Glass context and is
+rejected if workspace state changed before execution.
 
 ## Profiles and files
 

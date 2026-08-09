@@ -47,6 +47,7 @@ the default context.
 | `project processes` | command area | inspect bounded process state |
 | `project agent PROMPT` | command area | stream local harness events and tool results |
 | `project pi ACTION` | command area | queue a real Pi RPC request without blocking input |
+| `Y`/Enter or `N`/Esc | Pi approval sheet | approve the displayed exact mutation once, or deny it |
 | `project diagnostics PATH` | command area | run LSP work off the input/render loop |
 | `Esc` | busy/error | cancel browser work or dismiss an error |
 
@@ -61,6 +62,9 @@ the default context.
 - **Busy**: browser operations retain cancellation and mutation leases. LSP
   and Pi work run on bounded worker channels, so editor, render, and browser
   input continue to be polled.
+- **Approval**: a Pi mutation blocks only its agent tool execution while the
+  rest of the cockpit keeps rendering and accepting input. The sheet shows
+  bounded, redacted effect evidence and expires fail-closed after 120 seconds.
 - **Phone**: at 72 columns or fewer, or by explicit user preference, one
   full-width view is visible. Browser context remains semantic and
   continuous visual streaming is disabled by default. `--tui-live on` adds an

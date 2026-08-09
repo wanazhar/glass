@@ -22,6 +22,21 @@ A 2026-08-08 diagnostic run on Linux 6.17 aarch64 with Rust 1.97.0 measured
 headroom for the 3/6/12 FPS capture profiles; SSH throughput and PNG size still
 govern end-to-end performance and must be evaluated on the user's link.
 
+A controlled 2026-08-09 before/after run on Linux 6.17.0-1011-oracle aarch64
+with Rust 1.97.0 used the same optimized binary profile, two 320x180 inputs, and
+100 iterations per row:
+
+| Profile | Before mean | Direct-sampling mean | Reduction |
+|---|---:|---:|---:|
+| data, 40x12 | 0.657 ms | 0.576 ms | 12.3% |
+| balanced, 80x24 | 0.797 ms | 0.594 ms | 25.4% |
+| smooth, 120x36 | 0.947 ms | 0.645 ms | 31.9% |
+
+The retained implementation samples directly from bounded PNG decoder output,
+precomputes fit coordinates once per frame, and reuses two bounded cell buffers.
+A follow-up 1,000-iteration run measured 0.601/0.607/0.645 ms per frame. These
+are renderer microbenchmarks, not SSH latency claims.
+
 ## Task-success scorecard
 
 The versioned local corpus in `scenarios/v1.json` covers duplicate labels,

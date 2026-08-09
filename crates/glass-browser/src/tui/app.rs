@@ -14,6 +14,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -24,16 +25,12 @@ use ratatui::{
 };
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, VecDeque},
     future::Future,
     io::{self, Write},
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc as std_mpsc,
-    },
-    thread,
+    sync::mpsc as std_mpsc,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -73,7 +70,6 @@ use crate::terminal_graphics::{
     AnsiCanvas, FrameFit, GraphicsMode, MAX_FRAME_BYTES, PaneArea, SubmitResult, TerminalGraphics,
 };
 use crate::tui::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
-const INPUT_CHANNEL_CAPACITY: usize = 64;
 const BROWSER_COMMAND_CHANNEL_CAPACITY: usize = 8;
 const BROWSER_EVENT_CHANNEL_CAPACITY: usize = 2;
 const MAX_VISUAL_ENCODED_BYTES: usize = 6 * 1024 * 1024;
@@ -831,7 +827,6 @@ impl MutationLease {
 
 const TUI_INPUT_MAX_BYTES: usize = 4 * 1024;
 const BUSY_TICK: Duration = Duration::from_millis(120);
-const INPUT_POLL: Duration = Duration::from_millis(50);
 const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct App {
     url: String,
@@ -866,6 +861,7 @@ pub struct App {
     mobile_view: MobileView,
     mobile_help: bool,
     mobile_nav_area: Option<Rect>,
+    layout_root: Option<(Rect, DisplayClass, RootRegions)>,
     mobile_card_areas: Vec<(PhoneOverviewCard, Rect)>,
     mobile_remote_view_area: Option<Rect>,
     mobile_action_areas: Vec<(PhoneAction, Rect)>,
@@ -1064,6 +1060,7 @@ impl App {
             mobile_view: MobileView::Home,
             mobile_help: false,
             mobile_nav_area: None,
+            layout_root: None,
             mobile_card_areas: Vec::new(),
             mobile_remote_view_area: None,
             mobile_action_areas: Vec::new(),
@@ -2891,8 +2888,17 @@ impl App {
             geometry_revision: geometry.geometry_revision,
             dropped: Default::default(),
         };
-        self.live.thumbnail_png.clone_from(&payload);
-        self.live.thumbnail_revision = Some(browser_revision);
+        if self.display_class == DisplayClass::Phone {
+            self.live.thumbnail_png.clone_from(&payload);
+            self.live.thumbnail_revision = Some(browser_revision);
+        } else {
+            if !self.live.thumbnail_png.is_empty() {
+                self.live.thumbnail_png = Vec::new();
+            }
+            self.live.thumbnail_revision = None;
+            self.live.thumbnail_canvas_revision = None;
+            self.live.thumbnail_grid = None;
+        }
         match self.live.backend {
             Some(ActiveLiveBackend::Herdr) => {
                 let queued = self.live.herdr_worker.as_ref().is_some_and(|worker| {
@@ -2912,7 +2918,7 @@ impl App {
                     self.live.metrics.presented();
                 }
             }
-            Some(ActiveLiveBackend::Kitty) => match self.submit_graphics_frame(frame, &payload) {
+            Some(ActiveLiveBackend::Kitty) => match self.graphics.submit_owned(frame, payload) {
                 Ok(SubmitResult::Stale | SubmitResult::Replaced) => self.live.metrics.dropped(),
                 Ok(SubmitResult::Presented) => self.live.metrics.presented(),
                 Ok(SubmitResult::Queued) => {}
@@ -3132,6 +3138,7 @@ impl App {
             self.add_activity(format!("Responsive layout: {:?}.", next_class));
         }
         let root = root_regions(area, self.display_class);
+        self.layout_root = Some((area, self.display_class, root));
         self.palette_area = self.palette_open.then(|| phone_palette_rect(area));
         self.confirm_yes_area = None;
         self.confirm_no_area = None;
@@ -3232,7 +3239,7 @@ impl App {
             None
         };
         let Some(pane) = live_panel_region(
-            area,
+            root,
             self.display_class,
             self.mode,
             self.mobile_view,
@@ -3310,8 +3317,24 @@ impl App {
 
     fn render_graphics(&mut self) -> BrowserResult<()> {
         let presented_before = self.graphics.diagnostics().presented_frames;
-        let rendered = match self.graphics.render_current(&self.page_content) {
-            Ok(rendered) => rendered,
+        match self.graphics.present_pending() {
+            Ok(_) => {}
+            Err(error) if self.live.backend == Some(ActiveLiveBackend::Kitty) => {
+                self.add_activity(format!(
+                    "Kitty graphics presentation failed ({error}); selecting fallback."
+                ));
+                self.live.fall_back_from(ActiveLiveBackend::Kitty);
+                self.sync_live_graphics_mode();
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if self.graphics.diagnostics().presented_frames > presented_before {
+            self.live.metrics.presented();
+        }
+        let rendered = match self.graphics.render_current_if_new(&self.page_content) {
+            Ok(Some(rendered)) => rendered,
+            Ok(None) => return Ok(()),
             Err(error) if self.live.backend == Some(ActiveLiveBackend::Kitty) => {
                 self.add_activity(format!(
                     "Kitty graphics render failed ({error}); selecting fallback."
@@ -3327,37 +3350,8 @@ impl App {
             stdout.write_all(&rendered.bytes)?;
             stdout.flush()?;
         }
-        if let Err(error) = self.graphics.present_pending() {
-            if self.live.backend == Some(ActiveLiveBackend::Kitty) {
-                self.add_activity(format!(
-                    "Kitty graphics presentation failed ({error}); selecting fallback."
-                ));
-                self.live.fall_back_from(ActiveLiveBackend::Kitty);
-                self.sync_live_graphics_mode();
-                return Ok(());
-            }
-            return Err(error.into());
-        }
-        if self.graphics.diagnostics().presented_frames > presented_before {
-            self.live.metrics.presented();
-        }
         Ok(())
     }
-}
-
-#[derive(Debug)]
-enum InputEvent {
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    Paste(String),
-    Focus(bool),
-    Resize,
-    Error(String),
-}
-
-struct InputWorker {
-    shutdown: Arc<AtomicBool>,
-    join: Option<thread::JoinHandle<()>>,
 }
 
 fn actionable_mouse_event(mouse: &MouseEvent) -> bool {
@@ -3367,81 +3361,6 @@ fn actionable_mouse_event(mouse: &MouseEvent) -> bool {
             | MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
     )
-}
-
-impl InputWorker {
-    fn spawn(events: mpsc::Sender<InputEvent>) -> Self {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let worker_shutdown = Arc::clone(&shutdown);
-        let join = thread::spawn(move || {
-            while !worker_shutdown.load(Ordering::Relaxed) {
-                match event::poll(INPUT_POLL) {
-                    Ok(false) => {}
-                    Ok(true) => match event::read() {
-                        Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                            if events.blocking_send(InputEvent::Key(key)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Event::Key(_)) => {}
-                        Ok(Event::Mouse(mouse)) if actionable_mouse_event(&mouse) => {
-                            if events.blocking_send(InputEvent::Mouse(mouse)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Event::Mouse(_)) => {}
-                        Ok(Event::Paste(text)) => {
-                            if events.blocking_send(InputEvent::Paste(text)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Event::FocusGained) => {
-                            if events.blocking_send(InputEvent::Focus(true)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Event::FocusLost) => {
-                            if events.blocking_send(InputEvent::Focus(false)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Event::Resize(_, _)) => {
-                            if events.try_send(InputEvent::Resize).is_err() && events.is_closed() {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ = events.blocking_send(InputEvent::Error(error.to_string()));
-                            break;
-                        }
-                    },
-
-                    Err(error) => {
-                        let _ = events.blocking_send(InputEvent::Error(error.to_string()));
-                        break;
-                    }
-                }
-            }
-        });
-        Self {
-            shutdown,
-            join: Some(join),
-        }
-    }
-    fn stop(&mut self) -> io::Result<()> {
-        self.shutdown.store(true, Ordering::Relaxed);
-        if let Some(join) = self.join.take() {
-            join.join()
-                .map_err(|_| io::Error::other("input worker thread panicked"))?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for InputWorker {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6177,7 +6096,7 @@ fn wide_development_regions(area: Rect) -> WideDevelopmentRegions {
 }
 
 fn live_panel_region(
-    area: Rect,
+    root: RootRegions,
     display: DisplayClass,
     mode: WorkspaceMode,
     mobile_view: MobileView,
@@ -6186,7 +6105,6 @@ fn live_panel_region(
     if !live_enabled {
         return None;
     }
-    let root = root_regions(area, display);
     match display {
         DisplayClass::Phone => (mobile_view == MobileView::App).then_some(root.content),
         DisplayClass::Wide if mode == WorkspaceMode::Development => {
@@ -6225,7 +6143,11 @@ fn live_panel_region(
 }
 
 fn draw(frame: &mut Frame, app: &App) {
-    let root = root_regions(frame.area(), app.display_class);
+    let root = app
+        .layout_root
+        .filter(|(area, class, _)| *area == frame.area() && *class == app.display_class)
+        .map(|(_, _, root)| root)
+        .unwrap_or_else(|| root_regions(frame.area(), app.display_class));
     match app.display_class {
         DisplayClass::Phone => draw_phone(frame, app, root),
         DisplayClass::Compact => draw_desktop(frame, app, root, true),
@@ -6241,35 +6163,35 @@ fn draw_phone(frame: &mut Frame, app: &App, root: RootRegions) {
     );
     draw_phone_header(frame, app, root.header);
 
-    let (title, content) = match app.mobile_view {
-        MobileView::Home => ("Overview", String::new()),
+    let (title, content): (&str, Cow<'_, str>) = match app.mobile_view {
+        MobileView::Home => ("Overview", Cow::Borrowed("")),
         MobileView::Agent => (
             "◆ AGENT / TIMELINE",
-            format!(
+            Cow::Owned(format!(
                 "{}\n\nLATEST RESULT\n{}",
                 app.activity.iter().cloned().collect::<Vec<_>>().join("\n"),
                 app.page_content
-            ),
+            )),
         ),
         MobileView::App => (
             "◎ BROWSER",
             if app.tap_mode {
-                format!("{}\n\n{}", app.tap_overlay(), app.page_content)
+                Cow::Owned(format!("{}\n\n{}", app.tap_overlay(), app.page_content))
             } else {
-                app.page_content.clone()
+                Cow::Borrowed(&app.page_content)
             },
         ),
         MobileView::Diff => (
             "Δ DIFF / VERIFICATION",
-            format!(
+            Cow::Owned(format!(
                 "VERIFICATION CARD\n{}\n\nPROJECT DIFF\n{}",
                 app.verification_summary, app.development_diff
-            ),
+            )),
         ),
-        MobileView::Project => ("▣ PROJECT / EDITOR", mobile_project(app)),
+        MobileView::Project => ("▣ PROJECT / EDITOR", Cow::Owned(mobile_project(app))),
         MobileView::Process => (
             ">_ PROCESS / TESTS / LOGS",
-            format!(
+            Cow::Owned(format!(
                 "{}
 
 RECENT ACTIVITY
@@ -6285,13 +6207,13 @@ RECENT ACTIVITY
                     .rev()
                     .collect::<Vec<_>>()
                     .join("\n")
-            ),
+            )),
         ),
     };
     if app.mobile_view == MobileView::Home {
         draw_phone_overview(frame, app, root.content);
     } else if app.mobile_view == MobileView::App && app.live.enabled() {
-        draw_phone_live_view(frame, app, title, &content, root.content);
+        draw_phone_live_view(frame, app, title, content.as_ref(), root.content);
     } else {
         let accent = mobile_view_accent(app.mobile_view);
         frame.render_widget(
@@ -6308,8 +6230,7 @@ RECENT ACTIVITY
         draw_phone_actions(frame, app, area);
     }
 
-    let before = app.input.chars().take(app.cursor_pos).collect::<String>();
-    let after = app.input.chars().skip(app.cursor_pos).collect::<String>();
+    let (before, after) = app.input.split_at(app.cursor_byte_index());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -6461,14 +6382,24 @@ fn phone_action_layout(app: &App, area: Rect) -> Vec<(PhoneAction, Rect)> {
 }
 
 fn draw_phone_actions(frame: &mut Frame, app: &App, area: Rect) {
-    for (action, region) in phone_action_layout(app, area) {
-        frame.render_widget(
-            Paragraph::new(action.label())
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(PHONE_CYAN).bg(PHONE_PANEL_ACTIVE)),
-            region,
-        );
+    if !app.mobile_action_areas.is_empty() {
+        for (action, region) in app.mobile_action_areas.iter().copied() {
+            draw_phone_action(frame, action, region);
+        }
+        return;
     }
+    for (action, region) in phone_action_layout(app, area) {
+        draw_phone_action(frame, action, region);
+    }
+}
+
+fn draw_phone_action(frame: &mut Frame, action: PhoneAction, region: Rect) {
+    frame.render_widget(
+        Paragraph::new(action.label())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(PHONE_CYAN).bg(PHONE_PANEL_ACTIVE)),
+        region,
+    );
 }
 
 fn phone_palette_items(query: &str) -> Vec<(&'static str, PhoneAction)> {
@@ -6582,6 +6513,12 @@ impl PhoneOverviewCard {
 }
 
 fn draw_phone_overview(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.mobile_card_areas.is_empty() {
+        for (card, region) in app.mobile_card_areas.iter().copied() {
+            draw_phone_overview_card(frame, app, card, region);
+        }
+        return;
+    }
     for (card, region) in phone_overview_layout(app, area) {
         draw_phone_overview_card(frame, app, card, region);
     }
@@ -7830,7 +7767,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     };
     app.restore_reconnect_capsule();
 
-    let (input_tx, mut input_events) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+    let mut input_events = event::EventStream::new();
     let (browser_commands, browser_command_rx) = mpsc::channel(BROWSER_COMMAND_CHANNEL_CAPACITY);
     let (browser_event_tx, mut browser_events) = mpsc::channel(BROWSER_EVENT_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -7870,7 +7807,6 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         browser_event_tx,
         shutdown_rx,
     ));
-    let mut input_worker = InputWorker::spawn(input_tx);
     let manifest = GlassCapabilityManifest::for_policy_with_experimental_extensions(
         &policy,
         cli.experimental_extensions,
@@ -7914,14 +7850,12 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     drop(browser_commands);
     app.live.stop_herdr();
     let graphics_result = app.graphics_shutdown();
-    let input_result = input_worker.stop();
     let cursor_result = terminal.show_cursor();
     let terminal_result = terminal_guard.restore();
     let worker_result = local.run_until(finish_browser_worker(browser_worker)).await;
 
     loop_result?;
     graphics_result?;
-    input_result?;
     cursor_result?;
     terminal_result?;
     worker_result
@@ -7931,7 +7865,7 @@ async fn run_tui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     commands: &mpsc::Sender<BrowserCommand>,
-    input_events: &mut mpsc::Receiver<InputEvent>,
+    input_events: &mut event::EventStream,
     browser_events: &mut mpsc::Receiver<BrowserEvent>,
     policy: &BrowserPolicy,
     visual_mode: &watch::Sender<ScreencastConfig>,
@@ -7969,18 +7903,20 @@ async fn run_tui_loop(
         let changed = tokio::select! {
             biased;
             _ = time::sleep(render_wait), if redraw => false,
-            input = input_events.recv() => match input {
-                Some(InputEvent::Key(key)) => {
+            input = input_events.next() => match input {
+                Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
                     let intent = app.reduce_key(key);
                     dispatch_ui_intent(app, commands, policy, intent);
                     true
                 }
-                Some(InputEvent::Mouse(mouse)) => {
+                Some(Ok(Event::Key(_))) => false,
+                Some(Ok(Event::Mouse(mouse))) if actionable_mouse_event(&mouse) => {
                     let intent = app.mouse_intent(mouse);
                     dispatch_ui_intent(app, commands, policy, intent);
                     true
                 }
-                Some(InputEvent::Paste(text)) => {
+                Some(Ok(Event::Mouse(_))) => false,
+                Some(Ok(Event::Paste(text))) => {
                     if app.mode == WorkspaceMode::Development && app.editor_focus {
                         app.insert_editor_text(&text);
                         true
@@ -7988,7 +7924,8 @@ async fn run_tui_loop(
                         app.insert_text(&text)
                     }
                 }
-                Some(InputEvent::Focus(focused)) => {
+                Some(Ok(Event::FocusGained)) | Some(Ok(Event::FocusLost)) => {
+                    let focused = matches!(input, Some(Ok(Event::FocusGained)));
                     let regained = focused && !app.terminal_focused;
                     app.terminal_focused = focused;
                     app.set_status(if focused {
@@ -8001,9 +7938,9 @@ async fn run_tui_loop(
                     }
                     true
                 }
-                Some(InputEvent::Resize) => true,
-                Some(InputEvent::Error(error)) => return Err(error.into()),
-                None => return Err("TUI input worker stopped".into()),
+                Some(Ok(Event::Resize(_, _))) => true,
+                Some(Err(error)) => return Err(error.into()),
+                None => return Err("TUI input stream stopped".into()),
             },
             event = browser_events.recv(), if browser_events_open => match event {
                 Some(event) => {
@@ -9075,6 +9012,34 @@ mod tests {
                 .iter()
                 .any(|cell| cell.symbol() == "▀")
         );
+    }
+
+    #[test]
+    fn desktop_live_frames_do_not_retain_phone_thumbnail_payloads() {
+        let mut app = App::new_for_product_with_context(
+            true,
+            TuiLayout::Desktop,
+            RemoteContext::default(),
+            120,
+            LiveViewOptions {
+                mode: TuiLiveMode::On,
+                backend: TuiLiveBackend::Ansi,
+                quality: TuiLiveQuality::Data,
+                ..LiveViewOptions::default()
+            },
+        );
+        app.sync_graphics_geometry(Rect::new(0, 0, 120, 36))
+            .unwrap();
+        app.apply_visual_frame(
+            base64::engine::general_purpose::STANDARD.encode(test_live_png()),
+            serde_json::json!({"deviceWidth": 2, "deviceHeight": 2}),
+            8,
+        )
+        .unwrap();
+
+        assert!(app.live.thumbnail_png.is_empty());
+        assert_eq!(app.live.thumbnail_revision, None);
+        assert!(!app.live.ansi.cells().is_empty());
     }
 
     #[test]

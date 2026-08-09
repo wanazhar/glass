@@ -276,6 +276,9 @@ private Safari tunnel.
   second locally, 30 on a measured fast remote, and 20 on constrained, unknown,
   or Mosh links. State and input are processed immediately between frames; the
   cap removes redundant layout and SSH writes rather than delaying commands.
+- Terminal input uses Crossterm's asynchronous event stream. An idle cockpit no
+  longer wakes on Glass's former 50 ms polling interval; resize bursts and input
+  still update state immediately and share the next paced presentation.
 - Held keys use terminal repeat events, key releases do not trigger redraws, and
   bracketed command paste is inserted in one bounded operation. This keeps
   editing responsive without increasing the 4 KiB command limit.
@@ -291,3 +294,8 @@ Run the browser-free renderer benchmark on the remote machine with:
 GLASS_LIVE_BENCH_ITERATIONS=100 \
   cargo run -p glass-browser --release --example terminal_live_benchmark
 ```
+
+The benchmark isolates PNG decode, ANSI sampling, and changed-cell detection.
+Kitty/Herdr transport bytes and SSH latency are intentionally outside that
+microbenchmark. Glass sends a Kitty frame once per accepted generation; ordinary
+status, input, and spinner redraws do not replay the image payload.

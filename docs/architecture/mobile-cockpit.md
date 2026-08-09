@@ -125,12 +125,26 @@ complete new buffer against the previous frame and writes only changed cells.
 
 This pacing affects terminal presentation, not browser authority or event
 processing. Browser and development events are still consumed while a frame is
-pending, bounded channels retain backpressure, and the newest state appears on
-the next frame. Resize notifications use a coalescing channel path. Key-release
-events never enter the reducer, while press and repeat events do. Mouse move,
-release and drag noise is dropped before the channel because the cockpit has no
-hover or drag authority. Bracketed command paste is validated and inserted in
-one bounded pass instead of one layout-invalidating edit per character.
+pending, bounded browser channels retain backpressure, and the newest state
+appears on the next frame. Terminal input comes from Crossterm's asynchronous
+event stream, so an idle cockpit does not wake every 50 ms to poll and resize
+bursts collapse into the paced redraw. Key-release events never enter the
+reducer, while press and repeat events do. Mouse move, release and drag noise is
+dropped because the cockpit has no hover or drag authority. Bracketed command
+paste is validated and inserted in one bounded pass instead of one
+layout-invalidating edit per character.
+
+ANSI live frames decode into one bounded byte buffer and sample that buffer
+directly. Fit coordinates are computed once per axis rather than once per cell,
+and a two-buffer cell scratch space is reused across frames. Kitty presentation
+promotes the newest pending frame after the Ratatui cell pass, emits each
+geometry/generation identity once, and never retransmits an unchanged PNG merely
+because a status line or spinner caused another cell render. The validated
+decoded payload moves into the Kitty mailbox without another full-frame copy.
+Desktop and compact layouts do not retain the phone-only thumbnail allocation.
+Cached root, action, and Overview regions avoid duplicating Ratatui layout
+construction inside the same frame; standalone test renders retain deterministic
+fallbacks.
 
 ## Semantic tap overlay
 

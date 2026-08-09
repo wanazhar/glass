@@ -254,6 +254,7 @@ pub struct TerminalGraphics {
     cleanup_count: u64,
     fallback_count: u64,
     last_fallback: Option<GraphicsFallbackReason>,
+    last_rendered_frame: Option<(u64, u64)>,
     cleaned: bool,
     ownership: VecDeque<FrameOwnershipRecord>,
 }
@@ -275,6 +276,7 @@ impl TerminalGraphics {
             cleanup_count: 0,
             fallback_count: 0,
             last_fallback: None,
+            last_rendered_frame: None,
             cleaned: false,
             ownership: VecDeque::new(),
         })
@@ -416,6 +418,14 @@ impl TerminalGraphics {
         frame: BrowserFrame,
         payload: &[u8],
     ) -> Result<SubmitResult, GraphicsError> {
+        self.submit_owned(frame, payload.to_vec())
+    }
+
+    pub(crate) fn submit_owned(
+        &mut self,
+        frame: BrowserFrame,
+        payload: Vec<u8>,
+    ) -> Result<SubmitResult, GraphicsError> {
         if payload.len() > MAX_FRAME_BYTES {
             return Err(GraphicsError::PayloadTooLarge {
                 actual: payload.len(),
@@ -430,13 +440,13 @@ impl TerminalGraphics {
         if let Some(geometry) = self.geometry.as_ref() {
             geometry.check_snapshot(frame.browser_revision, frame.geometry_revision)?;
         }
-        let fallback = self.fallback_reason(&frame, payload);
+        let fallback = self.fallback_reason(&frame, &payload);
         let outcome = self.mailbox.submit(frame.clone())?;
         match outcome {
             crate::presentation::SubmitOutcome::Current => {
                 self.current_payload = Some(PayloadFrame {
                     frame: frame.clone(),
-                    bytes: payload.to_vec(),
+                    bytes: payload,
                     fallback,
                 });
                 self.note_fallback(fallback);
@@ -446,7 +456,7 @@ impl TerminalGraphics {
             crate::presentation::SubmitOutcome::Pending => {
                 self.pending_payload = Some(PayloadFrame {
                     frame: frame.clone(),
-                    bytes: payload.to_vec(),
+                    bytes: payload,
                     fallback,
                 });
                 self.note_fallback(fallback);
@@ -464,7 +474,7 @@ impl TerminalGraphics {
                 }
                 self.pending_payload = Some(PayloadFrame {
                     frame: frame.clone(),
-                    bytes: payload.to_vec(),
+                    bytes: payload,
                     fallback,
                 });
                 self.note_fallback(fallback);
@@ -657,6 +667,25 @@ impl TerminalGraphics {
         })
     }
 
+    /// Render a terminal graphics payload only when its geometry/generation
+    /// identity has not already been emitted. Semantic text remains owned by
+    /// Ratatui and is intentionally not replayed through this path.
+    pub(crate) fn render_current_if_new(
+        &mut self,
+        semantic: &str,
+    ) -> Result<Option<RenderedFrame>, GraphicsError> {
+        let Some(current) = self.current_payload.as_ref() else {
+            return Ok(None);
+        };
+        let key = (current.frame.geometry_revision, current.frame.generation);
+        if self.last_rendered_frame == Some(key) {
+            return Ok(None);
+        }
+        let rendered = self.render_current(semantic)?;
+        self.last_rendered_frame = Some(key);
+        Ok(Some(rendered))
+    }
+
     fn kitty_placement(&self) -> (u16, u16, u16, u16) {
         let Some(geometry) = self.geometry.as_ref() else {
             return (self.pane.x, self.pane.y, self.pane.width, self.pane.height);
@@ -776,6 +805,7 @@ impl TerminalGraphics {
         if let Some(frame) = self.pending_payload.take() {
             self.record(frame.frame, FrameOwnershipEvent::Released { reason });
         }
+        self.last_rendered_frame = None;
         self.mailbox.clear();
     }
 
@@ -907,6 +937,82 @@ mod tests {
         assert!(graphics.ownership().any(|record| {
             record.generation == 3 && record.event == FrameOwnershipEvent::Presented
         }));
+    }
+
+    #[test]
+    fn kitty_frames_render_once_and_promoted_frames_render_immediately() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(1, 1, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            graphics.submit(frame(1, 1), b"one").unwrap(),
+            SubmitResult::Presented
+        );
+        assert_eq!(
+            graphics
+                .render_current_if_new("semantic")
+                .unwrap()
+                .unwrap()
+                .generation,
+            Some(1)
+        );
+        assert!(
+            graphics
+                .render_current_if_new("semantic")
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(
+            graphics.submit(frame(2, 1), b"two").unwrap(),
+            SubmitResult::Queued
+        );
+        assert!(graphics.present_pending().unwrap());
+        assert_eq!(
+            graphics
+                .render_current_if_new("semantic")
+                .unwrap()
+                .unwrap()
+                .generation,
+            Some(2)
+        );
+        assert!(
+            graphics
+                .render_current_if_new("semantic")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn owned_submission_reuses_the_bounded_payload_allocation() {
+        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
+        graphics
+            .resize(
+                PaneArea::new(1, 1, 40, 20),
+                PixelSize::new(640, 480),
+                PixelSize::new(640, 480),
+                CaptureScale::FULL,
+                1,
+            )
+            .unwrap();
+        let payload = vec![7_u8; 1024];
+        let allocation = payload.as_ptr();
+        assert_eq!(
+            graphics.submit_owned(frame(1, 1), payload).unwrap(),
+            SubmitResult::Presented
+        );
+        assert_eq!(
+            graphics.current_payload.as_ref().unwrap().bytes.as_ptr(),
+            allocation
+        );
     }
     #[test]
     fn raw_rgba_render_uses_encoding_and_image_placement() {

@@ -43,6 +43,37 @@ export default function (pi: ExtensionAPI) {
   };
 
   register(
+    "glass_file_read",
+    "glass.file.read",
+    "Read one bounded project file through Glass root confinement",
+    Type.Object({ path: Type.String() }),
+  );
+  register(
+    "glass_file_list",
+    "glass.file.list",
+    "List the bounded Glass project tree",
+    Type.Object({}),
+  );
+  register(
+    "glass_file_search",
+    "glass.file.search",
+    "Search bounded project files and semantic project state",
+    Type.Object({ query: Type.String() }),
+  );
+  register(
+    "glass_git_status",
+    "glass.git.status",
+    "Inspect bounded code and runtime impact without modifying Git",
+    Type.Object({}),
+  );
+  register(
+    "glass_semantic_inspect",
+    "glass.semantic.inspect",
+    "Inspect source and runtime graph links for one entity",
+    Type.Object({ entity: Type.String() }),
+  );
+
+  register(
     "glass_web_ir_inspect",
     "glass.web_ir.inspect",
     "Validate and inspect bounded Glass Web IR without requesting a screenshot",

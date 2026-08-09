@@ -280,11 +280,33 @@ The optional Pi adapter owns one line-delimited RPC session in a resident TUI.
 It supports prompt, steer, follow-up, model discovery/selection, thinking
 level, abort, and new session. Pi is not required for project or browser use.
 
-Glass launches supported Pi versions with built-in tools disabled. A
-Glass-owned extension exposes bounded semantic and task tools through the same
-Rust gateway used by the local harness. Cross-process requests use mode-0600,
-size-bounded, one-use files that the broker removes immediately after reading.
-Arguments and results are schema-validated and capped.
+Glass launches supported Pi versions offline and ephemeral, with built-in
+tools, ambient extensions, skills, prompt templates, themes, context-file
+discovery, and session persistence disabled. The embedded
+`pi-glass-system.md` prompt makes Glass revisions, structured-first browser
+evidence, privacy, narrow-terminal output, and truthful effect reporting part
+of every turn without importing arbitrary user or project Pi configuration.
+
+A Glass-owned extension exposes nine read-only tools: bounded file read/list/
+search, Git/runtime-impact status, semantic entity links, Web IR inspect/diff/
+continuity, and value-free Task Protocol compilation. Each call crosses the
+same Rust gateway used by the local harness. Cross-process requests use
+mode-0600, size-bounded, one-use files that the broker removes immediately
+after reading. Arguments and results are schema-validated and capped. Pi file
+or process mutation tools are intentionally absent until a per-call approval
+can be represented in the Glass TUI; a model response is not confirmation.
+
+Pi's prompt response only acknowledges queueing. Glass therefore continues
+consuming JSONL events until `agent_settled` (an earlier `agent_end` may still
+be followed by retry, compaction, or queued continuation), forwards bounded
+message/tool/completion events to the Agent view, and drops token-level
+`message_update` noise before it can cause terminal redraws. The resident
+worker multiplexes commands with output at 50 ms or better, so `steer`,
+`follow-up`, and `abort` can be delivered while an agent turn is running.
+One-shot CLI prompts wait for the settled agent result; use the resident TUI
+for controls that target an active turn. RPC records are capped at 512 KiB, the
+reader applies backpressure after 32 queued records, and one-shot responses
+retain only the newest 64 display-worthy events.
 
 An attached Browser Workspace adds ephemeral target, origin, semantic summary,
 browser revision, workflow, memory-scope, and authority references. Browser

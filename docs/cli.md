@@ -353,6 +353,13 @@ glass agent prompt "Explain @diagnostic" --harness pi --root .
 glass agent steer "focus on the failing test" --root .
 ```
 
+The Pi path uses Glass's embedded system prompt and nine bounded read-only
+tools rather than Pi's built-in filesystem/shell tools. A one-shot Pi prompt
+waits for `agent_settled`; steer, follow-up, and abort are useful in
+the resident TUI where the same Pi RPC process remains active. Tool-level file
+or process mutations are not exposed until Glass can collect an explicit
+per-call approval.
+
 ## Profiles and files
 
 Run:

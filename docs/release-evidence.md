@@ -27,7 +27,7 @@ or GitHub Release is implied by this section.
 
 ### Completed 0.3.3 validation
 
-- `cargo test --workspace --all-targets --all-features --locked`: 783 library
+- `scripts/check-rust-workspace.sh test`: the complete split-package library
   tests passed, one installed-tool availability test was intentionally ignored,
   and every binary, integration test, example and 40x20 real-PTY target passed.
 - `GLASS_E2E=1 cargo test -p glass-browser --all-features --test
@@ -36,6 +36,10 @@ or GitHub Release is implied by this section.
 - Formatting, warnings-denied Clippy, warnings-denied workspace rustdoc,
   browser-core no-default-feature compilation, and separate optimized builds
   of both packages passed on Rust 1.97.0 (`aarch64-unknown-linux-gnu`).
+- The installed Pi 0.84.0 binary completed a real offline RPC state handshake
+  with the packaged Glass system prompt and nine-tool extension; protocol
+  classification tests cover prompt acknowledgement, authoritative assistant
+  messages, hidden user-message echoes, and final `agent_settled` handling.
 - Documentation validation covers 350 Markdown files, the exact top-level and
   nested CLI inventories, 133 MCP tools, 17 examples and 22 public modules.
   Sixteen substantive guide contracts plus complete current-guide routing are
@@ -95,7 +99,7 @@ those are explicit maintainer publication steps. The published
   live-browser Development TUI.
 - The version, feature-parity, release-documentation, reliability-matrix,
   read-only-adapter, and Web IR corpus checks pass.
-- `cargo test --workspace --all-targets --locked` passes the complete source
+- `scripts/check-rust-workspace.sh test` passes the complete source
   suite.
 - `GLASS_E2E=1 cargo test -p glass-browser --all-features --test browser_smoke --locked --
   --nocapture --test-threads=1` passes all 19 Chromium scenarios on the current Linux ARM64

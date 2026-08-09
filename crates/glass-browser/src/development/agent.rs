@@ -3,13 +3,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
     time::Duration,
 };
+
+const MAX_PI_EVENT_BYTES: usize = 512 * 1024;
+const MAX_PI_BUFFERED_EVENTS: usize = 64;
+const PI_EVENT_CHANNEL_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1065,14 +1070,20 @@ impl PiHarness {
                 "--offline",
                 "--no-approve",
                 "--no-context-files",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
                 "--no-session",
                 "--no-builtin-tools",
+                "--system-prompt",
+                include_str!("../../assets/pi-glass-system.md"),
                 "--extension",
             ])
             .arg(&extension_path)
             .args([
                 "--tools",
-                "glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan",
+                "glass_file_read,glass_file_list,glass_file_search,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan",
             ])
             .env("GLASS_PI_BROKER_BIN", broker)
             .current_dir(root)
@@ -1089,7 +1100,7 @@ impl PiHarness {
             .stdout
             .take()
             .ok_or_else(|| DevelopmentError::Process("Pi stdout is unavailable".into()))?;
-        let (sender, receiver) = mpsc::sync_channel(256);
+        let (sender, receiver) = mpsc::sync_channel(PI_EVENT_CHANNEL_CAPACITY);
         thread::Builder::new()
             .name("glass-pi-rpc".into())
             .spawn(move || {
@@ -1098,7 +1109,7 @@ impl PiHarness {
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
-                    if line.len() > 1024 * 1024 {
+                    if line.len() > MAX_PI_EVENT_BYTES {
                         continue;
                     }
                     if let Ok(value) = serde_json::from_slice::<Value>(&line)
@@ -1119,6 +1130,59 @@ impl PiHarness {
     }
 
     pub fn request(&mut self, request: HarnessRequest) -> DevelopmentResult<Vec<Value>> {
+        let wait_for_agent = matches!(request, HarnessRequest::Prompt { .. });
+        let id = self.start_request(request)?;
+        let mut events = VecDeque::with_capacity(MAX_PI_BUFFERED_EVENTS);
+        let mut response_received = false;
+        let mut observed = 0_usize;
+        loop {
+            let value = self
+                .recv_event_timeout(if response_received {
+                    Duration::from_secs(120)
+                } else {
+                    Duration::from_secs(10)
+                })?
+                .ok_or_else(|| {
+                    DevelopmentError::Process(if response_received {
+                        "Pi agent event stream timed out".into()
+                    } else {
+                        "Pi RPC response timed out".into()
+                    })
+                })?;
+            observed = observed.saturating_add(1);
+            let is_response = pi_response_matches(&value, &id);
+            let failed =
+                is_response && value.get("success").and_then(Value::as_bool) == Some(false);
+            let settled = pi_agent_settled(&value);
+            if pi_event_visible(&value) {
+                if events.len() == MAX_PI_BUFFERED_EVENTS {
+                    events.pop_front();
+                }
+                events.push_back(value);
+            }
+            if failed {
+                return Err(DevelopmentError::Process(format!(
+                    "Pi rejected RPC command {id}"
+                )));
+            }
+            if is_response {
+                response_received = true;
+                if !wait_for_agent {
+                    return Ok(events.into());
+                }
+            }
+            if response_received && settled {
+                return Ok(events.into());
+            }
+            if observed >= 4096 {
+                return Err(DevelopmentError::Process(
+                    "Pi emitted too many events before settling".into(),
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn start_request(&mut self, request: HarnessRequest) -> DevelopmentResult<String> {
         let (command, private_text) = match request {
             HarnessRequest::Hello | HarnessRequest::State => {
                 (serde_json::json!({"type": "get_state"}), None)
@@ -1151,40 +1215,112 @@ impl PiHarness {
         self.send(command)
     }
 
-    fn send(&mut self, mut command: Value) -> DevelopmentResult<Vec<Value>> {
+    fn send(&mut self, mut command: Value) -> DevelopmentResult<String> {
         let id = format!("glass-{}", self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         command["id"] = Value::String(id.clone());
-        serde_json::to_writer(&mut self.input, &command)?;
+        let encoded = serde_json::to_vec(&command)?;
+        if encoded.len() > 1024 * 1024 {
+            return Err(DevelopmentError::InvalidInput(
+                "Pi RPC command exceeds the 1 MiB limit".into(),
+            ));
+        }
+        self.input.write_all(&encoded)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
-        let mut events = Vec::new();
-        loop {
-            let value = self
-                .output
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|error| {
-                    DevelopmentError::Process(format!("Pi RPC response timed out: {error}"))
-                })?;
-            let is_response = value.get("type").and_then(Value::as_str) == Some("response")
-                && value.get("id").and_then(Value::as_str) == Some(id.as_str());
-            let failed =
-                is_response && value.get("success").and_then(Value::as_bool) == Some(false);
-            events.push(value);
-            if failed {
-                return Err(DevelopmentError::Process(format!(
-                    "Pi rejected RPC command {id}"
-                )));
-            }
-            if is_response {
-                return Ok(events);
-            }
-            if events.len() >= 256 {
-                return Err(DevelopmentError::Process(
-                    "Pi emitted too many events before its response".into(),
-                ));
-            }
+        Ok(id)
+    }
+
+    pub(crate) fn recv_event_timeout(&self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
+        match self.output.recv_timeout(timeout) {
+            Ok(value) => Ok(Some(value)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(
+                "Pi RPC event stream closed".into(),
+            )),
         }
+    }
+}
+
+pub(crate) fn pi_response_matches(value: &Value, id: &str) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("response")
+        && value.get("id").and_then(Value::as_str) == Some(id)
+}
+
+pub(crate) fn pi_agent_settled(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("agent_settled")
+}
+
+pub(crate) fn pi_event_visible(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) == Some("message_end") {
+        return value
+            .get("message")
+            .and_then(|message| message.get("role"))
+            .and_then(Value::as_str)
+            == Some("assistant");
+    }
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some(
+            "response"
+                | "tool_execution_start"
+                | "tool_execution_end"
+                | "agent_settled"
+                | "extension_error"
+                | "extension_ui_request"
+        )
+    )
+}
+
+pub(crate) fn pi_event_display(value: &Value) -> Option<String> {
+    match value.get("type").and_then(Value::as_str)? {
+        "message_end" => {
+            let message = value.get("message")?;
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let content = message.get("content")?;
+            if let Some(text) = content.as_str() {
+                return (!text.is_empty()).then(|| text.to_string());
+            }
+            let text = content
+                .as_array()?
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        "tool_execution_start" => Some(format!(
+            "Pi tool running: {}",
+            value
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        )),
+        "tool_execution_end" => Some(format!(
+            "Pi tool {}: {}",
+            value
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            if value.get("isError").and_then(Value::as_bool) == Some(true) {
+                "failed"
+            } else {
+                "completed"
+            }
+        )),
+        "extension_error" => Some(format!(
+            "Pi extension error: {}",
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+        )),
+        "response" => serde_json::to_string_pretty(value).ok(),
+        "agent_settled" | "extension_ui_request" => None,
+        _ => None,
     }
 }
 
@@ -1266,11 +1402,67 @@ mod tests {
         }
         let mut harness = PiHarness::spawn(Path::new(".")).unwrap();
         let events = harness.request(HarnessRequest::Hello).unwrap();
+        assert!(
+            !events.iter().any(|event| {
+                event.get("type").and_then(Value::as_str) == Some("extension_error")
+            })
+        );
         assert!(events.iter().any(|event| {
             event.get("type").and_then(Value::as_str) == Some("response")
                 && event.get("command").and_then(Value::as_str) == Some("get_state")
                 && event.get("success").and_then(Value::as_bool) == Some(true)
         }));
+    }
+
+    #[test]
+    fn pi_contract_is_glass_specific_read_only_and_event_bounded() {
+        let prompt = include_str!("../../assets/pi-glass-system.md");
+        let tools = include_str!("../../assets/pi-glass-tools.ts");
+        assert!(prompt.contains("embedded inside Glass Dev"));
+        assert!(prompt.contains("Structured browser observation is the default"));
+        assert!(prompt.contains("read-only unless Glass explicitly exposes"));
+        for tool in [
+            "glass_file_read",
+            "glass_file_list",
+            "glass_file_search",
+            "glass_git_status",
+            "glass_semantic_inspect",
+            "glass_web_ir_inspect",
+            "glass_web_ir_diff",
+            "glass_web_ir_continuity",
+            "glass_task_plan",
+        ] {
+            assert!(tools.contains(tool), "missing Pi tool {tool}");
+        }
+        assert!(!tools.contains("--allow-mutation"));
+
+        let response = serde_json::json!({
+            "type": "response",
+            "id": "glass-9",
+            "command": "prompt",
+            "success": true
+        });
+        assert!(pi_response_matches(&response, "glass-9"));
+        assert!(pi_event_visible(&response));
+        assert!(!pi_agent_settled(&response));
+        assert!(!pi_event_visible(
+            &serde_json::json!({"type":"message_update"})
+        ));
+        assert!(!pi_event_visible(&serde_json::json!({
+            "type":"message_end",
+            "message":{"role":"user","content":"private prompt"}
+        })));
+        assert!(!pi_agent_settled(&serde_json::json!({"type":"agent_end"})));
+        assert!(pi_agent_settled(
+            &serde_json::json!({"type":"agent_settled"})
+        ));
+        assert_eq!(
+            pi_event_display(&serde_json::json!({
+                "type":"message_end",
+                "message":{"role":"assistant","content":[{"type":"text","text":"done"}]}
+            })),
+            Some("done".into())
+        );
     }
 
     #[test]

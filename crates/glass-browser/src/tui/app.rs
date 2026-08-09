@@ -921,6 +921,11 @@ enum DevelopmentAsyncKind {
 
 #[derive(Debug)]
 enum DevelopmentAsyncEvent {
+    Progress {
+        kind: DevelopmentAsyncKind,
+        output: String,
+        settled: bool,
+    },
     Completed {
         kind: DevelopmentAsyncKind,
         output: String,
@@ -1698,21 +1703,57 @@ impl App {
                                         return;
                                     }
                                 };
-                                while let Ok(request) = receiver.recv() {
-                                    let event = match harness.request(request)
-                                        .and_then(|values| serde_json::to_string_pretty(&values).map_err(Into::into))
-                                    {
-                                        Ok(output) => DevelopmentAsyncEvent::Completed {
-                                            kind: DevelopmentAsyncKind::Agent,
-                                            output,
-                                        },
-                                        Err(error) => DevelopmentAsyncEvent::Failed {
-                                            kind: DevelopmentAsyncKind::Agent,
-                                            error: error.to_string(),
-                                        },
-                                    };
-                                    if events.send(event).is_err() {
-                                        break;
+                                let mut commands_open = true;
+                                while commands_open {
+                                    loop {
+                                        match receiver.try_recv() {
+                                            Ok(request) => {
+                                                if let Err(error) = harness.start_request(request)
+                                                    && events.send(DevelopmentAsyncEvent::Failed {
+                                                        kind: DevelopmentAsyncKind::Agent,
+                                                        error: error.to_string(),
+                                                    }).is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                            Err(std_mpsc::TryRecvError::Empty) => break,
+                                            Err(std_mpsc::TryRecvError::Disconnected) => {
+                                                commands_open = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    match harness.recv_event_timeout(Duration::from_millis(50)) {
+                                        Ok(Some(value)) => {
+                                            if !crate::development::agent::pi_event_visible(&value) {
+                                                continue;
+                                            }
+                                            let agent_settled = crate::development::agent::pi_agent_settled(&value);
+                                            let settled = agent_settled
+                                                || value.get("type").and_then(Value::as_str) == Some("response")
+                                                    && !matches!(
+                                                        value.get("command").and_then(Value::as_str),
+                                                        Some("prompt" | "steer" | "follow_up" | "abort")
+                                                    );
+                                            let output = crate::development::agent::pi_event_display(&value)
+                                                .unwrap_or_default();
+                                            if events.send(DevelopmentAsyncEvent::Progress {
+                                                kind: DevelopmentAsyncKind::Agent,
+                                                output,
+                                                settled,
+                                            }).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            let _ = events.send(DevelopmentAsyncEvent::Failed {
+                                                kind: DevelopmentAsyncKind::Agent,
+                                                error: error.to_string(),
+                                            });
+                                            break;
+                                        }
                                     }
                                 }
                             })
@@ -1806,6 +1847,31 @@ impl App {
         while let Ok(event) = self.development_event_rx.try_recv() {
             changed = true;
             match event {
+                DevelopmentAsyncEvent::Progress {
+                    kind,
+                    output,
+                    settled,
+                } => {
+                    if kind == DevelopmentAsyncKind::Agent {
+                        self.agent_phase = if settled {
+                            AgentPhase::Complete
+                        } else {
+                            AgentPhase::Working
+                        };
+                    }
+                    if !output.is_empty() {
+                        self.set_page_content(output);
+                    }
+                    self.set_status(if settled {
+                        "Pi agent settled"
+                    } else {
+                        "Pi agent streaming"
+                    });
+                    if settled {
+                        self.push_phone_toast("Pi agent completed", false);
+                        self.add_activity("Pi agent completed its current turn.");
+                    }
+                }
                 DevelopmentAsyncEvent::Completed { kind, output } => {
                     if kind == DevelopmentAsyncKind::Agent
                         && self.agent_phase == AgentPhase::Working
@@ -8861,6 +8927,33 @@ mod tests {
             .unwrap();
         assert!(app.poll_development_events());
         assert_eq!(app.agent_phase, AgentPhase::Complete);
+    }
+
+    #[test]
+    fn pi_progress_remains_working_until_the_agent_settles() {
+        let mut app = mock_remote_phone_app(46);
+        app.agent_phase = AgentPhase::Working;
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::Progress {
+                kind: DevelopmentAsyncKind::Agent,
+                output: "tool running".into(),
+                settled: false,
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert_eq!(app.agent_phase, AgentPhase::Working);
+        assert_eq!(app.page_content, "tool running");
+
+        app.development_event_tx
+            .send(DevelopmentAsyncEvent::Progress {
+                kind: DevelopmentAsyncKind::Agent,
+                output: "answer complete".into(),
+                settled: true,
+            })
+            .unwrap();
+        assert!(app.poll_development_events());
+        assert_eq!(app.agent_phase, AgentPhase::Complete);
+        assert_eq!(app.page_content, "answer complete");
     }
 
     #[test]

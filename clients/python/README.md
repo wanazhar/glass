@@ -119,7 +119,10 @@ available to later calls. Higher-level helpers include `wait_for_event()`,
 process = glass.run_until_healthy("dev", "npm run dev", project["root"])
 event = glass.wait_for_event(lambda item: item["kind"] == "testCompleted", project["root"])
 card = glass.project_verification_card("Checkout fix", project["root"])
-glass.project_capsule_save(project["root"], {"eventCursor": event["id"], "mobileView": "diff"})
+glass.project_capsule_save(
+    project["root"],
+    {"eventCursor": event["id"], "mobileView": "diff", "mobileScroll": 20},
+)
 ```
 
 Session, capsule, attention, and verification primitives are also typed. See

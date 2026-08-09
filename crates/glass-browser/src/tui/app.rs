@@ -7,7 +7,8 @@ use base64::Engine as _;
 use crossterm::{
     cursor::{Hide, Show},
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
@@ -126,6 +127,35 @@ enum MobileView {
     Process,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhoneAction {
+    View(MobileView),
+    Command(&'static str),
+    Palette,
+}
+
+impl PhoneAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::View(MobileView::Home) => "‹ Back",
+            Self::View(_) => "Open",
+            Self::Command("tap") => "Tap",
+            Self::Command("live on") => "Live on",
+            Self::Command("live off") => "Live off",
+            Self::Command("browser remote-view open") => "Remote",
+            Self::Command("project pi abort") => "Abort",
+            Self::Command("project timeline") => "Timeline",
+            Self::Command("project processes") => "Processes",
+            Self::Command("project diff") => "Refresh",
+            Self::Command("verify card") => "Verify",
+            Self::Command("project files") => "Files",
+            Self::Command("inbox") => "Inbox",
+            Self::Command(_) => "Run",
+            Self::Palette => "⌕ Actions",
+        }
+    }
+}
+
 impl MobileView {
     const fn number(self) -> u8 {
         match self {
@@ -191,6 +221,13 @@ enum AgentPhase {
     Working,
     Complete,
     Failed,
+}
+
+#[derive(Debug)]
+struct PhoneToast {
+    message: String,
+    error: bool,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -767,6 +804,8 @@ pub struct App {
     page_scroll: u16,
     input: String,
     cursor_pos: usize,
+    command_history: VecDeque<String>,
+    history_cursor: Option<usize>,
     should_quit: bool,
     error_msg: Option<String>,
     status: String,
@@ -789,6 +828,18 @@ pub struct App {
     mobile_nav_area: Option<Rect>,
     mobile_card_areas: Vec<(PhoneOverviewCard, Rect)>,
     mobile_remote_view_area: Option<Rect>,
+    mobile_action_areas: Vec<(PhoneAction, Rect)>,
+    mobile_send_area: Option<Rect>,
+    palette_open: bool,
+    palette_selection: usize,
+    palette_query: String,
+    palette_area: Option<Rect>,
+    palette_item_areas: Vec<Rect>,
+    pending_confirmation: Option<PhoneAction>,
+    confirm_yes_area: Option<Rect>,
+    confirm_no_area: Option<Rect>,
+    terminal_focused: bool,
+    phone_toast: Option<PhoneToast>,
     remote_context: RemoteContext,
     connection_environment: ConnectionEnvironment,
     mutation_lease: MutationLease,
@@ -947,6 +998,8 @@ impl App {
             page_scroll: 0,
             input: String::new(),
             cursor_pos: 0,
+            command_history: VecDeque::new(),
+            history_cursor: None,
             should_quit: false,
             error_msg: None,
             status: "Connecting to Chrome…".to_string(),
@@ -973,6 +1026,18 @@ impl App {
             mobile_nav_area: None,
             mobile_card_areas: Vec::new(),
             mobile_remote_view_area: None,
+            mobile_action_areas: Vec::new(),
+            mobile_send_area: None,
+            palette_open: false,
+            palette_selection: 0,
+            palette_query: String::new(),
+            palette_area: None,
+            palette_item_areas: Vec::new(),
+            pending_confirmation: None,
+            confirm_yes_area: None,
+            confirm_no_area: None,
+            terminal_focused: true,
+            phone_toast: None,
             remote_context,
             connection_environment,
             mutation_lease: MutationLease::default(),
@@ -1022,6 +1087,7 @@ impl App {
     fn report_error(&mut self, message: impl Into<String>) {
         let message = bounded_text(&message.into(), TUI_ACTIVITY_MAX_BYTES);
         self.set_error(message.clone());
+        self.push_phone_toast(message.clone(), true);
         self.add_activity(format!("Error: {message}"));
     }
 
@@ -1031,6 +1097,28 @@ impl App {
 
     fn set_status(&mut self, status: impl Into<String>) {
         self.status = bounded_text(&status.into(), TUI_ACTIVITY_MAX_BYTES);
+    }
+
+    fn push_phone_toast(&mut self, message: impl Into<String>, error: bool) {
+        if self.display_class == DisplayClass::Phone {
+            self.phone_toast = Some(PhoneToast {
+                message: bounded_text(&message.into(), 256),
+                error,
+                expires_at: Instant::now() + Duration::from_secs(3),
+            });
+        }
+    }
+
+    fn tick_phone_toast(&mut self) -> bool {
+        if self
+            .phone_toast
+            .as_ref()
+            .is_some_and(|toast| Instant::now() >= toast.expires_at)
+        {
+            self.phone_toast = None;
+            return true;
+        }
+        false
     }
     pub fn mode(&self) -> WorkspaceMode {
         self.mode
@@ -1173,6 +1261,9 @@ impl App {
     }
 
     fn live_capture_config(&self) -> ScreencastConfig {
+        if !self.terminal_focused {
+            return ScreencastConfig::default();
+        }
         let Some(area) = self.live_area else {
             return ScreencastConfig::default();
         };
@@ -1214,6 +1305,7 @@ impl App {
             .next_back()
             .map(|event| event.id.clone());
         capsule.mobile_view = Some(self.mobile_view.capsule_key().into());
+        capsule.mobile_scroll = Some(self.page_scroll);
         capsule.browser_target_id = self.browser_target_id.clone();
         capsule.browser_revision = Some(self.visual_revision);
         capsule.pending_attention = attention_inbox(project.timeline().events().cloned())
@@ -1250,6 +1342,7 @@ impl App {
         };
         self.browser_target_id = capsule.browser_target_id;
         self.visual_revision = capsule.browser_revision.unwrap_or(0);
+        self.page_scroll = capsule.mobile_scroll.unwrap_or(0);
         match capsule.live_mode.as_deref() {
             Some("on") => self.live.mode = TuiLiveMode::On,
             Some("auto") => self.live.mode = TuiLiveMode::Auto,
@@ -1680,6 +1773,7 @@ impl App {
                     }
                     self.set_page_content(output);
                     self.set_status("Development operation completed");
+                    self.push_phone_toast("Development operation completed", false);
                     self.add_activity("Asynchronous development operation completed.");
                 }
                 DevelopmentAsyncEvent::Failed { kind, error } => {
@@ -1711,6 +1805,7 @@ impl App {
     }
 
     fn insert_char(&mut self, character: char) -> bool {
+        self.history_cursor = None;
         if self.input.len().saturating_add(character.len_utf8()) > TUI_INPUT_MAX_BYTES {
             return false;
         }
@@ -1886,6 +1981,52 @@ impl App {
         self.refresh_development_view();
     }
     fn mouse_intent(&mut self, mouse: MouseEvent) -> UiIntent {
+        if let Some(action) = self.pending_confirmation
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            let contains = |area: Rect| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            };
+            if self.confirm_yes_area.is_some_and(contains) {
+                self.pending_confirmation = None;
+                if let PhoneAction::Command(command) = action {
+                    return UiIntent::Submit(command.into());
+                }
+            } else if self.confirm_no_area.is_some_and(contains) {
+                self.pending_confirmation = None;
+            }
+            return UiIntent::None;
+        }
+        if self.palette_open && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            let selected = self.palette_item_areas.iter().position(|area| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            });
+            if let Some(index) = selected {
+                let action = phone_palette_items(&self.palette_query)
+                    .get(index)
+                    .map(|(_, action)| *action);
+                self.palette_open = false;
+                self.palette_query.clear();
+                if let Some(action) = action {
+                    return self.activate_phone_action(action);
+                }
+            } else if self.palette_area.is_none_or(|area| {
+                mouse.column < area.x
+                    || mouse.column >= area.right()
+                    || mouse.row < area.y
+                    || mouse.row >= area.bottom()
+            }) {
+                self.palette_open = false;
+                self.palette_query.clear();
+            }
+            return UiIntent::None;
+        }
         if self.display_class == DisplayClass::Phone
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.mobile_nav_area.is_some_and(|area| {
@@ -1906,6 +2047,45 @@ impl App {
                 self.set_mobile_view(view);
             }
             return UiIntent::None;
+        }
+        if self.display_class == DisplayClass::Phone
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            if self.mobile_send_area.is_some_and(|area| {
+                mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            }) {
+                if let Some(busy) = self.busy.as_mut() {
+                    if !busy.cancelling {
+                        busy.cancelling = true;
+                        return UiIntent::Cancel(busy.id);
+                    }
+                    return UiIntent::None;
+                }
+                if self.input.trim().is_empty() {
+                    self.set_status("Type a command before sending");
+                    return UiIntent::None;
+                }
+                let command = std::mem::take(&mut self.input);
+                self.cursor_pos = 0;
+                self.remember_command(&command);
+                return UiIntent::Submit(command);
+            }
+            if let Some(action) = self
+                .mobile_action_areas
+                .iter()
+                .find(|(_, area)| {
+                    mouse.column >= area.x
+                        && mouse.column < area.right()
+                        && mouse.row >= area.y
+                        && mouse.row < area.bottom()
+                })
+                .map(|(action, _)| *action)
+            {
+                return self.activate_phone_action(action);
+            }
         }
         if self.display_class == DisplayClass::Phone
             && self.mobile_view == MobileView::Home
@@ -1995,6 +2175,26 @@ impl App {
         }
     }
 
+    fn activate_phone_action(&mut self, action: PhoneAction) -> UiIntent {
+        if action == PhoneAction::Command("project pi abort") {
+            self.pending_confirmation = Some(action);
+            return UiIntent::None;
+        }
+        match action {
+            PhoneAction::View(view) => {
+                self.set_mobile_view(view);
+                UiIntent::None
+            }
+            PhoneAction::Command(command) => UiIntent::Submit(command.into()),
+            PhoneAction::Palette => {
+                self.palette_open = true;
+                self.palette_selection = 0;
+                self.palette_query.clear();
+                UiIntent::None
+            }
+        }
+    }
+
     fn focus_editor_cell(&mut self, column: u16, row: u16) {
         let (Some(area), Some(path)) = (self.editor_area, self.active_buffer.clone()) else {
             return;
@@ -2023,6 +2223,64 @@ impl App {
 
     fn reduce_key(&mut self, key: KeyEvent) -> UiIntent {
         if key.kind != KeyEventKind::Press {
+            return UiIntent::None;
+        }
+
+        if let Some(action) = self.pending_confirmation {
+            return match key.code {
+                KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                    self.pending_confirmation = None;
+                    match action {
+                        PhoneAction::Command(command) => UiIntent::Submit(command.into()),
+                        _ => UiIntent::None,
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                    self.pending_confirmation = None;
+                    UiIntent::None
+                }
+                _ => UiIntent::None,
+            };
+        }
+
+        if self.palette_open {
+            let items = phone_palette_items(&self.palette_query);
+            match key.code {
+                KeyCode::Esc => {
+                    self.palette_open = false;
+                    self.palette_query.clear();
+                }
+                KeyCode::Up => {
+                    self.palette_selection = self.palette_selection.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.palette_selection = self
+                        .palette_selection
+                        .saturating_add(1)
+                        .min(items.len().saturating_sub(1));
+                }
+                KeyCode::Enter => {
+                    let action = items
+                        .get(self.palette_selection.min(items.len().saturating_sub(1)))
+                        .map(|(_, action)| *action);
+                    self.palette_open = false;
+                    self.palette_query.clear();
+                    if let Some(action) = action {
+                        return self.activate_phone_action(action);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.palette_query.pop();
+                    self.palette_selection = 0;
+                }
+                KeyCode::Char(character)
+                    if key.modifiers == KeyModifiers::NONE && self.palette_query.len() < 128 =>
+                {
+                    self.palette_query.push(character);
+                    self.palette_selection = 0;
+                }
+                _ => {}
+            }
             return UiIntent::None;
         }
 
@@ -2102,7 +2360,13 @@ impl App {
             KeyCode::Char(':' | '/')
                 if self.input.is_empty() && key.modifiers == KeyModifiers::NONE =>
             {
-                self.set_status("Command palette · type help for the complete command index");
+                if self.display_class == DisplayClass::Phone {
+                    self.palette_open = true;
+                    self.palette_selection = 0;
+                    self.palette_query.clear();
+                } else {
+                    self.set_status("Command palette · type help for the complete command index");
+                }
                 UiIntent::None
             }
             KeyCode::Char('q') if self.input.is_empty() => UiIntent::Quit,
@@ -2139,6 +2403,7 @@ impl App {
             KeyCode::Enter if !self.input.trim().is_empty() => {
                 let command = std::mem::take(&mut self.input);
                 self.cursor_pos = 0;
+                self.remember_command(&command);
                 UiIntent::Submit(command)
             }
             KeyCode::Backspace => {
@@ -2173,12 +2438,20 @@ impl App {
                 self.page_scroll = self.page_scroll.saturating_add(10);
                 UiIntent::None
             }
-            KeyCode::Up if self.input.is_empty() => {
-                self.move_intent_selection(-1);
+            KeyCode::Up if self.input.is_empty() || self.history_cursor.is_some() => {
+                if self.intent_result.is_some() {
+                    self.move_intent_selection(-1);
+                } else {
+                    self.navigate_command_history(true);
+                }
                 UiIntent::None
             }
-            KeyCode::Down if self.input.is_empty() => {
-                self.move_intent_selection(1);
+            KeyCode::Down if self.input.is_empty() || self.history_cursor.is_some() => {
+                if self.intent_result.is_some() {
+                    self.move_intent_selection(1);
+                } else {
+                    self.navigate_command_history(false);
+                }
                 UiIntent::None
             }
             KeyCode::Char(character) => {
@@ -2380,6 +2653,7 @@ impl App {
                 if let Some(update) = result.update {
                     self.apply_page_update(update)?;
                 }
+                self.push_phone_toast(result.activity.clone(), false);
                 self.add_activity(result.activity);
             }
             BrowserEvent::OperationFailed { id, message } => {
@@ -2721,6 +2995,44 @@ impl App {
         self.page_content = bounded_text(&content.into(), TUI_PAGE_MAX_BYTES);
         self.page_scroll = 0;
     }
+
+    fn remember_command(&mut self, command: &str) {
+        if command.trim().is_empty() {
+            return;
+        }
+        if self
+            .command_history
+            .back()
+            .is_some_and(|last| last == command)
+        {
+            return;
+        }
+        if self.command_history.len() == 32 {
+            self.command_history.pop_front();
+        }
+        self.command_history.push_back(command.to_string());
+        self.history_cursor = None;
+    }
+
+    fn navigate_command_history(&mut self, older: bool) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        let next = match (self.history_cursor, older) {
+            (None, true) => self.command_history.len() - 1,
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) if index + 1 < self.command_history.len() => index + 1,
+            (_, false) => {
+                self.history_cursor = None;
+                self.input.clear();
+                self.cursor_pos = 0;
+                return;
+            }
+        };
+        self.history_cursor = Some(next);
+        self.input = self.command_history[next].clone();
+        self.cursor_pos = self.input.chars().count();
+    }
     fn sync_graphics_geometry(&mut self, area: Rect) -> BrowserResult<bool> {
         let next_class = display_class(self.layout_preference, area.width, self.remote_context);
         self.connection_environment.layout = match next_class {
@@ -2739,9 +3051,55 @@ impl App {
             self.add_activity(format!("Responsive layout: {:?}.", next_class));
         }
         let root = root_regions(area, self.display_class);
+        self.palette_area = self.palette_open.then(|| phone_palette_rect(area));
+        self.confirm_yes_area = None;
+        self.confirm_no_area = None;
+        if self.pending_confirmation.is_some() {
+            let popup = centered_popup_sized(area, 38, 7);
+            let button_y = popup.bottom().saturating_sub(2);
+            let half = popup.width.saturating_sub(2) / 2;
+            self.confirm_no_area = Some(Rect::new(popup.x + 1, button_y, half, 1));
+            self.confirm_yes_area = Some(Rect::new(
+                popup.x.saturating_add(1 + half),
+                button_y,
+                popup.width.saturating_sub(2 + half),
+                1,
+            ));
+        }
+        self.palette_item_areas.clear();
+        if let Some(palette) = self.palette_area {
+            let count = phone_palette_items(&self.palette_query)
+                .len()
+                .min(usize::from(palette.height.saturating_sub(4)));
+            self.palette_item_areas = (0..count)
+                .map(|index| {
+                    Rect::new(
+                        palette.x.saturating_add(1),
+                        palette.y.saturating_add(3 + index as u16),
+                        palette.width.saturating_sub(2),
+                        1,
+                    )
+                })
+                .collect();
+        }
         self.mobile_nav_area = root.nav;
         self.mobile_card_areas.clear();
         self.mobile_remote_view_area = None;
+        self.mobile_action_areas.clear();
+        self.mobile_send_area = None;
+        if self.display_class == DisplayClass::Phone {
+            if let Some(action_area) = root.actions {
+                self.mobile_action_areas = phone_action_layout(self, action_area);
+            }
+            if root.command.width >= 14 && root.command.height >= 3 {
+                self.mobile_send_area = Some(Rect::new(
+                    root.command.right().saturating_sub(9),
+                    root.command.y.saturating_add(1),
+                    8,
+                    1,
+                ));
+            }
+        }
         if self.display_class == DisplayClass::Phone && self.mobile_view == MobileView::Home {
             self.mobile_card_areas = phone_overview_layout(self, root.content);
             self.mobile_remote_view_area = self
@@ -2911,6 +3269,7 @@ enum InputEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Paste(String),
+    Focus(bool),
     Redraw,
     Error(String),
 }
@@ -2941,6 +3300,16 @@ impl InputWorker {
                         }
                         Ok(Event::Paste(text)) => {
                             if events.blocking_send(InputEvent::Paste(text)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Event::FocusGained) => {
+                            if events.blocking_send(InputEvent::Focus(true)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Event::FocusLost) => {
+                            if events.blocking_send(InputEvent::Focus(false)).is_err() {
                                 break;
                             }
                         }
@@ -5366,6 +5735,7 @@ fn handle_submission(
                         .next_back()
                         .map(|event| event.id.clone());
                     capsule.mobile_view = Some(app.mobile_view.capsule_key().into());
+                    capsule.mobile_scroll = Some(app.page_scroll);
                     capsule.browser_target_id = app.browser_target_id.clone();
                     capsule.browser_revision = Some(app.visual_revision);
                     capsule.pending_attention =
@@ -5628,6 +5998,7 @@ fn queue_browser_operation(
 struct RootRegions {
     header: Rect,
     content: Rect,
+    actions: Option<Rect>,
     command: Rect,
     nav: Option<Rect>,
     footer: Rect,
@@ -5641,6 +6012,7 @@ fn root_regions(area: Rect, class: DisplayClass) -> RootRegions {
             .constraints([
                 Constraint::Length(header_height),
                 Constraint::Min(5),
+                Constraint::Length(1),
                 Constraint::Length(3),
                 Constraint::Length(2),
                 Constraint::Length(1),
@@ -5649,9 +6021,10 @@ fn root_regions(area: Rect, class: DisplayClass) -> RootRegions {
         RootRegions {
             header: regions[0],
             content: regions[1],
-            command: regions[2],
-            nav: Some(regions[3]),
-            footer: regions[4],
+            actions: Some(regions[2]),
+            command: regions[3],
+            nav: Some(regions[4]),
+            footer: regions[5],
         }
     } else {
         let regions = Layout::default()
@@ -5666,6 +6039,7 @@ fn root_regions(area: Rect, class: DisplayClass) -> RootRegions {
         RootRegions {
             header: regions[0],
             content: regions[1],
+            actions: None,
             command: regions[2],
             nav: None,
             footer: regions[3],
@@ -5836,6 +6210,10 @@ RECENT ACTIVITY
         );
     }
 
+    if let Some(area) = root.actions {
+        draw_phone_actions(frame, app, area);
+    }
+
     let before = app.input.chars().take(app.cursor_pos).collect::<String>();
     let after = app.input.chars().skip(app.cursor_pos).collect::<String>();
     frame.render_widget(
@@ -5864,6 +6242,27 @@ RECENT ACTIVITY
         ),
         root.command,
     );
+    if let Some(send) = app.mobile_send_area {
+        frame.render_widget(
+            Paragraph::new(if app.busy.is_some() {
+                " Cancel "
+            } else {
+                " Send › "
+            })
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(PHONE_TEXT)
+                    .bg(if app.busy.is_some() {
+                        Color::LightRed
+                    } else {
+                        PHONE_BLUE
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            send,
+        );
+    }
 
     if let Some(nav) = root.nav {
         frame.render_widget(
@@ -5911,6 +6310,101 @@ fn mobile_nav_line(app: &App, views: [MobileView; 3]) -> Line<'static> {
         ));
     }
     Line::from(spans)
+}
+
+fn phone_actions(app: &App) -> Vec<PhoneAction> {
+    match app.mobile_view {
+        MobileView::Home => vec![PhoneAction::Palette, PhoneAction::Command("inbox")],
+        MobileView::App => vec![
+            PhoneAction::View(MobileView::Home),
+            PhoneAction::Command("tap"),
+            PhoneAction::Command(if app.live.enabled() {
+                "live off"
+            } else {
+                "live on"
+            }),
+            PhoneAction::Command("browser remote-view open"),
+        ],
+        MobileView::Agent => vec![
+            PhoneAction::View(MobileView::Home),
+            PhoneAction::Command("project timeline"),
+            PhoneAction::Command("project pi abort"),
+            PhoneAction::Palette,
+        ],
+        MobileView::Process => vec![
+            PhoneAction::View(MobileView::Home),
+            PhoneAction::Command("project processes"),
+            PhoneAction::Palette,
+        ],
+        MobileView::Diff => vec![
+            PhoneAction::View(MobileView::Home),
+            PhoneAction::Command("verify card"),
+            PhoneAction::Command("project diff"),
+            PhoneAction::Palette,
+        ],
+        MobileView::Project => vec![
+            PhoneAction::View(MobileView::Home),
+            PhoneAction::Command("project files"),
+            PhoneAction::Command("project diff"),
+            PhoneAction::Palette,
+        ],
+    }
+}
+
+fn phone_action_layout(app: &App, area: Rect) -> Vec<(PhoneAction, Rect)> {
+    let actions = phone_actions(app);
+    if actions.is_empty() {
+        return Vec::new();
+    }
+    let constraints = vec![Constraint::Ratio(1, actions.len() as u32); actions.len()];
+    Layout::horizontal(constraints)
+        .split(area)
+        .iter()
+        .copied()
+        .zip(actions)
+        .map(|(area, action)| (action, area))
+        .collect()
+}
+
+fn draw_phone_actions(frame: &mut Frame, app: &App, area: Rect) {
+    for (action, region) in phone_action_layout(app, area) {
+        frame.render_widget(
+            Paragraph::new(action.label())
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(PHONE_CYAN).bg(PHONE_PANEL_ACTIVE)),
+            region,
+        );
+    }
+}
+
+fn phone_palette_items(query: &str) -> Vec<(&'static str, PhoneAction)> {
+    let query = query.trim().to_ascii_lowercase();
+    [
+        ("Browser · semantic actions", PhoneAction::Command("tap")),
+        ("Browser · live on", PhoneAction::Command("live on")),
+        ("Browser · live off", PhoneAction::Command("live off")),
+        (
+            "Terminal · capability doctor",
+            PhoneAction::Command("live doctor"),
+        ),
+        (
+            "Browser · Remote View",
+            PhoneAction::Command("browser remote-view open"),
+        ),
+        ("Project · files", PhoneAction::Command("project files")),
+        ("Project · diff", PhoneAction::Command("project diff")),
+        (
+            "Process · status",
+            PhoneAction::Command("project processes"),
+        ),
+        ("Agent · timeline", PhoneAction::Command("project timeline")),
+        ("Agent · abort", PhoneAction::Command("project pi abort")),
+        ("Verification card", PhoneAction::Command("verify card")),
+        ("Attention inbox", PhoneAction::Command("inbox")),
+    ]
+    .into_iter()
+    .filter(|(label, _)| query.is_empty() || label.to_ascii_lowercase().contains(&query))
+    .collect()
 }
 
 fn draw_phone_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -6377,6 +6871,24 @@ fn draw_phone_live_view(frame: &mut Frame, app: &App, title: &str, semantic: &st
     } else {
         render_ansi_cells(frame, app, inner);
     }
+    if app.live.thumbnail_revision.is_some() && (!app.browser_ready() || !app.terminal_focused) {
+        let veil = Rect::new(inner.x, inner.y, inner.width, inner.height.min(1));
+        frame.render_widget(
+            Paragraph::new(if app.terminal_focused {
+                " STALE FRAME · reconnect to interact "
+            } else {
+                " PAUSED · return to refresh "
+            })
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(PHONE_TEXT)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            veil,
+        );
+    }
 }
 
 fn phone_project_name(app: &App) -> String {
@@ -6826,6 +7338,122 @@ const fn workspace_content_title(mode: WorkspaceMode) -> &'static str {
 }
 
 fn draw_overlays(frame: &mut Frame, app: &App) {
+    if let Some(toast) = &app.phone_toast {
+        let width = frame.area().width.saturating_sub(4).min(44);
+        let area = Rect::new(
+            frame
+                .area()
+                .x
+                .saturating_add(frame.area().width.saturating_sub(width) / 2),
+            frame
+                .area()
+                .y
+                .saturating_add(4)
+                .min(frame.area().bottom().saturating_sub(1)),
+            width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(one_line(&toast.message, width.saturating_sub(2) as usize))
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(PHONE_TEXT)
+                        .bg(if toast.error {
+                            Color::LightRed
+                        } else {
+                            PHONE_PANEL_ACTIVE
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+            area,
+        );
+    }
+    if app.palette_open {
+        let popup = phone_palette_rect(frame.area());
+        frame.render_widget(Clear, popup);
+        let items = phone_palette_items(&app.palette_query);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("⌕ ", Style::default().fg(PHONE_CYAN)),
+                Span::styled(
+                    if app.palette_query.is_empty() {
+                        "type to filter"
+                    } else {
+                        app.palette_query.as_str()
+                    },
+                    Style::default().fg(PHONE_TEXT),
+                ),
+            ]),
+            Line::from(""),
+        ];
+        lines.extend(items.iter().enumerate().take(8).map(|(index, (label, _))| {
+            let selected = index == app.palette_selection.min(items.len().saturating_sub(1));
+            Line::from(Span::styled(
+                format!("{} {label}", if selected { "›" } else { " " }),
+                Style::default()
+                    .fg(if selected { PHONE_TEXT } else { PHONE_MUTED })
+                    .bg(if selected {
+                        PHONE_PANEL_ACTIVE
+                    } else {
+                        PHONE_PANEL
+                    })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ))
+        }));
+        if items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No matching action",
+                Style::default().fg(PHONE_MUTED),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(phone_panel(
+                    "⌕ ACTIONS",
+                    "Enter runs · Esc closes",
+                    PHONE_PURPLE,
+                ))
+                .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL)),
+            popup,
+        );
+    }
+    if app.pending_confirmation.is_some() {
+        let popup = centered_popup_sized(frame.area(), 38, 7);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("Abort the active agent request?"),
+                Line::from(Span::styled(
+                    "No project or browser state will be deleted.",
+                    Style::default().fg(PHONE_MUTED),
+                )),
+            ])
+            .block(phone_panel("! CONFIRM", "Esc cancels", Color::LightRed))
+            .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL)),
+            popup,
+        );
+        if let Some(no) = app.confirm_no_area {
+            frame.render_widget(
+                Paragraph::new(" Keep running ")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(PHONE_TEXT).bg(PHONE_PANEL_ACTIVE)),
+                no,
+            );
+        }
+        if let Some(yes) = app.confirm_yes_area {
+            frame.render_widget(
+                Paragraph::new(" Abort ")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(PHONE_TEXT).bg(Color::LightRed)),
+                yes,
+            );
+        }
+    }
     if app.mobile_help {
         let popup = centered_popup_sized(frame.area(), 38, 15);
         frame.render_widget(Clear, popup);
@@ -6874,6 +7502,17 @@ fn draw_overlays(frame: &mut Frame, app: &App) {
     }
 }
 
+fn phone_palette_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(2).clamp(1, 52);
+    let height = area.height.saturating_sub(3).clamp(1, 14);
+    Rect::new(
+        area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        area.bottom().saturating_sub(height).saturating_sub(1),
+        width,
+        height,
+    )
+}
+
 fn centered_popup(area: Rect) -> Rect {
     let width = (area.width.saturating_mul(2) / 3).max(1).min(area.width);
     let height = 5.min(area.height);
@@ -6906,8 +7545,22 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide) {
-            let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange,
+            EnableBracketedPaste,
+            Hide
+        ) {
+            let _ = execute!(
+                stdout,
+                DisableFocusChange,
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen,
+                Show
+            );
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -6921,7 +7574,14 @@ impl TerminalGuard {
         self.active = false;
         let raw_result = disable_raw_mode();
         let mut stdout = io::stdout();
-        let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        let screen_result = execute!(
+            stdout,
+            DisableFocusChange,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
         match (raw_result, screen_result) {
             (Err(error), _) | (_, Err(error)) => Err(error),
             (Ok(()), Ok(())) => Ok(()),
@@ -7228,6 +7888,19 @@ async fn run_tui_loop(
                     }
                     true
                 }
+                Some(InputEvent::Focus(focused)) => {
+                    let regained = focused && !app.terminal_focused;
+                    app.terminal_focused = focused;
+                    app.set_status(if focused {
+                        "Terminal focused · refreshing current evidence"
+                    } else {
+                        "Terminal backgrounded · live capture paused"
+                    });
+                    if regained && app.browser_ready() && !app.is_busy() {
+                        queue_browser_operation(app, commands, BrowserOperation::Observe { fresh: true });
+                    }
+                    true
+                }
                 Some(InputEvent::Redraw) => true,
                 Some(InputEvent::Error(error)) => return Err(error.into()),
                 None => return Err("TUI input worker stopped".into()),
@@ -7256,7 +7929,8 @@ async fn run_tui_loop(
                     app.tick_busy();
                 }
                 let live_changed = app.poll_live_worker();
-                app.poll_development_events() || app.is_busy() || live_changed
+                let toast_changed = app.tick_phone_toast();
+                app.poll_development_events() || app.is_busy() || live_changed || toast_changed
             },
         };
     }
@@ -7764,6 +8438,41 @@ mod tests {
     }
 
     #[test]
+    fn phone_command_history_is_bounded_process_only_state() {
+        let mut app = mock_remote_phone_app(46);
+        app.input = "project files".into();
+        app.cursor_pos = app.input.chars().count();
+        assert_eq!(
+            app.reduce_key(key(KeyCode::Enter)),
+            UiIntent::Submit("project files".into())
+        );
+        assert!(app.input.is_empty());
+        assert_eq!(app.reduce_key(key(KeyCode::Up)), UiIntent::None);
+        assert_eq!(app.input, "project files");
+        assert_eq!(app.reduce_key(key(KeyCode::Down)), UiIntent::None);
+        assert!(app.input.is_empty());
+
+        for index in 0..40 {
+            app.remember_command(&format!("project search item-{index}"));
+        }
+        assert_eq!(app.command_history.len(), 32);
+        let mut capsule = ReconnectCapsule::new(app.development.as_ref().unwrap().root()).unwrap();
+        capsule.mobile_scroll = Some(30);
+        let json = serde_json::to_string(&capsule).unwrap();
+        assert!(!json.contains("project search"));
+    }
+
+    #[test]
+    fn phone_toast_redraws_only_when_it_expires() {
+        let mut app = mock_remote_phone_app(46);
+        app.push_phone_toast("ready", false);
+        assert!(!app.tick_phone_toast());
+        app.phone_toast.as_mut().unwrap().expires_at = Instant::now();
+        assert!(app.tick_phone_toast());
+        assert!(app.phone_toast.is_none());
+    }
+
+    #[test]
     fn phone_layout_renders_at_portrait_size_and_has_no_graphics_pane() {
         use ratatui::backend::TestBackend;
 
@@ -7931,6 +8640,66 @@ mod tests {
     }
 
     #[test]
+    fn phone_action_dock_palette_send_and_confirmation_are_real_controls() {
+        let mut app = mock_remote_phone_app(46);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        let palette = app
+            .mobile_action_areas
+            .iter()
+            .find(|(action, _)| *action == PhoneAction::Palette)
+            .map(|(_, area)| *area)
+            .unwrap();
+        assert_eq!(app.mouse_intent(left_click(palette)), UiIntent::None);
+        assert!(app.palette_open);
+        for character in "remote".chars() {
+            assert_eq!(
+                app.reduce_key(key(KeyCode::Char(character))),
+                UiIntent::None
+            );
+        }
+        assert_eq!(
+            app.reduce_key(key(KeyCode::Enter)),
+            UiIntent::Submit("browser remote-view open".into())
+        );
+
+        app.input = "project files".into();
+        app.cursor_pos = app.input.chars().count();
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        assert_eq!(
+            app.mouse_intent(left_click(app.mobile_send_area.unwrap())),
+            UiIntent::Submit("project files".into())
+        );
+
+        app.set_mobile_view(MobileView::Agent);
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        let abort = app
+            .mobile_action_areas
+            .iter()
+            .find(|(action, _)| *action == PhoneAction::Command("project pi abort"))
+            .map(|(_, area)| *area)
+            .unwrap();
+        assert_eq!(app.mouse_intent(left_click(abort)), UiIntent::None);
+        assert!(app.pending_confirmation.is_some());
+        assert_eq!(
+            app.reduce_key(key(KeyCode::Char('y'))),
+            UiIntent::Submit("project pi abort".into())
+        );
+    }
+
+    #[test]
+    fn phone_palette_renders_as_a_searchable_action_sheet() {
+        let mut app = mock_remote_phone_app(46);
+        app.palette_open = true;
+        app.palette_query = "browser".into();
+        app.sync_graphics_geometry(Rect::new(0, 0, 46, 50)).unwrap();
+        let (rendered, _, _) = rendered_phone(&app, 46, 50);
+        assert!(rendered.contains("ACTIONS"));
+        assert!(rendered.contains("Remote View"));
+        assert!(!rendered.contains("Process · status"));
+        assert!(!app.palette_item_areas.is_empty());
+    }
+
+    #[test]
     fn phone_statuses_report_actual_frame_semantic_and_agent_evidence() {
         let mut app = mock_remote_phone_app(46);
         app.live.mode = TuiLiveMode::Off;
@@ -8086,6 +8855,9 @@ mod tests {
         assert_eq!(config.requested_fps, 3);
         assert!(config.minimum_interval <= Duration::from_millis(334));
         assert!(config.max_width <= 320);
+        app.terminal_focused = false;
+        assert!(!app.live_capture_config().enabled);
+        app.terminal_focused = true;
         app.apply_visual_frame(
             base64::engine::general_purpose::STANDARD.encode(test_live_png()),
             serde_json::json!({"deviceWidth": 2, "deviceHeight": 2}),

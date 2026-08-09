@@ -29,7 +29,20 @@ nested Remote View control through the real command parser, distinguish an
 actual received frame from a merely connected browser, reject browser readiness
 as semantic-confidence evidence, prevent diagnostics from completing an agent
 task, and build the Overview thumbnail from a Kitty-backed frame. The PTY test
-also proves mouse capture is enabled on entry and disabled on restoration.
+also proves mouse, focus, and bracketed-paste reporting are enabled on entry and
+disabled on restoration.
+
+The native interaction layer is covered separately from the visual contract.
+`phone_action_dock_palette_send_and_confirmation_are_real_controls` exercises
+touch hit regions for the contextual dock and composer, searchable action-sheet
+dispatch, busy-operation cancellation, and the abort confirmation boundary.
+`phone_command_history_is_bounded_process_only_state` verifies recall, the
+32-command memory bound, and exclusion from reconnect capsules. Focus loss
+suspends live acquisition; focus gain queues a fresh structured observation;
+retained pixels are visibly marked paused or stale until that evidence is
+current. The capsule round-trip test preserves only the bounded mobile scroll
+position alongside the existing target, revision, attention, and live-mode
+metadata.
 
 Interaction references applied to the final design:
 

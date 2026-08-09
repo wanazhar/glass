@@ -142,6 +142,8 @@ pub struct ReconnectCapsule {
     pub project_root: String,
     pub event_cursor: Option<String>,
     pub mobile_view: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile_scroll: Option<u16>,
     pub browser_target_id: Option<String>,
     pub browser_revision: Option<u64>,
     pub pending_attention: Option<String>,
@@ -158,6 +160,7 @@ impl ReconnectCapsule {
             project_root: root.display().to_string(),
             event_cursor: None,
             mobile_view: None,
+            mobile_scroll: None,
             browser_target_id: None,
             browser_revision: None,
             pending_attention: None,
@@ -605,6 +608,7 @@ mod tests {
         let mut capsule = ReconnectCapsule::new(&root).unwrap();
         capsule.event_cursor = Some("dev-1".into());
         capsule.mobile_view = Some("app".into());
+        capsule.mobile_scroll = Some(20);
         ReconnectCapsuleStore::save(&capsule).unwrap();
         assert_eq!(ReconnectCapsuleStore::load(&root).unwrap(), Some(capsule));
         assert!(ReconnectCapsuleStore::clear(&root).unwrap());

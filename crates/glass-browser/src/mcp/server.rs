@@ -238,6 +238,7 @@ enum ToolInvocation<'a> {
         root: std::path::PathBuf,
         event_cursor: Option<&'a str>,
         mobile_view: Option<&'a str>,
+        mobile_scroll: Option<u64>,
         browser_target_id: Option<&'a str>,
         browser_revision: Option<u64>,
         pending_attention: Option<&'a str>,
@@ -2780,6 +2781,7 @@ fn call_development_tool(
             root,
             event_cursor,
             mobile_view,
+            mobile_scroll,
             browser_target_id,
             browser_revision,
             pending_attention,
@@ -2789,6 +2791,10 @@ fn call_development_tool(
             let mut capsule = ReconnectCapsule::new(root)?;
             capsule.event_cursor = event_cursor.map(str::to_string);
             capsule.mobile_view = mobile_view.map(str::to_string);
+            capsule.mobile_scroll = mobile_scroll
+                .map(u16::try_from)
+                .transpose()
+                .map_err(|_| "mobileScroll must fit an unsigned 16-bit terminal offset")?;
             capsule.browser_target_id = browser_target_id.map(str::to_string);
             capsule.browser_revision = browser_revision;
             capsule.pending_attention = pending_attention.map(str::to_string);
@@ -3286,6 +3292,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
             root: development_root(arguments)?,
             event_cursor: optional_string(arguments, "eventCursor")?,
             mobile_view: optional_string(arguments, "mobileView")?,
+            mobile_scroll: optional_u64_value(arguments, "mobileScroll")?,
             browser_target_id: optional_string(arguments, "browserTargetId")?,
             browser_revision: optional_u64_value(arguments, "browserRevision")?,
             pending_attention: optional_string(arguments, "pendingAttention")?,
@@ -3988,7 +3995,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "project.capsule.save",
             description: "Atomically save a bounded, non-sensitive reconnect capsule for one project.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","overview","agent","app","browser","diff","project","process","logs"]},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
+            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","overview","agent","app","browser","diff","project","process","logs"]},"mobileScroll":{"type":"integer","minimum":0,"maximum":65535},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
         },
         Tool {
             name: "project.capsule.show",

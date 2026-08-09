@@ -82,6 +82,17 @@ View-active states.
 
 ## Interaction contract
 
+The phone interaction layer provides a contextual action dock, searchable
+action sheet, touch Send/Cancel target, confirmation sheet, bounded transient
+toasts, in-process command history, focus-aware capture, and explicit stale-frame
+veil. All touch actions reduce to the same typed commands as keyboard input;
+there is no parallel mobile authority path.
+
+Mouse, focus, and bracketed-paste reporting are scoped to the alternate-screen
+terminal guard and disabled during every cleanup path. Command history and
+drafts are never written to the reconnect capsule. Only the non-sensitive view
+and scroll projection joins the existing target/revision/live preferences.
+
 | Input or command | Behavior |
 |---|---|
 | `1`–`6` | Select a focused view without function/control keys. |

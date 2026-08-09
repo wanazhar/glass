@@ -58,8 +58,13 @@ try {
   await client.projectProcessStop("typescript-smoke", projectRoot);
   const card = await client.projectVerificationCard("TypeScript smoke", projectRoot);
   if (card.visualStatus !== "not-captured") throw new Error("verification card captured pixels implicitly");
-  await client.projectCapsuleSave(projectRoot, { eventCursor: firstPage.value.cursor ?? undefined, mobileView: "app" });
-  if ((await client.projectCapsuleShow(projectRoot)).capsule === null) throw new Error("reconnect capsule was not saved");
+  await client.projectCapsuleSave(projectRoot, {
+    eventCursor: firstPage.value.cursor ?? undefined,
+    mobileView: "app",
+    mobileScroll: 12,
+  });
+  const capsule = (await client.projectCapsuleShow(projectRoot)).capsule;
+  if (capsule === null || capsule.mobileScroll !== 12) throw new Error("reconnect capsule was not saved");
   await client.projectCapsuleClear(true, projectRoot);
   if (!Array.isArray(await client.projectInbox(projectRoot))) throw new Error("attention inbox was not an array");
 } finally {

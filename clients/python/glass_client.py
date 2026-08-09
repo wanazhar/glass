@@ -369,6 +369,7 @@ class ReconnectCapsule(TypedDict):
     projectRoot: str
     eventCursor: Optional[str]
     mobileView: Optional[str]
+    mobileScroll: Optional[int]
     browserTargetId: Optional[str]
     browserRevision: Optional[int]
     pendingAttention: Optional[str]
@@ -390,6 +391,7 @@ class ReconnectCapsuleInput(TypedDict, total=False):
         "process",
         "logs",
     ]
+    mobileScroll: int
     browserTargetId: str
     browserRevision: int
     pendingAttention: str

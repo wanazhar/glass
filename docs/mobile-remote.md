@@ -35,6 +35,30 @@ while the command bar is empty, so commands and agent prompts can contain
 numbers normally. `:` or `/` opens the command-palette hint, and `Ctrl-L`
 redraws. Function keys, pointer input, and control-key chords are not required.
 
+## Native-feeling phone controls
+
+Every phone view has a one-row action dock whose commands depend on the active
+surface. Browser exposes Back, Tap, live toggle, and Remote View; Agent exposes
+Back, Timeline, Abort, and Actions; Project, Diff, and Process expose their
+bounded read/verification operations. The dock is clickable when the SSH client
+forwards mouse events and remains reachable through the documented commands.
+
+Press `:` or `/`, or tap `Actions`, to open the searchable action sheet. Type to
+filter, use Up/Down and Enter, tap a result, or press Esc to close it. Agent abort
+uses a confirmation sheet with touch and `Y`/`N` routes. The command composer has
+a real Send target which becomes Cancel while a browser operation is active.
+Up/Down recalls up to 32 commands for the current process. History and command
+drafts are deliberately memory-only because commands can contain secrets.
+Bracketed paste is enabled only while Glass owns the terminal and input remains
+bounded by the same 4 KiB composer limit.
+
+Glass requests mouse, focus, and bracketed-paste reporting on entry and restores
+all three on exit. Losing terminal focus suspends live acquisition; returning
+queues a fresh structured observation before treating evidence as current.
+Completed and failed operations use short-lived, bounded toasts. These behaviors
+degrade to printable keys when a mobile SSH client does not forward the optional
+terminal protocols.
+
 Overview mirrors a native mobile cockpit without inventing state: the header
 shows project, revision, connection, agent, and browser status; rounded cards
 project the latest browser, agent, semantic, and process evidence; the bordered
@@ -133,8 +157,10 @@ Use an SSH client or a separate SSH connection for the TCP port forward needed
 by Safari.
 
 Glass also writes a bounded reconnect capsule on clean TUI exit and restores
-the mobile view, browser target metadata/revision, and live preferences on the
-next start. `capsule save|show|clear` manages it explicitly. Running PTYs remain
+the mobile view and scroll position, browser target metadata/revision, and live
+preferences on the next start. It does not persist composer drafts, command
+history, palette queries, clipboard contents, or pixels. `capsule
+save|show|clear` manages it explicitly. Running PTYs remain
 owned by the resident process or Herdr; a capsule never pretends a process
 survived a machine or Glass process crash.
 

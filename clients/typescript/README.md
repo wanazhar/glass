@@ -129,7 +129,11 @@ const process = await glass.runUntilHealthy("dev", "npm run dev", {
 });
 const event = await glass.waitForEvent(e => e.kind === "testCompleted", project.root);
 const card = await glass.projectVerificationCard("Checkout fix", project.root);
-await glass.projectCapsuleSave(project.root, { eventCursor: event.id, mobileView: "diff" });
+await glass.projectCapsuleSave(project.root, {
+  eventCursor: event.id,
+  mobileView: "diff",
+  mobileScroll: 20,
+});
 ```
 
 `withMutationLease()` releases only a lease it acquired itself.

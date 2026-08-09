@@ -13,8 +13,8 @@ On the current checkout, `target/debug/glass` reports:
 | Metric | Measured value |
 |---|---:|
 | Negotiated tools | 133 |
-| Serialized `tools` array | 42,956 UTF-8 bytes |
-| Four-bytes-per-token estimate | 10,739 tokens |
+| Serialized `tools` array | 43,018 UTF-8 bytes |
+| Four-bytes-per-token estimate | 10,755 tokens |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,

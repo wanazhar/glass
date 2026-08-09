@@ -17,6 +17,7 @@
         "projectRoot": { "type": "string", "maxLength": 4096 },
         "eventCursor": { "type": ["string", "null"], "maxLength": 128 },
         "mobileView": { "type": ["string", "null"], "enum": ["home", "overview", "agent", "app", "browser", "diff", "project", "process", "logs", null] },
+        "mobileScroll": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
         "browserTargetId": { "type": ["string", "null"], "maxLength": 128 },
         "browserRevision": { "type": ["integer", "null"], "minimum": 0 },
         "pendingAttention": { "$ref": "#/$defs/nullableShortString" },

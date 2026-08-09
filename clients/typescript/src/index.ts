@@ -460,6 +460,7 @@ export interface ReconnectCapsule {
   projectRoot: string;
   eventCursor: string | null;
   mobileView: string | null;
+  mobileScroll?: number | null;
   browserTargetId: string | null;
   browserRevision: number | null;
   pendingAttention: string | null;
@@ -471,6 +472,7 @@ export interface ReconnectCapsule {
 export interface ReconnectCapsuleInput {
   eventCursor?: string;
   mobileView?: "home" | "overview" | "agent" | "app" | "browser" | "diff" | "project" | "process" | "logs";
+  mobileScroll?: number;
   browserTargetId?: string;
   browserRevision?: number;
   pendingAttention?: string;

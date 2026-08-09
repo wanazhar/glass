@@ -78,9 +78,11 @@ try:
     card = client.project_verification_card("Python smoke", project_root)
     assert card["visualStatus"] == "not-captured"
     client.project_capsule_save(
-        project_root, {"eventCursor": page["cursor"], "mobileView": "app"}
+        project_root,
+        {"eventCursor": page["cursor"], "mobileView": "app", "mobileScroll": 12},
     )
-    assert client.project_capsule_show(project_root)["capsule"] is not None
+    capsule = client.project_capsule_show(project_root)["capsule"]
+    assert capsule is not None and capsule["mobileScroll"] == 12
     client.project_capsule_clear(confirmed=True, root=project_root)
     assert isinstance(client.project_inbox(project_root), list)
 finally:

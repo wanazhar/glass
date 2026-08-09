@@ -95,24 +95,41 @@ or PyPI in the `0.3.3` line.
 The deterministic local harness supports hello, prompt, steering, and bounded
 tool calls. Optional Pi RPC adds model selection, thinking level, follow-up,
 abort, and new session. Pi starts with its built-in tools disabled; Glass owns
-the schema-validating tool gateway and private one-use broker files. Browser
-tools stay unavailable until an attached Browser Workspace exists.
+the schema-validating tool gateway and private one-use broker files. The current
+subprocess bridge reports browser and persistent-process tools as unavailable
+until a resident bridge can carry browser revisions, policy, mutation leases,
+and PTY ownership correctly.
 
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
 
-The optional resident Pi adapter uses a Glass-specific system prompt, twelve
-bounded read-only project/runtime/Web IR/task tools, and four approval-gated mutation
-tools for file patches, process start/stop, and test runs. It streams completed message and
+The optional resident Pi adapter uses a Glass-specific system prompt and twenty
+tools: thirteen read-only operations and seven approval-gated mutations. Glass
+overrides Pi's familiar `read`, `write`, `edit`, `bash`, `grep`, `find`, and
+`ls` names, then adds project/runtime/diagnostic/Web IR/task tools. It streams completed message and
 tool events through the Agent view while dropping token-level redraw noise;
 steer and abort remain responsive during a running turn. Ambient Pi extensions,
 skills, context files, and sessions are disabled for deterministic local-first
 behavior. Every mutation pauses on a Glass-owned confirmation sheet. `Y` or
 Enter grants one use for the already serialized call; `N` or Esc denies it.
 Requests expire after 120 seconds, concurrent requests fail closed, and the
-one-shot/non-interactive Pi path always denies UI requests. Every mutation also
-names the expected project revision; stale approvals are rejected before any
-effect.
+one-shot/non-interactive Pi path always denies UI requests. Exact edit
+preconditions, workspace confinement, atomic saves, bounded command execution,
+actor attribution, and private request files remain enforced by Glass.
+
+The standard names keep useful coding semantics: line-paged reads; bounded,
+path-filtered listings; literal UTF-8 grep with glob/case/context controls;
+`*`/`?` path finding; atomic exact-match edits; and commands with an explicit
+300-second ceiling. Files that are non-UTF-8 or over the project-file bound are
+skipped by grep rather than copied into the model context.
+
+All Pi built-in and `models.json` providers remain selectable. Ambient Pi
+resources stay off by default; trusted users can opt into live catalog refresh,
+session persistence, or installed context/extensions/skills with
+`GLASS_PI_ONLINE_CATALOG=1`, `GLASS_PI_PERSIST_SESSION=1`, and
+`GLASS_PI_TRUSTED_RESOURCES=1` respectively. Trusted-resource mode also removes
+the extension-tool allowlist, so tools registered by installed extensions are
+available; those tools execute outside Glass's broker and approval boundary.
 
 ## Browser usage
 

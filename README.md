@@ -230,8 +230,9 @@ glass agent prompt "Inspect @workspace and @diagnostic" --root .
 ```
 
 The optional Pi adapter uses a real line-delimited RPC session. Glass launches
-Pi with built-in tools disabled and supplies its own bounded semantic/project
-tools:
+Pi with its raw built-in tools disabled and supplies Glass-owned overrides for
+the familiar `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` names,
+plus bounded semantic/project tools:
 
 ```console
 glass agent hello --harness pi --root .
@@ -239,14 +240,34 @@ glass agent models --root .
 glass agent prompt "Explain the failing diagnostic" --harness pi --root .
 ```
 
-Tool availability follows live dependencies. Browser tools do not appear
-until an authoritative Browser Workspace is attached. Mutations require the
-current project/browser revision, the shared mutation lease, applicable
-policy, and confirmation. In the resident TUI, each Pi mutation pauses on a
+Tool availability follows live dependencies. The current subprocess Pi bridge
+does not advertise browser or persistent-process controls because it cannot
+carry the resident target revision, policy, mutation lease, or PTY ownership;
+`glass_capabilities` reports those reasons instead of pretending an operation
+is available. Project mutations require the applicable precondition and policy
+plus confirmation. In the resident TUI, each Pi mutation pauses on a
 Glass-owned approval sheet; `Y`/Enter approves that exact serialized call once
 and `N`/Esc denies it. Unanswered requests expire after 120 seconds, while
 non-interactive Pi CLI requests deny them immediately. Prompt text, page content, secrets, and process
 output are not copied into the persisted timeline.
+
+The overrides are coding-harness complete: `read` supports bounded line paging,
+`ls` supports path and result bounds, `grep` performs bounded literal UTF-8 text
+search with path/glob/case/context controls, `find` supports `*`/`?` pathname
+matching, `edit` applies an atomic exact-match edit set, and `bash` runs an
+approved command for up to 300 seconds. Directory creation, rename, deletion,
+diagnostics, verification, Git status, semantic inspection, Web IR, and task
+planning are also available as explicit `glass_*` tools.
+
+Pi retains its configured provider/model catalog, including supported custom
+providers from `models.json`; use `project pi models` and model selection from
+the cockpit. `GLASS_PI_ONLINE_CATALOG=1` permits live catalog refresh,
+`GLASS_PI_PERSIST_SESSION=1` opts into Pi session persistence, and
+`GLASS_PI_TRUSTED_RESOURCES=1` opts into ambient Pi context files, extensions,
+skills, templates, and themes, and removes Glass's extension-tool allowlist so
+those registered tools are selectable too. The last setting executes
+user-installed code outside Glass's broker and should be used only for a trusted
+machine and project.
 
 External agents can use the CLI or MCP project tools and attach an attributed
 actor. Conflicting file claims fail closed rather than silently overwriting

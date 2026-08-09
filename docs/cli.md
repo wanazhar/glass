@@ -353,17 +353,37 @@ glass agent prompt "Explain @diagnostic" --harness pi --root .
 glass agent steer "focus on the failing test" --root .
 ```
 
-The Pi path uses Glass's embedded system prompt and sixteen bounded tools
-rather than Pi's built-in filesystem/shell tools: twelve read-only tools plus
-approval-gated file patch, process start/stop, and test-run tools. A one-shot Pi prompt
+The Pi path uses Glass's embedded system prompt and twenty bounded tools rather
+than Pi's raw filesystem/shell implementation: thirteen read-only tools and
+seven approval-gated mutations. Glass overrides the standard `read`, `write`,
+`edit`, `bash`, `grep`, `find`, and `ls` names so coding-oriented models retain
+their expected harness vocabulary. A one-shot Pi prompt
 waits for `agent_settled`; steer, follow-up, and abort are useful in
 the resident TUI where the same Pi RPC process remains active. A mutation
 freezes and privately serializes its exact arguments, then pauses on a Glass
 approval sheet. `Y`/Enter approves once; `N`/Esc denies. The approval expires
-after 120 seconds and cannot authorize a retry or reshaped call. One-shot CLI
-Pi requests have no interactive approval host and therefore deny mutations.
-Each mutation requires the project revision from current Glass context and is
-rejected if workspace state changed before execution.
+after 120 seconds and cannot authorize a retry or reshaped call. Exact edits
+must still match uniquely and are applied atomically. One-shot CLI Pi requests
+have no interactive approval host and therefore deny mutations.
+
+The standard tool behavior is explicit and bounded. `read` accepts one-based
+`offset` and `limit`; `ls` accepts a path prefix and limit; `grep` is a literal
+UTF-8 search with optional path prefix, `*`/`?` glob, case folding, context, and
+limit; `find` matches project paths with `*` and `?`; `edit` applies one atomic
+set of unique exact replacements; and `bash` has a caller-selected timeout
+capped at 300 seconds.
+
+Pi's configured providers and `models.json` models are available through
+`project pi models` and model selection. The default uses the cached catalog,
+ephemeral session, and only the Glass-owned extension. Set
+`GLASS_PI_ONLINE_CATALOG=1` for catalog refresh,
+`GLASS_PI_PERSIST_SESSION=1` for Pi-managed session persistence, or
+`GLASS_PI_TRUSTED_RESOURCES=1` to load ambient context files, extensions,
+skills, templates, and themes. Trusted resources are executable local code and
+are outside Glass's per-tool authority boundary. This opt-in also removes the
+extension-tool allowlist so installed extension tools can be selected by Pi;
+Glass's raw built-in filesystem and shell tools remain disabled because their
+names are replaced by the Glass-owned overrides.
 
 ## Profiles and files
 

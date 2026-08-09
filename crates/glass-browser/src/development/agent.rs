@@ -172,6 +172,8 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
 const MAX_TOOL_NAME_BYTES: usize = 128;
+const MAX_GREP_FILES: usize = 512;
+const MAX_GREP_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ToolAuthorization {
@@ -210,6 +212,24 @@ impl Default for AgentToolGateway {
 }
 
 impl AgentToolGateway {
+    pub fn subprocess_broker() -> Self {
+        let mut gateway = Self::default();
+        for descriptor in &mut gateway.descriptors {
+            if matches!(
+                descriptor.name.as_str(),
+                "glass.process.start"
+                    | "glass.process.stop"
+                    | "glass.process.logs"
+                    | "glass.process.list"
+            ) {
+                descriptor.available = false;
+                descriptor.unavailable_reason =
+                    Some("Requires a resident Glass Dev session that owns the managed PTY".into());
+            }
+        }
+        gateway
+    }
+
     pub fn set_browser_context(&mut self, context: Option<BrowserAgentContext>) {
         self.browser_context = context;
         for descriptor in &mut self.descriptors {
@@ -268,31 +288,19 @@ impl AgentToolGateway {
                 descriptor.name
             )));
         }
-        if descriptor.mutating {
-            let expected_revision =
-                call.arguments["expectedRevision"].as_u64().ok_or_else(|| {
-                    DevelopmentError::InvalidInput(format!(
-                        "tool {} requires unsigned integer argument expectedRevision",
-                        descriptor.name
-                    ))
-                })?;
-            let current_revision = workspace.revision();
-            if expected_revision != current_revision {
-                return Err(DevelopmentError::Conflict(format!(
-                    "tool {} was approved for stale project revision {expected_revision}; current revision is {current_revision}",
-                    descriptor.name
-                )));
-            }
-        }
         workspace.record_as(
             authorization.actor.clone(),
             DevelopmentEventKind::AgentToolCalled,
             tool_call_evidence(call, descriptor.mutating, &argument_evidence),
         )?;
-        let result = self.execute_attached(call).unwrap_or_else(|| {
-            self.registry
-                .execute_unchecked(workspace, call, authorization.actor.clone())
-        });
+        let result = if call.name == "glass.capabilities.inspect" {
+            Ok(serde_json::to_value(&self.descriptors)?)
+        } else {
+            self.execute_attached(call).unwrap_or_else(|| {
+                self.registry
+                    .execute_unchecked(workspace, call, authorization.actor.clone())
+            })
+        };
         let (ok, bytes) = match &result {
             Ok(value) => {
                 let mut counter = BoundedJsonWriter::new(MAX_TOOL_RESULT_BYTES);
@@ -354,13 +362,19 @@ impl ToolRegistry {
             descriptor(
                 "glass.file.read",
                 "Read one bounded project file",
-                schema(serde_json::json!({"path":{"type":"string"}}), &["path"]),
+                schema(
+                    serde_json::json!({"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}),
+                    &["path"],
+                ),
                 false,
             ),
             descriptor(
                 "glass.file.list",
                 "List bounded project files",
-                schema(serde_json::json!({}), &[]),
+                schema(
+                    serde_json::json!({"path":{"type":"string"},"limit":{"type":"integer"}}),
+                    &[],
+                ),
                 false,
             ),
             descriptor(
@@ -370,30 +384,84 @@ impl ToolRegistry {
                 false,
             ),
             descriptor(
+                "glass.file.grep",
+                "Search bounded UTF-8 project files for a literal text pattern",
+                schema(
+                    serde_json::json!({"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"ignoreCase":{"type":"boolean"},"context":{"type":"integer"},"limit":{"type":"integer"}}),
+                    &["pattern"],
+                ),
+                false,
+            ),
+            descriptor(
+                "glass.file.find",
+                "Find bounded project paths with shell-style star and question-mark matching",
+                schema(
+                    serde_json::json!({"pattern":{"type":"string"},"path":{"type":"string"},"limit":{"type":"integer"}}),
+                    &["pattern"],
+                ),
+                false,
+            ),
+            descriptor(
                 "glass.file.patch",
                 "Replace bounded text through an attributed editor buffer",
                 schema(
-                    serde_json::json!({"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
-                    &["path", "search", "replace", "expectedRevision"],
+                    serde_json::json!({"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}}),
+                    &["path", "search", "replace"],
                 ),
+                true,
+            ),
+            descriptor(
+                "glass.file.edit",
+                "Apply one atomic set of exact non-overlapping replacements",
+                schema(
+                    serde_json::json!({"path":{"type":"string"},"edits":{"type":"array"}}),
+                    &["path", "edits"],
+                ),
+                true,
+            ),
+            descriptor(
+                "glass.file.write",
+                "Create or replace one bounded project file",
+                schema(
+                    serde_json::json!({"path":{"type":"string"},"content":{"type":"string"}}),
+                    &["path", "content"],
+                ),
+                true,
+            ),
+            descriptor(
+                "glass.file.mkdir",
+                "Create one workspace-confined directory tree",
+                schema(serde_json::json!({"path":{"type":"string"}}), &["path"]),
+                true,
+            ),
+            descriptor(
+                "glass.file.rename",
+                "Rename one workspace-confined path",
+                schema(
+                    serde_json::json!({"from":{"type":"string"},"to":{"type":"string"}}),
+                    &["from", "to"],
+                ),
+                true,
+            ),
+            descriptor(
+                "glass.file.delete",
+                "Delete one file or empty directory",
+                schema(serde_json::json!({"path":{"type":"string"}}), &["path"]),
                 true,
             ),
             descriptor(
                 "glass.process.start",
                 "Start a named PTY process",
                 schema(
-                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
-                    &["name", "command", "expectedRevision"],
+                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"}}),
+                    &["name", "command"],
                 ),
                 true,
             ),
             descriptor(
                 "glass.process.stop",
                 "Stop a named managed process",
-                schema(
-                    serde_json::json!({"name":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
-                    &["name", "expectedRevision"],
-                ),
+                schema(serde_json::json!({"name":{"type":"string"}}), &["name"]),
                 true,
             ),
             descriptor(
@@ -424,14 +492,35 @@ impl ToolRegistry {
                 "glass.test.run",
                 "Run a command as attributed verification",
                 schema(
-                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"expectedRevision":{"type":"integer","minimum":0}}),
-                    &["name", "command", "expectedRevision"],
+                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"}}),
+                    &["name", "command"],
                 ),
                 true,
             ),
             descriptor(
+                "glass.command.run",
+                "Run one bounded command to completion as the Pi actor",
+                schema(
+                    serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"timeoutSeconds":{"type":"integer"}}),
+                    &["name", "command"],
+                ),
+                true,
+            ),
+            descriptor(
+                "glass.diagnostics.run",
+                "Publish bounded rust-analyzer diagnostics for one file",
+                schema(serde_json::json!({"path":{"type":"string"}}), &["path"]),
+                false,
+            ),
+            descriptor(
                 "glass.runtime.inspect",
                 "Inspect project, processes, actors, and diagnostics",
+                schema(serde_json::json!({}), &[]),
+                false,
+            ),
+            descriptor(
+                "glass.capabilities.inspect",
+                "Inspect the current Glass agent tool inventory and unavailable reasons",
                 schema(serde_json::json!({}), &[]),
                 false,
             ),
@@ -513,13 +602,13 @@ impl ToolRegistry {
                 })
         };
         match call.name.as_str() {
-            "glass.file.read" => {
-                Ok(serde_json::json!({"content": workspace.read_file(string("path")?)?}))
-            }
-            "glass.file.list" => Ok(serde_json::to_value(workspace.list_files_result()?)?),
+            "glass.file.read" => read_tool_file(workspace, call, string("path")?),
+            "glass.file.list" => list_tool_files(workspace, call),
             "glass.file.search" => Ok(serde_json::to_value(
                 workspace.search(string("query")?, 64)?,
             )?),
+            "glass.file.grep" => grep_tool_files(workspace, call, string("pattern")?),
+            "glass.file.find" => find_tool_files(workspace, call, string("pattern")?),
             "glass.file.patch" => {
                 let count = workspace.replace_in_buffer(
                     string("path")?,
@@ -535,6 +624,28 @@ impl ToolRegistry {
                 let path = string("path")?.to_string();
                 let buffer = workspace.save_buffer(&path)?;
                 Ok(serde_json::json!({"path": path, "replacements": count, "dirty": buffer.dirty}))
+            }
+            "glass.file.edit" => execute_atomic_edits(workspace, call, actor),
+            "glass.file.write" => {
+                let path = string("path")?.to_string();
+                workspace.write_file(&path, string("content")?, actor)?;
+                Ok(serde_json::json!({"path":path,"written":true}))
+            }
+            "glass.file.mkdir" => {
+                let path = string("path")?.to_string();
+                workspace.create_directory(&path, actor)?;
+                Ok(serde_json::json!({"path":path,"created":true}))
+            }
+            "glass.file.rename" => {
+                let from = string("from")?.to_string();
+                let to = string("to")?.to_string();
+                workspace.rename_path(&from, &to, actor)?;
+                Ok(serde_json::json!({"from":from,"to":to,"renamed":true}))
+            }
+            "glass.file.delete" => {
+                let path = string("path")?.to_string();
+                workspace.delete_path(&path, actor)?;
+                Ok(serde_json::json!({"path":path,"deleted":true}))
             }
             "glass.process.start" => Ok(serde_json::to_value(
                 workspace.start_process(string("name")?, string("command")?)?,
@@ -557,6 +668,26 @@ impl ToolRegistry {
                 string("command")?,
                 Duration::from_secs(120),
             )?)?),
+            "glass.command.run" => {
+                let timeout = call
+                    .arguments
+                    .get("timeoutSeconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(120);
+                if !(1..=300).contains(&timeout) {
+                    return Err(DevelopmentError::InvalidInput(
+                        "glass.command.run timeoutSeconds must be between 1 and 300".into(),
+                    ));
+                }
+                Ok(serde_json::to_value(workspace.run_command_to_completion(
+                    string("name")?,
+                    string("command")?,
+                    Duration::from_secs(timeout),
+                )?)?)
+            }
+            "glass.diagnostics.run" => Ok(serde_json::to_value(
+                workspace.publish_rust_diagnostics(string("path")?)?,
+            )?),
             "glass.runtime.inspect" => Ok(serde_json::json!({
                 "project": workspace.detection(),
                 "processes": workspace.processes().list_checked()?,
@@ -679,6 +810,324 @@ impl Write for BoundedJsonWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+fn read_tool_file(
+    workspace: &mut ProjectWorkspace,
+    call: &ToolCall,
+    path: &str,
+) -> DevelopmentResult<Value> {
+    let content = workspace.read_file(path)?;
+    let content_sha256 = digest_hex(&Sha256::digest(content.as_bytes()));
+    let offset = call
+        .arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let limit = call
+        .arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(500);
+    if offset == 0 || !(1..=2_000).contains(&limit) {
+        return Err(DevelopmentError::InvalidInput(
+            "glass.file.read offset must be positive and limit must be between 1 and 2000".into(),
+        ));
+    }
+    let total_lines = content
+        .lines()
+        .count()
+        .max(usize::from(!content.is_empty())) as u64;
+    let mut selected = content
+        .split_inclusive('\n')
+        .skip(offset.saturating_sub(1) as usize)
+        .take(limit as usize)
+        .collect::<String>();
+    let selected_lines = selected.lines().count() as u64;
+    let mut bytes_truncated = false;
+    if selected.len() > 60 * 1024 {
+        let mut boundary = 60 * 1024;
+        while !selected.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        selected.truncate(boundary);
+        bytes_truncated = true;
+    }
+    Ok(serde_json::json!({
+        "path": path,
+        "content": selected,
+        "offset": offset,
+        "lines": selected_lines,
+        "totalLines": total_lines,
+        "sha256": content_sha256,
+        "truncated": bytes_truncated || offset.saturating_sub(1) + selected_lines < total_lines,
+    }))
+}
+
+fn list_tool_files(workspace: &ProjectWorkspace, call: &ToolCall) -> DevelopmentResult<Value> {
+    let path_prefix = optional_string_argument(call, "path")
+        .map(|path| path.trim_matches('/').to_string())
+        .unwrap_or_default();
+    let limit = bounded_u64_argument(call, "limit", 1, 2_000, 500)? as usize;
+    let tree = workspace.list_files_result()?;
+    let mut entries = Vec::new();
+    let mut truncated = tree.truncated;
+    for entry in tree.entries {
+        if !path_prefix.is_empty()
+            && entry.path != path_prefix
+            && !entry.path.starts_with(&format!("{path_prefix}/"))
+        {
+            continue;
+        }
+        entries.push(entry);
+        if entries.len() == limit {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(serde_json::json!({
+        "entries": entries,
+        "limit": limit,
+        "truncated": truncated,
+        "ignoredDirectories": tree.ignored_directories,
+        "skippedSymlinks": tree.skipped_symlinks,
+    }))
+}
+
+fn grep_tool_files(
+    workspace: &mut ProjectWorkspace,
+    call: &ToolCall,
+    pattern: &str,
+) -> DevelopmentResult<Value> {
+    if pattern.is_empty() {
+        return Err(DevelopmentError::InvalidInput(
+            "glass.file.grep pattern must not be empty".into(),
+        ));
+    }
+    let path_prefix = optional_string_argument(call, "path")
+        .map(|path| path.trim_matches('/').to_string())
+        .unwrap_or_default();
+    let glob = optional_string_argument(call, "glob");
+    let ignore_case = call
+        .arguments
+        .get("ignoreCase")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let context = bounded_u64_argument(call, "context", 0, 10, 0)? as usize;
+    let limit = bounded_u64_argument(call, "limit", 1, 500, 100)? as usize;
+    let needle = ignore_case.then(|| pattern.to_lowercase());
+    let entries = workspace.list_files_result()?;
+    let mut matches = Vec::new();
+    let mut files_searched = 0usize;
+    let mut bytes_searched = 0u64;
+    let mut files_skipped = 0usize;
+    let mut truncated = entries.truncated;
+    for entry in entries.entries {
+        if entry.kind != super::project::FileKind::File
+            || (!path_prefix.is_empty()
+                && entry.path != path_prefix
+                && !entry.path.starts_with(&format!("{path_prefix}/")))
+            || glob.is_some_and(|glob| !wildcard_matches(glob, &entry.path))
+        {
+            continue;
+        }
+        let bytes = entry.bytes.unwrap_or(0);
+        if files_searched == MAX_GREP_FILES || bytes_searched.saturating_add(bytes) > MAX_GREP_BYTES
+        {
+            truncated = true;
+            break;
+        }
+        let Ok(content) = workspace.read_file_snapshot(&entry.path) else {
+            files_skipped += 1;
+            continue;
+        };
+        files_searched += 1;
+        bytes_searched = bytes_searched.saturating_add(content.len() as u64);
+        let lines = content.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            let found = needle.as_ref().map_or_else(
+                || line.contains(pattern),
+                |needle| line.to_lowercase().contains(needle),
+            );
+            if !found {
+                continue;
+            }
+            let start = index.saturating_sub(context);
+            let end = (index + context + 1).min(lines.len());
+            matches.push(serde_json::json!({
+                "path": entry.path,
+                "line": index + 1,
+                "text": line,
+                "contextBefore": lines[start..index],
+                "contextAfter": lines[index + 1..end],
+            }));
+            if matches.len() == limit {
+                return Ok(serde_json::json!({
+                    "matches": matches,
+                    "filesSearched": files_searched,
+                    "bytesSearched": bytes_searched,
+                    "filesSkipped": files_skipped,
+                    "limit": limit,
+                    "truncated": true,
+                    "literal": true,
+                }));
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "matches": matches,
+        "filesSearched": files_searched,
+        "bytesSearched": bytes_searched,
+        "filesSkipped": files_skipped,
+        "limit": limit,
+        "truncated": truncated,
+        "literal": true,
+    }))
+}
+
+fn find_tool_files(
+    workspace: &ProjectWorkspace,
+    call: &ToolCall,
+    pattern: &str,
+) -> DevelopmentResult<Value> {
+    if pattern.is_empty() {
+        return Err(DevelopmentError::InvalidInput(
+            "glass.file.find pattern must not be empty".into(),
+        ));
+    }
+    let path_prefix = optional_string_argument(call, "path")
+        .map(|path| path.trim_matches('/').to_string())
+        .unwrap_or_default();
+    let limit = bounded_u64_argument(call, "limit", 1, 2_000, 500)? as usize;
+    let tree = workspace.list_files_result()?;
+    let mut paths = Vec::new();
+    let mut truncated = tree.truncated;
+    for entry in tree.entries {
+        if (!path_prefix.is_empty()
+            && entry.path != path_prefix
+            && !entry.path.starts_with(&format!("{path_prefix}/")))
+            || !wildcard_matches(pattern, &entry.path)
+        {
+            continue;
+        }
+        paths.push(serde_json::json!({"path":entry.path,"kind":entry.kind}));
+        if paths.len() == limit {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(serde_json::json!({"paths":paths,"limit":limit,"truncated":truncated}))
+}
+
+fn optional_string_argument<'a>(call: &'a ToolCall, name: &str) -> Option<&'a str> {
+    call.arguments.get(name).and_then(Value::as_str)
+}
+
+fn bounded_u64_argument(
+    call: &ToolCall,
+    name: &str,
+    minimum: u64,
+    maximum: u64,
+    default: u64,
+) -> DevelopmentResult<u64> {
+    let value = call
+        .arguments
+        .get(name)
+        .and_then(Value::as_u64)
+        .unwrap_or(default);
+    if !(minimum..=maximum).contains(&value) {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "{} {name} must be between {minimum} and {maximum}",
+            call.name
+        )));
+    }
+    Ok(value)
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let value = value.chars().collect::<Vec<_>>();
+    let (mut pattern_index, mut value_index) = (0usize, 0usize);
+    let (mut star, mut retry) = (None, 0usize);
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == '?' || pattern[pattern_index] == value[value_index])
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == '*' {
+            star = Some(pattern_index);
+            pattern_index += 1;
+            retry = value_index;
+        } else if let Some(star_index) = star {
+            pattern_index = star_index + 1;
+            retry += 1;
+            value_index = retry;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == '*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
+fn execute_atomic_edits(
+    workspace: &mut ProjectWorkspace,
+    call: &ToolCall,
+    actor: Actor,
+) -> DevelopmentResult<Value> {
+    let path = call.arguments["path"]
+        .as_str()
+        .ok_or_else(|| DevelopmentError::InvalidInput("glass.file.edit requires path".into()))?;
+    let edits = call.arguments["edits"]
+        .as_array()
+        .filter(|edits| !edits.is_empty() && edits.len() <= 64)
+        .ok_or_else(|| {
+            DevelopmentError::InvalidInput("glass.file.edit requires between 1 and 64 edits".into())
+        })?;
+    let original = workspace.read_file(path)?;
+    let mut replacements = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let old_text = edit.get("oldText").and_then(Value::as_str).ok_or_else(|| {
+            DevelopmentError::InvalidInput("every edit requires string oldText".into())
+        })?;
+        let new_text = edit.get("newText").and_then(Value::as_str).ok_or_else(|| {
+            DevelopmentError::InvalidInput("every edit requires string newText".into())
+        })?;
+        if old_text.is_empty() {
+            return Err(DevelopmentError::InvalidInput(
+                "glass.file.edit oldText must not be empty".into(),
+            ));
+        }
+        let matches = original.match_indices(old_text).collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(DevelopmentError::Conflict(format!(
+                "glass.file.edit oldText must match exactly once; matched {} times",
+                matches.len()
+            )));
+        }
+        let start = matches[0].0;
+        replacements.push((start, start + old_text.len(), new_text));
+    }
+    replacements.sort_by_key(|replacement| replacement.0);
+    if replacements.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(DevelopmentError::Conflict(
+            "glass.file.edit replacements overlap".into(),
+        ));
+    }
+    let mut content = original;
+    for (start, end, new_text) in replacements.iter().rev() {
+        content.replace_range(*start..*end, new_text);
+    }
+    workspace.edit_buffer(path, content, actor)?;
+    let buffer = workspace.save_buffer(path)?;
+    Ok(serde_json::json!({
+        "path": path,
+        "replacements": replacements.len(),
+        "dirty": buffer.dirty,
+    }))
 }
 
 fn validate_tool_call_envelope(call: &ToolCall) -> DevelopmentResult<()> {
@@ -1084,28 +1533,38 @@ impl PiHarness {
             include_str!("../../assets/pi-glass-tools.ts"),
         )?;
         let broker = std::env::current_exe().map_err(DevelopmentError::Io)?;
-        let mut child = Command::new("pi")
-            .args([
-                "--mode",
-                "rpc",
-                "--offline",
-                "--no-approve",
+        let trusted_resources = env_enabled("GLASS_PI_TRUSTED_RESOURCES");
+        let mut command = Command::new("pi");
+        command.args(["--mode", "rpc", "--no-approve", "--no-builtin-tools"]);
+        if !env_enabled("GLASS_PI_ONLINE_CATALOG") {
+            command.arg("--offline");
+        }
+        if !trusted_resources {
+            command.args([
                 "--no-context-files",
                 "--no-extensions",
                 "--no-skills",
                 "--no-prompt-templates",
                 "--no-themes",
-                "--no-session",
-                "--no-builtin-tools",
+            ]);
+        }
+        if !env_enabled("GLASS_PI_PERSIST_SESSION") {
+            command.arg("--no-session");
+        }
+        command
+            .args([
                 "--system-prompt",
                 include_str!("../../assets/pi-glass-system.md"),
                 "--extension",
             ])
-            .arg(&extension_path)
-            .args([
+            .arg(&extension_path);
+        if !trusted_resources {
+            command.args([
                 "--tools",
-                "glass_file_read,glass_file_list,glass_file_search,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan,glass_process_logs,glass_process_list,glass_runtime_inspect,glass_file_patch,glass_process_start,glass_process_stop,glass_test_run",
-            ])
+                "read,write,edit,bash,grep,find,ls,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan,glass_runtime_inspect,glass_capabilities,glass_diagnostics_run,glass_file_mkdir,glass_file_rename,glass_file_delete,glass_test_run",
+            ]);
+        }
+        let mut child = command
             .env("GLASS_PI_BROKER_BIN", broker)
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -1307,6 +1766,10 @@ impl PiHarness {
             )),
         }
     }
+}
+
+fn env_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1527,28 +1990,34 @@ mod tests {
         assert!(prompt.contains("Structured browser observation is the default"));
         assert!(prompt.contains("per-call approval"));
         for tool in [
-            "glass_file_read",
-            "glass_file_list",
-            "glass_file_search",
             "glass_git_status",
             "glass_semantic_inspect",
             "glass_web_ir_inspect",
             "glass_web_ir_diff",
             "glass_web_ir_continuity",
             "glass_task_plan",
-            "glass_process_logs",
-            "glass_process_list",
             "glass_runtime_inspect",
-            "glass_file_patch",
-            "glass_process_start",
-            "glass_process_stop",
+            "glass_capabilities",
+            "glass_diagnostics_run",
+            "glass_file_mkdir",
+            "glass_file_rename",
+            "glass_file_delete",
             "glass_test_run",
+            "\"read\"",
+            "\"write\"",
+            "\"edit\"",
+            "\"bash\"",
+            "\"grep\"",
+            "\"find\"",
+            "\"ls\"",
         ] {
             assert!(tools.contains(tool), "missing Pi tool {tool}");
         }
         assert!(tools.contains("ctx.ui.confirm"));
         assert!(tools.contains("--allow-mutation"));
         assert!(tools.contains("exact serialized call once"));
+        assert!(!tools.contains("\"glass_process_start\""));
+        assert!(!tools.contains("\"glass_process_stop\""));
 
         let response = serde_json::json!({
             "type": "response",
@@ -1617,7 +2086,6 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
-        let expected_revision = workspace.revision();
         let gateway = AgentToolGateway::default();
         let result = gateway
             .execute(
@@ -1625,7 +2093,7 @@ mod tests {
                 &ToolCall {
                     id: "tool-1".into(),
                     name: "glass.file.patch".into(),
-                    arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after","expectedRevision":expected_revision}),
+                    arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after"}),
                 },
                 &ToolAuthorization {
                     actor: Actor::embedded(),
@@ -1639,26 +2107,6 @@ mod tests {
             fs::read_to_string(root.join("note.txt")).unwrap(),
             "after\n"
         );
-        let stale = ToolCall {
-            id: "tool-stale".into(),
-            name: "glass.file.patch".into(),
-            arguments: serde_json::json!({
-                "path":"note.txt", "search":"after", "replace":"stale",
-                "expectedRevision":expected_revision
-            }),
-        };
-        assert!(matches!(
-            gateway.execute(
-                &mut workspace,
-                &stale,
-                &ToolAuthorization {
-                    actor: Actor::embedded(),
-                    allow_mutation: true,
-                    confirmed: true,
-                },
-            ),
-            Err(DevelopmentError::Conflict(_))
-        ));
         assert!(
             gateway
                 .execute(
@@ -1682,7 +2130,6 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "private-before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
-        let expected_revision = workspace.revision();
         let gateway = AgentToolGateway::default();
         let mutating = ToolCall {
             id: "denied".into(),
@@ -1690,8 +2137,7 @@ mod tests {
             arguments: serde_json::json!({
                 "path":"note.txt",
                 "search":"private-before",
-                "replace":"private-after",
-                "expectedRevision":expected_revision
+                "replace":"private-after"
             }),
         };
         assert!(
@@ -1727,6 +2173,171 @@ mod tests {
         assert!(!audit.contains("private-before"));
         assert!(!audit.contains("private-after"));
         assert!(!audit.contains("private-value"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coding_gateway_writes_and_applies_atomic_multi_edits() {
+        let root = std::env::temp_dir().join(format!("glass-coding-tools-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let authority = ToolAuthorization {
+            actor: Actor::external("pi"),
+            allow_mutation: true,
+            confirmed: true,
+        };
+        gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "write-1".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({
+                        "path":"src/example.rs",
+                        "content":"fn alpha() {}\nfn beta() {}\n"
+                    }),
+                },
+                &authority,
+            )
+            .unwrap();
+        let result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "edit-1".into(),
+                    name: "glass.file.edit".into(),
+                    arguments: serde_json::json!({
+                        "path":"src/example.rs",
+                        "edits":[
+                            {"oldText":"alpha", "newText":"first"},
+                            {"oldText":"beta", "newText":"second"}
+                        ]
+                    }),
+                },
+                &authority,
+            )
+            .unwrap();
+        assert_eq!(result["replacements"], 2);
+        assert_eq!(
+            fs::read_to_string(root.join("src/example.rs")).unwrap(),
+            "fn first() {}\nfn second() {}\n"
+        );
+        let read = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "read-page".into(),
+                    name: "glass.file.read".into(),
+                    arguments: serde_json::json!({"path":"src/example.rs","offset":2,"limit":1}),
+                },
+                &ToolAuthorization::read_only(Actor::external("pi")),
+            )
+            .unwrap();
+        assert_eq!(read["content"], "fn second() {}\n");
+        assert_eq!(read["offset"], 2);
+        assert!(
+            read["sha256"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+        );
+
+        let command = "printf command-private-value";
+        let command_result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "command-1".into(),
+                    name: "glass.command.run".into(),
+                    arguments: serde_json::json!({
+                        "name":"pi-command-test", "command":command, "timeoutSeconds":5
+                    }),
+                },
+                &authority,
+            )
+            .unwrap();
+        assert!(
+            command_result["output"]
+                .as_str()
+                .is_some_and(|value| value.contains("command-private-value"))
+        );
+        assert!(
+            workspace
+                .timeline()
+                .events()
+                .all(|event| !event.payload.to_string().contains(command))
+        );
+        assert!(workspace.timeline().events().all(|event| !matches!(
+            event.kind,
+            DevelopmentEventKind::TestStarted | DevelopmentEventKind::TestCompleted
+        )));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coding_gateway_lists_finds_and_greps_with_bounded_standard_semantics() {
+        let root = std::env::temp_dir().join(format!("glass-coding-search-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/lib.rs"), "alpha\nNeedle target\nomega\n").unwrap();
+        fs::write(root.join("src/nested/mod.rs"), "needle second\n").unwrap();
+        fs::write(root.join("README.md"), "Needle outside\n").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let authority = ToolAuthorization::read_only(Actor::external("pi"));
+
+        let listed = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "list-src".into(),
+                    name: "glass.file.list".into(),
+                    arguments: serde_json::json!({"path":"src","limit":2}),
+                },
+                &authority,
+            )
+            .unwrap();
+        assert_eq!(listed["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(listed["truncated"], true);
+        assert!(
+            listed["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["path"].as_str().unwrap().starts_with("src"))
+        );
+
+        let found = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "find-rs".into(),
+                    name: "glass.file.find".into(),
+                    arguments: serde_json::json!({"pattern":"src/*.rs","limit":20}),
+                },
+                &authority,
+            )
+            .unwrap();
+        assert_eq!(found["paths"].as_array().unwrap().len(), 2);
+
+        let grep = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "grep-needle".into(),
+                    name: "glass.file.grep".into(),
+                    arguments: serde_json::json!({
+                        "pattern":"needle", "path":"src", "glob":"*.rs",
+                        "ignoreCase":true, "context":1, "limit":10
+                    }),
+                },
+                &authority,
+            )
+            .unwrap();
+        assert_eq!(grep["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(grep["literal"], true);
+        assert_eq!(grep["matches"][0]["contextBefore"][0], "alpha");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1768,6 +2379,62 @@ mod tests {
                 .is_err()
         );
         assert_eq!(descriptor_storage, gateway.descriptors.as_ptr());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subprocess_broker_reports_resident_process_tools_as_unavailable() {
+        let gateway = AgentToolGateway::subprocess_broker();
+        for name in [
+            "glass.process.start",
+            "glass.process.stop",
+            "glass.process.logs",
+            "glass.process.list",
+        ] {
+            let descriptor = gateway
+                .descriptors()
+                .into_iter()
+                .find(|descriptor| descriptor.name == name)
+                .unwrap();
+            assert!(!descriptor.available);
+            assert!(
+                descriptor
+                    .unavailable_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("resident Glass Dev"))
+            );
+        }
+        let root = std::env::temp_dir().join(format!("glass-capabilities-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "capabilities".into(),
+                    name: "glass.capabilities.inspect".into(),
+                    arguments: serde_json::json!({}),
+                },
+                &ToolAuthorization::read_only(Actor::external("pi")),
+            )
+            .unwrap();
+        let processes = result
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|descriptor| {
+                descriptor["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("glass.process."))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(processes.len(), 4);
+        assert!(
+            processes
+                .iter()
+                .all(|descriptor| descriptor["available"] == false)
+        );
         let _ = fs::remove_dir_all(root);
     }
 

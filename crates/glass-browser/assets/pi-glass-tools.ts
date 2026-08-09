@@ -23,31 +23,41 @@ export default function (pi: ExtensionAPI) {
     )
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/giu, "$1<redacted>@"));
   const approvalSummary = (glassName: string, params: Record<string, unknown>) => {
-    const revision = `Project revision: ${String(params.expectedRevision ?? "missing")}`;
-    if (glassName === "glass.file.patch") {
-      const search = String(params.search ?? "");
-      const replace = String(params.replace ?? "");
+    if (glassName === "glass.file.edit") {
+      const edits = Array.isArray(params.edits) ? params.edits : [];
       return [
         `File: ${bounded(String(params.path ?? ""))}`,
-        `Match: ${search.length} bytes · sha256 ${digest(search)}`,
-        `Replacement: ${replace.length} bytes · sha256 ${digest(replace)}`,
-        revision,
+        `Exact replacements: ${edits.length}`,
+        `Edit evidence: sha256 ${digest(JSON.stringify(edits))}`,
         "This approval is valid for this exact serialized call once.",
       ].join("\n");
     }
-    if (glassName === "glass.process.start" || glassName === "glass.test.run") {
+    if (glassName === "glass.file.write") {
+      const content = String(params.content ?? "");
+      return [
+        `File: ${bounded(String(params.path ?? ""))}`,
+        `Content: ${content.length} bytes · sha256 ${digest(content)}`,
+        "This approval is valid for this exact serialized call once.",
+      ].join("\n");
+    }
+    if (glassName === "glass.command.run" || glassName === "glass.test.run") {
       const command = String(params.command ?? "");
       return [
         `Name: ${bounded(String(params.name ?? ""))}`,
         `Command: ${redactCommand(command)}`,
         `Command evidence: ${command.length} bytes · sha256 ${digest(command)}`,
-        revision,
+        "This approval is valid for this exact serialized call once.",
+      ].join("\n");
+    }
+    if (glassName === "glass.file.rename") {
+      return [
+        `From: ${bounded(String(params.from ?? ""))}`,
+        `To: ${bounded(String(params.to ?? ""))}`,
         "This approval is valid for this exact serialized call once.",
       ].join("\n");
     }
     return [
-      `Process: ${bounded(String(params.name ?? ""))}`,
-      revision,
+      `Target: ${bounded(String(params.path ?? params.name ?? ""))}`,
       "This approval is valid for this exact serialized call once.",
     ].join("\n");
   };
@@ -58,6 +68,7 @@ export default function (pi: ExtensionAPI) {
     description: string,
     parameters: any,
     mutating = false,
+    mapArguments: (params: any, toolCallId: string) => Record<string, unknown> = (params) => params,
   ) => {
     pi.registerTool({
       name,
@@ -66,11 +77,12 @@ export default function (pi: ExtensionAPI) {
       promptSnippet: description,
       parameters,
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
-        const call = JSON.stringify({ id: toolCallId, name: glassName, arguments: params });
+        const arguments_ = mapArguments(params, toolCallId);
+        const call = JSON.stringify({ id: toolCallId, name: glassName, arguments: arguments_ });
         if (mutating) {
           const confirmed = await ctx.ui.confirm(
             `Approve ${glassName}?`,
-            approvalSummary(glassName, params as Record<string, unknown>),
+            approvalSummary(glassName, arguments_),
             { timeout: 120000 },
           );
           if (!confirmed) throw new Error(`Glass denied ${glassName}`);
@@ -85,7 +97,13 @@ export default function (pi: ExtensionAPI) {
               "agent", "tool-file", requestPath, "--root", ctx.cwd,
               ...(mutating ? ["--allow-mutation", "--yes"] : []),
             ],
-            { cwd: ctx.cwd, signal, timeout: 15000 },
+            {
+              cwd: ctx.cwd,
+              signal,
+              timeout: glassName === "glass.command.run"
+                ? (Number(arguments_.timeoutSeconds ?? 120) + 5) * 1000
+                : glassName === "glass.test.run" ? 125000 : 30000,
+            },
           );
         } finally {
           await unlink(requestPath).catch(() => {});
@@ -102,24 +120,6 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  register(
-    "glass_file_read",
-    "glass.file.read",
-    "Read one bounded project file through Glass root confinement",
-    Type.Object({ path: Type.String() }),
-  );
-  register(
-    "glass_file_list",
-    "glass.file.list",
-    "List the bounded Glass project tree",
-    Type.Object({}),
-  );
-  register(
-    "glass_file_search",
-    "glass.file.search",
-    "Search bounded project files and semantic project state",
-    Type.Object({ query: Type.String() }),
-  );
   register(
     "glass_git_status",
     "glass.git.status",
@@ -168,56 +168,130 @@ export default function (pi: ExtensionAPI) {
     }),
   );
   register(
-    "glass_file_patch",
-    "glass.file.patch",
-    "Replace one exact bounded text occurrence after per-call human approval",
-    Type.Object({
-      path: Type.String(), search: Type.String(), replace: Type.String(),
-      expectedRevision: Type.Integer({ minimum: 0 }),
-    }),
+    "glass_file_mkdir",
+    "glass.file.mkdir",
+    "Create one workspace-confined directory after per-call human approval",
+    Type.Object({ path: Type.String() }),
     true,
   );
   register(
-    "glass_process_start",
-    "glass.process.start",
-    "Start one named PTY process after per-call human approval",
-    Type.Object({
-      name: Type.String(), command: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }),
-    }),
+    "glass_file_rename",
+    "glass.file.rename",
+    "Rename one workspace-confined path after per-call human approval",
+    Type.Object({ from: Type.String(), to: Type.String() }),
     true,
   );
   register(
-    "glass_process_stop",
-    "glass.process.stop",
-    "Stop one named managed process after per-call human approval",
-    Type.Object({ name: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }) }),
+    "glass_file_delete",
+    "glass.file.delete",
+    "Delete one file or empty directory after per-call human approval",
+    Type.Object({ path: Type.String() }),
     true,
+  );
+  register(
+    "glass_diagnostics_run",
+    "glass.diagnostics.run",
+    "Run bounded rust-analyzer diagnostics for one project file",
+    Type.Object({ path: Type.String() }),
   );
   register(
     "glass_test_run",
     "glass.test.run",
     "Run one named verification command after per-call human approval",
-    Type.Object({
-      name: Type.String(), command: Type.String(), expectedRevision: Type.Integer({ minimum: 0 }),
-    }),
+    Type.Object({ name: Type.String(), command: Type.String() }),
     true,
-  );
-  register(
-    "glass_process_logs",
-    "glass.process.logs",
-    "Read a bounded output tail from one Glass-managed process",
-    Type.Object({ name: Type.String() }),
-  );
-  register(
-    "glass_process_list",
-    "glass.process.list",
-    "List Glass-managed processes and their checked state",
-    Type.Object({}),
   );
   register(
     "glass_runtime_inspect",
     "glass.runtime.inspect",
-    "Inspect bounded project, process, actor, diagnostic, and revision state",
+    "Inspect bounded project, actor, diagnostic, and current broker state",
     Type.Object({}),
+  );
+  register(
+    "glass_capabilities",
+    "glass.capabilities.inspect",
+    "Inspect available Glass tools and explicit unavailable reasons",
+    Type.Object({}),
+  );
+
+  // Override Pi's familiar coding-tool names with Glass-confined operations.
+  // Models retain standard coding-harness affordances without receiving a
+  // second, untracked filesystem or shell authority path.
+  register(
+    "read", "glass.file.read", "Read a workspace-confined text file",
+    Type.Object({
+      path: Type.String(),
+      offset: Type.Optional(Type.Integer({ minimum: 1 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1 })),
+    }),
+    false,
+    (params) => ({ path: params.path, offset: params.offset, limit: params.limit }),
+  );
+  register(
+    "write", "glass.file.write", "Create or replace a workspace-confined text file",
+    Type.Object({ path: Type.String(), content: Type.String() }),
+    true,
+  );
+  register(
+    "edit", "glass.file.edit", "Apply exact non-overlapping edits atomically",
+    Type.Object({
+      path: Type.String(),
+      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }), {
+        minItems: 1, maxItems: 64,
+      }),
+    }),
+    true,
+  );
+  register(
+    "bash", "glass.command.run", "Run a command to completion through Glass",
+    Type.Object({
+      command: Type.String(),
+      timeout: Type.Optional(Type.Number({ minimum: 1, maximum: 300 })),
+    }),
+    true,
+    (params, toolCallId) => ({
+      name: `pi-${digest(toolCallId)}`,
+      command: params.command,
+      timeoutSeconds: Math.max(1, Math.min(300, Math.ceil(Number(params.timeout ?? 120)))),
+    }),
+  );
+  register(
+    "grep", "glass.file.grep", "Search workspace-confined UTF-8 files for literal text",
+    Type.Object({
+      pattern: Type.String(),
+      path: Type.Optional(Type.String()),
+      glob: Type.Optional(Type.String()),
+      ignoreCase: Type.Optional(Type.Boolean()),
+      context: Type.Optional(Type.Integer({ minimum: 0, maximum: 10 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+    }),
+    false,
+    (params) => ({
+      pattern: params.pattern,
+      path: params.path,
+      glob: params.glob,
+      ignoreCase: params.ignoreCase,
+      context: params.context,
+      limit: params.limit,
+    }),
+  );
+  register(
+    "find", "glass.file.find", "Find workspace-confined paths with star and question-mark matching",
+    Type.Object({
+      pattern: Type.String(),
+      path: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+    }),
+    false,
+    (params) => ({ pattern: params.pattern, path: params.path, limit: params.limit }),
+  );
+  register(
+    "ls", "glass.file.list", "List the bounded Glass project tree",
+    Type.Object({
+      path: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+    }),
+    false,
+    (params) => ({ path: params.path, limit: params.limit }),
   );
 }

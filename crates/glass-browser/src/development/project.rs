@@ -334,13 +334,20 @@ impl ProjectWorkspace {
     }
 
     pub fn read_file(&mut self, path: &str) -> DevelopmentResult<String> {
-        let (absolute, relative) = self.resolve_path(path, false)?;
-        let content = read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file")?;
+        let (_, relative) = self.resolve_path(path, false)?;
+        let content = self.read_file_snapshot(path)?;
         self.record(
             DevelopmentEventKind::FileOpened,
             serde_json::json!({"path": relative}),
         )?;
         Ok(content)
+    }
+
+    /// Read a confined file without producing one timeline event per file in a
+    /// bounded aggregate operation such as project grep.
+    pub(crate) fn read_file_snapshot(&self, path: &str) -> DevelopmentResult<String> {
+        let (absolute, _) = self.resolve_path(path, false)?;
+        read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file")
     }
 
     pub fn open_buffer(&mut self, path: &str, actor: Actor) -> DevelopmentResult<EditorBuffer> {
@@ -674,7 +681,12 @@ impl ProjectWorkspace {
         self.revision = self.revision.saturating_add(1);
         self.record(
             DevelopmentEventKind::ProcessStarted,
-            serde_json::json!({"name": name, "command": command, "pid": snapshot.pid}),
+            serde_json::json!({
+                "name": name,
+                "commandBytes": command.len(),
+                "commandSha256": hash(command),
+                "pid": snapshot.pid
+            }),
         )?;
         Ok(snapshot)
     }
@@ -697,7 +709,11 @@ impl ProjectWorkspace {
     ) -> DevelopmentResult<super::ProcessSnapshot> {
         self.record(
             DevelopmentEventKind::TestStarted,
-            serde_json::json!({"name": name, "command": command}),
+            serde_json::json!({
+                "name": name,
+                "commandBytes": command.len(),
+                "commandSha256": hash(command)
+            }),
         )?;
         self.start_process(name, command)?;
         let deadline = Instant::now() + timeout;
@@ -734,6 +750,44 @@ impl ProjectWorkspace {
             }),
         )?;
         Ok(snapshot)
+    }
+
+    pub fn run_command_to_completion(
+        &mut self,
+        name: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> DevelopmentResult<super::ProcessSnapshot> {
+        self.start_process(name, command)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snapshot = self
+                .processes
+                .poll()?
+                .into_iter()
+                .find(|snapshot| snapshot.name == name)
+                .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
+            if !matches!(snapshot.state, super::ProcessState::Running) {
+                self.record(
+                    DevelopmentEventKind::ProcessExited,
+                    serde_json::json!({
+                        "name": name,
+                        "state": snapshot.state,
+                        "outputBytes": snapshot.output.len(),
+                        "outputSha256": hash(&snapshot.output)
+                    }),
+                )?;
+                return Ok(snapshot);
+            }
+            if Instant::now() >= deadline {
+                self.stop_process(name)?;
+                return Err(DevelopmentError::Process(format!(
+                    "command {name} exceeded {} seconds",
+                    timeout.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     /// Record a live-update proof only after a browser consumer has observed a

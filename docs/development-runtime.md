@@ -287,12 +287,12 @@ discovery, and session persistence disabled. The embedded
 evidence, privacy, narrow-terminal output, and truthful effect reporting part
 of every turn without importing arbitrary user or project Pi configuration.
 
-A Glass-owned extension exposes twelve read-only tools: bounded file read/list/
-search, Git/runtime-impact status, semantic entity links, Web IR inspect/diff/
-continuity, value-free Task Protocol compilation, managed-process list/logs,
-and aggregate runtime inspection. It also exposes four
-mutating tools—file patch, process start, process stop, and test run—only through
-the approval exchange described below. Each call crosses the
+A Glass-owned extension exposes twenty tools. Thirteen are read-only: paged
+file reads, bounded search/list, Git/runtime-impact status, semantic entity
+links, Web IR inspect/diff/continuity, value-free Task Protocol compilation,
+runtime/capability inspection, and diagnostics. Seven mutate: atomic edit,
+file write, bounded command execution, directory creation, rename, delete, and
+test execution. Each call crosses the
 same Rust gateway used by the local harness. Cross-process requests use
 mode-0600, size-bounded, one-use files that the broker removes immediately
 after reading. Arguments and results are schema-validated and capped.
@@ -300,7 +300,7 @@ after reading. Arguments and results are schema-validated and capped.
 For a mutation, the trusted extension serializes the complete tool call before
 asking. Pi's RPC `extension_ui_request` blocks that tool while Glass shows the
 tool name and bounded effect evidence: path/name, redacted command preview, byte
-counts, and short SHA-256 evidence for content or commands. `Y`/Enter or the
+counts, replacement counts, and short SHA-256 evidence for content or commands. `Y`/Enter or the
 Approve once button sends the matching `extension_ui_response`; only then does
 the extension invoke the broker with mutation authority using the same frozen
 call. `N`/Esc denies. Requests expire after 120 seconds, duplicate/concurrent
@@ -308,10 +308,32 @@ and stale responses fail closed, and an approval is consumed once. It does not
 authorize a retry, changed arguments, another tool, or another session. The
 one-shot CLI adapter has no interactive host, so it immediately denies every UI
 request instead of hanging. Raw patch content and secret-looking environment
-assignment values are not placed in status or audit messages. Each mutation
-must include the `expectedRevision` from current Glass context; the Rust gateway
-compares it immediately before recording or applying the effect, so an approval
-cannot cross a workspace revision change.
+assignment values are not placed in status or audit messages. Exact edit blocks
+must each match once against the same original file and may not overlap; the
+combined write is atomic and fails if the file changes after opening.
+
+The standard Pi coding-tool names are deliberate Glass overrides, following
+Pi's documented extension mechanism. This retains model compatibility without
+granting a second unconfined filesystem or shell path. `bash` runs one approved
+command to completion for at most 300 seconds. `read` is line-paged; `ls` is
+path- and result-bounded; `grep` is literal UTF-8 text search with path, glob,
+case, context, and result controls; and `find` applies `*`/`?` matching to the
+bounded project tree. Persistent PTY ownership remains
+in the resident Glass TUI; the subprocess broker does not advertise start/stop/
+logs because it cannot truthfully share those in-memory jobs. Likewise, live
+browser mutation tools remain explicitly unavailable until a resident-session
+bridge can carry target revision, policy, and mutation-lease state.
+
+Provider/model choice is Pi-owned: built-in providers and supported
+`models.json` custom providers remain available. Glass defaults to cached model
+catalogs, an ephemeral Pi session, and no ambient resources. Operators may set
+`GLASS_PI_ONLINE_CATALOG=1`, `GLASS_PI_PERSIST_SESSION=1`, or
+`GLASS_PI_TRUSTED_RESOURCES=1`. Trusted resources load ambient context files,
+extensions, skills, prompt templates, and themes; because extensions execute
+local code outside the broker, that opt-in is equivalent to trusting those
+installed resources with the user's account. It also removes the extension-tool
+allowlist, making every tool registered by those extensions selectable. Pi's raw
+built-in tools remain off because Glass overrides their standard coding names.
 
 Pi's prompt response only acknowledges queueing. Glass therefore continues
 consuming JSONL events until `agent_settled` (an earlier `agent_end` may still

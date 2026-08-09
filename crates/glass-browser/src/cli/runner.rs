@@ -607,7 +607,7 @@ fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
             allow_mutation,
             confirmed: yes,
         };
-        let result = crate::development::AgentToolGateway::default().execute(
+        let result = crate::development::AgentToolGateway::subprocess_broker().execute(
             &mut workspace,
             &call,
             &authorization,

@@ -7,7 +7,8 @@ evidence with the source code.
 The source declares Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64.
 The current local reliability evidence is Linux ARM64 only; it is not a claim
 that the other targets have passed native verification.
-Windows is unsupported.
+Windows receives browser-free source/contract checks. Native Windows browser
+and PTY reliability are not certified.
 
 ## Contracts
 

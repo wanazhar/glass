@@ -22,6 +22,11 @@ glass-browser doctor
 glass-browser --help
 ```
 
+This package installs only `glass-browser`. Install `glass-dev` instead when
+you want both `glass` and `glass-browser`. Installing both packages into the
+same Cargo home can make the last installation replace the shared
+`glass-browser` executable; use one package as the owner of that command.
+
 Chrome, Chromium, or Chrome for Testing is required for browser-backed
 operations. `doctor`, Task Protocol validation/compilation, Web IR operations,
 policy checks, and several scorecards are browser-free.
@@ -119,13 +124,15 @@ agreement reports exact schema and capability status.
 - Treat profiles, cookies, storage, screenshots, DOM, PDFs, evaluated results,
   and diagnostic logs as sensitive.
 - Linux and macOS targets are declared; native certification is tracked
-  separately. Windows, Firefox, WebKit, and Safari are unsupported.
+  separately. Windows receives browser-free source checks but has no certified
+  native browser runtime. Firefox, WebKit, and Safari are unsupported.
 - WebDriver BiDi is experimental and bounded. An unavailable capability fails
   closed rather than falling back to raw transport.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation
 
+- [Glass product overview](https://github.com/wanazhar/glass/blob/main/README.md)
 - [Getting started](https://github.com/wanazhar/glass/blob/main/docs/getting-started.md)
 - [Complete feature reference](https://github.com/wanazhar/glass/blob/main/docs/features.md)
 - [Rust SDK](https://github.com/wanazhar/glass/blob/main/docs/rust-sdk.md)
@@ -133,6 +140,7 @@ agreement reports exact schema and capability status.
 - [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
 - [MCP integration](https://github.com/wanazhar/glass/blob/main/docs/mcp.md)
 - [Security policy](https://github.com/wanazhar/glass/blob/main/SECURITY.md)
+- [Complete uninstall and retained state](https://github.com/wanazhar/glass/blob/main/docs/installation.md#fully-uninstall-glass)
 - [API documentation](https://docs.rs/glass-browser)
 
 License: MIT.

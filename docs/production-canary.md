@@ -1,32 +1,88 @@
 # Production canary runbook
 
-A production canary is optional. It must be read-only, bounded, and monitored.
+A production canary is optional supplementary evidence. It must be read-only,
+bounded, authorized by the site operator, and monitored. Deterministic local
+fixtures remain the release gate.
 
-Use an approved URL. Use the `hardened` policy and an exact host allowlist.
-Do not use a logged-in profile. Do not evaluate JavaScript. Do not click, type,
-upload, download, or change browser emulation.
+## Preconditions
 
-Set the URL and run:
+- Obtain approval for the exact public origin and time window.
+- Use a health, documentation, or other non-sensitive page.
+- Use an incognito session. Do not use a logged-in profile.
+- Pin the `hardened` policy to the exact public host.
+- Do not click, type, upload, download, evaluate JavaScript, import cookies,
+  capture form values, or change browser emulation.
+- Record Glass commit/version, browser version, OS/architecture, manifest,
+  policy, and operator.
 
-```console
-export CANARY_URL=https://approved.example/health
+## Create one bounded manifest
 
-cargo run --release --locked -- \
-  --policy hardened \
-  --policy-allow-host approved.example \
-  navigate "$CANARY_URL" --timeout-ms 20000
+Create `canary.json` with the approved URL and expected origin:
 
-cargo run --release --locked -- \
-  --policy hardened \
-  --policy-allow-host approved.example \
-  observe
+```json
+{
+  "schemaVersion": 1,
+  "sites": [
+    {
+      "id": "approved-health",
+      "url": "https://approved.example/health",
+      "expectedOrigin": "https://approved.example",
+      "expectedPageState": "normal",
+      "allowRedirect": false
+    }
+  ]
+}
 ```
 
-Record the commit, Glass version, Chrome version, host operating system and
-architecture, URL host, policy, result, elapsed time, and typed failure.
+Do not put credentials or secret query parameters in the manifest.
 
-Stop on an outside redirect, unexpected dialog, transport error, or stale
-topology. Do not relax policy. Do not retry a mutation.
+## Run the canary
 
-The deterministic fixture and scorecard remain the release gate. Canary data is
-supplementary evidence.
+Use one `smoke-sites` invocation so navigation, bootstrap observation,
+read-only inspection/preflight, and post-observation continuity belong to the
+same isolated browser session:
+
+```console
+glass --incognito \
+  --policy hardened \
+  --policy-allow-host approved.example \
+  smoke-sites canary.json --stop-on-error
+```
+
+The command does not click, submit, download, screenshot, log in, or evaluate
+JavaScript. Each site receives a cold isolated session. A target preflight is
+side-effect-free.
+
+## Interpret and record
+
+Record the complete bounded report, exit status, elapsed time, final origin,
+page-state classification, operation classification, omission/truncation
+fields, revision continuity, and typed failure. A `partial` result is evidence
+of a challenge, consent page, empty page, missing interactive target, or
+bounded inspection problem; it is not a pass silently converted from missing
+data.
+
+Stop immediately on:
+
+- outside-origin redirect or expectation mismatch;
+- unexpected dialog, login, challenge, or access-denied state;
+- URL-policy denial;
+- transport/protocol error;
+- stale target/topology that the bounded read-only recovery cannot reconcile;
+  or
+- any evidence that a mutation occurred.
+
+Do not relax policy or retry with credentials to turn a canary green. Remove
+the local manifest/report according to the operator's evidence-retention
+policy.
+
+## Claim boundary
+
+One successful canary proves only that the recorded version/environment could
+complete the bounded read-only scenario at that time. It does not certify all
+site routes, authenticated workflows, mutation behavior, another browser, or
+another platform. Compare canary evidence only when manifest, policy, browser,
+environment, and page-state expectations are equivalent.
+
+See [Live-site smoke testing](site-smoke.md), [read-only real-site
+certification](reliability-real-site.md), and [Policy](policy.md).

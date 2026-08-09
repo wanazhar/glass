@@ -36,9 +36,11 @@ or GitHub Release is implied by this section.
 - Formatting, warnings-denied Clippy, warnings-denied workspace rustdoc,
   browser-core no-default-feature compilation, and separate optimized builds
   of both packages passed on Rust 1.97.0 (`aarch64-unknown-linux-gnu`).
-- Documentation validation covers 348 Markdown files, 133 MCP tools, 17
-  examples and 22 public modules. Version, feature-parity, reliability,
-  read-only-adapter and eight-fixture Web IR corpus checks passed.
+- Documentation validation covers 350 Markdown files, the exact top-level and
+  nested CLI inventories, 133 MCP tools, 17 examples and 22 public modules.
+  Sixteen substantive guide contracts plus complete current-guide routing are
+  depth-checked. Version, feature-parity, reliability, read-only-adapter and
+  eight-fixture Web IR corpus checks passed.
 - TypeScript build/typecheck/smoke and Python compile/smoke passed against the
   checkout's 0.3.3 executable. `cargo deny`, `cargo audit`, and the locked fuzz
   all-target build passed.

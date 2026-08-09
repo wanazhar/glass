@@ -1,7 +1,8 @@
 # Ownership and compatibility boundaries
 
-Glass is maintained as a local browser control plane. Every public operation has
-one owning layer:
+Glass is maintained as a local development environment and browser control
+plane. Every public operation has one owning layer; sharing result types across
+interfaces does not transfer lifecycle or mutation authority between layers.
 
 | Surface | Owner | Contract |
 | --- | --- | --- |
@@ -17,6 +18,10 @@ one owning layer:
 | MCP envelope and tool registry | `src/mcp/` | JSON-RPC framing and stable tool schemas |
 | CLI dispatch | `src/cli/` | deterministic command parsing and output projections |
 | Protocol compatibility | `src/protocol.rs`, `src/capabilities.rs` | additive fields and negotiated schemas |
+| Development Runtime | `src/development/` | canonical project roots, bounded files, PTYs, events, actors, graphs, replay, and experiments |
+| TUI presentation | `src/tui/` | responsive views and input routing; no independent mutation semantics |
+| Local daemon | `src/daemon/` | resident session ownership, local transport, mutation leases, and shutdown |
+| Repository clients | `clients/typescript/`, `clients/python/` | typed convenience projections over negotiated MCP; no server authority |
 
 ## Change rules
 
@@ -29,6 +34,29 @@ one owning layer:
    query strings, evaluated expressions, and raw page text.
 6. New client examples must start the local `glass` binary; Glass does not
    publish browser runtimes or separate client packages.
+
+## Lifecycle rules
+
+- A one-shot CLI invocation owns only the session it starts. Do not compose
+  stateful examples from separate invocations unless a daemon or manifest owns
+  the shared session.
+- An owned browser receives `Browser.close` before fallback termination. Attach
+  mode observes an external lifecycle and never closes that browser.
+- A resident project belongs to the TUI, MCP server, or daemon registry that
+  created it. Client disconnect does not silently terminate a daemon-owned PTY.
+- TUI and client helpers may render or project canonical results, but policy,
+  revision, lease, and actor checks remain in the owning runtime.
+- Repository clients must negotiate schemas and capabilities with the exact
+  matching source-line executable; presence of a helper method is not evidence
+  that a connected server supports it.
+
+## Failure ownership
+
+The layer that detects a failure assigns its stable kind and phase. Adapters may
+add transport context but must not convert ambiguity, stale revision, denied
+policy, expired cursor, or lost mutation lease into a transparent retry. A
+caller may retry only after the canonical result says whether an external
+effect remains possible and after it refreshes the relevant state.
 
 Focused tests live beside the owning module. Cross-interface compatibility is
 validated by `tests/protocol_conformance.rs` and the checked-in fixtures.

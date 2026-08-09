@@ -35,6 +35,9 @@ On macOS, socket ownership and mode provide the local access boundary.
 
 The daemon does not support remote network access.
 
+Windows has browser-free source checks for daemon-adjacent contracts, but the
+Unix-domain daemon transport is not a Windows release contract.
+
 ## Reuse one live MCP session
 
 Keep one MCP process and transport connection open for a sequence of related
@@ -104,3 +107,29 @@ of sixteen in-flight requests.
 
 The lease owner is tied to the local socket connection. Do not write the lease
 token to a log or file.
+
+## Project-session registry
+
+Project MCP tools use the daemon process's bounded canonical-root registry.
+The registry retains at most eight project sessions and evicts one after 30
+minutes of idle time. A retained session can own buffers, PTYs, language
+servers, an agent adapter, and an event cursor. Browser namespaces remain
+connection-local and are not transferred when a client reconnects.
+
+Inspect and detach project state through `project.session.status` and
+`project.session.detach`. Detach closes the project session, language services,
+and owned process trees. It does not delete project files or persistent
+timeline data.
+
+## Failure and shutdown matrix
+
+| State | Meaning | Operator action |
+|---|---|---|
+| stale status, dead PID | prior daemon did not cleanly remove metadata | run `daemon doctor`; start performs bounded stale-state recovery |
+| socket exists but is not compatible | another local service or malformed endpoint owns the path | do not connect or delete blindly; inspect ownership and use explicit paths |
+| lease expired/disconnected | mutation authority is gone | acquire a new lease after observing current state |
+| `reconciliation_required` | daemon stopped with active workflow requests | reconcile every request checkpoint, then acknowledge exact IDs |
+| project session evicted | resident project resources were closed | reattach the root and restart required processes |
+
+Stop the daemon before uninstalling `glass-dev`. A forced package removal does
+not stop an already running daemon process or remove its local data.

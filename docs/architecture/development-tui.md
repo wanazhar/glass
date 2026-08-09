@@ -33,7 +33,7 @@ the default context.
 | `:` | global | open the filtered command palette |
 | `safari` | command area | show private SSH port-forwarding instructions |
 | `inbox` / `notify on` | command area | show attention groups or opt into a deduplicated terminal bell |
-| `tap` / `tap N` | App | show and activate bounded revision-bound semantic actions |
+| `tap` / `tap N` | Browser | show and activate bounded revision-bound semantic actions |
 | `verify card` | Diff | show compact code/runtime/semantic/visual evidence |
 | `capsule save\|show\|clear` | command area | manage non-sensitive restart continuity |
 | `project` | command area | show detected project configuration |
@@ -64,9 +64,9 @@ the default context.
 - **Phone**: at 72 columns or fewer, or by explicit user preference, one
   full-width view is visible. Browser context remains semantic and
   continuous visual streaming is disabled by default. `--tui-live on` adds an
-  adaptive live App view without changing the single-pane navigation model.
+  adaptive live Browser view without changing the single-pane navigation model.
   An explicit `--tui-layout mobile` override is available.
-  Home prioritizes needs-attention items. App can layer a numbered semantic
+  Overview prioritizes needs-attention items. Browser can layer a numbered semantic
   action overlay above semantics or live pixels; the target reference retains
   the observation revision and fails closed when stale.
 - **Compact**: terminals from 73 through 109 columns use a condensed workspace.

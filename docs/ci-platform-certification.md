@@ -53,3 +53,25 @@ GLASS_E2E=1 cargo test --test browser_smoke --locked -- --nocapture --test-threa
 Do not mark another target `certified` from a cross-compiled binary or
 emulated browser run alone. A Linux ARM64 check is not a cross-platform release
 claim.
+
+## Evidence required for certification
+
+Each target row must record the source commit, native OS and architecture, Rust
+toolchain and target, browser name/version/source, terminal environment, and
+the exact commands with their exit status. Browser certification additionally
+requires launch/close, structured observation, revision-guarded input, profile
+persistence, and the opt-in smoke fixture. Development Runtime certification
+requires native PTY start/read/stop, process-tree cleanup, atomic editing,
+filesystem containment, and responsive TUI startup.
+
+| Result | Allowed claim |
+|---|---|
+| Cross-compile succeeds | source compiles for the target |
+| Browser-free tests pass natively | non-browser contracts pass on that host |
+| Smoke fixture passes with recorded browser | bounded browser path passes in that environment |
+| All native release gates pass | target may be marked `certified` for that exact commit |
+
+A later dependency, browser, runner-image, or platform change invalidates the
+affected evidence until it is refreshed. Store the bounded record in
+[release evidence](release-evidence.md); do not infer current support from a
+historical green workflow badge.

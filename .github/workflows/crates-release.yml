@@ -83,6 +83,9 @@ jobs:
       - name: Validate documentation inventories and links
         run: python3 scripts/check-documentation-coverage.py
 
+      - name: Validate documentation depth and command tree
+        run: python3 scripts/check-documentation-depth.py
+
       - name: Validate feature parity
         run: python3 scripts/check-feature-parity.py
 

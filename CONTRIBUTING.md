@@ -52,6 +52,7 @@ Check documentation changes with:
 ```console
 git diff --check
 python3 scripts/check-documentation-coverage.py
+python3 scripts/check-documentation-depth.py
 python3 scripts/check-release-documentation.py
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
 cargo test --workspace --all-features --doc --locked

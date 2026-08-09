@@ -85,6 +85,7 @@ command, MCP tool, example, module, package README, or Markdown path changes:
 ```console
 cargo build --workspace --all-features --locked
 python3 scripts/check-documentation-coverage.py
+python3 scripts/check-documentation-depth.py
 python3 scripts/check-release-documentation.py
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
 cargo test --workspace --all-features --doc --locked
@@ -95,6 +96,11 @@ pinned client-conformance fixture, examples from Cargo source, and modules
 from the crate root. It also resolves repository-local links across current
 guides and historical plan evidence. Keep `tools/list` and installed `--help`
 as the exact-version schema and syntax authority.
+
+The depth gate routes every current guide, rejects known stale product terms,
+and requires substantive purpose, workflow, state, limit, failure, and recovery
+sections for core user and operator journeys. It also compares the checked-in
+top-level and nested CLI inventory with live Clap help.
 
 For the standard definition, see the [official ASD-STE100
 site](https://www.asd-ste100.org/).

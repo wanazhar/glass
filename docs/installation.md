@@ -2,16 +2,18 @@
 
 ## Requirements
 
-Glass requires:
+Native browser use requires:
 
 - stable Rust for a source build;
-- a Linux or macOS environment with a supported Rust target; and
+- a Linux or macOS environment with a declared Rust target; and
 - Chrome, Chromium, or Chrome for Testing.
 
 Validate native browser behavior in the environment where you deploy Glass.
 
-Windows is not a supported target. Glass does not install Playwright or another
-browser runtime.
+The 0.3.3 source line runs browser-free Windows CI, but native Windows browser,
+PTY, and TUI behavior is not certified. Do not infer deployment support from a
+successful source build. Glass does not install Playwright or another browser
+runtime.
 
 ## Install from source
 

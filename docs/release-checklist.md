@@ -99,6 +99,7 @@ Run:
 ```console
 cargo fmt --all -- --check
 python3 scripts/check-version-sync.py
+python3 scripts/check-documentation-depth.py
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps

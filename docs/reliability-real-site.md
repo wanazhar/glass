@@ -38,22 +38,35 @@ These classifications cannot certify a release.
 
 ## Example
 
+Use one `smoke-sites` manifest so navigation and evidence share an owned
+session. Do not compose this check from independent one-shot `navigate`,
+`observe`, and `verify` commands.
+
+```json
+{
+  "schemaVersion": 1,
+  "sites": [
+    {
+      "id": "approved-example",
+      "url": "https://example.com/approved-read-only-route",
+      "expectedOrigin": "https://example.com",
+      "expectedPageState": "normal",
+      "allowRedirect": false
+    }
+  ]
+}
+```
+
 ```console
 glass --incognito --policy hardened \
   --policy-allow-host example.com \
-  navigate https://example.com/approved-read-only-route
-
-glass --incognito --policy hardened \
-  --policy-allow-host example.com \
-  observe --level summary
-
-glass --incognito --policy hardened \
-  --policy-allow-host example.com \
-  verify '{"textContains":"Expected marker"}'
+  smoke-sites approved-sites.json
 ```
 
-This example does not certify `example.com`. The current checkout does not
-discover approved sites or publish real-site evidence.
+Confirm the exact manifest fields against `glass smoke-sites --help` and the
+[site-smoke guide](site-smoke.md). This example does not certify `example.com`.
+The current checkout does not discover approved sites or publish real-site
+evidence.
 
 ## Live-site smoke is evidence, not a benchmark
 

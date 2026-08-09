@@ -10,7 +10,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| 0.3.2 | Current published release |",
+        "| `glass-browser 0.3.2`, `glass-dev 0.3.2` | Current published crates |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],

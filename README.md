@@ -1,349 +1,427 @@
 # Glass
 
-Glass is a local, revision-safe browser intelligence runtime for humans and
-agents. It combines semantic memory, multi-surface understanding, verified
-workflows, a terminal browser workspace, MCP, CLI, and Rust APIs while keeping
-every browser action explicit and bounded.
+Glass is a local-first terminal workspace for developing, operating, and
+verifying applications with humans and agents. It combines a bounded project
+runtime, native terminal UI, local agent harness, browser intelligence, Model
+Context Protocol (MCP) server, and reusable Rust library in one revision-aware
+workspace.
 
-Glass controls Chrome or Chromium through a transport-neutral backend
-contract. CDP is the primary production backend, WebDriver BiDi is an
-experimental bounded backend, and unsupported capabilities fail closed. Glass
-does not include a browser engine or create an autonomous action plan. Install
-the executable with Cargo, then use the safe observe → guarded action → verify
-loop.
+The complete product is `glass-dev`, which installs both `glass` and
+`glass-browser`. The focused `glass-browser` package provides the standalone
+browser control plane and `glass_browser` Rust crate without the development
+runtime.
 
-## Support status
-
-| Item | Status |
-|---|---|
-| Linux x86-64 | Declared target; native runtime certification pending |
-| Linux arm64 | Declared target; native runtime certification pending |
-| macOS x86-64 | Declared target; native runtime certification pending |
-| macOS arm64 | Declared target; native runtime certification pending |
-| Windows | Browser-free contracts checked in CI; native PTY certification pending |
-| 0.3.3 | Current source release candidate |
-| 0.3.2 | Current published release |
-| 0.3.1 | Previous source release |
-| 0.3.0 | Previous published release |
-| 0.2.9 | Earlier published release |
-| 0.2.8 | Earlier published release |
-| Chrome and Chromium | Supported browser families |
-| Firefox, WebKit, and Safari | Unsupported browser families |
-
-The command-line interface (CLI), terminal user interface (TUI), Model
-Context Protocol (MCP) server, and Rust library use the same session runtime.
-The support table describes declared targets and target-specific validation
-requirements. Native runtime certification is not implied by a source build.
-See the [cross-platform feature parity
-matrix](docs/feature-parity.md) for implementation inventory and the [release
-evidence guide](docs/release-evidence.md) for the crates.io package and
-source-only GitHub Release boundary.
-
-## Install the local checkout
-
-Prerequisite: install stable Rust and a supported Chrome or Chromium browser.
-
-Run:
-
-```console
-cargo install --path crates/glass-dev --locked
-glass --help
+```text
+                               Glass workspace
+                                      │
+             ┌────────────────────────┼────────────────────────┐
+             │                        │                        │
+       project runtime          agent coordination       browser workspace
+   files · editor · PTYs       local/Pi · MCP · leases   semantics · actions
+   LSP · diff · timeline       revisions · attribution   Web IR · workflows
+             │                        │                        │
+             └────────────────────────┼────────────────────────┘
+                                      │
+                         CLI · TUI · MCP · Rust SDK
+                                      │
+                    local terminal · SSH/Mosh · iPhone
 ```
 
-The command installs both `glass` and `glass-browser` from `glass-dev`. For the
-independent browser control plane and Rust library without the development
-runtime, install `glass-browser` instead. If an older standalone executable
-exists in the same Cargo root, uninstall that package before installing
-`glass-dev` so Cargo can complete the intentional executable transition.
-The reverse transition is `cargo uninstall glass-dev` followed by
-`cargo install glass-browser --locked`; normal full-suite upgrades use
-`cargo install glass-dev --locked --force`. See the
-[installation guide](docs/installation.md) for the tested transition matrix.
+Glass does not host code, credentials, or browsers. It does not infer an
+autonomous plan or silently act on a page. Project mutations stay inside the
+selected root. Browser mutations require current evidence, policy authority,
+and revision checks.
 
-The latest published package can be installed with:
+## Choose the product
+
+| Package | Installed commands | Choose it when |
+|---|---|---|
+| `glass-dev` | `glass`, `glass-browser` | You want the complete development workspace, TUI, agents, MCP, project runtime, and browser control plane. |
+| `glass-browser` | `glass-browser` | You want browser automation or the reusable Rust library without PTY, LSP, project, Pi, or Neovim dependencies. |
+
+The packages intentionally share the `glass-browser` executable name and
+cannot own it in the same Cargo installation root. Follow the tested
+[installation and ownership-transition guide](docs/installation.md).
+
+## Install
+
+Install the complete published product:
 
 ```console
 cargo install glass-dev --locked
-# or, for browser automation without the development workspace:
-cargo install glass-browser --locked
+glass doctor
+glass --help
+glass-browser --help
 ```
 
-Use `glass install-chromium` when no supported system browser is available.
+Install only the browser control plane:
 
-Read [Installation and operations](docs/installation.md) for browser
-discovery, profiles, attach mode, logging, policy, and deployment.
-Its [full uninstall procedure](docs/installation.md#fully-uninstall-glass)
-removes both possible Cargo package owners and explains the separate,
-destructive purge of retained profiles, managed Chromium, and runtime state.
-See [Experimental capabilities](docs/experimental-capabilities.md) before
-enabling opt-in features.
+```console
+cargo install glass-browser --locked
+glass-browser doctor
+```
 
-## Run Glass
+Install the current checkout during development:
 
-Start the interactive terminal workspace (both forms are equivalent):
+```console
+cargo install --path crates/glass-dev --locked
+```
+
+Chrome or Chromium is required only for browser-backed operations. Project
+inspection, file operations, task validation, Web IR inspection, policy
+preflight, capability inspection, and many diagnostics are browser-free.
+
+Use `glass install-chromium` when the platform has a supported Chrome for
+Testing archive and no suitable system browser is available. Linux ARM64 must
+use a system Chromium or an explicit `--chrome-path`.
+
+To remove Glass, use the [complete uninstall
+procedure](docs/installation.md#fully-uninstall-glass). Cargo uninstallation
+and deletion of retained profiles/runtime data are separate operations.
+
+## Five-minute development loop
+
+Open a project and inspect what Glass detected:
+
+```console
+cd /path/to/project
+glass project inspect --root .
+glass project files --root .
+glass project diagnostics src/main.rs --root .
+glass project diff --root .
+```
+
+`project inspect` reports the canonical root, project kind, detected commands,
+and browser URL. `project files` returns a bounded tree with explicit limit,
+truncation, ignored-directory, and skipped-symlink metadata. Reads and writes
+cannot escape the canonical root.
+
+Run a finite check in a real pseudo-terminal (PTY):
+
+```console
+glass project run check --command "cargo check" --wait --root .
+```
+
+Use the resident TUI or MCP server for a long-running development server. A
+one-shot CLI process cannot own an interactive child after it exits.
+
+Start the terminal workspace:
 
 ```console
 glass
-glass tui
 ```
 
-For an iPhone or another narrow SSH terminal, Glass automatically selects a
-single-pane phone workspace. Force it when terminal dimensions are misleading:
+The workspace retains project, process, agent, browser, revision, and
+attention state while the process is alive. A browser failure enters recovery;
+it does not terminate the editor, PTYs, agent, or project session.
+
+Read the [Development Runtime guide](docs/development-runtime.md) for files,
+editor ownership, processes, LSP, source/runtime graph, timeline, replay,
+experiments, agents, and Neovim integration.
+
+## Terminal workspace
+
+Glass adapts by terminal geometry without treating a narrow screen as proof of
+a slow network.
+
+| Key | View | Primary state |
+|---|---|---|
+| `1` | Overview | connection, attention, browser, process, test, and actor summary |
+| `2` | Agent | active request, harness state, attribution, and recent events |
+| `3` | Browser | structured page state, explicit live pixels, targets, and recovery |
+| `4` | Project | files, editor buffer, diagnostics, and source/runtime links |
+| `5` | Diff | source, runtime, semantic, workflow, and verification impact |
+| `6` | Process | owned PTYs, health, exit state, and bounded output |
+
+`Tab` and `Shift-Tab` move between views. `?` opens help, `:` or `/` opens
+command discovery, and `Ctrl-L` redraws. Essential phone navigation uses
+printable keys and does not require function keys or mouse input.
+
+The browser view is structured-first. Continuous pixels are off by default.
+Use `live on` only when visual steering is useful, and use an explicit
+`screenshot PATH` when you need persistent visual evidence.
+
+Architecture and interaction details are in the [TUI
+contract](docs/architecture/tui.md), [Development TUI
+layout](docs/architecture/development-tui.md), and [mobile cockpit
+design](docs/architecture/mobile-cockpit.md).
+
+## Browser verification
+
+Glass drives local Chrome or Chromium through a transport-neutral backend
+contract. Raw Chrome DevTools Protocol (CDP) is the production backend.
+WebDriver BiDi remains a bounded experimental backend. Unsupported operations
+fail closed.
+
+Start with structured evidence:
+
+```console
+glass observe --level interactive
+```
+
+An observation returns a browser revision and revisioned references such as
+`r7:b42`. Guard the action with the observed revision:
+
+```console
+glass click r7:b42 --expected-revision 7
+```
+
+Glass resolves exactly one target, checks the expected revision, applies
+policy, dispatches the input, and returns typed verification or recovery data.
+An ambiguous locator does not become a best-effort click. A transport failure
+after dispatch may be `indeterminate`; re-observe and reconcile instead of
+blindly retrying.
+
+For a long-lived browser session, use the TUI, MCP server, daemon, Rust API, or
+a bounded workflow. Individual CLI invocations are process-scoped unless they
+attach to an existing browser or resident service.
+
+Normal observation does not capture screenshots, full DOM, cookies, form
+values, network bodies, or evaluated JavaScript. Request sensitive or deep
+evidence explicitly:
+
+```console
+glass screenshot --output evidence.png
+glass dom
+glass observe --form-values
+glass diagnostics
+```
+
+Use these guides for the complete contract:
+
+- [Semantic observation](docs/semantic-observation.md)
+- [Actions and revisions](docs/actions.md)
+- [Policy and confirmation](docs/policy.md)
+- [Profiles and authenticated state](docs/profile-ergonomics.md)
+- [Semantic execution and Glass Web IR](docs/semantic-execution.md)
+- [Workflow definitions and recovery](docs/workflows.md)
+
+## Browser recovery and targets
+
+An occupied or disconnected CDP endpoint does not force the TUI to exit. In
+the Browser view, inspect and choose an explicit recovery action:
+
+```text
+browser status
+browser reconnect
+browser launch --port auto --headless
+browser targets 9222
+browser attach --port 9222 2
+browser semantic-only
+```
+
+Glass classifies the endpoint as free, verified CDP, unrelated HTTP, or
+unknown. It probes again before attachment, refuses unrelated listeners, and
+requires explicit target selection when multiple pages exist. Connecting to a
+new target invalidates old semantic and visual revisions before tools become
+available again.
+
+Read [Browser connection and Remote View](docs/architecture/browser-connection.md)
+for the controller state machine and authority boundaries.
+
+## Agents and collaboration
+
+The Development Runtime includes a Glass-owned bounded tool gateway and actor
+timeline. The deterministic local harness is always available:
+
+```console
+glass agent hello --root .
+glass agent prompt "Inspect @workspace and @diagnostic" --root .
+```
+
+The optional Pi adapter uses a real line-delimited RPC session. Glass launches
+Pi with built-in tools disabled and supplies its own bounded semantic/project
+tools:
+
+```console
+glass agent hello --harness pi --root .
+glass agent models --root .
+glass agent prompt "Explain the failing diagnostic" --harness pi --root .
+```
+
+Tool availability follows live dependencies. Browser tools do not appear
+until an authoritative Browser Workspace is attached. Mutations require the
+current project/browser revision, the shared mutation lease, applicable
+policy, and confirmation. Prompt text, page content, secrets, and process
+output are not copied into the persisted timeline.
+
+External agents can use the CLI or MCP project tools and attach an attributed
+actor. Conflicting file claims fail closed rather than silently overwriting
+another actor's work.
+
+## SSH, Mosh, Herdr, and iPhone
+
+Force the phone layout when terminal geometry is reported incorrectly:
 
 ```console
 glass --tui-layout mobile
 ```
 
-Use `1` through `6` or `Tab` to switch Overview, Agent, Browser, Project, Diff,
-and Process views. Overview is an attention inbox rather than a raw log. Enter `tap` to select one of
-the current revision-bound semantic actions by number, `verify card` for a
-compact evidence summary, `notify on` for opt-in terminal alerts, and
-`capsule save|show|clear` to manage restart continuity. Clean TUI exits save a
-non-sensitive capsule automatically.
-The mobile workspace is structured-first and leaves continuous pixels off by
-default. Add `--tui-live on` (or enter `live on`) for an adaptive terminal-native
-view: Glass prefers Herdr-owned graphics, then direct Kitty, and uses true-color
-ANSI as the SSH/Mosh-safe fallback. Run Glass inside [Herdr](https://herdr.dev/)
-for agent-aware detach/reattach persistence. Enter `safari` for the stable,
-full-fidelity private SSH port-forwarding path; Glass never publicly exposes the
-dev server or Chrome CDP. See [Mobile and remote development](docs/mobile-remote.md).
+The phone workspace uses the same six views and browser recovery actions as
+desktop. Structured semantic state, project files, agent activity, diffs, and
+process health remain usable without continuous images.
 
-`live quality auto` reduces capture scale before frame rate. Local balanced and
-smooth request 30 and 60 FPS; unknown SSH links fail closed to constrained
-rates, idle/background views throttle aggressively, and Mosh stays
-semantic-only. Width affects layout, not transport or graphics capability.
-Override those dimensions independently with `--tui-layout`,
-`--tui-transport`, and `--tui-graphics`; measured RTT and throughput can be
-supplied with `--tui-rtt-ms` and `--tui-throughput-mbps`.
+Presentation is selected independently from layout:
 
-For an explicit full-fidelity iOS Safari view backed by the same
-`BrowserSession`, enter `browser remote-view open`. Glass binds a random-token
-endpoint to loopback and prints an SSH forwarding command. Input carries the
-displayed browser revision, so stale input fails closed. Revoke the token and
-clients with `browser remote-view close`. Structured observation remains the
-default and terminal pixels remain optional.
+- local balanced and smooth profiles request 30 and 60 FPS;
+- verified fast remote links use higher bounded profiles;
+- constrained or unknown remote links use 3/6/12 FPS profiles;
+- Mosh remains semantic-only because it synchronizes terminal cells, not
+  arbitrary graphics-protocol state;
+- auto quality reduces capture scale before frame rate and suspends hidden
+  browser acquisition.
 
-Enter these commands in the TUI:
+Use Herdr when you want agent-aware persistent PTYs across SSH detach and
+reattach. tmux remains compatible. For full-fidelity iPhone viewing, use one
+of two private loopback paths:
 
-```text
-navigate https://example.com
-observe
-```
+- `safari` prints a stable application-server forwarding workflow;
+- `browser remote-view open` serves the current BrowserSession through a
+  random, revocable token and revision-bound input.
 
-Run one operation from the CLI:
+Neither path exposes CDP publicly or launches Safari on the remote machine.
+The iOS SSH client owns the local port forward.
+
+Follow [Mobile and remote development](docs/mobile-remote.md) for exact Herdr,
+Mosh, terminal-graphics, Safari, Remote View, troubleshooting, and security
+procedures.
+
+## MCP integration
+
+Generate exact configuration instead of guessing command paths:
 
 ```console
-glass navigate https://example.com
-glass --incognito --headed navigate https://example.com
+glass mcp-config --client generic
+glass mcp-config --client claude-code
+glass mcp-config --client codex
 ```
 
-Open the terminal-native development workspace without starting Chrome:
+The MCP server uses newline-delimited JSON-RPC on stdio. Stdout is protocol
+only; diagnostics go to stderr. A client must initialize, negotiate Glass
+schemas and capabilities, send `notifications/initialized`, and then call
+tools. Requests and responses are bounded. Cancellation reaches waits and
+pending operations without corrupting the resident browser session.
 
-```console
-glass project inspect --root .
-glass project files --root .
-glass project run check --command "cargo check" --wait --root .
-glass project diff --root .
-glass agent prompt "read README.md" --root .
-```
+Start with [MCP integration](docs/mcp.md). Use the [complete MCP tool
+catalog](docs/mcp-tools.md) for operation names, and use live `tools/list` as
+the exact-version input-schema authority.
 
-The project runtime keeps files workspace-confined, runs commands in a bounded
-PTY, records actor-attributed events, and exposes the same operations through
-MCP and the TUI Development workspace. Rust diagnostics use a real bounded
-rust-analyzer LSP path; live-update and source/runtime claims remain pending
-unless browser revisions or explicit markers provide evidence.
+## Rust library
 
-Compile a bounded Task Protocol plan against stable Glass Web IR v1 without
-starting Chrome:
-
-```console
-glass task compile task.json web-ir.json
-glass task compile task.json web-ir.json --explain
-```
-
-Validate authored Task Protocol JSON without compiling or starting Chrome:
-
-```console
-glass task validate task.json
-```
-
-The canonical plan remains on stdout; `--explain` writes deterministic,
-redacted compilation metadata to stderr.
-
-Inspect or diff validated browser-free Glass Web IR v1 documents:
-
-```console
-glass ir validate ir.json
-glass ir inspect ir.json
-glass ir diff before.json after.json
-glass ir diff before.json after.json --summary
-glass ir continuity before.json after.json field-1
-glass ir canonical ir.json
-```
-
-`ir diff` prints detailed local diagnostics by default; `--summary` emits the
-bounded canonical diff projection used by the protocol helpers.
-
-Use `--profile NAME` for persistent cookies and storage. Use `--incognito`
-for a disposable browser profile.
-
-## Interfaces
-
-| Interface | Use | Entry point |
-|---|---|---|
-| CLI | Browser and project operations | `glass <command>` |
-| TUI | Browser or Development workspace | `glass tui` |
-| MCP | A long-lived stdio connection | `glass --mcp` |
-| Browser CLI | Browser-only control plane | `glass-browser <command>` |
-| Rust library | An embedded session runtime | crate `glass-browser`, import `glass_browser` |
-
-The bounded extraction contract and stable Glass Web IR v1 data model are
-available from the Rust crate root (`ExtractionRequest`, `ExtractionEvidence`,
-and `GlassWebIrV1`). `BrowserSession::extract_evidence` and
-`BrowserSession::extract_web_ir` acquire fresh, budgeted live-page evidence;
-browser-free reconciliation, validation, diff, and continuity remain available
-for offline callers.
-
-Example MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "glass": {
-      "command": "/absolute/path/to/glass",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-Use an absolute path when the MCP client does not inherit your shell path.
-Keep stdout reserved for MCP frames. Read the [MCP guide](docs/mcp.md) for
-frame limits, tools, lifecycle, and security.
-
-## Main capabilities
-
-Glass provides these browser operations:
-
-- navigate, click, double-click, hover, drag, type, clear, check, uncheck, and
-  select;
-- scroll, wait, inspect text, inspect the DOM, evaluate JavaScript, and capture
-  screenshots or PDFs;
-- upload files, handle JavaScript dialogs, and dismiss recognized consent
-  controls;
-- select page targets and frames;
-- inspect and export cookies and web storage;
-- run bounded batches and workflows; and
-- use revision guards and bounded verification evidence.
-
-Semantic observations provide bounded page and region data. Start with:
-
-```console
-glass observe --level summary
-glass observe --level interactive
-```
-
-Read the [semantic observation guide](docs/semantic-observation.md) before
-using observation references for actions.
-
-Intent resolution compares semantic candidates before an action. Use:
-
-```console
-glass resolve-intent request.json
-glass execute-intent execution.json
-```
-
-Read the [intent resolution guide](docs/intent-resolution.md) for evidence,
-ambiguity, and revision rules.
-
-Glass also includes workflow authoring and reliability checks. Read [Workflow
-authoring](docs/workflow-authoring.md) and [Reliability laboratory](docs/reliability.md).
-
-## Targets and revisions
-
-An observation returns bounded accessibility data and revisioned target
-references such as `r7:b42`. You can also use explicit locators:
-
-```console
-glass click 'name=Save'
-glass click 'role=button;name=Save'
-glass click 'css=button.primary'
-```
-
-Guard an action with the revision from the observation:
-
-```console
-glass click r7:b42 --expected-revision 7
-glass type 'hello' --target r7:b43 --expected-revision 7
-```
-
-Glass rejects a stale revision before it sends the browser action. Read the
-[action guide](docs/actions.md) for result fields and recovery.
-
-## Rust library and clients
-
-After publication, add the crate as `glass`:
+Embed only the browser control plane:
 
 ```toml
 [dependencies]
 glass = { package = "glass-browser", version = "0.3" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The library provides `BrowserSession`, session options, policies, structured
-observations, revision-safe actions, stable Web IR, Task Protocol compilation,
-workflows, advisory knowledge, project-development contracts, presentation and
-backend abstractions, reliability evidence, and the MCP server. Read the
-[Rust SDK guide](docs/rust-sdk.md), [feature reference](docs/features.md), and
-[runnable example catalog](docs/examples.md); API docs are published from the
-`glass-browser` crate with all Cargo features enabled.
+The library owns browser launch/attach lifecycle, target and frame selection,
+structured observation, revision-safe actions, stable Web IR, Task Protocol,
+workflows, advisory knowledge, backend/surface contracts, presentation, daemon
+and MCP integration. Enable `development-runtime` only when the embedding
+application needs project, PTY, LSP, agent, or Neovim types.
 
-The repository-only [TypeScript client](clients/typescript) and [Python
-client](clients/python) remain experimental repository clients for the 0.3.3
-release line. They are not published as npm or PyPI packages, do not
-include a browser runtime, and do not change the primary Cargo installation
-path. Both expose typed browser and Development Runtime helpers plus a bounded,
-cursor-based project event subscription API.
+Owned sessions must call `BrowserSession::close().await` so Chrome can flush a
+persistent profile before process fallback. Attach sessions never own or close
+the external browser.
 
-## Safety and scope
+Read the [Rust SDK guide](docs/rust-sdk.md), [runnable example
+catalog](docs/examples.md), and [docs.rs API](https://docs.rs/glass-browser).
 
-Glass requires a local Chrome or Chromium process. The primary backend uses a
-local CDP connection; the bounded WebDriver BiDi backend remains experimental.
-Glass does not provide a hosted browser service. Browser-free core and
-Development Runtime paths are checked on Windows; native browser automation
-release evidence is currently Linux-only.
+## TypeScript and Python clients
 
-Use a dedicated browser profile. Keep the CDP endpoint local. Treat profiles,
-screenshots, DOM output, cookies, and logs as sensitive. Read the
-[security policy](SECURITY.md) before using authenticated sessions or attach
-mode.
+The repository contains dependency-light TypeScript and Python clients for
+the Glass MCP control plane. They expose typed browser and Development Runtime
+helpers, cursor-based event subscriptions, deadline-aware waits, process
+health, mutation-lease scopes, and edit-and-verify flows.
 
-## Documentation
+They are repository clients for the 0.3.3 source line, not published npm or
+PyPI packages and not browser runtimes:
 
-Start with the role-based [documentation index](docs/INDEX.md), then use
-[Getting started](docs/getting-started.md) for the first safe session. The
-[feature reference](docs/features.md) maps every capability to CLI, MCP, TUI,
-Rust, TypeScript, and Python surfaces; the [CLI reference](docs/cli.md) and
-[complete MCP catalog](docs/mcp-tools.md) enumerate the command interfaces.
-Architecture, operations, policy, security, benchmarking, maintenance, and
-release evidence remain indexed from the same page.
+- [TypeScript client](clients/typescript/README.md)
+- [Python client](clients/python/README.md)
 
-## Development
+## State, privacy, and ownership
 
-Run the checks before you submit a change:
+| State | Owner | Persistence |
+|---|---|---|
+| Project buffers and PTYs | active Glass project session | process lifetime; saves explicitly mutate project files |
+| Development timeline | project-scoped local data | bounded and actor-attributed; prompt text and process output excluded |
+| Browser profile | named Glass profile or external attached Chrome | persistent for named profiles; disposable for incognito |
+| Semantic observation | BrowserSession | bounded in memory and invalidated by navigation/target/reconnect changes |
+| Screenshot, DOM, PDF, diagnostics | explicit caller operation | returned/written only when requested |
+| Knowledge and snapshots | profile/workspace-scoped store | bounded, validated, explainable, and explicitly manageable |
+| Reconnect capsule | project-scoped local data | non-sensitive navigation/control metadata only |
+| Remote View frames | current BrowserSession | newest-frame memory only; never persisted by the service |
+
+Keep CDP, daemon sockets, Remote View, and development servers on trusted local
+interfaces. Use SSH forwarding instead of public binds. Treat profiles,
+screenshots, DOM, cookies, evaluated output, logs, and exported knowledge as
+sensitive.
+
+Read [Security](SECURITY.md), [Policy](docs/policy.md), and [Ownership and
+compatibility](docs/ownership.md) before deploying authenticated or multi-agent
+workflows.
+
+## Support and evidence
+
+| Item | 0.3.3 source status |
+|---|---|
+| Linux ARM64 | Native Chromium evidence recorded for the current candidate |
+| Linux x86-64 | Declared source target; native runtime certification pending |
+| macOS x86-64 / ARM64 | Browser-free CI contract; native runtime certification pending |
+| Windows | Browser-free CI contract; native PTY/browser certification pending |
+| Chrome / Chromium | Supported browser families on environments with native evidence |
+| Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
+| `glass-browser 0.3.2`, `glass-dev 0.3.2` | Current published crates |
+| `0.3.3` | Current local source release candidate; not published by this checkout |
+
+A source build, cross-compilation, or browser-free CI run is not native browser
+certification. Read the [feature-parity matrix](docs/feature-parity.md),
+[platform certification guide](docs/ci-platform-certification.md), and
+[release evidence](docs/release-evidence.md) for exact claim boundaries.
+
+## Documentation map
+
+| Goal | Start here | Deep reference |
+|---|---|---|
+| Install, upgrade, switch packages, or uninstall | [Installation](docs/installation.md) | [Release checklist](docs/release-checklist.md) |
+| Learn the complete product | [Getting started](docs/getting-started.md) | [Feature reference](docs/features.md) |
+| Develop in the terminal workspace | [Development Runtime](docs/development-runtime.md) | [Development TUI architecture](docs/architecture/development-tui.md) |
+| Use Glass over SSH or iPhone | [Mobile and remote](docs/mobile-remote.md) | [Connection/presentation policy](docs/architecture/connection-presentation.md) |
+| Automate a browser safely | [Semantic observation](docs/semantic-observation.md) | [Automation contracts](docs/architecture/automation.md) |
+| Build workflows and semantic tasks | [Semantic execution](docs/semantic-execution.md) | [Workflow definitions](docs/workflows.md) |
+| Connect an MCP agent | [MCP integration](docs/mcp.md) | [MCP tool catalog](docs/mcp-tools.md) |
+| Embed the Rust crate | [Rust SDK](docs/rust-sdk.md) | [Examples](docs/examples.md) |
+| Operate profiles, policy, or daemon | [Profiles](docs/profile-ergonomics.md) | [Policy](docs/policy.md), [daemon](docs/daemon.md) |
+| Understand architecture | [Architecture index](docs/architecture/README.md) | [Documentation index](docs/INDEX.md) |
+
+The role-based [documentation index](docs/INDEX.md) routes every current guide,
+architecture contract, operator runbook, SDK reference, and historical release
+record.
+
+## Develop and verify
 
 ```console
 cargo fmt --all -- --check
-cargo test --workspace --all-targets --locked
+cargo test --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo package --package glass-browser --locked
-cargo package --package glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+python3 scripts/check-documentation-coverage.py
+python3 scripts/check-documentation-depth.py
+python3 scripts/check-release-documentation.py
 ```
 
-Run the browser smoke test only when a supported browser is available:
+Run the native browser suite only in an environment with supported Chromium:
 
 ```console
-GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture
+GLASS_E2E=1 cargo test -p glass-browser --all-features \
+  --test browser_smoke --locked -- --nocapture --test-threads=1
 ```
+
+See [Contributing](CONTRIBUTING.md) for repository structure, focused tests,
+security rules, documentation contracts, and conventional commits.
 
 ## License
 

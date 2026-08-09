@@ -497,24 +497,25 @@ selection are not yet stabilised.
 
 ## MCP Schema Budget
 
-Glass ships 59 MCP tools with compact JSON Schema definitions. The complete
-`tools/list` response is ~13.6 KiB — well under the Chrome DevTools MCP
-~18k-token class. This keeps agent context costs low: every byte of tool
-definition is a byte the model does not spend on page content.
+The current 0.3.3 `glass` source binary negotiates 133 browser, semantic, and
+Development Runtime tools. The reproducible probe measures the serialized
+`tools` array at 42,918 UTF-8 bytes, or 10,730 tokens using the documented
+four-bytes-per-token estimate. JSON-RPC framing is excluded.
 
-| Metric | Glass | Chrome DevTools MCP |
-|--------|-------|---------------------|
-| MCP tools | 59 | ~33 |
-| `tools/list` response | ~13.6 KiB (~3.5k estimated tokens) | ~18k tokens (~72 KiB) |
-| No-parameter tools | 15 | — |
-| Tools with bounded arrays | 2 (batch ≤ 32, fillForm ≤ 16) | — |
+```console
+cargo build --workspace --all-features --locked
+GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
+```
 
-Glass achieves this through:
-- **Stable verbs**: one fixed action set with typed parameters, not tool sprawl
-- **Locator consolidation**: `target` accepts all locator forms (ref, name,
-  role+name, text, CSS, ordinal) — one input, not six tools
-- **Opt-in heavy payloads**: DOM and screenshots require explicit boolean flags
-- **Documented caps**: every array parameter has a published maximum
+This value belongs to the measured checkout; it is not a fixed product promise
+or a comparison with another server. The report includes each input schema's
+byte size so growth can be attributed. Both current source-line executables
+advertise this same registry; their effective capability agreements still
+determine which optional tools are usable.
+
+The review ceiling is 64 KiB. Changes must retain bounded inputs, stable typed
+verbs, explicit heavy payloads, capability negotiation, and the before/after
+report. Tool count alone is insufficient because schema sizes vary widely.
 
 See [docs/mcp-schema-budget.md](../docs/mcp-schema-budget.md) for the full
-inventory, design principles, and rejection criteria for new tools.
+methodology, current high-cost schemas, client rules, and rejection criteria.

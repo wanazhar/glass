@@ -1,118 +1,128 @@
-# MCP Schema Budget
+# MCP schema and context budget
 
-Glass maintains a bounded, audited MCP tool surface. This document inventories
-the current tool definitions and their JSON Schema size for token-cost
-accounting.
+Glass treats MCP discovery as a measurable context cost. This guide defines the
+measurement, current source-line evidence, growth rules, and reduction options.
+It is not the tool reference; use the [complete MCP catalog](mcp-tools.md) for
+purpose and authority, and the live negotiated `tools/list` result for exact
+schemas supported by an installed server.
 
-## Budget Target
+## Current 0.3.3 source measurement
 
-**Target:** Well below Chrome DevTools MCP (~18k-token class). Glass targets
-under 4k tokens for the full `tools/list` response.
+On the current checkout, `target/debug/glass` reports:
 
-## Current Tool Inventory
+| Metric | Measured value |
+|---|---:|
+| Negotiated tools | 133 |
+| Serialized `tools` array | 42,918 UTF-8 bytes |
+| Four-bytes-per-token estimate | 10,730 tokens |
+| JSON-RPC framing | excluded |
 
-| Tool | Properties | Required | Notes |
-|------|-----------|----------|-------|
-| `navigate` | `url`, `timeoutMs`, `expectedRevision` | `url` | Optional revision guard |
-| `click` | `target`, `selector`, `expectedRevision` | one of | Locator forms; optional revision guard |
-| `clickExpectPopup` | `target`, `selector` | one of | Causal popup verification |
-| `doubleClick` | `target`, `selector` | one of | |
-| `hover` | `target`, `selector` | one of | |
-| `drag` | `source`, `destination` | both | |
-| `key` | `key` | `key` | |
-| `keyDown` | `key` | `key` | |
-| `keyUp` | `key` | `key` | |
-| `shortcut` | `shortcut` | `shortcut` | |
-| `clear` | `target`, `selector` | one of | |
-| `check` | `target`, `selector` | one of | |
-| `uncheck` | `target`, `selector` | one of | |
-| `select` | `target`, `value` | `target` | |
-| `upload` | `target`, `files` | `target` | 1–16 regular files |
-| `type` | `text`, `target`, `expectedRevision` | `text` | Optional target and revision guard |
-| `screenshot` | `format`, `quality`, `scale`, `fullPage`, `clip`, `target` | none | Explicit visual capture |
-| `observe` | `includeDom`, `includeScreenshot`, `includeFormValues` | none | Heavy payloads are opt-in |
-| `preflight` | `target`, `action` | `target` | No browser mutation |
-| `clickAt` | `x`, `y` | both | Policy-gated coordinate click |
-| `getDOM` | (none) | — | Full DOM |
-| `getText` | (none) | — | Visible text |
-| `reconcileReferences` | `fromRevision`, `refs`, `hints`, `scopeRef` | `fromRevision`, `refs` | Bounded reconciliation |
-| `observeDelta` | (none) | — | Bounded observation delta |
-| `setNetworkConditions` | `preset`, `offline`, `latencyMs`, `downloadThroughput`, `uploadThroughput` | none | Scoped emulation |
-| `clearNetworkConditions` | (none) | — | |
-| `setCpuThrottling` | `rate` | `rate` | Scoped emulation |
-| `clearCpuThrottling` | (none) | — | |
-| `setUserAgent` | `userAgent`, `acceptLanguage`, `platform` | `userAgent` | Scoped override |
-| `clearUserAgent` | (none) | — | |
-| `exportCheckpoint` | (none) | — | Bounded checkpoint |
-| `importCheckpoint` | checkpoint fields | schema version and fields | Bounded checkpoint |
-| `evaluate` | `expression` | `expression` | Policy-gated |
-| `batch` | `steps`, `atomic`, `mode`, `expectedRevision` | `steps` | Max 32 steps; mode is fixed, chain, or unguarded |
-| `verify` | `predicate`, `timeoutMs` | `predicate` | Predicate depth 4, fan-out 8, deadline bounded |
-| `scroll` | `dx`, `dy` | none | |
-| `wait` | `condition`, `timeoutMs` | `condition` | Bounded deadline |
-| `diagnostics` | `durationMs` | none | Bounded redacted evidence |
-| `acceptDialog` | (none) | — | |
-| `dismissDialog` | (none) | — | |
-| `dismissConsent` | (none) | — | Recognized consent controls |
-| `download` | `destination`, `timeoutMs` | `destination` | Scoped download lifecycle |
-| `listTargets` | (none) | — | |
-| `createTarget` | `url` | `url` | Does not select the target |
-| `selectTarget` | `id` | `id` | |
-| `closeTarget` | `id` | `id` | |
-| `listFrames` | (none) | — | |
-| `selectFrame` | `id` | `id` | |
-| `cookies` | (none) | — | Persistent profile |
-| `setCookies` | `cookies` | `cookies` | Persistent profile |
-| `clearCookies` | (none) | — | Persistent profile |
-| `localStorage` | (none) | — | Bounded storage |
-| `sessionStorage` | (none) | — | Bounded storage |
-| `printToPdf` | `paperWidth`, `paperHeight`, `printBackground` | none | Returns PDF data |
-| `fillForm` | `fields`, `expectedRevision` | `fields` | Max 16 fields; optional revision guard |
-| `clipboardRead` | (none) | — | Bounded text |
-| `clipboardWrite` | `text` | `text` | Bounded text |
-| `setGeolocation` | `latitude`, `longitude` | both | Override geolocation |
-| `clearGeolocation` | (none) | — | |
-| `setTimezone` | `timezoneId` | `timezoneId` | IANA timezone ID |
+This is a reproducible local measurement, not a guarantee for another commit,
+client tokenizer, capability agreement, or future release. The tool count is
+pinned independently by the client-conformance fixture and documentation
+coverage gate.
 
-**Total: 70 tools.**
+The 0.3.3 surface is larger than the earlier browser-only inventory because it
+also exposes the Development Runtime, semantic execution, memory, workspace,
+backend, replay, and recovery contracts. Older counts and byte totals must not
+be carried forward as current evidence.
 
-## Schema Size Estimate
+## Reproduce the measurement
 
-Each tool contributes:
-- `name`: ~15-25 bytes
-- `description`: ~40-80 bytes
-- `inputSchema`: ~80-300 bytes (typically `{"type":"object","properties":{...}}`)
+Build the exact executable, then run the browser-free probe:
 
-The 0.2.0 release measures 21,070 UTF-8 bytes, or an estimated 5,268
-tokens using the repository's four-bytes-per-token method. Re-measure a local
-build with `GLASS_BINARY_PATH=target/debug/glass node
-benchmarks/schema-scoreboard.mjs` when the tool descriptions or schemas change.
+```console
+cargo build --workspace --all-features --locked
+GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
+```
 
-## Design Principles
+The probe starts `glass --mcp`, completes initialization and the initialized
+notification, requests `tools/list`, serializes only the returned `tools`
+array, counts UTF-8 bytes, and divides by four for a conservative model-agnostic
+estimate. It does not start Chrome.
 
-1. **Stable verbs, not tool sprawl.** The surface uses a fixed set of action
-   names (`navigate`, `click`, `type`, etc.) rather than creating new tools
-   for every operation variant.
-2. **Locator forms are a single parameter.** `target` accepts all locator
-   forms (ref, name, role+name, text, CSS, ordinal). One input, not six tools.
-3. **Heavy payloads are opt-in.** `observe` returns compact accessibility by
-   default; DOM and screenshots require explicit boolean flags.
-4. **No tool accepts unbounded arrays without a documented cap.** `batch.steps`
-   caps at 32; `reconcileReferences.refs` caps at 16.
-5. **No tool duplicates an existing capability under a different name.**
+Record the commit, binary profile, tool count, bytes, and methodology together.
+Do not compare a full JSON-RPC response with a bare array, or a pre-negotiation
+catalog with the effective tool list.
 
-## Rejection Criteria for New Tools
+## Budget and acceptance
 
-A proposed tool is rejected if it:
-- Duplicates an existing verb (use a parameter, not a new tool)
-- Accepts unbounded input without a documented cap
-- Exposes raw CDP directly (use `evaluate` with policy gating instead)
-- Introduces tool-specific output schemas larger than the existing observe
-  response
-- Requires a new CDP domain that is not already optionally enabled
+The source line uses 64 KiB as the review ceiling for the serialized tools
+array. This is a regression alarm, not permission to consume the remaining
+space. Any increase must include the before/after scoreboard and explain why a
+new public tool is preferable to an existing typed verb or a namespaced
+resource.
 
-## Periodic Audit
+A change is rejected when it:
 
-This document is updated whenever tools are added, removed, or renamed. The
-`tools/list` response size is measured on each release and must not exceed
-12 KiB without a documented justification in the changelog.
+- exceeds 64 KiB without an accepted compatibility design and release note;
+- duplicates an existing operation under a new name;
+- adds unbounded strings, arrays, maps, or recursive input;
+- embeds large examples or result schemas in discovery descriptions;
+- exposes raw CDP as a convenience path around policy; or
+- changes a required field without schema negotiation and migration guidance.
+
+Tool count alone is not the budget. A single deeply nested schema can cost more
+than several no-argument tools, so review total bytes and the per-tool list from
+the scoreboard.
+
+## Current high-cost schemas
+
+The current measurement identifies these larger input schemas:
+
+| Tool | Input-schema bytes | Reason |
+|---|---:|---|
+| `extractStructured` | 1,576 | typed extraction fields, sources, and bounds |
+| `resolveIntentWithKnowledge` | 1,133 | intent plus scoped knowledge controls |
+| `executeIntent` | 826 | revision-bound executable intent |
+| `executeTask` | 767 | validated Task Protocol execution controls |
+| `resolveIntent` | 695 | structured intent resolution |
+| `actAndVerify` | 691 | action plus explicit postcondition evidence |
+
+These sizes are diagnostic priorities, not automatic defects. Simplification
+must preserve validation, bounds, authority, and compatibility; moving required
+constraints out of schema and into undocumented prose is not an optimization.
+
+## Design rules
+
+1. Prefer stable verbs with typed variants over one tool per locator or mode.
+2. Keep structured observation the default and large DOM, screenshot, PDF,
+   evaluated, and form-value payloads explicit.
+3. Bound every collection, string, nesting depth, response, and deadline in the
+   canonical server contract.
+4. Put operational explanation in this documentation and concise actionable
+   descriptions in discovery.
+5. Negotiate optional or experimental capabilities; do not advertise a method
+   as usable when the effective agreement disables it.
+6. Keep project and browser mutations visibly distinct and preserve leases,
+   actor authority, policy, and revision guards.
+
+## Client strategy
+
+Clients should cache the discovery result only for the initialized connection.
+Do not assume that a fixture, SDK method list, or previous server has the same
+effective agreement. Inspect `glassAgreement`, then use `tools/list` and
+capability/schema checks for optional behavior. A reconnect creates a new
+agreement and requires fresh discovery.
+
+Both source-line executables currently advertise the same 133-tool MCP schema;
+the effective capability agreement determines which optional operations are
+usable. Choosing `glass-browser` changes the installed CLI/product boundary,
+not this discovery byte count. Context reduction must use an explicitly
+versioned future negotiation mechanism; clients must not silently drop schemas
+the server advertises.
+
+## Release maintenance
+
+Whenever a tool or input schema changes:
+
+1. update the server registry and canonical result type;
+2. update `client-conformance-v1.json` and [the tool catalog](mcp-tools.md);
+3. rebuild and run the scoreboard against the exact binary;
+4. run `python3 scripts/check-documentation-coverage.py`;
+5. update the measured table and release evidence when the numbers change; and
+6. verify TypeScript/Python negotiation smoke tests against the matching
+   executable.
+
+An unexplained count or byte drift fails the documentation/release review even
+when the server still compiles.

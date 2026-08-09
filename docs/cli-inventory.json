@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "binaries": {
+    "glass": [
+      "install-chromium", "certify", "workspace", "project", "agent",
+      "memory", "surfaces", "backend", "daemon", "replay", "capabilities",
+      "doctor", "mcp-config", "profiles", "knowledge", "result",
+      "delete-profile", "navigate", "click", "preflight", "click-at",
+      "click-expect-popup", "double-click", "hover", "drag", "type", "key",
+      "key-down", "key-up", "shortcut", "clear", "check", "uncheck",
+      "select", "upload", "screenshot", "text", "dom", "observe",
+      "inspect-page", "smoke-sites", "find-target", "act-and-verify",
+      "extract-structured", "recover-run", "scroll", "wait", "diagnostics",
+      "accept-dialog", "dismiss-dialog", "dismiss-consent", "download",
+      "targets", "new-target", "select-target", "close-target", "frames",
+      "select-frame", "evaluate", "cookies", "export-cookies",
+      "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
+      "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
+      "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
+      "clipboard-read", "clipboard-write", "tui"
+    ],
+    "glass-browser": [
+      "install-chromium", "certify", "workspace", "memory", "surfaces",
+      "backend", "daemon", "replay", "capabilities", "doctor", "mcp-config",
+      "profiles", "knowledge", "result", "delete-profile", "navigate",
+      "click", "preflight", "click-at", "click-expect-popup", "double-click",
+      "hover", "drag", "type", "key", "key-down", "key-up", "shortcut",
+      "clear", "check", "uncheck", "select", "upload", "screenshot", "text",
+      "dom", "observe", "inspect-page", "smoke-sites", "find-target",
+      "act-and-verify", "extract-structured", "recover-run", "scroll", "wait",
+      "diagnostics", "accept-dialog", "dismiss-dialog", "dismiss-consent",
+      "download", "targets", "new-target", "select-target", "close-target",
+      "frames", "select-frame", "evaluate", "cookies", "export-cookies",
+      "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
+      "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
+      "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
+      "clipboard-read", "clipboard-write", "tui"
+    ]
+  },
+  "nested": {
+    "certify": ["run", "plan", "release", "replay", "replay-diff"],
+    "workspace": ["list", "inspect", "suspend", "resume", "delete"],
+    "project": ["inspect", "files", "search", "read", "edit", "mkdir", "rename", "delete", "diagnostics", "run", "test", "lint", "process", "diff", "link", "graph", "breakpoint", "timeline", "replay", "neovim", "experiment", "attach"],
+    "project process": ["list", "start", "stop", "restart", "remove", "input", "resize", "output"],
+    "project graph": ["discover", "entity", "source"],
+    "project neovim": ["probe", "start"],
+    "project experiment": ["create"],
+    "agent": ["hello", "prompt", "steer", "follow-up", "models", "set-model", "thinking", "abort", "new-session"],
+    "memory": ["status", "inspect", "explain", "forget", "export", "prune", "reindex"],
+    "surfaces": ["inspect", "coverage"],
+    "backend": ["status", "capabilities", "test"],
+    "daemon": ["start", "status", "stop", "doctor", "logs", "acknowledge-recovery"],
+    "replay": ["inspect", "diff", "attach"],
+    "profiles": ["list", "create", "delete"],
+    "knowledge": ["list", "show", "explain", "stats", "export", "import", "invalidate", "purge"],
+    "result": ["show", "purge"],
+    "workflow": ["compile", "format", "preview", "diff", "record", "validate", "lint", "templates", "init"],
+    "task": ["validate", "compile", "execute"],
+    "ir": ["validate", "inspect", "diff", "continuity", "canonical"],
+    "checkpoint": ["export", "import"],
+    "snapshot": ["create", "list", "inspect", "diff", "purge"]
+  }
+}

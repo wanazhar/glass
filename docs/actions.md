@@ -3,6 +3,29 @@
 Glass can run an action without a revision guard. Use a revision guard when the
 page may change between observation and execution.
 
+An action is not a selector shortcut. Glass resolves one current target,
+checks policy and revision state, dispatches a bounded browser operation, then
+collects post-action evidence. Classification, historical knowledge, and
+visual similarity do not authorize input.
+
+## Choose a target
+
+Prefer references returned by the current `interactive` observation. Other
+locators are available for human use and compatibility:
+
+| Form | Example | Rule |
+|---|---|---|
+| revisioned reference | `r7:b42` | Must belong to the active target/frame and current revision. |
+| accessible role/name | `role=button;name=Save` | Role and accessible name must resolve uniquely. |
+| accessible name | `name=Save` | Fails when more than one candidate has the name. |
+| visible text | `text=Continue` | Uses bounded visible semantic text. |
+| CSS | `css=button.primary` | Explicit deep targeting; still must resolve uniquely. |
+| ordinal | `ordinal=2` | Fragile compatibility form; prefer a revisioned reference. |
+
+Use `find-target` to inspect bounded candidates and `preflight` to check one
+target without input. Neither operation grants permission for a later action;
+observe again when the page changes.
+
 ## Guard an action
 
 1. Run `observe`.
@@ -11,13 +34,22 @@ page may change between observation and execution.
 4. Read the typed result.
 5. Run `observe` again when Glass reports a stale revision.
 
-Example:
+Run the sequence inside one resident TUI, MCP, daemon, or Rust session. For the
+TUI, start it and enter the three unprefixed commands in its command input:
 
 ```console
-glass navigate https://example.com
-glass observe
-glass click r7:b42 --expected-revision 7
+glass --incognito tui
 ```
+
+```text
+navigate https://example.com
+observe
+click r7:b42 --expected-revision 7
+```
+
+Three separately prefixed one-shot CLI processes do not share a browser
+revision. For a non-interactive multi-step flow, keep one MCP/SDK session or
+author a workflow.
 
 The guard is available for navigation, click, popup click, double-click, type,
 clear, check, uncheck, select, scroll, fill-form, drag, keyboard, and upload
@@ -93,6 +125,46 @@ Recovery is explicit:
 
 Automatic recovery is disabled by default. Glass never moves a stale reference
 to a new target without a new observation.
+
+## Dispatch and idempotency
+
+Actions such as `check` and `uncheck` describe a desired state and can often
+verify that state without toggling twice. Click, type, upload, submit, shortcut,
+and coordinate input are not generally idempotent. Do not retry them solely
+because the caller missed a response.
+
+Use `act-and-verify` when the caller can state a bounded postcondition. Use a
+workflow when multiple steps need retry policy, checkpointing, outputs, and
+recovery. `retry_safe` applies only when Glass proves that dispatch did not
+occur; it is not a generic transport retry.
+
+Coordinate clicks require current viewport geometry and the
+`coordinate-click` capability. Remote View and terminal pointer coordinates
+also carry the displayed browser revision. Stale geometry or revision fails
+before input.
+
+## Interface mapping
+
+| Interface | Session behavior | Exact contract source |
+|---|---|---|
+| CLI | one process-scoped session unless attached/resident | `glass COMMAND --help` |
+| TUI | one long-lived Browser Workspace with recovery | command palette and Browser view |
+| MCP | one session per initialized stdio/socket namespace | live `tools/list` |
+| Rust | caller owns `BrowserSession` and close behavior | docs.rs and `BrowserSession` methods |
+
+All interfaces use the same target resolution, revision, policy, dispatch, and
+verification contracts. They may expose different convenience projections.
+
+## Troubleshooting
+
+| Result | Inspect next | Do not do |
+|---|---|---|
+| stale revision | fresh structured observation and active target/frame | substitute the old reference into a new revision |
+| ambiguous target | bounded candidates from `find-target` | choose the first candidate automatically |
+| confirmation required | policy decision and one-use confirmation token | log or reuse a consumed token |
+| verification failed | current page, dialog, popup, download, and revision evidence | assume the action had no effect |
+| indeterminate transport | execution ID and recovery result | blindly repeat a non-idempotent action |
+| target/frame changed | current topology and new observation | retain old coordinate or backend-node state |
 
 The stable machine-readable action contract is
 [action-v1.schema.json](schema/glass-action-v1.schema.json). The compatibility

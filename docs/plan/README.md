@@ -1,5 +1,16 @@
 # Glass delivery plans
 
+## Completed plan: Glass 0.3.3 documentation depth
+
+Status: Completed and verified locally — documentation-only, with no push,
+tag, publication, release, or issue mutation.
+
+The [depth audit](analysis/documentation-depth-035.md) accounts for every
+public documentation surface and replaces name-presence checks with workflow,
+state, limit, failure, recovery, and exact nested-command contracts. The
+implementation record is
+[documentation-depth-035-001](tasks/documentation-depth-035-001.md).
+
 ## Completed plan: Glass v0.3.3 issue #33
 
 Status: Complete local release candidate — no tag, push, crates.io

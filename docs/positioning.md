@@ -1,54 +1,70 @@
-# Positioning: Where Glass Fits
+# Positioning: where Glass fits
 
-Glass is a small, local control layer for Chrome and Chromium. It turns
-explicit commands into browser actions and keeps browser ownership, targeting,
-policy, and session state in one process.
+Glass is a local-first terminal development environment with an integrated
+browser intelligence runtime. `glass-dev` combines project inspection,
+editing, PTYs, diagnostics, agents, replay, graphs, remote cockpit views, and
+browser verification. `glass-browser` packages the focused browser CLI and
+Rust library for consumers that do not need the development workspace.
 
-Glass is not a test framework, a hosted browser, or a workflow generator.
+Glass is not a hosted IDE, general operating-system sandbox, autonomous
+workflow generator, cross-browser test framework, or remote browser fleet.
 
-## The landscape
+## Product boundary
 
-| Category | Typical use | Glass |
+| Need | Glass surface | Deliberate boundary |
 |---|---|---|
-| Local browser control | Explicit commands against a local browser | Yes |
-| Test framework | Assertions, fixtures, trace viewers, and cross-browser suites | No |
-| Workflow generator | Choose and recover an entire browser workflow | No |
-| Hosted browser | Run browsers on remote infrastructure | No |
+| Work on a project over a local or SSH terminal | `glass` TUI and Development Runtime | bounded project root; commands retain the user's OS authority |
+| Inspect and control Chrome/Chromium | browser workspace, CLI, MCP, Rust SDK | local browser; structured-first state; explicit privileged capture |
+| Connect an agent to project/browser tools | local harness and optional Pi RPC | Glass validates tool schemas and mutation authority; it does not trust model output |
+| Automate from another local process | MCP plus repository TypeScript/Python clients | local stdio/socket transport; clients do not contain a browser runtime |
+| Resume or observe from an iPhone | mobile TUI, terminal graphics, SSH-forwarded Remote View | loopback-only services; no public hosted relay |
+| Build repeatable browser tasks | Task Protocol, workflows, checkpoints, replay | callers author intent and policy; Glass does not invent an unbounded workflow |
 
-## Use Glass when
+## Use the full `glass-dev` product when
 
-- Chrome or Chromium can run on the local Linux or macOS host.
-- The calling program can provide explicit browser commands.
-- Target ambiguity should fail instead of selecting the first match.
-- Compact observations and bounded responses are useful.
-- Browser state should remain local and a dedicated profile is acceptable.
-- A CLI, terminal UI, MCP server, or Rust library is the right integration
-  surface.
+- the source tree, editor, PTYs, diagnostics, diff, graph, and verification
+  evidence should share one bounded project session;
+- an SSH or narrow-terminal workflow needs a responsive six-view cockpit;
+- local agents should use schema-validated project and browser tools;
+- browser state should be connected to source/runtime evidence; or
+- one MCP lifecycle should own persistent project processes and browser state.
+
+Use the focused `glass-browser` package when an application needs only the
+browser command, MCP surface, or reusable Rust crate.
 
 ## Choose another tool when
 
-- You need Firefox, WebKit, Safari, or Windows release support.
-- You need a full QA framework with assertions, test fixtures, code generation,
-  or a trace viewer.
-- You need a hosted browser fleet or remote rendering infrastructure.
-- You want one command to invent and execute an entire workflow.
-- You need stealth, fingerprint modification, CAPTCHA solving, or bot-evasion
-  features.
+- you need a hosted collaborative IDE, browser fleet, or public remote desktop;
+- you need Firefox, WebKit, Safari, or a fully certified Windows browser release;
+- you need a complete QA framework with assertions, fixtures, code generation,
+  cross-browser matrices, and trace viewers;
+- you require an OS security sandbox for untrusted repository commands;
+- you want an agent to invent and execute unrestricted workflows without
+  explicit policy and authority; or
+- you need stealth, fingerprint modification, CAPTCHA solving, or bot evasion.
 
 ## What distinguishes Glass
 
-- It uses raw CDP through a native Rust runtime.
-- It does not silently adopt an existing CDP endpoint; attach mode is explicit.
-- Locators resolve uniquely, with bounded candidate information on ambiguity.
-- Observations publish revisioned references, and guarded actions can reject
-  stale page state before mutation.
-- Screenshots, full DOM, form values, downloads, uploads, evaluation, and other
-  privileged operations are explicit and policy-gated.
-- The CLI, terminal UI, MCP server, and library use the same browser session
-  semantics.
+- Project state, browser state, events, actors, processes, and verification
+  evidence are coordinated locally rather than sent to a hosted control plane.
+- The Development Runtime bounds project roots, resident sessions, event
+  history, file trees, output, and graph evidence.
+- Browser observation is structured-first. Screenshots, DOM, form values, PDFs,
+  evaluation, uploads, downloads, and raw CDP are explicit policy-sensitive
+  operations.
+- Locators resolve uniquely, and revision-guarded actions reject stale page
+  state before input.
+- Chrome ownership is explicit: Glass does not silently adopt an occupied CDP
+  endpoint, and attached browsers are never closed as owned sessions.
+- CLI, TUI, MCP, Rust, TypeScript, and Python surfaces preserve the same typed
+  failure, capability, revision, and lifecycle contracts.
 
-For command details, see the [CLI reference](cli.md), [MCP guide](mcp.md), and
-[action contract](actions.md). For resource measurements and comparison
-methodology, see the [category metric guide](category-metric.md) and
-[benchmarks](https://github.com/wanazhar/glass/tree/main/benchmarks); those measurements are version- and
-environment-specific and are not product guarantees.
+## Decision path
+
+Start with the [getting-started guide](getting-started.md). Continue to the
+[Development Runtime](development-runtime.md) for project work, the
+[browser action contract](actions.md) for automation, or
+[mobile and remote development](mobile-remote.md) for SSH/iPhone use. Exact
+package and platform status is recorded in [release evidence](release-evidence.md)
+and [target certification](ci-platform-certification.md); it should not be
+inferred from an implementation matrix alone.

@@ -3,6 +3,10 @@
 Run `glass --help` or `glass COMMAND --help` for the exact syntax for the
 installed version.
 
+The checked-in [CLI inventory](cli-inventory.json) records the exact public
+top-level and nested command tree for documentation drift validation. Live
+`--help` remains the authority for flags, defaults, and positional arguments.
+
 ## Global options
 
 | Option | Default | Function |
@@ -140,11 +144,11 @@ confirmation flags, and output schemas.
 | `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
 | `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
 | `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach` |
-| `agent` | `tool`, `tool-file`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `agent` | `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
 | `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
 | `surfaces` | `inspect`, `coverage` |
 | `backend` | `status`, `capabilities`, `test` |
-| `daemon` | `start`, `status`, `stop`, `doctor`, `logs`, `acknowledge-recovery`, `serve` |
+| `daemon` | `start`, `status`, `stop`, `doctor`, `logs`, `acknowledge-recovery` |
 | `replay` | `inspect`, `diff`, `attach` |
 | `profiles` | `list`, `create`, `delete` |
 | `knowledge` | `list`, `show`, `explain`, `stats`, `export`, `import`, `invalidate`, `purge` |
@@ -155,11 +159,40 @@ confirmation flags, and output schemas.
 | `checkpoint` | `export`, `import` |
 | `snapshot` | `create` (browser-backed), `list`, `inspect`, `diff`, `purge` |
 
-Nested development families are `project process list|start|stop|restart|remove|input|resize|output`,
-`project graph discover|entity|source`, `project neovim probe|start`, and
-`project experiment create`. Project mutations remain confined to the
-canonical root. Certification and replay inspect evidence; they do not replay
-browser input as an unguarded command stream.
+Nested development inventories are exact:
+
+| Path | Public subcommands |
+|---|---|
+| `project process` | `list`, `start`, `stop`, `restart`, `remove`, `input`, `resize`, `output` |
+| `project graph` | `discover`, `entity`, `source` |
+| `project neovim` | `probe`, `start` |
+| `project experiment` | `create` |
+
+Project mutations remain confined to the canonical root. Certification and
+replay inspect evidence; they do not replay browser input as an unguarded
+command stream. Hidden implementation commands are not public CLI contracts.
+
+### Family contracts
+
+| Family | Primary input | Output/state | Important failure or recovery |
+|---|---|---|---|
+| `certify` | scenario, manifest, or replay evidence | bounded certification evidence | missing observations and forbidden outcomes block release status |
+| `workspace` | workspace ID and expected lifecycle revision | persisted identity, ownership, attachments, and lease state | stale revision or active ownership fails closed |
+| `project` | canonical root, relative paths, commands, actor | files, buffers, PTYs, diagnostics, graph, timeline | path escape, edit conflict, process degradation, and missing LSP are explicit |
+| `agent` | bounded text/control request and harness | attributed local/Pi harness result | unavailable adapter, stale context, absent browser, and authority denial are distinct |
+| `memory` | memory selector or snapshot operation | advisory memory projection | stale/quarantined evidence cannot authorize an action |
+| `surfaces` | versioned surface evidence | capability and coverage result | unknown/weak evidence fails closed for input authority |
+| `backend` | backend profile/evidence | status, capabilities, proof test | an unregistered or incompatible backend cannot become active |
+| `daemon` | local socket/status lifecycle | resident MCP session and recovery state | stale PID/socket is diagnosed; interrupted mutations require acknowledgement |
+| `replay` | validated replay bundle | inspection, diff, or attachment metadata | replay data does not dispatch recorded input automatically |
+| `profiles` | validated profile name | named Chrome user-data lifecycle | active ownership prevents deletion |
+| `knowledge` | profile/workspace-scoped record selector | bounded validated knowledge store | scope, provenance, lifecycle, and sensitivity checks reject unsafe records |
+| `result` | result ID or bounded age | stored diagnostic projection/purge count | invalid IDs and malformed artifacts are rejected |
+| `workflow` | YAML/JSON definition or authoring input | canonical definition, preview, lint, diff, or execution | invalid bounds, unsafe retry suffix, and stale checkpoint stop execution |
+| `task` | Task Protocol and Web IR JSON | validation, deterministic plan, or verified execution | ambiguous/unproven entities and unsupported capabilities fail before dispatch |
+| `ir` | Glass Web IR v1 JSON | validation, summary, diff, continuity, canonical JSON | invalid graph, revision drift, and ambiguous continuity stay explicit |
+| `checkpoint` | bounded workflow/checkpoint files | portable redacted checkpoint | definition/route/effect mismatch prevents resume |
+| `snapshot` | profile and snapshot selector | redacted bounded session evidence | snapshot data never restores live browser authority |
 
 Standalone utility commands are `install-chromium`, `capabilities`, `doctor`,
 `mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`

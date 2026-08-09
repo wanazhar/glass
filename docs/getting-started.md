@@ -1,141 +1,230 @@
 # Getting started
 
-Glass is a local browser intelligence and development runtime. It does not
-host a browser or infer an autonomous plan. The caller chooses an operation;
-Glass resolves current evidence, enforces policy and revision guards, performs
-the bounded operation, and returns verification or recovery data.
+This guide takes you from installation to one verified Glass workflow. Choose
+the path that matches your goal. All paths use local processes and local state;
+Glass does not provide a hosted browser, code service, or autonomous planner.
+
+## Before you begin
+
+You need stable Rust 1.88 or newer for a source installation. Browser-backed
+paths also need Chrome or Chromium. Project inspection, Task Protocol, Web IR,
+policy, capability, and most development-runtime operations are browser-free.
+
+Check the current support and release boundary before deployment:
+
+- [Installation and platform requirements](installation.md)
+- [Feature parity](feature-parity.md)
+- [Recorded platform evidence](local-platform.md)
 
 ## Select the product
 
 | Package | Installs | Use it for |
 |---|---|---|
-| `glass-dev` | `glass`, `glass-browser` | Full CLI, TUI, MCP server, project runtime, mobile workspace, and browser control |
+| `glass-dev` | `glass`, `glass-browser` | Complete CLI/TUI/MCP product, project runtime, agents, remote cockpit, and browser control |
 | `glass-browser` | `glass-browser` and Rust crate `glass_browser` | Standalone browser control plane and embeddable Rust API |
 
-Install the full environment from a checkout:
+Install the complete environment:
 
 ```console
-cargo install --path crates/glass-dev --locked
+cargo install glass-dev --locked
 glass doctor
 ```
 
-Or install only the browser control plane:
+Install only the browser package:
 
 ```console
-cargo install --path crates/glass-browser --locked
+cargo install glass-browser --locked
 glass-browser doctor
 ```
 
-`doctor` is browser-free. It reports paths, platform support, policy,
-profiles, stores, daemon state, extension status, and remediation without
-starting Chrome.
+`doctor` does not start Chrome. It reports executable and browser discovery,
+platform status, policy, profiles, daemon health, stores, and remediation. A
+`degraded` result identifies each missing dependency instead of partially
+starting a session.
 
-To remove Glass, uninstall both possible Cargo package owners and decide
-separately whether to purge authenticated profiles and other retained state.
-Follow [Fully uninstall Glass](installation.md#fully-uninstall-glass); deleting
-only the executable does not remove persistent browser data.
+The two packages intentionally compete for the `glass-browser` command in one
+Cargo root. Use the [package transition and complete uninstall
+procedures](installation.md#install-from-source) when switching products.
 
-## Select an interface
+## Path A: inspect and run a project
+
+Use this path when you want Glass as a local development workspace without a
+browser.
+
+1. Enter the project and inspect detection:
+
+   ```console
+   cd /path/to/project
+   glass project inspect --root .
+   ```
+
+   The result identifies the canonical root, detected ecosystem, configured
+   commands, and optional browser URL. Glass reads `glass.toml` or
+   `.glass.toml` when present. It does not execute a detected command during
+   inspection.
+
+2. Inspect the bounded project tree and diagnostics:
+
+   ```console
+   glass project files --root .
+   glass project diagnostics src/main.rs --root .
+   ```
+
+   The tree reports its entry limit, truncation, ignored generated/vendor
+   directories, and skipped symlinks. Diagnostics use a persistent LSP client
+   in resident sessions and fail explicitly when the language server is not
+   installed.
+
+3. Run a finite command in a real PTY:
+
+   ```console
+   glass project run check --command "cargo check" --wait --root .
+   ```
+
+   `--wait` keeps the one-shot CLI alive until the child exits. For a
+   long-running server, use the TUI or MCP project session so one resident
+   owner can accept input, resize, restart, stop, and retain bounded output.
+
+4. Review attributed state:
+
+   ```console
+   glass project diff --root .
+   glass project timeline --root .
+   glass project replay --root .
+   ```
+
+Project reads, writes, renames, and deletes remain inside the canonical root.
+Saves are atomic. An external file change or conflicting actor claim produces
+a conflict instead of overwriting another version.
+
+Continue with [Development Runtime](development-runtime.md).
+
+## Path B: use the terminal workspace
+
+Start the resident workspace from a project:
+
+```console
+cd /path/to/project
+glass
+```
+
+Use `1`–`6` or `Tab` to switch Overview, Agent, Browser, Project, Diff, and
+Process. Press `?` for context-sensitive help. Enter `:` or `/` to discover
+commands. The same printable navigation works on narrow SSH terminals.
+
+Useful first commands in the TUI command bar:
 
 ```text
-human terminal ──> glass CLI or Ratatui TUI ─┐
-MCP client ──────> glass --mcp ──────────────┼─> shared session/policy runtime
-Rust program ────> glass_browser crate ──────┘             │
-                                                             └─> Chrome/Chromium
+project open README.md
+project search TODO
+project run dev cargo run
+project diagnostics src/main.rs
+inbox
+verify card
 ```
 
-| Interface | First command | Contract |
-|---|---|---|
-| CLI | `glass navigate https://example.com` | One process and bounded result per invocation |
-| TUI | `glass` | Long-lived local browser and development workspace |
-| MCP | `glass mcp-config --client generic` | Long-lived stdio JSON-RPC session |
-| Rust | `cargo add glass-browser --rename glass` | Owned `BrowserSession` lifecycle |
+The resident process owns the editor buffers, PTYs, language services, browser
+controller, agent adapter, and event timeline. Browser recovery replaces only
+the browser session; project and process state stays alive.
 
-## Observe before acting
+Continuous browser pixels are off by default. `live on` enables a bounded,
+ephemeral terminal renderer. `screenshot evidence.png` is a separate explicit
+capture. See [Terminal UI architecture](architecture/tui.md) for state and key
+ownership.
 
-Start with structured page evidence:
+## Path C: observe and act in a browser
+
+Use a dedicated profile or incognito session. Keep CDP on loopback.
+
+For disposable state:
 
 ```console
-glass navigate https://example.com
-glass observe --level interactive
+glass --incognito --headed navigate https://example.com
 ```
 
-An interactive observation includes a revision and revisioned references such
-as `r7:b42`. Use that revision when acting:
-
-```console
-glass click r7:b42 --expected-revision 7
-```
-
-Glass rejects a stale revision before sending browser input. Name, role, text,
-CSS, and ordinal locators are supported, but each must resolve exactly one
-target. Revisioned references are preferable in automation.
-
-Normal observation does not request screenshots, full DOM, or form values.
-Those are explicit operations:
-
-```console
-glass screenshot --output evidence.png
-glass dom
-glass observe --form-values
-```
-
-Policy may require an allow or confirmation for sensitive evidence.
-
-## Use a safe session
-
-For disposable browsing:
-
-```console
-glass --incognito navigate https://example.com
-```
-
-For an authenticated local profile:
+For an authenticated profile:
 
 ```console
 glass profiles create work
 glass --profile work --headed navigate https://example.com
 ```
 
-For untrusted input, pin an exact public host under hardened policy:
+In a resident TUI, MCP, daemon, or Rust session, observe before acting:
 
 ```console
-glass --policy hardened --incognito \
-  --policy-allow-host example.com \
-  navigate https://example.com
+glass observe --level interactive
 ```
 
-Keep CDP on a trusted local interface. Do not expose port `9222` publicly.
-
-## Open the terminal workspace
+The result includes a browser revision and bounded references such as
+`r7:b42`. Use both for the action:
 
 ```console
-glass
+glass click r7:b42 --expected-revision 7
 ```
 
-Desktop mode provides browser and Development workspaces. Narrow SSH and Mosh
-terminals automatically use the phone layout; force it with:
+The action path is resolve exactly one target, check revision and policy,
+dispatch, observe again, and report verification. Glass refuses ambiguous and
+stale targets. If transport fails after dispatch, the result can be
+`indeterminate`; re-observe or use returned recovery data instead of retrying
+blindly.
+
+Normal observation does not request screenshots, full DOM, form values,
+cookies, PDFs, network diagnostics, or evaluated JavaScript. Invoke those
+operations explicitly and treat their output as sensitive.
+
+Continue with [Semantic observations](semantic-observation.md), [Actions and
+revisions](actions.md), and [Policy](policy.md).
+
+## Path D: use Glass from an iPhone or remote shell
+
+Connect to the machine that owns the project and credentials, then start the
+mobile layout:
 
 ```console
+ssh you@workstation
+cd /path/to/project
 glass --tui-layout mobile
 ```
 
-Continuous pixels are off by default. `live on` enables an ephemeral Herdr,
-Kitty, or ANSI view. `safari` prints the stable private SSH-forward workflow
-for an iPhone. See [mobile and remote development](mobile-remote.md).
+Glass separates terminal geometry, network transport, graphics capability,
+shell, and multiplexer. A phone-sized terminal does not by itself lower local
+render policy, and an SSH environment variable does not prove graphics
+support.
 
-## Connect an MCP client
+The semantic-first phone UI works without pixels. Use Herdr or tmux to retain
+the PTY across detach. Use `live on` for an ephemeral terminal view. Use
+`safari` or `browser remote-view open` for a private loopback service forwarded
+by the iOS SSH client. Never expose Chrome CDP publicly.
+
+Follow [Mobile and remote development](mobile-remote.md) for forwarding,
+Herdr, Mosh, Remote View, browser recovery, terminal compatibility, and
+troubleshooting.
+
+## Path E: connect an MCP client
+
+Generate configuration with an absolute executable path:
 
 ```console
 glass mcp-config --client generic
+glass mcp-config --client claude-code
+glass mcp-config --client codex
 ```
 
-Use the emitted absolute executable path. The client must initialize,
-negotiate Glass schemas/capabilities, send `notifications/initialized`, and
-only then call tools. See [MCP integration](mcp.md) and the
-[complete tool catalog](mcp-tools.md).
+The client must:
 
-## Embed in Rust
+1. start `glass --mcp` with stdout reserved for protocol frames;
+2. send `initialize` and accept the returned version/capability contract;
+3. send `notifications/initialized`;
+4. inspect `tools/list` for the exact installed schemas; and
+5. cancel bounded waits when the calling task is abandoned.
+
+Browser and project tools share the resident server's state. Mutating daemon
+operations additionally require the current mutation lease. Read [MCP
+integration](mcp.md) before writing a client.
+
+## Path F: embed the Rust library
+
+Add the focused package:
 
 ```toml
 [dependencies]
@@ -143,25 +232,45 @@ glass = { package = "glass-browser", version = "0.3" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The Rust crate name is `glass_browser` unless Cargo renames it. Read the
-[Rust SDK guide](rust-sdk.md) for lifecycle, semantic extraction, Task
-Protocol, knowledge, backend, and development-runtime APIs.
+The crate name is `glass_browser` unless Cargo renames it. The embedding
+application owns `BrowserSession` lifecycle. Call `close().await` for owned
+sessions so Chrome can flush profile state; dropping an attached session must
+not close the external browser.
 
-## Recover and close
+Read the [Rust SDK guide](rust-sdk.md) for launch/attach, policy, observations,
+actions, semantic execution, workflows, knowledge, backends, presentation,
+errors, and optional development-runtime APIs.
 
-Mutation failures can be `indeterminate` when Chrome may have accepted input
-before transport failure. Do not blindly retry. Use returned recovery data or
-`glass recover-run EXECUTION_ID`, re-observe, and reconcile state.
+## Common first-run failures
 
-Owned Rust sessions should call `BrowserSession::close().await`; this asks
-owned Chrome to close so profile state can flush before process fallback.
-Attach mode never owns or closes the external Chrome process.
+| Symptom | Meaning | Recovery |
+|---|---|---|
+| `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
+| Port `9222` is occupied | Another process owns the preferred CDP port | In TUI use `browser launch --port auto`, or explicitly attach only after Glass verifies the endpoint. |
+| Multiple targets found | More than one page is eligible | Run `targets` or `browser targets PORT`, then select an explicit ID/number. |
+| LSP unavailable | The detected language server is missing or failed initialization | Install the server, inspect diagnostics, and retry; Glass does not fabricate diagnostics. |
+| One-shot process cannot remain running | The CLI owner is exiting | Use `--wait` for finite work or use TUI/MCP/daemon for a resident process. |
+| Stale revision | Browser/project state changed after observation | Re-observe or reread, then issue a new revision-bound request. |
+| MCP request rejected before tools | Initialization lifecycle is incomplete | Complete negotiation and send `notifications/initialized`. |
+
+## Close safely
+
+- Exit the TUI cleanly so it restores terminal state and writes the bounded
+  reconnect capsule.
+- Stop owned project processes before deleting their project or uninstalling
+  Glass.
+- Stop the daemon with `glass daemon stop` before uninstalling `glass-dev`.
+- Close owned browser sessions so named profiles can flush.
+- Revoke Remote View with `browser remote-view close` when sharing ends.
+- Do not assume an interrupted mutation is safe to repeat; reconcile its
+  execution ID and current revision.
 
 ## Next steps
 
 - [Complete feature reference](features.md)
 - [CLI reference](cli.md)
+- [Development Runtime](development-runtime.md)
+- [Mobile and remote development](mobile-remote.md)
+- [MCP integration](mcp.md)
 - [Rust SDK](rust-sdk.md)
-- [Actions and revisions](actions.md)
-- [Semantic execution](semantic-execution.md)
 - [Security policy](../SECURITY.md)

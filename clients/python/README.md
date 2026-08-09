@@ -10,7 +10,7 @@ browser controls, and the complete local Development Runtime.
 From this directory, run:
 
 ```console
-python -m pip install .
+python3 -m pip install .
 ```
 
 The client does not install Chrome or Chromium.
@@ -35,6 +35,11 @@ try:
 finally:
     glass.close()
 ```
+
+`close()` stops the client transport and a child server started by this client.
+It does not terminate a separately owned daemon, daemon-resident project PTY,
+or attached browser. Always close the client from `finally` or a surrounding
+application shutdown hook.
 
 Use `daemon_socket="/path/to/glass.sock"` to connect to a running Linux or
 macOS daemon.
@@ -63,6 +68,20 @@ in logs or persistent files.
 
 The client accepts newline-delimited MCP frames and `Content-Length` frames.
 It limits each frame to 4 MiB.
+
+## Errors, cancellation, and compatibility
+
+Calls preserve the server's typed error data. Inspect error kind, phase, retry
+classification, and possible-effect state before retrying. Never transparently
+replay a mutation after EOF or a timeout. Refresh stale observations, reacquire
+expired daemon leases, and handle `cursorExpired` as an explicit event-history
+gap.
+
+Watcher `stop` callbacks and bounded wait helpers cancel local polling; they do
+not prove that a server mutation already dispatched had no effect.
+`initialize()` is the compatibility boundary. Require the negotiated schema or
+capability before an optional operation rather than relying only on matching
+package version text.
 
 ## Development Runtime
 
@@ -105,3 +124,14 @@ glass.project_capsule_save(project["root"], {"eventCursor": event["id"], "mobile
 
 Session, capsule, attention, and verification primitives are also typed. See
 [`examples/remote_cockpit.py`](examples/remote_cockpit.py).
+
+## Verification and removal
+
+Run `python3 smoke.py` with `GLASS_BINARY` set to the matching built executable;
+CI also builds a wheel with `python3 -m pip wheel --no-deps .`. Uninstall with
+the same interpreter used for installation, for example
+`python3 -m pip uninstall glass-browser-client`. This removes only the Python package;
+it does not remove Glass binaries, profiles, project state, or configuration.
+Follow the repository
+[uninstall guide](../../docs/installation.md#fully-uninstall-glass) for the
+full machine cleanup.

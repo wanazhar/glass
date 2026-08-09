@@ -35,8 +35,15 @@ claim.
    revision; ambiguous targets and failed postconditions are likewise reported
    as structured errors.
 
-The MCP server or either thin client from
-[`clients/typescript`](https://github.com/wanazhar/glass/tree/main/clients/typescript) and
-[`clients/python`](https://github.com/wanazhar/glass/tree/main/clients/python). Keep the terminal visible, show the
-compact JSON response, and omit credentials, cookies, screenshots, and page
-secrets.
+The same sequence can run inside one MCP server lifecycle or through either
+repository client:
+[`clients/typescript`](https://github.com/wanazhar/glass/tree/main/clients/typescript)
+and
+[`clients/python`](https://github.com/wanazhar/glass/tree/main/clients/python).
+Do not translate it into three independent one-shot CLI commands: navigation,
+observation, and the revision-guarded click must share one browser session.
+
+For a recording, keep the terminal visible, show the compact JSON response,
+and omit credentials, cookies, screenshots, and page secrets. Stop if the
+fixture or expected target differs; the displayed reference and revision are
+illustrative, not stable values for another page load.

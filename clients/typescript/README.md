@@ -37,6 +37,10 @@ console.log(page);
 glass.close();
 ```
 
+`close()` stops the client transport and a child server started by this client.
+It does not terminate a separately owned daemon, daemon-resident project PTY,
+or attached browser. Put it in a `finally` block in long-running programs.
+
 Use `daemonSocket: "/path/to/glass.sock"` to connect to a running Linux or
 macOS daemon.
 
@@ -64,6 +68,20 @@ in logs or persistent files.
 
 The client accepts newline-delimited MCP responses and `Content-Length` frames.
 It limits each frame to 4 MiB.
+
+## Errors, cancellation, and compatibility
+
+Rejected calls preserve the server's typed error data. Inspect the error kind,
+phase, retry classification, and possible-effect field before deciding to
+retry; never automatically replay a mutation after a transport loss. Refresh
+observations after stale revisions, reacquire an expired daemon lease, and
+resume event reads from a valid cursor after compaction.
+
+Pass `AbortSignal` to watchers and wait helpers that accept it. Cancellation
+stops the local wait; it is not proof that a previously dispatched server-side
+mutation had no effect. `initialize()` is the compatibility boundary: require
+the schema/capability you consume instead of using package version equality as
+a substitute for negotiation.
 
 ## Development Runtime
 
@@ -118,3 +136,14 @@ await glass.projectCapsuleSave(project.root, { eventCursor: event.id, mobileView
 `onAttentionRequired()` deduplicates needs-attention IDs and stops through an
 `AbortSignal`. See
 [`examples/remote-cockpit.ts`](examples/remote-cockpit.ts).
+
+## Verification and removal
+
+Run `npm run typecheck`, `npm run build`, and then `node smoke.mjs` with
+`GLASS_BINARY` set to the matching built executable. The smoke suite compares
+the client's negotiated tool inventory with the checked-in fixture.
+Remove the local package using the package manager or link method used to
+install it. Removing the client does not remove the Glass executable, browser
+profiles, project state, or configuration; follow the repository
+[uninstall guide](../../docs/installation.md#fully-uninstall-glass) for those
+resources.

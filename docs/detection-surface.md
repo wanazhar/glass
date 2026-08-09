@@ -2,11 +2,14 @@
 
 **Version:** 1
 
-**Chrome build:** Managed Chromium (see `glass install-chromium`)
+**Browser build:** Record the exact Chrome/Chromium version used for each run
+(see `glass install-chromium`)
 
-**Methodology:** Stock Chrome launched via Glass's owned-process path
-(`--remote-debugging-port`). No flags beyond Glass defaults. All measurements
-taken through the page's own JavaScript context via `Runtime.evaluate`.
+**Methodology:** Launch the selected Chrome/Chromium through Glass's owned
+process path, record the full version and launch mode, and collect signals from
+the page JavaScript context through explicit `evaluate`. The tables below are a
+surface inventory; values that depend on Chrome version or headless mode must be
+remeasured and retained with the run rather than treated as permanent facts.
 
 ---
 
@@ -22,15 +25,16 @@ Glass does not attempt to hide or alter these signals.
 
 | Property | Value |
 |----------|-------|
-| **Trigger** | Chrome sets this when launched with `--remote-debugging-port` |
-| **Detected by** | `navigator.webdriver === true` |
-| **Glass exposure** | Always `true` when Glass owns the browser |
-| **Attach mode** | Also `true` — the CDP port is open regardless of launch method |
+| **Possible trigger** | Chrome launch automation/debugging configuration; behavior is version-dependent |
+| **Detected by** | `navigator.webdriver` in the page context |
+| **Glass contract** | Glass does not clear or spoof the value |
+| **Attach mode** | Measure the external browser; Glass did not choose its launch flags |
 
 ### Why It Exists
 
-Chrome's WebDriver specification compliance: automation that uses the remote
-debugging protocol must self-identify. This is intentional, not a leak.
+Do not infer the value from CDP connectivity alone. Chrome has changed the
+conditions that set this signal across releases. The supported Glass claim is
+that the runtime does not conceal or rewrite the browser's value.
 
 ### Detection Script
 
@@ -66,9 +70,11 @@ can detect Glass's presence through side-channel timing if it instruments
 
 ## 3. Headless Mode Tells
 
-Glass does **not** default to headless mode. `--headed` is implicit.
+Glass CLI sessions are headless by default. Pass `--headed` to request a
+visible browser window. Record the selected mode because headless and headed
+runs have different detection and rendering surfaces.
 
-When a user optionally passes `--headless`:
+In headless mode, possible signals include:
 
 | Signal | Value |
 |--------|-------|
@@ -79,10 +85,9 @@ When a user optionally passes `--headless`:
 | Font metric differences | Headless font rendering may produce slightly different bounding boxes |
 | `requestAnimationFrame` | May not fire or fire at reduced rate |
 
-### Glass Default
-
-Glass launches **headed** Chrome. Headless mode is opt-in for CI. The headed
-default reduces detection surface compared to headless-first tools.
+The exact value of plugins, `window.chrome`, screen metrics, fonts, and frame
+pacing depends on the browser build and host. Re-run the probe; do not publish
+the illustrative possibilities above as observed values without evidence.
 
 ---
 
@@ -105,11 +110,11 @@ this is consistent with the Chrome DevTools security model.
 | Domain | Commands Used | Page-Visible Side Effects |
 |--------|--------------|--------------------------|
 | `Page` | `navigate`, `getFrameTree`, `createIsolatedWorld`, `captureScreenshot`, `handleJavaScriptDialog` | Isolated worlds detectable |
-| `Runtime` | `evaluate`, `callFunctionOn`, `resolveNode`, `releaseObject`, `enable` | `Runtime.enable` instrumentation |
+| `Runtime` | `evaluate`, `callFunctionOn`, `resolveNode`, `releaseObject`, `enable` | evaluation contexts and timing may be observable |
 | `DOM` | `getDocument`, `getFlattenedDocument`, `querySelector`, `describeNode`, `resolveNode` | `DOM.documentUpdated` events |
 | `Accessibility` | `getFullAXTree`, `getPartialAXTree` | Minimal — server-side computation |
 | `Input` | `dispatchMouseEvent`, `dispatchKeyEvent` | Events dispatched as trusted; indistinguishable from user input |
-| `Network` | `enable`, `setRequestInterception` (policy-gated) | Interception hooks observable |
+| `Network` | enabled domains and policy-controlled network operations | timing and request behavior may be observable |
 | `Target` | `getTargets`, `createTarget`, `closeTarget`, `setAutoAttach`, `attachToTarget` | Target lifecycle; invisible to page |
 | `Browser` | `getVersion`, `close`, `setDownloadBehavior` | Browser-level; invisible to page |
 
@@ -151,11 +156,13 @@ analysis. `--interaction human` mimics human timing but is not undetectable.
 
 ## Re-running This Report
 
-To regenerate this report against a different Chrome build:
+To regenerate this report against a different Chrome build, first keep the
+session alive in the TUI or MCP lifecycle, navigate to a controlled local
+fixture, and then collect the signals in that same session. The expression is:
 
 ```sh
 # Collect signals through evaluate
-glass evaluate "JSON.stringify({
+evaluate "JSON.stringify({
   webdriver: navigator.webdriver,
   plugins: Array.from(navigator.plugins).map(p => p.name),
   mimeTypes: Array.from(navigator.mimeTypes).map(m => m.type),
@@ -170,6 +177,11 @@ glass evaluate "JSON.stringify({
   onLine: navigator.onLine,
 })"
 ```
+
+Record `glass --version`, the browser version/path, headed/headless mode, OS,
+launch versus attach ownership, and the raw bounded result. A standalone
+one-shot `glass evaluate` without prior navigation measures a different page or
+session and is not a reproduction of the intended fixture.
 
 Update this document when a Chrome upgrade or Glass release changes the
 detection surface.

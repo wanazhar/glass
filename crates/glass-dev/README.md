@@ -17,6 +17,10 @@ glass --help
 glass-browser --help
 ```
 
+`glass-dev` is the umbrella package and owns both installed commands. Do not
+also install `glass-browser` into the same Cargo home unless you intentionally
+want that package to replace the shared `glass-browser` executable.
+
 Chrome or Chromium is needed only for browser-backed operations. Project
 inspection, files, search, local harness, Task Protocol/Web IR operations,
 policy preflight, and many diagnostics are browser-free.
@@ -118,5 +122,6 @@ JavaScript evaluation are explicit and policy-sensitive.
 - [MCP integration](https://github.com/wanazhar/glass/blob/main/docs/mcp.md)
 - [Complete MCP tool catalog](https://github.com/wanazhar/glass/blob/main/docs/mcp-tools.md)
 - [Security policy](https://github.com/wanazhar/glass/blob/main/SECURITY.md)
+- [Complete uninstall and retained state](https://github.com/wanazhar/glass/blob/main/docs/installation.md#fully-uninstall-glass)
 
 License: MIT.

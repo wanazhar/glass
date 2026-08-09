@@ -14,7 +14,9 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 COMMANDS_RE = re.compile(r"^Commands:\s*$\n(?P<body>.*?)(?:\n\n|\nArguments:|\nOptions:)", re.MULTILINE | re.DOTALL)
-COMMAND_RE = re.compile(r"^  (?P<name>[a-z][a-z0-9-]*)\s{2,}", re.MULTILINE)
+COMMAND_RE = re.compile(
+    r"^  (?P<name>[a-z][a-z0-9-]*)(?:[ \t]{2,}.*)?$", re.MULTILINE
+)
 MODULE_RE = re.compile(r"^pub mod ([a-z][a-z0-9_]*);", re.MULTILINE)
 
 
@@ -63,9 +65,9 @@ def check_links(paths: list[pathlib.Path]) -> list[str]:
     return failures
 
 
-def commands(binary: pathlib.Path) -> list[str]:
+def commands(binary: pathlib.Path, path: tuple[str, ...] = ()) -> list[str]:
     result = subprocess.run(
-        [str(binary), "--help"],
+        [str(binary), *path, "--help"],
         cwd=ROOT,
         check=True,
         text=True,
@@ -75,7 +77,68 @@ def commands(binary: pathlib.Path) -> list[str]:
     match = COMMANDS_RE.search(result.stdout)
     if not match:
         raise ValueError(f"cannot parse Commands section from {binary}")
-    return COMMAND_RE.findall(match.group("body"))
+    return [command for command in COMMAND_RE.findall(match.group("body")) if command != "help"]
+
+
+def mcp_schema_metrics(binary: pathlib.Path) -> tuple[int, int]:
+    process = subprocess.Popen(
+        [str(binary), "--mcp"],
+        cwd=ROOT,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    try:
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05", "capabilities": {},
+                "clientInfo": {"name": "documentation-coverage", "version": "1"},
+            },
+        }
+        process.stdin.write(json.dumps(initialize, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+        initialized = json.loads(process.stdout.readline())
+        if initialized.get("id") != 1 or "error" in initialized:
+            raise ValueError(f"MCP initialization failed for {binary}: {initialized}")
+        process.stdin.write(
+            '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+        )
+        process.stdin.write(
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+        )
+        process.stdin.flush()
+        listed = json.loads(process.stdout.readline())
+        if listed.get("id") != 2 or "error" in listed:
+            raise ValueError(f"MCP tools/list failed for {binary}: {listed}")
+        tools = listed.get("result", {}).get("tools", [])
+
+        # Match JavaScript JSON.stringify, which renders integral JSON numbers
+        # as integers (`1`, not Python's `1.0`). The public scoreboard uses
+        # JSON.stringify and defines the release measurement.
+        def javascript_numbers(value: object) -> object:
+            if isinstance(value, float) and value.is_integer():
+                return int(value)
+            if isinstance(value, list):
+                return [javascript_numbers(item) for item in value]
+            if isinstance(value, dict):
+                return {key: javascript_numbers(item) for key, item in value.items()}
+            return value
+
+        encoded = json.dumps(
+            javascript_numbers(tools), ensure_ascii=False, separators=(",", ":")
+        ).encode()
+        return len(tools), len(encoded)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
 
 def main() -> None:
@@ -88,6 +151,11 @@ def main() -> None:
     failures: list[str] = []
 
     cli_text = (ROOT / "docs/cli.md").read_text(encoding="utf-8")
+    cli_inventory = json.loads(
+        (ROOT / "docs/cli-inventory.json").read_text(encoding="utf-8")
+    )
+    if cli_inventory.get("schemaVersion") != 1:
+        failures.append("docs/cli-inventory.json schemaVersion must be 1")
     for binary in (args.glass, args.glass_browser):
         if not binary.is_file():
             failures.append(f"build documentation inventory binary first: {binary}")
@@ -97,12 +165,39 @@ def main() -> None:
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             failures.append(str(error))
             continue
+        expected_inventory = cli_inventory.get("binaries", {}).get(binary.name)
+        if inventory != expected_inventory:
+            failures.append(
+                f"docs/cli-inventory.json {binary.name} inventory differs from live --help: "
+                f"expected {expected_inventory!r}, got {inventory!r}"
+            )
         for command in inventory:
             documented = f"`{command}`" in cli_text or re.search(
                 rf"^{re.escape(command)}(?:\s|$)", cli_text, re.MULTILINE
             )
             if command != "help" and not documented:
                 failures.append(f"docs/cli.md omits {binary.name} command `{command}`")
+
+    if args.glass.is_file():
+        for raw_path, expected_inventory in cli_inventory.get("nested", {}).items():
+            path = tuple(raw_path.split())
+            try:
+                inventory = commands(args.glass, path)
+            except (OSError, subprocess.CalledProcessError, ValueError) as error:
+                failures.append(str(error))
+                continue
+            if inventory != expected_inventory:
+                failures.append(
+                    f"docs/cli-inventory.json `{raw_path}` differs from live --help: "
+                    f"expected {expected_inventory!r}, got {inventory!r}"
+                )
+            if f"`{raw_path}`" not in cli_text and f"`{path[0]}`" not in cli_text:
+                failures.append(f"docs/cli.md omits nested family `{raw_path}`")
+            for command in inventory:
+                if f"`{command}`" not in cli_text:
+                    failures.append(
+                        f"docs/cli.md omits `{raw_path}` subcommand `{command}`"
+                    )
 
     fixture = json.loads(
         (ROOT / "crates/glass-browser/tests/fixtures/client-conformance-v1.json").read_text(
@@ -113,6 +208,30 @@ def main() -> None:
     for tool in fixture["tools"]:
         if f"`{tool}`" not in mcp_text:
             failures.append(f"docs/mcp-tools.md omits MCP tool `{tool}`")
+
+    schema_budget_text = (ROOT / "docs/mcp-schema-budget.md").read_text(
+        encoding="utf-8"
+    )
+    if args.glass.is_file():
+        try:
+            tool_count, schema_bytes = mcp_schema_metrics(args.glass)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            failures.append(str(error))
+        else:
+            if tool_count != len(fixture["tools"]):
+                failures.append(
+                    "live MCP tool count differs from client conformance fixture: "
+                    f"{tool_count} != {len(fixture['tools'])}"
+                )
+            markers = (
+                f"| Negotiated tools | {tool_count} |",
+                f"| Serialized `tools` array | {schema_bytes:,} UTF-8 bytes |",
+            )
+            for marker in markers:
+                if marker not in schema_budget_text:
+                    failures.append(
+                        f"docs/mcp-schema-budget.md omits live measurement `{marker}`"
+                    )
 
     examples_text = (ROOT / "docs/examples.md").read_text(encoding="utf-8")
     examples = sorted((ROOT / "crates/glass-browser/examples").glob("*.rs"))

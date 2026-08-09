@@ -1,15 +1,31 @@
 # Glass documentation
 
-These guides describe the published `0.3.2` release. `Local only` means a
-capability is present in this checkout but is not part of the published
-contract. Platform certification remains separate from source availability;
-see [cross-platform feature parity](feature-parity.md).
+These guides describe the complete Glass product in this `0.3.3` source
+checkout. The currently published crates remain `0.3.2`. `Local only` means a
+capability exists in the checkout but is not part of the published contract.
+Platform certification remains separate from source availability; see
+[cross-platform feature parity](feature-parity.md).
+
+Glass has two installable product boundaries:
+
+```text
+glass-dev (complete product)
+  ├─ glass            project runtime · TUI · agents · MCP · browser
+  └─ glass-browser    browser-only compatible entry point
+          │
+          └─ exact dependency on glass-browser (focused package/library)
+```
+
+Start with the complete product unless you specifically need only browser
+automation or the embeddable Rust crate. Package READMEs describe crates.io
+installation; this index owns the cross-product documentation map.
 
 ## Choose your path
 
 | You are… | Start here | Then read |
 |---|---|---|
 | Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
+| Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [docs.rs](https://docs.rs/glass-browser) |
@@ -20,6 +36,12 @@ see [cross-platform feature parity](feature-parity.md).
 The [complete feature reference](features.md) maps every implemented domain to
 its CLI, TUI, MCP, and Rust entry points. It is the fastest way to answer “is
 this supported and how do I invoke it?”
+
+Core workflow guides state prerequisites, commands, state ownership, limits,
+failure behavior, recovery, and verification. Dense catalogs such as the CLI,
+MCP tool, feature, and SDK references optimize for exact lookup. Historical
+records under `docs/plan/` preserve their original version claims and are not
+current user instructions.
 
 ## Core user guides
 
@@ -61,8 +83,8 @@ this supported and how do I invoke it?”
   environment requirements, and output/claim boundaries.
 - [MCP integration](mcp.md) — framing, initialization, agreement negotiation,
   cancellation, concurrency, errors, security, and response modes.
-- [MCP tool catalog](mcp-tools.md) — every tool in the negotiated `0.3.2`
-  conformance inventory grouped by domain.
+- [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
+  negotiated conformance inventory grouped by domain.
 - [MCP schema budget](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
 - [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —

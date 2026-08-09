@@ -28,7 +28,8 @@ The current matrix intentionally marks ordinary cross-platform capabilities as
 product support claim. Native extensions are `experimental` only for explicit
 opt-in on Linux ARM64, where the required native sandbox policy is defined,
 and remain `blockedBySecurityGate` on the other declared targets. Windows is
-outside this matrix and remains unsupported.
+outside this native feature matrix: browser-free source checks exist, but its
+browser, PTY, and TUI runtime is not certified.
 
 The JSON contract is defined by
 [feature-parity-v1.schema.json](schema/feature-parity-v1.schema.json). The

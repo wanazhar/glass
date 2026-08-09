@@ -100,8 +100,8 @@ Run:
 cargo fmt --all -- --check
 python3 scripts/check-version-sync.py
 python3 scripts/check-documentation-depth.py
-cargo test --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+scripts/check-rust-workspace.sh test
+scripts/check-rust-workspace.sh clippy
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 cargo package --package glass-browser --locked
@@ -113,6 +113,12 @@ cargo audit
 cargo check --manifest-path fuzz/Cargo.toml --bins
 GLASS_PREVIOUS_VERSION=0.3.2 scripts/smoke-clean-install.sh
 ```
+
+The split-package test and Clippy script is required: the core-only and full
+packages both intentionally publish `glass-browser`, so one workspace-wide
+all-target invocation asks Cargo to produce two same-named artifacts. Package
+validation preserves both install contracts without emitting that collision
+warning.
 
 Then complete these release checks:
 

@@ -32,7 +32,7 @@ be carried forward as current evidence.
 Build the exact executable, then run the browser-free probe:
 
 ```console
-cargo build --workspace --all-features --locked
+cargo build --package glass-dev --all-features --locked
 GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
 ```
 

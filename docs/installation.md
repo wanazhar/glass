@@ -20,11 +20,18 @@ runtime.
 Build both release executables:
 
 ```console
-cargo build --release --locked
+cargo build --package glass-dev --release --locked
 ```
 
 The executables are `target/release/glass` and
 `target/release/glass-browser`; `glass-dev` packages both entry points.
+
+Build, test, and lint the two packages in separate Cargo invocations. Both
+packages intentionally publish a binary target named `glass-browser`; asking
+Cargo to build every workspace target in one invocation triggers Cargo's
+output-filename-collision warning even though installed package ownership is
+well-defined. `scripts/check-rust-workspace.sh check|test|clippy` performs the
+complete split-package gates without the collision or lost coverage.
 
 Install the local checkout:
 
@@ -351,7 +358,8 @@ explicit allow decision. It does not support a confirmation token.
 
 For a deployment:
 
-1. Build on the target platform with `cargo build --release --locked`.
+1. Build on the target platform with
+   `cargo build --package glass-dev --release --locked`.
 2. Keep Chrome or Chromium current.
 3. Keep the CDP endpoint on a trusted local interface.
 4. Use a dedicated operating-system account and browser profile.

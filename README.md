@@ -405,8 +405,8 @@ record.
 
 ```console
 cargo fmt --all -- --check
-cargo test --workspace --all-targets --all-features --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+scripts/check-rust-workspace.sh test
+scripts/check-rust-workspace.sh clippy
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 python3 scripts/check-documentation-coverage.py
 python3 scripts/check-documentation-depth.py

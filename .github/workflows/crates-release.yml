@@ -69,10 +69,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint with Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: scripts/check-rust-workspace.sh clippy
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: scripts/check-rust-workspace.sh test
 
       - name: Check package version synchronization
         run: python3 scripts/check-version-sync.py

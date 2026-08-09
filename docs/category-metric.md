@@ -34,7 +34,7 @@ optional fields were enabled.
 Build the current checkout and provide a detectable Chromium executable:
 
 ```sh
-cargo build --release --locked
+cargo build --package glass-dev --release --locked
 GLASS_BINARY_PATH=target/release/glass \
   GLASS_SCORECARD_ITERATIONS=100 \
   CHROME_PATH=/path/to/chromium \

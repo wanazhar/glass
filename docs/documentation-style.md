@@ -83,7 +83,8 @@ Build both debug binaries, then run the inventory/link gate whenever a public
 command, MCP tool, example, module, package README, or Markdown path changes:
 
 ```console
-cargo build --workspace --all-features --locked
+cargo build --package glass-browser --all-features --locked
+cargo build --package glass-dev --all-features --locked
 python3 scripts/check-documentation-coverage.py
 python3 scripts/check-documentation-depth.py
 python3 scripts/check-release-documentation.py

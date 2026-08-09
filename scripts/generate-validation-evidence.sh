@@ -16,11 +16,11 @@ platform_smoke_passed="${GLASS_PLATFORM_SMOKE_PASSED:-0}"
 platform_raw_report="${GLASS_PLATFORM_RAW_REPORT:-}"
 
 test_status=passed
-if ! cargo test --workspace --all-targets --locked >/dev/null; then test_status=failed; fi
+if ! scripts/check-rust-workspace.sh test >/dev/null; then test_status=failed; fi
 fmt_status=passed
 if ! cargo fmt --all -- --check >/dev/null; then fmt_status=failed; fi
 clippy_status=passed
-if ! cargo clippy --workspace --all-targets --all-features --locked -- -D warnings >/dev/null; then clippy_status=failed; fi
+if ! scripts/check-rust-workspace.sh clippy >/dev/null; then clippy_status=failed; fi
 docs_status=passed
 if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked >/dev/null; then docs_status=failed; fi
 documentation_coverage_status=passed
@@ -88,8 +88,8 @@ base = {
 }
 check_commands = {
     "fmt": "cargo fmt --all -- --check",
-    "test": "cargo test --workspace --all-targets --locked",
-    "clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "test": "scripts/check-rust-workspace.sh test",
+    "clippy": "scripts/check-rust-workspace.sh clippy",
     "docs": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --locked",
     "documentation-coverage": "python3 scripts/check-documentation-coverage.py",
     "documentation-depth": "python3 scripts/check-documentation-depth.py",

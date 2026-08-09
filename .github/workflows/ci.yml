@@ -16,9 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Check both product packages
-        run: cargo check --workspace --all-targets --all-features --locked
+        run: |
+          cargo check --package glass-browser --all-targets --all-features --locked
+          cargo check --package glass-dev --all-targets --all-features --locked
       - name: Run browser-free contract tests
-        run: cargo test --workspace --all-targets --locked
+        run: |
+          cargo test --package glass-browser --all-targets --all-features --locked
+          cargo test --package glass-dev --all-targets --all-features --locked
 
   test:
     runs-on: ubuntu-latest
@@ -34,10 +38,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint with Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: scripts/check-rust-workspace.sh clippy
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: scripts/check-rust-workspace.sh test
 
       - name: Install native development fixtures
         run: |

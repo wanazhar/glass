@@ -8,6 +8,7 @@ pub mod agents;
 pub mod daemon;
 pub mod debugger;
 pub mod git;
+pub mod intelligence;
 pub mod kernels;
 pub mod lsp;
 pub mod testing;
@@ -17,6 +18,10 @@ pub mod workspace;
 use glass_browser::cli::args::Cli;
 
 pub use agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
+pub use intelligence::{
+    CausalPath, DevelopmentEdge, DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind,
+    ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,
+};
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};

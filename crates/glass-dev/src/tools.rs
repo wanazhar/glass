@@ -4,6 +4,7 @@ use crate::agents::AgentSpec;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
 use crate::workspace::DevelopmentWorkspace;
+use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput};
 use glass_browser::development::{
     AgentToolGateway, DevelopmentError, DevelopmentResult, HarnessRequest, ToolAuthorization,
     ToolCall, ToolDescriptor,
@@ -84,21 +85,83 @@ impl DevelopmentToolRouter {
                 call.name
             )));
         }
+        let actor_id = context.authorization.actor.id.clone();
+        let project_revision = workspace.project().revision();
+        let resource = format!("tool:{}", call.id);
+        let argument_bytes = serde_json::to_vec(&call.arguments)?.len();
+        workspace.intelligence_mut().upsert_node(DevelopmentNode {
+            id: resource.clone(),
+            kind: DevelopmentNodeKind::ToolCall,
+            label: call.name.clone(),
+            revision: project_revision,
+            stale: false,
+            evidence: serde_json::json!({
+                "toolCallId":call.id,
+                "name":call.name,
+                "mutating":descriptor.mutating,
+                "argumentBytes":argument_bytes
+            }),
+        })?;
+        workspace.intelligence_mut().link(
+            "repository:root",
+            &resource,
+            "receivedToolCall",
+            project_revision,
+            &actor_id,
+            serde_json::json!({"name":call.name}),
+        )?;
+        workspace.intelligence_mut().record(ObservableEventInput {
+            actor: &actor_id,
+            subsystem: "tool",
+            kind: "called",
+            resource: Some(&resource),
+            workspace_revision: project_revision,
+            evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating}),
+            rationale: None,
+        })?;
         let result = if service_descriptors()
             .iter()
             .any(|descriptor| descriptor.name == call.name)
         {
-            self.execute_service(workspace, call, context)?
+            self.execute_service(workspace, call, context)
         } else {
             self.core
-                .execute(workspace.project_mut(), call, &context.authorization)?
+                .execute(workspace.project_mut(), call, &context.authorization)
         };
-        if serde_json::to_vec(&result)?.len() > RESULT_LIMIT {
-            return Err(DevelopmentError::InvalidInput(format!(
-                "tool result exceeds the {RESULT_LIMIT} byte limit"
-            )));
+        match result {
+            Ok(result) => {
+                let result_bytes = serde_json::to_vec(&result)?.len();
+                if result_bytes > RESULT_LIMIT {
+                    return Err(DevelopmentError::InvalidInput(format!(
+                        "tool result exceeds the {RESULT_LIMIT} byte limit"
+                    )));
+                }
+                let resulting_revision = workspace.project().revision();
+                workspace.intelligence_mut().record(ObservableEventInput {
+                    actor: &actor_id,
+                    subsystem: "tool",
+                    kind: "completed",
+                    resource: Some(&resource),
+                    workspace_revision: resulting_revision,
+                    evidence: serde_json::json!({"name":call.name,"resultBytes":result_bytes}),
+                    rationale: None,
+                })?;
+                Ok(result)
+            }
+            Err(error) => {
+                let resulting_revision = workspace.project().revision();
+                workspace.intelligence_mut().record(ObservableEventInput {
+                    actor: &actor_id,
+                    subsystem: "tool",
+                    kind: "failed",
+                    resource: Some(&resource),
+                    workspace_revision: resulting_revision,
+                    evidence: serde_json::json!({"name":call.name,"error":error.to_string()}),
+                    rationale: None,
+                })?;
+                Err(error)
+            }
         }
-        Ok(result)
     }
 
     fn execute_service(
@@ -676,6 +739,20 @@ mod tests {
         let valid = context(&workspace, true);
         workspace.execute_tool(&call, &valid).unwrap();
         assert!(workspace.root().join("src/lib.rs").exists());
+        let replay = workspace.intelligence().replay(0, 16).unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["called", "completed"]
+        );
+        assert!(
+            workspace
+                .intelligence()
+                .path("repository:root", "tool:write-1")
+                .is_ok()
+        );
     }
 
     #[test]

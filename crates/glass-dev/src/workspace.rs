@@ -3,6 +3,7 @@
 use crate::agents::AgentRegistry;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::git::GitService;
+use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::KernelManager;
 use crate::lsp::LanguageService;
 use crate::testing::TestService;
@@ -23,6 +24,7 @@ pub struct DevelopmentWorkspace {
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
     git: Option<GitService>,
+    intelligence: DevelopmentIntelligence,
     kernels: KernelManager,
     language: LanguageService,
     tests: TestService,
@@ -54,11 +56,23 @@ impl DevelopmentWorkspace {
         let agents = AgentRegistry::new(&root)?;
         let language = LanguageService::new(&root)?;
         Ok(Self {
-            root,
+            root: root.clone(),
             agents,
             project,
             debuggers: BTreeMap::new(),
             git,
+            intelligence: {
+                let mut intelligence = DevelopmentIntelligence::default();
+                intelligence.upsert_node(DevelopmentNode {
+                    id: "repository:root".into(),
+                    kind: DevelopmentNodeKind::Repository,
+                    label: root.display().to_string(),
+                    revision: 0,
+                    stale: false,
+                    evidence: serde_json::json!({"root":root}),
+                })?;
+                intelligence
+            },
             kernels,
             language,
             tests,
@@ -130,6 +144,14 @@ impl DevelopmentWorkspace {
 
     pub fn git(&self) -> Option<&GitService> {
         self.git.as_ref()
+    }
+
+    pub fn intelligence(&self) -> &DevelopmentIntelligence {
+        &self.intelligence
+    }
+
+    pub fn intelligence_mut(&mut self) -> &mut DevelopmentIntelligence {
+        &mut self.intelligence
     }
 
     pub fn tests(&self) -> &TestService {

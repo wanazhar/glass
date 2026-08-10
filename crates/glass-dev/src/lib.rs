@@ -14,6 +14,7 @@ pub mod kernels;
 pub mod lsp;
 pub mod testing;
 pub mod tools;
+pub mod tui;
 pub mod workspace;
 
 use glass_browser::cli::args::Cli;
@@ -39,6 +40,9 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action).await;
+    }
+    if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
+        return tui::run(std::env::current_dir()?, cli.tui_layout);
     }
     glass_browser::cli::runner::dispatch(cli).await
 }

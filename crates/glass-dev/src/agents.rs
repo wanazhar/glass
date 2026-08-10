@@ -151,7 +151,6 @@ impl AgentRegistry {
     pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = std::fs::canonicalize(root)?;
         let sessions_dir = root.join(".glass").join("pi-sessions");
-        std::fs::create_dir_all(&sessions_dir)?;
         let (events_tx, events_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         Ok(Self {
             root,

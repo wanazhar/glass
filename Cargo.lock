@@ -850,8 +850,10 @@ name = "glass-dev"
 version = "0.3.3"
 dependencies = [
  "clap",
+ "crossterm",
  "glass-browser",
  "libc",
+ "ratatui",
  "rusqlite",
  "serde",
  "serde_json",

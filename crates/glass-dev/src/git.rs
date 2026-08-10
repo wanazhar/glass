@@ -352,12 +352,17 @@ impl GitService {
 
     pub fn remove_worktree(&self, path: &Path, force: bool) -> GitResult<()> {
         let path = absolute_worktree_path(path)?;
+        let path = path.canonicalize()?;
         if path == self.root {
             return Err(GitError::InvalidInput(
                 "cannot remove the primary repository worktree".into(),
             ));
         }
-        let known = self.worktrees()?.into_iter().any(|item| item.path == path);
+        let known = self.worktrees()?.into_iter().any(|item| {
+            item.path
+                .canonicalize()
+                .is_ok_and(|known_path| known_path == path)
+        });
         if !known {
             return Err(GitError::InvalidInput(format!(
                 "path is not an owned repository worktree: {}",
@@ -730,6 +735,31 @@ mod tests {
         assert!(validate_relative_path("/absolute").is_err());
         assert!(validate_ref("--upload-pack=bad").is_err());
         assert!(absolute_worktree_path(Path::new("relative")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_removal_accepts_a_canonical_path_alias() {
+        use std::os::unix::fs::symlink;
+
+        let root = repository();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let service = GitService::open(&root).unwrap();
+        service.stage(&["main.rs".into()]).unwrap();
+        service.commit("test: initialize fixture").unwrap();
+
+        let worktree = root.with_extension("worktree");
+        let alias = root.with_extension("worktree-alias");
+        service
+            .create_worktree(&worktree, "canonical-alias", true)
+            .unwrap();
+        symlink(&worktree, &alias).unwrap();
+
+        service.remove_worktree(&alias, true).unwrap();
+        assert!(!worktree.exists());
+
+        std::fs::remove_file(alias).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

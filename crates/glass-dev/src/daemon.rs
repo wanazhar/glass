@@ -455,6 +455,14 @@ pub async fn request(
     Ok(serde_json::from_str(&line)?)
 }
 
+#[cfg(not(unix))]
+pub async fn request(
+    _socket: &Path,
+    _request: &DevelopmentDaemonRequest,
+) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>> {
+    Err("the local development daemon requires Unix-domain sockets on this platform".into())
+}
+
 pub async fn forward_resident_tool_file(
     path: &Path,
     root: &Path,

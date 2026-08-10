@@ -315,16 +315,31 @@ export default function (pi: ExtensionAPI) {
 
   register("glass_browser_state", "glass.browser.state", "Inspect the authoritative resident browser state", Type.Object({}));
   register("glass_browser_start", "glass.browser.start", "Start or attach the resident browser", Type.Object({ port: Type.Optional(Type.Integer()), attach: Type.Optional(Type.Boolean()), incognito: Type.Optional(Type.Boolean()), headed: Type.Optional(Type.Boolean()), profile: Type.Optional(Type.String()), chromePath: Type.Optional(Type.String()) }), true);
+  register("glass_browser_attach", "glass.browser.attach", "Attach the resident browser to an existing CDP endpoint", Type.Object({ port: Type.Optional(Type.Integer()), incognito: Type.Optional(Type.Boolean()), headed: Type.Optional(Type.Boolean()), profile: Type.Optional(Type.String()), chromePath: Type.Optional(Type.String()) }), true);
+  register("glass_browser_reconnect", "glass.browser.reconnect", "Reconnect using the last authoritative browser configuration", Type.Object({}), true);
   register("glass_browser_stop", "glass.browser.stop", "Stop the resident browser", Type.Object({}), true);
   register("glass_browser_observe", "glass.browser.observe", "Create a fresh structured browser observation", Type.Object({}));
+  register("glass_browser_snapshot", "glass.browser.snapshot", "Capture a fresh accessibility snapshot", Type.Object({}));
+  register("glass_browser_semantic", "glass.browser.semantic", "Inspect fresh semantic browser evidence", Type.Object({ level: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("interactive"), Type.Literal("structured"), Type.Literal("detailed"), Type.Literal("raw")])) }));
+  register("glass_browser_diff", "glass.browser.diff", "Diff the cached and fresh browser observations", Type.Object({}));
   register("glass_browser_targets", "glass.browser.targets", "List authoritative browser targets", Type.Object({}));
   register("glass_browser_select_target", "glass.browser.target.select", "Select an authoritative browser target", Type.Object({ targetId: Type.String() }), true);
   register("glass_browser_navigate", "glass.browser.navigate", "Navigate with a browser revision guard", Type.Object({ url: Type.String(), browserRevision: Type.Integer({ minimum: 1 }), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
   register("glass_browser_act", "glass.browser.act", "Execute a revision-safe browser click, type, or scroll", Type.Object({ action: Type.Union([Type.Literal("click"), Type.Literal("type"), Type.Literal("scroll")]), browserRevision: Type.Integer({ minimum: 1 }), target: Type.Optional(Type.String()), text: Type.Optional(Type.String()), dx: Type.Optional(Type.Number()), dy: Type.Optional(Type.Number()) }), true);
   register("glass_browser_screenshot", "glass.browser.screenshot", "Capture an explicit bounded browser screenshot", Type.Object({}));
   register("glass_workflow_run", "glass.workflow.run", "Run a validated browser workflow", Type.Object({ definition: Type.Any(), inputs: Type.Optional(Type.Record(Type.String(), Type.Any())) }), true);
+  register("glass_workflow_list", "glass.workflow.list", "List resident workflow state and evidence", Type.Object({}));
   register("glass_workflow_pause", "glass.workflow.pause", "Export a redacted workflow checkpoint", Type.Object({}), true);
   register("glass_workflow_resume", "glass.workflow.resume", "Resume a reconciled workflow checkpoint", Type.Object({ definition: Type.Any(), inputs: Type.Optional(Type.Record(Type.String(), Type.Any())), checkpoint: Type.Any() }), true);
+  register("glass_workflow_cancel", "glass.workflow.cancel", "Cancel a checkpointed resident workflow", Type.Object({}), true);
+  register("glass_workflow_verify", "glass.workflow.verify", "Verify the latest resident workflow result", Type.Object({}));
+  register("glass_workflow_record", "glass.workflow.record", "Compile semantic interaction evidence into a workflow draft", Type.Object({ session: Type.Any() }));
+  register("glass_memory_retrieve", "glass.memory.retrieve", "Retrieve bounded advisory browser memory", Type.Object({ recordId: Type.Optional(Type.String()) }));
+  register("glass_memory_explain", "glass.memory.explain", "Explain one advisory memory record", Type.Object({ recordId: Type.String() }));
+  register("glass_memory_forget", "glass.memory.forget", "Forget one advisory memory record", Type.Object({ recordId: Type.String() }), true);
+  register("glass_semantic_inspect", "glass.semantic.inspect", "Inspect fresh authoritative browser semantics", Type.Object({}));
+  register("glass_semantic_diff", "glass.semantic.diff", "Diff fresh authoritative browser semantics", Type.Object({}));
+  register("glass_semantic_links", "glass.semantic.links", "Read source/runtime/browser semantic links", Type.Object({}));
 
   register("glass_git_diff", "glass.git.diff", "Read a native Git diff", Type.Object({ staged: Type.Optional(Type.Boolean()), path: Type.Optional(Type.String()) }));
   register("glass_git_stage", "glass.git.stage", "Stage repository paths", Type.Object({ paths: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }) }), true);
@@ -355,6 +370,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_lsp_stop", "glass.lsp.stop", "Stop a shared resident language server", Type.Object({ server: Type.String() }), true);
   register("glass_lsp_list", "glass.lsp.list", "List shared resident language servers", Type.Object({}));
   register("glass_lsp_events", "glass.lsp.events", "Read language-service attribution events", Type.Object({ since: Type.Optional(Type.Integer()) }));
+  register("glass_lsp_raw", "glass.lsp.raw", "Send one bounded advanced language-server request", Type.Object({ server: Type.String(), method: Type.String(), params: Type.Optional(Type.Any()), timeoutSeconds: Type.Optional(Type.Integer()) }));
   register("glass_lsp_diagnostics", "glass.lsp.diagnostics", "Read diagnostics from the shared resident LSP", Type.Object({ server: Type.String(), path: Type.String() }));
   register("glass_lsp_hover", "glass.lsp.hover", "Read hover information from the shared resident LSP", Type.Object(position));
   register("glass_lsp_completion", "glass.lsp.completion", "Request completion from the shared resident LSP", Type.Object(position));
@@ -376,7 +392,10 @@ export default function (pi: ExtensionAPI) {
   register("glass_debug_launch", "glass.debug.launch", "Launch a program through a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_debug_attach", "glass.debug.attach", "Attach a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_debug_configuration_done", "glass.debug.configuration_done", "Finish debugger configuration and start execution", Type.Object({ session: Type.String() }), true);
+  register("glass_debug_restart", "glass.debug.restart", "Restart a resident debug session", Type.Object({ session: Type.String(), configuration: Type.Optional(Type.Any()) }), true);
   register("glass_debug_breakpoint_set", "glass.debug.breakpoint.set", "Set source breakpoints", Type.Object({ session: Type.String(), path: Type.String(), lines: Type.Array(Type.Integer({ minimum: 1 })) }), true);
+  register("glass_debug_breakpoint_remove", "glass.debug.breakpoint.remove", "Remove all source breakpoints for a file", Type.Object({ session: Type.String(), path: Type.String() }), true);
+  register("glass_debug_exception_set", "glass.debug.exception.set", "Configure exception breakpoint filters", Type.Object({ session: Type.String(), filters: Type.Array(Type.String()) }), true);
   register("glass_debug_continue", "glass.debug.continue", "Continue one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
   register("glass_debug_pause", "glass.debug.pause", "Pause one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
   register("glass_debug_step", "glass.debug.step", "Step a debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer(), kind: Type.Union([Type.Literal("over"), Type.Literal("in"), Type.Literal("out")]) }), true);
@@ -386,6 +405,8 @@ export default function (pi: ExtensionAPI) {
   register("glass_debug_variables", "glass.debug.variables", "Read debugger variables", Type.Object({ session: Type.String(), variablesReference: Type.Integer() }));
   register("glass_debug_evaluate", "glass.debug.evaluate", "Evaluate in a debugger frame", Type.Object({ session: Type.String(), expression: Type.String(), frameId: Type.Optional(Type.Integer()), context: Type.Optional(Type.String()) }));
   register("glass_debug_events", "glass.debug.events", "Read bounded DAP events", Type.Object({ session: Type.String() }));
+  register("glass_debug_disconnect", "glass.debug.disconnect", "Disconnect a resident debugger", Type.Object({ session: Type.String(), terminateDebuggee: Type.Optional(Type.Boolean()) }), true);
+  register("glass_debug_terminate", "glass.debug.terminate", "Terminate a debuggee", Type.Object({ session: Type.String(), restart: Type.Optional(Type.Boolean()) }), true);
   register("glass_debug_stop", "glass.debug.stop", "Stop a resident debugger session", Type.Object({ session: Type.String() }), true);
 
   register("glass_agent_list", "glass.agent.list", "Inspect independent Glass Agent sessions", Type.Object({}));

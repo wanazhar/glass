@@ -10,6 +10,7 @@ use crate::kernels::KernelManager;
 use crate::lsp::LanguageService;
 use crate::testing::TestService;
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
+use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ pub struct DevelopmentWorkspace {
     intelligence: DevelopmentIntelligence,
     kernels: KernelManager,
     language: LanguageService,
+    knowledge: KnowledgeStore,
     tests: TestService,
     tools: DevelopmentToolRouter,
     generation: u64,
@@ -62,6 +64,14 @@ impl DevelopmentWorkspace {
         agents.set_additional_system_prompt(customization.agent_instructions())?;
         let language = LanguageService::new(&root)?;
         let browser = BrowserService::new(&root)?;
+        let knowledge = KnowledgeStore::open(default_knowledge_store_path_for_workspace(
+            "default",
+            &root.display().to_string(),
+            Some(1),
+        ))
+        .map_err(|error| {
+            glass_browser::development::DevelopmentError::Process(error.to_string())
+        })?;
         customization.run_hooks(
             "workspace.opened",
             &serde_json::json!({"root":root,"generation":1}),
@@ -89,6 +99,7 @@ impl DevelopmentWorkspace {
             },
             kernels,
             language,
+            knowledge,
             tests,
             tools,
             generation: 1,
@@ -194,6 +205,14 @@ impl DevelopmentWorkspace {
 
     pub fn language(&mut self) -> &mut LanguageService {
         &mut self.language
+    }
+
+    pub fn knowledge(&self) -> &KnowledgeStore {
+        &self.knowledge
+    }
+
+    pub fn knowledge_mut(&mut self) -> &mut KnowledgeStore {
+        &mut self.knowledge
     }
 
     pub fn tool_descriptors(&self) -> Vec<glass_browser::development::ToolDescriptor> {

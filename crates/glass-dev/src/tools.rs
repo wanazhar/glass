@@ -6,6 +6,9 @@ use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
 use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput};
+use glass_browser::browser::session::{
+    SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
+};
 use glass_browser::development::{
     AgentToolGateway, DevelopmentError, DevelopmentResult, HarnessRequest, ToolAuthorization,
     ToolCall, ToolDescriptor,
@@ -291,8 +294,24 @@ impl DevelopmentToolRouter {
                 workspace.browser().start(config)
             }
             "glass.browser.stop" => workspace.browser().stop(),
+            "glass.browser.attach" => {
+                let mut config: BrowserStartConfig = serde_json::from_value(call.arguments.clone())?;
+                config.attach = true;
+                workspace.browser().start(config)
+            }
+            "glass.browser.reconnect" => workspace.browser().reconnect(),
             "glass.browser.state" => workspace.browser().state(),
             "glass.browser.observe" => workspace.browser().observe(),
+            "glass.browser.snapshot" => workspace.browser().snapshot(),
+            "glass.browser.semantic" => workspace.browser().semantic(match optional_string(call, "level").unwrap_or("structured") {
+                "summary" => SemanticObservationLevel::Summary,
+                "interactive" => SemanticObservationLevel::Interactive,
+                "structured" => SemanticObservationLevel::Structured,
+                "detailed" => SemanticObservationLevel::Detailed,
+                "raw" => SemanticObservationLevel::Raw,
+                _ => return Err(DevelopmentError::InvalidInput("browser semantic level must be summary, interactive, structured, detailed, or raw".into())),
+            }),
+            "glass.browser.diff" => workspace.browser().diff(),
             "glass.browser.targets" => workspace.browser().targets(),
             "glass.browser.target.select" => workspace
                 .browser()
@@ -324,6 +343,7 @@ impl DevelopmentToolRouter {
                 }
             }
             "glass.browser.screenshot" => workspace.browser().screenshot(),
+            "glass.workflow.list" => workspace.browser().list_workflows(),
             "glass.workflow.run" => workspace.browser().run_workflow(
                 required_value(call, "definition")?.clone(),
                 value_map(call, "inputs")?,
@@ -334,6 +354,59 @@ impl DevelopmentToolRouter {
                 value_map(call, "inputs")?,
                 required_value(call, "checkpoint")?.clone(),
             ),
+            "glass.workflow.cancel" => workspace.browser().cancel_workflow(),
+            "glass.workflow.verify" => workspace.browser().verify_workflow(),
+            "glass.workflow.record" => {
+                let session: WorkflowRecordingSession = serde_json::from_value(
+                    required_value(call, "session")?.clone(),
+                )?;
+                Ok(serde_json::to_value(record_semantic_events(session).map_err(|error| {
+                    DevelopmentError::InvalidInput(error.to_string())
+                })?)?)
+            }
+            "glass.memory.retrieve" => {
+                if let Some(record_id) = optional_string(call, "recordId") {
+                    Ok(serde_json::to_value(
+                        workspace
+                            .knowledge()
+                            .get(record_id)
+                            .ok_or_else(|| DevelopmentError::NotFound(format!("memory record {record_id}")))?,
+                    )?)
+                } else {
+                    Ok(serde_json::json!({
+                        "records":workspace.knowledge().records(),
+                        "stats":workspace.knowledge().stats().map_err(|error| DevelopmentError::Process(error.to_string()))?
+                    }))
+                }
+            }
+            "glass.memory.explain" => {
+                let record_id = string("recordId")?;
+                let record = workspace
+                    .knowledge()
+                    .get(record_id)
+                    .ok_or_else(|| DevelopmentError::NotFound(format!("memory record {record_id}")))?;
+                Ok(serde_json::json!({
+                    "record":record,
+                    "advisory":true,
+                    "authority":"fresh browser evidence remains authoritative"
+                }))
+            }
+            "glass.memory.forget" => {
+                let record_id = string("recordId")?;
+                let change = workspace
+                    .knowledge_mut()
+                    .remove(record_id)
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                Ok(serde_json::to_value(change)?)
+            }
+            "glass.semantic.inspect" => workspace
+                .browser()
+                .semantic(SemanticObservationLevel::Structured),
+            "glass.semantic.diff" => workspace.browser().diff(),
+            "glass.semantic.links" => Ok(serde_json::json!({
+                "nodes":workspace.intelligence().nodes().collect::<Vec<_>>(),
+                "edges":workspace.intelligence().edges().collect::<Vec<_>>()
+            })),
             "glass.git.status" => git_value(workspace.git(), |git| git.status()),
             "glass.git.diff" => git_value(workspace.git(), |git| {
                 git.diff(
@@ -477,6 +550,16 @@ impl DevelopmentToolRouter {
             "glass.lsp.events" => Ok(serde_json::to_value(
                 workspace.language().events(unsigned(call, "since", 0)?),
             )?),
+            "glass.lsp.raw" => map_service(workspace.language().raw_request(
+                string("server")?,
+                &actor,
+                string("method")?,
+                call.arguments
+                    .get("params")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                timeout(call, 60)?.unwrap_or(Duration::from_secs(10)),
+            )),
             "glass.lsp.diagnostics" => map_service(workspace.language().diagnostics(
                 string("server")?,
                 &actor,
@@ -603,6 +686,14 @@ impl DevelopmentToolRouter {
             "glass.debug.configuration_done" => {
                 map_debug(debugger(workspace, string("session")?)?.configuration_done())
             }
+            "glass.debug.restart" => map_debug(
+                debugger(workspace, string("session")?)?.restart(
+                    call.arguments
+                        .get("configuration")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                ),
+            ),
             "glass.debug.breakpoint.set" => {
                 let lines = unsigned_array(call, "lines")?;
                 let breakpoints = lines
@@ -615,6 +706,14 @@ impl DevelopmentToolRouter {
                         .set_source_breakpoints(&PathBuf::from(string("path")?), &breakpoints),
                 )
             }
+            "glass.debug.breakpoint.remove" => map_debug(
+                debugger(workspace, string("session")?)?
+                    .set_source_breakpoints(&PathBuf::from(string("path")?), &[]),
+            ),
+            "glass.debug.exception.set" => map_debug(
+                debugger(workspace, string("session")?)?
+                    .set_exception_breakpoints(&string_array_or_empty(call, "filters")?),
+            ),
             "glass.debug.continue" => map_debug(
                 debugger(workspace, string("session")?)?
                     .continue_thread(integer(call, "threadId")?),
@@ -653,6 +752,14 @@ impl DevelopmentToolRouter {
             "glass.debug.events" => {
                 map_debug(debugger(workspace, string("session")?)?.poll_events())
             }
+            "glass.debug.disconnect" => map_debug(
+                debugger(workspace, string("session")?)?
+                    .disconnect(boolean(call, "terminateDebuggee", false)),
+            ),
+            "glass.debug.terminate" => map_debug(
+                debugger(workspace, string("session")?)?
+                    .terminate(boolean(call, "restart", false)),
+            ),
             "glass.debug.stop" => {
                 map_debug(workspace.stop_debugger(string("session")?))?;
                 Ok(serde_json::json!({"stopped":string("session")?}))
@@ -789,6 +896,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.diagnostics",
         "glass.lsp.list",
         "glass.lsp.events",
+        "glass.lsp.raw",
         "glass.lsp.hover",
         "glass.lsp.completion",
         "glass.lsp.definition",
@@ -826,8 +934,19 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.process.ports",
         "glass.browser.state",
         "glass.browser.observe",
+        "glass.browser.snapshot",
+        "glass.browser.semantic",
+        "glass.browser.diff",
         "glass.browser.targets",
         "glass.browser.screenshot",
+        "glass.workflow.list",
+        "glass.workflow.verify",
+        "glass.workflow.record",
+        "glass.memory.retrieve",
+        "glass.memory.explain",
+        "glass.semantic.inspect",
+        "glass.semantic.diff",
+        "glass.semantic.links",
     ];
     const MUTATE: &[&str] = &[
         "glass.git.stage",
@@ -852,10 +971,15 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.launch",
         "glass.debug.attach",
         "glass.debug.configuration_done",
+        "glass.debug.restart",
         "glass.debug.breakpoint.set",
+        "glass.debug.breakpoint.remove",
+        "glass.debug.exception.set",
         "glass.debug.continue",
         "glass.debug.pause",
         "glass.debug.step",
+        "glass.debug.disconnect",
+        "glass.debug.terminate",
         "glass.debug.stop",
         "glass.agent.spawn",
         "glass.agent.prompt",
@@ -877,6 +1001,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.process.input",
         "glass.process.resize",
         "glass.browser.start",
+        "glass.browser.attach",
+        "glass.browser.reconnect",
         "glass.browser.stop",
         "glass.browser.target.select",
         "glass.browser.navigate",
@@ -884,6 +1010,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.workflow.run",
         "glass.workflow.pause",
         "glass.workflow.resume",
+        "glass.workflow.cancel",
+        "glass.memory.forget",
     ];
     READ.iter()
         .map(|name| service_descriptor(name, false))
@@ -1260,11 +1388,26 @@ mod tests {
             "glass.process.health",
             "glass.process.ports",
             "glass.browser.observe",
+            "glass.browser.snapshot",
+            "glass.browser.attach",
+            "glass.browser.reconnect",
+            "glass.browser.semantic",
+            "glass.browser.diff",
             "glass.browser.navigate",
             "glass.browser.act",
+            "glass.workflow.list",
             "glass.workflow.run",
             "glass.workflow.pause",
             "glass.workflow.resume",
+            "glass.workflow.cancel",
+            "glass.workflow.verify",
+            "glass.workflow.record",
+            "glass.memory.retrieve",
+            "glass.memory.explain",
+            "glass.memory.forget",
+            "glass.semantic.inspect",
+            "glass.semantic.diff",
+            "glass.semantic.links",
             "glass.lsp.start",
             "glass.lsp.stop",
             "glass.lsp.list",
@@ -1281,8 +1424,14 @@ mod tests {
             "glass.lsp.range_formatting",
             "glass.lsp.semantic_tokens",
             "glass.lsp.rename",
+            "glass.lsp.raw",
             "glass.debug.configuration_done",
+            "glass.debug.restart",
+            "glass.debug.breakpoint.remove",
+            "glass.debug.exception.set",
             "glass.debug.threads",
+            "glass.debug.disconnect",
+            "glass.debug.terminate",
             "glass.agent.model",
             "glass.agent.thinking",
             "glass.agent.new-session",

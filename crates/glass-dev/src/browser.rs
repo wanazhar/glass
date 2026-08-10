@@ -2,7 +2,8 @@
 
 use glass_browser::browser::policy::BrowserPolicy;
 use glass_browser::browser::session::{
-    BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
+    BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
+    WorkflowDefinition, WorkflowRunResult,
 };
 use glass_browser::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
@@ -59,9 +60,13 @@ pub struct BrowserRuntimeState {
 
 enum BrowserCommand {
     Start(BrowserStartConfig),
+    Reconnect,
     Stop,
     State,
     Observe,
+    Snapshot,
+    Semantic(SemanticObservationLevel),
+    Diff,
     Targets,
     SelectTarget(String),
     Navigate {
@@ -94,6 +99,9 @@ enum BrowserCommand {
         inputs: BTreeMap<String, Value>,
         checkpoint: Value,
     },
+    ListWorkflows,
+    CancelWorkflow,
+    VerifyWorkflow,
 }
 
 type Reply = SyncSender<DevelopmentResult<Value>>;
@@ -146,12 +154,28 @@ impl BrowserService {
         self.call(BrowserCommand::Stop)
     }
 
+    pub fn reconnect(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Reconnect)
+    }
+
     pub fn state(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::State)
     }
 
     pub fn observe(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Observe)
+    }
+
+    pub fn snapshot(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Snapshot)
+    }
+
+    pub fn semantic(&self, level: SemanticObservationLevel) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Semantic(level))
+    }
+
+    pub fn diff(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Diff)
     }
 
     pub fn targets(&self) -> DevelopmentResult<Value> {
@@ -231,6 +255,18 @@ impl BrowserService {
             checkpoint,
         })
     }
+
+    pub fn list_workflows(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::ListWorkflows)
+    }
+
+    pub fn cancel_workflow(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::CancelWorkflow)
+    }
+
+    pub fn verify_workflow(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::VerifyWorkflow)
+    }
 }
 
 struct BrowserWorker {
@@ -240,6 +276,7 @@ struct BrowserWorker {
     workflow_state: String,
     active_workflow: Option<String>,
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
+    last_config: Option<BrowserStartConfig>,
 }
 
 impl BrowserWorker {
@@ -251,6 +288,7 @@ impl BrowserWorker {
             workflow_state: "idle".into(),
             active_workflow: None,
             last_workflow: None,
+            last_config: None,
         }
     }
 
@@ -285,35 +323,47 @@ impl BrowserWorker {
         self.last_workflow = None;
     }
 
+    async fn start_session(&mut self, config: BrowserStartConfig) -> DevelopmentResult<Value> {
+        if self.session.is_some() {
+            return Err(DevelopmentError::Conflict(
+                "browser workspace already has a connected session".into(),
+            ));
+        }
+        let policy = BrowserPolicy::development(&self.root)
+            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        let mut builder = SessionOptions::builder()
+            .port(config.port)
+            .attach(config.attach)
+            .incognito(config.incognito)
+            .headed(config.headed)
+            .profile(config.profile.clone())
+            .policy(policy);
+        if let Some(path) = config.chrome_path.clone() {
+            builder = builder.chrome_path(path);
+        }
+        let options = builder
+            .build()
+            .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+        let session = BrowserSession::start(&options)
+            .await
+            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        self.revision = Some(1);
+        self.session = Some(session);
+        self.last_config = Some(config);
+        serde_json::to_value(self.state()).map_err(Into::into)
+    }
+
     async fn execute(&mut self, command: BrowserCommand) -> DevelopmentResult<Value> {
         match command {
-            BrowserCommand::Start(config) => {
-                if self.session.is_some() {
-                    return Err(DevelopmentError::Conflict(
-                        "browser workspace already has a connected session".into(),
-                    ));
-                }
-                let policy = BrowserPolicy::development(&self.root)
-                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-                let mut builder = SessionOptions::builder()
-                    .port(config.port)
-                    .attach(config.attach)
-                    .incognito(config.incognito)
-                    .headed(config.headed)
-                    .profile(config.profile)
-                    .policy(policy);
-                if let Some(path) = config.chrome_path {
-                    builder = builder.chrome_path(path);
-                }
-                let options = builder
-                    .build()
-                    .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
-                let session = BrowserSession::start(&options)
-                    .await
-                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-                self.revision = Some(1);
-                self.session = Some(session);
-                serde_json::to_value(self.state()).map_err(Into::into)
+            BrowserCommand::Start(config) => self.start_session(config).await,
+            BrowserCommand::Reconnect => {
+                let config = self.last_config.clone().ok_or_else(|| {
+                    DevelopmentError::Conflict(
+                        "browser has no prior connection configuration to reconnect".into(),
+                    )
+                })?;
+                self.shutdown().await;
+                self.start_session(config).await
             }
             BrowserCommand::Stop => {
                 self.shutdown().await;
@@ -328,6 +378,27 @@ impl BrowserWorker {
                     .map_err(browser_error)?;
                 self.revision = Some(context.consistency.end_revision);
                 serde_json::to_value(context).map_err(Into::into)
+            }
+            BrowserCommand::Snapshot => {
+                let snapshot = self.session()?.snapshot().await.map_err(browser_error)?;
+                serde_json::to_value(snapshot).map_err(Into::into)
+            }
+            BrowserCommand::Semantic(level) => {
+                let observation = self
+                    .session()?
+                    .semantic_observe(level)
+                    .await
+                    .map_err(browser_error)?;
+                serde_json::to_value(observation).map_err(Into::into)
+            }
+            BrowserCommand::Diff => {
+                let delta = self
+                    .session()?
+                    .observe_delta()
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(delta.to_revision);
+                serde_json::to_value(delta).map_err(Into::into)
             }
             BrowserCommand::Targets => {
                 let targets = self
@@ -475,6 +546,39 @@ impl BrowserWorker {
                 self.last_workflow = Some((workflow, result.clone()));
                 serde_json::to_value(result).map_err(Into::into)
             }
+            BrowserCommand::ListWorkflows => Ok(serde_json::json!({
+                "state":self.workflow_state,
+                "active":self.active_workflow,
+                "last":self.last_workflow.as_ref().map(|(definition, result)| serde_json::json!({
+                    "name":definition.name,
+                    "version":definition.workflow_version,
+                    "result":result
+                }))
+            })),
+            BrowserCommand::CancelWorkflow => {
+                if self.workflow_state == "running" {
+                    return Err(DevelopmentError::Conflict(
+                        "workflow cancellation cannot preempt an in-flight synchronous browser command"
+                            .into(),
+                    ));
+                }
+                let previous = self.workflow_state.clone();
+                self.workflow_state = "cancelled".into();
+                self.active_workflow = None;
+                Ok(serde_json::json!({"cancelled":true,"previousState":previous}))
+            }
+            BrowserCommand::VerifyWorkflow => {
+                let (definition, result) = self.last_workflow.as_ref().ok_or_else(|| {
+                    DevelopmentError::Conflict("no workflow result is available to verify".into())
+                })?;
+                Ok(serde_json::json!({
+                    "verified":self.workflow_state == "completed",
+                    "name":definition.name,
+                    "version":definition.workflow_version,
+                    "finalRevision":result.final_revision,
+                    "result":result
+                }))
+            }
         }
     }
 }
@@ -572,6 +676,20 @@ mod tests {
         );
         let observed = service.observe().unwrap();
         assert_eq!(observed["page"]["title"], "Resident Glass");
+        assert!(
+            service
+                .snapshot()
+                .unwrap()
+                .as_object()
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+        assert_eq!(
+            service
+                .semantic(SemanticObservationLevel::Structured)
+                .unwrap()["page"]["title"],
+            "Resident Glass"
+        );
+        assert!(service.diff().unwrap()["toRevision"].as_u64().is_some());
         let revision = observed["consistency"]["end_revision"]
             .as_u64()
             .or_else(|| observed["consistency"]["endRevision"].as_u64())

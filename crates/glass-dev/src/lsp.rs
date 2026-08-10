@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const EVENT_LIMIT: usize = 512;
 
@@ -318,6 +319,22 @@ impl LanguageService {
             .filter(|event| event.sequence > since)
             .cloned()
             .collect()
+    }
+
+    pub fn raw_request(
+        &mut self,
+        name: &str,
+        actor: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> DevelopmentResult<LanguageResponse> {
+        validate_actor(actor)?;
+        let response = self
+            .client_mut(name)?
+            .raw_request(method, params, timeout)?;
+        self.record(name, actor, method, None, value_count(&response));
+        Ok(response)
     }
 
     fn record(

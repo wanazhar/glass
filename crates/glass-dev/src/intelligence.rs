@@ -236,6 +236,14 @@ impl DevelopmentIntelligence {
         self.nodes.get(id)
     }
 
+    pub fn nodes(&self) -> impl Iterator<Item = &DevelopmentNode> {
+        self.nodes.values()
+    }
+
+    pub fn edges(&self) -> impl Iterator<Item = &DevelopmentEdge> {
+        self.edges.iter()
+    }
+
     pub fn query_kind(&self, kind: DevelopmentNodeKind) -> Vec<&DevelopmentNode> {
         self.nodes
             .values()

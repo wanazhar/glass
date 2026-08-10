@@ -2371,12 +2371,6 @@ impl WorkspaceStore {
     pub fn save(&self, workspace: &mut Workspace) -> Result<(), WorkspaceStoreError> {
         let id = workspace.identity().id();
         let _lock = self.lock_workspace(id)?;
-        let _profile_lock = workspace
-            .config()
-            .profile_id
-            .as_ref()
-            .map(|profile_id| self.lock_profile(id, profile_id))
-            .transpose()?;
         let Some(expected) = workspace.persisted_revision else {
             return Err(WorkspaceStoreError::UnpersistedWorkspace(id.clone()));
         };
@@ -2389,6 +2383,15 @@ impl WorkspaceStore {
         if current.snapshot_revision != expected {
             return Err(WorkspaceStoreError::StaleSnapshot(id.clone()));
         }
+        // Reject stale state before acquiring its profile lock. Besides making
+        // optimistic-concurrency errors deterministic, this prevents an old
+        // snapshot whose profile changed from locking the wrong profile.
+        let _profile_lock = workspace
+            .config()
+            .profile_id
+            .as_ref()
+            .map(|profile_id| self.lock_profile(id, profile_id))
+            .transpose()?;
         let previous_revision = workspace.snapshot_revision;
         workspace.snapshot_revision = next_snapshot_revision(previous_revision)?;
         if let Err(error) = self.write_unlocked(workspace) {
@@ -3030,10 +3033,14 @@ mod persistence_tests {
         store.save(&mut first).unwrap();
         assert_eq!(store.open(&id).unwrap().snapshot_revision, 1);
         second.transition(WorkspaceLifecycle::Suspended).unwrap();
+        let _profile_guard = store
+            .lock_profile(&id, second.config().profile_id.as_ref().unwrap())
+            .unwrap();
         assert!(matches!(
             store.save(&mut second),
             Err(WorkspaceStoreError::StaleSnapshot(_))
         ));
+        drop(_profile_guard);
         let _ = fs::remove_dir_all(root);
     }
 

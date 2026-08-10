@@ -1,6 +1,8 @@
 //! Resident development workspace ownership.
 
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
+use crate::git::GitService;
+use crate::testing::TestService;
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,8 @@ pub struct DevelopmentWorkspace {
     root: PathBuf,
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
+    git: Option<GitService>,
+    tests: TestService,
     generation: u64,
 }
 
@@ -23,10 +27,25 @@ impl DevelopmentWorkspace {
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let project = ProjectWorkspace::open(root)?;
         let root = project.root().to_path_buf();
+        let git = if root
+            .ancestors()
+            .any(|ancestor| ancestor.join(".git").exists())
+        {
+            Some(GitService::open(&root).map_err(|error| {
+                glass_browser::development::DevelopmentError::Process(error.to_string())
+            })?)
+        } else {
+            None
+        };
+        let tests = TestService::discover(&root).map_err(|error| {
+            glass_browser::development::DevelopmentError::Process(error.to_string())
+        })?;
         Ok(Self {
             root,
             project,
             debuggers: BTreeMap::new(),
+            git,
+            tests,
             generation: 1,
         })
     }
@@ -86,6 +105,18 @@ impl DevelopmentWorkspace {
             .remove(name)
             .ok_or_else(|| DebugError::InvalidInput(format!("unknown debugger session {name}")))?;
         debugger.shutdown()
+    }
+
+    pub fn git(&self) -> Option<&GitService> {
+        self.git.as_ref()
+    }
+
+    pub fn tests(&self) -> &TestService {
+        &self.tests
+    }
+
+    pub fn tests_mut(&mut self) -> &mut TestService {
+        &mut self.tests
     }
 
     /// Advance the generation after replacing resident service ownership.

@@ -6,6 +6,7 @@
 
 pub mod debugger;
 pub mod git;
+pub mod testing;
 pub mod workspace;
 
 use glass_browser::cli::args::Cli;

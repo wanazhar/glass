@@ -335,6 +335,28 @@ installed resources with the user's account. It also removes the extension-tool
 allowlist, making every tool registered by those extensions selectable. Pi's raw
 built-in tools remain off because Glass overrides their standard coding names.
 
+### Unrestricted launch
+
+`glass --yolo` is the explicit no-approval development mode. For the lifetime
+of that Glass process it:
+
+- skips the Glass-owned confirmation sheet for every Pi mutation;
+- automatically accepts any Pi extension `confirm` RPC that still occurs;
+- authorizes private broker mutations without `--allow-mutation --yes` being
+  supplied manually;
+- loads ambient Pi context, extensions, skills, prompt templates, themes, and
+  every tool registered by those extensions; and
+- treats browser policy capabilities as explicitly allowed rather than
+  confirmation-required.
+
+The phone and desktop cockpit keep a visible `YOLO` marker/capability warning.
+This mode trusts the model, prompt context, project, commands, and installed Pi
+extensions with the current operating-system account. It intentionally does
+not remove stale-revision checks, browser/workspace mutation leases, explicit
+host denials, path checks performed by individual file tools, JSON/RPC limits,
+timeouts, or result bounds. Shell commands and trusted extensions are arbitrary
+local code and are not confined to the project root.
+
 Pi's prompt response only acknowledges queueing. Glass therefore continues
 consuming JSONL events until `agent_settled` (an earlier `agent_end` may still
 be followed by retry, compaction, or queued continuation), forwards bounded

@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::{
     io::Write,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,11 +13,16 @@ fn glass_binary() -> std::path::PathBuf {
 }
 
 fn temp_project() -> std::path::PathBuf {
+    static NEXT_PROJECT: AtomicU64 = AtomicU64::new(1);
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("glass-development-runtime-{suffix}"));
+    let sequence = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "glass-development-runtime-{}-{suffix}-{sequence}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&root).expect("temporary project should be created");
     std::fs::write(root.join("note.txt"), "hello from the project\n")
         .expect("temporary project file should be written");
@@ -66,6 +72,49 @@ fn cli_project_and_agent_paths_are_browser_free() {
     assert!(agent_report.as_array().unwrap().iter().any(|event| {
         event["type"] == "toolResult" && event["result"]["content"] == "hello from the project\n"
     }));
+
+    std::fs::remove_dir_all(root).expect("temporary project should be removed");
+}
+
+#[test]
+fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
+    let root = temp_project();
+    let binary = glass_binary();
+    let call = r#"{"id":"write","name":"glass.file.write","arguments":{"path":"yolo.txt","content":"approval-free\n"}}"#;
+
+    let denied = Command::new(&binary)
+        .args(["agent", "tool", call, "--root", root.to_str().unwrap()])
+        .output()
+        .expect("normal agent tool should run");
+    assert!(!denied.status.success());
+    assert!(!root.join("yolo.txt").exists());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr)
+            .contains("requires explicit mutation authority and confirmation")
+    );
+
+    let allowed = Command::new(&binary)
+        .args([
+            "--yolo",
+            "agent",
+            "tool",
+            call,
+            "--root",
+            root.to_str().unwrap(),
+        ])
+        .output()
+        .expect("YOLO agent tool should run");
+    assert!(
+        allowed.status.success(),
+        "YOLO agent tool failed: {:?}",
+        allowed.stderr
+    );
+    let report: Value = serde_json::from_slice(&allowed.stdout).unwrap();
+    assert_eq!(report["written"], true);
+    assert_eq!(
+        std::fs::read_to_string(root.join("yolo.txt")).unwrap(),
+        "approval-free\n"
+    );
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");
 }

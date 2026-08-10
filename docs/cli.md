@@ -11,6 +11,7 @@ top-level and nested command tree for documentation drift validation. Live
 
 | Option | Default | Function |
 |---|---|---|
+| `--yolo` | off | Run an unrestricted trusted Pi/Glass session: no tool approvals, all browser policy capabilities allowed, and ambient Pi resources/tools loaded. |
 | `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
 | `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
 | `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |
@@ -372,6 +373,27 @@ UTF-8 search with optional path prefix, `*`/`?` glob, case folding, context, and
 limit; `find` matches project paths with `*` and `?`; `edit` applies one atomic
 set of unique exact replacements; and `bash` has a caller-selected timeout
 capped at 300 seconds.
+
+### Unrestricted Pi mode
+
+```console
+glass --yolo
+glass --yolo agent prompt "Implement and verify the requested change" --harness pi --root .
+```
+
+This is a process-scoped trust decision. Glass skips its mutation approval
+sheet, the Pi extension does not request approval, and any confirmation RPC
+from another loaded Pi extension is accepted automatically. Ambient context,
+extensions, skills, templates, themes, and registered extension tools are
+enabled. Browser policy capabilities are treated as explicitly allowed, even
+if a confirmation capability was also supplied on the command line.
+
+`--yolo` does not turn correctness guards into best effort: project file tools
+remain root-confined, browser revisions remain guarded, workspace/daemon
+mutation leases still apply, explicit host denials still deny, and request and
+result bounds remain active. The unrestricted `bash` tool and loaded extensions
+can execute arbitrary commands as the current OS user, so those components can
+operate outside the project root.
 
 Pi's configured providers and `models.json` models are available through
 `project pi models` and model selection. The default uses the cached catalog,

@@ -8,6 +8,7 @@ import { join } from "node:path";
 export default function (pi: ExtensionAPI) {
   const broker = process.env.GLASS_PI_BROKER_BIN;
   if (!broker) return;
+  const unrestricted = process.env.GLASS_PI_YOLO === "1";
 
   const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
   const bounded = (value: string, limit = 160) =>
@@ -79,7 +80,7 @@ export default function (pi: ExtensionAPI) {
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         const arguments_ = mapArguments(params, toolCallId);
         const call = JSON.stringify({ id: toolCallId, name: glassName, arguments: arguments_ });
-        if (mutating) {
+        if (mutating && !unrestricted) {
           const confirmed = await ctx.ui.confirm(
             `Approve ${glassName}?`,
             approvalSummary(glassName, arguments_),

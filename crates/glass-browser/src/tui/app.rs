@@ -875,6 +875,7 @@ pub struct App {
     palette_item_areas: Vec<Rect>,
     pending_confirmation: Option<PhoneAction>,
     pi_tool_approval: Option<PiToolApproval>,
+    pi_unrestricted: bool,
     confirm_yes_area: Option<Rect>,
     confirm_no_area: Option<Rect>,
     terminal_focused: bool,
@@ -1099,6 +1100,7 @@ impl App {
             palette_item_areas: Vec::new(),
             pending_confirmation: None,
             pi_tool_approval: None,
+            pi_unrestricted: false,
             confirm_yes_area: None,
             confirm_no_area: None,
             terminal_focused: true,
@@ -1711,12 +1713,16 @@ impl App {
                     };
                     if self.pi_command_tx.is_none() {
                         let root = project.root().to_path_buf();
+                        let unrestricted = self.pi_unrestricted;
                         let events = self.development_event_tx.clone();
                         let (sender, receiver) = std_mpsc::channel();
                         std::thread::Builder::new()
                             .name("glass-pi-harness".into())
                             .spawn(move || {
-                                let mut harness = match PiHarness::spawn(&root) {
+                                let mut harness = match PiHarness::spawn_with_unrestricted(
+                                    &root,
+                                    unrestricted,
+                                ) {
                                     Ok(harness) => harness,
                                     Err(error) => {
                                         let _ = events.send(DevelopmentAsyncEvent::Failed {
@@ -1761,6 +1767,9 @@ impl App {
                                         Ok(Some(value)) => {
                                             match crate::development::agent::pi_ui_request(&value) {
                                                 Ok(Some(request)) => {
+                                                    if unrestricted {
+                                                        continue;
+                                                    }
                                                     if events.send(DevelopmentAsyncEvent::ApprovalRequested {
                                                         id: request.id,
                                                         title: request.title,
@@ -2449,7 +2458,7 @@ impl App {
     }
 
     fn activate_phone_action(&mut self, action: PhoneAction) -> UiIntent {
-        if action == PhoneAction::Command("project pi abort") {
+        if action == PhoneAction::Command("project pi abort") && !self.pi_unrestricted {
             self.pending_confirmation = Some(action);
             return UiIntent::None;
         }
@@ -6662,7 +6671,11 @@ fn draw_phone_header(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(PHONE_BORDER))
         .style(Style::default().bg(PHONE_BACKGROUND))
         .title(Span::styled(
-            " ◈ GLASS REMOTE ",
+            if app.pi_unrestricted {
+                " ◈ GLASS · YOLO "
+            } else {
+                " ◈ GLASS REMOTE "
+            },
             Style::default().fg(PHONE_TEXT).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
@@ -6690,6 +6703,16 @@ fn draw_phone_header(frame: &mut Frame, app: &App, area: Rect) {
             phone_chip(&format!("rev {}", app.visual_revision), PHONE_CYAN),
             Span::raw(" "),
             phone_chip(browser_state_label(app), PHONE_PURPLE),
+            if app.pi_unrestricted {
+                Span::raw(" ")
+            } else {
+                Span::raw("")
+            },
+            if app.pi_unrestricted {
+                phone_chip("YOLO", Color::LightRed)
+            } else {
+                Span::raw("")
+            },
         ]));
     }
     frame.render_widget(
@@ -7396,7 +7419,8 @@ fn draw_desktop(frame: &mut Frame, app: &App, root: RootRegions, compact: bool) 
     );
     let hint = if compact {
         format!(
-            " {} | F1-F7 modes | Enter execute | Esc cancel/back",
+            " {}{} | F1-F7 modes | Enter execute | Esc cancel/back",
+            if app.pi_unrestricted { "[YOLO] " } else { "" },
             app.status
         )
     } else {
@@ -8009,6 +8033,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             kitty_detected,
         },
     );
+    app.pi_unrestricted = cli.yolo;
     app.connection_environment = connection_environment;
     app.display_class = match app.connection_environment.layout {
         LayoutClass::Phone => DisplayClass::Phone,
@@ -8062,12 +8087,17 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         cli.experimental_extensions,
     );
     app.capability_summary = format!(
-        "Capabilities: {} schemas, daemon {}",
+        "Capabilities: {} schemas, daemon {}{}",
         manifest.schemas.len(),
         if manifest.capabilities.get("localDaemon") == Some(&true) {
             "on"
         } else {
             "off"
+        },
+        if cli.yolo {
+            ", YOLO unrestricted (approvals off)"
+        } else {
+            ""
         }
     );
     app.knowledge_path = cli
@@ -9175,6 +9205,14 @@ mod tests {
                 if id == "approval-9" && confirmed
         ));
         assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn yolo_mode_is_persistently_visible_on_the_phone_cockpit() {
+        let mut app = mock_remote_phone_app(40);
+        app.pi_unrestricted = true;
+        let (rendered, _, _) = rendered_phone(&app, 40, 30);
+        assert!(rendered.contains("YOLO"));
     }
 
     #[test]

@@ -1507,6 +1507,7 @@ pub struct PiHarness {
     next_id: u64,
     extension_path: PathBuf,
     pending_ui_requests: BTreeSet<String>,
+    unrestricted: bool,
 }
 
 impl std::fmt::Debug for PiHarness {
@@ -1521,6 +1522,10 @@ impl std::fmt::Debug for PiHarness {
 
 impl PiHarness {
     pub fn spawn(root: &Path) -> DevelopmentResult<Self> {
+        Self::spawn_with_unrestricted(root, false)
+    }
+
+    pub fn spawn_with_unrestricted(root: &Path, unrestricted: bool) -> DevelopmentResult<Self> {
         static NEXT_EXTENSION_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(1);
         let extension_id = NEXT_EXTENSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1533,7 +1538,15 @@ impl PiHarness {
             include_str!("../../assets/pi-glass-tools.ts"),
         )?;
         let broker = std::env::current_exe().map_err(DevelopmentError::Io)?;
-        let trusted_resources = env_enabled("GLASS_PI_TRUSTED_RESOURCES");
+        let trusted_resources = unrestricted || env_enabled("GLASS_PI_TRUSTED_RESOURCES");
+        let system_prompt = if unrestricted {
+            format!(
+                "{}\n- UNRESTRICTED MODE is active. Glass will not ask for tool approval; execute requested local development work directly and report effects truthfully.",
+                include_str!("../../assets/pi-glass-system.md")
+            )
+        } else {
+            include_str!("../../assets/pi-glass-system.md").to_string()
+        };
         let mut command = Command::new("pi");
         command.args(["--mode", "rpc", "--no-approve", "--no-builtin-tools"]);
         if !env_enabled("GLASS_PI_ONLINE_CATALOG") {
@@ -1552,11 +1565,7 @@ impl PiHarness {
             command.arg("--no-session");
         }
         command
-            .args([
-                "--system-prompt",
-                include_str!("../../assets/pi-glass-system.md"),
-                "--extension",
-            ])
+            .args(["--system-prompt", &system_prompt, "--extension"])
             .arg(&extension_path);
         if !trusted_resources {
             command.args([
@@ -1566,6 +1575,7 @@ impl PiHarness {
         }
         let mut child = command
             .env("GLASS_PI_BROKER_BIN", broker)
+            .env("GLASS_PI_YOLO", if unrestricted { "1" } else { "0" })
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1607,6 +1617,7 @@ impl PiHarness {
             next_id: 1,
             extension_path,
             pending_ui_requests: BTreeSet::new(),
+            unrestricted,
         })
     }
 
@@ -1636,10 +1647,13 @@ impl PiHarness {
                 is_response && value.get("success").and_then(Value::as_bool) == Some(false);
             let settled = pi_agent_settled(&value);
             if let Some(request) = pi_ui_request(&value)? {
-                // A one-shot/non-interactive caller has nowhere safe to ask a
-                // human. Deny immediately instead of hanging or inheriting
-                // ambient authority.
-                self.respond_extension_ui(&request.id, false)?;
+                if !self.unrestricted {
+                    // A one-shot/non-interactive caller has nowhere safe to ask a
+                    // human. Deny immediately instead of hanging or inheriting
+                    // ambient authority.
+                    self.respond_extension_ui(&request.id, false)?;
+                }
+                continue;
             }
             if pi_event_visible(&value) {
                 if events.len() == MAX_PI_BUFFERED_EVENTS {
@@ -1757,6 +1771,11 @@ impl PiHarness {
                     return Err(DevelopmentError::Conflict(
                         "too many pending Pi UI requests".into(),
                     ));
+                }
+                if self.unrestricted
+                    && let Some(request) = pi_ui_request(&value)?
+                {
+                    self.respond_extension_ui(&request.id, true)?;
                 }
                 Ok(Some(value))
             }
@@ -2014,6 +2033,8 @@ mod tests {
             assert!(tools.contains(tool), "missing Pi tool {tool}");
         }
         assert!(tools.contains("ctx.ui.confirm"));
+        assert!(tools.contains("GLASS_PI_YOLO"));
+        assert!(tools.contains("mutating && !unrestricted"));
         assert!(tools.contains("--allow-mutation"));
         assert!(tools.contains("exact serialized call once"));
         assert!(!tools.contains("\"glass_process_start\""));

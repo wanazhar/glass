@@ -173,7 +173,7 @@ async fn dispatch_product(cli: Cli, development_enabled: bool) -> BrowserResult<
                     "agent harness commands belong to the `glass` development product".into(),
                 );
             }
-            dispatch_agent(action)?;
+            dispatch_agent(action, cli.yolo)?;
             return Ok(());
         }
         Some(Commands::Memory { action }) => {
@@ -576,7 +576,7 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
     Ok(())
 }
 
-fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
+fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> BrowserResult<()> {
     if matches!(
         action,
         AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. }
@@ -604,8 +604,8 @@ fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
         let mut workspace = ProjectWorkspace::open(root)?;
         let authorization = crate::development::ToolAuthorization {
             actor: Actor::external("pi"),
-            allow_mutation,
-            confirmed: yes,
+            allow_mutation: allow_mutation || unrestricted,
+            confirmed: yes || unrestricted,
         };
         let result = crate::development::AgentToolGateway::subprocess_broker().execute(
             &mut workspace,
@@ -669,7 +669,10 @@ fn dispatch_agent(action: &AgentCommand) -> BrowserResult<()> {
             print_json(&harness.handle(&mut workspace, request)?)?;
         }
         AgentHarness::Pi => {
-            let mut harness = crate::development::PiHarness::spawn(workspace.root())?;
+            let mut harness = crate::development::PiHarness::spawn_with_unrestricted(
+                workspace.root(),
+                unrestricted,
+            )?;
             print_json(&harness.request(request)?)?;
         }
     }
@@ -2765,17 +2768,52 @@ fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_jso
 }
 
 pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
+    let unrestricted_capabilities = [
+        PolicyCapability::Attach,
+        PolicyCapability::PersistentProfile,
+        PolicyCapability::Evaluate,
+        PolicyCapability::Upload,
+        PolicyCapability::Download,
+        PolicyCapability::Screenshot,
+        PolicyCapability::RawCdp,
+        PolicyCapability::ReadFormValues,
+        PolicyCapability::ReadSensitiveFormValues,
+        PolicyCapability::ReadSensitiveExtraction,
+        PolicyCapability::CoordinateClick,
+        PolicyCapability::ConsentDismissal,
+        PolicyCapability::DeclaredAgentIdentity,
+    ];
     Ok(BrowserPolicy::new(
         cli.policy,
         std::env::current_dir()?,
-        cli.policy_allow.iter().copied(),
-        cli.policy_confirm.iter().copied(),
+        if cli.yolo {
+            unrestricted_capabilities.as_slice()
+        } else {
+            cli.policy_allow.as_slice()
+        }
+        .iter()
+        .copied(),
+        if cli.yolo {
+            &[]
+        } else {
+            cli.policy_confirm.as_slice()
+        }
+        .iter()
+        .copied(),
     )?
     .with_host_rules(
         cli.policy_allow_host.iter().cloned(),
         cli.policy_deny_host.iter().cloned(),
     )?
-    .with_confirmation_tokens(cli.policy_confirm_once.iter().copied())?)
+    .with_confirmation_tokens(
+        if cli.yolo {
+            &[]
+        } else {
+            cli.policy_confirm_once.as_slice()
+        }
+        .iter()
+        .copied(),
+    )?)
 }
 
 async fn run_prompt(
@@ -2882,6 +2920,7 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn default_dispatch_requires_both_terminal_streams_for_tui() {
@@ -2889,6 +2928,29 @@ mod tests {
         assert!(!should_run_tui(false, true));
         assert!(!should_run_tui(true, false));
         assert!(!should_run_tui(false, false));
+    }
+
+    #[test]
+    fn yolo_allows_capabilities_without_confirmation() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--yolo",
+            "--policy",
+            "hardened",
+            "--policy-confirm",
+            "evaluate",
+            "doctor",
+        ])
+        .unwrap();
+        let policy = policy_from_cli(&cli).unwrap();
+        assert!(matches!(
+            policy.decide(PolicyCapability::Evaluate),
+            crate::browser::policy::PolicyDecision::Allow
+        ));
+        assert!(matches!(
+            policy.decide(PolicyCapability::RawCdp),
+            crate::browser::policy::PolicyDecision::Allow
+        ));
     }
 
     #[test]

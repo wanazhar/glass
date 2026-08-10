@@ -240,6 +240,20 @@ glass agent models --root .
 glass agent prompt "Explain the failing diagnostic" --harness pi --root .
 ```
 
+For an intentionally unrestricted coding session, launch the cockpit with:
+
+```console
+glass --yolo
+```
+
+`--yolo` disables Pi/Glass tool confirmations for that process, automatically
+accepts confirmation requests from loaded Pi extensions, grants browser policy
+capabilities without confirmation, and loads trusted Pi resources plus all
+their registered tools. It trusts the model, current project, shell commands,
+and installed Pi extensions with the user's account. It does not disable
+revision checks, workspace/daemon leases, explicit host denials, protocol
+bounds, or result-size limits.
+
 Tool availability follows live dependencies. The current subprocess Pi bridge
 does not advertise browser or persistent-process controls because it cannot
 carry the resident target revision, policy, mutation lease, or PTY ownership;

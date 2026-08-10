@@ -25,6 +25,11 @@ use crate::results::ResponseMode;
     after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nUse `glass <command> --help` for command-specific options and examples."
 )]
 pub struct Cli {
+    /// Run trusted local automation without interactive capability or tool approvals.
+    /// Glass Dev also enables unrestricted Pi resources and tools in this mode.
+    #[arg(long, global = true)]
+    pub yolo: bool,
+
     /// Browser safety preset. Hardened mode fails closed for privileged operations.
     #[arg(long, global = true, value_enum, default_value_t = PolicyPreset::Development)]
     pub policy: PolicyPreset,
@@ -1444,6 +1449,7 @@ mod tests {
     #[test]
     fn tui_layout_defaults_to_auto_and_accepts_mobile_override() {
         let default = Cli::try_parse_from(["glass", "tui"]).unwrap();
+        assert!(!default.yolo);
         assert_eq!(default.tui_layout, TuiLayout::Auto);
         assert_eq!(default.tui_live, TuiLiveMode::Off);
         assert_eq!(default.tui_live_backend, TuiLiveBackend::Auto);
@@ -1470,6 +1476,20 @@ mod tests {
         assert_eq!(mobile.tui_live_backend, TuiLiveBackend::Ansi);
         assert_eq!(mobile.tui_live_quality, TuiLiveQuality::Data);
         assert_eq!(mobile.tui_live_fit, TuiLiveFit::Cover);
+    }
+
+    #[test]
+    fn yolo_is_an_explicit_global_opt_in() {
+        assert!(
+            Cli::try_parse_from(["glass", "--yolo", "tui"])
+                .unwrap()
+                .yolo
+        );
+        assert!(
+            Cli::try_parse_from(["glass", "agent", "hello", "--yolo"])
+                .unwrap()
+                .yolo
+        );
     }
 
     #[test]

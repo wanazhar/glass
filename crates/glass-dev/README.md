@@ -103,6 +103,13 @@ and PTY ownership correctly.
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
 
+Launch `glass --yolo` only for a fully trusted local development session. It
+turns off Pi/Glass tool confirmation, automatically accepts extension
+confirmation RPCs, grants browser policy capabilities without confirmation,
+and loads installed Pi resources and their tools. The TUI displays a persistent
+`YOLO` marker. Revision guards, daemon/workspace leases, explicit host denials,
+and transport/result bounds remain enforced.
+
 The optional resident Pi adapter uses a Glass-specific system prompt and twenty
 tools: thirteen read-only operations and seven approval-gated mutations. Glass
 overrides Pi's familiar `read`, `write`, `edit`, `bash`, `grep`, `find`, and

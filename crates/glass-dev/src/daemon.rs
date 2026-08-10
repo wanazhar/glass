@@ -375,7 +375,8 @@ async fn execute_request(
                     "processes":processes,
                     "agents":agents,
                     "kernels":workspace.kernels().snapshots().collect::<Vec<_>>(),
-                    "debuggers":workspace.debugger_names().collect::<Vec<_>>()
+                    "debuggers":workspace.debugger_names().collect::<Vec<_>>(),
+                    "browser":workspace.browser().state().map_err(|error| error.to_string())?
                 }))
             }
             "workspace.tool" => {
@@ -810,7 +811,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[cfg(unix)]
-    async fn daemon_preserves_resident_kernel_across_client_disconnects() {
+    async fn daemon_preserves_resources_across_client_disconnects() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let base =
             std::env::temp_dir().join(format!("glassd-test-{}-{sequence}", std::process::id()));
@@ -865,6 +866,68 @@ mod tests {
                 start.allow_mutation = true;
                 start.confirmed = true;
                 assert!(request(&socket, &start).await.unwrap().ok);
+                let mut process_start = base_request("process-start", "workspace.tool");
+                process_start.call = Some(ToolCall {
+                    id: "process-start".into(),
+                    name: "glass.process.start".into(),
+                    arguments: serde_json::json!({"name":"durable-process","command":"sleep 30"}),
+                });
+                process_start.expected_generation = Some(1);
+                process_start.expected_project_revision = Some(0);
+                process_start.allow_mutation = true;
+                process_start.confirmed = true;
+                assert!(request(&socket, &process_start).await.unwrap().ok);
+                let pi_available = std::process::Command::new("pi")
+                    .arg("--version")
+                    .output()
+                    .is_ok();
+                if pi_available {
+                    let mut agent_start = base_request("agent-start", "workspace.tool");
+                    agent_start.call = Some(ToolCall {
+                        id: "agent-start".into(),
+                        name: "glass.agent.spawn".into(),
+                        arguments: serde_json::json!({"spec":{
+                            "role":"durability-probe",
+                            "task":"Remain idle while the client reconnects",
+                            "dependencies":[],
+                            "model":null,
+                            "thinking":null,
+                            "worktree":null,
+                            "unrestricted":false,
+                            "maxRuntimeSeconds":60,
+                            "maxEvents":100
+                        }}),
+                    });
+                    agent_start.expected_generation = Some(1);
+                    agent_start.expected_project_revision = Some(1);
+                    agent_start.allow_mutation = true;
+                    agent_start.confirmed = true;
+                    let agent_response = request(&socket, &agent_start).await.unwrap();
+                    assert!(agent_response.ok, "{:?}", agent_response.error);
+                }
+                let browser_e2e = std::env::var("GLASS_E2E").as_deref() == Ok("1")
+                    && std::env::var_os("GLASS_CHROME_PATH").is_some();
+                if browser_e2e {
+                    let port_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let browser_port = port_probe.local_addr().unwrap().port();
+                    drop(port_probe);
+                    let mut browser_start = base_request("browser-start", "workspace.tool");
+                    browser_start.call = Some(ToolCall {
+                        id: "browser-start".into(),
+                        name: "glass.browser.start".into(),
+                        arguments: serde_json::json!({
+                            "port":browser_port,
+                            "incognito":true,
+                            "chromePath":std::env::var("GLASS_CHROME_PATH").unwrap()
+                        }),
+                    });
+                    browser_start.expected_generation = Some(1);
+                    browser_start.expected_project_revision = Some(1);
+                    browser_start.allow_mutation = true;
+                    browser_start.confirmed = true;
+                    let response = request(&socket, &browser_start).await.unwrap();
+                    assert!(response.ok, "{:?}", response.error);
+                }
                 // The Pi-style broker opens a new process/socket and still
                 // executes against the same daemon-owned kernel.
                 let call = ToolCall {
@@ -883,6 +946,57 @@ mod tests {
                 .await
                 .unwrap();
                 assert_eq!(result["value"][0]["answer"], 42);
+                // A fresh socket observes the process and optional Pi worker
+                // created by earlier, disconnected clients.
+                let inspect = request(
+                    &socket,
+                    &base_request("inspect-reconnected", "workspace.inspect"),
+                )
+                .await
+                .unwrap();
+                assert!(inspect.ok);
+                assert!(
+                    inspect.result["processes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|process| process["name"] == "durable-process")
+                );
+                assert!(
+                    inspect.result["kernels"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|kernel| kernel["name"] == "durable")
+                );
+                if pi_available {
+                    assert!(!inspect.result["agents"].as_array().unwrap().is_empty());
+                }
+                assert_eq!(inspect.result["browser"]["connected"], browser_e2e);
+                let mut process_stop = base_request("process-stop", "workspace.tool");
+                process_stop.call = Some(ToolCall {
+                    id: "process-stop".into(),
+                    name: "glass.process.stop".into(),
+                    arguments: serde_json::json!({"name":"durable-process"}),
+                });
+                process_stop.expected_generation = Some(1);
+                process_stop.expected_project_revision = Some(1);
+                process_stop.allow_mutation = true;
+                process_stop.confirmed = true;
+                assert!(request(&socket, &process_stop).await.unwrap().ok);
+                if browser_e2e {
+                    let mut browser_stop = base_request("browser-stop", "workspace.tool");
+                    browser_stop.call = Some(ToolCall {
+                        id: "browser-stop".into(),
+                        name: "glass.browser.stop".into(),
+                        arguments: serde_json::json!({}),
+                    });
+                    browser_stop.expected_generation = Some(1);
+                    browser_stop.expected_project_revision = Some(2);
+                    browser_stop.allow_mutation = true;
+                    browser_stop.confirmed = true;
+                    assert!(request(&socket, &browser_stop).await.unwrap().ok);
+                }
                 server.abort();
             })
             .await;

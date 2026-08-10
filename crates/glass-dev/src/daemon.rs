@@ -559,7 +559,7 @@ async fn forward_resident_tool_file_with_context(
     }
 }
 
-fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn std::error::Error>> {
+pub(crate) fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn std::error::Error>> {
     use std::io::Read;
     const MAX_CALL_BYTES: u64 = 256 * 1024;
     let canonical = path.canonicalize()?;

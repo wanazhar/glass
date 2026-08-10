@@ -112,7 +112,7 @@ fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
     assert!(!root.join("yolo.txt").exists());
     assert!(
         String::from_utf8_lossy(&denied.stderr)
-            .contains("requires explicit mutation authority and confirmation")
+            .contains("requires mutation authority and confirmation")
     );
 
     let allowed = Command::new(&binary)

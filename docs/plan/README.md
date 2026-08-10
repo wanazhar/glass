@@ -1,5 +1,27 @@
 # Glass delivery plans
 
+## Active plan: Glass v0.3.4 issue #34
+
+Status: Active direct local development — no push, tag, crates.io publication,
+GitHub Release, or issue mutation is authorized by this plan.
+
+Issue [#34](https://github.com/wanazhar/glass/issues/34) is the authoritative
+18-pillar full-agentic-development-suite contract. The baseline inventory,
+dependency order, checkpoint boundaries, forbidden outcomes, and release gate
+evidence map are in [the v0.3.4 delivery analysis](analysis/release-034.md).
+
+Delivery order:
+
+1. ownership and TUI boundary decomposition;
+2. native Pi sessions, governed resident tools, and agent scheduling;
+3. shared LSP, real DAP, Git, tests, and persistent kernels;
+4. durable workspace ownership, experiments, graph, and replay;
+5. agent-native desktop/mobile surfaces and integrated browser/workflow tools;
+6. synchronized 0.3.4 packaging, full-system demonstrations, and release gates.
+
+Every completed delivery checkpoint is committed locally with a focused
+conventional commit before the next checkpoint begins.
+
 ## Completed plan: Glass 0.3.3 documentation depth
 
 Status: Completed and verified locally — documentation-only, with no push,

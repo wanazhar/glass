@@ -254,6 +254,36 @@ impl LspClient {
         )
     }
 
+    pub fn declaration(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/declaration",
+            path,
+            line,
+            character,
+            Value::Null,
+        )
+    }
+
+    pub fn implementation(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/implementation",
+            path,
+            line,
+            character,
+            Value::Null,
+        )
+    }
+
     pub fn references(
         &mut self,
         path: &str,
@@ -277,9 +307,134 @@ impl LspClient {
         )
     }
 
+    pub fn workspace_symbols(&mut self, query: &str) -> DevelopmentResult<LanguageResponse> {
+        validate_lsp_text("workspace symbol query", query, 1024, true)?;
+        self.request_result("workspace/symbol", serde_json::json!({"query":query}))
+    }
+
+    pub fn completion(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/completion",
+            path,
+            line,
+            character,
+            serde_json::json!({"context":{"triggerKind":1}}),
+        )
+    }
+
+    pub fn signature_help(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(
+            "textDocument/signatureHelp",
+            path,
+            line,
+            character,
+            serde_json::json!({"context":{"triggerKind":1,"isRetrigger":false}}),
+        )
+    }
+
+    pub fn code_actions(
+        &mut self,
+        path: &str,
+        start: DiagnosticPosition,
+        end: DiagnosticPosition,
+        diagnostics: &[Value],
+    ) -> DevelopmentResult<LanguageResponse> {
+        if diagnostics.len() > 512 {
+            return Err(DevelopmentError::InvalidInput(
+                "code action diagnostics exceed the 512 item limit".into(),
+            ));
+        }
+        let uri = self.sync_document(path)?.uri.clone();
+        self.request_result(
+            "textDocument/codeAction",
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "range":{"start":protocol_position(&start),"end":protocol_position(&end)},
+                "context":{"diagnostics":diagnostics}
+            }),
+        )
+    }
+
     pub fn formatting(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
         let uri = self.sync_document(path)?.uri.clone();
         self.request_result("textDocument/formatting", serde_json::json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":true}}))
+    }
+
+    pub fn range_formatting(
+        &mut self,
+        path: &str,
+        start: DiagnosticPosition,
+        end: DiagnosticPosition,
+    ) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document(path)?.uri.clone();
+        self.request_result(
+            "textDocument/rangeFormatting",
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "range":{"start":protocol_position(&start),"end":protocol_position(&end)},
+                "options":{"tabSize":4,"insertSpaces":true}
+            }),
+        )
+    }
+
+    pub fn semantic_tokens(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document(path)?.uri.clone();
+        self.request_result(
+            "textDocument/semanticTokens/full",
+            serde_json::json!({"textDocument":{"uri":uri}}),
+        )
+    }
+
+    /// Bounded advanced request escape hatch. Lifecycle and protocol methods
+    /// stay owned by Glass and cannot be overridden by callers.
+    pub fn raw_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> DevelopmentResult<LanguageResponse> {
+        validate_lsp_text("LSP method", method, 256, false)?;
+        if !method.contains('/')
+            || matches!(
+                method,
+                "initialize" | "initialized" | "shutdown" | "exit" | "$/cancelRequest"
+            )
+            || method.starts_with("window/")
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "raw LSP requests cannot control lifecycle or server UI".into(),
+            ));
+        }
+        if timeout.is_zero() || timeout > Duration::from_secs(60) {
+            return Err(DevelopmentError::InvalidInput(
+                "raw LSP timeout must be between 1 ms and 60 seconds".into(),
+            ));
+        }
+        if serde_json::to_vec(&params)?.len() > MAX_LSP_MESSAGE_BYTES {
+            return Err(DevelopmentError::InvalidInput(
+                "raw LSP parameters exceed the size limit".into(),
+            ));
+        }
+        let response = self.call(method, params, timeout)?;
+        if let Some(error) = response.get("error") {
+            return Err(DevelopmentError::Process(format!(
+                "{method} failed: {error}"
+            )));
+        }
+        Ok(LanguageResponse {
+            method: method.into(),
+            result: response.get("result").cloned().unwrap_or(Value::Null),
+        })
     }
 
     pub fn rename(
@@ -365,7 +520,17 @@ impl LspClient {
             serde_json::json!({
                 "processId": std::process::id(),
                 "rootUri": root_uri,
-                "capabilities": {"textDocument": {"publishDiagnostics": {"relatedInformation": true}}},
+                "capabilities": {
+                    "workspace": {"workspaceEdit": {"documentChanges": true}},
+                    "textDocument": {
+                        "publishDiagnostics": {"relatedInformation": true},
+                        "completion": {"completionItem": {"snippetSupport": false}},
+                        "signatureHelp": {},
+                        "codeAction": {"dataSupport": true},
+                        "rename": {"prepareSupport": true},
+                        "semanticTokens": {"requests": {"full": true}, "tokenTypes": [], "tokenModifiers": [], "formats": ["relative"]}
+                    }
+                },
                 "workspaceFolders": [{"uri": root_uri, "name": self.root.file_name().and_then(|name| name.to_str()).unwrap_or("project")}]
             }),
             Duration::from_secs(30),
@@ -518,6 +683,31 @@ fn parse_diagnostic(path: &str, value: &Value) -> DevelopmentResult<LanguageDiag
     })
 }
 
+fn protocol_position(position: &DiagnosticPosition) -> Value {
+    serde_json::json!({
+        "line": position.line.saturating_sub(1),
+        "character": position.character.saturating_sub(1)
+    })
+}
+
+fn validate_lsp_text(
+    description: &str,
+    value: &str,
+    limit: usize,
+    allow_empty: bool,
+) -> DevelopmentResult<()> {
+    if (!allow_empty && value.is_empty())
+        || value.len() > limit
+        || value.chars().any(char::is_control)
+    {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "{description} must contain {}..={limit} non-control bytes",
+            usize::from(!allow_empty)
+        )));
+    }
+    Ok(())
+}
+
 fn file_uri(path: &Path) -> DevelopmentResult<String> {
     url::Url::from_file_path(path)
         .map(|url| url.to_string())
@@ -543,6 +733,20 @@ fn language_id(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_language_requests_reject_lifecycle_and_unbounded_inputs() {
+        assert!(validate_lsp_text("method", "textDocument/hover", 256, false).is_ok());
+        assert!(validate_lsp_text("method", "", 256, false).is_err());
+        assert!(validate_lsp_text("method", "textDocument\nhover", 256, false).is_err());
+        assert_eq!(
+            protocol_position(&DiagnosticPosition {
+                line: 4,
+                character: 2
+            }),
+            serde_json::json!({"line":3,"character":1})
+        );
+    }
 
     #[test]
     fn rust_analyzer_publishes_real_diagnostics_when_available() {

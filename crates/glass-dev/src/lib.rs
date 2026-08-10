@@ -5,6 +5,7 @@
 //! `glass-browser` dependency.
 
 pub mod agents;
+pub mod daemon;
 pub mod debugger;
 pub mod git;
 pub mod kernels;
@@ -26,5 +27,8 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 /// the 0.3.4 ownership migration. The product entry point lives here so each
 /// resident service can move without changing the installed `glass` binary.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
+        return daemon::dispatch(action).await;
+    }
     glass_browser::cli::runner::dispatch(cli).await
 }

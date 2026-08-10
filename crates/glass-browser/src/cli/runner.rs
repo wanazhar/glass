@@ -423,12 +423,21 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
                 .clone()
                 .or_else(|| detected_command(workspace.detection(), name))
                 .ok_or_else(|| format!("no configured command for process {name}"))?;
-            let snapshot = workspace.start_process(name, &command)?;
-            let snapshot = if *wait {
-                workspace.processes().close_input(name)?;
-                wait_for_project_process(&mut workspace, name)?
-            } else {
-                snapshot
+            #[cfg(windows)]
+            let snapshot = workspace.run_command_to_completion(
+                name,
+                &command,
+                std::time::Duration::from_secs(600),
+            )?;
+            #[cfg(not(windows))]
+            let snapshot = {
+                let snapshot = workspace.start_process(name, &command)?;
+                if *wait {
+                    workspace.processes().close_input(name)?;
+                    wait_for_project_process(&mut workspace, name)?
+                } else {
+                    snapshot
+                }
             };
             print_json(&snapshot)?;
         }
@@ -450,17 +459,26 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
                     if !wait {
                         return Err("one-shot CLI process starts require --wait; use the TUI for persistent interactive processes".into());
                     }
-                    workspace.start_process(name, command)?;
-                    let snapshot = if *wait {
-                        workspace.processes().close_input(name)?;
-                        wait_for_project_process(&mut workspace, name)?
-                    } else {
-                        workspace
-                            .processes()
-                            .list()
-                            .into_iter()
-                            .find(|process| process.name == *name)
-                            .ok_or_else(|| format!("process {name} disappeared"))?
+                    #[cfg(windows)]
+                    let snapshot = workspace.run_command_to_completion(
+                        name,
+                        command,
+                        std::time::Duration::from_secs(600),
+                    )?;
+                    #[cfg(not(windows))]
+                    let snapshot = {
+                        workspace.start_process(name, command)?;
+                        if *wait {
+                            workspace.processes().close_input(name)?;
+                            wait_for_project_process(&mut workspace, name)?
+                        } else {
+                            workspace
+                                .processes()
+                                .list()
+                                .into_iter()
+                                .find(|process| process.name == *name)
+                                .ok_or_else(|| format!("process {name} disappeared"))?
+                        }
                     };
                     print_json(&snapshot)?;
                 }

@@ -71,7 +71,7 @@ fn cli_project_and_agent_paths_are_browser_free() {
         .expect("project run should start");
     assert!(run.status.success(), "project run failed: {:?}", run.stderr);
     let run_report: Value = serde_json::from_slice(&run.stdout).unwrap();
-    assert_eq!(run_report["pty"], true);
+    assert_eq!(run_report["pty"], cfg!(not(windows)));
     assert_eq!(run_report["state"]["exited"]["code"], 0);
     assert!(run_report["output"].as_str().unwrap().contains("rc-ok"));
 

@@ -65,10 +65,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Replaced allocation-heavy workspace snapshot fingerprints with a persisted,
   monotonic revision so concurrent stale saves fail closed deterministically.
 - Drained bounded PTY output before reporting process completion, moved the
-  complete CLI lifecycle onto a larger Windows stack, finalized non-interactive
-  process input deterministically, released completed Windows ConPTY masters
-  before draining output, and removed platform-only Cargo warnings from
-  browser-free builds.
+  complete CLI lifecycle onto a larger Windows stack, routed bounded Windows
+  commands through owned non-interactive pipes, released completed ConPTY
+  masters before draining output, and removed platform-only Cargo warnings
+  from browser-free builds.
 - Made workspace deletion release its ownership lock explicitly after durable
   removal so immediate reopen checks cannot race lock teardown.
 

@@ -1,7 +1,6 @@
 use super::{DevelopmentError, DevelopmentResult, MAX_PROCESS_OUTPUT_BYTES};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
 use std::time::Instant;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -218,6 +217,96 @@ impl ProcessManager {
         #[cfg(not(windows))]
         process.writer.take();
         Ok(())
+    }
+
+    /// Run a bounded non-interactive command without routing it through ConPTY.
+    ///
+    /// Windows pseudo consoles intentionally model an interactive terminal and
+    /// do not provide portable pipe-EOF semantics. One-shot commands use normal
+    /// pipes while retaining the same Job Object descendant ownership.
+    #[cfg(windows)]
+    pub fn run_bounded(
+        &self,
+        name: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> DevelopmentResult<ProcessSnapshot> {
+        validate_name(name)?;
+        if command.trim().is_empty() || command.len() > 4 * 1024 {
+            return Err(DevelopmentError::InvalidInput(
+                "process command must be non-empty and at most 4096 bytes".into(),
+            ));
+        }
+        let started_at_ms = now_ms();
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/D", "/Q", "/C", command])
+            .current_dir(&self.root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let job = WindowsJob::assign(child.id()).map_err(|error| {
+            let _ = child.kill();
+            DevelopmentError::Process(format!(
+                "failed to own bounded Windows process tree: {error}"
+            ))
+        })?;
+        let output = Arc::new(Mutex::new(VecDeque::new()));
+        let mut readers = Vec::with_capacity(2);
+        for reader in [child.stdout.take(), child.stderr.take()]
+            .into_iter()
+            .flatten()
+        {
+            let reader_output = Arc::clone(&output);
+            readers.push(thread::spawn(move || {
+                read_output(Box::new(reader), reader_output)
+            }));
+        }
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                // SAFETY: `job` exclusively owns this valid handle.
+                unsafe {
+                    windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 1)
+                };
+                let _ = child.wait();
+                for reader in readers {
+                    let _ = reader.join();
+                }
+                return Err(DevelopmentError::Process(format!(
+                    "process {name} exceeded {} seconds",
+                    timeout.as_secs()
+                )));
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        for reader in readers {
+            reader
+                .join()
+                .map_err(|_| DevelopmentError::Process("process output reader panicked".into()))?;
+        }
+        let output = output_string(&output);
+        Ok(ProcessSnapshot {
+            name: name.into(),
+            command: command.into(),
+            pid: Some(child.id()),
+            state: ProcessState::Exited {
+                code: status.code().map(|code| code as u32),
+            },
+            started_at_ms,
+            output: output.clone(),
+            pty: false,
+            cwd: self.root.clone(),
+            health: if status.success() {
+                ProcessHealth::Exited
+            } else {
+                ProcessHealth::Failed
+            },
+            detected_urls: detect_urls(&output),
+        })
     }
 
     pub fn resize(&mut self, name: &str, cols: u16, rows: u16) -> DevelopmentResult<()> {

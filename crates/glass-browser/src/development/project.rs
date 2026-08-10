@@ -715,9 +715,27 @@ impl ProjectWorkspace {
                 "commandSha256": hash(command)
             }),
         )?;
+        #[cfg(windows)]
+        {
+            let snapshot = self.processes.run_bounded(name, command, timeout)?;
+            self.record(
+                DevelopmentEventKind::TestCompleted,
+                serde_json::json!({
+                    "name": name,
+                    "state": snapshot.state,
+                    "outputBytes": snapshot.output.len(),
+                    "outputSha256": hash(&snapshot.output)
+                }),
+            )?;
+            return Ok(snapshot);
+        }
+        #[cfg(not(windows))]
         self.start_process(name, command)?;
+        #[cfg(not(windows))]
         self.processes.close_input(name)?;
+        #[cfg(not(windows))]
         let deadline = Instant::now() + timeout;
+        #[cfg(not(windows))]
         let snapshot = loop {
             let snapshot = self
                 .processes
@@ -741,6 +759,7 @@ impl ProjectWorkspace {
             }
             std::thread::sleep(Duration::from_millis(25));
         };
+        #[cfg(not(windows))]
         self.record(
             DevelopmentEventKind::TestCompleted,
             serde_json::json!({
@@ -750,6 +769,7 @@ impl ProjectWorkspace {
                 "outputSha256": hash(&snapshot.output)
             }),
         )?;
+        #[cfg(not(windows))]
         Ok(snapshot)
     }
 
@@ -759,9 +779,16 @@ impl ProjectWorkspace {
         command: &str,
         timeout: Duration,
     ) -> DevelopmentResult<super::ProcessSnapshot> {
+        #[cfg(windows)]
+        return self.processes.run_bounded(name, command, timeout);
+
+        #[cfg(not(windows))]
         self.start_process(name, command)?;
+        #[cfg(not(windows))]
         self.processes.close_input(name)?;
+        #[cfg(not(windows))]
         let deadline = Instant::now() + timeout;
+        #[cfg(not(windows))]
         loop {
             let snapshot = self
                 .processes

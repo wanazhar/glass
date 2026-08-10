@@ -355,6 +355,7 @@ export default function (pi: ExtensionAPI) {
 
   register("glass_test_discover", "glass.test.discover", "Discover resident test suites", Type.Object({}));
   register("glass_test_run_suite", "glass.test.run", "Run a discovered resident test suite", Type.Object({ runId: Type.String(), suiteId: Type.String(), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_test_run_affected", "glass.test.run-affected", "Run resident suites affected by changed paths", Type.Object({ changedPaths: Type.Array(Type.String()), runPrefix: Type.Optional(Type.String()), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
   register("glass_test_results", "glass.test.results", "Inspect structured resident test results", Type.Object({}));
   register("glass_test_cancel", "glass.test.cancel", "Cancel a resident test run", Type.Object({ runId: Type.String() }), true);
   register("glass_test_watch", "glass.test.watch", "Watch a test suite by workspace revision", Type.Object({ suiteId: Type.String() }), true);
@@ -366,7 +367,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_eval_stop", "glass.eval.stop", "Stop a persistent execution kernel", Type.Object({ name: Type.String() }), true);
 
   const position = { server: Type.String(), path: Type.String(), line: Type.Integer({ minimum: 1 }), character: Type.Integer({ minimum: 1 }) };
-  register("glass_lsp_start", "glass.lsp.start", "Start a shared resident language server", Type.Object({ server: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())) }), true);
+  register("glass_lsp_start", "glass.lsp.start", "Start a shared resident language server", Type.Object({ server: Type.String(), command: Type.Optional(Type.String()), arguments: Type.Optional(Type.Array(Type.String())) }), true);
   register("glass_lsp_stop", "glass.lsp.stop", "Stop a shared resident language server", Type.Object({ server: Type.String() }), true);
   register("glass_lsp_list", "glass.lsp.list", "List shared resident language servers", Type.Object({}));
   register("glass_lsp_events", "glass.lsp.events", "Read language-service attribution events", Type.Object({ since: Type.Optional(Type.Integer()) }));
@@ -388,7 +389,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_lsp_semantic_tokens", "glass.lsp.semantic_tokens", "Read semantic tokens", Type.Object({ server: Type.String(), path: Type.String() }));
   register("glass_lsp_rename", "glass.lsp.rename", "Request a shared LSP workspace rename edit", Type.Object({ ...position, newName: Type.String() }));
 
-  register("glass_debug_start", "glass.debug.start", "Start and initialize a resident DAP adapter", Type.Object({ session: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_debug_start", "glass.debug.start", "Start and initialize a resident DAP adapter", Type.Object({ session: Type.String(), command: Type.Optional(Type.String()), arguments: Type.Optional(Type.Array(Type.String())), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
   register("glass_debug_launch", "glass.debug.launch", "Launch a program through a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_debug_attach", "glass.debug.attach", "Attach a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_debug_configuration_done", "glass.debug.configuration_done", "Finish debugger configuration and start execution", Type.Object({ session: Type.String() }), true);

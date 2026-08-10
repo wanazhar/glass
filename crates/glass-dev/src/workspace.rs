@@ -8,7 +8,7 @@ use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::KernelManager;
 use crate::lsp::LanguageService;
-use crate::testing::TestService;
+use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
@@ -53,15 +53,40 @@ impl DevelopmentWorkspace {
         } else {
             None
         };
-        let tests = TestService::discover(&root).map_err(|error| {
+        let customization = Customization::load(&root)?;
+        let mut tests = TestService::discover(&root).map_err(|error| {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
+        for (name, configured) in &customization.config().tests {
+            tests
+                .register(TestSuite {
+                    id: name.clone(),
+                    name: name.clone(),
+                    framework: TestFramework::Custom,
+                    program: if cfg!(windows) { "cmd" } else { "sh" }.into(),
+                    arguments: if cfg!(windows) {
+                        vec!["/C".into(), configured.command.clone()]
+                    } else {
+                        vec!["-lc".into(), configured.command.clone()]
+                    },
+                    source: customization
+                        .config_path()
+                        .unwrap_or(root.as_path())
+                        .to_path_buf(),
+                })
+                .map_err(|error| {
+                    glass_browser::development::DevelopmentError::Process(error.to_string())
+                })?;
+        }
         let kernels = KernelManager::new(&root).map_err(|error| {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
-        let customization = Customization::load(&root)?;
         let mut agents = AgentRegistry::new(&root)?;
         agents.set_additional_system_prompt(customization.agent_instructions())?;
+        agents.set_defaults(
+            customization.config().agent.model.clone(),
+            customization.config().agent.reasoning.clone(),
+        )?;
         let language = LanguageService::new(&root)?;
         let browser = BrowserService::new(&root)?;
         let knowledge = KnowledgeStore::open(default_knowledge_store_path_for_workspace(

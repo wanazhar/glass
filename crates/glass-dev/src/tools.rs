@@ -492,6 +492,28 @@ impl DevelopmentToolRouter {
                     timeout(call, 3_600)?,
                 ))
             }
+            "glass.test.run-affected" => {
+                let paths = string_array(call, "changedPaths")?;
+                let suite_ids = workspace
+                    .tests()
+                    .affected_suites(paths.iter().map(String::as_str))
+                    .into_iter()
+                    .map(|suite| suite.id.clone())
+                    .collect::<Vec<_>>();
+                let revision = workspace.project().revision();
+                let prefix = optional_string(call, "runPrefix").unwrap_or("affected");
+                let mut runs = Vec::new();
+                for (index, suite_id) in suite_ids.into_iter().enumerate() {
+                    runs.push(map_service(workspace.tests_mut().start(
+                        &format!("{prefix}-{index}"),
+                        &suite_id,
+                        &actor,
+                        revision,
+                        timeout(call, 3_600)?,
+                    ))?);
+                }
+                Ok(serde_json::to_value(runs)?)
+            }
             "glass.test.cancel" => {
                 map_service(workspace.tests_mut().cancel(string("runId")?))?;
                 Ok(serde_json::json!({"cancelled":string("runId")?}))
@@ -533,12 +555,23 @@ impl DevelopmentToolRouter {
             }
             "glass.eval.stop" => map_service(workspace.kernels_mut().stop(string("name")?)),
             "glass.lsp.start" => {
-                let config = crate::lsp::LanguageServerConfig {
-                    command: string("command")?.to_string(),
-                    arguments: string_array_or_empty(call, "arguments")?,
+                let server = string("server")?;
+                let configured = workspace.customization().config().lsp.get(server).cloned();
+                let config = match (optional_string(call, "command"), configured) {
+                    (Some(command), _) => crate::lsp::LanguageServerConfig {
+                        command: command.to_string(),
+                        arguments: string_array_or_empty(call, "arguments")?,
+                    },
+                    (None, Some(config)) => crate::lsp::LanguageServerConfig {
+                        command: config.command,
+                        arguments: config.args,
+                    },
+                    (None, None) => return Err(DevelopmentError::InvalidInput(
+                        "lsp start requires command or a matching glass.toml lsp entry".into(),
+                    )),
                 };
-                map_service(workspace.language().start(string("server")?, &config))?;
-                Ok(serde_json::json!({"started":string("server")?}))
+                map_service(workspace.language().start(server, &config))?;
+                Ok(serde_json::json!({"started":server}))
             }
             "glass.lsp.stop" => {
                 map_service(workspace.language().stop(string("server")?))?;
@@ -658,14 +691,24 @@ impl DevelopmentToolRouter {
                 string("newName")?,
             )),
             "glass.debug.start" => {
-                let arguments = string_array_or_empty(call, "arguments")?;
-                let config = DebugAdapterConfig::new(string("command")?, arguments);
+                let session = string("session")?;
+                let configured = workspace.customization().config().dap.get(session).cloned();
+                let config = match (optional_string(call, "command"), configured) {
+                    (Some(command), _) => DebugAdapterConfig::new(
+                        command,
+                        string_array_or_empty(call, "arguments")?,
+                    ),
+                    (None, Some(config)) => DebugAdapterConfig::new(config.command, config.args),
+                    (None, None) => return Err(DevelopmentError::InvalidInput(
+                        "debug start requires command or a matching glass.toml dap entry".into(),
+                    )),
+                };
                 map_debug(workspace.start_debugger(
-                    string("session")?,
+                    session,
                     &config,
                     Duration::from_secs(unsigned(call, "timeoutSeconds", 30)?),
                 ))?;
-                Ok(serde_json::json!({"started":string("session")?}))
+                Ok(serde_json::json!({"started":session}))
             }
             "glass.debug.launch" => map_debug(
                 debugger(workspace, string("session")?)?.launch(
@@ -959,6 +1002,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.git.worktree.create",
         "glass.git.worktree.remove",
         "glass.test.run",
+        "glass.test.run-affected",
         "glass.test.cancel",
         "glass.test.watch",
         "glass.eval.start",

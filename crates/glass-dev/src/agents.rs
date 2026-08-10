@@ -161,6 +161,8 @@ pub struct AgentRegistry {
     next_event: u64,
     broker: Option<ResidentAgentBroker>,
     additional_system_prompt: Option<String>,
+    default_model: Option<String>,
+    default_thinking: Option<String>,
 }
 
 impl AgentRegistry {
@@ -179,6 +181,8 @@ impl AgentRegistry {
             next_event: 1,
             broker: None,
             additional_system_prompt: None,
+            default_model: None,
+            default_thinking: None,
         })
     }
 
@@ -218,8 +222,34 @@ impl AgentRegistry {
         Ok(())
     }
 
-    pub fn create(&mut self, spec: AgentSpec) -> DevelopmentResult<AgentId> {
+    pub fn set_defaults(
+        &mut self,
+        model: Option<String>,
+        thinking: Option<String>,
+    ) -> DevelopmentResult<()> {
+        for (label, value) in [("model", &model), ("thinking", &thinking)] {
+            if value
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 256 || value.contains('\0'))
+            {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "default agent {label} must contain 1..=256 bytes without NUL"
+                )));
+            }
+        }
+        self.default_model = model;
+        self.default_thinking = thinking;
+        Ok(())
+    }
+
+    pub fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;
+        if spec.model.is_none() {
+            spec.model.clone_from(&self.default_model);
+        }
+        if spec.thinking.is_none() {
+            spec.thinking.clone_from(&self.default_thinking);
+        }
         validate_spec(&self.root, &self.records, &spec)?;
         if self.records.len() >= MAX_AGENTS {
             return Err(DevelopmentError::Conflict(format!(

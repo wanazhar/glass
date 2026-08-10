@@ -578,8 +578,13 @@ mod tests {
             r#"
 [agent]
 harness = "pi"
+model = "provider/model"
+reasoning = "high"
 [commands]
 hello = "printf command-ok"
+[tests.smoke]
+command = "printf configured-test"
+timeout_seconds = 30
 [tools.echo]
 description = "Echo structured input"
 command = "printf '%s' \"$GLASS_TOOL_INPUT\""
@@ -616,6 +621,14 @@ input_schema = { type = "object", required = ["text"] }
                 .contains("command-ok")
         );
         let mut workspace = crate::DevelopmentWorkspace::open(&root).unwrap();
+        assert!(workspace.tests().suites().any(|suite| {
+            suite.id == "smoke"
+                && suite.framework == crate::testing::TestFramework::Custom
+                && suite
+                    .arguments
+                    .iter()
+                    .any(|argument| argument == "printf configured-test")
+        }));
         assert!(
             workspace
                 .tool_descriptors()

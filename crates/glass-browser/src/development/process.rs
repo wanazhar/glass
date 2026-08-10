@@ -200,7 +200,7 @@ impl ProcessManager {
     ///
     /// Bounded, non-interactive commands use this after spawning. Unix shells
     /// observe EOF. Windows ConPTY turns a closed input pipe into Control-C, so
-    /// its owned `cmd.exe` shell receives an explicit successful exit request
+    /// its owned console receives the platform EOF key (Control-Z then Enter)
     /// and retains the input handle until the child exits naturally.
     pub fn close_input(&mut self, name: &str) -> DevelopmentResult<()> {
         let process = self
@@ -210,7 +210,7 @@ impl ProcessManager {
 
         #[cfg(windows)]
         if let Some(writer) = process.writer.as_mut() {
-            writer.write_all(b"\r\nexit /b 0\r\n")?;
+            writer.write_all(b"\x1a\r\n")?;
             writer.flush()?;
             return Ok(());
         }

@@ -65,7 +65,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Replaced allocation-heavy workspace snapshot fingerprints with a persisted,
   monotonic revision so concurrent stale saves fail closed deterministically.
 - Drained bounded PTY output before reporting process completion, moved the
-  complete CLI lifecycle onto a larger Windows stack, closed non-interactive
+  complete CLI lifecycle onto a larger Windows stack, finalized non-interactive
   process input deterministically, released completed Windows ConPTY masters
   before draining output, and removed platform-only Cargo warnings from
   browser-free builds.

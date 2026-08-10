@@ -142,10 +142,11 @@ fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
 }
 
 #[test]
-fn mcp_project_read_stays_on_clean_json_rpc_stdout() {
+fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     let root = temp_project();
     let mut child = Command::new(glass_binary())
         .arg("--mcp")
+        .current_dir(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -167,10 +168,25 @@ fn mcp_project_read_stays_on_clean_json_rpc_stdout() {
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
             "method": "tools/call",
             "params": {
                 "name": "project.read",
                 "arguments": {"path": "note.txt", "root": root}
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "glass.file.read",
+                "arguments": {"path": "note.txt"}
             }
         }),
     ] {
@@ -188,12 +204,34 @@ fn mcp_project_read_stays_on_clean_json_rpc_stdout() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("stdout must be JSON-RPC JSONL"))
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 2);
+    assert_eq!(responses.len(), 4);
+    let response = |id: u64| {
+        responses
+            .iter()
+            .find(|response| response["id"] == id)
+            .unwrap_or_else(|| panic!("missing MCP response {id}"))
+    };
     assert!(
-        responses[1]["result"]["content"]
+        response(3)["result"]["content"]
             .as_str()
             .unwrap()
             .contains("hello from the project")
+    );
+    let tools = response(2)["result"]["tools"].as_array().unwrap();
+    for name in [
+        "project.read",
+        "observe",
+        "glass.file.read",
+        "glass.debug.threads",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == name),
+            "missing MCP tool {name}"
+        );
+    }
+    assert_eq!(
+        response(4)["result"]["structuredContent"]["content"],
+        "hello from the project\n"
     );
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");

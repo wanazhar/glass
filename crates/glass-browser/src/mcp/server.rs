@@ -146,6 +146,25 @@ struct Tool {
     input_schema: Value,
 }
 
+/// One host-provided MCP tool advertised alongside the browser tool catalog.
+#[derive(Debug, Clone, Serialize)]
+pub struct HostMcpTool {
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
+}
+
+/// Optional one-way extension point used by the full Glass product.
+///
+/// `glass-browser` owns the MCP transport and browser tools while a depending
+/// package may contribute product-specific tools without reversing the crate
+/// dependency direction.
+pub trait HostMcpToolBackend: Send + Sync {
+    fn tools(&self) -> Vec<HostMcpTool>;
+    fn call(&self, name: &str, arguments: Value) -> Result<Value, String>;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum FrameFormat {
     ContentLength,
@@ -642,10 +661,28 @@ pub async fn run_mcp_server(cli: &Cli) -> BrowserResult<()> {
     local.run_until(run_mcp_server_local(cli)).await
 }
 
+/// Run the stdio MCP server with host-owned tools merged into the catalog.
+pub async fn run_mcp_server_with_backend(
+    cli: &Cli,
+    backend: Arc<dyn HostMcpToolBackend>,
+) -> BrowserResult<()> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_mcp_server_local_with_backend(cli, Some(backend)))
+        .await
+}
+
 async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
+    run_mcp_server_local_with_backend(cli, None).await
+}
+
+async fn run_mcp_server_local_with_backend(
+    cli: &Cli,
+    backend: Option<Arc<dyn HostMcpToolBackend>>,
+) -> BrowserResult<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    run_mcp_stream(
+    run_mcp_stream_inner(
         BufReader::new(stdin),
         stdout,
         cli,
@@ -653,6 +690,7 @@ async fn run_mcp_server_local(cli: &Cli) -> BrowserResult<()> {
         true,
         false,
         None,
+        backend,
     )
     .await
 }
@@ -670,6 +708,34 @@ pub async fn run_mcp_stream<R, W>(
     close_session_on_eof: bool,
     local_daemon: bool,
     lease_context: Option<Arc<DaemonLeaseContext>>,
+) -> BrowserResult<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + 'static,
+{
+    run_mcp_stream_inner(
+        reader,
+        writer,
+        cli,
+        session,
+        close_session_on_eof,
+        local_daemon,
+        lease_context,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_mcp_stream_inner<R, W>(
+    reader: R,
+    writer: W,
+    cli: &Cli,
+    session: Arc<Mutex<Option<BrowserSession>>>,
+    close_session_on_eof: bool,
+    local_daemon: bool,
+    lease_context: Option<Arc<DaemonLeaseContext>>,
+    host_backend: Option<Arc<dyn HostMcpToolBackend>>,
 ) -> BrowserResult<()>
 where
     R: AsyncBufRead + Unpin,
@@ -820,7 +886,18 @@ where
             continue;
         }
 
+        let is_host_tool = request.method == "tools/call"
+            && request
+                .params
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| {
+                    host_backend
+                        .as_ref()
+                        .is_some_and(|backend| backend.tools().iter().any(|tool| tool.name == name))
+                });
         if request.method == "tools/call"
+            && !is_host_tool
             && let Err(error) = canonical_tool_request(&request)
         {
             if !request.id.is_notification() {
@@ -970,6 +1047,7 @@ where
         let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
         let task_development_sessions = Arc::clone(&development_sessions);
+        let task_host_backend = host_backend.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
@@ -988,6 +1066,7 @@ where
                     task_viewport,
                     task_knowledge_store.as_deref(),
                     &task_development_sessions,
+                    task_host_backend.as_deref(),
                 )
                 .await
             };
@@ -1480,10 +1559,12 @@ async fn handle_request(
         None,
         knowledge_store_path,
         &development_sessions,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request_with_viewport(
     request: &JsonRpcRequest,
     session: &mut Option<BrowserSession>,
@@ -1492,6 +1573,7 @@ async fn handle_request_with_viewport(
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
     development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -1507,7 +1589,21 @@ async fn handle_request_with_viewport(
     let response = match request.method.as_str() {
         "initialize" => initialize_response(request, policy),
         "ping" => success_response(request.id.response_value(), json!({})),
-        "tools/list" => success_response(request.id.response_value(), json!({"tools": tools()})),
+        "tools/list" => {
+            let mut catalog = tools()
+                .into_iter()
+                .filter_map(|tool| serde_json::to_value(tool).ok())
+                .collect::<Vec<_>>();
+            if let Some(backend) = host_backend {
+                catalog.extend(
+                    backend
+                        .tools()
+                        .into_iter()
+                        .filter_map(|tool| serde_json::to_value(tool).ok()),
+                );
+            }
+            success_response(request.id.response_value(), json!({"tools": catalog}))
+        }
         "prompts/list" => match prompts::list_prompts() {
             Ok(result) => success_response(request.id.response_value(), result),
             Err(error) => error_response(
@@ -1554,6 +1650,42 @@ async fn handle_request_with_viewport(
                 "resources/read requires a string `uri` parameter",
             ),
         },
+        "tools/call"
+            if request
+                .params
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| {
+                    host_backend
+                        .is_some_and(|backend| backend.tools().iter().any(|tool| tool.name == name))
+                }) =>
+        {
+            let name = request.params["name"]
+                .as_str()
+                .expect("host tool name checked above");
+            let arguments = request
+                .params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match host_backend
+                .expect("host backend checked above")
+                .call(name, arguments)
+            {
+                Ok(result) => success_response(
+                    request.id.response_value(),
+                    json!({
+                        "content":[{"type":"text","text":serde_json::to_string(&result).unwrap_or_else(|_| "null".into())}],
+                        "structuredContent":result,
+                        "isError":false
+                    }),
+                ),
+                Err(error) => success_response(
+                    request.id.response_value(),
+                    json!({"content":[{"type":"text","text":error}],"isError":true}),
+                ),
+            }
+        }
         "tools/call" => match call_tool(
             request,
             session,

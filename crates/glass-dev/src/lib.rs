@@ -14,6 +14,7 @@ pub mod git;
 pub mod intelligence;
 pub mod kernels;
 pub mod lsp;
+pub mod mcp;
 pub mod testing;
 pub mod tools;
 pub mod tui;
@@ -44,6 +45,13 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 /// the 0.3.4 ownership migration. The product entry point lives here so each
 /// resident service can move without changing the installed `glass` binary.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    if cli.mcp {
+        let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open(
+            std::env::current_dir()?,
+            cli.yolo,
+        )?);
+        return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
+    }
     if let Some(glass_browser::cli::args::Commands::Agent {
         action:
             glass_browser::cli::args::AgentCommand::ToolFile {

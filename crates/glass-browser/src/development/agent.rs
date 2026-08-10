@@ -2359,6 +2359,8 @@ mod tests {
             "glass_file_rename",
             "glass_file_delete",
             "glass_test_run",
+            "glass_process_start",
+            "glass_process_stop",
             "\"read\"",
             "\"write\"",
             "\"edit\"",
@@ -2374,8 +2376,8 @@ mod tests {
         assert!(tools.contains("mutating && !unrestricted"));
         assert!(tools.contains("--allow-mutation"));
         assert!(tools.contains("exact serialized call once"));
-        assert!(!tools.contains("\"glass_process_start\""));
-        assert!(!tools.contains("\"glass_process_stop\""));
+        assert!(tools.contains("register(\"glass_process_start\", \"glass.process.start\""));
+        assert!(tools.contains("register(\"glass_process_stop\", \"glass.process.stop\""));
 
         let response = serde_json::json!({
             "type": "response",

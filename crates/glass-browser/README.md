@@ -22,6 +22,12 @@ glass-browser doctor
 glass-browser --help
 ```
 
+For subsequent Cargo registry releases, run `glass-browser update --dry-run`
+to inspect the resolved package, source, root, and Cargo arguments, then run
+`glass-browser update`. The command updates this `glass-browser` package and
+does not switch to `glass-dev`. Use `--version VERSION` to pin a release and
+`--force` only for an intentional reinstall.
+
 This package installs only `glass-browser`. Install `glass-dev` instead when
 you want both `glass` and `glass-browser`. Installing both packages into the
 same Cargo home can make the last installation replace the shared

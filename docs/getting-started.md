@@ -37,14 +37,28 @@ cargo install glass-browser --locked
 glass-browser doctor
 ```
 
+After installation, preview the resolved owner and root before updating:
+
+```console
+glass update --dry-run
+glass update
+# Use this form when only the core command is installed:
+glass-browser update
+```
+
+The command updates the existing Cargo package; it does not switch products.
+Read the [complete update contract](installation.md#update-a-cargo-installation)
+for custom registries, pinned versions, unmanaged builds, and recovery.
+
 `doctor` does not start Chrome. It reports executable and browser discovery,
 platform status, policy, profiles, daemon health, stores, and remediation. A
 `degraded` result identifies each missing dependency instead of partially
 starting a session.
 
 The two packages intentionally compete for the `glass-browser` command in one
-Cargo root. Use the [package transition and complete uninstall
-procedures](installation.md#install-from-source) when switching products.
+Cargo root. Use the [package transition](installation.md#install-from-source)
+and [complete uninstall](installation.md#fully-uninstall-glass) procedures when
+switching products.
 
 ## Path A: inspect and run a project
 

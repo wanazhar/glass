@@ -5,6 +5,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `glass update` and `glass-browser update`, which resolve the owning
+  Cargo package and install root, verify source provenance, preserve the
+  full/core package boundary, support dry-run/version/force/registry choices,
+  and avoid Windows in-process executable replacement.
+
 ## [0.3.3] - 2026-08-08
 
 ### Added

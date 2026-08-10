@@ -256,6 +256,22 @@ pub enum TuiLiveFit {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Update the Cargo package that owns this executable.
+    Update {
+        /// Print the resolved package, provenance, root, and Cargo command without running it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Install a specific Cargo-compatible version requirement instead of the latest release.
+        #[arg(long)]
+        version: Option<String>,
+        /// Reinstall even when Cargo considers the selected version current.
+        #[arg(long)]
+        force: bool,
+        /// Use this configured Cargo registry. Required to change from an unknown or non-crates.io source.
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
     /// Download and install a managed Chrome for Testing build.
     InstallChromium {
         /// Reinstall the version pinned by this Glass release.
@@ -1443,6 +1459,30 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["glass", "tui"]).unwrap().command,
             Some(Commands::Tui)
+        ));
+    }
+
+    #[test]
+    fn update_options_are_explicit_and_browser_free() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "update",
+            "--dry-run",
+            "--version",
+            "0.3.4",
+            "--force",
+            "--registry",
+            "internal",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update {
+                dry_run: true,
+                version: Some(ref version),
+                force: true,
+                registry: Some(ref registry),
+            }) if version == "0.3.4" && registry == "internal"
         ));
     }
 

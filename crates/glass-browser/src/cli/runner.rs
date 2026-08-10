@@ -110,6 +110,20 @@ async fn dispatch_product(cli: Cli, development_enabled: bool) -> BrowserResult<
     }
 
     match &cli.command {
+        Some(Commands::Update {
+            dry_run,
+            version,
+            force,
+            registry,
+        }) => {
+            crate::update::run(crate::update::UpdateOptions {
+                dry_run: *dry_run,
+                version: version.clone(),
+                force: *force,
+                registry: registry.clone(),
+            })?;
+            return Ok(());
+        }
         Some(Commands::InstallChromium { update }) => {
             let path = crate::browser::chrome::download_chromium(*update).await?;
             println!("Chrome for Testing installed at {}", path.display());
@@ -2158,7 +2172,8 @@ async fn run_command(
                 .await?;
             print_json_mode(&result, response_mode)?;
         }
-        Commands::Capabilities
+        Commands::Update { .. }
+        | Commands::Capabilities
         | Commands::Daemon { .. }
         | Commands::Doctor { .. }
         | Commands::McpConfig { .. }

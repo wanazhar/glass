@@ -17,6 +17,12 @@ glass --help
 glass-browser --help
 ```
 
+For subsequent Cargo registry releases, preview and apply an ownership-aware
+update with `glass update --dry-run` and `glass update`. Invoking
+`glass-browser update` from this package updates the same `glass-dev` owner;
+it does not install the core-only package. Use `--version VERSION` to pin a
+release and `--force` only for an intentional reinstall.
+
 `glass-dev` is the umbrella package and owns both installed commands. Do not
 also install `glass-browser` into the same Cargo home unless you intentionally
 want that package to replace the shared `glass-browser` executable.

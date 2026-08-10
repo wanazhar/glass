@@ -195,8 +195,8 @@ command stream. Hidden implementation commands are not public CLI contracts.
 | `checkpoint` | bounded workflow/checkpoint files | portable redacted checkpoint | definition/route/effect mismatch prevents resume |
 | `snapshot` | profile and snapshot selector | redacted bounded session evidence | snapshot data never restores live browser authority |
 
-Standalone utility commands are `install-chromium`, `capabilities`, `doctor`,
-`mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`
+Standalone utility commands are `update`, `install-chromium`, `capabilities`,
+`doctor`, `mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`
 opens the TUI. The `glass-browser` executable exposes the browser-control
 subset; use its own `--help` as the installed-version authority.
 
@@ -412,6 +412,8 @@ names are replaced by the Glass-owned overrides.
 Run:
 
 ```console
+glass update --dry-run
+glass update
 glass install-chromium
 glass profiles
 glass profiles create NAME
@@ -419,6 +421,14 @@ glass profiles delete NAME
 glass delete-profile NAME
 glass tui
 ```
+
+`update` is browser-free. It updates the Cargo package that owns the invoked
+executable, preserves its detected install root, and uses `--locked`. Optional
+`--version`, `--force`, and `--registry` values pass through as bounded Cargo
+install choices. It fails instead of guessing for unmanaged binaries,
+ambiguous owners, or an implicit source-channel change. See
+[Installation and operations](installation.md#update-a-cargo-installation) for
+the complete ownership, provenance, custom-root, and Windows contracts.
 
 `delete-profile` remains an alias for profile deletion.
 

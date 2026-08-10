@@ -219,6 +219,7 @@ pub mod task_protocol;
 pub mod terminal_graphics;
 /// Ratatui terminal interface.
 pub mod tui;
+mod update;
 /// Stable Glass Web IR v1 reconciliation and validation.
 pub mod web_ir;
 /// Bounded workspace identity and lifecycle contracts.

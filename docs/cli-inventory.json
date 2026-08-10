@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "binaries": {
     "glass": [
-      "install-chromium", "certify", "workspace", "project", "agent",
+      "update", "install-chromium", "certify", "workspace", "project", "agent",
       "memory", "surfaces", "backend", "daemon", "replay", "capabilities",
       "doctor", "mcp-config", "profiles", "knowledge", "result",
       "delete-profile", "navigate", "click", "preflight", "click-at",
@@ -20,7 +20,7 @@
       "clipboard-read", "clipboard-write", "tui"
     ],
     "glass-browser": [
-      "install-chromium", "certify", "workspace", "memory", "surfaces",
+      "update", "install-chromium", "certify", "workspace", "memory", "surfaces",
       "backend", "daemon", "replay", "capabilities", "doctor", "mcp-config",
       "profiles", "knowledge", "result", "delete-profile", "navigate",
       "click", "preflight", "click-at", "click-expect-popup", "double-click",

@@ -79,6 +79,66 @@ The release smoke additionally exercises Cargo's direct `--force` replacement
 in both directions in an isolated root. Uninstall/install is the clearest
 interactive route because it leaves no stale package-ownership record.
 
+## Update a Cargo installation
+
+Both installed executables expose the same ownership-aware updater:
+
+```console
+# Inspect without modifying the installation
+glass update --dry-run
+
+# Update the full suite to the latest registry release
+glass update
+
+# A core-only installation uses its available command
+glass-browser update
+```
+
+`glass update` resolves the Cargo root from the running `<root>/bin/glass`
+path, asks Cargo which package owns that binary, verifies the install source,
+and runs the equivalent of:
+
+```console
+cargo install glass-dev --locked --root /resolved/root
+```
+
+`glass-browser update` follows the same process. When `glass-browser` is owned
+by `glass-dev`, it updates `glass-dev`; when it is owned by the core-only
+package, it updates `glass-browser`. It never installs both packages, changes
+the package owner, deletes retained state, updates managed Chromium, or starts
+a browser. The full package's exact `glass-browser` dependency keeps both
+executables on the same released version.
+
+Options are intentionally small and map to Cargo install semantics:
+
+```console
+glass update --version 0.3.4   # select a Cargo-compatible version requirement
+glass update --force           # reinstall even when already current
+glass update --registry corp   # intentionally use a configured Cargo registry
+```
+
+The updater supports binaries tracked by Cargo in their actual install root,
+including custom `cargo install --root` locations. It refuses to guess when
+the executable is a source build, a manually copied/native-release binary, no
+Cargo owner is recorded, both Glass package owners conflict, provenance is
+missing, or a Git/path/custom-registry source would silently become crates.io.
+Update those installations through their original distribution channel. An
+explicit `--registry NAME` authorizes use of that configured Cargo registry
+when Cargo provenance is unknown or non-crates.io; it does not infer a registry
+name from a URL.
+
+Cargo performs registry resolution, checksum verification, compilation, and
+install-record updates. On Linux and macOS Glass waits and returns Cargo's
+status. On Windows it starts Cargo and exits so the running executable is not
+held open; keep the terminal open until Cargo reports completion. If an update
+fails, the prior Cargo-installed executable remains the recovery point in
+normal Cargo replacement behavior. Run the printed `cargo install` command
+directly when deeper Cargo diagnostics are required.
+
+Package changes are migrations, not updates. Use the explicit core/full
+uninstall-install transitions above instead of `--registry`, `--version`, or
+`--force` to change owners.
+
 ## Fully uninstall Glass
 
 Stop any running TUI, CLI, MCP clients, and owned browser sessions first. If

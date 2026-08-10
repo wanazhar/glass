@@ -47,8 +47,9 @@ current user instructions.
 
 - [Getting started](getting-started.md) — select an interface, run diagnostics,
   observe a page, perform a guarded action, and close cleanly.
-- [Installation and operations](installation.md) — packages, browser discovery,
-  profiles, attach mode, logging, policy, and deployment.
+- [Installation and operations](installation.md) — packages, ownership-aware
+  updates, complete uninstall, browser discovery, profiles, attach mode,
+  logging, policy, and deployment.
 - [CLI reference](cli.md) — every command family, global option, locator,
   revision guard, input, and output convention.
 - [Complete feature reference](features.md) — exhaustive capability-to-interface

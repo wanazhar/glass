@@ -9,7 +9,7 @@ cross-platform certification claim. The machine-readable target status is in
 
 | Domain | CLI | TUI | MCP | Rust | Guide |
 |---|---|---|---|---|---|
-| Browser launch/attach | global options, `doctor`, `install-chromium` | startup | session configuration | `BrowserSession`, `SessionOptions` | [Installation](installation.md) |
+| Install/update and browser launch/attach | `update`, global options, `doctor`, `install-chromium` | startup | session configuration | `BrowserSession`, `SessionOptions` | [Installation](installation.md) |
 | Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | `BrowserSession` target/navigation methods | [CLI](cli.md) |
 | Frames and topology | `frames`, `select-frame`, `verify` | current frame state | frame tools and predicates | session frame/topology APIs | [Actions](actions.md) |
 | Structured observation | `observe`, `inspect-page`, `observe-delta` | semantic page pane | `observe`, `inspectPage`, `observeDelta` | `observe`, `semantic_observe` | [Semantic observation](semantic-observation.md) |

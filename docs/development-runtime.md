@@ -20,6 +20,11 @@ cd /path/to/project
 glass project inspect --root .
 ```
 
+For later registry releases, `glass update --dry-run` previews the resolved
+package and root and `glass update` updates the existing `glass-dev` owner. See
+[Installation and operations](installation.md#update-a-cargo-installation) for
+the source-provenance and package-transition rules.
+
 Glass canonicalizes the root before it creates state. It detects Rust,
 JavaScript/TypeScript, Python, and Go markers; package manager, build system,
 formatter, framework, available language servers, default commands, and an

@@ -67,6 +67,20 @@ Install the current checkout during development:
 cargo install --path crates/glass-dev --locked
 ```
 
+Update the package that owns the command you invoke:
+
+```console
+glass update --dry-run
+glass update
+# Core-only installations expose the same operation:
+glass-browser update
+```
+
+The updater preserves the detected Cargo install root and uses a locked Cargo
+install. It never installs both packages or guesses between `glass-dev` and
+`glass-browser`; see the [update contract and recovery
+steps](docs/installation.md#update-a-cargo-installation).
+
 Chrome or Chromium is required only for browser-backed operations. Project
 inspection, file operations, task validation, Web IR inspection, policy
 preflight, capability inspection, and many diagnostics are browser-free.
@@ -424,7 +438,7 @@ certification. Read the [feature-parity matrix](docs/feature-parity.md),
 
 | Goal | Start here | Deep reference |
 |---|---|---|
-| Install, upgrade, switch packages, or uninstall | [Installation](docs/installation.md) | [Release checklist](docs/release-checklist.md) |
+| Install, update, switch packages, or uninstall | [Installation](docs/installation.md) | [Release checklist](docs/release-checklist.md) |
 | Learn the complete product | [Getting started](docs/getting-started.md) | [Feature reference](docs/features.md) |
 | Develop in the terminal workspace | [Development Runtime](docs/development-runtime.md) | [Development TUI architecture](docs/architecture/development-tui.md) |
 | Use Glass over SSH or iPhone | [Mobile and remote](docs/mobile-remote.md) | [Connection/presentation policy](docs/architecture/connection-presentation.md) |

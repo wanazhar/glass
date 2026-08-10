@@ -4,6 +4,7 @@
 //! `glass` product. Browser intelligence remains provided by the one-way
 //! `glass-browser` dependency.
 
+pub mod agents;
 pub mod debugger;
 pub mod git;
 pub mod kernels;
@@ -12,6 +13,7 @@ pub mod workspace;
 
 use glass_browser::cli::args::Cli;
 
+pub use agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.

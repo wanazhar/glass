@@ -1,5 +1,6 @@
 //! Resident development workspace ownership.
 
+use crate::agents::AgentRegistry;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::git::GitService;
 use crate::kernels::KernelManager;
@@ -16,6 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// ownership root for services moved into `glass-dev` during the 0.3.4 cycle.
 pub struct DevelopmentWorkspace {
     root: PathBuf,
+    agents: AgentRegistry,
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
     git: Option<GitService>,
@@ -45,8 +47,10 @@ impl DevelopmentWorkspace {
         let kernels = KernelManager::new(&root).map_err(|error| {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
+        let agents = AgentRegistry::new(&root)?;
         Ok(Self {
             root,
+            agents,
             project,
             debuggers: BTreeMap::new(),
             git,
@@ -75,6 +79,10 @@ impl DevelopmentWorkspace {
     /// Mutable access for governed resident service operations.
     pub fn project_mut(&mut self) -> &mut ProjectWorkspace {
         &mut self.project
+    }
+
+    pub fn agents(&mut self) -> &mut AgentRegistry {
+        &mut self.agents
     }
 
     /// Start and initialize one named resident DAP session.

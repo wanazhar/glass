@@ -5,14 +5,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- Added `glass update` and `glass-browser update`, which resolve the owning
-  Cargo package and install root, verify source provenance, preserve the
-  full/core package boundary, support dry-run/version/force/registry choices,
-  and avoid Windows in-process executable replacement.
-
-## [0.3.3] - 2026-08-08
+## [0.3.3] - 2026-08-10
 
 ### Added
 
@@ -31,6 +24,20 @@ and intends to use [Semantic Versioning](https://semver.org/).
   and language operations, and a real Neovim `--embed` Msgpack-RPC proof.
 - Added attached-agent browser/project revision context and Linux, macOS, and
   Windows browser-free CI coverage.
+- Added native phone-cockpit mouse/touch hit testing, searchable actions,
+  revision-bound semantic taps, command history, approvals, and visible agent
+  progress without requiring function keys.
+- Expanded the Pi coding harness with workspace-confined read, search, edit,
+  file lifecycle, process, command, diagnostic, semantic, Web IR, and task
+  tools; exact per-call mutation approvals; bounded audit evidence; and a
+  Glass-specific system prompt.
+- Added explicit `glass --yolo` operation for trusted local automation with
+  unrestricted Pi tool/resource availability and no Glass or Pi approval
+  prompts, while keeping the mode visibly persistent in the cockpit.
+- Added `glass update` and `glass-browser update`, which resolve the owning
+  Cargo package and install root, verify source provenance, preserve the
+  full/core package boundary, support dry-run/version/force/registry choices,
+  and avoid Windows in-process executable replacement.
 
 ### Changed
 
@@ -44,6 +51,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Browser startup failure no longer terminates the TUI worker; free,
   compatible, unrelated, and unknown endpoints produce explicit recovery
   choices without silently attaching.
+- Reduced remote redraw, allocation, and terminal-write pressure while keeping
+  local interaction responsive, and split workspace validation by package to
+  avoid Cargo's duplicate binary-target warning without losing coverage.
+- Reworked the complete product, installation, uninstallation, CLI, runtime,
+  mobile, architecture, security, SDK, and troubleshooting documentation.
 
 ### Fixed
 

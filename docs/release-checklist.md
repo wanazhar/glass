@@ -11,7 +11,7 @@ feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks; native browser/PTY support is not
 certified.
 
-## 0.3.3 local candidate record
+## 0.3.3 release record
 
 - [x] Map all 53 mandatory issue #33 checkboxes, including the authoritative
       amendment, to integrated evidence.
@@ -30,8 +30,9 @@ certified.
 - [x] Document complete uninstallation for both package owners, custom Cargo
       roots, retained state, external MCP entries, and experiment worktrees.
 - [x] Keep macOS and Windows claims bounded to browser-free CI definitions.
-- [ ] Obtain explicit approval before pushing, tagging, publishing, closing
-      issue #33, or creating the GitHub Release.
+- [x] Obtain explicit approval before pushing, tagging, publishing, closing
+      issue #33, or creating the GitHub Release; approval was given on
+      2026-08-10.
 
 ## 0.3.2 release record
 

@@ -420,14 +420,14 @@ workflows.
 
 | Item | 0.3.3 source status |
 |---|---|
-| Linux ARM64 | Native Chromium evidence recorded for the current candidate |
+| Linux ARM64 | Native Chromium evidence recorded for the current release |
 | Linux x86-64 | Declared source target; native runtime certification pending |
 | macOS x86-64 / ARM64 | Browser-free CI contract; native runtime certification pending |
 | Windows | Browser-free CI contract; native PTY/browser certification pending |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.2`, `glass-dev 0.3.2` | Current published crates |
-| `0.3.3` | Current local source release candidate; not published by this checkout |
+| `glass-browser 0.3.3`, `glass-dev 0.3.3` | Current release; published by the signed-tag workflow |
+| `0.3.2` | Previous stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

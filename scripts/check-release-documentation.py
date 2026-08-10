@@ -10,12 +10,12 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| `glass-browser 0.3.2`, `glass-dev 0.3.2` | Current published crates |",
+        "| `glass-browser 0.3.3`, `glass-dev 0.3.3` | Current release; published by the signed-tag workflow |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
-        "## [0.3.3] - 2026-08-08",
+        "## [0.3.3] - 2026-08-10",
         "## [0.3.2] - 2026-08-08",
         "## [Unreleased]",
     ],
@@ -43,11 +43,9 @@ REQUIRED_MARKERS = {
     ],
     "docs/release-evidence.md": [
         "## 0.3.2 publication evidence",
-        "## 0.3.3 local release-candidate evidence",
+        "## 0.3.3 release evidence",
         "Release workflow run 31254928934",
         "GitHub Release v0.3.2",
-        "## 0.3.2 local pre-publication evidence",
-        "local `0.3.2` candidate metadata",
         "`feature-parity.json`",
         "cargo publish --locked --dry-run",
         "`glass-browser 0.3.0` to crates.io",

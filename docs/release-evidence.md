@@ -1,9 +1,10 @@
 # Release evidence
 
-## 0.3.3 local release-candidate evidence
+## 0.3.3 release evidence
 
-This checkout is a local candidate only. No tag, push, crates.io publication,
-or GitHub Release is implied by this section.
+This section records the evidence used for the signed `v0.3.3` release on
+2026-08-10. Publication is performed by the ordered tag workflow and verified
+against crates.io and the matching source-only GitHub Release.
 
 - Workspace, TypeScript, Python, and exact inter-crate versions are `0.3.3`.
 - `glass-dev` packages both `glass` and `glass-browser`; the core
@@ -37,10 +38,10 @@ or GitHub Release is implied by this section.
   browser-core no-default-feature compilation, and separate optimized builds
   of both packages passed on Rust 1.97.0 (`aarch64-unknown-linux-gnu`).
 - The installed Pi 0.84.0 binary completed a real offline RPC state handshake
-  with the packaged Glass system prompt and nine-tool extension; protocol
+  with the packaged Glass system prompt and expanded coding extension; protocol
   classification tests cover prompt acknowledgement, authoritative assistant
   messages, hidden user-message echoes, and final `agent_settled` handling.
-- Documentation validation covers 350 Markdown files, the exact top-level and
+- Documentation validation covers 351 Markdown files, the exact top-level and
   nested CLI inventories, 133 MCP tools, 17 examples and 22 public modules.
   Sixteen substantive guide contracts plus complete current-guide routing are
   depth-checked. Version, feature-parity, reliability, read-only-adapter and
@@ -48,8 +49,8 @@ or GitHub Release is implied by this section.
 - TypeScript build/typecheck/smoke and Python compile/smoke passed against the
   checkout's 0.3.3 executable. `cargo deny`, `cargo audit`, and the locked fuzz
   all-target build passed.
-- `glass-browser` packages 186 files (4.2 MiB; 811.9 KiB compressed) and
-  `glass-dev` packages 8 files (89.7 KiB; 25.4 KiB compressed). Both package
+- `glass-browser` packages 188 files (4.4 MiB; 844.0 KiB compressed) and
+  `glass-dev` packages 8 files (94.4 KiB; 27.2 KiB compressed). Both package
   verification and publication dry runs passed without upload; the normalized
   development package retains the exact `glass-browser =0.3.3` dependency.
 - `scripts/smoke-clean-install.sh` passed isolated core-only and full-suite
@@ -61,7 +62,7 @@ or GitHub Release is implied by this section.
 
 This is host-specific native evidence, not a native-platform claim for macOS
 or Windows. Those platforms have browser-free CI definitions only in this
-candidate.
+release.
 
 ## 0.3.2 publication evidence
 
@@ -77,50 +78,6 @@ candidate.
   is published, non-draft, non-prerelease, marked latest, and source-only.
 - The release contains no native binaries, checksum manifests, Sigstore
   bundles, or npm/PyPI client packages.
-
-## 0.3.2 local pre-publication evidence
-
-The source checkout contains the local `0.3.2` candidate metadata for the
-`glass-browser` library/browser-executable and `glass-dev` development-
-executable packages. It is not tagged,
-pushed, published, or represented by a crates.io package or GitHub Release;
-those are explicit maintainer publication steps. The published
-`glass-browser 0.3.0` evidence below remains historical registry evidence.
-
-### Completed validation scope
-
-- Rust, Python, and TypeScript package metadata are synchronized at `0.3.2`.
-- The packages share one release version. `glass-browser` owns the
-  `glass-browser` executable and `glass_browser` library; `glass-dev` owns
-  `glass` and declares an exact `=0.3.2` browser dependency.
-- Issue #32 includes a native editor, real rust-analyzer LSP path, PTY/process
-  manager, Glass-owned local and Pi harness adapters, development graph,
-  semantic breakpoints, replay, experiments, collaboration, and a coherent
-  live-browser Development TUI.
-- The version, feature-parity, release-documentation, reliability-matrix,
-  read-only-adapter, and Web IR corpus checks pass.
-- `scripts/check-rust-workspace.sh test` passes the complete source
-  suite.
-- `GLASS_E2E=1 cargo test -p glass-browser --all-features --test browser_smoke --locked --
-  --nocapture --test-threads=1` passes all 19 Chromium scenarios on the current Linux ARM64
-  host. This is host evidence, not a cross-platform certification claim.
-- Clippy with warnings denied, warning-free workspace rustdoc, `cargo deny`,
-  `cargo audit`, and the fuzz-crate all-target check pass.
-- `cargo package` verifies `glass-browser`. The unpublished `glass-dev`
-  candidate packages through a Cargo patch source, and the normalized archive
-  is checked to retain exact `glass-browser =0.3.2` without a path. The release
-  workflow publishes the browser first, waits for registry visibility, then
-  verifies/publishes the development crate and clean-installs both products.
-- Issue #32 implementation evidence covers the bounded development runtime,
-  CLI/MCP/TUI surfaces, harness, package boundary, and explicit capability
-  limits without extending certification claims to unobserved targets.
-
-### Publication boundary
-
-- No tag, push, crates.io publication, or GitHub Release operation has been
-  performed by this pre-publication audit.
-- The release workflow accepts only stable tags. This candidate cannot publish
-  until a maintainer approves and pushes the matching `v0.3.2` tag.
 
 The 0.3.0 release follows the crates-only distribution boundary.
 The `glass-browser` 0.3.0 release has a source-only GitHub Release with

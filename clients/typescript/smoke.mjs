@@ -12,13 +12,14 @@ try {
   const manifest = await client.initialize();
   if (manifest?.protocolVersion !== 1) throw new Error("unexpected Glass protocol version");
   if (!client.supportsCapability("action")) throw new Error("action capability missing");
-  const fixture = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "crates/glass-browser/tests/fixtures/client-conformance-v1.json"), "utf8"));
-  for (const [schema, versions] of Object.entries(fixture.requiredSchemas)) {
+  const browserFixture = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "crates/glass-browser/tests/fixtures/client-conformance-v1.json"), "utf8"));
+  const developmentFixture = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "crates/glass-dev/tests/fixtures/client-conformance-v1.json"), "utf8"));
+  for (const [schema, versions] of Object.entries(browserFixture.requiredSchemas)) {
     for (const version of versions) if (!client.supportsSchema(schema, version)) throw new Error(`schema missing: ${schema}@${version}`);
   }
-  for (const capability of fixture.requiredCapabilities) client.requireCapability(capability);
+  for (const capability of browserFixture.requiredCapabilities) client.requireCapability(capability);
   const toolNames = (await client.listTools()).map((tool) => tool.name).sort();
-  if (JSON.stringify(toolNames) !== JSON.stringify(fixture.tools)) throw new Error("MCP tool inventory does not match the conformance fixture");
+  if (JSON.stringify(toolNames) !== JSON.stringify(developmentFixture.tools)) throw new Error("MCP tool inventory does not match the full-product conformance fixture");
   const projectRoot = repositoryRoot;
   const project = await client.projectInspect(projectRoot);
   if (project.schemaVersion !== "glass.development.v1") throw new Error("unexpected project schema");

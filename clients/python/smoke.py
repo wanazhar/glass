@@ -16,7 +16,7 @@ try:
     manifest = client.initialize()
     assert manifest["protocolVersion"] == 1
     assert client.supports_capability("action")
-    fixture = json.loads(
+    browser_fixture = json.loads(
         (
             Path(__file__).resolve().parents[2]
             / "crates"
@@ -26,13 +26,23 @@ try:
             / "client-conformance-v1.json"
         ).read_text()
     )
-    for schema, versions in fixture["requiredSchemas"].items():
+    development_fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "crates"
+            / "glass-dev"
+            / "tests"
+            / "fixtures"
+            / "client-conformance-v1.json"
+        ).read_text()
+    )
+    for schema, versions in browser_fixture["requiredSchemas"].items():
         for version in versions:
             assert client.supports_schema(schema, version)
-    for capability in fixture["requiredCapabilities"]:
+    for capability in browser_fixture["requiredCapabilities"]:
         client.require_capability(capability)
     tool_names = sorted(tool["name"] for tool in client.list_tools())
-    assert tool_names == fixture["tools"]
+    assert tool_names == development_fixture["tools"]
     project_root = str(Path(__file__).resolve().parents[2])
     project = client.project_inspect(project_root)
     assert project["schemaVersion"] == "glass.development.v1"

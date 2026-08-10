@@ -49,6 +49,16 @@ impl Default for DevelopmentToolRouter {
 }
 
 impl DevelopmentToolRouter {
+    pub fn with_customization(customization: &crate::Customization) -> Self {
+        let mut router = Self::default();
+        let custom = customization.descriptors();
+        router
+            .descriptors
+            .retain(|descriptor| !custom.iter().any(|item| item.name == descriptor.name));
+        router.descriptors.extend(custom);
+        router
+    }
+
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.descriptors.clone()
     }
@@ -120,17 +130,31 @@ impl DevelopmentToolRouter {
             evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating}),
             rationale: None,
         })?;
+        workspace.customization().run_hooks(
+            "tool.before",
+            &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
+        )?;
         let result = if service_descriptors()
             .iter()
             .any(|descriptor| descriptor.name == call.name)
         {
             self.execute_service(workspace, call, context)
+        } else if workspace.customization().custom_tool(&call.name).is_some() {
+            workspace
+                .customization()
+                .execute_tool(&call.name, &call.arguments)
+        } else if let Some(name) = call.name.strip_prefix("glass.command.") {
+            workspace.customization().execute_command(name)
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
         };
         match result {
             Ok(result) => {
+                workspace.customization().run_hooks(
+                    "tool.after",
+                    &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
+                )?;
                 let result_bytes = serde_json::to_vec(&result)?.len();
                 if result_bytes > RESULT_LIMIT {
                     return Err(DevelopmentError::InvalidInput(format!(
@@ -150,6 +174,10 @@ impl DevelopmentToolRouter {
                 Ok(result)
             }
             Err(error) => {
+                workspace.customization().run_hooks(
+                    "tool.after",
+                    &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
+                )?;
                 let resulting_revision = workspace.project().revision();
                 workspace.intelligence_mut().record(ObservableEventInput {
                     actor: &actor_id,

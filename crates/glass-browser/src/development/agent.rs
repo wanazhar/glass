@@ -1541,6 +1541,7 @@ pub struct PiHarnessOptions {
     pub broker_socket: Option<PathBuf>,
     pub broker_token: Option<String>,
     pub broker_workspace_id: Option<String>,
+    pub additional_system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for PiHarness {
@@ -1584,7 +1585,7 @@ impl PiHarness {
         )?;
         let broker = std::env::current_exe().map_err(DevelopmentError::Io)?;
         let trusted_resources = options.unrestricted || env_enabled("GLASS_PI_TRUSTED_RESOURCES");
-        let system_prompt = if options.unrestricted {
+        let mut system_prompt = if options.unrestricted {
             format!(
                 "{}\n- UNRESTRICTED MODE is active. Glass will not ask for tool approval; execute requested local development work directly and report effects truthfully.",
                 include_str!("../../assets/pi-glass-system.md")
@@ -1592,6 +1593,14 @@ impl PiHarness {
         } else {
             include_str!("../../assets/pi-glass-system.md").to_string()
         };
+        if let Some(additional) = &options.additional_system_prompt {
+            if additional.len() > 128 * 1024 || additional.contains('\0') {
+                return Err(DevelopmentError::InvalidInput(
+                    "additional Pi system prompt exceeds 128 KiB or contains NUL".into(),
+                ));
+            }
+            system_prompt.push_str(additional);
+        }
         let mut command = Command::new("pi");
         command.args(["--mode", "rpc", "--no-approve", "--no-builtin-tools"]);
         if !env_enabled("GLASS_PI_ONLINE_CATALOG") {

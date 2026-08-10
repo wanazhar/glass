@@ -2,6 +2,7 @@
 
 use crate::agents::AgentRegistry;
 use crate::browser::BrowserService;
+use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
@@ -23,6 +24,7 @@ pub struct DevelopmentWorkspace {
     root: PathBuf,
     agents: AgentRegistry,
     browser: BrowserService,
+    customization: Customization,
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
     git: Option<GitService>,
@@ -55,13 +57,21 @@ impl DevelopmentWorkspace {
         let kernels = KernelManager::new(&root).map_err(|error| {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
-        let agents = AgentRegistry::new(&root)?;
+        let customization = Customization::load(&root)?;
+        let mut agents = AgentRegistry::new(&root)?;
+        agents.set_additional_system_prompt(customization.agent_instructions())?;
         let language = LanguageService::new(&root)?;
         let browser = BrowserService::new(&root)?;
+        customization.run_hooks(
+            "workspace.opened",
+            &serde_json::json!({"root":root,"generation":1}),
+        )?;
+        let tools = DevelopmentToolRouter::with_customization(&customization);
         Ok(Self {
             root: root.clone(),
             agents,
             browser,
+            customization,
             project,
             debuggers: BTreeMap::new(),
             git,
@@ -80,7 +90,7 @@ impl DevelopmentWorkspace {
             kernels,
             language,
             tests,
-            tools: DevelopmentToolRouter::default(),
+            tools,
             generation: 1,
         })
     }
@@ -112,6 +122,10 @@ impl DevelopmentWorkspace {
 
     pub fn browser(&self) -> &BrowserService {
         &self.browser
+    }
+
+    pub fn customization(&self) -> &Customization {
+        &self.customization
     }
 
     /// Start and initialize one named resident DAP session.

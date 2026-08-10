@@ -39,6 +39,15 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
             state.surface = DevSurface::Replay;
             Ok("Observable replay refreshed".into())
         }
+        _ if state.workspace.customization().command(command).is_some() => {
+            let result = run_tool(
+                state,
+                &format!("glass.command.{command}"),
+                json!({}),
+                true,
+            )?;
+            Ok(compact_result(command, &result))
+        }
         _ => Err(format!("unknown command {command}; use help")),
     }
 }

@@ -138,6 +138,13 @@ struct AgentRecord {
     awaiting_agent_settle: bool,
 }
 
+struct WorkerRuntime {
+    worktree: PathBuf,
+    sessions_dir: PathBuf,
+    broker: Option<ResidentAgentBroker>,
+    additional_system_prompt: Option<String>,
+}
+
 /// Registry and scheduler for independent Pi subprocesses.
 ///
 /// Each running agent owns a distinct Pi process and persistent session. The
@@ -153,6 +160,7 @@ pub struct AgentRegistry {
     next_agent: u64,
     next_event: u64,
     broker: Option<ResidentAgentBroker>,
+    additional_system_prompt: Option<String>,
 }
 
 impl AgentRegistry {
@@ -170,6 +178,7 @@ impl AgentRegistry {
             next_agent: 1,
             next_event: 1,
             broker: None,
+            additional_system_prompt: None,
         })
     }
 
@@ -190,6 +199,22 @@ impl AgentRegistry {
             ));
         }
         self.broker = Some(broker);
+        Ok(())
+    }
+
+    pub fn set_additional_system_prompt(
+        &mut self,
+        prompt: Option<String>,
+    ) -> DevelopmentResult<()> {
+        if prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.len() > 128 * 1024 || prompt.contains('\0'))
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "agent project instructions exceed 128 KiB or contain NUL".into(),
+            ));
+        }
+        self.additional_system_prompt = prompt;
         Ok(())
     }
 
@@ -381,6 +406,7 @@ impl AgentRegistry {
         let sessions_dir = self.sessions_dir.clone();
         let events = self.events_tx.clone();
         let broker = self.broker.clone();
+        let additional_system_prompt = self.additional_system_prompt.clone();
         let record = self.record_mut(id)?;
         let spec = record.spec.clone();
         let worktree = record.snapshot.worktree.clone();
@@ -396,9 +422,12 @@ impl AgentRegistry {
                 run_worker(
                     worker_id,
                     spec,
-                    worktree,
-                    sessions_dir,
-                    broker,
+                    WorkerRuntime {
+                        worktree,
+                        sessions_dir,
+                        broker,
+                        additional_system_prompt,
+                    },
                     commands_rx,
                     events,
                 )
@@ -605,25 +634,24 @@ impl Drop for AgentRegistry {
 fn run_worker(
     id: AgentId,
     spec: AgentSpec,
-    worktree: PathBuf,
-    sessions_dir: PathBuf,
-    broker: Option<ResidentAgentBroker>,
+    runtime: WorkerRuntime,
     commands: Receiver<WorkerCommand>,
     events: SyncSender<WorkerEvent>,
 ) {
     let options = PiHarnessOptions {
         unrestricted: spec.unrestricted,
         persist_session: true,
-        session_dir: Some(sessions_dir),
+        session_dir: Some(runtime.sessions_dir),
         name: Some(format!("{}: {}", spec.role, id.as_str())),
         model: spec.model,
         thinking: spec.thinking,
-        broker_socket: broker.as_ref().map(|broker| broker.socket.clone()),
-        broker_token: broker.as_ref().map(|broker| broker.token.clone()),
-        broker_workspace_id: broker.map(|broker| broker.workspace_id),
+        broker_socket: runtime.broker.as_ref().map(|broker| broker.socket.clone()),
+        broker_token: runtime.broker.as_ref().map(|broker| broker.token.clone()),
+        broker_workspace_id: runtime.broker.map(|broker| broker.workspace_id),
+        additional_system_prompt: runtime.additional_system_prompt,
         ..PiHarnessOptions::default()
     };
-    let mut harness = match PiHarness::spawn_with_options(&worktree, options) {
+    let mut harness = match PiHarness::spawn_with_options(&runtime.worktree, options) {
         Ok(harness) => harness,
         Err(error) => {
             send_critical_worker_event(&events, WorkerEvent::Failed(id, error.to_string()));

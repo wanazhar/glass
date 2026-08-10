@@ -179,9 +179,17 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let content = format!(
-        "KERNELS\n{}\n\nDEBUGGERS\n{}\n\nAUTHORITY\ngeneration {}\nproject revision {}\nmutations require actor + revision + confirmation",
+        "KERNELS\n{}\n\nDEBUGGERS\n{}\n\nCUSTOMIZATION\n{} skills · {} custom tools · config {}\n\nAUTHORITY\ngeneration {}\nproject revision {}\nmutations require actor + revision + confirmation",
         state.kernels,
         state.debugger,
+        state.workspace.customization().skills().count(),
+        state.workspace.customization().config().tools.len(),
+        state
+            .workspace
+            .customization()
+            .config_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "auto-detected".into()),
         state.workspace.generation(),
         state.workspace.project().revision()
     );

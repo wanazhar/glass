@@ -1,6 +1,7 @@
 //! Resident development workspace ownership.
 
 use crate::agents::AgentRegistry;
+use crate::browser::BrowserService;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
@@ -21,6 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct DevelopmentWorkspace {
     root: PathBuf,
     agents: AgentRegistry,
+    browser: BrowserService,
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
     git: Option<GitService>,
@@ -55,9 +57,11 @@ impl DevelopmentWorkspace {
         })?;
         let agents = AgentRegistry::new(&root)?;
         let language = LanguageService::new(&root)?;
+        let browser = BrowserService::new(&root)?;
         Ok(Self {
             root: root.clone(),
             agents,
+            browser,
             project,
             debuggers: BTreeMap::new(),
             git,
@@ -104,6 +108,10 @@ impl DevelopmentWorkspace {
 
     pub fn agents(&mut self) -> &mut AgentRegistry {
         &mut self.agents
+    }
+
+    pub fn browser(&self) -> &BrowserService {
+        &self.browser
     }
 
     /// Start and initialize one named resident DAP session.

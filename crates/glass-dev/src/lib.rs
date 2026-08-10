@@ -5,6 +5,7 @@
 //! `glass-browser` dependency.
 
 pub mod agents;
+pub mod browser;
 pub mod daemon;
 pub mod debugger;
 pub mod experiments;
@@ -22,6 +23,7 @@ use glass_browser::cli::args::Cli;
 pub use agents::{
     AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker,
 };
+pub use browser::{BrowserRuntimeState, BrowserService, BrowserStartConfig};
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
     ExperimentSnapshot, ExperimentState,

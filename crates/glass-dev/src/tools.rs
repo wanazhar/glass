@@ -1,6 +1,7 @@
 //! Governed tool routing into one resident development workspace.
 
 use crate::agents::AgentSpec;
+use crate::browser::BrowserStartConfig;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
 use crate::workspace::DevelopmentWorkspace;
@@ -173,6 +174,54 @@ impl DevelopmentToolRouter {
         let string = |name: &str| required_string(call, name);
         let actor = normalized_actor_id(&context.authorization.actor.id);
         match call.name.as_str() {
+            "glass.browser.start" => {
+                let config: BrowserStartConfig = serde_json::from_value(call.arguments.clone())?;
+                workspace.browser().start(config)
+            }
+            "glass.browser.stop" => workspace.browser().stop(),
+            "glass.browser.state" => workspace.browser().state(),
+            "glass.browser.observe" => workspace.browser().observe(),
+            "glass.browser.targets" => workspace.browser().targets(),
+            "glass.browser.target.select" => workspace
+                .browser()
+                .select_target(string("targetId")?.into()),
+            "glass.browser.navigate" => workspace.browser().navigate(
+                string("url")?.into(),
+                unsigned(call, "browserRevision", 0)?,
+                timeout(call, 180)?.unwrap_or(Duration::from_secs(30)),
+            ),
+            "glass.browser.act" => {
+                let revision = unsigned(call, "browserRevision", 0)?;
+                match string("action")? {
+                    "click" => workspace
+                        .browser()
+                        .click(string("target")?.into(), revision),
+                    "type" => workspace.browser().type_text(
+                        string("text")?.into(),
+                        optional_string(call, "target").map(str::to_string),
+                        revision,
+                    ),
+                    "scroll" => workspace.browser().scroll(
+                        number(call, "dx", 0.0)?,
+                        number(call, "dy", 0.0)?,
+                        revision,
+                    ),
+                    action => Err(DevelopmentError::InvalidInput(format!(
+                        "unsupported browser action {action}; expected click, type, or scroll"
+                    ))),
+                }
+            }
+            "glass.browser.screenshot" => workspace.browser().screenshot(),
+            "glass.workflow.run" => workspace.browser().run_workflow(
+                required_value(call, "definition")?.clone(),
+                value_map(call, "inputs")?,
+            ),
+            "glass.workflow.pause" => workspace.browser().pause_workflow(),
+            "glass.workflow.resume" => workspace.browser().resume_workflow(
+                required_value(call, "definition")?.clone(),
+                value_map(call, "inputs")?,
+                required_value(call, "checkpoint")?.clone(),
+            ),
             "glass.git.status" => git_value(workspace.git(), |git| git.status()),
             "glass.git.diff" => git_value(workspace.git(), |git| {
                 git.diff(
@@ -485,6 +534,10 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.replay.list",
         "glass.replay.inspect",
         "glass.replay.diff",
+        "glass.browser.state",
+        "glass.browser.observe",
+        "glass.browser.targets",
+        "glass.browser.screenshot",
     ];
     const MUTATE: &[&str] = &[
         "glass.git.stage",
@@ -517,6 +570,14 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.follow-up",
         "glass.agent.abort",
         "glass.agent.compact",
+        "glass.browser.start",
+        "glass.browser.stop",
+        "glass.browser.target.select",
+        "glass.browser.navigate",
+        "glass.browser.act",
+        "glass.workflow.run",
+        "glass.workflow.pause",
+        "glass.workflow.resume",
     ];
     READ.iter()
         .map(|name| service_descriptor(name, false))
@@ -549,6 +610,22 @@ fn optional_string<'a>(call: &'a ToolCall, name: &str) -> Option<&'a str> {
     call.arguments.get(name).and_then(Value::as_str)
 }
 
+fn required_value<'a>(call: &'a ToolCall, name: &str) -> DevelopmentResult<&'a Value> {
+    call.arguments
+        .get(name)
+        .ok_or_else(|| DevelopmentError::InvalidInput(format!("{} requires {name}", call.name)))
+}
+
+fn value_map(
+    call: &ToolCall,
+    name: &str,
+) -> DevelopmentResult<std::collections::BTreeMap<String, Value>> {
+    match call.arguments.get(name) {
+        None => Ok(std::collections::BTreeMap::new()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(DevelopmentError::from),
+    }
+}
+
 fn boolean(call: &ToolCall, name: &str, default: bool) -> bool {
     call.arguments
         .get(name)
@@ -572,6 +649,17 @@ fn integer(call: &ToolCall, name: &str) -> DevelopmentResult<i64> {
         .get(name)
         .and_then(Value::as_i64)
         .ok_or_else(|| DevelopmentError::InvalidInput(format!("{} requires {name}", call.name)))
+}
+
+fn number(call: &ToolCall, name: &str, default: f64) -> DevelopmentResult<f64> {
+    let value = call
+        .arguments
+        .get(name)
+        .and_then(Value::as_f64)
+        .unwrap_or(default);
+    value.is_finite().then_some(value).ok_or_else(|| {
+        DevelopmentError::InvalidInput(format!("{}.{} must be finite", call.name, name))
+    })
 }
 
 fn string_array(call: &ToolCall, name: &str) -> DevelopmentResult<Vec<String>> {

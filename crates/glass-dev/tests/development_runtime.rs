@@ -62,7 +62,7 @@ fn cli_project_and_agent_paths_are_browser_free() {
             "run",
             "smoke",
             "--command",
-            "printf rc-ok",
+            "echo rc-ok",
             "--wait",
             "--root",
             root.to_str().unwrap(),
@@ -148,7 +148,7 @@ fn mcp_project_read_stays_on_clean_json_rpc_stdout() {
         .arg("--mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("MCP server should start");
     let mut stdin = child.stdin.take().unwrap();
@@ -178,7 +178,11 @@ fn mcp_project_read_stays_on_clean_json_rpc_stdout() {
     }
     drop(stdin);
     let output = child.wait_with_output().expect("MCP server should exit");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "MCP process failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let lines = String::from_utf8(output.stdout).unwrap();
     let responses = lines
         .lines()

@@ -10,7 +10,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1209,6 +1211,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlink_targets_must_remain_inside_the_archive_root() {
         assert!(safe_relative_symlink(

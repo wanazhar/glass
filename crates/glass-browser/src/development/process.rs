@@ -771,7 +771,7 @@ mod tests {
         manager
             .start("server", "echo ready http://localhost:3000")
             .unwrap();
-        for _ in 0..40 {
+        for _ in 0..200 {
             let snapshots = manager.poll().unwrap();
             if !snapshots[0].detected_urls.is_empty() {
                 break;

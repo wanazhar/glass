@@ -54,8 +54,7 @@ pub async fn probe_local_endpoint(port: u16) -> EndpointProbe {
             // Error-kind mappings differ between Unix and Winsock. A
             // successful exclusive bind is the stronger cross-platform proof
             // that nothing owns the requested loopback endpoint.
-            if let Ok(listener) = TcpListener::bind(address) {
-                drop(listener);
+            if wait_until_bindable(address).await {
                 return probe(port, EndpointClassification::Free, "port is available");
             }
             return probe(
@@ -65,6 +64,9 @@ pub async fn probe_local_endpoint(port: u16) -> EndpointProbe {
             );
         }
         Err(_) => {
+            if wait_until_bindable(address).await {
+                return probe(port, EndpointClassification::Free, "port is available");
+            }
             return probe(port, EndpointClassification::Unknown, "TCP probe timed out");
         }
     }
@@ -126,6 +128,19 @@ pub async fn probe_local_endpoint(port: u16) -> EndpointProbe {
         targets,
         detail: "verified Chrome DevTools discovery endpoint".to_string(),
     }
+}
+
+async fn wait_until_bindable(address: SocketAddr) -> bool {
+    for attempt in 0..10 {
+        if let Ok(listener) = TcpListener::bind(address) {
+            drop(listener);
+            return true;
+        }
+        if attempt < 9 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    false
 }
 
 /// Reserve an ephemeral loopback port for a subsequent bounded launch retry.

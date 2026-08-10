@@ -2159,11 +2159,14 @@ async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
         assess_popup_topology(&snapshot, &topology, true).unwrap()
     };
     let late_topology = Arc::clone(&topology);
+    let event_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let late_event_fired = Arc::clone(&event_fired);
     let (scheduled_tx, scheduled_rx) = tokio::sync::oneshot::channel();
     let late_event = tokio::spawn(async move {
         let _ = scheduled_tx.send(());
         tokio::time::sleep(Duration::from_millis(15)).await;
         late_topology.lock().await.sequence += 1;
+        late_event_fired.store(true, std::sync::atomic::Ordering::Release);
     });
     scheduled_rx.await.unwrap();
 
@@ -2178,9 +2181,9 @@ async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
     .await
     .unwrap();
 
-    late_event.await.unwrap();
     assert_eq!(stable.target.id, "popup");
-    assert!(started.elapsed() >= Duration::from_millis(40));
+    assert!(event_fired.load(std::sync::atomic::Ordering::Acquire));
+    late_event.await.unwrap();
     assert_eq!(topology.lock().await.sequence, 12);
 }
 

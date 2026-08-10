@@ -2498,12 +2498,15 @@ impl WorkspaceStore {
         }
         let path = self.path_for(id);
         fs::remove_file(&path).map_err(io_error)?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| WorkspaceStoreError::Io("workspace path has no parent".into()))?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(io_error)?;
+        #[cfg(unix)]
+        {
+            let parent = path
+                .parent()
+                .ok_or_else(|| WorkspaceStoreError::Io("workspace path has no parent".into()))?;
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(io_error)?;
+        }
         drop(_profile_lock);
         FileExt::unlock(&lock).map_err(io_error)?;
         Ok(())

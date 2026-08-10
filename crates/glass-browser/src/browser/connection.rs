@@ -50,13 +50,14 @@ pub async fn probe_local_endpoint(port: u16) -> EndpointProbe {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(address)).await {
         Ok(Ok(stream)) => drop(stream),
-        Ok(Err(error))
-            if error.kind() == std::io::ErrorKind::ConnectionRefused
-                || (cfg!(windows) && error.raw_os_error() == Some(10061)) =>
-        {
-            return probe(port, EndpointClassification::Free, "port is available");
-        }
         Ok(Err(error)) => {
+            // Error-kind mappings differ between Unix and Winsock. A
+            // successful exclusive bind is the stronger cross-platform proof
+            // that nothing owns the requested loopback endpoint.
+            if let Ok(listener) = TcpListener::bind(address) {
+                drop(listener);
+                return probe(port, EndpointClassification::Free, "port is available");
+            }
             return probe(
                 port,
                 EndpointClassification::Unknown,

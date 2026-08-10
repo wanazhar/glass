@@ -2164,7 +2164,9 @@ async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
     let (scheduled_tx, scheduled_rx) = tokio::sync::oneshot::channel();
     let late_event = tokio::spawn(async move {
         let _ = scheduled_tx.send(());
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        // Keep the event comfortably inside the quiet window even on Windows,
+        // where short timers may share a coarse wake-up boundary.
+        tokio::time::sleep(Duration::from_millis(20)).await;
         late_topology.lock().await.sequence += 1;
         late_event_fired.store(true, std::sync::atomic::Ordering::Release);
     });
@@ -2175,8 +2177,8 @@ async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
         &topology,
         &snapshot,
         &candidate,
-        started + Duration::from_millis(150),
-        Duration::from_millis(30),
+        started + Duration::from_millis(750),
+        Duration::from_millis(200),
     )
     .await
     .unwrap();

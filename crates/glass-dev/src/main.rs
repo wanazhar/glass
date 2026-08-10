@@ -10,5 +10,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    glass_browser::cli::runner::dispatch(glass_browser::cli::args::Cli::parse()).await
+    glass_browser::cli::runner::dispatch(parse_cli()?).await
+}
+
+fn parse_cli() -> Result<glass_browser::cli::args::Cli, Box<dyn std::error::Error>> {
+    #[cfg(not(windows))]
+    return Ok(glass_browser::cli::args::Cli::parse());
+
+    #[cfg(windows)]
+    {
+        let cli = std::thread::Builder::new()
+            .name("glass-cli-parser".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(glass_browser::cli::args::Cli::parse)?
+            .join()
+            .map_err(|_| std::io::Error::other("Glass CLI parser thread panicked"))?;
+        Ok(cli)
+    }
 }

@@ -3,6 +3,7 @@
 use std::io;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
+#[cfg(unix)]
 use std::time::Duration;
 
 const FRAME_QUEUE_CAPACITY: usize = 1;
@@ -36,6 +37,7 @@ impl HerdrEnvironment {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub struct HerdrFrame {
     pub png: Vec<u8>,
     pub image_width: u32,
@@ -47,6 +49,7 @@ pub struct HerdrFrame {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum HerdrEvent {
     Connected,
     Failed(String),

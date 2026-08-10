@@ -1,13 +1,15 @@
 use super::{DevelopmentError, DevelopmentResult, MAX_PROCESS_OUTPUT_BYTES};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::time::Instant;
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{Read, Write},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -64,6 +64,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   repeated one-shot LSP startup, and the false headless-Lua Neovim RPC claim.
 - Replaced allocation-heavy workspace snapshot fingerprints with a persisted,
   monotonic revision so concurrent stale saves fail closed deterministically.
+- Drained bounded PTY output before reporting process completion, moved the
+  expanded CLI parser onto a larger Windows stack, and removed platform-only
+  Cargo warnings from browser-free builds.
 
 ## [0.3.2] - 2026-08-08
 

@@ -4,15 +4,21 @@
 //! isolated MCP child session, so a daemon restart or client disconnect cannot
 //! silently transfer a browser session or workflow lease to another client.
 
+#[cfg(unix)]
 use crate::cli::args::Cli;
-use crate::results::{ExperienceProvenance, ProvenanceSource, RESULT_SCHEMA_VERSION};
+#[cfg(unix)]
+use crate::results::ProvenanceSource;
+use crate::results::{ExperienceProvenance, RESULT_SCHEMA_VERSION};
 use crate::workspace::ResourceReference;
+#[cfg(unix)]
 use clap::Parser;
+#[cfg(unix)]
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 /// Version of the local daemon status and lifecycle contract.
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;

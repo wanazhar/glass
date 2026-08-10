@@ -12,6 +12,12 @@ fn glass_binary() -> std::path::PathBuf {
         .expect("Cargo should expose the glass-dev integration-test binary")
 }
 
+fn glass_browser_binary() -> std::path::PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_glass-browser")
+        .map(Into::into)
+        .expect("Cargo should expose the glass-browser integration-test binary")
+}
+
 fn temp_project() -> std::path::PathBuf {
     static NEXT_PROJECT: AtomicU64 = AtomicU64::new(1);
     let suffix = SystemTime::now()
@@ -27,6 +33,22 @@ fn temp_project() -> std::path::PathBuf {
     std::fs::write(root.join("note.txt"), "hello from the project\n")
         .expect("temporary project file should be written");
     root
+}
+
+#[test]
+fn both_cli_help_paths_exit_successfully() {
+    for binary in [glass_binary(), glass_browser_binary()] {
+        let output = Command::new(binary)
+            .arg("--help")
+            .output()
+            .expect("CLI help should start");
+        assert!(
+            output.status.success(),
+            "CLI help failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+    }
 }
 
 #[test]

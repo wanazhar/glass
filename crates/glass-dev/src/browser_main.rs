@@ -10,6 +10,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    glass_browser::cli::runner::dispatch_browser(parse_cli()?).await
+}
+
+fn parse_cli() -> Result<glass_browser::cli::args::Cli, Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    return std::thread::Builder::new()
+        .name("glass-browser-cli-parser".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(configured_cli)?
+        .join()
+        .map_err(|_| std::io::Error::other("Glass browser CLI parser thread panicked"))
+        .map_err(Into::into);
+
+    #[cfg(not(windows))]
+    Ok(configured_cli())
+}
+
+fn configured_cli() -> glass_browser::cli::args::Cli {
     let mut command = glass_browser::cli::args::Cli::command();
     command = command
         .name("glass-browser")
@@ -22,6 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 subcommand
             }
         });
-    let cli = glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches())?;
-    glass_browser::cli::runner::dispatch_browser(cli).await
+    glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches())
+        .unwrap_or_else(|error| error.exit())
 }

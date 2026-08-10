@@ -511,6 +511,7 @@ fn extract_chrome_zip(
         return Err("Chrome archive contained too many entries".into());
     }
     let mut extracted = 0_u64;
+    #[cfg(unix)]
     let mut symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
@@ -617,6 +618,7 @@ fn make_removable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn safe_relative_symlink(link: &Path, target: &Path) -> bool {
     if target.is_absolute() {
         return false;

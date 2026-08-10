@@ -563,6 +563,7 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/lib.rs"), "pub fn broken( {\n").unwrap();
         let mut client = LspClient::rust_analyzer(&root).unwrap();
+        #[cfg(unix)]
         let server_pid = client.child.id();
         assert_eq!(client.sync_document("src/lib.rs").unwrap().version, 1);
         fs::write(root.join("src/lib.rs"), "pub fn broken( -> u8 {\n").unwrap();

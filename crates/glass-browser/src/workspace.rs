@@ -2587,13 +2587,53 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceStoreError> {
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
     drop(file);
-    fs::rename(&tmp, path).map_err(|error| {
+    replace_file(&tmp, path).map_err(|error| {
         let _ = fs::remove_file(&tmp);
         io_error(error)
     })?;
+    #[cfg(unix)]
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(io_error)
+        .map_err(io_error)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both paths are valid, NUL-terminated UTF-16 buffers for the
+    // duration of this call. The workspace lock serializes replacement.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -247,8 +247,10 @@ fn discover_in_directory(
                     let relative = path
                         .strip_prefix(root)
                         .map_err(|_| DevelopmentError::PathOutsideWorkspace(path.clone()))?
-                        .to_string_lossy()
-                        .into_owned();
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/");
                     discovered.push(RuntimeLink {
                         entity_id: entity.into(),
                         source: SourceLocation::new(relative, index as u32 + 1, index as u32 + 1)?,

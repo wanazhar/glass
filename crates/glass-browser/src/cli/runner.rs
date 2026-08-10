@@ -3207,10 +3207,11 @@ mod tests {
 
     #[test]
     fn private_agent_tool_call_is_bounded_and_consumed_once() {
+        static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "glass-pi-call-{}-{}.json",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::write(
             &path,

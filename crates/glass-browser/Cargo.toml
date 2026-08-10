@@ -31,7 +31,7 @@ all-features = true
 default = []
 visual-compare = []
 fuzzing = []
-development-runtime = ["dep:portable-pty", "dep:toml", "dep:rmpv", "dep:windows-sys"]
+development-runtime = ["dep:portable-pty", "dep:toml", "dep:rmpv"]
 
 [dependencies]
 base64 = "0.22"
@@ -67,7 +67,7 @@ toml = { version = "0.9", optional = true }
 rmpv = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 base64-simd = "0.8"

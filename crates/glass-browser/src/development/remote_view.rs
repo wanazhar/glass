@@ -214,6 +214,11 @@ async fn handle_client(
     let request = std::str::from_utf8(&peek[..size]).unwrap_or("");
     let expected_page = format!("GET /{token}/ ");
     if request.starts_with(&expected_page) {
+        // Consume the request before closing the socket. Windows sends an RST
+        // when a socket is closed with unread inbound bytes, which can discard
+        // an otherwise complete HTTP response at the client.
+        let mut request_bytes = vec![0_u8; size];
+        tokio::io::AsyncReadExt::read_exact(&mut stream, &mut request_bytes).await?;
         let body = viewer_html(&token);
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'\r\nX-Frame-Options: DENY\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -221,6 +226,7 @@ async fn handle_client(
             body
         );
         tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await?;
+        tokio::io::AsyncWriteExt::shutdown(&mut stream).await?;
         return Ok(());
     }
     if !request.starts_with(&format!("GET /ws/{token} ")) {

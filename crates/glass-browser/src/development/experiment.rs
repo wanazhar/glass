@@ -56,7 +56,7 @@ impl ExperimentManager {
         }
         let top = String::from_utf8(output.stdout)
             .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
-        let repository = fs::canonicalize(top.trim())?;
+        let repository = subprocess_compatible_path(fs::canonicalize(top.trim())?);
         let repository_name = repository
             .file_name()
             .and_then(|name| name.to_str())
@@ -154,6 +154,20 @@ impl ExperimentManager {
     ) -> ExperimentComparison {
         ExperimentComparison { left, right }
     }
+}
+
+#[cfg(windows)]
+fn subprocess_compatible_path(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    value
+        .strip_prefix(r"\\?\")
+        .map(PathBuf::from)
+        .unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn subprocess_compatible_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn validate_name(name: &str) -> DevelopmentResult<()> {

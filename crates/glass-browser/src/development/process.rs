@@ -137,6 +137,16 @@ impl ProcessManager {
             .master
             .take_writer()
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        #[cfg(windows)]
+        let writer = {
+            let mut writer = writer;
+            // ConPTY asks the terminal for its cursor position (`CSI 6 n`)
+            // before dispatching some short-lived commands. Seed the canonical
+            // response so the shell cannot stall before Glass' reader starts.
+            writer.write_all(b"\x1b[1;1R")?;
+            writer.flush()?;
+            writer
+        };
         let output = Arc::new(Mutex::new(VecDeque::new()));
         let reader_output = Arc::clone(&output);
         let (reader_done_tx, reader_done) = mpsc::channel();

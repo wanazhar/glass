@@ -74,6 +74,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Kept browser-only builds usable for file, search, and semantic development
   operations without PTY support, while gating real Neovim and command probes
   on the `development-runtime` feature.
+- Corrected Windows workspace replacement and durability semantics, lock and
+  refused-connection classification, portable source paths, ConPTY startup,
+  Git worktree paths, and Remote View HTTP shutdown behavior.
 
 ## [0.3.2] - 2026-08-08
 

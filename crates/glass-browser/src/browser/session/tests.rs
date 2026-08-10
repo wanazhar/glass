@@ -2159,10 +2159,13 @@ async fn popup_topology_quiet_window_resets_for_a_late_event_then_stabilizes() {
         assess_popup_topology(&snapshot, &topology, true).unwrap()
     };
     let late_topology = Arc::clone(&topology);
+    let (scheduled_tx, scheduled_rx) = tokio::sync::oneshot::channel();
     let late_event = tokio::spawn(async move {
+        let _ = scheduled_tx.send(());
         tokio::time::sleep(Duration::from_millis(15)).await;
         late_topology.lock().await.sequence += 1;
     });
+    scheduled_rx.await.unwrap();
 
     let started = tokio::time::Instant::now();
     let stable = wait_for_stable_popup_topology(

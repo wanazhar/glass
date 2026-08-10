@@ -1073,8 +1073,15 @@ impl ProjectWorkspace {
         } else if !allow_missing {
             return Err(DevelopmentError::NotFound(input.into()));
         }
-        Ok((candidate, path.to_string_lossy().into_owned()))
+        Ok((candidate, portable_relative_path(path)))
     }
+}
+
+fn portable_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetection> {
@@ -1235,9 +1242,8 @@ fn visit_files(
         }
         let relative = path
             .strip_prefix(root)
-            .map_err(|_| DevelopmentError::PathOutsideWorkspace(path.clone()))?
-            .to_string_lossy()
-            .into_owned();
+            .map_err(|_| DevelopmentError::PathOutsideWorkspace(path.clone()))?;
+        let relative = portable_relative_path(relative);
         if metadata.is_dir() {
             result.entries.push(FileEntry {
                 path: relative,

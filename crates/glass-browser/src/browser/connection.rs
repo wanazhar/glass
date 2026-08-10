@@ -50,7 +50,10 @@ pub async fn probe_local_endpoint(port: u16) -> EndpointProbe {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(address)).await {
         Ok(Ok(stream)) => drop(stream),
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+        Ok(Err(error))
+            if error.kind() == std::io::ErrorKind::ConnectionRefused
+                || (cfg!(windows) && error.raw_os_error() == Some(10061)) =>
+        {
             return probe(port, EndpointClassification::Free, "port is available");
         }
         Ok(Err(error)) => {

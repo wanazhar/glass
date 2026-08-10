@@ -57,7 +57,7 @@ impl PortLaunchLock {
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(Self { file }),
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                Err(error) if launch_lock_is_contended(&error) => {
                     if Instant::now() >= deadline {
                         return Err(format!(
                             "timed out waiting to launch Chrome on CDP port {port}; use --attach for an existing endpoint or choose another --port"
@@ -75,6 +75,10 @@ impl PortLaunchLock {
             }
         }
     }
+}
+
+fn launch_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::WouldBlock || (cfg!(windows) && error.raw_os_error() == Some(33))
 }
 
 impl Drop for PortLaunchLock {

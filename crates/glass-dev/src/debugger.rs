@@ -195,6 +195,11 @@ impl DapClient {
         arguments: Value,
         timeout: Duration,
     ) -> DebugResult<Value> {
+        let sequence = self.send_request(command, arguments)?;
+        self.wait_for_response(sequence, command, timeout)
+    }
+
+    fn send_request(&mut self, command: &str, arguments: Value) -> DebugResult<u64> {
         if command.is_empty() || command.len() > 128 {
             return Err(DebugError::InvalidInput(
                 "DAP command must contain 1..=128 bytes".into(),
@@ -215,6 +220,15 @@ impl DapClient {
             }),
         )?;
 
+        Ok(sequence)
+    }
+
+    fn wait_for_response(
+        &mut self,
+        sequence: u64,
+        command: &str,
+        timeout: Duration,
+    ) -> DebugResult<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(response) = take_response(&mut self.pending, sequence) {
@@ -317,6 +331,7 @@ pub struct DebuggerSession {
     state: DebugSessionState,
     capabilities: Value,
     timeout: Duration,
+    pending_start: Option<(u64, &'static str)>,
 }
 
 impl DebuggerSession {
@@ -347,6 +362,7 @@ impl DebuggerSession {
             state: DebugSessionState::Initialized,
             capabilities,
             timeout,
+            pending_start: None,
         })
     }
 
@@ -359,20 +375,37 @@ impl DebuggerSession {
     }
 
     pub fn launch(&mut self, arguments: Value) -> DebugResult<Value> {
-        let body = self.client.request("launch", arguments, self.timeout)?;
-        self.state = DebugSessionState::Running;
-        Ok(body)
+        self.begin_start("launch", arguments)
     }
 
     pub fn attach(&mut self, arguments: Value) -> DebugResult<Value> {
-        let body = self.client.request("attach", arguments, self.timeout)?;
-        self.state = DebugSessionState::Running;
-        Ok(body)
+        self.begin_start("attach", arguments)
     }
 
     pub fn configuration_done(&mut self) -> DebugResult<Value> {
-        self.client
-            .request("configurationDone", json!({}), self.timeout)
+        let configuration = self
+            .client
+            .request("configurationDone", json!({}), self.timeout)?;
+        let startup = if let Some((sequence, command)) = self.pending_start.take() {
+            self.client
+                .wait_for_response(sequence, command, self.timeout)?
+        } else {
+            Value::Null
+        };
+        self.state = DebugSessionState::Running;
+        Ok(json!({"configurationDone": configuration, "startup": startup}))
+    }
+
+    fn begin_start(&mut self, command: &'static str, arguments: Value) -> DebugResult<Value> {
+        if self.pending_start.is_some() {
+            return Err(DebugError::InvalidInput(
+                "a debugger launch or attach request is already pending".into(),
+            ));
+        }
+        let sequence = self.client.send_request(command, arguments)?;
+        self.pending_start = Some((sequence, command));
+        self.state = DebugSessionState::Starting;
+        Ok(json!({"pending": true, "requestSequence": sequence}))
     }
 
     pub fn restart(&mut self, arguments: Value) -> DebugResult<Value> {
@@ -700,5 +733,84 @@ mod tests {
         assert_eq!(encoded["line"], 42);
         assert_eq!(encoded["condition"], "inventory == 0");
         assert!(encoded.get("hitCondition").is_none());
+    }
+
+    #[test]
+    fn real_debugpy_adapter_supports_breakpoint_state_and_continue() {
+        let Some(python) = std::env::var_os("GLASS_DEBUGPY_PYTHON") else {
+            return;
+        };
+        let root =
+            std::env::temp_dir().join(format!("glass-debugpy-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let program = root.join("program.py");
+        std::fs::write(&program, "value = 41\nanswer = value + 1\nprint(answer)\n").unwrap();
+        let config = DebugAdapterConfig::new(
+            PathBuf::from(python),
+            ["-m".to_string(), "debugpy.adapter".to_string()],
+        );
+        let mut debugger =
+            DebuggerSession::start(&root, &config, "Glass DebugPy E2E", Duration::from_secs(15))
+                .unwrap();
+        debugger
+            .launch(json!({
+                "name":"Glass debugpy fixture",
+                "type":"python",
+                "request":"launch",
+                "program":program,
+                "console":"internalConsole",
+                "justMyCode":false
+            }))
+            .unwrap();
+        let breakpoints = debugger.set_breakpoints(&program, &[2]).unwrap();
+        assert_eq!(breakpoints["breakpoints"][0]["verified"], true);
+        debugger.configuration_done().unwrap();
+        let stopped = wait_for_debug_event(&mut debugger, "stopped", Duration::from_secs(15));
+        let thread_id = stopped["threadId"].as_i64().unwrap();
+        let threads = debugger.threads().unwrap();
+        assert!(
+            threads["threads"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        let stack = debugger.stack_trace(thread_id).unwrap();
+        let frame_id = stack["stackFrames"][0]["id"].as_i64().unwrap();
+        let scopes = debugger.scopes(frame_id).unwrap();
+        let variables_reference = scopes["scopes"][0]["variablesReference"].as_i64().unwrap();
+        let variables = debugger.variables(variables_reference).unwrap();
+        assert!(
+            variables["variables"]
+                .as_array()
+                .is_some_and(|items| { items.iter().any(|variable| variable["name"] == "value") })
+        );
+        let evaluated = debugger
+            .evaluate("value + 1", Some(frame_id), "watch")
+            .unwrap();
+        assert_eq!(evaluated["result"], "42");
+        debugger.continue_thread(thread_id).unwrap();
+        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(15));
+        debugger.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn wait_for_debug_event(
+        debugger: &mut DebuggerSession,
+        expected: &str,
+        timeout: Duration,
+    ) -> Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            for event in debugger.poll_events().unwrap() {
+                if event.event == expected {
+                    return event.body;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {expected}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

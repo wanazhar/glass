@@ -66,8 +66,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   monotonic revision so concurrent stale saves fail closed deterministically.
 - Drained bounded PTY output before reporting process completion, moved the
   complete CLI lifecycle onto a larger Windows stack, closed non-interactive
-  process input deterministically, and removed platform-only Cargo warnings
-  from browser-free builds.
+  process input deterministically, released completed Windows ConPTY masters
+  before draining output, and removed platform-only Cargo warnings from
+  browser-free builds.
 - Made workspace deletion release its ownership lock explicitly after durable
   removal so immediate reopen checks cannot race lock teardown.
 

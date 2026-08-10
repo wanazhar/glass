@@ -50,7 +50,7 @@ pub struct ProcessSnapshot {
 struct RunningProcess {
     snapshot: ProcessSnapshot,
     child: Box<dyn Child + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
+    master: Option<Box<dyn MasterPty + Send>>,
     writer: Option<Box<dyn Write + Send>>,
     output: Arc<Mutex<VecDeque<u8>>>,
     reader: Option<thread::JoinHandle<()>>,
@@ -165,7 +165,7 @@ impl ProcessManager {
             RunningProcess {
                 snapshot: snapshot.clone(),
                 child,
-                master: pty.master,
+                master: Some(pty.master),
                 writer: Some(writer),
                 output,
                 reader: Some(reader_handle),
@@ -221,6 +221,8 @@ impl ProcessManager {
             .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
         process
             .master
+            .as_ref()
+            .ok_or_else(|| DevelopmentError::Process("process PTY is closed".into()))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -358,6 +360,8 @@ impl Drop for ProcessManager {
 
 fn finish_reader(process: &mut RunningProcess) -> DevelopmentResult<()> {
     process.writer.take();
+    #[cfg(windows)]
+    process.master.take();
     if process.reader.is_none() {
         return Ok(());
     }

@@ -428,8 +428,8 @@ workflows.
 | Windows | Browser-free CI contract; native PTY/browser certification pending |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Local release candidate; publication requires the signed-tag workflow |
-| `0.3.3` | Current published stable release |
+| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Current published stable release |
+| `0.3.3` | Previous published stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

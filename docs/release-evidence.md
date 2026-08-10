@@ -1,10 +1,9 @@
 # Release evidence
 
-## 0.3.4 local release evidence
+## 0.3.4 release evidence
 
-This checkout is a local `0.3.4` release candidate implementing authoritative
-issue #34. No push, tag, crates.io publication, issue mutation, or GitHub
-Release has been performed.
+This section records the local and public evidence for the signed `v0.3.4`
+release implementing authoritative issue #34.
 
 - The full Development Workspace is owned and consumed by `glass-dev`; the
   dependency remains one-way to independently buildable `glass-browser`.
@@ -25,6 +24,25 @@ Release has been performed.
 - `glass --mcp` advertises both the browser and resident development catalogs;
   a JSON-RPC integration test calls both with clean stdout framing. Direct CLI
   mutations remain authority/confirmation gated outside `--yolo`.
+
+### Published 0.3.4 records
+
+- Signed annotated tag `v0.3.4` points to
+  `739b2e6a461cf17d5a776a3d6c2cf98b83c2e83f`; local signature verification
+  succeeded with EdDSA key `C7102B6A568EABDE023F818528E01A5852DB1559`.
+- [Release workflow run 31442780359](https://github.com/wanazhar/glass/actions/runs/31442780359)
+  passed tag validation, package and publication dry runs, ordered publication,
+  crates.io propagation, clean registry installs, executable help smokes, and
+  GitHub Release creation. Exact-tag
+  [CI run 31442780356](https://github.com/wanazhar/glass/actions/runs/31442780356)
+  and [fuzz run 31442780360](https://github.com/wanazhar/glass/actions/runs/31442780360)
+  also passed.
+- crates.io published `glass-browser 0.3.4` at
+  `2026-08-10T23:48:44.961163Z` and `glass-dev 0.3.4` at
+  `2026-08-10T23:49:44.508902Z`; neither version is yanked.
+- [GitHub Release v0.3.4](https://github.com/wanazhar/glass/releases/tag/v0.3.4)
+  was published at `2026-08-10T23:57:57Z`. It is non-draft, non-prerelease,
+  source-only, and has no attached binary assets.
 
 ### Completed 0.3.4 local validation
 

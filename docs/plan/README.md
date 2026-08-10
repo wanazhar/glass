@@ -1,9 +1,8 @@
 # Glass delivery plans
 
-## Active plan: Glass v0.3.4 issue #34
+## Completed plan: Glass v0.3.4 issue #34
 
-Status: Active direct local development — no push, tag, crates.io publication,
-GitHub Release, or issue mutation is authorized by this plan.
+Status: Released and publicly verified on 2026-08-10.
 
 Issue [#34](https://github.com/wanazhar/glass/issues/34) is the authoritative
 18-pillar full-agentic-development-suite contract. The baseline inventory,

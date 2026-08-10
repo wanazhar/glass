@@ -10,7 +10,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Local release candidate; publication requires the signed-tag workflow |",
+        "| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Current published stable release |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
@@ -45,7 +45,7 @@ REQUIRED_MARKERS = {
     "docs/release-evidence.md": [
         "## 0.3.2 publication evidence",
         "## 0.3.3 release evidence",
-        "## 0.3.4 local release evidence",
+        "## 0.3.4 release evidence",
         "Release workflow run 31254928934",
         "GitHub Release v0.3.2",
         "`feature-parity.json`",

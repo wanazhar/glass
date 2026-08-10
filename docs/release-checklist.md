@@ -11,12 +11,15 @@ feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks; native browser/PTY support is not
 certified.
 
-## 0.3.4 local candidate
+## 0.3.4 release record
 
-Issue #34 defines the full agentic-development release. Local implementation,
-tests, package inspection, and install smoke are authorized; push, tag,
-publication, issue mutation, and GitHub Release creation remain pending explicit
-remote-mutation approval.
+Signed annotated tag `v0.3.4` points to commit
+`739b2e6a461cf17d5a776a3d6c2cf98b83c2e83f`. The
+[ordered release workflow](https://github.com/wanazhar/glass/actions/runs/31442780359)
+published `glass-browser 0.3.4`, then `glass-dev 0.3.4`, clean-installed both
+registry packages, and created the source-only
+[GitHub Release](https://github.com/wanazhar/glass/releases/tag/v0.3.4) on
+2026-08-10.
 
 - [x] Pi is the sole embedded runtime and independent Pi sessions expose native
       session, model, thinking, steering, follow-up, compaction, and cancellation.
@@ -30,8 +33,11 @@ remote-mutation approval.
       `glass-browser` remains independently buildable with no default features.
 - [x] Complete the final workspace, rustdoc, package, and clean-install gates
       and record exact results in `docs/release-evidence.md`.
-- [ ] Obtain explicit approval before any push, tag, publication, issue update,
-      or GitHub Release operation.
+- [x] Obtain explicit approval before any push, tag, publication, issue update,
+      or GitHub Release operation; approval was given on 2026-08-10.
+- [x] Verify exact-tag CI and parser fuzz, ordered crates.io publication,
+      unyanked registry records, clean registry installs, and the non-draft,
+      non-prerelease, source-only GitHub Release.
 
 ## 0.3.3 release record
 

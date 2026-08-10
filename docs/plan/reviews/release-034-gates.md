@@ -1,6 +1,6 @@
 # Glass v0.3.4 issue #34 gate review
 
-Status: local release candidate; remote release actions are not authorized.
+Status: released on 2026-08-10
 
 This review maps the twelve blocking categories in issue #34 to executable
 source evidence. A checked item means the implementation and local proof exist;
@@ -98,8 +98,9 @@ it does not claim publication or untested native-platform certification.
       and PTY TUI evidence is recorded with target limits.
 - [x] Final workspace CI-equivalent, rustdoc, packages, and isolated installs
       must pass before the candidate is locally ready.
-- [ ] Remote tag/workflow/crates.io/GitHub Release evidence requires explicit
-      authorization and remains outside this local delivery.
+- [x] The signed tag, exact-tag CI and fuzz, ordered crates.io publication,
+      clean registry installs, and source-only GitHub Release are verified in
+      `docs/release-evidence.md`.
 
 ## Forbidden-outcome audit
 

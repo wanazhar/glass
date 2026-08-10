@@ -300,6 +300,31 @@ export default function (pi: ExtensionAPI) {
   register("glass_process_start", "glass.process.start", "Start a resident named process", Type.Object({ name: Type.String(), command: Type.String() }), true);
   register("glass_process_stop", "glass.process.stop", "Stop a resident named process", Type.Object({ name: Type.String() }), true);
   register("glass_process_logs", "glass.process.logs", "Read bounded resident process logs", Type.Object({ name: Type.String() }));
+  register("glass_process_restart", "glass.process.restart", "Restart a resident named process", Type.Object({ name: Type.String() }), true);
+  register("glass_process_input", "glass.process.input", "Send bounded input to a resident PTY", Type.Object({ name: Type.String(), input: Type.String() }), true);
+  register("glass_process_resize", "glass.process.resize", "Resize a resident PTY", Type.Object({ name: Type.String(), cols: Type.Integer({ minimum: 1 }), rows: Type.Integer({ minimum: 1 }) }), true);
+  register("glass_process_health", "glass.process.health", "Inspect resident process health", Type.Object({ name: Type.String() }));
+  register("glass_process_ports", "glass.process.ports", "Inspect process-owned detected URLs and ports", Type.Object({}));
+
+  register("glass_editor_open", "glass.editor.open", "Open a shared resident editor buffer", Type.Object({ path: Type.String() }), true);
+  register("glass_editor_selection", "glass.editor.selection", "Inspect a shared editor cursor and selection", Type.Object({ path: Type.String() }));
+  register("glass_editor_replace", "glass.editor.replace", "Replace text in a shared conflict-safe buffer", Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), true);
+  register("glass_editor_save", "glass.editor.save", "Save a shared conflict-safe editor buffer", Type.Object({ path: Type.String() }), true);
+  register("glass_editor_diff", "glass.editor.diff", "Inspect the current project/editor diff", Type.Object({}));
+  register("glass_editor_buffers", "glass.editor.buffers", "List shared resident editor buffers", Type.Object({}));
+
+  register("glass_browser_state", "glass.browser.state", "Inspect the authoritative resident browser state", Type.Object({}));
+  register("glass_browser_start", "glass.browser.start", "Start or attach the resident browser", Type.Object({ port: Type.Optional(Type.Integer()), attach: Type.Optional(Type.Boolean()), incognito: Type.Optional(Type.Boolean()), headed: Type.Optional(Type.Boolean()), profile: Type.Optional(Type.String()), chromePath: Type.Optional(Type.String()) }), true);
+  register("glass_browser_stop", "glass.browser.stop", "Stop the resident browser", Type.Object({}), true);
+  register("glass_browser_observe", "glass.browser.observe", "Create a fresh structured browser observation", Type.Object({}));
+  register("glass_browser_targets", "glass.browser.targets", "List authoritative browser targets", Type.Object({}));
+  register("glass_browser_select_target", "glass.browser.target.select", "Select an authoritative browser target", Type.Object({ targetId: Type.String() }), true);
+  register("glass_browser_navigate", "glass.browser.navigate", "Navigate with a browser revision guard", Type.Object({ url: Type.String(), browserRevision: Type.Integer({ minimum: 1 }), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_browser_act", "glass.browser.act", "Execute a revision-safe browser click, type, or scroll", Type.Object({ action: Type.Union([Type.Literal("click"), Type.Literal("type"), Type.Literal("scroll")]), browserRevision: Type.Integer({ minimum: 1 }), target: Type.Optional(Type.String()), text: Type.Optional(Type.String()), dx: Type.Optional(Type.Number()), dy: Type.Optional(Type.Number()) }), true);
+  register("glass_browser_screenshot", "glass.browser.screenshot", "Capture an explicit bounded browser screenshot", Type.Object({}));
+  register("glass_workflow_run", "glass.workflow.run", "Run a validated browser workflow", Type.Object({ definition: Type.Any(), inputs: Type.Optional(Type.Record(Type.String(), Type.Any())) }), true);
+  register("glass_workflow_pause", "glass.workflow.pause", "Export a redacted workflow checkpoint", Type.Object({}), true);
+  register("glass_workflow_resume", "glass.workflow.resume", "Resume a reconciled workflow checkpoint", Type.Object({ definition: Type.Any(), inputs: Type.Optional(Type.Record(Type.String(), Type.Any())), checkpoint: Type.Any() }), true);
 
   register("glass_git_diff", "glass.git.diff", "Read a native Git diff", Type.Object({ staged: Type.Optional(Type.Boolean()), path: Type.Optional(Type.String()) }));
   register("glass_git_stage", "glass.git.stage", "Stage repository paths", Type.Object({ paths: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }) }), true);
@@ -329,6 +354,19 @@ export default function (pi: ExtensionAPI) {
   register("glass_lsp_diagnostics", "glass.lsp.diagnostics", "Read diagnostics from the shared resident LSP", Type.Object({ server: Type.String(), path: Type.String() }));
   register("glass_lsp_hover", "glass.lsp.hover", "Read hover information from the shared resident LSP", Type.Object(position));
   register("glass_lsp_completion", "glass.lsp.completion", "Request completion from the shared resident LSP", Type.Object(position));
+  register("glass_lsp_definition", "glass.lsp.definition", "Navigate to a shared LSP definition", Type.Object(position));
+  register("glass_lsp_declaration", "glass.lsp.declaration", "Navigate to a shared LSP declaration", Type.Object(position));
+  register("glass_lsp_implementation", "glass.lsp.implementation", "Navigate to shared LSP implementations", Type.Object(position));
+  register("glass_lsp_references", "glass.lsp.references", "Find shared LSP references", Type.Object(position));
+  register("glass_lsp_document_symbols", "glass.lsp.document_symbols", "List document symbols", Type.Object({ server: Type.String(), path: Type.String() }));
+  register("glass_lsp_workspace_symbols", "glass.lsp.workspace_symbols", "Search workspace symbols", Type.Object({ server: Type.String(), query: Type.String() }));
+  register("glass_lsp_signature_help", "glass.lsp.signature_help", "Read signature help", Type.Object(position));
+  const range = { start: Type.Object({ line: Type.Integer({ minimum: 0 }), character: Type.Integer({ minimum: 0 }) }), end: Type.Object({ line: Type.Integer({ minimum: 0 }), character: Type.Integer({ minimum: 0 }) }) };
+  register("glass_lsp_code_actions", "glass.lsp.code_actions", "Request shared LSP code actions", Type.Object({ server: Type.String(), path: Type.String(), ...range, diagnostics: Type.Optional(Type.Array(Type.Any())) }));
+  register("glass_lsp_formatting", "glass.lsp.formatting", "Request document formatting", Type.Object({ server: Type.String(), path: Type.String() }));
+  register("glass_lsp_range_formatting", "glass.lsp.range_formatting", "Request range formatting", Type.Object({ server: Type.String(), path: Type.String(), ...range }));
+  register("glass_lsp_semantic_tokens", "glass.lsp.semantic_tokens", "Read semantic tokens", Type.Object({ server: Type.String(), path: Type.String() }));
+  register("glass_lsp_rename", "glass.lsp.rename", "Request a shared LSP workspace rename edit", Type.Object({ ...position, newName: Type.String() }));
 
   register("glass_debug_start", "glass.debug.start", "Start and initialize a resident DAP adapter", Type.Object({ session: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
   register("glass_debug_launch", "glass.debug.launch", "Launch a program through a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);

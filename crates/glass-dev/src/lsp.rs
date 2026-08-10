@@ -1,9 +1,11 @@
 //! Shared resident language-service ownership for humans and agents.
 
 use glass_browser::development::{
-    DevelopmentError, DevelopmentResult, LanguageDiagnostic, LanguageResponse, LspClient,
+    DevelopmentError, DevelopmentResult, DiagnosticPosition, LanguageDiagnostic, LanguageResponse,
+    LspClient,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -137,6 +139,176 @@ impl LanguageService {
         validate_actor(actor)?;
         let response = self.client_mut(name)?.hover(path, line, character)?;
         self.record(name, actor, "hover", Some(path), value_count(&response));
+        Ok(response)
+    }
+
+    pub fn definition(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "definition", path, |client| {
+            client.definition(path, line, character)
+        })
+    }
+
+    pub fn declaration(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "declaration", path, |client| {
+            client.declaration(path, line, character)
+        })
+    }
+
+    pub fn implementation(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "implementation", path, |client| {
+            client.implementation(path, line, character)
+        })
+    }
+
+    pub fn references(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "references", path, |client| {
+            client.references(path, line, character)
+        })
+    }
+
+    pub fn document_symbols(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "documentSymbols", path, |client| {
+            client.document_symbols(path)
+        })
+    }
+
+    pub fn workspace_symbols(
+        &mut self,
+        name: &str,
+        actor: &str,
+        query: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "workspaceSymbols", "", |client| {
+            client.workspace_symbols(query)
+        })
+    }
+
+    pub fn signature_help(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "signatureHelp", path, |client| {
+            client.signature_help(path, line, character)
+        })
+    }
+
+    pub fn code_actions(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        start: DiagnosticPosition,
+        end: DiagnosticPosition,
+        diagnostics: Vec<Value>,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "codeActions", path, |client| {
+            client.code_actions(path, start, end, &diagnostics)
+        })
+    }
+
+    pub fn formatting(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "formatting", path, |client| {
+            client.formatting(path)
+        })
+    }
+
+    pub fn range_formatting(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        start: DiagnosticPosition,
+        end: DiagnosticPosition,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "rangeFormatting", path, |client| {
+            client.range_formatting(path, start, end)
+        })
+    }
+
+    pub fn semantic_tokens(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "semanticTokens", path, |client| {
+            client.semantic_tokens(path)
+        })
+    }
+
+    pub fn rename(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "rename", path, |client| {
+            client.rename(path, line, character, new_name)
+        })
+    }
+
+    fn position_request(
+        &mut self,
+        name: &str,
+        actor: &str,
+        operation: &str,
+        path: &str,
+        request: impl FnOnce(&mut LspClient) -> DevelopmentResult<LanguageResponse>,
+    ) -> DevelopmentResult<LanguageResponse> {
+        validate_actor(actor)?;
+        let response = request(self.client_mut(name)?)?;
+        self.record(
+            name,
+            actor,
+            operation,
+            (!path.is_empty()).then_some(path),
+            value_count(&response),
+        );
         Ok(response)
     }
 

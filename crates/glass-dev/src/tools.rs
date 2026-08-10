@@ -174,6 +174,90 @@ impl DevelopmentToolRouter {
         let string = |name: &str| required_string(call, name);
         let actor = normalized_actor_id(&context.authorization.actor.id);
         match call.name.as_str() {
+            "glass.editor.open" => map_service(
+                workspace
+                    .project_mut()
+                    .open_buffer(string("path")?, context.authorization.actor.clone()),
+            ),
+            "glass.editor.selection" => {
+                let path = string("path")?;
+                workspace
+                    .project()
+                    .buffer(path)
+                    .cloned()
+                    .map(|buffer| {
+                        serde_json::json!({
+                            "path":buffer.path,
+                            "line":buffer.cursor_line,
+                            "column":buffer.cursor_column,
+                            "actor":buffer.actor,
+                            "dirty":buffer.dirty
+                        })
+                    })
+                    .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))
+            }
+            "glass.editor.replace" => {
+                let matches = workspace.project_mut().replace_in_buffer(
+                    string("path")?,
+                    string("oldText")?,
+                    string("newText")?,
+                    context.authorization.actor.clone(),
+                )?;
+                Ok(serde_json::json!({"replacements":matches}))
+            }
+            "glass.editor.save" => {
+                map_service(workspace.project_mut().save_buffer(string("path")?))
+            }
+            "glass.editor.diff" => map_service(workspace.project_mut().diff()),
+            "glass.editor.buffers" => Ok(serde_json::to_value(
+                workspace.project().buffers().cloned().collect::<Vec<_>>(),
+            )?),
+            "glass.process.restart" => {
+                map_service(workspace.project_mut().processes().restart(string("name")?))
+            }
+            "glass.process.input" => {
+                workspace
+                    .project_mut()
+                    .processes()
+                    .send_input(string("name")?, string("input")?)?;
+                Ok(serde_json::json!({"sent":true}))
+            }
+            "glass.process.resize" => {
+                let cols = u16_value(call, "cols")?;
+                let rows = u16_value(call, "rows")?;
+                workspace
+                    .project_mut()
+                    .processes()
+                    .resize(string("name")?, cols, rows)?;
+                Ok(serde_json::json!({"resized":true,"cols":cols,"rows":rows}))
+            }
+            "glass.process.health" => {
+                let name = string("name")?;
+                let snapshot = workspace
+                    .project_mut()
+                    .processes()
+                    .list_checked()?
+                    .into_iter()
+                    .find(|snapshot| snapshot.name == name)
+                    .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
+                Ok(serde_json::json!({
+                    "name":snapshot.name,
+                    "pid":snapshot.pid,
+                    "state":snapshot.state,
+                    "health":snapshot.health,
+                    "detectedUrls":snapshot.detected_urls
+                }))
+            }
+            "glass.process.ports" => {
+                let snapshots = workspace.project_mut().processes().list_checked()?;
+                Ok(serde_json::json!({
+                    "processes":snapshots.into_iter().map(|snapshot| serde_json::json!({
+                        "name":snapshot.name,
+                        "pid":snapshot.pid,
+                        "urls":snapshot.detected_urls
+                    })).collect::<Vec<_>>()
+                }))
+            }
             "glass.browser.start" => {
                 let config: BrowserStartConfig = serde_json::from_value(call.arguments.clone())?;
                 workspace.browser().start(config)
@@ -366,6 +450,84 @@ impl DevelopmentToolRouter {
                 unsigned(call, "line", 1)? as u32,
                 unsigned(call, "character", 1)? as u32,
             )),
+            "glass.lsp.definition" => map_service(workspace.language().definition(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+            )),
+            "glass.lsp.declaration" => map_service(workspace.language().declaration(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+            )),
+            "glass.lsp.implementation" => map_service(workspace.language().implementation(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+            )),
+            "glass.lsp.references" => map_service(workspace.language().references(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+            )),
+            "glass.lsp.document_symbols" => map_service(workspace.language().document_symbols(
+                string("server")?,
+                &actor,
+                string("path")?,
+            )),
+            "glass.lsp.workspace_symbols" => map_service(workspace.language().workspace_symbols(
+                string("server")?,
+                &actor,
+                string("query")?,
+            )),
+            "glass.lsp.signature_help" => map_service(workspace.language().signature_help(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+            )),
+            "glass.lsp.code_actions" => map_service(workspace.language().code_actions(
+                string("server")?,
+                &actor,
+                string("path")?,
+                position(call, "start")?,
+                position(call, "end")?,
+                value_array_or_empty(call, "diagnostics")?,
+            )),
+            "glass.lsp.formatting" => map_service(workspace.language().formatting(
+                string("server")?,
+                &actor,
+                string("path")?,
+            )),
+            "glass.lsp.range_formatting" => map_service(workspace.language().range_formatting(
+                string("server")?,
+                &actor,
+                string("path")?,
+                position(call, "start")?,
+                position(call, "end")?,
+            )),
+            "glass.lsp.semantic_tokens" => map_service(workspace.language().semantic_tokens(
+                string("server")?,
+                &actor,
+                string("path")?,
+            )),
+            "glass.lsp.rename" => map_service(workspace.language().rename(
+                string("server")?,
+                &actor,
+                string("path")?,
+                u32_value(call, "line")?,
+                u32_value(call, "character")?,
+                string("newName")?,
+            )),
             "glass.debug.start" => {
                 let arguments = string_array_or_empty(call, "arguments")?;
                 let config = DebugAdapterConfig::new(string("command")?, arguments);
@@ -522,6 +684,18 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.diagnostics",
         "glass.lsp.hover",
         "glass.lsp.completion",
+        "glass.lsp.definition",
+        "glass.lsp.declaration",
+        "glass.lsp.implementation",
+        "glass.lsp.references",
+        "glass.lsp.document_symbols",
+        "glass.lsp.workspace_symbols",
+        "glass.lsp.signature_help",
+        "glass.lsp.code_actions",
+        "glass.lsp.formatting",
+        "glass.lsp.range_formatting",
+        "glass.lsp.semantic_tokens",
+        "glass.lsp.rename",
         "glass.debug.stack",
         "glass.debug.scopes",
         "glass.debug.variables",
@@ -534,6 +708,11 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.replay.list",
         "glass.replay.inspect",
         "glass.replay.diff",
+        "glass.editor.selection",
+        "glass.editor.diff",
+        "glass.editor.buffers",
+        "glass.process.health",
+        "glass.process.ports",
         "glass.browser.state",
         "glass.browser.observe",
         "glass.browser.targets",
@@ -570,6 +749,12 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.follow-up",
         "glass.agent.abort",
         "glass.agent.compact",
+        "glass.editor.open",
+        "glass.editor.replace",
+        "glass.editor.save",
+        "glass.process.restart",
+        "glass.process.input",
+        "glass.process.resize",
         "glass.browser.start",
         "glass.browser.stop",
         "glass.browser.target.select",
@@ -649,6 +834,39 @@ fn integer(call: &ToolCall, name: &str) -> DevelopmentResult<i64> {
         .get(name)
         .and_then(Value::as_i64)
         .ok_or_else(|| DevelopmentError::InvalidInput(format!("{} requires {name}", call.name)))
+}
+
+fn u32_value(call: &ToolCall, name: &str) -> DevelopmentResult<u32> {
+    u32::try_from(unsigned(call, name, 0)?).map_err(|_| {
+        DevelopmentError::InvalidInput(format!("{}.{} is out of range", call.name, name))
+    })
+}
+
+fn u16_value(call: &ToolCall, name: &str) -> DevelopmentResult<u16> {
+    let value = u16::try_from(unsigned(call, name, 0)?).map_err(|_| {
+        DevelopmentError::InvalidInput(format!("{}.{} is out of range", call.name, name))
+    })?;
+    (value > 0).then_some(value).ok_or_else(|| {
+        DevelopmentError::InvalidInput(format!("{}.{} must be non-zero", call.name, name))
+    })
+}
+
+fn position(
+    call: &ToolCall,
+    name: &str,
+) -> DevelopmentResult<glass_browser::development::DiagnosticPosition> {
+    serde_json::from_value(required_value(call, name)?.clone()).map_err(DevelopmentError::from)
+}
+
+fn value_array_or_empty(call: &ToolCall, name: &str) -> DevelopmentResult<Vec<Value>> {
+    match call.arguments.get(name) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(values)) if values.len() <= 512 => Ok(values.clone()),
+        Some(_) => Err(DevelopmentError::InvalidInput(format!(
+            "{}.{} must be an array of at most 512 values",
+            call.name, name
+        ))),
+    }
 }
 
 fn number(call: &ToolCall, name: &str, default: f64) -> DevelopmentResult<f64> {
@@ -891,6 +1109,82 @@ mod tests {
                 .descriptors()
                 .iter()
                 .any(|descriptor| descriptor.name == "glass.debug.launch")
+        );
+    }
+
+    #[test]
+    fn router_exposes_shared_editor_process_browser_and_complete_lsp_tools() {
+        let mut workspace = workspace();
+        std::fs::create_dir_all(workspace.root().join("src")).unwrap();
+        std::fs::write(workspace.root().join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+        let router = DevelopmentToolRouter::default();
+        let descriptors = router.descriptors();
+        for name in [
+            "glass.editor.open",
+            "glass.editor.replace",
+            "glass.editor.save",
+            "glass.process.restart",
+            "glass.process.input",
+            "glass.process.resize",
+            "glass.process.health",
+            "glass.process.ports",
+            "glass.browser.observe",
+            "glass.browser.navigate",
+            "glass.browser.act",
+            "glass.workflow.run",
+            "glass.workflow.pause",
+            "glass.workflow.resume",
+            "glass.lsp.definition",
+            "glass.lsp.declaration",
+            "glass.lsp.implementation",
+            "glass.lsp.references",
+            "glass.lsp.document_symbols",
+            "glass.lsp.workspace_symbols",
+            "glass.lsp.signature_help",
+            "glass.lsp.code_actions",
+            "glass.lsp.formatting",
+            "glass.lsp.range_formatting",
+            "glass.lsp.semantic_tokens",
+            "glass.lsp.rename",
+        ] {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert!(
+                descriptor.available,
+                "{name} must execute, not be a placeholder"
+            );
+        }
+
+        for (id, name, arguments) in [
+            (
+                "open",
+                "glass.editor.open",
+                serde_json::json!({"path":"src/lib.rs"}),
+            ),
+            (
+                "replace",
+                "glass.editor.replace",
+                serde_json::json!({"path":"src/lib.rs","oldText":"old","newText":"resident"}),
+            ),
+            (
+                "save",
+                "glass.editor.save",
+                serde_json::json!({"path":"src/lib.rs"}),
+            ),
+        ] {
+            let call = ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments,
+            };
+            let authorized = context(&workspace, true);
+            router.execute(&mut workspace, &call, &authorized).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(workspace.root().join("src/lib.rs")).unwrap(),
+            "pub fn resident() {}\n"
         );
     }
 }

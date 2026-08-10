@@ -260,6 +260,7 @@ errors, and optional development-runtime APIs.
 | Symptom | Meaning | Recovery |
 |---|---|---|
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
+| Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
 | Port `9222` is occupied | Another process owns the preferred CDP port | In TUI use `browser launch --port auto`, or explicitly attach only after Glass verifies the endpoint. |
 | Multiple targets found | More than one page is eligible | Run `targets` or `browser targets PORT`, then select an explicit ID/number. |
 | LSP unavailable | The detected language server is missing or failed initialization | Install the server, inspect diagnostics, and retry; Glass does not fabricate diagnostics. |

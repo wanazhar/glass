@@ -86,8 +86,10 @@ inspection, file operations, task validation, Web IR inspection, policy
 preflight, capability inspection, and many diagnostics are browser-free.
 
 Use `glass install-chromium` when the platform has a supported Chrome for
-Testing archive and no suitable system browser is available. Linux ARM64 must
-use a system Chromium or an explicit `--chrome-path`.
+Testing archive and no suitable system browser is available. Linux ARM64 uses
+an automatically discovered system Chromium. Glass also places profiles for
+confined Snap Chromium in its accessible Snap data directory automatically, so
+the normal first run remains simply `glass`.
 
 To remove Glass, use the [complete uninstall
 procedure](docs/installation.md#fully-uninstall-glass). Cargo uninstallation

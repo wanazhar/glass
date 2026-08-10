@@ -156,12 +156,12 @@ async fn dispatch_product(cli: Cli, development_enabled: bool) -> BrowserResult<
         }
         Some(Commands::Profiles { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
-            dispatch_profiles(action.as_ref())?;
+            dispatch_profiles(&cli, action.as_ref())?;
             return Ok(());
         }
         Some(Commands::DeleteProfile { name }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
-            ProfileManager::new().delete_profile(name)?;
+            profile_manager_for_cli(&cli).delete_profile(name)?;
             println!("deleted profile {name}");
             return Ok(());
         }
@@ -837,9 +837,12 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
     let executable = std::env::current_exe()
         .ok()
         .map(|path| path.display().to_string());
-    let chrome_path =
-        crate::browser::chrome::resolve_chrome_path(None).map(|path| path.display().to_string());
-    let profile_path = ProfileManager::new().profile_dir(&cli.profile);
+    let resolved_chrome = crate::browser::chrome::resolve_chrome_path(cli.chrome_path.clone());
+    let chrome_path = resolved_chrome
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let profile_manager = ProfileManager::for_browser(resolved_chrome.as_deref());
+    let profile_path = profile_manager.profile_dir(&cli.profile);
     let runtime_path = default_result_store_path();
     let profile_writable = path_is_writable(profile_path.parent());
     let runtime_writable = path_is_writable(runtime_path.parent());
@@ -855,7 +858,7 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
     let mcp_initialized = probe_mcp_initialization(executable.as_deref()).await;
     let (daemon_socket, daemon_status) = crate::daemon::default_paths();
     let daemon = crate::daemon::doctor(Some(&daemon_socket), Some(&daemon_status))?;
-    let profiles = ProfileManager::new().list_profiles().unwrap_or_default();
+    let profiles = profile_manager.list_profiles().unwrap_or_default();
     let knowledge_path = cli
         .knowledge_store
         .clone()
@@ -1151,8 +1154,13 @@ fn cli_trace_action(command: Option<&Commands>, prompt: Option<&str>) -> ActionK
     }
 }
 
-fn dispatch_profiles(action: Option<&ProfileCommand>) -> BrowserResult<()> {
-    let manager = ProfileManager::new();
+fn profile_manager_for_cli(cli: &Cli) -> ProfileManager {
+    let chrome_path = crate::browser::chrome::resolve_chrome_path(cli.chrome_path.clone());
+    ProfileManager::for_browser(chrome_path.as_deref())
+}
+
+fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResult<()> {
+    let manager = profile_manager_for_cli(cli);
     match action {
         None | Some(ProfileCommand::List) => {
             let profiles = manager.list_profiles()?;

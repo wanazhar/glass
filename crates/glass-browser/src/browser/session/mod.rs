@@ -655,7 +655,15 @@ impl BrowserSession {
             policy.require(PolicyCapability::PersistentProfile)?;
         }
         let resolver_rules = policy.prepare_hardened_session(options.attach).await?;
-        let profile_manager = ProfileManager::new();
+        let chrome_path =
+            if options.attach {
+                None
+            } else {
+                Some(resolve_chrome_path(options.chrome_path.clone()).ok_or(
+                    "Chrome/Chromium not found; run install-chromium or pass --chrome-path",
+                )?)
+            };
+        let profile_manager = ProfileManager::for_browser(chrome_path.as_deref());
         let mut profile_lock = None;
         let mut disposable_profile = None;
         let mut chrome = None;
@@ -688,8 +696,6 @@ impl BrowserSession {
                 .into());
             }
 
-            let chrome_path = resolve_chrome_path(options.chrome_path.clone())
-                .ok_or("Chrome/Chromium not found; run install-chromium or pass --chrome-path")?;
             let profile_dir = if options.incognito {
                 let directory = DisposableProfileDir::create()?;
                 let path = directory.path().to_path_buf();
@@ -702,7 +708,9 @@ impl BrowserSession {
             };
             chrome = Some(
                 launch_chrome_with_viewport(
-                    &chrome_path,
+                    chrome_path
+                        .as_deref()
+                        .expect("owned launch resolved Chrome before profile setup"),
                     options.port,
                     Some(&profile_dir),
                     options.headed,

@@ -28,12 +28,33 @@ pub struct ProfileLock {
 
 impl ProfileManager {
     pub fn new() -> Self {
-        let profiles_dir = std::env::var_os("GLASS_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(dirs::config_dir)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("glass")
-            .join("profiles");
+        let chrome_path = super::chrome::resolve_chrome_path(None);
+        Self::for_browser(chrome_path.as_deref())
+    }
+
+    /// Select a persistent profile root that the resolved browser can access.
+    ///
+    /// Snap Chromium cannot access Chrome user-data directories below the
+    /// ordinary host configuration directory. When Glass discovered that
+    /// confined browser without an explicit configuration override, keep the
+    /// profile in Chromium's Snap-owned common directory instead.
+    pub fn for_browser(chrome_path: Option<&Path>) -> Self {
+        let explicit_config_home = std::env::var_os("GLASS_CONFIG_HOME").map(PathBuf::from);
+        let profiles_dir = profile_root_for_browser(
+            explicit_config_home.as_deref(),
+            dirs::config_dir().as_deref(),
+            dirs::home_dir().as_deref(),
+            chrome_path,
+            Path::new("/snap/bin/chromium").is_file(),
+        );
+        if is_snap_chromium(chrome_path, Path::new("/snap/bin/chromium").is_file())
+            && explicit_config_home.is_none()
+        {
+            info!(
+                path = %profiles_dir.display(),
+                "using Snap-accessible Chromium profile root"
+            );
+        }
         Self { profiles_dir }
     }
 
@@ -200,6 +221,40 @@ impl ProfileManager {
     }
 }
 
+fn profile_root_for_browser(
+    explicit_config_home: Option<&Path>,
+    config_home: Option<&Path>,
+    home: Option<&Path>,
+    chrome_path: Option<&Path>,
+    snap_chromium_available: bool,
+) -> PathBuf {
+    if let Some(root) = explicit_config_home {
+        return root.join("glass").join("profiles");
+    }
+    if is_snap_chromium(chrome_path, snap_chromium_available)
+        && let Some(home) = home
+    {
+        return home
+            .join("snap")
+            .join("chromium")
+            .join("common")
+            .join("glass")
+            .join("profiles");
+    }
+    config_home
+        .unwrap_or_else(|| Path::new("."))
+        .join("glass")
+        .join("profiles")
+}
+
+fn is_snap_chromium(chrome_path: Option<&Path>, snap_chromium_available: bool) -> bool {
+    let Some(path) = chrome_path else {
+        return false;
+    };
+    path.starts_with("/snap/")
+        || (snap_chromium_available && path == Path::new("/usr/bin/chromium-browser"))
+}
+
 fn remove_dir_if_exists(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if path.exists() {
         std::fs::remove_dir_all(path)?;
@@ -302,5 +357,47 @@ mod tests {
 
         assert_eq!(manager.list_profiles().unwrap(), vec!["work_chrome"]);
         let _ = std::fs::remove_dir_all(profiles_dir);
+    }
+
+    #[test]
+    fn snap_chromium_uses_its_accessible_common_directory_by_default() {
+        let root = profile_root_for_browser(
+            None,
+            Some(Path::new("/home/user/.config")),
+            Some(Path::new("/home/user")),
+            Some(Path::new("/snap/bin/chromium")),
+            true,
+        );
+
+        assert_eq!(
+            root,
+            Path::new("/home/user/snap/chromium/common/glass/profiles")
+        );
+    }
+
+    #[test]
+    fn explicit_config_home_wins_over_confined_browser_detection() {
+        let root = profile_root_for_browser(
+            Some(Path::new("/configured")),
+            Some(Path::new("/home/user/.config")),
+            Some(Path::new("/home/user")),
+            Some(Path::new("/usr/bin/chromium-browser")),
+            true,
+        );
+
+        assert_eq!(root, Path::new("/configured/glass/profiles"));
+    }
+
+    #[test]
+    fn unconfined_chromium_keeps_the_standard_profile_root() {
+        let root = profile_root_for_browser(
+            None,
+            Some(Path::new("/home/user/.config")),
+            Some(Path::new("/home/user")),
+            Some(Path::new("/usr/bin/chromium")),
+            false,
+        );
+
+        assert_eq!(root, Path::new("/home/user/.config/glass/profiles"));
     }
 }

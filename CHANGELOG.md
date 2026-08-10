@@ -51,6 +51,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 - Diagnose Chrome status 21 caused by confined Snap profile locks and provide
   actionable incognito, managed-Chromium, and unconfined-browser guidance.
+- Automatically place persistent profiles for detected Snap Chromium in its
+  accessible common-data directory, preserving zero-configuration startup on
+  Linux ARM64 without `--chrome-path`, `--incognito`, or manual CDP attachment.
 - Close resident Chromium sessions when their worker channel disconnects so
   headless browser processes and disposable profiles cannot become orphans.
 - Sequence DAP launch/attach with `configurationDone`, matching real adapters

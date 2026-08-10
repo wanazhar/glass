@@ -294,9 +294,12 @@ glass install-chromium --update
 ```
 
 Chrome for Testing does not currently provide a Linux ARM64 archive. On Linux
-ARM64, install a system Chromium build or provide an explicit executable with
-`--chrome-path`. `glass install-chromium` reports this limitation and does not
-create a partial installation.
+ARM64, install a system Chromium build; Glass discovers standard installations
+without `--chrome-path`. `glass install-chromium` reports this limitation and
+does not create a partial installation. When the discovered browser is confined
+Snap Chromium, Glass automatically stores its named browser profiles below
+`~/snap/chromium/common/glass/profiles`, where Chromium can access them. An
+explicit `GLASS_CONFIG_HOME` remains authoritative.
 
 The installer checks the archive size and digest. It extracts the archive in
 the Glass process. It publishes the browser only after validation. It does not
@@ -304,8 +307,9 @@ require the `unzip` program.
 
 ## Start a session
 
-By default, Glass starts headless Chrome on CDP port `9222` with the profile
-`default`.
+By default, Glass discovers Chrome/Chromium, starts it headlessly on its managed
+CDP port, and uses the persistent profile `default`. Users do not need to launch
+Chrome, select an executable, or attach to a port for an ordinary owned session.
 
 Use these options:
 

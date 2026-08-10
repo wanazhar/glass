@@ -6,6 +6,7 @@ use crate::git::GitService;
 use crate::kernels::KernelManager;
 use crate::lsp::LanguageService;
 use crate::testing::TestService;
+use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ pub struct DevelopmentWorkspace {
     kernels: KernelManager,
     language: LanguageService,
     tests: TestService,
+    tools: DevelopmentToolRouter,
     generation: u64,
 }
 
@@ -60,6 +62,7 @@ impl DevelopmentWorkspace {
             kernels,
             language,
             tests,
+            tools: DevelopmentToolRouter::default(),
             generation: 1,
         })
     }
@@ -147,6 +150,19 @@ impl DevelopmentWorkspace {
 
     pub fn language(&mut self) -> &mut LanguageService {
         &mut self.language
+    }
+
+    pub fn tool_descriptors(&self) -> Vec<glass_browser::development::ToolDescriptor> {
+        self.tools.descriptors()
+    }
+
+    pub fn execute_tool(
+        &mut self,
+        call: &glass_browser::development::ToolCall,
+        context: &DevelopmentToolContext,
+    ) -> DevelopmentResult<serde_json::Value> {
+        let router = self.tools.clone();
+        router.execute(self, call, context)
     }
 
     /// Advance the generation after replacing resident service ownership.

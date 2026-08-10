@@ -10,12 +10,14 @@ pub mod git;
 pub mod kernels;
 pub mod lsp;
 pub mod testing;
+pub mod tools;
 pub mod workspace;
 
 use glass_browser::cli::args::Cli;
 
 pub use agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
+pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.

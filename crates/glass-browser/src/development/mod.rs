@@ -47,8 +47,8 @@ use std::{
 
 pub use agent::{
     AgentAuthorityContext, AgentContextPacket, AgentToolGateway, BrowserAgentContext, HarnessEvent,
-    HarnessRequest, LocalHarness, PiHarness, ToolAuthorization, ToolCall, ToolDescriptor,
-    ToolRegistry, resolve_context, resolve_context_with_browser,
+    HarnessRequest, LocalHarness, PiHarness, PiHarnessOptions, ToolAuthorization, ToolCall,
+    ToolDescriptor, ToolRegistry, resolve_context, resolve_context_with_browser,
 };
 pub use cockpit::{
     AttentionItem, AttentionState, ReconnectCapsule, ReconnectCapsuleStore,

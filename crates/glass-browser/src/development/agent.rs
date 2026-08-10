@@ -1268,6 +1268,14 @@ pub enum HarnessRequest {
     SetModel { provider: String, model_id: String },
     SetThinking { level: String },
     NewSession,
+    Compact { instructions: Option<String> },
+    CloneSession,
+    Fork { entry_id: String },
+    SwitchSession { path: String },
+    Entries { since: Option<String> },
+    Messages,
+    SessionStats,
+    SetSessionName { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1394,6 +1402,16 @@ impl LocalHarness {
                     state: self.state.clone(),
                 }])
             }
+            HarnessRequest::Compact { .. }
+            | HarnessRequest::CloneSession
+            | HarnessRequest::Fork { .. }
+            | HarnessRequest::SwitchSession { .. }
+            | HarnessRequest::Entries { .. }
+            | HarnessRequest::Messages
+            | HarnessRequest::SessionStats
+            | HarnessRequest::SetSessionName { .. } => Ok(vec![HarnessEvent::Error {
+                message: "persistent session controls require the Pi runtime".into(),
+            }]),
         }
     }
 
@@ -1510,6 +1528,18 @@ pub struct PiHarness {
     unrestricted: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PiHarnessOptions {
+    pub unrestricted: bool,
+    pub persist_session: bool,
+    pub session_id: Option<String>,
+    pub fork: Option<String>,
+    pub session_dir: Option<PathBuf>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+}
+
 impl std::fmt::Debug for PiHarness {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1526,6 +1556,18 @@ impl PiHarness {
     }
 
     pub fn spawn_with_unrestricted(root: &Path, unrestricted: bool) -> DevelopmentResult<Self> {
+        Self::spawn_with_options(
+            root,
+            PiHarnessOptions {
+                unrestricted,
+                persist_session: env_enabled("GLASS_PI_PERSIST_SESSION"),
+                ..PiHarnessOptions::default()
+            },
+        )
+    }
+
+    pub fn spawn_with_options(root: &Path, options: PiHarnessOptions) -> DevelopmentResult<Self> {
+        validate_pi_harness_options(&options)?;
         static NEXT_EXTENSION_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(1);
         let extension_id = NEXT_EXTENSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1538,8 +1580,8 @@ impl PiHarness {
             include_str!("../../assets/pi-glass-tools.ts"),
         )?;
         let broker = std::env::current_exe().map_err(DevelopmentError::Io)?;
-        let trusted_resources = unrestricted || env_enabled("GLASS_PI_TRUSTED_RESOURCES");
-        let system_prompt = if unrestricted {
+        let trusted_resources = options.unrestricted || env_enabled("GLASS_PI_TRUSTED_RESOURCES");
+        let system_prompt = if options.unrestricted {
             format!(
                 "{}\n- UNRESTRICTED MODE is active. Glass will not ask for tool approval; execute requested local development work directly and report effects truthfully.",
                 include_str!("../../assets/pi-glass-system.md")
@@ -1561,8 +1603,27 @@ impl PiHarness {
                 "--no-themes",
             ]);
         }
-        if !env_enabled("GLASS_PI_PERSIST_SESSION") {
+        if !options.persist_session {
             command.arg("--no-session");
+        }
+        if let Some(session_id) = &options.session_id {
+            command.args(["--session-id", session_id]);
+        }
+        if let Some(fork) = &options.fork {
+            command.args(["--fork", fork]);
+        }
+        if let Some(session_dir) = &options.session_dir {
+            std::fs::create_dir_all(session_dir)?;
+            command.arg("--session-dir").arg(session_dir);
+        }
+        if let Some(name) = &options.name {
+            command.args(["--name", name]);
+        }
+        if let Some(model) = &options.model {
+            command.args(["--model", model]);
+        }
+        if let Some(thinking) = &options.thinking {
+            command.args(["--thinking", thinking]);
         }
         command
             .args(["--system-prompt", &system_prompt, "--extension"])
@@ -1575,7 +1636,10 @@ impl PiHarness {
         }
         let mut child = command
             .env("GLASS_PI_BROKER_BIN", broker)
-            .env("GLASS_PI_YOLO", if unrestricted { "1" } else { "0" })
+            .env(
+                "GLASS_PI_YOLO",
+                if options.unrestricted { "1" } else { "0" },
+            )
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1617,7 +1681,7 @@ impl PiHarness {
             next_id: 1,
             extension_path,
             pending_ui_requests: BTreeSet::new(),
-            unrestricted,
+            unrestricted: options.unrestricted,
         })
     }
 
@@ -1683,7 +1747,7 @@ impl PiHarness {
         }
     }
 
-    pub(crate) fn start_request(&mut self, request: HarnessRequest) -> DevelopmentResult<String> {
+    pub fn start_request(&mut self, request: HarnessRequest) -> DevelopmentResult<String> {
         let (command, private_text) = match request {
             HarnessRequest::Hello | HarnessRequest::State => {
                 (serde_json::json!({"type": "get_state"}), None)
@@ -1711,6 +1775,31 @@ impl PiHarness {
                 None,
             ),
             HarnessRequest::NewSession => (serde_json::json!({"type": "new_session"}), None),
+            HarnessRequest::Compact { instructions } => (
+                serde_json::json!({"type": "compact", "customInstructions": instructions}),
+                None,
+            ),
+            HarnessRequest::CloneSession => (serde_json::json!({"type": "clone"}), None),
+            HarnessRequest::Fork { entry_id } => (
+                serde_json::json!({"type": "fork", "entryId": entry_id}),
+                None,
+            ),
+            HarnessRequest::SwitchSession { path } => (
+                serde_json::json!({"type": "switch_session", "sessionPath": path}),
+                None,
+            ),
+            HarnessRequest::Entries { since } => (
+                serde_json::json!({"type": "get_entries", "since": since}),
+                None,
+            ),
+            HarnessRequest::Messages => (serde_json::json!({"type": "get_messages"}), None),
+            HarnessRequest::SessionStats => {
+                (serde_json::json!({"type": "get_session_stats"}), None)
+            }
+            HarnessRequest::SetSessionName { name } => (
+                serde_json::json!({"type": "set_session_name", "name": name}),
+                None,
+            ),
         };
         let _private_text = private_text;
         self.send(command)
@@ -1732,11 +1821,7 @@ impl PiHarness {
         Ok(id)
     }
 
-    pub(crate) fn respond_extension_ui(
-        &mut self,
-        id: &str,
-        confirmed: bool,
-    ) -> DevelopmentResult<()> {
+    pub fn respond_extension_ui(&mut self, id: &str, confirmed: bool) -> DevelopmentResult<()> {
         if !self.pending_ui_requests.remove(id) {
             return Err(DevelopmentError::Conflict(format!(
                 "stale or unknown Pi UI request: {id}"
@@ -1753,10 +1838,7 @@ impl PiHarness {
         Ok(())
     }
 
-    pub(crate) fn recv_event_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> DevelopmentResult<Option<Value>> {
+    pub fn recv_event_timeout(&mut self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
         match self.output.recv_timeout(timeout) {
             Ok(value) => {
                 if let Some(request) = pi_ui_request(&value)?
@@ -1785,6 +1867,58 @@ impl PiHarness {
             )),
         }
     }
+}
+
+fn validate_pi_harness_options(options: &PiHarnessOptions) -> DevelopmentResult<()> {
+    if options.session_id.is_some() && options.fork.is_some() {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi session ID and fork source are mutually exclusive".into(),
+        ));
+    }
+    if (options.session_id.is_some()
+        || options.fork.is_some()
+        || options.session_dir.is_some()
+        || options.name.is_some())
+        && !options.persist_session
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi session options require persistent session storage".into(),
+        ));
+    }
+    for (description, value, limit) in [
+        ("session ID", options.session_id.as_deref(), 256),
+        ("fork source", options.fork.as_deref(), 4096),
+        ("session name", options.name.as_deref(), 256),
+        ("model", options.model.as_deref(), 512),
+    ] {
+        if let Some(value) = value
+            && (value.is_empty()
+                || value.len() > limit
+                || value.chars().any(|character| character.is_control()))
+        {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "Pi {description} must contain 1..={limit} non-control bytes"
+            )));
+        }
+    }
+    if let Some(thinking) = options.thinking.as_deref()
+        && !matches!(
+            thinking,
+            "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+        )
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi thinking level must be off, minimal, low, medium, high, xhigh, or max".into(),
+        ));
+    }
+    if let Some(directory) = &options.session_dir
+        && (!directory.is_absolute() || directory == Path::new("/"))
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi session directory must be an explicit absolute path".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn env_enabled(name: &str) -> bool {
@@ -1931,6 +2065,36 @@ fn prompt_evidence(text: &str) -> Value {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn pi_session_options_require_safe_persistent_configuration() {
+        let directory = std::env::temp_dir().join("glass-pi-sessions");
+        assert!(
+            validate_pi_harness_options(&PiHarnessOptions {
+                persist_session: true,
+                session_id: Some("session-1".into()),
+                session_dir: Some(directory),
+                thinking: Some("high".into()),
+                ..PiHarnessOptions::default()
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_pi_harness_options(&PiHarnessOptions {
+                session_id: Some("session-1".into()),
+                ..PiHarnessOptions::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_pi_harness_options(&PiHarnessOptions {
+                persist_session: true,
+                thinking: Some("unbounded".into()),
+                ..PiHarnessOptions::default()
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn local_harness_proves_prompt_tool_result_and_steer_events() {

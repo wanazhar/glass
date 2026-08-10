@@ -2,6 +2,7 @@
 
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::git::GitService;
+use crate::kernels::KernelManager;
 use crate::testing::TestService;
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ pub struct DevelopmentWorkspace {
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
     git: Option<GitService>,
+    kernels: KernelManager,
     tests: TestService,
     generation: u64,
 }
@@ -40,11 +42,15 @@ impl DevelopmentWorkspace {
         let tests = TestService::discover(&root).map_err(|error| {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
+        let kernels = KernelManager::new(&root).map_err(|error| {
+            glass_browser::development::DevelopmentError::Process(error.to_string())
+        })?;
         Ok(Self {
             root,
             project,
             debuggers: BTreeMap::new(),
             git,
+            kernels,
             tests,
             generation: 1,
         })
@@ -117,6 +123,14 @@ impl DevelopmentWorkspace {
 
     pub fn tests_mut(&mut self) -> &mut TestService {
         &mut self.tests
+    }
+
+    pub fn kernels(&self) -> &KernelManager {
+        &self.kernels
+    }
+
+    pub fn kernels_mut(&mut self) -> &mut KernelManager {
+        &mut self.kernels
     }
 
     /// Advance the generation after replacing resident service ownership.

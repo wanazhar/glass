@@ -6,6 +6,7 @@
 
 pub mod debugger;
 pub mod git;
+pub mod kernels;
 pub mod testing;
 pub mod workspace;
 

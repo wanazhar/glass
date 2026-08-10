@@ -565,6 +565,26 @@ mod tests {
     #[test]
     fn customization_loads_skills_and_executes_governed_tools_and_hooks() {
         let root = std::env::temp_dir().join(format!("glass-customization-{}", std::process::id()));
+        let echo_input = if cfg!(windows) {
+            "echo %GLASS_TOOL_INPUT%"
+        } else {
+            "printf '%s' \"$GLASS_TOOL_INPUT\""
+        };
+        let echo_text = if cfg!(windows) {
+            "echo command-ok"
+        } else {
+            "printf command-ok"
+        };
+        let configured_test = if cfg!(windows) {
+            "echo configured-test"
+        } else {
+            "printf configured-test"
+        };
+        let hook = if cfg!(windows) {
+            "echo hook-ok"
+        } else {
+            "printf hook-ok"
+        };
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".glass/skills")).unwrap();
         std::fs::write(root.join(".glass/skills/review.md"), "Always run tests.").unwrap();
@@ -575,23 +595,25 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("glass.toml"),
-            r#"
+            format!(
+                r#"
 [agent]
 harness = "pi"
 model = "provider/model"
 reasoning = "high"
 [commands]
-hello = "printf command-ok"
+hello = "{echo_text}"
 [tests.smoke]
-command = "printf configured-test"
+command = "{configured_test}"
 timeout_seconds = 30
 [tools.echo]
 description = "Echo structured input"
-command = "printf '%s' \"$GLASS_TOOL_INPUT\""
-input_schema = { type = "object", required = ["text"] }
+command = '''{echo_input}'''
+input_schema = {{ type = "object", required = ["text"] }}
 [hooks]
-"tool.before" = [{ command = "printf hook-ok" }]
+"tool.before" = [{{ command = "{hook}" }}]
 "#,
+            ),
         )
         .unwrap();
         let customization = Customization::load(&root).unwrap();
@@ -627,7 +649,7 @@ input_schema = { type = "object", required = ["text"] }
                 && suite
                     .arguments
                     .iter()
-                    .any(|argument| argument == "printf configured-test")
+                    .any(|argument| argument == configured_test)
         }));
         assert!(
             workspace

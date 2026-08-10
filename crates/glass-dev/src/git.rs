@@ -621,9 +621,15 @@ fn validate_paths(paths: &[String]) -> GitResult<Vec<String>> {
 
 fn validate_relative_path(path: &str) -> GitResult<String> {
     let candidate = Path::new(path);
+    let rooted = candidate.components().any(|part| {
+        matches!(
+            part,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        )
+    });
     if path.is_empty()
         || path.len() > 4096
-        || candidate.is_absolute()
+        || rooted
         || candidate
             .components()
             .any(|part| matches!(part, std::path::Component::ParentDir))

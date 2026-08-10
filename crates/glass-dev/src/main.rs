@@ -28,7 +28,5 @@ fn run() -> MainResult {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(glass_browser::cli::runner::dispatch(
-            glass_browser::cli::args::Cli::parse(),
-        ))
+        .block_on(glass_dev::dispatch(glass_browser::cli::args::Cli::parse()))
 }

@@ -1,8 +1,9 @@
 # Glass documentation
 
 These guides describe the complete Glass product in this `0.3.3` source
-checkout. The currently published crates remain `0.3.2`. `Local only` means a
-capability exists in the checkout but is not part of the published contract.
+checkout. `glass-browser 0.3.3` and `glass-dev 0.3.3` are the current published
+crates. `Local only` means a capability exists in the checkout but is not part
+of the published contract.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 

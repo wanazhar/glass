@@ -13,6 +13,14 @@ certified.
 
 ## 0.3.3 release record
 
+Signed annotated tag `v0.3.3` points to commit
+`f5951f40c0c2fbb0c8cae60f44e7a07840c6ced3`. The
+[ordered release workflow](https://github.com/wanazhar/glass/actions/runs/31373242351)
+published `glass-browser 0.3.3`, then `glass-dev 0.3.3`, clean-installed both
+registry packages, and created the source-only
+[GitHub Release](https://github.com/wanazhar/glass/releases/tag/v0.3.3) on
+2026-08-10.
+
 - [x] Map all 53 mandatory issue #33 checkboxes, including the authoritative
       amendment, to integrated evidence.
 - [x] Verify the responsive phone/compact/wide TUI, real 40x20 PTY behavior,
@@ -33,6 +41,9 @@ certified.
 - [x] Obtain explicit approval before pushing, tagging, publishing, closing
       issue #33, or creating the GitHub Release; approval was given on
       2026-08-10.
+- [x] Verify exact-tag CI and parser fuzz, ordered crates.io publication,
+      unyanked registry records, clean registry installs, and the non-draft,
+      non-prerelease, source-only GitHub Release.
 
 ## 0.3.2 release record
 

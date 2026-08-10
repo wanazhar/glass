@@ -42,8 +42,9 @@ Python client builds/smokes, formatting, release truth, version parity,
 feature parity, reliability inventories, Web IR corpus, shell syntax, and both
 Cargo package file lists pass.
 
-A fresh `glass-browser` archive packages successfully. The local-only
-`glass-dev 0.3.3` source file list is valid, but a new archive cannot resolve
-its exact unpublished `glass-browser =0.3.3` dependency from crates.io until
-the ordered release workflow publishes the core crate. No remote mutation was
-performed.
+At this task's local-candidate checkpoint, a fresh `glass-browser` archive
+packaged successfully and the `glass-dev 0.3.3` archive awaited its exact
+unpublished `glass-browser =0.3.3` dependency. The subsequent ordered release
+workflow published the core crate first, then packaged, published, and
+registry-install-smoked `glass-dev 0.3.3`; the final public evidence is in
+[`docs/release-evidence.md`](../../release-evidence.md).

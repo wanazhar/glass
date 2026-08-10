@@ -1,6 +1,6 @@
 # Glass v0.3.3 issue #33 gate review
 
-Status: final local candidate review
+Status: released on 2026-08-10
 
 This is the auditable mapping for all 53 mandatory checkboxes in issue #33,
 including its authoritative amendment. A checked item means an integrated code
@@ -67,7 +67,7 @@ or runtime certification on an unobserved platform.
 - [x] Browser-free CI covers Linux, macOS and Windows — the CI matrix checks and tests the workspace on all three.
 - [x] Support claims are evidence-backed — docs separate source/CI coverage from Linux native-browser evidence.
 - [x] Clean-install smoke covers both crates — `scripts/smoke-clean-install.sh` verifies core and full products in isolated roots.
-- [x] Release history language is correct — published 0.3.2 evidence remains historical and 0.3.3 is explicitly local-only.
+- [x] Release history language is correct — published 0.3.2 evidence remains historical and the 0.3.3 signed-tag, crates.io and GitHub Release records are explicit.
 - [x] Major limitations are documented — remote graphics, Mosh, loopback forwarding, platform and native-browser claim boundaries are explicit.
 
 ## Gate 9 — full-suite install completeness
@@ -92,6 +92,9 @@ or runtime certification on an unobserved platform.
 
 ## Release boundary
 
-The issue implementation is complete only as a local candidate. Closing the
-remote issue, pushing commits, creating `v0.3.3`, publishing crates, and
-creating a GitHub Release require explicit maintainer approval.
+The maintainer approved remote mutation on 2026-08-10. Signed tag `v0.3.3`
+points to `f5951f40c0c2fbb0c8cae60f44e7a07840c6ced3`; exact-tag CI and fuzz passed,
+both crates were published and registry-install-smoked, and the source-only
+[GitHub Release](https://github.com/wanazhar/glass/releases/tag/v0.3.3) was
+created. The 53/53 issue implementation gates and the distribution boundary
+are complete.

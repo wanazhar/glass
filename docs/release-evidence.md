@@ -26,6 +26,25 @@ against crates.io and the matching source-only GitHub Release.
 - The iOS and Android concept JPEGs decode successfully; the iOS source SVG
   is retained alongside the rendered asset.
 
+### Published 0.3.3 records
+
+- Signed annotated tag `v0.3.3` points to
+  `f5951f40c0c2fbb0c8cae60f44e7a07840c6ced3`; local signature verification
+  succeeded with EdDSA key `C7102B6A568EABDE023F818528E01A5852DB1559`.
+- [Release workflow run 31373242351](https://github.com/wanazhar/glass/actions/runs/31373242351)
+  passed tag validation, package and publication dry runs, ordered publication,
+  crates.io propagation, clean registry installs, executable help smokes, and
+  GitHub Release creation. Exact-tag
+  [CI run 31373242354](https://github.com/wanazhar/glass/actions/runs/31373242354)
+  and [fuzz run 31373242362](https://github.com/wanazhar/glass/actions/runs/31373242362)
+  also passed.
+- crates.io published `glass-browser 0.3.3` at
+  `2026-08-10T09:23:18.508627Z` and `glass-dev 0.3.3` at
+  `2026-08-10T09:24:14.018121Z`; neither version is yanked.
+- [GitHub Release v0.3.3](https://github.com/wanazhar/glass/releases/tag/v0.3.3)
+  was published at `2026-08-10T09:32:07Z`. It is non-draft,
+  non-prerelease, source-only, and has no attached binary assets.
+
 ### Completed 0.3.3 validation
 
 - `scripts/check-rust-workspace.sh test`: the complete split-package library

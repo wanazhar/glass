@@ -26,8 +26,36 @@ Release has been performed.
   a JSON-RPC integration test calls both with clean stdout framing. Direct CLI
   mutations remain authority/confirmation gated outside `--yolo`.
 
-Final workspace, documentation, package, and clean-install measurements are
-recorded below after the convergence commands complete.
+### Completed 0.3.4 local validation
+
+- `scripts/check-rust-workspace.sh test` passed for both products: 822
+  `glass-browser` library tests passed with one intentionally ignored test, all
+  binary/integration/example/real-PTY targets passed, and all 36 `glass-dev`
+  library plus four full-product integration tests passed. The run included
+  available real Pi, rust-analyzer, debugpy, Chromium, durable-daemon, Git,
+  worktree, kernel, experiment, and MCP paths.
+- `cargo fmt --all -- --check`, warnings-denied all-target/all-feature Clippy,
+  warnings-denied workspace rustdoc, and the independent
+  `glass-browser --no-default-features` build passed. All release/documentation,
+  feature-parity, reliability, public-adapter, and eight-fixture Web IR gates
+  passed.
+- The full `glass` MCP inventory is pinned at 284 tools and 129,444 serialized
+  UTF-8 bytes; `glass-browser` retains its independently checked 133-tool
+  catalog. TypeScript build/typecheck/package/handshake and Python
+  compile/wheel/handshake smokes passed against `glass 0.3.4`.
+- `glass-browser` packages 188 files (4.4 MiB; 855.9 KiB compressed) and verifies
+  from normalized package contents. `glass-dev` packages 28 files (500.5 KiB;
+  108.0 KiB compressed), verifies with the packaged browser crate, and retains
+  the exact `glass-browser =0.3.4` dependency. The locked fuzz all-target build,
+  `cargo deny check`, and the current 1,200-advisory RustSec audit passed.
+- `GLASS_PREVIOUS_VERSION=0.3.3 scripts/smoke-clean-install.sh` passed isolated
+  core-only and full-suite installs, all same-version command-ownership
+  transitions, and a real published `0.3.3` to local `0.3.4` upgrade. Installed
+  version, help, and capability commands were executed before the temporary
+  Cargo root was removed.
+- The stripped `release-size` binaries execute as version `0.3.4`:
+  `glass` is 9,592,528 bytes and `glass-browser` is 7,742,560 bytes on
+  `aarch64-unknown-linux-gnu`.
 
 ## 0.3.3 release evidence
 

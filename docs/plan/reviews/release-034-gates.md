@@ -96,7 +96,7 @@ it does not claim publication or untested native-platform certification.
 - [x] Version metadata and substantive release notes are synchronized at 0.3.4.
 - [x] Host-native Pi, rust-analyzer, debugpy, Chromium, daemon, experiment, MCP,
       and PTY TUI evidence is recorded with target limits.
-- [ ] Final workspace CI-equivalent, rustdoc, packages, and isolated installs
+- [x] Final workspace CI-equivalent, rustdoc, packages, and isolated installs
       must pass before the candidate is locally ready.
 - [ ] Remote tag/workflow/crates.io/GitHub Release evidence requires explicit
       authorization and remains outside this local delivery.

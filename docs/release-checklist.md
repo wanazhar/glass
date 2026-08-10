@@ -28,7 +28,7 @@ remote-mutation approval.
       catalog; direct CLI callers are not forced through Pi.
 - [x] `glass-dev` owns the decomposed full development shell while
       `glass-browser` remains independently buildable with no default features.
-- [ ] Complete the final workspace, rustdoc, package, and clean-install gates
+- [x] Complete the final workspace, rustdoc, package, and clean-install gates
       and record exact results in `docs/release-evidence.md`.
 - [ ] Obtain explicit approval before any push, tag, publication, issue update,
       or GitHub Release operation.

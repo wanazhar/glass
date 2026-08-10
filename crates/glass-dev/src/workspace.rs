@@ -1,6 +1,8 @@
 //! Resident development workspace ownership.
 
+use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -12,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct DevelopmentWorkspace {
     root: PathBuf,
     project: ProjectWorkspace,
+    debuggers: BTreeMap<String, DebuggerSession>,
     generation: u64,
 }
 
@@ -23,6 +26,7 @@ impl DevelopmentWorkspace {
         Ok(Self {
             root,
             project,
+            debuggers: BTreeMap::new(),
             generation: 1,
         })
     }
@@ -48,6 +52,42 @@ impl DevelopmentWorkspace {
         &mut self.project
     }
 
+    /// Start and initialize one named resident DAP session.
+    pub fn start_debugger(
+        &mut self,
+        name: &str,
+        config: &DebugAdapterConfig,
+        timeout: std::time::Duration,
+    ) -> DebugResult<()> {
+        validate_service_name(name)?;
+        if self.debuggers.contains_key(name) {
+            return Err(DebugError::InvalidInput(format!(
+                "debugger session {name} already exists"
+            )));
+        }
+        let debugger = DebuggerSession::start(&self.root, config, "Glass Dev", timeout)?;
+        self.debuggers.insert(name.to_string(), debugger);
+        Ok(())
+    }
+
+    pub fn debugger_mut(&mut self, name: &str) -> DebugResult<&mut DebuggerSession> {
+        self.debuggers
+            .get_mut(name)
+            .ok_or_else(|| DebugError::InvalidInput(format!("unknown debugger session {name}")))
+    }
+
+    pub fn debugger_names(&self) -> impl Iterator<Item = &str> {
+        self.debuggers.keys().map(String::as_str)
+    }
+
+    pub fn stop_debugger(&mut self, name: &str) -> DebugResult<()> {
+        let mut debugger = self
+            .debuggers
+            .remove(name)
+            .ok_or_else(|| DebugError::InvalidInput(format!("unknown debugger session {name}")))?;
+        debugger.shutdown()
+    }
+
     /// Advance the generation after replacing resident service ownership.
     pub fn advance_generation(&mut self) -> DevelopmentResult<u64> {
         self.generation = self.generation.checked_add(1).ok_or_else(|| {
@@ -57,6 +97,20 @@ impl DevelopmentWorkspace {
         })?;
         Ok(self.generation)
     }
+}
+
+fn validate_service_name(name: &str) -> DebugResult<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+    {
+        return Err(DebugError::InvalidInput(
+            "resident service names must be 1..=64 ASCII letters, digits, '-' or '_'".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Thread-safe resident handle shared by CLI, TUI, MCP and daemon clients.
@@ -118,5 +172,12 @@ mod tests {
         assert_eq!(state.root(), std::fs::canonicalize(&root).unwrap());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resident_service_names_fail_closed() {
+        assert!(validate_service_name("rust").is_ok());
+        assert!(validate_service_name("../escape").is_err());
+        assert!(validate_service_name("").is_err());
     }
 }

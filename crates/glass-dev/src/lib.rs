@@ -4,6 +4,7 @@
 //! `glass` product. Browser intelligence remains provided by the one-way
 //! `glass-browser` dependency.
 
+pub mod debugger;
 pub mod workspace;
 
 use glass_browser::cli::args::Cli;

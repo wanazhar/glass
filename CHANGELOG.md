@@ -69,8 +69,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
   commands through owned non-interactive pipes, released completed ConPTY
   masters before draining output, and removed platform-only Cargo warnings
   from browser-free builds.
-- Made workspace deletion release its ownership lock explicitly after durable
-  removal so immediate reopen checks cannot race lock teardown.
+- Made transient workspace operations release ownership locks explicitly so
+  immediate same-process saves, reopens, and deletes cannot race lock teardown.
+- Kept browser-only builds usable for file, search, and semantic development
+  operations without PTY support, while gating real Neovim and command probes
+  on the `development-runtime` feature.
 
 ## [0.3.2] - 2026-08-08
 

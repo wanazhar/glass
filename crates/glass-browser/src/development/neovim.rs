@@ -171,7 +171,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "development-runtime"))]
 mod tests {
     use super::*;
 

@@ -2315,12 +2315,15 @@ impl WorkspaceStore {
         self.write_unlocked(&workspace)?;
         workspace.persisted_revision = Some(workspace.snapshot_revision);
         drop(profile_lock);
+        FileExt::unlock(&_lock).map_err(io_error)?;
         Ok(workspace)
     }
 
     pub fn open(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
-        let _lock = self.lock_workspace(id)?;
-        self.read_unlocked(id)
+        let lock = self.lock_workspace(id)?;
+        let workspace = self.read_unlocked(id);
+        FileExt::unlock(&lock).map_err(io_error)?;
+        workspace
     }
     pub fn open_owned(&self, id: &WorkspaceId) -> Result<WorkspaceSession, WorkspaceStoreError> {
         let workspace_lock = self.lock_workspace(id)?;
@@ -2393,6 +2396,8 @@ impl WorkspaceStore {
             return Err(error);
         }
         workspace.persisted_revision = Some(workspace.snapshot_revision);
+        drop(_profile_lock);
+        FileExt::unlock(&_lock).map_err(io_error)?;
         Ok(())
     }
 
@@ -2420,6 +2425,8 @@ impl WorkspaceStore {
             return Err(error);
         }
         workspace.persisted_revision = Some(workspace.snapshot_revision);
+        drop(_profile_lock);
+        FileExt::unlock(&_lock).map_err(io_error)?;
         Ok(workspace)
     }
 

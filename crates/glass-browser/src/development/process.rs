@@ -253,14 +253,13 @@ impl ProcessManager {
         })?;
         let output = Arc::new(Mutex::new(VecDeque::new()));
         let mut readers = Vec::with_capacity(2);
-        for reader in [child.stdout.take(), child.stderr.take()]
-            .into_iter()
-            .flatten()
-        {
+        if let Some(reader) = child.stdout.take() {
             let reader_output = Arc::clone(&output);
-            readers.push(thread::spawn(move || {
-                read_output(Box::new(reader), reader_output)
-            }));
+            readers.push(thread::spawn(move || read_output(reader, reader_output)));
+        }
+        if let Some(reader) = child.stderr.take() {
+            let reader_output = Arc::clone(&output);
+            readers.push(thread::spawn(move || read_output(reader, reader_output)));
         }
         let deadline = Instant::now() + timeout;
         let status = loop {
@@ -639,7 +638,7 @@ fn snapshot(process: &RunningProcess) -> ProcessSnapshot {
     snapshot
 }
 
-fn read_output(mut reader: Box<dyn Read + Send>, output: Arc<Mutex<VecDeque<u8>>>) {
+fn read_output(mut reader: impl Read, output: Arc<Mutex<VecDeque<u8>>>) {
     let mut buffer = [0_u8; 1024];
     loop {
         match reader.read(&mut buffer) {

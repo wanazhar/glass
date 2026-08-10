@@ -2264,35 +2264,38 @@ mod tests {
                 .is_some_and(|value| value.len() == 64)
         );
 
-        let command = "printf command-private-value";
-        let command_result = gateway
-            .execute(
-                &mut workspace,
-                &ToolCall {
-                    id: "command-1".into(),
-                    name: "glass.command.run".into(),
-                    arguments: serde_json::json!({
-                        "name":"pi-command-test", "command":command, "timeoutSeconds":5
-                    }),
-                },
-                &authority,
-            )
-            .unwrap();
-        assert!(
-            command_result["output"]
-                .as_str()
-                .is_some_and(|value| value.contains("command-private-value"))
-        );
-        assert!(
-            workspace
-                .timeline()
-                .events()
-                .all(|event| !event.payload.to_string().contains(command))
-        );
-        assert!(workspace.timeline().events().all(|event| !matches!(
-            event.kind,
-            DevelopmentEventKind::TestStarted | DevelopmentEventKind::TestCompleted
-        )));
+        #[cfg(feature = "development-runtime")]
+        {
+            let command = "printf command-private-value";
+            let command_result = gateway
+                .execute(
+                    &mut workspace,
+                    &ToolCall {
+                        id: "command-1".into(),
+                        name: "glass.command.run".into(),
+                        arguments: serde_json::json!({
+                            "name":"pi-command-test", "command":command, "timeoutSeconds":5
+                        }),
+                    },
+                    &authority,
+                )
+                .unwrap();
+            assert!(
+                command_result["output"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("command-private-value"))
+            );
+            assert!(
+                workspace
+                    .timeline()
+                    .events()
+                    .all(|event| !event.payload.to_string().contains(command))
+            );
+            assert!(workspace.timeline().events().all(|event| !matches!(
+                event.kind,
+                DevelopmentEventKind::TestStarted | DevelopmentEventKind::TestCompleted
+            )));
+        }
         let _ = fs::remove_dir_all(root);
     }
 

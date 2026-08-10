@@ -92,7 +92,10 @@ impl ProcessManager {
     }
 
     pub fn list_checked(&mut self) -> DevelopmentResult<Vec<ProcessSnapshot>> {
-        self.unavailable()
+        // Browser-only builds have no process runtime, so the checked process
+        // inventory is valid and empty. File, search, and semantic operations
+        // must remain usable without accidentally requiring PTY support.
+        Ok(Vec::new())
     }
 
     pub fn output(&self, _name: &str) -> DevelopmentResult<String> {

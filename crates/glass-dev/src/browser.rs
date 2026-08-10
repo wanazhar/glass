@@ -51,6 +51,7 @@ fn default_profile() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserRuntimeState {
     pub connected: bool,
+    pub browser_process_id: Option<u32>,
     pub browser_revision: Option<u64>,
     pub workflow_state: String,
     pub active_workflow: Option<String>,
@@ -121,6 +122,7 @@ impl BrowserService {
                     let result = runtime.block_on(worker.execute(command));
                     let _ = reply.send(result);
                 }
+                runtime.block_on(worker.shutdown());
             })
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
         Ok(Self { commands })
@@ -255,6 +257,10 @@ impl BrowserWorker {
     fn state(&self) -> BrowserRuntimeState {
         BrowserRuntimeState {
             connected: self.session.is_some(),
+            browser_process_id: self
+                .session
+                .as_ref()
+                .and_then(BrowserSession::owned_chrome_pid),
             browser_revision: self.revision,
             workflow_state: self.workflow_state.clone(),
             active_workflow: self.active_workflow.clone(),
@@ -267,6 +273,16 @@ impl BrowserWorker {
                 "browser is not connected; call glass.browser.start first".into(),
             )
         })
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(session) = self.session.take() {
+            let _ = session.close().await;
+        }
+        self.revision = None;
+        self.workflow_state = "idle".into();
+        self.active_workflow = None;
+        self.last_workflow = None;
     }
 
     async fn execute(&mut self, command: BrowserCommand) -> DevelopmentResult<Value> {
@@ -300,11 +316,7 @@ impl BrowserWorker {
                 serde_json::to_value(self.state()).map_err(Into::into)
             }
             BrowserCommand::Stop => {
-                self.session = None;
-                self.revision = None;
-                self.workflow_state = "idle".into();
-                self.active_workflow = None;
-                self.last_workflow = None;
+                self.shutdown().await;
                 serde_json::to_value(self.state()).map_err(Into::into)
             }
             BrowserCommand::State => serde_json::to_value(self.state()).map_err(Into::into),
@@ -475,7 +487,7 @@ fn browser_error(error: Box<dyn std::error::Error>) -> DevelopmentError {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -527,13 +539,14 @@ mod tests {
         drop(port_probe);
 
         let service = BrowserService::new(std::env::temp_dir()).unwrap();
-        service
+        let started = service
             .start(BrowserStartConfig {
                 port: browser_port,
                 chrome_path: Some(chrome_path.into()),
                 ..BrowserStartConfig::default()
             })
             .unwrap();
+        let browser_pid = started["browserProcessId"].as_u64().unwrap() as u32;
         let initial = service.observe().unwrap();
         let initial_revision = initial["consistency"]["end_revision"]
             .as_u64()
@@ -575,6 +588,17 @@ mod tests {
                 .contains("Saved Ada")
         );
         service.stop().unwrap();
+        #[cfg(unix)]
+        assert!(unsafe { libc::kill(browser_pid as i32, 0) } == -1);
+        let port_closed = (0..100).any(|_| {
+            if TcpStream::connect(("127.0.0.1", browser_port)).is_err() {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(port_closed, "owned browser endpoint survived resident stop");
         running.store(false, Ordering::Relaxed);
         server.join().unwrap();
     }

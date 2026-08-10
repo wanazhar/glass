@@ -8,6 +8,7 @@ use fs2::FileExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 #[cfg(unix)]
@@ -26,6 +27,7 @@ const PORT_LAUNCH_LOCK_RETRY: Duration = Duration::from_millis(25);
 const CHROME_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHROME_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CHROME_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+const MAX_CHROME_STARTUP_DIAGNOSTIC_LINES: usize = 32;
 const PINNED_CHROME_VERSION: &str = "150.0.7871.115";
 const MAX_CHROME_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CHROME_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -742,6 +744,7 @@ async fn wait_for_child_debugger_url(
     port: u16,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let deadline = tokio::time::Instant::now() + CHROME_STARTUP_TIMEOUT;
+    let mut diagnostics = VecDeque::with_capacity(MAX_CHROME_STARTUP_DIAGNOSTIC_LINES);
     loop {
         tokio::select! {
             line = stderr.next_line() => match line? {
@@ -749,17 +752,21 @@ async fn wait_for_child_debugger_url(
                     if let Some(debugger_url) = child_debugger_url_from_stderr(&line, port) {
                         return Ok(debugger_url);
                     }
+                    if diagnostics.len() == MAX_CHROME_STARTUP_DIAGNOSTIC_LINES {
+                        diagnostics.pop_front();
+                    }
+                    diagnostics.push_back(line);
                 }
                 None => {
                     if let Some(status) = child.try_wait()? {
-                        return Err(format!("Chrome exited during startup with status {status}").into());
+                        return Err(chrome_startup_exit_error(status, &diagnostics).into());
                     }
                     return Err(format!("Chrome closed stderr before reporting its DevTools listener on port {port}").into());
                 }
             },
             _ = tokio::time::sleep(CHROME_STARTUP_POLL_INTERVAL) => {
                 if let Some(status) = child.try_wait()? {
-                    return Err(format!("Chrome exited during startup with status {status}").into());
+                    return Err(chrome_startup_exit_error(status, &diagnostics).into());
                 }
                 if tokio::time::Instant::now() >= deadline {
                     return Err(format!("Chrome did not report its DevTools listener on port {port}").into());
@@ -767,6 +774,24 @@ async fn wait_for_child_debugger_url(
             }
         }
     }
+}
+
+fn chrome_startup_exit_error(
+    status: std::process::ExitStatus,
+    diagnostics: &VecDeque<String>,
+) -> String {
+    if chrome_profile_permission_denied(diagnostics) {
+        return format!(
+            "Chrome exited during startup with status {status}: the browser could not access its profile directory. Confined packages such as Snap Chromium cannot use Glass profiles under ~/.config; run `glass install-chromium`, pass an unconfined `--chrome-path`, or use `--incognito`"
+        );
+    }
+    format!("Chrome exited during startup with status {status}")
+}
+
+fn chrome_profile_permission_denied(diagnostics: &VecDeque<String>) -> bool {
+    diagnostics
+        .iter()
+        .any(|line| line.contains("SingletonLock") && line.contains("Permission denied"))
 }
 
 fn child_debugger_url_from_stderr(line: &str, port: u16) -> Option<String> {
@@ -1272,6 +1297,20 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn chrome_startup_diagnostics_recognize_profile_permission_failure() {
+        let diagnostics = VecDeque::from([
+            "Failed to create /home/user/.config/glass/profiles/data/default/SingletonLock: Permission denied (13)".to_string(),
+            "Failed to create a ProcessSingleton for your profile directory".to_string(),
+        ]);
+        assert!(chrome_profile_permission_denied(&diagnostics));
+
+        let profile_in_use = VecDeque::from([
+            "Failed to create a ProcessSingleton for your profile directory".to_string(),
+        ]);
+        assert!(!chrome_profile_permission_denied(&profile_in_use));
     }
 
     #[tokio::test]

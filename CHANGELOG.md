@@ -62,6 +62,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Fixed the corrupt iOS design artifact, silent 2,048-entry project-tree
   truncation, discarded PTY polling errors, child-only Unix termination,
   repeated one-shot LSP startup, and the false headless-Lua Neovim RPC claim.
+- Replaced allocation-heavy workspace snapshot fingerprints with a persisted,
+  monotonic revision so concurrent stale saves fail closed deterministically.
 
 ## [0.3.2] - 2026-08-08
 

@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -51,7 +51,8 @@ struct RunningProcess {
     master: Box<dyn MasterPty + Send>,
     writer: Option<Box<dyn Write + Send>>,
     output: Arc<Mutex<VecDeque<u8>>>,
-    _reader: Option<thread::JoinHandle<()>>,
+    reader: Option<thread::JoinHandle<()>>,
+    reader_done: mpsc::Receiver<()>,
     #[cfg(windows)]
     job: WindowsJob,
 }
@@ -137,9 +138,13 @@ impl ProcessManager {
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
         let output = Arc::new(Mutex::new(VecDeque::new()));
         let reader_output = Arc::clone(&output);
+        let (reader_done_tx, reader_done) = mpsc::channel();
         let reader_handle = thread::Builder::new()
             .name(format!("glass-process-{name}"))
-            .spawn(move || read_output(reader, reader_output))
+            .spawn(move || {
+                read_output(reader, reader_output);
+                let _ = reader_done_tx.send(());
+            })
             .map_err(DevelopmentError::Io)?;
         let snapshot = ProcessSnapshot {
             name: name.into(),
@@ -161,7 +166,8 @@ impl ProcessManager {
                 master: pty.master,
                 writer: Some(writer),
                 output,
-                _reader: Some(reader_handle),
+                reader: Some(reader_handle),
+                reader_done,
                 #[cfg(windows)]
                 job,
             },
@@ -215,6 +221,7 @@ impl ProcessManager {
             .get_mut(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
         terminate_process_tree(process)?;
+        finish_reader(process)?;
         process.snapshot.state = ProcessState::Stopped;
         process.snapshot.health = ProcessHealth::Stopped;
         Ok(snapshot(process))
@@ -274,6 +281,7 @@ impl ProcessManager {
                 } else {
                     ProcessHealth::Failed
                 };
+                finish_reader(process)?;
             }
             process.snapshot.output = output_string(&process.output);
             process.snapshot.detected_urls = detect_urls(&process.snapshot.output);
@@ -327,9 +335,32 @@ impl Drop for ProcessManager {
         for process in self.processes.values_mut() {
             if matches!(process.snapshot.state, ProcessState::Running) {
                 let _ = terminate_process_tree(process);
+                let _ = finish_reader(process);
             }
         }
     }
+}
+
+fn finish_reader(process: &mut RunningProcess) -> DevelopmentResult<()> {
+    process.writer.take();
+    if process.reader.is_none() {
+        return Ok(());
+    }
+    match process.reader_done.recv_timeout(Duration::from_secs(2)) {
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(DevelopmentError::Process(
+                "PTY output did not close within 2 seconds after process exit".into(),
+            ));
+        }
+    }
+    let reader = process
+        .reader
+        .take()
+        .expect("reader existence checked above");
+    reader
+        .join()
+        .map_err(|_| DevelopmentError::Process("PTY output reader panicked".into()))
 }
 
 fn terminate_process_tree(process: &mut RunningProcess) -> DevelopmentResult<()> {

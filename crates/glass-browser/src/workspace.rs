@@ -1562,18 +1562,21 @@ pub struct Workspace {
     identity: WorkspaceIdentity,
     config: WorkspaceConfig,
     lifecycle: WorkspaceLifecycle,
+    #[serde(rename = "snapshotRevision", default)]
+    snapshot_revision: u64,
     #[serde(default)]
     attachments: BTreeMap<AttachmentId, Attachment>,
     #[serde(rename = "lease", serialize_with = "serialize_lease_authority")]
     lease_authority: MutationLeaseAuthority,
     #[serde(skip)]
-    persisted_fingerprint: Option<Vec<u8>>,
+    persisted_revision: Option<u64>,
 }
 impl PartialEq for Workspace {
     fn eq(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.config == other.config
             && self.lifecycle == other.lifecycle
+            && self.snapshot_revision == other.snapshot_revision
             && self.attachments == other.attachments
             && self.lease_authority == other.lease_authority
     }
@@ -1616,6 +1619,7 @@ impl Workspace {
         };
         let mut workspace = Self::new(identity, config).map_err(wire_error)?;
         workspace.lifecycle = raw.lifecycle;
+        workspace.snapshot_revision = raw.snapshot_revision;
         workspace.lease_authority =
             MutationLeaseAuthority::from_snapshot(parse_raw_lease(raw.lease).map_err(wire_error)?);
         let scope = WorkspaceScope {
@@ -1633,7 +1637,7 @@ impl Workspace {
         }
         workspace.attachments = attachments;
         validate_lease_holder(&workspace.lease(), &workspace.attachments).map_err(wire_error)?;
-        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         Ok(workspace)
     }
     pub fn new(
@@ -1645,9 +1649,10 @@ impl Workspace {
             identity,
             config,
             lifecycle: WorkspaceLifecycle::Active,
+            snapshot_revision: 0,
             attachments: BTreeMap::new(),
             lease_authority: MutationLeaseAuthority::default(),
-            persisted_fingerprint: None,
+            persisted_revision: None,
         })
     }
     pub fn identity(&self) -> &WorkspaceIdentity {
@@ -1841,6 +1846,8 @@ struct RawWorkspace {
     config: WorkspaceConfig,
     lifecycle: WorkspaceLifecycle,
     #[serde(default)]
+    snapshot_revision: u64,
+    #[serde(default)]
     attachments: BoundedAttachments,
     #[serde(default)]
     lease: Option<RawLeaseSnapshotWire>,
@@ -1885,12 +1892,14 @@ impl<'de> Deserialize<'de> for Workspace {
         let mut workspace =
             Workspace::new(raw.identity, raw.config).map_err(serde::de::Error::custom)?;
         workspace.lifecycle = raw.lifecycle;
+        workspace.snapshot_revision = raw.snapshot_revision;
         workspace.lease_authority = MutationLeaseAuthority::from_snapshot(
             parse_raw_lease(raw.lease).map_err(serde::de::Error::custom)?,
         );
         workspace.attachments = raw.attachments.0;
         validate_lease_holder(&workspace.lease(), &workspace.attachments)
             .map_err(serde::de::Error::custom)?;
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         Ok(workspace)
     }
 }
@@ -1953,6 +1962,8 @@ struct RawWorkspaceWire {
     identity: RawWorkspaceIdentityWire,
     config: RawWorkspaceConfigWire,
     lifecycle: WorkspaceLifecycle,
+    #[serde(default)]
+    snapshot_revision: u64,
     #[serde(default)]
     attachments: BoundedWireAttachments,
     #[serde(default)]
@@ -2203,8 +2214,13 @@ impl WorkspaceSession {
         F: FnOnce(&mut Workspace) -> Result<(), WorkspaceStoreError>,
     {
         operation(&mut self.workspace)?;
-        self.store.write_unlocked(&self.workspace)?;
-        self.workspace.persisted_fingerprint = serde_json::to_vec(&self.workspace).ok();
+        let previous_revision = self.workspace.snapshot_revision;
+        self.workspace.snapshot_revision = next_snapshot_revision(previous_revision)?;
+        if let Err(error) = self.store.write_unlocked(&self.workspace) {
+            self.workspace.snapshot_revision = previous_revision;
+            return Err(error);
+        }
+        self.workspace.persisted_revision = Some(self.workspace.snapshot_revision);
         Ok(())
     }
 }
@@ -2297,7 +2313,7 @@ impl WorkspaceStore {
             return Err(WorkspaceStoreError::AlreadyExists(id));
         }
         self.write_unlocked(&workspace)?;
-        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         drop(profile_lock);
         Ok(workspace)
     }
@@ -2341,7 +2357,7 @@ impl WorkspaceStore {
             return Err(WorkspaceStoreError::AlreadyExists(id));
         }
         self.write_unlocked(&workspace)?;
-        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         Ok(WorkspaceSession {
             workspace,
             store: self.clone(),
@@ -2358,7 +2374,7 @@ impl WorkspaceStore {
             .as_ref()
             .map(|profile_id| self.lock_profile(id, profile_id))
             .transpose()?;
-        let Some(expected) = &workspace.persisted_fingerprint else {
+        let Some(expected) = workspace.persisted_revision else {
             return Err(WorkspaceStoreError::UnpersistedWorkspace(id.clone()));
         };
         let current_bytes = fs::read(self.path_for(id)).map_err(io_error)?;
@@ -2367,13 +2383,16 @@ impl WorkspaceStore {
                 .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?,
         )
         .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
-        let canonical_current = serde_json::to_vec(&current)
-            .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
-        if &canonical_current != expected {
+        if current.snapshot_revision != expected {
             return Err(WorkspaceStoreError::StaleSnapshot(id.clone()));
         }
-        self.write_unlocked(workspace)?;
-        workspace.persisted_fingerprint = serde_json::to_vec(workspace).ok();
+        let previous_revision = workspace.snapshot_revision;
+        workspace.snapshot_revision = next_snapshot_revision(previous_revision)?;
+        if let Err(error) = self.write_unlocked(workspace) {
+            workspace.snapshot_revision = previous_revision;
+            return Err(error);
+        }
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         Ok(())
     }
 
@@ -2394,8 +2413,13 @@ impl WorkspaceStore {
             .map(|profile_id| self.lock_profile(id, profile_id))
             .transpose()?;
         operation(&mut workspace)?;
-        self.write_unlocked(&workspace)?;
-        workspace.persisted_fingerprint = serde_json::to_vec(&workspace).ok();
+        let previous_revision = workspace.snapshot_revision;
+        workspace.snapshot_revision = next_snapshot_revision(previous_revision)?;
+        if let Err(error) = self.write_unlocked(&workspace) {
+            workspace.snapshot_revision = previous_revision;
+            return Err(error);
+        }
+        workspace.persisted_revision = Some(workspace.snapshot_revision);
         Ok(workspace)
     }
 
@@ -2515,6 +2539,12 @@ impl WorkspaceStore {
 
 fn io_error(error: io::Error) -> WorkspaceStoreError {
     WorkspaceStoreError::Io(error.to_string())
+}
+
+fn next_snapshot_revision(current: u64) -> Result<u64, WorkspaceStoreError> {
+    current
+        .checked_add(1)
+        .ok_or_else(|| WorkspaceStoreError::Corrupt("workspace snapshot revision overflow".into()))
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceStoreError> {
     let parent = path
@@ -2945,6 +2975,7 @@ mod persistence_tests {
         let mut second = store.open(&id).unwrap();
         first.transition(WorkspaceLifecycle::Suspended).unwrap();
         store.save(&mut first).unwrap();
+        assert_eq!(store.open(&id).unwrap().snapshot_revision, 1);
         second.transition(WorkspaceLifecycle::Suspended).unwrap();
         assert!(matches!(
             store.save(&mut second),

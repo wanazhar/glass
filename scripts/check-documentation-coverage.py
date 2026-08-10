@@ -80,7 +80,7 @@ def commands(binary: pathlib.Path, path: tuple[str, ...] = ()) -> list[str]:
     return [command for command in COMMAND_RE.findall(match.group("body")) if command != "help"]
 
 
-def mcp_schema_metrics(binary: pathlib.Path) -> tuple[int, int]:
+def mcp_schema_metrics(binary: pathlib.Path) -> tuple[list[str], int]:
     process = subprocess.Popen(
         [str(binary), "--mcp"],
         cwd=ROOT,
@@ -131,7 +131,8 @@ def mcp_schema_metrics(binary: pathlib.Path) -> tuple[int, int]:
         encoded = json.dumps(
             javascript_numbers(tools), ensure_ascii=False, separators=(",", ":")
         ).encode()
-        return len(tools), len(encoded)
+        names = sorted(tool["name"] for tool in tools)
+        return names, len(encoded)
     finally:
         process.terminate()
         try:
@@ -199,13 +200,18 @@ def main() -> None:
                         f"docs/cli.md omits `{raw_path}` subcommand `{command}`"
                     )
 
-    fixture = json.loads(
+    browser_fixture = json.loads(
         (ROOT / "crates/glass-browser/tests/fixtures/client-conformance-v1.json").read_text(
             encoding="utf-8"
         )
     )
+    dev_fixture = json.loads(
+        (ROOT / "crates/glass-dev/tests/fixtures/client-conformance-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     mcp_text = (ROOT / "docs/mcp-tools.md").read_text(encoding="utf-8")
-    for tool in fixture["tools"]:
+    for tool in dev_fixture["tools"]:
         if f"`{tool}`" not in mcp_text:
             failures.append(f"docs/mcp-tools.md omits MCP tool `{tool}`")
 
@@ -214,15 +220,16 @@ def main() -> None:
     )
     if args.glass.is_file():
         try:
-            tool_count, schema_bytes = mcp_schema_metrics(args.glass)
+            tool_names, schema_bytes = mcp_schema_metrics(args.glass)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             failures.append(str(error))
         else:
-            if tool_count != len(fixture["tools"]):
+            if tool_names != dev_fixture["tools"]:
                 failures.append(
-                    "live MCP tool count differs from client conformance fixture: "
-                    f"{tool_count} != {len(fixture['tools'])}"
+                    "live glass MCP tools differ from the development client "
+                    "conformance fixture"
                 )
+            tool_count = len(tool_names)
             markers = (
                 f"| Negotiated tools | {tool_count} |",
                 f"| Serialized `tools` array | {schema_bytes:,} UTF-8 bytes |",
@@ -232,6 +239,18 @@ def main() -> None:
                     failures.append(
                         f"docs/mcp-schema-budget.md omits live measurement `{marker}`"
                     )
+
+    if args.glass_browser.is_file():
+        try:
+            browser_tool_names, _ = mcp_schema_metrics(args.glass_browser)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            failures.append(str(error))
+        else:
+            if browser_tool_names != browser_fixture["tools"]:
+                failures.append(
+                    "live glass-browser MCP tools differ from the browser client "
+                    "conformance fixture"
+                )
 
     examples_text = (ROOT / "docs/examples.md").read_text(encoding="utf-8")
     examples = sorted((ROOT / "crates/glass-browser/examples").glob("*.rs"))
@@ -263,7 +282,8 @@ def main() -> None:
     fail(failures)
     print(
         "documentation coverage validated: "
-        f"{len(paths)} Markdown files, {len(fixture['tools'])} MCP tools, "
+        f"{len(paths)} Markdown files, {len(dev_fixture['tools'])} full-product "
+        f"MCP tools ({len(browser_fixture['tools'])} browser-only), "
         f"{len(examples)} examples, {len(MODULE_RE.findall(lib_text))} public modules"
     )
 

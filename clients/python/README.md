@@ -14,7 +14,7 @@ python3 -m pip install .
 ```
 
 The client does not install Chrome or Chromium.
-It is a repository client for the `0.3.3` source line and is not currently
+It is a repository client for the `0.3.4` source line and is not currently
 published to PyPI. Install it from this checkout and pair it with the exact
 matching Glass executable.
 

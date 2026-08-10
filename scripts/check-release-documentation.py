@@ -10,12 +10,13 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| `glass-browser 0.3.3`, `glass-dev 0.3.3` | Current release; published by the signed-tag workflow |",
+        "| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Local release candidate; publication requires the signed-tag workflow |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
     "CHANGELOG.md": [
         "## [0.3.3] - 2026-08-10",
+        "## [0.3.4] - 2026-08-10",
         "## [0.3.2] - 2026-08-08",
         "## [Unreleased]",
     ],
@@ -26,7 +27,7 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.3`",
+        "release checkout is `glass-browser` and `glass-dev` version `0.3.4`",
         "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
@@ -44,6 +45,7 @@ REQUIRED_MARKERS = {
     "docs/release-evidence.md": [
         "## 0.3.2 publication evidence",
         "## 0.3.3 release evidence",
+        "## 0.3.4 local release evidence",
         "Release workflow run 31254928934",
         "GitHub Release v0.3.2",
         "`feature-parity.json`",
@@ -128,8 +130,8 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
-    if package_version != "0.3.3":
-        fail(f"release checkout must use local candidate package version 0.3.3, not {package_version}")
+    if package_version != "0.3.4":
+        fail(f"release checkout must use local candidate package version 0.3.4, not {package_version}")
     marker_sets = REQUIRED_MARKERS
     failures = []
     for relative, markers in marker_sets.items():

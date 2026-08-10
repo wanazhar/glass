@@ -388,7 +388,7 @@ the Glass MCP control plane. They expose typed browser and Development Runtime
 helpers, cursor-based event subscriptions, deadline-aware waits, process
 health, mutation-lease scopes, and edit-and-verify flows.
 
-They are repository clients for the 0.3.3 source line, not published npm or
+They are repository clients for the 0.3.4 source line, not published npm or
 PyPI packages and not browser runtimes:
 
 - [TypeScript client](clients/typescript/README.md)
@@ -418,7 +418,7 @@ workflows.
 
 ## Support and evidence
 
-| Item | 0.3.3 source status |
+| Item | 0.3.4 source status |
 |---|---|
 | Linux ARM64 | Native Chromium evidence recorded for the current release |
 | Linux x86-64 | Declared source target; native runtime certification pending |
@@ -426,8 +426,8 @@ workflows.
 | Windows | Browser-free CI contract; native PTY/browser certification pending |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.3`, `glass-dev 0.3.3` | Current release; published by the signed-tag workflow |
-| `0.3.2` | Previous stable release |
+| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Local release candidate; publication requires the signed-tag workflow |
+| `0.3.3` | Current published stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

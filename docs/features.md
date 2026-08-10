@@ -1,7 +1,7 @@
 # Complete feature reference
 
 This reference maps shipped capability domains to their user-visible entry
-points. “Available” describes source implementation in `0.3.3`; it is not a
+points. “Available” describes source implementation in `0.3.4`; it is not a
 cross-platform certification claim. The machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 
@@ -172,7 +172,7 @@ clients, not browser runtimes. They negotiate capabilities, expose browser and
 Development Runtime helpers, maintain bounded request state, support
 cancellation, cursor-based project events, process-health waits, reconnect
 workflows, and mutation-lease scopes. They are not published to npm or PyPI in
-the `0.3.3` line.
+the `0.3.4` line.
 
 Run their browser-free conformance smokes:
 

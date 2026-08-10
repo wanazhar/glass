@@ -9,6 +9,7 @@ Issue [#34](https://github.com/wanazhar/glass/issues/34) is the authoritative
 18-pillar full-agentic-development-suite contract. The baseline inventory,
 dependency order, checkpoint boundaries, forbidden outcomes, and release gate
 evidence map are in [the v0.3.4 delivery analysis](analysis/release-034.md).
+The live audit is in the [v0.3.4 gate review](reviews/release-034-gates.md).
 
 Delivery order:
 

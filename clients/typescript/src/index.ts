@@ -558,7 +558,7 @@ export class GlassClient {
         schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1], developmentCockpit: [1] },
       },
       capabilities: {},
-      clientInfo: { name: "glass-typescript-client", version: "0.3.3" },
+      clientInfo: { name: "glass-typescript-client", version: "0.3.4" },
     });
     const manifest = (result as { glass?: GlassCapabilityManifest }).glass;
     if (!manifest) throw new Error("Glass capability manifest missing from initialize response");

@@ -233,6 +233,22 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
         response(4)["result"]["structuredContent"]["content"],
         "hello from the project\n"
     );
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/client-conformance-v1.json"))
+        .expect("development conformance fixture should be valid JSON");
+    let mut live_names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    live_names.sort();
+    assert_eq!(
+        live_names,
+        fixture["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    );
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");
 }

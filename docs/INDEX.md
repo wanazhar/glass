@@ -1,7 +1,8 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.3` source
-checkout. `glass-browser 0.3.3` and `glass-dev 0.3.3` are the current published
+These guides describe the complete Glass product in this `0.3.4` source
+checkout. `glass-browser 0.3.4` and `glass-dev 0.3.4` are the current local
+release candidates; `0.3.3` remains the current published
 crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
 Platform certification remains separate from source availability; see

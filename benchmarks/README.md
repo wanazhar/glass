@@ -512,9 +512,9 @@ selection are not yet stabilised.
 
 ## MCP Schema Budget
 
-The current 0.3.3 `glass` source binary negotiates 133 browser, semantic, and
+The current 0.3.4 `glass` source binary negotiates browser, semantic, and
 Development Runtime tools. The reproducible probe measures the serialized
-`tools` array at 43,018 UTF-8 bytes, or 10,755 tokens using the documented
+`tools` array at 129,444 UTF-8 bytes, or 32,361 tokens using the documented
 four-bytes-per-token estimate. JSON-RPC framing is excluded.
 
 ```console
@@ -524,11 +524,13 @@ GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
 
 This value belongs to the measured checkout; it is not a fixed product promise
 or a comparison with another server. The report includes each input schema's
-byte size so growth can be attributed. Both current source-line executables
-advertise this same registry; their effective capability agreements still
-determine which optional tools are usable.
+byte size so growth can be attributed. The full `glass` product advertises 284
+merged tools while `glass-browser` retains its 133-tool browser-only registry;
+their effective capability agreements still determine which optional tools are
+usable.
 
-The review ceiling is 64 KiB. Changes must retain bounded inputs, stable typed
+The review ceilings are 160 KiB for the merged development product and 64 KiB
+for the browser-only product. Changes must retain bounded inputs, stable typed
 verbs, explicit heavy payloads, capability negotiation, and the before/after
 report. Tool count alone is insufficient because schema sizes vary widely.
 

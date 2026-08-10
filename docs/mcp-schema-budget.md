@@ -6,15 +6,15 @@ It is not the tool reference; use the [complete MCP catalog](mcp-tools.md) for
 purpose and authority, and the live negotiated `tools/list` result for exact
 schemas supported by an installed server.
 
-## Current 0.3.3 source measurement
+## Current 0.3.4 source measurement
 
 On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 133 |
-| Serialized `tools` array | 43,018 UTF-8 bytes |
-| Four-bytes-per-token estimate | 10,755 tokens |
+| Negotiated tools | 284 |
+| Serialized `tools` array | 129,444 UTF-8 bytes |
+| Four-bytes-per-token estimate | 32,361 tokens |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -22,7 +22,7 @@ client tokenizer, capability agreement, or future release. The tool count is
 pinned independently by the client-conformance fixture and documentation
 coverage gate.
 
-The 0.3.3 surface is larger than the earlier browser-only inventory because it
+The 0.3.4 surface is larger than the earlier browser-only inventory because it
 also exposes the Development Runtime, semantic execution, memory, workspace,
 backend, replay, and recovery contracts. Older counts and byte totals must not
 be carried forward as current evidence.
@@ -47,15 +47,24 @@ catalog with the effective tool list.
 
 ## Budget and acceptance
 
-The source line uses 64 KiB as the review ceiling for the serialized tools
-array. This is a regression alarm, not permission to consume the remaining
-space. Any increase must include the before/after scoreboard and explain why a
-new public tool is preferable to an existing typed verb or a namespaced
-resource.
+The independently installable `glass-browser` product retains the 64 KiB
+review ceiling for its browser-only catalog. The full `glass` development
+product uses a separate 160 KiB ceiling for the merged browser and resident
+workspace catalog. This is a regression alarm, not permission to consume the
+remaining space. Any increase must include the before/after scoreboard and
+explain why a new public tool is preferable to an existing typed verb or a
+namespaced resource.
+
+The 0.3.4 increase from 43,018 to 129,444 bytes is an accepted product-boundary
+change: `glass` now exposes the same typed resident services used by Pi, the
+TUI, CLI, and daemon, while `glass-browser` remains the compact browser-only
+product. A future capability-scoped discovery protocol can reduce per-client
+context without hiding tools from clients that require the complete workspace.
 
 A change is rejected when it:
 
-- exceeds 64 KiB without an accepted compatibility design and release note;
+- exceeds the applicable 64 KiB browser or 160 KiB development ceiling without
+  an accepted compatibility design and release note;
 - duplicates an existing operation under a new name;
 - adds unbounded strings, arrays, maps, or recursive input;
 - embeds large examples or result schemas in discovery descriptions;
@@ -78,6 +87,7 @@ The current measurement identifies these larger input schemas:
 | `executeTask` | 767 | validated Task Protocol execution controls |
 | `resolveIntent` | 695 | structured intent resolution |
 | `actAndVerify` | 691 | action plus explicit postcondition evidence |
+| `glass.file.grep` | 664 | bounded search scope and result controls |
 
 These sizes are diagnostic priorities, not automatic defects. Simplification
 must preserve validation, bounds, authority, and compatibility; moving required
@@ -105,12 +115,11 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-Both source-line executables currently advertise the same 133-tool MCP schema;
-the effective capability agreement determines which optional operations are
-usable. Choosing `glass-browser` changes the installed CLI/product boundary,
-not this discovery byte count. Context reduction must use an explicitly
-versioned future negotiation mechanism; clients must not silently drop schemas
-the server advertises.
+The full `glass` executable advertises the 284-tool merged catalog;
+`glass-browser` retains its 133-tool browser catalog. The effective capability
+agreement determines which optional operations are usable. Context reduction
+must use an explicitly versioned future negotiation mechanism; clients must not
+silently drop schemas the server advertises.
 
 ## Release maintenance
 

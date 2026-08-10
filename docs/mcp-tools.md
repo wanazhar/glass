@@ -1,6 +1,9 @@
 # Complete MCP tool catalog
 
-This catalog names every tool in the `0.3.3` client-conformance inventory.
+This catalog names every browser tool in the `0.3.4` client-conformance inventory.
+The full `glass` command also merges its live `glass.*` Development Workspace
+catalog at runtime; these tools are governed by actor, authority, confirmation,
+workspace-generation, and project-revision metadata.
 The server's `tools/list` response is authoritative for exact JSON Schema,
 required fields, and additive descriptions in the installed version. Use this
 catalog for discovery and [MCP integration](mcp.md) for framing, negotiation,
@@ -10,6 +13,39 @@ Tool calls use MCP JSON-RPC framing. Camel-case input fields map to canonical
 Glass request payloads; MCP-only fields such as `responseMode` and
 `includeTrace` do not become part of browser or task contracts.
 
+## Resident development tool inventory
+
+The full `glass` product adds the following namespaced tools to the
+`glass-browser` catalog. Tools in one family share the same resident service,
+actor attribution, bounded-result rules, and revision/confirmation policy.
+
+| Family | Exact tools | Scope |
+|---|---|---|
+| `glass.agent` | `glass.agent.abort`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking` | Persistent Pi sessions, steering, lifecycle, model state, and evidence. |
+| `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets` | Resident Chrome lifecycle, revision-safe actions, observations, targets, and evidence. |
+| `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
+| `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the Pi actor. |
+| `glass.debug` | `glass.debug.attach`, `glass.debug.breakpoint.remove`, `glass.debug.breakpoint.set`, `glass.debug.configuration_done`, `glass.debug.continue`, `glass.debug.disconnect`, `glass.debug.evaluate`, `glass.debug.events`, `glass.debug.exception.set`, `glass.debug.launch`, `glass.debug.pause`, `glass.debug.restart`, `glass.debug.scopes`, `glass.debug.stack`, `glass.debug.start`, `glass.debug.step`, `glass.debug.stop`, `glass.debug.terminate`, `glass.debug.threads`, `glass.debug.variables` | Resident DAP lifecycle, configuration, breakpoints, execution, and inspection. |
+| `glass.diagnostics` | `glass.diagnostics.run` | Bounded shared language-server diagnostics. |
+| `glass.editor` | `glass.editor.buffers`, `glass.editor.diff`, `glass.editor.open`, `glass.editor.replace`, `glass.editor.save`, `glass.editor.selection` | Attributed editor buffers, selections, diffs, replacements, and saves. |
+| `glass.eval` | `glass.eval.execute`, `glass.eval.list`, `glass.eval.reset`, `glass.eval.start`, `glass.eval.stop` | Persistent language kernels and bounded execution state. |
+| `glass.file` | `glass.file.delete`, `glass.file.edit`, `glass.file.find`, `glass.file.grep`, `glass.file.list`, `glass.file.mkdir`, `glass.file.patch`, `glass.file.read`, `glass.file.rename`, `glass.file.search`, `glass.file.write` | Workspace-confined reads, discovery, search, patches, and mutations. |
+| `glass.git` | `glass.git.blame`, `glass.git.branch.create`, `glass.git.branch.switch`, `glass.git.branches`, `glass.git.commit`, `glass.git.conflicts`, `glass.git.diff`, `glass.git.stage`, `glass.git.stash.list`, `glass.git.stash.pop`, `glass.git.stash.push`, `glass.git.status`, `glass.git.unstage`, `glass.git.worktree.create`, `glass.git.worktree.list`, `glass.git.worktree.remove` | Native repository inspection, branches, staging, commits, stashes, conflicts, and worktrees. |
+| `glass.graph` | `glass.graph.explain`, `glass.graph.path`, `glass.graph.query` | Revisioned causal graph queries, paths, and explanations. |
+| `glass.lsp` | `glass.lsp.code_actions`, `glass.lsp.completion`, `glass.lsp.declaration`, `glass.lsp.definition`, `glass.lsp.diagnostics`, `glass.lsp.document_symbols`, `glass.lsp.events`, `glass.lsp.formatting`, `glass.lsp.hover`, `glass.lsp.implementation`, `glass.lsp.list`, `glass.lsp.range_formatting`, `glass.lsp.raw`, `glass.lsp.references`, `glass.lsp.rename`, `glass.lsp.semantic_tokens`, `glass.lsp.signature_help`, `glass.lsp.start`, `glass.lsp.stop`, `glass.lsp.workspace_symbols` | Shared LSP lifecycle and the complete typed language-operation surface. |
+| `glass.memory` | `glass.memory.explain`, `glass.memory.forget`, `glass.memory.retrieve` | Scoped retrieval, explanations, and confirmed forgetting. |
+| `glass.process` | `glass.process.health`, `glass.process.input`, `glass.process.list`, `glass.process.logs`, `glass.process.ports`, `glass.process.resize`, `glass.process.restart`, `glass.process.start`, `glass.process.stop` | Resident PTY lifecycle, I/O, health, ports, and bounded logs. |
+| `glass.replay` | `glass.replay.diff`, `glass.replay.inspect`, `glass.replay.list` | Bounded causal timeline discovery, inspection, and comparison. |
+| `glass.runtime` | `glass.runtime.inspect` | Project, process, actor, diagnostic, and resident-state inspection. |
+| `glass.semantic` | `glass.semantic.diff`, `glass.semantic.inspect`, `glass.semantic.links` | Semantic state inspection, diffs, and source/runtime links. |
+| `glass.task` | `glass.task.plan` | Value-free task compilation and explanation. |
+| `glass.test` | `glass.test.cancel`, `glass.test.discover`, `glass.test.results`, `glass.test.run`, `glass.test.run-affected`, `glass.test.watch` | Test discovery, execution, affected selection, watching, cancellation, and results. |
+| `glass.web_ir` | `glass.web_ir.continuity`, `glass.web_ir.diff`, `glass.web_ir.inspect` | Validated Web IR inspection, diffs, and entity continuity. |
+| `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
+
+The checked-in development conformance fixture pins this exact inventory.
+Clients must still use `tools/list` for schemas and the negotiated capability
+agreement for availability; an inventory entry is not authority to mutate.
 ## Project and agent runtime
 
 These tools are browser-free. Paths are confined to a canonical project root,

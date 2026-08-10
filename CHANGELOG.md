@@ -5,6 +5,57 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-10
+
+### Added
+
+- Added the Glass-owned resident Development Workspace with shared editor,
+  PTY, Git, test, LSP, DAP, execution-kernel, browser, semantic-memory,
+  workflow, graph, replay, experiment, and customization services.
+- Added native Pi session controls, independent concurrent Pi agents with
+  dependency scheduling and cancellation, bounded evidence, model/thinking
+  controls, persistent sessions, and durable-daemon tool brokerage.
+- Added real DAP framing and lifecycle support, including launch/attach,
+  configuration sequencing, breakpoints and exception filters, stepping,
+  threads, stacks, scopes, variables, evaluation, restart, disconnect, and
+  termination. A live debugpy scenario exercises breakpoint-to-continue state.
+- Added a complete shared LSP manager with lifecycle, diagnostics, completion,
+  navigation, symbols, signature help, code actions, formatting, semantic
+  tokens, rename, attribution events, and a bounded raw request escape hatch.
+- Added native Git/worktree operations, structured test discovery and runs,
+  affected/watch/cancel flows, and persistent Python, JavaScript, shell, and
+  SQLite kernels.
+- Added isolated competing experiments and evidence-derived ranking, plus a
+  typed causal Development Graph and observable replay/diff timeline.
+- Added strict `glass.toml` customization for Pi skills, agent defaults,
+  configured LSP/DAP/test services, bounded hooks, commands, and governed
+  schema-validated custom tools.
+
+### Changed
+
+- `glass-dev` now owns the full development TUI and resident service registry;
+  `glass-browser` remains the one-way browser-intelligence dependency and
+  standalone browser product.
+- `glass --mcp` merges the browser catalog with every available resident Glass
+  Dev tool. External CLI and MCP callers use the same actor-attributed,
+  revision-checked router as Pi and the TUI without being nested through Pi.
+- The native TUI is decomposed into state, command, and rendering modules with
+  desktop, compact, and phone layouts and command-palette access to editor,
+  agents, processes, LSP, DAP, Git, tests, kernels, experiments, graph, replay,
+  browser, and workflow controls.
+- `glassd` now owns complete Development Workspaces across client disconnects,
+  retaining Pi sessions, processes, browser identity, language/debug services,
+  kernels, tests, graph, replay, and configuration under scoped local IPC.
+
+### Fixed
+
+- Diagnose Chrome status 21 caused by confined Snap profile locks and provide
+  actionable incognito, managed-Chromium, and unconfined-browser guidance.
+- Close resident Chromium sessions when their worker channel disconnects so
+  headless browser processes and disposable profiles cannot become orphans.
+- Sequence DAP launch/attach with `configurationDone`, matching real adapters
+  such as debugpy that defer startup responses until configuration completes.
+
 ## [0.3.3] - 2026-08-10
 
 ### Added

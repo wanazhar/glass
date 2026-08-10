@@ -4,12 +4,34 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.3`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.4`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks; native browser/PTY support is not
 certified.
+
+## 0.3.4 local candidate
+
+Issue #34 defines the full agentic-development release. Local implementation,
+tests, package inspection, and install smoke are authorized; push, tag,
+publication, issue mutation, and GitHub Release creation remain pending explicit
+remote-mutation approval.
+
+- [x] Pi is the sole embedded runtime and independent Pi sessions expose native
+      session, model, thinking, steering, follow-up, compaction, and cancellation.
+- [x] Resident file/editor/process/browser/workflow/LSP/DAP/Git/test/kernel,
+      memory, graph, replay, and external-client tools share governed state.
+- [x] Real rust-analyzer, debugpy, Chromium, Pi, durable reconnect, isolated
+      worktree, PTY TUI, and process/browser cleanup scenarios pass locally.
+- [x] `glass --mcp` preserves the browser catalog and adds the live Glass Dev
+      catalog; direct CLI callers are not forced through Pi.
+- [x] `glass-dev` owns the decomposed full development shell while
+      `glass-browser` remains independently buildable with no default features.
+- [ ] Complete the final workspace, rustdoc, package, and clean-install gates
+      and record exact results in `docs/release-evidence.md`.
+- [ ] Obtain explicit approval before any push, tag, publication, issue update,
+      or GitHub Release operation.
 
 ## 0.3.3 release record
 

@@ -1,5 +1,34 @@
 # Release evidence
 
+## 0.3.4 local release evidence
+
+This checkout is a local `0.3.4` release candidate implementing authoritative
+issue #34. No push, tag, crates.io publication, issue mutation, or GitHub
+Release has been performed.
+
+- The full Development Workspace is owned and consumed by `glass-dev`; the
+  dependency remains one-way to independently buildable `glass-browser`.
+- Pi 0.84.1 completed real RPC startup with the packaged coding extension, and
+  tests exercised multiple independent session processes, dependencies,
+  cancellation, model/thinking state, and durable brokerage.
+- Installed rust-analyzer served two actors through one resident service. A
+  disposable debugpy 1.8.21 environment proved initialize, deferred launch,
+  verified breakpoint, stop, threads, stack, scopes, variables, evaluation,
+  continue, termination, and adapter cleanup.
+- Snap Chromium executed the revision-safe local fixture, accessibility
+  snapshot, semantic observation, observation diff, typing, clicking, workflow
+  authority, and clean child/port shutdown. Durable-daemon evidence retained a
+  Pi agent, PTY process, SQL kernel, and browser identity across fresh clients.
+- Native Git, structured tests, persistent kernels, isolated worktrees,
+  evidence ranking, graph paths, replay diffs, desktop/phone TUI snapshots, and
+  a real PTY TUI smoke are covered by executable tests.
+- `glass --mcp` advertises both the browser and resident development catalogs;
+  a JSON-RPC integration test calls both with clean stdout framing. Direct CLI
+  mutations remain authority/confirmation gated outside `--yolo`.
+
+Final workspace, documentation, package, and clean-install measurements are
+recorded below after the convergence commands complete.
+
 ## 0.3.3 release evidence
 
 This section records the evidence used for the signed `v0.3.3` release on

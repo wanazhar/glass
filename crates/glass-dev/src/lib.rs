@@ -7,6 +7,7 @@
 pub mod agents;
 pub mod daemon;
 pub mod debugger;
+pub mod experiments;
 pub mod git;
 pub mod intelligence;
 pub mod kernels;
@@ -18,6 +19,10 @@ pub mod workspace;
 use glass_browser::cli::args::Cli;
 
 pub use agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
+pub use experiments::{
+    ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
+    ExperimentSnapshot, ExperimentState,
+};
 pub use intelligence::{
     CausalPath, DevelopmentEdge, DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind,
     ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,

@@ -459,6 +459,24 @@ impl DevelopmentToolRouter {
                 Ok(serde_json::json!({"reset":string("name")?}))
             }
             "glass.eval.stop" => map_service(workspace.kernels_mut().stop(string("name")?)),
+            "glass.lsp.start" => {
+                let config = crate::lsp::LanguageServerConfig {
+                    command: string("command")?.to_string(),
+                    arguments: string_array_or_empty(call, "arguments")?,
+                };
+                map_service(workspace.language().start(string("server")?, &config))?;
+                Ok(serde_json::json!({"started":string("server")?}))
+            }
+            "glass.lsp.stop" => {
+                map_service(workspace.language().stop(string("server")?))?;
+                Ok(serde_json::json!({"stopped":string("server")?}))
+            }
+            "glass.lsp.list" => Ok(serde_json::json!({
+                "servers":workspace.language().names().collect::<Vec<_>>()
+            })),
+            "glass.lsp.events" => Ok(serde_json::to_value(
+                workspace.language().events(unsigned(call, "since", 0)?),
+            )?),
             "glass.lsp.diagnostics" => map_service(workspace.language().diagnostics(
                 string("server")?,
                 &actor,
@@ -582,6 +600,9 @@ impl DevelopmentToolRouter {
                         .unwrap_or(Value::Null),
                 ),
             ),
+            "glass.debug.configuration_done" => {
+                map_debug(debugger(workspace, string("session")?)?.configuration_done())
+            }
             "glass.debug.breakpoint.set" => {
                 let lines = unsigned_array(call, "lines")?;
                 let breakpoints = lines
@@ -613,6 +634,7 @@ impl DevelopmentToolRouter {
                     )),
                 }
             }
+            "glass.debug.threads" => map_debug(debugger(workspace, string("session")?)?.threads()),
             "glass.debug.stack" => map_debug(
                 debugger(workspace, string("session")?)?.stack_trace(integer(call, "threadId")?),
             ),
@@ -765,6 +787,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.test.results",
         "glass.eval.list",
         "glass.lsp.diagnostics",
+        "glass.lsp.list",
+        "glass.lsp.events",
         "glass.lsp.hover",
         "glass.lsp.completion",
         "glass.lsp.definition",
@@ -780,6 +804,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.semantic_tokens",
         "glass.lsp.rename",
         "glass.debug.stack",
+        "glass.debug.threads",
         "glass.debug.scopes",
         "glass.debug.variables",
         "glass.debug.evaluate",
@@ -822,8 +847,11 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.eval.reset",
         "glass.eval.stop",
         "glass.debug.start",
+        "glass.lsp.start",
+        "glass.lsp.stop",
         "glass.debug.launch",
         "glass.debug.attach",
+        "glass.debug.configuration_done",
         "glass.debug.breakpoint.set",
         "glass.debug.continue",
         "glass.debug.pause",
@@ -1237,6 +1265,10 @@ mod tests {
             "glass.workflow.run",
             "glass.workflow.pause",
             "glass.workflow.resume",
+            "glass.lsp.start",
+            "glass.lsp.stop",
+            "glass.lsp.list",
+            "glass.lsp.events",
             "glass.lsp.definition",
             "glass.lsp.declaration",
             "glass.lsp.implementation",
@@ -1249,6 +1281,8 @@ mod tests {
             "glass.lsp.range_formatting",
             "glass.lsp.semantic_tokens",
             "glass.lsp.rename",
+            "glass.debug.configuration_done",
+            "glass.debug.threads",
             "glass.agent.model",
             "glass.agent.thinking",
             "glass.agent.new-session",

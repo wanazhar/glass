@@ -1,12 +1,10 @@
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
-use crate::debugger::DebugAdapterConfig;
 use crate::kernels::KernelKind;
 use crate::tools::DevelopmentToolContext;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 static NEXT_TUI_TOOL: AtomicU64 = AtomicU64::new(1);
 
@@ -16,7 +14,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         return Ok("Command palette closed".into());
     };
     match command {
-        "help" | "?" => Ok("Routes: view · editor · agent · process · browser · debug · kernel · git · test · replay · quit. All mutations use the resident authority/revision router.".into()),
+        "help" | "?" => Ok("Routes: view · editor · lsp · agent · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
         "quit" | "q" => {
             state.quit = true;
             Ok("Closing Glass Dev".into())
@@ -28,6 +26,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         }
         "agent" => execute_agent(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
+        "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "debug" => execute_debug(state, parts.collect()),
@@ -157,6 +156,46 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     Ok(compact_result(tool, &result))
 }
 
+fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    let action = parts.first().copied().unwrap_or("list");
+    let server = parts.get(1).copied();
+    let (tool, arguments, mutating) = match action {
+        "start" => ("glass.lsp.start", json!({"server":server.ok_or("lsp start requires SERVER COMMAND")?,"command":parts.get(2).ok_or("lsp start requires SERVER COMMAND")?,"arguments":parts.get(3..).unwrap_or_default()}), true),
+        "stop" => ("glass.lsp.stop", json!({"server":server.ok_or("lsp stop requires SERVER")?}), true),
+        "list" => ("glass.lsp.list", json!({}), false),
+        "events" => ("glass.lsp.events", json!({"since":parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0)}), false),
+        "diagnostics" | "symbols" | "format" | "tokens" => {
+            let path = parts.get(2).ok_or("lsp action requires SERVER PATH")?;
+            let tool = match action {
+                "diagnostics" => "glass.lsp.diagnostics",
+                "symbols" => "glass.lsp.document_symbols",
+                "format" => "glass.lsp.formatting",
+                _ => "glass.lsp.semantic_tokens",
+            };
+            (tool, json!({"server":server.ok_or("missing SERVER")?,"path":path}), false)
+        }
+        "workspace-symbols" => ("glass.lsp.workspace_symbols", json!({"server":server.ok_or("lsp workspace-symbols requires SERVER QUERY")?,"query":parts.get(2..).unwrap_or_default().join(" ")}), false),
+        "hover" | "complete" | "definition" | "declaration" | "implementation" | "references" | "signature" => {
+            let tool = match action {
+                "hover" => "glass.lsp.hover",
+                "complete" => "glass.lsp.completion",
+                "definition" => "glass.lsp.definition",
+                "declaration" => "glass.lsp.declaration",
+                "implementation" => "glass.lsp.implementation",
+                "references" => "glass.lsp.references",
+                _ => "glass.lsp.signature_help",
+            };
+            (tool, json!({"server":server.ok_or("lsp position action requires SERVER PATH LINE CHARACTER")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?}), false)
+        }
+        "rename" => ("glass.lsp.rename", json!({"server":server.ok_or("lsp rename requires SERVER PATH LINE CHARACTER NAME")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?,"newName":parts.get(5).ok_or("missing NAME")?}), false),
+        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, signature, format, tokens, rename".into()),
+    };
+    let result = run_tool(state, tool, arguments, mutating)?;
+    state.editor = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.surface = DevSurface::Editor;
+    Ok(compact_result(tool, &result))
+}
+
 fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
         state.surface = DevSurface::Processes;
@@ -205,9 +244,12 @@ fn execute_browser(
         return Ok("Opened resident browser".into());
     };
     let (tool, arguments, mutating) = if command == "workflow" {
-        return Err(
-            "workflow run/resume accepts structured JSON through CLI, MCP, or Pi tools".into(),
-        );
+        match action {
+            "run" => ("glass.workflow.run", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow run requires DEFINITION.json")?)?,"inputs":parse_inline_json(parts.get(2), json!({}))?}), true),
+            "pause" => ("glass.workflow.pause", json!({}), true),
+            "resume" => ("glass.workflow.resume", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow resume requires DEFINITION.json CHECKPOINT.json")?)?,"checkpoint":read_project_json(state, parts.get(2).ok_or("workflow resume requires DEFINITION.json CHECKPOINT.json")?)?,"inputs":parse_inline_json(parts.get(3), json!({}))?}), true),
+            _ => return Err("workflow actions: run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON]".into()),
+        }
     } else {
         match action {
             "start" => ("glass.browser.start", json!({"port":parts.get(1).and_then(|value| value.parse::<u16>().ok()).unwrap_or(9222),"incognito":true,"chromePath":parts.get(2)}), true),
@@ -219,7 +261,9 @@ fn execute_browser(
             "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL REVISION")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?}), true),
             "click" => ("glass.browser.act", json!({"action":"click","target":parts.get(1).ok_or("browser click requires TARGET REVISION")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?}), true),
             "type" => ("glass.browser.act", json!({"action":"type","target":parts.get(1).ok_or("browser type requires TARGET REVISION TEXT")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?,"text":parts.get(3..).unwrap_or_default().join(" ")}), true),
-            _ => return Err("browser actions: start, stop, state, observe, targets, select, navigate, click, type".into()),
+            "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":parse_u64(parts.get(3), "REVISION")?}), true),
+            "screenshot" => ("glass.browser.screenshot", json!({}), false),
+            _ => return Err("browser actions: start, stop, state, observe, targets, select, navigate, click, type, scroll, screenshot".into()),
         }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
@@ -227,6 +271,23 @@ fn execute_browser(
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
     state.surface = DevSurface::Browser;
     Ok(compact_result(tool, &result))
+}
+
+fn read_project_json(state: &mut DevTuiState, path: &str) -> Result<Value, String> {
+    let content = state
+        .workspace
+        .project_mut()
+        .read_file(path)
+        .map_err(|error| error.to_string())?;
+    serde_json::from_str(&content).map_err(|error| format!("invalid JSON in {path}: {error}"))
+}
+
+fn parse_inline_json(value: Option<&&str>, default: Value) -> Result<Value, String> {
+    value
+        .map(|value| {
+            serde_json::from_str(value).map_err(|error| format!("invalid inline JSON: {error}"))
+        })
+        .unwrap_or(Ok(default))
 }
 
 fn find_agent(state: &mut DevTuiState, id: &str) -> Result<crate::AgentId, String> {
@@ -242,10 +303,10 @@ fn find_agent(state: &mut DevTuiState, id: &str) -> Result<crate::AgentId, Strin
 }
 
 fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    match parts.first().copied() {
+    let result = match parts.first().copied() {
         None => {
             state.surface = DevSurface::Debugger;
-            Ok("Opened debugger".into())
+            return Ok("Opened debugger".into());
         }
         Some("start") => {
             let name = parts.get(1).ok_or("debug start requires NAME COMMAND")?;
@@ -254,28 +315,44 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 .get(3..)
                 .unwrap_or_default()
                 .iter()
-                .map(|value| (*value).to_string());
-            state
-                .workspace
-                .start_debugger(
-                    name,
-                    &DebugAdapterConfig::new(command, arguments),
-                    Duration::from_secs(30),
-                )
-                .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Debugger;
-            Ok(format!("Started debugger {name}"))
+                .map(|value| (*value).to_string())
+                .collect::<Vec<_>>();
+            run_tool(
+                state,
+                "glass.debug.start",
+                json!({"session":name,"command":command,"arguments":arguments}),
+                true,
+            )?
         }
-        Some("stop") => {
-            let name = parts.get(1).ok_or("debug stop requires NAME")?;
-            state
-                .workspace
-                .stop_debugger(name)
-                .map_err(|error| error.to_string())?;
-            Ok(format!("Stopped debugger {name}"))
+        Some(action) => {
+            let session = parts.get(1).ok_or("debug action requires SESSION")?;
+            let (tool, arguments, mutating) = match action {
+                "launch" | "attach" => {
+                    let configuration = serde_json::from_str::<Value>(&parts.get(2..).unwrap_or_default().join(" ")).map_err(|error| format!("debug {action} requires a JSON configuration: {error}"))?;
+                    (if action == "launch" { "glass.debug.launch" } else { "glass.debug.attach" }, json!({"session":session,"configuration":configuration}), true)
+                }
+                "configured" => ("glass.debug.configuration_done", json!({"session":session}), true),
+                "break" => {
+                    let lines = parts.get(3..).unwrap_or_default().iter().map(|line| line.parse::<u64>().map_err(|_| "breakpoint lines must be integers")).collect::<Result<Vec<_>, _>>()?;
+                    ("glass.debug.breakpoint.set", json!({"session":session,"path":parts.get(2).ok_or("debug break requires SESSION PATH LINES...")?,"lines":lines}), true)
+                }
+                "continue" | "pause" => (if action == "continue" { "glass.debug.continue" } else { "glass.debug.pause" }, json!({"session":session,"threadId":parse_u64(parts.get(2), "THREAD_ID")?}), true),
+                "step" => ("glass.debug.step", json!({"session":session,"threadId":parse_u64(parts.get(2), "THREAD_ID")?,"kind":parts.get(3).ok_or("debug step requires SESSION THREAD_ID over|in|out")?}), true),
+                "threads" => ("glass.debug.threads", json!({"session":session}), false),
+                "stack" => ("glass.debug.stack", json!({"session":session,"threadId":parse_u64(parts.get(2), "THREAD_ID")?}), false),
+                "scopes" => ("glass.debug.scopes", json!({"session":session,"frameId":parse_u64(parts.get(2), "FRAME_ID")?}), false),
+                "variables" => ("glass.debug.variables", json!({"session":session,"variablesReference":parse_u64(parts.get(2), "VARIABLES_REFERENCE")?}), false),
+                "evaluate" => ("glass.debug.evaluate", json!({"session":session,"frameId":parse_u64(parts.get(2), "FRAME_ID")?,"expression":parts.get(3..).unwrap_or_default().join(" "),"context":"repl"}), false),
+                "events" => ("glass.debug.events", json!({"session":session}), false),
+                "stop" => ("glass.debug.stop", json!({"session":session}), true),
+                _ => return Err("debug actions: start, launch, attach, configured, break, continue, pause, step, threads, stack, scopes, variables, evaluate, events, stop".into()),
+            };
+            run_tool(state, tool, arguments, mutating)?
         }
-        _ => Err("debug actions: start, stop".into()),
-    }
+    };
+    state.debugger = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.surface = DevSurface::Debugger;
+    Ok(compact_result("debug", &result))
 }
 
 fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {

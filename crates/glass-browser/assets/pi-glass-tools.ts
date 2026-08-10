@@ -351,6 +351,10 @@ export default function (pi: ExtensionAPI) {
   register("glass_eval_stop", "glass.eval.stop", "Stop a persistent execution kernel", Type.Object({ name: Type.String() }), true);
 
   const position = { server: Type.String(), path: Type.String(), line: Type.Integer({ minimum: 1 }), character: Type.Integer({ minimum: 1 }) };
+  register("glass_lsp_start", "glass.lsp.start", "Start a shared resident language server", Type.Object({ server: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())) }), true);
+  register("glass_lsp_stop", "glass.lsp.stop", "Stop a shared resident language server", Type.Object({ server: Type.String() }), true);
+  register("glass_lsp_list", "glass.lsp.list", "List shared resident language servers", Type.Object({}));
+  register("glass_lsp_events", "glass.lsp.events", "Read language-service attribution events", Type.Object({ since: Type.Optional(Type.Integer()) }));
   register("glass_lsp_diagnostics", "glass.lsp.diagnostics", "Read diagnostics from the shared resident LSP", Type.Object({ server: Type.String(), path: Type.String() }));
   register("glass_lsp_hover", "glass.lsp.hover", "Read hover information from the shared resident LSP", Type.Object(position));
   register("glass_lsp_completion", "glass.lsp.completion", "Request completion from the shared resident LSP", Type.Object(position));
@@ -371,10 +375,12 @@ export default function (pi: ExtensionAPI) {
   register("glass_debug_start", "glass.debug.start", "Start and initialize a resident DAP adapter", Type.Object({ session: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
   register("glass_debug_launch", "glass.debug.launch", "Launch a program through a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_debug_attach", "glass.debug.attach", "Attach a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
+  register("glass_debug_configuration_done", "glass.debug.configuration_done", "Finish debugger configuration and start execution", Type.Object({ session: Type.String() }), true);
   register("glass_debug_breakpoint_set", "glass.debug.breakpoint.set", "Set source breakpoints", Type.Object({ session: Type.String(), path: Type.String(), lines: Type.Array(Type.Integer({ minimum: 1 })) }), true);
   register("glass_debug_continue", "glass.debug.continue", "Continue one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
   register("glass_debug_pause", "glass.debug.pause", "Pause one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
   register("glass_debug_step", "glass.debug.step", "Step a debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer(), kind: Type.Union([Type.Literal("over"), Type.Literal("in"), Type.Literal("out")]) }), true);
+  register("glass_debug_threads", "glass.debug.threads", "List debugger threads", Type.Object({ session: Type.String() }));
   register("glass_debug_stack", "glass.debug.stack", "Read a debugger stack", Type.Object({ session: Type.String(), threadId: Type.Integer() }));
   register("glass_debug_scopes", "glass.debug.scopes", "Read debugger scopes", Type.Object({ session: Type.String(), frameId: Type.Integer() }));
   register("glass_debug_variables", "glass.debug.variables", "Read debugger variables", Type.Object({ session: Type.String(), variablesReference: Type.Integer() }));

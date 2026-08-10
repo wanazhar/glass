@@ -1,5 +1,5 @@
 use super::command;
-use crate::{DevelopmentWorkspace, ExperimentComparison};
+use crate::{DevelopmentWorkspace, ExperimentComparison, ExperimentManager};
 use glass_browser::cli::args::TuiLayout;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -70,13 +70,18 @@ pub struct DevTuiState {
     pub command_input: String,
     pub status: String,
     pub agents: String,
+    pub editor: String,
     pub processes: String,
     pub git: String,
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
     pub replay: String,
+    pub browser: String,
+    pub browser_detail: String,
     pub experiment_comparison: Option<ExperimentComparison>,
+    pub experiments: String,
+    pub experiment_manager: Option<ExperimentManager>,
 }
 
 impl DevTuiState {
@@ -94,13 +99,18 @@ impl DevTuiState {
             command_input: String::new(),
             status: "Ready · : opens the command palette · q quits".into(),
             agents: String::new(),
+            editor: String::new(),
             processes: String::new(),
             git: String::new(),
             tests: String::new(),
             kernels: String::new(),
             debugger: String::new(),
             replay: String::new(),
+            browser: String::new(),
+            browser_detail: "No browser observation yet".into(),
             experiment_comparison: None,
+            experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
+            experiment_manager: None,
         };
         state.refresh();
         Ok(state)
@@ -184,19 +194,28 @@ impl DevTuiState {
                 .iter()
                 .map(|agent| {
                     format!(
-                        "{}  {:?}  {} · {}\n  target {} · model {} · events {}{}",
+                        "{}  {:?}  {} · {}\n  target {} · model {} · thinking {} · events {}{}\n  evidence {}",
                         agent.id.as_str(),
                         agent.status,
                         agent.role,
                         agent.task,
                         agent.worktree.display(),
                         agent.model.as_deref().unwrap_or("default"),
+                        agent.thinking.as_deref().unwrap_or("default"),
                         agent.event_count,
                         agent
                             .last_error
                             .as_deref()
                             .map(|error| format!(" · {error}"))
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                        agent
+                            .evidence
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .map(|evidence| evidence.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" · ")
                     )
                 })
                 .collect::<Vec<_>>()
@@ -210,6 +229,15 @@ impl DevTuiState {
             .list_checked()
             .and_then(|items| serde_json::to_string_pretty(&items).map_err(Into::into))
             .unwrap_or_else(|error| format!("Process state failed: {error}"));
+        self.editor = serde_json::to_string_pretty(
+            &self
+                .workspace
+                .project()
+                .buffers()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|error| format!("Editor state failed: {error}"));
         self.git = self
             .workspace
             .git()
@@ -248,5 +276,16 @@ impl DevTuiState {
             .replay(0, 128)
             .and_then(|events| serde_json::to_string_pretty(&events).map_err(Into::into))
             .unwrap_or_else(|error| format!("Replay failed: {error}"));
+        self.browser = self
+            .workspace
+            .browser()
+            .state()
+            .and_then(|state| serde_json::to_string_pretty(&state).map_err(Into::into))
+            .unwrap_or_else(|error| format!("Browser state failed: {error}"));
+        if let Some(experiments) = self.experiment_manager.as_ref() {
+            self.experiments = serde_json::to_string_pretty(&experiments.snapshots())
+                .unwrap_or_else(|error| format!("Experiment state failed: {error}"));
+            self.experiment_comparison = Some(experiments.compare());
+        }
     }
 }

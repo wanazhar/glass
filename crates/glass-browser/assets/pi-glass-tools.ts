@@ -389,6 +389,16 @@ export default function (pi: ExtensionAPI) {
   register("glass_agent_follow_up", "glass.agent.follow-up", "Queue a Glass Agent follow-up", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
   register("glass_agent_abort", "glass.agent.abort", "Cancel an independent Glass Agent", Type.Object({ agentId: Type.String() }), true);
   register("glass_agent_compact", "glass.agent.compact", "Compact an independent Glass Agent session", Type.Object({ agentId: Type.String(), instructions: Type.Optional(Type.String()) }), true);
+  register("glass_agent_model", "glass.agent.model", "Switch an independent Glass Agent model", Type.Object({ agentId: Type.String(), provider: Type.String(), modelId: Type.String() }), true);
+  register("glass_agent_thinking", "glass.agent.thinking", "Switch an independent Glass Agent reasoning level", Type.Object({ agentId: Type.String(), level: Type.String() }), true);
+  register("glass_agent_new_session", "glass.agent.new-session", "Start a new Pi conversation in an agent", Type.Object({ agentId: Type.String() }), true);
+  register("glass_agent_clone_session", "glass.agent.clone-session", "Clone an agent conversation", Type.Object({ agentId: Type.String() }), true);
+  register("glass_agent_fork", "glass.agent.fork", "Fork an agent conversation at an entry", Type.Object({ agentId: Type.String(), entryId: Type.String() }), true);
+  register("glass_agent_switch_session", "glass.agent.switch-session", "Resume an agent session path", Type.Object({ agentId: Type.String(), path: Type.String() }), true);
+  register("glass_agent_messages", "glass.agent.messages", "Read structured agent messages", Type.Object({ agentId: Type.String() }));
+  register("glass_agent_entries", "glass.agent.entries", "Read structured agent session entries", Type.Object({ agentId: Type.String(), since: Type.Optional(Type.String()) }));
+  register("glass_agent_stats", "glass.agent.stats", "Read agent token and session statistics", Type.Object({ agentId: Type.String() }));
+  register("glass_agent_name", "glass.agent.name", "Name an agent session", Type.Object({ agentId: Type.String(), name: Type.String() }), true);
 
   register("glass_graph_query", "glass.graph.query", "Query one causal development graph node", Type.Object({ id: Type.String() }));
   register("glass_graph_path", "glass.graph.path", "Explain a causal path between development nodes", Type.Object({ from: Type.String(), to: Type.String() }));

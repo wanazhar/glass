@@ -130,7 +130,10 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             "AGENTS\n{}\n\nPROCESSES\n{}\n\nTESTS\n{}",
             state.agents, state.processes, state.tests
         ),
-        DevSurface::Editor => "Native editor workspace\n\nOpen buffers, diagnostics, Git gutters, LSP navigation, and agent edit markers share the resident ProjectWorkspace.\n\nUse :view Git, :view Tests, or :agent without leaving the workspace.".into(),
+        DevSurface::Editor => format!(
+            "SHARED BUFFERS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH",
+            state.editor
+        ),
         DevSurface::Agent | DevSurface::Agents => state.agents.clone(),
         DevSurface::Processes => state.processes.clone(),
         DevSurface::Debugger => state.debugger.clone(),
@@ -140,7 +143,13 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .experiment_comparison
             .as_ref()
             .and_then(|comparison| serde_json::to_string_pretty(comparison).ok())
-            .unwrap_or_else(|| "No comparison loaded. Experiments own isolated worktrees, agents, processes, tests, browser/workflow metrics, and evidence-derived selection.".into()),
+            .map(|comparison| {
+                format!(
+                    "EXPERIMENTS\n{}\n\nEVIDENCE RANKING\n{}",
+                    state.experiments, comparison
+                )
+            })
+            .unwrap_or_else(|| state.experiments.clone()),
         DevSurface::Graph => format!(
             "CAUSAL DEVELOPMENT GRAPH\n\n{} replay events recorded\nUse governed tools to create source/runtime/test/debug/browser evidence paths.",
             state
@@ -151,7 +160,10 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .unwrap_or(0)
         ),
         DevSurface::Replay => state.replay.clone(),
-        DevSurface::Browser => "BROWSER WORKSPACE\n\nSemantic browser control remains provided by glass-browser. Attached targets, Web IR revisions, workflows, memory, and mutation leases appear here when connected through the durable workspace.".into(),
+        DevSurface::Browser => format!(
+            "AUTHORITATIVE BROWSER\n{}\n\nLATEST EVIDENCE\n{}\n\nActions: :browser start|stop|observe|targets|navigate|click|type",
+            state.browser, state.browser_detail
+        ),
     };
     frame.render_widget(
         Paragraph::new(content)

@@ -645,6 +645,61 @@ impl DevelopmentToolRouter {
                 ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
+            "glass.agent.model" => {
+                let id = agent_id(workspace, string("agentId")?)?;
+                map_service(workspace.agents().request(
+                    &id,
+                    HarnessRequest::SetModel {
+                        provider: string("provider")?.into(),
+                        model_id: string("modelId")?.into(),
+                    },
+                ))?;
+                Ok(serde_json::json!({"queued":true}))
+            }
+            "glass.agent.thinking" => {
+                let id = agent_id(workspace, string("agentId")?)?;
+                map_service(workspace.agents().request(
+                    &id,
+                    HarnessRequest::SetThinking {
+                        level: string("level")?.into(),
+                    },
+                ))?;
+                Ok(serde_json::json!({"queued":true}))
+            }
+            "glass.agent.new-session" => agent_request(workspace, call, HarnessRequest::NewSession),
+            "glass.agent.clone-session" => {
+                agent_request(workspace, call, HarnessRequest::CloneSession)
+            }
+            "glass.agent.fork" => agent_request(
+                workspace,
+                call,
+                HarnessRequest::Fork {
+                    entry_id: string("entryId")?.into(),
+                },
+            ),
+            "glass.agent.switch-session" => agent_request(
+                workspace,
+                call,
+                HarnessRequest::SwitchSession {
+                    path: string("path")?.into(),
+                },
+            ),
+            "glass.agent.messages" => agent_request(workspace, call, HarnessRequest::Messages),
+            "glass.agent.entries" => agent_request(
+                workspace,
+                call,
+                HarnessRequest::Entries {
+                    since: optional_string(call, "since").map(str::to_string),
+                },
+            ),
+            "glass.agent.stats" => agent_request(workspace, call, HarnessRequest::SessionStats),
+            "glass.agent.name" => agent_request(
+                workspace,
+                call,
+                HarnessRequest::SetSessionName {
+                    name: string("name")?.into(),
+                },
+            ),
             "glass.graph.query" => Ok(serde_json::to_value(
                 workspace.intelligence().node(string("id")?),
             )?),
@@ -702,6 +757,9 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.evaluate",
         "glass.debug.events",
         "glass.agent.list",
+        "glass.agent.messages",
+        "glass.agent.entries",
+        "glass.agent.stats",
         "glass.graph.query",
         "glass.graph.path",
         "glass.graph.explain",
@@ -749,6 +807,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.follow-up",
         "glass.agent.abort",
         "glass.agent.compact",
+        "glass.agent.model",
+        "glass.agent.thinking",
+        "glass.agent.new-session",
+        "glass.agent.clone-session",
+        "glass.agent.fork",
+        "glass.agent.switch-session",
+        "glass.agent.name",
         "glass.editor.open",
         "glass.editor.replace",
         "glass.editor.save",
@@ -978,6 +1043,16 @@ fn agent_id(
         .ok_or_else(|| DevelopmentError::NotFound(format!("agent {value}")))
 }
 
+fn agent_request(
+    workspace: &mut DevelopmentWorkspace,
+    call: &ToolCall,
+    request: HarnessRequest,
+) -> DevelopmentResult<Value> {
+    let id = agent_id(workspace, required_string(call, "agentId")?)?;
+    map_service(workspace.agents().request(&id, request))?;
+    Ok(serde_json::json!({"queued":true}))
+}
+
 fn map_service<T: serde::Serialize, E: std::fmt::Display>(
     result: Result<T, E>,
 ) -> DevelopmentResult<Value> {
@@ -1146,6 +1221,16 @@ mod tests {
             "glass.lsp.range_formatting",
             "glass.lsp.semantic_tokens",
             "glass.lsp.rename",
+            "glass.agent.model",
+            "glass.agent.thinking",
+            "glass.agent.new-session",
+            "glass.agent.clone-session",
+            "glass.agent.fork",
+            "glass.agent.switch-session",
+            "glass.agent.messages",
+            "glass.agent.entries",
+            "glass.agent.stats",
+            "glass.agent.name",
         ] {
             let descriptor = descriptors
                 .iter()

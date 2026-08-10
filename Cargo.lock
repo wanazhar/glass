@@ -839,6 +839,7 @@ version = "0.3.3"
 dependencies = [
  "clap",
  "glass-browser",
+ "serde",
  "serde_json",
  "tokio",
  "tracing-subscriber",

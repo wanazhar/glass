@@ -2134,9 +2134,22 @@ pub type WorkspaceCoordinator = WorkspaceStore;
 
 #[derive(Debug)]
 pub struct WorkspaceProfileLock {
-    _file: File,
+    file: File,
     pub workspace_id: WorkspaceId,
     pub profile_id: ProfileId,
+}
+
+impl Drop for WorkspaceProfileLock {
+    fn drop(&mut self) {
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!(
+                workspace = %self.workspace_id,
+                profile = %self.profile_id,
+                %error,
+                "could not explicitly release workspace profile lock"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2200,8 +2213,8 @@ impl From<LifecycleError> for WorkspaceStoreError {
 pub struct WorkspaceSession {
     workspace: Workspace,
     store: WorkspaceStore,
-    _workspace_lock: File,
-    _profile_lock: Option<WorkspaceProfileLock>,
+    workspace_lock: File,
+    profile_lock: Option<WorkspaceProfileLock>,
 }
 impl WorkspaceSession {
     pub fn workspace(&self) -> &Workspace {
@@ -2222,6 +2235,22 @@ impl WorkspaceSession {
         }
         self.workspace.persisted_revision = Some(self.workspace.snapshot_revision);
         Ok(())
+    }
+}
+impl Drop for WorkspaceSession {
+    fn drop(&mut self) {
+        // Release the narrower profile claim before the workspace claim so a
+        // successor never observes an unlocked workspace with a stale profile
+        // owner. Explicit unlock avoids relying on platform-specific File drop
+        // timing.
+        drop(self.profile_lock.take());
+        if let Err(error) = FileExt::unlock(&self.workspace_lock) {
+            tracing::warn!(
+                workspace = %self.workspace.identity().id(),
+                %error,
+                "could not explicitly release owned workspace lock"
+            );
+        }
     }
 }
 impl WorkspaceStore {
@@ -2337,8 +2366,8 @@ impl WorkspaceStore {
         Ok(WorkspaceSession {
             workspace,
             store: self.clone(),
-            _workspace_lock: workspace_lock,
-            _profile_lock: profile_lock,
+            workspace_lock,
+            profile_lock,
         })
     }
     pub fn create_owned(
@@ -2348,9 +2377,9 @@ impl WorkspaceStore {
         config: WorkspaceConfig,
     ) -> Result<WorkspaceSession, WorkspaceStoreError> {
         let identity = WorkspaceIdentity::new(id.clone(), aliases)?;
-        let _workspace_lock = self.lock_workspace(&id)?;
+        let workspace_lock = self.lock_workspace(&id)?;
         let mut workspace = Workspace::new(identity, config)?;
-        let _profile_lock = workspace
+        let profile_lock = workspace
             .config()
             .profile_id
             .as_ref()
@@ -2364,8 +2393,8 @@ impl WorkspaceStore {
         Ok(WorkspaceSession {
             workspace,
             store: self.clone(),
-            _workspace_lock,
-            _profile_lock,
+            workspace_lock,
+            profile_lock,
         })
     }
     pub fn save(&self, workspace: &mut Workspace) -> Result<(), WorkspaceStoreError> {
@@ -2545,7 +2574,7 @@ impl WorkspaceStore {
         file.try_lock_exclusive()
             .map_err(|_| WorkspaceStoreError::ProfileLocked(profile_id.clone()))?;
         Ok(WorkspaceProfileLock {
-            _file: file,
+            file,
             workspace_id: workspace_id.clone(),
             profile_id: profile_id.clone(),
         })

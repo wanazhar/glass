@@ -1,7 +1,22 @@
 use clap::{CommandFactory, FromArgMatches};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+type MainResult = Result<(), Box<dyn std::error::Error>>;
+
+fn main() -> MainResult {
+    #[cfg(windows)]
+    return std::thread::Builder::new()
+        .name("glass-browser-main".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| run().map_err(|error| error.to_string()))?
+        .join()
+        .map_err(|_| std::io::Error::other("Glass browser main thread panicked"))?
+        .map_err(|error| std::io::Error::other(error).into());
+
+    #[cfg(not(windows))]
+    run()
+}
+
+fn run() -> MainResult {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -10,21 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    glass_browser::cli::runner::dispatch_browser(parse_cli()?).await
-}
-
-fn parse_cli() -> Result<glass_browser::cli::args::Cli, Box<dyn std::error::Error>> {
-    #[cfg(windows)]
-    return std::thread::Builder::new()
-        .name("glass-browser-cli-parser".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(configured_cli)?
-        .join()
-        .map_err(|_| std::io::Error::other("Glass browser CLI parser thread panicked"))
-        .map_err(Into::into);
-
-    #[cfg(not(windows))]
-    Ok(configured_cli())
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(glass_browser::cli::runner::dispatch_browser(
+            configured_cli(),
+        ))
 }
 
 fn configured_cli() -> glass_browser::cli::args::Cli {

@@ -434,6 +434,25 @@ impl DevelopmentToolRouter {
                 ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
+            "glass.graph.query" => Ok(serde_json::to_value(
+                workspace.intelligence().node(string("id")?),
+            )?),
+            "glass.graph.path" | "glass.graph.explain" => Ok(serde_json::to_value(
+                workspace
+                    .intelligence()
+                    .path(string("from")?, string("to")?)?,
+            )?),
+            "glass.replay.list" | "glass.replay.inspect" => {
+                Ok(serde_json::to_value(workspace.intelligence().replay(
+                    unsigned(call, "since", 0)?,
+                    usize::try_from(unsigned(call, "limit", 128)?).unwrap_or(4096),
+                )?)?)
+            }
+            "glass.replay.diff" => Ok(serde_json::to_value(
+                workspace
+                    .intelligence()
+                    .replay_diff(unsigned(call, "from", 0)?, unsigned(call, "to", 1)?)?,
+            )?),
             _ => Err(DevelopmentError::NotFound(format!("tool {}", call.name))),
         }
     }
@@ -460,6 +479,12 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.evaluate",
         "glass.debug.events",
         "glass.agent.list",
+        "glass.graph.query",
+        "glass.graph.path",
+        "glass.graph.explain",
+        "glass.replay.list",
+        "glass.replay.inspect",
+        "glass.replay.diff",
     ];
     const MUTATE: &[&str] = &[
         "glass.git.stage",

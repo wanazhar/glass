@@ -19,7 +19,9 @@ pub mod workspace;
 
 use glass_browser::cli::args::Cli;
 
-pub use agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
+pub use agents::{
+    AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker,
+};
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
     ExperimentSnapshot, ExperimentState,
@@ -38,6 +40,27 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 /// the 0.3.4 ownership migration. The product entry point lives here so each
 /// resident service can move without changing the installed `glass` binary.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(glass_browser::cli::args::Commands::Agent {
+        action:
+            glass_browser::cli::args::AgentCommand::ToolFile {
+                path,
+                root,
+                allow_mutation,
+                yes,
+            },
+    }) = &cli.command
+        && std::env::var_os("GLASS_DEV_DAEMON_SOCKET").is_some()
+    {
+        let result = daemon::forward_resident_tool_file(
+            path,
+            root,
+            *allow_mutation || cli.yolo,
+            *yes || cli.yolo,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action).await;
     }

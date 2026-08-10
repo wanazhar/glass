@@ -1538,6 +1538,9 @@ pub struct PiHarnessOptions {
     pub name: Option<String>,
     pub model: Option<String>,
     pub thinking: Option<String>,
+    pub broker_socket: Option<PathBuf>,
+    pub broker_token: Option<String>,
+    pub broker_workspace_id: Option<String>,
 }
 
 impl std::fmt::Debug for PiHarness {
@@ -1625,13 +1628,22 @@ impl PiHarness {
         if let Some(thinking) = &options.thinking {
             command.args(["--thinking", thinking]);
         }
+        if let Some(socket) = &options.broker_socket {
+            command.env("GLASS_DEV_DAEMON_SOCKET", socket);
+        }
+        if let Some(token) = &options.broker_token {
+            command.env("GLASS_DEV_DAEMON_TOKEN", token);
+        }
+        if let Some(workspace_id) = &options.broker_workspace_id {
+            command.env("GLASS_DEV_DAEMON_WORKSPACE", workspace_id);
+        }
         command
             .args(["--system-prompt", &system_prompt, "--extension"])
             .arg(&extension_path);
         if !trusted_resources {
             command.args([
                 "--tools",
-                "read,write,edit,bash,grep,find,ls,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan,glass_runtime_inspect,glass_capabilities,glass_diagnostics_run,glass_file_mkdir,glass_file_rename,glass_file_delete,glass_test_run",
+                "read,write,edit,bash,grep,find,ls,glass_git_status,glass_semantic_inspect,glass_web_ir_inspect,glass_web_ir_diff,glass_web_ir_continuity,glass_task_plan,glass_runtime_inspect,glass_capabilities,glass_diagnostics_run,glass_file_mkdir,glass_file_rename,glass_file_delete,glass_test_run,glass_process_list,glass_process_start,glass_process_stop,glass_process_logs,glass_git_diff,glass_git_stage,glass_git_unstage,glass_git_commit,glass_git_branches,glass_git_branch_create,glass_git_branch_switch,glass_git_blame,glass_git_worktrees,glass_git_worktree_create,glass_git_worktree_remove,glass_test_discover,glass_test_run_suite,glass_test_results,glass_test_cancel,glass_test_watch,glass_eval_start,glass_eval_execute,glass_eval_list,glass_eval_reset,glass_eval_stop,glass_lsp_diagnostics,glass_lsp_hover,glass_lsp_completion,glass_debug_start,glass_debug_launch,glass_debug_attach,glass_debug_breakpoint_set,glass_debug_continue,glass_debug_pause,glass_debug_step,glass_debug_stack,glass_debug_scopes,glass_debug_variables,glass_debug_evaluate,glass_debug_events,glass_debug_stop,glass_agent_list,glass_agent_spawn,glass_agent_prompt,glass_agent_steer,glass_agent_follow_up,glass_agent_abort,glass_agent_compact,glass_graph_query,glass_graph_path,glass_replay_list,glass_replay_diff",
             ]);
         }
         let mut child = command
@@ -1870,6 +1882,40 @@ impl PiHarness {
 }
 
 fn validate_pi_harness_options(options: &PiHarnessOptions) -> DevelopmentResult<()> {
+    let broker_fields = [
+        options.broker_socket.is_some(),
+        options.broker_token.is_some(),
+        options.broker_workspace_id.is_some(),
+    ];
+    if broker_fields.iter().any(|present| *present) && !broker_fields.iter().all(|present| *present)
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi resident broker socket, token, and workspace must be configured together".into(),
+        ));
+    }
+    if let Some(socket) = &options.broker_socket
+        && (!socket.is_absolute() || socket == Path::new("/"))
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "Pi resident broker socket must be an explicit absolute path".into(),
+        ));
+    }
+    for (description, value, limit) in [
+        ("broker token", options.broker_token.as_deref(), 256),
+        (
+            "broker workspace",
+            options.broker_workspace_id.as_deref(),
+            128,
+        ),
+    ] {
+        if let Some(value) = value
+            && (value.is_empty() || value.len() > limit || value.chars().any(char::is_control))
+        {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "Pi {description} must contain 1..={limit} non-control bytes"
+            )));
+        }
+    }
     if options.session_id.is_some() && options.fork.is_some() {
         return Err(DevelopmentError::InvalidInput(
             "Pi session ID and fork source are mutually exclusive".into(),

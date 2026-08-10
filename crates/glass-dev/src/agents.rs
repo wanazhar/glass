@@ -18,6 +18,13 @@ const AGENT_EVIDENCE_CAPACITY: usize = 64;
 const MAX_AGENTS: usize = 32;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone)]
+pub struct ResidentAgentBroker {
+    pub socket: PathBuf,
+    pub token: String,
+    pub workspace_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AgentId(String);
 
@@ -145,6 +152,7 @@ pub struct AgentRegistry {
     history: VecDeque<AgentEvent>,
     next_agent: u64,
     next_event: u64,
+    broker: Option<ResidentAgentBroker>,
 }
 
 impl AgentRegistry {
@@ -161,7 +169,28 @@ impl AgentRegistry {
             history: VecDeque::new(),
             next_agent: 1,
             next_event: 1,
+            broker: None,
         })
+    }
+
+    pub fn set_resident_broker(&mut self, broker: ResidentAgentBroker) -> DevelopmentResult<()> {
+        if !broker.socket.is_absolute()
+            || broker.socket == Path::new("/")
+            || broker.token.is_empty()
+            || broker.token.len() > 256
+            || broker.workspace_id.is_empty()
+            || broker.workspace_id.len() > 128
+            || broker
+                .workspace_id
+                .chars()
+                .any(|character| character.is_control())
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "invalid resident agent broker context".into(),
+            ));
+        }
+        self.broker = Some(broker);
+        Ok(())
     }
 
     pub fn create(&mut self, spec: AgentSpec) -> DevelopmentResult<AgentId> {
@@ -351,6 +380,7 @@ impl AgentRegistry {
     fn spawn(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         let sessions_dir = self.sessions_dir.clone();
         let events = self.events_tx.clone();
+        let broker = self.broker.clone();
         let record = self.record_mut(id)?;
         let spec = record.spec.clone();
         let worktree = record.snapshot.worktree.clone();
@@ -362,7 +392,17 @@ impl AgentRegistry {
         record.snapshot.updated_at_ms = now_ms();
         thread::Builder::new()
             .name(format!("glass-{}", id.as_str()))
-            .spawn(move || run_worker(worker_id, spec, worktree, sessions_dir, commands_rx, events))
+            .spawn(move || {
+                run_worker(
+                    worker_id,
+                    spec,
+                    worktree,
+                    sessions_dir,
+                    broker,
+                    commands_rx,
+                    events,
+                )
+            })
             .map_err(DevelopmentError::Io)?;
         self.record_event(id, "starting", Value::Null);
         Ok(())
@@ -567,6 +607,7 @@ fn run_worker(
     spec: AgentSpec,
     worktree: PathBuf,
     sessions_dir: PathBuf,
+    broker: Option<ResidentAgentBroker>,
     commands: Receiver<WorkerCommand>,
     events: SyncSender<WorkerEvent>,
 ) {
@@ -577,6 +618,9 @@ fn run_worker(
         name: Some(format!("{}: {}", spec.role, id.as_str())),
         model: spec.model,
         thinking: spec.thinking,
+        broker_socket: broker.as_ref().map(|broker| broker.socket.clone()),
+        broker_token: broker.as_ref().map(|broker| broker.token.clone()),
+        broker_workspace_id: broker.map(|broker| broker.workspace_id),
         ..PiHarnessOptions::default()
     };
     let mut harness = match PiHarness::spawn_with_options(&worktree, options) {

@@ -1,6 +1,6 @@
 //! Local authenticated daemon that owns complete development workspaces.
 
-use crate::{DevelopmentToolContext, DevelopmentWorkspace};
+use crate::{DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker};
 use glass_browser::cli::args::DaemonCommand;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
@@ -256,8 +256,11 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
                     let clients = std::rc::Rc::clone(&clients);
                     let token = token.clone();
                     let status_path = status_path.to_path_buf();
+                    let socket = socket.to_path_buf();
                     tokio::task::spawn_local(async move {
-                        if let Err(error) = handle_client(stream, &token, &workspaces).await {
+                        if let Err(error) =
+                            handle_client(stream, &token, &socket, &workspaces).await
+                        {
                             tracing::warn!(%error, "development daemon client failed");
                         }
                         clients.set(clients.get().saturating_sub(1));
@@ -279,6 +282,7 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
 async fn handle_client(
     stream: tokio::net::UnixStream,
     token: &str,
+    socket: &Path,
     workspaces: &std::rc::Rc<tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (read, mut write) = stream.into_split();
@@ -293,7 +297,7 @@ async fn handle_client(
             }
         } else {
             match serde_json::from_str::<DevelopmentDaemonRequest>(&line) {
-                Ok(request) => execute_request(request, token, workspaces).await,
+                Ok(request) => execute_request(request, token, socket, workspaces).await,
                 Err(error) => DevelopmentDaemonResponse {
                     id: "invalid".into(),
                     ok: false,
@@ -316,6 +320,7 @@ async fn handle_client(
 async fn execute_request(
     request: DevelopmentDaemonRequest,
     token: &str,
+    socket: &Path,
     workspaces: &tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>,
 ) -> DevelopmentDaemonResponse {
     let id = request.id.clone();
@@ -336,8 +341,16 @@ async fn execute_request(
                 if state.len() >= MAX_WORKSPACES {
                     return Err("daemon workspace quota reached".into());
                 }
-                let workspace =
+                let mut workspace =
                     DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?;
+                workspace
+                    .agents()
+                    .set_resident_broker(ResidentAgentBroker {
+                        socket: socket.to_path_buf(),
+                        token: token.to_string(),
+                        workspace_id: workspace_id.to_string(),
+                    })
+                    .map_err(|error| error.to_string())?;
                 let result = workspace_summary(workspace_id, &workspace);
                 state.insert(workspace_id.into(), workspace);
                 Ok(result)
@@ -439,6 +452,153 @@ pub async fn request(
     let mut line = String::new();
     BufReader::new(read).read_line(&mut line).await?;
     Ok(serde_json::from_str(&line)?)
+}
+
+pub async fn forward_resident_tool_file(
+    path: &Path,
+    root: &Path,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let socket = PathBuf::from(
+        std::env::var_os("GLASS_DEV_DAEMON_SOCKET")
+            .ok_or("resident Pi broker socket is missing")?,
+    );
+    let token = std::env::var("GLASS_DEV_DAEMON_TOKEN")
+        .map_err(|_| "resident Pi broker token is missing")?;
+    let workspace_id = std::env::var("GLASS_DEV_DAEMON_WORKSPACE")
+        .map_err(|_| "resident Pi broker workspace is missing")?;
+    forward_resident_tool_file_with_context(
+        &socket,
+        &token,
+        &workspace_id,
+        path,
+        root,
+        allow_mutation,
+        confirmed,
+    )
+    .await
+}
+
+async fn forward_resident_tool_file_with_context(
+    socket: &Path,
+    token: &str,
+    workspace_id: &str,
+    path: &Path,
+    root: &Path,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let call = read_private_tool_call(path)?;
+    let inspect = request(
+        socket,
+        &DevelopmentDaemonRequest {
+            id: format!("inspect-{}", call.id),
+            token: token.to_string(),
+            operation: "workspace.inspect".into(),
+            workspace_id: Some(workspace_id.to_string()),
+            root: None,
+            call: None,
+            expected_generation: None,
+            expected_project_revision: None,
+            allow_mutation: false,
+            confirmed: false,
+            actor: Some("pi".into()),
+        },
+    )
+    .await?;
+    if !inspect.ok {
+        return Err(inspect
+            .error
+            .unwrap_or_else(|| "workspace inspect failed".into())
+            .into());
+    }
+    let expected_root = std::fs::canonicalize(root)?;
+    let observed_root = inspect
+        .result
+        .pointer("/workspace/root")
+        .and_then(Value::as_str);
+    if observed_root != expected_root.to_str() {
+        return Err("resident Pi broker root does not match the durable workspace".into());
+    }
+    let generation = inspect
+        .result
+        .pointer("/workspace/generation")
+        .and_then(Value::as_u64)
+        .ok_or("durable workspace generation is missing")?;
+    let revision = inspect
+        .result
+        .pointer("/workspace/projectRevision")
+        .and_then(Value::as_u64)
+        .ok_or("durable workspace revision is missing")?;
+    let response = request(
+        socket,
+        &DevelopmentDaemonRequest {
+            id: format!("tool-{}", call.id),
+            token: token.to_string(),
+            operation: "workspace.tool".into(),
+            workspace_id: Some(workspace_id.to_string()),
+            root: None,
+            call: Some(call),
+            expected_generation: Some(generation),
+            expected_project_revision: Some(revision),
+            allow_mutation,
+            confirmed,
+            actor: Some("pi".into()),
+        },
+    )
+    .await?;
+    if response.ok {
+        Ok(response.result)
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| "resident tool call failed".into())
+            .into())
+    }
+}
+
+fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn std::error::Error>> {
+    use std::io::Read;
+    const MAX_CALL_BYTES: u64 = 256 * 1024;
+    let canonical = path.canonicalize()?;
+    let temporary_root = std::env::temp_dir().canonicalize()?;
+    if canonical.parent() != Some(temporary_root.as_path())
+        || !canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("glass-pi-call-") && name.ends_with(".json"))
+    {
+        return Err("Pi broker requests must use a private Glass temporary file".into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(&canonical)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_CALL_BYTES {
+        return Err("invalid Pi broker request file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err("Pi broker request must be owned by this user with mode 0600".into());
+        }
+    }
+    let mut encoded = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_CALL_BYTES + 1).read_to_end(&mut encoded)?;
+    std::fs::remove_file(&canonical)?;
+    if encoded.len() as u64 > MAX_CALL_BYTES {
+        return Err("Pi broker request exceeds the size limit".into());
+    }
+    Ok(serde_json::from_slice(&encoded)?)
 }
 
 fn workspace_summary(id: &str, workspace: &DevelopmentWorkspace) -> Value {
@@ -705,21 +865,24 @@ mod tests {
                 start.allow_mutation = true;
                 start.confirmed = true;
                 assert!(request(&socket, &start).await.unwrap().ok);
-                // `request` opens and closes a new socket each time. The second
-                // client still sees and executes against the same kernel.
-                let mut execute = base_request("execute", "workspace.tool");
-                execute.call = Some(ToolCall {
+                // The Pi-style broker opens a new process/socket and still
+                // executes against the same daemon-owned kernel.
+                let call = ToolCall {
                     id: "kernel-execute".into(),
                     name: "glass.eval.execute".into(),
                     arguments: serde_json::json!({"name":"durable","code":"SELECT 42 AS answer"}),
-                });
-                execute.expected_generation = Some(1);
-                execute.expected_project_revision = Some(0);
-                execute.allow_mutation = true;
-                execute.confirmed = true;
-                let response = request(&socket, &execute).await.unwrap();
-                assert!(response.ok, "{:?}", response.error);
-                assert_eq!(response.result["value"][0]["answer"], 42);
+                };
+                let call_path = std::env::temp_dir().join(format!(
+                    "glass-pi-call-{}-{sequence}.json",
+                    std::process::id()
+                ));
+                write_private(&call_path, &serde_json::to_vec(&call).unwrap()).unwrap();
+                let result = forward_resident_tool_file_with_context(
+                    &socket, &token, "fixture", &call_path, &project, true, true,
+                )
+                .await
+                .unwrap();
+                assert_eq!(result["value"][0]["answer"], 42);
                 server.abort();
             })
             .await;

@@ -295,4 +295,65 @@ export default function (pi: ExtensionAPI) {
     false,
     (params) => ({ path: params.path, limit: params.limit }),
   );
+
+  register("glass_process_list", "glass.process.list", "List resident managed processes", Type.Object({}));
+  register("glass_process_start", "glass.process.start", "Start a resident named process", Type.Object({ name: Type.String(), command: Type.String() }), true);
+  register("glass_process_stop", "glass.process.stop", "Stop a resident named process", Type.Object({ name: Type.String() }), true);
+  register("glass_process_logs", "glass.process.logs", "Read bounded resident process logs", Type.Object({ name: Type.String() }));
+
+  register("glass_git_diff", "glass.git.diff", "Read a native Git diff", Type.Object({ staged: Type.Optional(Type.Boolean()), path: Type.Optional(Type.String()) }));
+  register("glass_git_stage", "glass.git.stage", "Stage repository paths", Type.Object({ paths: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }) }), true);
+  register("glass_git_unstage", "glass.git.unstage", "Unstage repository paths", Type.Object({ paths: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }) }), true);
+  register("glass_git_commit", "glass.git.commit", "Create an attributed Git commit", Type.Object({ message: Type.String() }), true);
+  register("glass_git_branches", "glass.git.branches", "List repository branches", Type.Object({}));
+  register("glass_git_branch_create", "glass.git.branch.create", "Create a repository branch", Type.Object({ name: Type.String(), startPoint: Type.Optional(Type.String()) }), true);
+  register("glass_git_branch_switch", "glass.git.branch.switch", "Switch repository branches", Type.Object({ name: Type.String(), create: Type.Optional(Type.Boolean()) }), true);
+  register("glass_git_blame", "glass.git.blame", "Read bounded Git blame evidence", Type.Object({ path: Type.String(), startLine: Type.Optional(Type.Integer()), endLine: Type.Optional(Type.Integer()) }));
+  register("glass_git_worktrees", "glass.git.worktree.list", "List repository worktrees", Type.Object({}));
+  register("glass_git_worktree_create", "glass.git.worktree.create", "Create an isolated worktree", Type.Object({ path: Type.String(), branch: Type.String(), createBranch: Type.Optional(Type.Boolean()) }), true);
+  register("glass_git_worktree_remove", "glass.git.worktree.remove", "Remove an owned worktree", Type.Object({ path: Type.String(), force: Type.Optional(Type.Boolean()) }), true);
+
+  register("glass_test_discover", "glass.test.discover", "Discover resident test suites", Type.Object({}));
+  register("glass_test_run_suite", "glass.test.run", "Run a discovered resident test suite", Type.Object({ runId: Type.String(), suiteId: Type.String(), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_test_results", "glass.test.results", "Inspect structured resident test results", Type.Object({}));
+  register("glass_test_cancel", "glass.test.cancel", "Cancel a resident test run", Type.Object({ runId: Type.String() }), true);
+  register("glass_test_watch", "glass.test.watch", "Watch a test suite by workspace revision", Type.Object({ suiteId: Type.String() }), true);
+
+  register("glass_eval_start", "glass.eval.start", "Start a persistent execution kernel", Type.Object({ name: Type.String(), kind: Type.Union([Type.Literal("python"), Type.Literal("javascript"), Type.Literal("shell"), Type.Literal("sql")]) }), true);
+  register("glass_eval_execute", "glass.eval.execute", "Execute code in a persistent kernel", Type.Object({ name: Type.String(), code: Type.String(), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_eval_list", "glass.eval.list", "List persistent execution kernels", Type.Object({}));
+  register("glass_eval_reset", "glass.eval.reset", "Reset a persistent execution kernel", Type.Object({ name: Type.String() }), true);
+  register("glass_eval_stop", "glass.eval.stop", "Stop a persistent execution kernel", Type.Object({ name: Type.String() }), true);
+
+  const position = { server: Type.String(), path: Type.String(), line: Type.Integer({ minimum: 1 }), character: Type.Integer({ minimum: 1 }) };
+  register("glass_lsp_diagnostics", "glass.lsp.diagnostics", "Read diagnostics from the shared resident LSP", Type.Object({ server: Type.String(), path: Type.String() }));
+  register("glass_lsp_hover", "glass.lsp.hover", "Read hover information from the shared resident LSP", Type.Object(position));
+  register("glass_lsp_completion", "glass.lsp.completion", "Request completion from the shared resident LSP", Type.Object(position));
+
+  register("glass_debug_start", "glass.debug.start", "Start and initialize a resident DAP adapter", Type.Object({ session: Type.String(), command: Type.String(), arguments: Type.Optional(Type.Array(Type.String())), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
+  register("glass_debug_launch", "glass.debug.launch", "Launch a program through a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
+  register("glass_debug_attach", "glass.debug.attach", "Attach a resident DAP session", Type.Object({ session: Type.String(), configuration: Type.Object({}, { additionalProperties: true }) }), true);
+  register("glass_debug_breakpoint_set", "glass.debug.breakpoint.set", "Set source breakpoints", Type.Object({ session: Type.String(), path: Type.String(), lines: Type.Array(Type.Integer({ minimum: 1 })) }), true);
+  register("glass_debug_continue", "glass.debug.continue", "Continue one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
+  register("glass_debug_pause", "glass.debug.pause", "Pause one debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer() }), true);
+  register("glass_debug_step", "glass.debug.step", "Step a debugger thread", Type.Object({ session: Type.String(), threadId: Type.Integer(), kind: Type.Union([Type.Literal("over"), Type.Literal("in"), Type.Literal("out")]) }), true);
+  register("glass_debug_stack", "glass.debug.stack", "Read a debugger stack", Type.Object({ session: Type.String(), threadId: Type.Integer() }));
+  register("glass_debug_scopes", "glass.debug.scopes", "Read debugger scopes", Type.Object({ session: Type.String(), frameId: Type.Integer() }));
+  register("glass_debug_variables", "glass.debug.variables", "Read debugger variables", Type.Object({ session: Type.String(), variablesReference: Type.Integer() }));
+  register("glass_debug_evaluate", "glass.debug.evaluate", "Evaluate in a debugger frame", Type.Object({ session: Type.String(), expression: Type.String(), frameId: Type.Optional(Type.Integer()), context: Type.Optional(Type.String()) }));
+  register("glass_debug_events", "glass.debug.events", "Read bounded DAP events", Type.Object({ session: Type.String() }));
+  register("glass_debug_stop", "glass.debug.stop", "Stop a resident debugger session", Type.Object({ session: Type.String() }), true);
+
+  register("glass_agent_list", "glass.agent.list", "Inspect independent Glass Agent sessions", Type.Object({}));
+  register("glass_agent_spawn", "glass.agent.spawn", "Spawn an independent Pi-powered Glass Agent", Type.Object({ spec: Type.Object({}, { additionalProperties: true }) }), true);
+  register("glass_agent_prompt", "glass.agent.prompt", "Prompt an independent Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
+  register("glass_agent_steer", "glass.agent.steer", "Steer a running Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
+  register("glass_agent_follow_up", "glass.agent.follow-up", "Queue a Glass Agent follow-up", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
+  register("glass_agent_abort", "glass.agent.abort", "Cancel an independent Glass Agent", Type.Object({ agentId: Type.String() }), true);
+  register("glass_agent_compact", "glass.agent.compact", "Compact an independent Glass Agent session", Type.Object({ agentId: Type.String(), instructions: Type.Optional(Type.String()) }), true);
+
+  register("glass_graph_query", "glass.graph.query", "Query one causal development graph node", Type.Object({ id: Type.String() }));
+  register("glass_graph_path", "glass.graph.path", "Explain a causal path between development nodes", Type.Object({ from: Type.String(), to: Type.String() }));
+  register("glass_replay_list", "glass.replay.list", "List observable development replay events", Type.Object({ since: Type.Optional(Type.Integer()), limit: Type.Optional(Type.Integer()) }));
+  register("glass_replay_diff", "glass.replay.diff", "Diff an observable replay sequence range", Type.Object({ from: Type.Integer(), to: Type.Integer() }));
 }

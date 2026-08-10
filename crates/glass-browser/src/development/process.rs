@@ -196,6 +196,19 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// Close the process input stream while retaining output and lifecycle tracking.
+    ///
+    /// Bounded, non-interactive commands use this after spawning so shells and
+    /// Windows ConPTY hosts can observe EOF and terminate deterministically.
+    pub fn close_input(&mut self, name: &str) -> DevelopmentResult<()> {
+        let process = self
+            .processes
+            .get_mut(name)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?;
+        process.writer.take();
+        Ok(())
+    }
+
     pub fn resize(&mut self, name: &str, cols: u16, rows: u16) -> DevelopmentResult<()> {
         if cols == 0 || rows == 0 {
             return Err(DevelopmentError::InvalidInput(
@@ -620,9 +633,8 @@ mod tests {
     #[test]
     fn pty_process_emits_output_and_exits() {
         let mut manager = ProcessManager::new(std::env::temp_dir());
-        manager
-            .start("echo", "printf 'glass-process-ok\\n'")
-            .unwrap();
+        manager.start("echo", "echo glass-process-ok").unwrap();
+        manager.close_input("echo").unwrap();
         for _ in 0..40 {
             let snapshots = manager.poll().unwrap();
             if snapshots[0].state != ProcessState::Running
@@ -644,7 +656,7 @@ mod tests {
     fn process_detects_local_dev_server_urls_and_can_restart() {
         let mut manager = ProcessManager::new(std::env::temp_dir());
         manager
-            .start("server", "printf 'ready http://localhost:3000\\n'")
+            .start("server", "echo ready http://localhost:3000")
             .unwrap();
         for _ in 0..40 {
             let snapshots = manager.poll().unwrap();

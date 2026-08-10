@@ -2475,7 +2475,7 @@ impl WorkspaceStore {
         })
     }
     pub fn delete(&self, id: &WorkspaceId) -> Result<(), WorkspaceStoreError> {
-        let _lock = self.lock_workspace(id)?;
+        let lock = self.lock_workspace(id)?;
         let mut workspace = self.read_unlocked(id)?;
         let _profile_lock = workspace
             .config()
@@ -2497,6 +2497,8 @@ impl WorkspaceStore {
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(io_error)?;
+        drop(_profile_lock);
+        FileExt::unlock(&lock).map_err(io_error)?;
         Ok(())
     }
     pub fn lock_workspace(&self, id: &WorkspaceId) -> Result<File, WorkspaceStoreError> {
@@ -2767,10 +2769,11 @@ mod persistence_tests {
             "sandbox"
         );
         store.delete(&id).unwrap();
-        assert!(matches!(
-            store.open(&id),
-            Err(WorkspaceStoreError::NotFound(_))
-        ));
+        let deleted = store.open(&id);
+        assert!(
+            matches!(deleted, Err(WorkspaceStoreError::NotFound(_))),
+            "deleted workspace remained observable: {deleted:?}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

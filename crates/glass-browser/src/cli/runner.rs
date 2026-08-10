@@ -425,6 +425,7 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
                 .ok_or_else(|| format!("no configured command for process {name}"))?;
             let snapshot = workspace.start_process(name, &command)?;
             let snapshot = if *wait {
+                workspace.processes().close_input(name)?;
                 wait_for_project_process(&mut workspace, name)?
             } else {
                 snapshot
@@ -451,6 +452,7 @@ fn dispatch_project(action: &ProjectCommand) -> BrowserResult<()> {
                     }
                     workspace.start_process(name, command)?;
                     let snapshot = if *wait {
+                        workspace.processes().close_input(name)?;
                         wait_for_project_process(&mut workspace, name)?
                     } else {
                         workspace
@@ -782,6 +784,7 @@ fn wait_for_project_process(
     workspace: &mut ProjectWorkspace,
     name: &str,
 ) -> BrowserResult<ProcessSnapshot> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
     loop {
         let snapshots = workspace.processes().poll()?;
         let snapshot = snapshots
@@ -790,6 +793,10 @@ fn wait_for_project_process(
             .ok_or_else(|| format!("process {name} disappeared"))?;
         if !matches!(snapshot.state, crate::development::ProcessState::Running) {
             return Ok(snapshot);
+        }
+        if std::time::Instant::now() >= deadline {
+            workspace.stop_process(name)?;
+            return Err(format!("process {name} exceeded 600 seconds").into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }

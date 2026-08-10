@@ -63,6 +63,10 @@ impl ProcessManager {
         self.unavailable()
     }
 
+    pub fn close_input(&mut self, _name: &str) -> DevelopmentResult<()> {
+        self.unavailable()
+    }
+
     pub fn resize(&mut self, _name: &str, _cols: u16, _rows: u16) -> DevelopmentResult<()> {
         self.unavailable()
     }

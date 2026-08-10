@@ -716,6 +716,7 @@ impl ProjectWorkspace {
             }),
         )?;
         self.start_process(name, command)?;
+        self.processes.close_input(name)?;
         let deadline = Instant::now() + timeout;
         let snapshot = loop {
             let snapshot = self
@@ -759,6 +760,7 @@ impl ProjectWorkspace {
         timeout: Duration,
     ) -> DevelopmentResult<super::ProcessSnapshot> {
         self.start_process(name, command)?;
+        self.processes.close_input(name)?;
         let deadline = Instant::now() + timeout;
         loop {
             let snapshot = self

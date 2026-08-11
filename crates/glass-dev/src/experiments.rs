@@ -1038,10 +1038,15 @@ mod tests {
         let second = manager
             .create("approach-b", "experiment-b", Some(3102))
             .unwrap();
+        let third = manager
+            .create("approach-c", "experiment-c", Some(3103))
+            .unwrap();
         assert!(first.worktree.exists());
         assert!(second.worktree.exists());
+        assert!(third.worktree.exists());
         std::fs::write(first.worktree.join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(second.worktree.join("b.rs"), "fn b() {}\n").unwrap();
+        std::fs::write(third.worktree.join("c.rs"), "fn c() {}\n").unwrap();
         assert_eq!(manager.refresh_changed_files("approach-a").unwrap(), 1);
         assert_eq!(manager.refresh_changed_files("approach-b").unwrap(), 1);
         let automatic = manager.collect_automatic("approach-a").unwrap();
@@ -1081,7 +1086,21 @@ mod tests {
                 },
             )
             .unwrap();
+        manager
+            .record_evidence(
+                "approach-c",
+                ExperimentEvidence {
+                    tests_passed: 120,
+                    tests_failed: 4,
+                    workflow_passed: Some(false),
+                    semantic_regressions: 2,
+                    lcp_ms: Some(1_450.0),
+                    ..ExperimentEvidence::default()
+                },
+            )
+            .unwrap();
         let comparison = manager.compare();
+        assert_eq!(comparison.rankings.len(), 3);
         assert_eq!(comparison.recommended.as_deref(), Some("approach-a"));
         assert_eq!(
             manager.select("approach-a").unwrap().state,
@@ -1090,6 +1109,7 @@ mod tests {
         assert!(manager.select("approach-b").is_err());
         manager.remove("approach-a", true).unwrap();
         manager.remove("approach-b", true).unwrap();
+        manager.remove("approach-c", true).unwrap();
         drop(manager);
         std::fs::remove_dir_all(base).unwrap();
     }

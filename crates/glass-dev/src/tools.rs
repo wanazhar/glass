@@ -2094,6 +2094,141 @@ mod tests {
     }
 
     #[test]
+    fn governed_python_queries_browser_tests_and_graph_before_approved_mutation() {
+        let mut workspace = workspace();
+        let router = DevelopmentToolRouter::default();
+        let mutation = context(&workspace, true);
+        router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "governed-python-start".into(),
+                    name: "glass.eval.start".into(),
+                    arguments: serde_json::json!({
+                        "name":"analysis",
+                        "kind":"python",
+                        "capabilities":[
+                            "glass.browser.state",
+                            "glass.test.results",
+                            "glass.graph.path",
+                            "glass.file.write"
+                        ]
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+
+        for (id, code, expected) in [
+            (
+                "governed-python-browser",
+                "glass.call('glass.browser.state')",
+                "'connected': False",
+            ),
+            (
+                "governed-python-tests",
+                "glass.call('glass.test.results')",
+                "results",
+            ),
+            (
+                "governed-python-graph",
+                "glass.call('glass.graph.path', {'from': 'repository:root', 'to': 'tool:kernel-analysis-python-1'})",
+                "repository:root",
+            ),
+        ] {
+            let result = router
+                .execute(
+                    &mut workspace,
+                    &ToolCall {
+                        id: id.into(),
+                        name: "glass.eval.execute".into(),
+                        arguments: serde_json::json!({"name":"analysis","code":code}),
+                    },
+                    &mutation,
+                )
+                .unwrap();
+            assert!(
+                result["value"].as_str().unwrap().contains(expected),
+                "{id} must return governed {expected} evidence: {result}"
+            );
+            assert_eq!(result["initiatorId"], "embedded:glass-agent");
+            assert_eq!(result["executorId"], "kernel:analysis");
+        }
+
+        let denied = router.execute(
+            &mut workspace,
+            &ToolCall {
+                id: "governed-python-denied".into(),
+                name: "glass.eval.execute".into(),
+                arguments: serde_json::json!({
+                    "name":"analysis",
+                    "code":"glass.call('glass.file.write', {'path': 'denied.py', 'content': 'no'})"
+                }),
+            },
+            &mutation,
+        );
+        assert!(denied.unwrap_err().to_string().contains("mutation"));
+        assert!(!workspace.root().join("denied.py").exists());
+
+        router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "approved-python-start".into(),
+                    name: "glass.eval.start".into(),
+                    arguments: serde_json::json!({
+                        "name":"approved",
+                        "kind":"python",
+                        "capabilities":["glass.file.write"],
+                        "mutationAuthority":true
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+        let approved = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "approved-python-write".into(),
+                    name: "glass.eval.execute".into(),
+                    arguments: serde_json::json!({
+                        "name":"approved",
+                        "code":"glass.call('glass.file.write', {'path': 'approved.py', 'content': 'approved\\n'})"
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+        assert_eq!(approved["initiatorId"], "embedded:glass-agent");
+        assert_eq!(approved["executorId"], "kernel:approved");
+        assert_eq!(
+            std::fs::read_to_string(workspace.root().join("approved.py")).unwrap(),
+            "approved\n"
+        );
+
+        let replay = workspace.intelligence().replay(0, 128).unwrap();
+        for resource in [
+            "tool:kernel-analysis-python-1",
+            "tool:kernel-analysis-python-2",
+            "tool:kernel-analysis-python-3",
+            "tool:kernel-approved-python-1",
+        ] {
+            let nested = replay
+                .iter()
+                .find(|event| event.resource.as_deref() == Some(resource))
+                .unwrap_or_else(|| panic!("missing provenance for {resource}"));
+            assert_eq!(nested.evidence["initiator"], "embedded:glass-agent");
+            assert!(
+                nested.evidence["executor"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("kernel:")
+            );
+        }
+    }
+
+    #[test]
     fn router_exposes_shared_editor_process_browser_and_complete_lsp_tools() {
         let mut workspace = workspace();
         std::fs::create_dir_all(workspace.root().join("src")).unwrap();

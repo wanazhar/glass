@@ -1,5 +1,5 @@
 use super::command;
-use crate::{DevelopmentWorkspace, ExperimentComparison, ExperimentManager};
+use crate::{DevelopmentWorkspace, ExperimentComparison};
 use glass_browser::cli::args::TuiLayout;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -88,7 +88,6 @@ pub struct DevTuiState {
     pub browser_detail: String,
     pub experiment_comparison: Option<ExperimentComparison>,
     pub experiments: String,
-    pub experiment_manager: Option<ExperimentManager>,
 }
 
 impl DevTuiState {
@@ -131,7 +130,6 @@ impl DevTuiState {
             browser_detail: "No browser observation yet".into(),
             experiment_comparison: None,
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
-            experiment_manager: None,
         };
         state.refresh();
         Ok(state)
@@ -370,7 +368,9 @@ impl DevTuiState {
             .state()
             .and_then(|state| serde_json::to_string_pretty(&state).map_err(Into::into))
             .unwrap_or_else(|error| format!("Browser state failed: {error}"));
-        if let Some(experiments) = self.experiment_manager.as_ref() {
+        if self.workspace.trust().permits_project_execution()
+            && let Ok(experiments) = self.workspace.experiments()
+        {
             self.experiments = serde_json::to_string_pretty(&experiments.snapshots())
                 .unwrap_or_else(|error| format!("Experiment state failed: {error}"));
             self.experiment_comparison = Some(experiments.compare());

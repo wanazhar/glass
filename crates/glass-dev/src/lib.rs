@@ -32,7 +32,7 @@ pub use browser::{BrowserRuntimeState, BrowserService, BrowserStartConfig};
 pub use customization::{Customization, GlassConfig, Skill};
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
-    ExperimentSnapshot, ExperimentState, ExperimentTrustPolicy,
+    ExperimentSnapshot, ExperimentState, ExperimentTrustPolicy, ExperimentWeights,
 };
 pub use intelligence::{
     CausalPath, DevelopmentEdge, DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind,

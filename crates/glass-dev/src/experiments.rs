@@ -7,11 +7,14 @@ use crate::{
     DevelopmentWorkspace, LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust,
     WorkspaceTrustStore,
 };
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
+use glass_browser::development::{DevelopmentError, DevelopmentResult, ProcessHealth};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_EXPERIMENTS: usize = 8;
 const MAX_NOTES_BYTES: usize = 16 * 1024;
@@ -47,7 +50,25 @@ pub struct ExperimentEvidence {
     pub diagnostics: u64,
     pub debugger_stops: u64,
     pub changed_files: u64,
+    pub build_passed: Option<bool>,
+    pub startup_healthy: Option<bool>,
+    pub process_crashes: u64,
     pub notes: String,
+    #[serde(default)]
+    pub provenance: BTreeMap<String, EvidenceProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceProvenance {
+    pub producer: String,
+    pub timestamp_ms: u128,
+    pub workspace_revision: u64,
+    pub browser_revision: Option<u64>,
+    pub run_id: Option<String>,
+    pub measured: bool,
+    pub available: bool,
+    pub details: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +98,34 @@ pub struct ExperimentComparison {
     pub recommended: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentWeights {
+    pub test_passed: i64,
+    pub test_failed: i64,
+    pub workflow_passed: i64,
+    pub workflow_failed: i64,
+    pub semantic_regression: i64,
+    pub diagnostic: i64,
+    pub changed_file: i64,
+    pub process_crash: i64,
+}
+
+impl Default for ExperimentWeights {
+    fn default() -> Self {
+        Self {
+            test_passed: 10,
+            test_failed: -1_000,
+            workflow_passed: 5_000,
+            workflow_failed: -20_000,
+            semantic_regression: -2_000,
+            diagnostic: -200,
+            changed_file: -5,
+            process_crash: -5_000,
+        }
+    }
+}
+
 struct Experiment {
     snapshot: ExperimentSnapshot,
     workspace: DevelopmentWorkspace,
@@ -89,6 +138,7 @@ pub struct ExperimentManager {
     experiments: BTreeMap<String, Experiment>,
     ports: BTreeSet<u16>,
     trust_policy: ExperimentTrustPolicy,
+    weights: ExperimentWeights,
 }
 
 impl ExperimentManager {
@@ -127,6 +177,7 @@ impl ExperimentManager {
             experiments: BTreeMap::new(),
             ports: BTreeSet::new(),
             trust_policy: ExperimentTrustPolicy::InheritOnce,
+            weights: ExperimentWeights::default(),
         })
     }
 
@@ -293,10 +344,273 @@ impl ExperimentManager {
         Ok(finished)
     }
 
+    /// Collect every currently available evidence family from resident or
+    /// bounded project services. Missing providers are recorded as unavailable
+    /// rather than silently converted into favorable zeroes.
+    pub fn collect_automatic(&mut self, id: &str) -> DevelopmentResult<ExperimentEvidence> {
+        let experiment = self.experiment_mut(id)?;
+        experiment.snapshot.state = ExperimentState::Running;
+        let revision = experiment.workspace.project().revision();
+        let browser_state = experiment.workspace.browser().state().ok();
+        let browser_revision = browser_state
+            .as_ref()
+            .and_then(|state| state.get("browserRevision"))
+            .and_then(Value::as_u64);
+        let mut evidence = ExperimentEvidence::default();
+
+        let detection = experiment.workspace.project().detection().clone();
+        if let Some(command) = detection.build_command.as_deref() {
+            let measurement = run_measured_command(&experiment.snapshot.worktree, command, 600)?;
+            evidence.build_passed = Some(measurement.passed);
+            evidence.provenance.insert(
+                "buildPassed".into(),
+                measured_provenance(
+                    "project-build",
+                    revision,
+                    browser_revision,
+                    Some(measurement.run_id),
+                    serde_json::json!({
+                        "command":command,
+                        "exitCode":measurement.exit_code,
+                        "durationMs":measurement.duration_ms
+                    }),
+                ),
+            );
+        } else {
+            evidence.provenance.insert(
+                "buildPassed".into(),
+                unavailable_provenance("project-build", revision, browser_revision),
+            );
+        }
+
+        if let Some(command) = detection.test_command.as_deref() {
+            let measurement = run_measured_command(&experiment.snapshot.worktree, command, 600)?;
+            if measurement.passed {
+                evidence.tests_passed = 1;
+            } else {
+                evidence.tests_failed = 1;
+            }
+            evidence.provenance.insert(
+                "tests".into(),
+                measured_provenance(
+                    "project-test",
+                    revision,
+                    browser_revision,
+                    Some(measurement.run_id),
+                    serde_json::json!({
+                        "command":command,
+                        "exitCode":measurement.exit_code,
+                        "durationMs":measurement.duration_ms,
+                        "aggregateCommandResult":true
+                    }),
+                ),
+            );
+        } else {
+            evidence.provenance.insert(
+                "tests".into(),
+                unavailable_provenance("project-test", revision, browser_revision),
+            );
+        }
+
+        if let Some(git) = experiment.workspace.git() {
+            let status = git
+                .status()
+                .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+            evidence.changed_files = u64::try_from(status.entries.len()).unwrap_or(u64::MAX);
+            evidence.provenance.insert(
+                "changedFiles".into(),
+                measured_provenance(
+                    "resident-git",
+                    revision,
+                    browser_revision,
+                    None,
+                    serde_json::json!({
+                        "entries":status.entries,
+                        "conflicts":status.conflicts
+                    }),
+                ),
+            );
+        }
+
+        let processes = experiment
+            .workspace
+            .project_mut()
+            .processes()
+            .list_checked()?;
+        evidence.process_crashes = processes
+            .iter()
+            .filter(|process| process.health == ProcessHealth::Failed)
+            .count() as u64;
+        evidence.startup_healthy = (!processes.is_empty()).then(|| {
+            evidence.process_crashes == 0
+                && processes.iter().all(|process| {
+                    matches!(
+                        process.health,
+                        ProcessHealth::Healthy | ProcessHealth::Starting
+                    )
+                })
+        });
+        evidence.provenance.insert(
+            "startupHealth".into(),
+            EvidenceProvenance {
+                producer: "resident-process-service".into(),
+                timestamp_ms: now_ms(),
+                workspace_revision: revision,
+                browser_revision,
+                run_id: None,
+                measured: true,
+                available: !processes.is_empty(),
+                details: serde_json::to_value(&processes)?,
+            },
+        );
+
+        let diagnostics = experiment
+            .workspace
+            .language()
+            .events(0)
+            .into_iter()
+            .filter(|event| event.operation == "diagnostics")
+            .filter_map(|event| event.result_count)
+            .sum::<usize>();
+        evidence.diagnostics = diagnostics as u64;
+        evidence.provenance.insert(
+            "diagnostics".into(),
+            EvidenceProvenance {
+                producer: "resident-lsp".into(),
+                timestamp_ms: now_ms(),
+                workspace_revision: revision,
+                browser_revision,
+                run_id: None,
+                measured: true,
+                available: experiment.workspace.language().names().next().is_some(),
+                details: serde_json::json!({"observedDiagnostics":diagnostics}),
+            },
+        );
+
+        let debugger_names = experiment
+            .workspace
+            .debugger_names()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut debugger_stops = 0_u64;
+        for debugger in &debugger_names {
+            debugger_stops = debugger_stops.saturating_add(
+                experiment
+                    .workspace
+                    .debugger_mut(debugger)
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?
+                    .poll_events()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?
+                    .iter()
+                    .filter(|event| event.event == "stopped")
+                    .count() as u64,
+            );
+        }
+        evidence.debugger_stops = debugger_stops;
+        evidence.provenance.insert(
+            "debuggerStops".into(),
+            EvidenceProvenance {
+                producer: "resident-dap".into(),
+                timestamp_ms: now_ms(),
+                workspace_revision: revision,
+                browser_revision,
+                run_id: None,
+                measured: true,
+                available: !debugger_names.is_empty(),
+                details: serde_json::json!({"stops":debugger_stops,"sessions":debugger_names}),
+            },
+        );
+
+        if browser_state
+            .as_ref()
+            .and_then(|state| state.get("connected"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            match experiment.workspace.browser().verify_workflow() {
+                Ok(result) => {
+                    evidence.workflow_passed = result.get("verified").and_then(Value::as_bool);
+                    evidence.provenance.insert(
+                        "workflowPassed".into(),
+                        measured_provenance(
+                            "resident-browser-workflow",
+                            revision,
+                            browser_revision,
+                            result
+                                .pointer("/result/runId")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            result,
+                        ),
+                    );
+                }
+                Err(error) => {
+                    evidence.provenance.insert(
+                        "workflowPassed".into(),
+                        EvidenceProvenance {
+                            details: serde_json::json!({"error":error.to_string()}),
+                            ..unavailable_provenance(
+                                "resident-browser-workflow",
+                                revision,
+                                browser_revision,
+                            )
+                        },
+                    );
+                }
+            }
+            match experiment.workspace.browser().diff() {
+                Ok(result) => {
+                    evidence.semantic_regressions = result
+                        .get("changes")
+                        .and_then(Value::as_array)
+                        .map_or(0, |changes| changes.len() as u64);
+                    evidence.provenance.insert(
+                        "semanticRegressions".into(),
+                        measured_provenance(
+                            "resident-browser-semantic-diff",
+                            revision,
+                            browser_revision,
+                            None,
+                            result,
+                        ),
+                    );
+                }
+                Err(error) => {
+                    evidence.provenance.insert(
+                        "semanticRegressions".into(),
+                        EvidenceProvenance {
+                            details: serde_json::json!({"error":error.to_string()}),
+                            ..unavailable_provenance(
+                                "resident-browser-semantic-diff",
+                                revision,
+                                browser_revision,
+                            )
+                        },
+                    );
+                }
+            }
+        } else {
+            for (metric, producer) in [
+                ("workflowPassed", "resident-browser-workflow"),
+                ("semanticRegressions", "resident-browser-semantic-diff"),
+                ("visualDifference", "resident-browser-visual-compare"),
+                ("lcpMs", "resident-browser-performance"),
+            ] {
+                evidence.provenance.insert(
+                    metric.into(),
+                    unavailable_provenance(producer, revision, browser_revision),
+                );
+            }
+        }
+        experiment.snapshot.evidence = evidence.clone();
+        experiment.snapshot.state = ExperimentState::Completed;
+        Ok(evidence)
+    }
+
     pub fn record_evidence(
         &mut self,
         id: &str,
-        evidence: ExperimentEvidence,
+        mut evidence: ExperimentEvidence,
     ) -> DevelopmentResult<()> {
         if evidence.notes.len() > MAX_NOTES_BYTES || evidence.notes.contains('\0') {
             return Err(DevelopmentError::InvalidInput(
@@ -315,6 +629,40 @@ impl ExperimentManager {
             ));
         }
         let experiment = self.experiment_mut(id)?;
+        let revision = experiment.workspace.project().revision();
+        let browser_revision = experiment
+            .workspace
+            .browser()
+            .state()
+            .ok()
+            .and_then(|state| state.get("browserRevision").and_then(Value::as_u64));
+        for metric in [
+            "tests",
+            "workflowPassed",
+            "semanticRegressions",
+            "visualDifference",
+            "lcpMs",
+            "diagnostics",
+            "debuggerStops",
+            "changedFiles",
+            "buildPassed",
+            "startupHealth",
+            "processCrashes",
+        ] {
+            evidence.provenance.insert(
+                metric.into(),
+                EvidenceProvenance {
+                    producer: "manual-external".into(),
+                    timestamp_ms: now_ms(),
+                    workspace_revision: revision,
+                    browser_revision,
+                    run_id: None,
+                    measured: false,
+                    available: true,
+                    details: Value::Null,
+                },
+            );
+        }
         experiment.snapshot.evidence = evidence;
         experiment.snapshot.state = ExperimentState::Completed;
         Ok(())
@@ -337,7 +685,7 @@ impl ExperimentManager {
         let mut rankings = self
             .experiments
             .values()
-            .map(|experiment| rank(&experiment.snapshot))
+            .map(|experiment| rank(&experiment.snapshot, &self.weights))
             .collect::<Vec<_>>();
         rankings.sort_by(|left, right| {
             right
@@ -357,6 +705,37 @@ impl ExperimentManager {
             rankings,
             recommended,
         }
+    }
+
+    pub fn set_weights(
+        &mut self,
+        weights: ExperimentWeights,
+        trust: WorkspaceTrust,
+    ) -> DevelopmentResult<()> {
+        if !trust.permits_project_execution() {
+            return Err(DevelopmentError::Conflict(
+                "experiment ranking weights require a trusted workspace".into(),
+            ));
+        }
+        if [
+            weights.test_passed,
+            weights.test_failed,
+            weights.workflow_passed,
+            weights.workflow_failed,
+            weights.semantic_regression,
+            weights.diagnostic,
+            weights.changed_file,
+            weights.process_crash,
+        ]
+        .iter()
+        .any(|weight| weight.unsigned_abs() > 1_000_000)
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "experiment weight magnitude exceeds 1000000".into(),
+            ));
+        }
+        self.weights = weights;
+        Ok(())
     }
 
     pub fn select(&mut self, id: &str) -> DevelopmentResult<ExperimentSnapshot> {
@@ -404,26 +783,150 @@ impl ExperimentManager {
     }
 }
 
-fn rank(snapshot: &ExperimentSnapshot) -> ExperimentRanking {
+struct CommandMeasurement {
+    passed: bool,
+    exit_code: i32,
+    duration_ms: u128,
+    run_id: String,
+}
+
+fn run_measured_command(
+    worktree: &Path,
+    command: &str,
+    timeout_seconds: u64,
+) -> DevelopmentResult<CommandMeasurement> {
+    if command.is_empty() || command.len() > 16 * 1024 || command.contains('\0') {
+        return Err(DevelopmentError::InvalidInput(
+            "experiment command is empty, oversized, or contains NUL".into(),
+        ));
+    }
+    let started = Instant::now();
+    let mut process = if cfg!(windows) {
+        let mut process = Command::new("cmd.exe");
+        process.args(["/d", "/s", "/c", command]);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-lc", command]);
+        process
+    };
+    let mut child = process
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let exit_code = loop {
+        if let Some(status) = child.try_wait()? {
+            break status.code().unwrap_or(-1);
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            break -1;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let timestamp = now_ms();
+    Ok(CommandMeasurement {
+        passed: exit_code == 0,
+        exit_code,
+        duration_ms: started.elapsed().as_millis(),
+        run_id: format!("experiment-command-{timestamp}"),
+    })
+}
+
+fn measured_provenance(
+    producer: &str,
+    workspace_revision: u64,
+    browser_revision: Option<u64>,
+    run_id: Option<String>,
+    details: Value,
+) -> EvidenceProvenance {
+    EvidenceProvenance {
+        producer: producer.into(),
+        timestamp_ms: now_ms(),
+        workspace_revision,
+        browser_revision,
+        run_id,
+        measured: true,
+        available: true,
+        details,
+    }
+}
+
+fn unavailable_provenance(
+    producer: &str,
+    workspace_revision: u64,
+    browser_revision: Option<u64>,
+) -> EvidenceProvenance {
+    EvidenceProvenance {
+        producer: producer.into(),
+        timestamp_ms: now_ms(),
+        workspace_revision,
+        browser_revision,
+        run_id: None,
+        measured: true,
+        available: false,
+        details: Value::Null,
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn rank(snapshot: &ExperimentSnapshot, weights: &ExperimentWeights) -> ExperimentRanking {
     let evidence = &snapshot.evidence;
     let mut score = 0_i64;
     let mut reasons = Vec::new();
-    score = score.saturating_add((evidence.tests_passed.min(10_000) as i64) * 10);
-    score = score.saturating_sub((evidence.tests_failed.min(10_000) as i64) * 1_000);
+    score = score.saturating_add(
+        (evidence.tests_passed.min(10_000) as i64).saturating_mul(weights.test_passed),
+    );
+    score = score.saturating_add(
+        (evidence.tests_failed.min(10_000) as i64).saturating_mul(weights.test_failed),
+    );
     match evidence.workflow_passed {
         Some(true) => {
-            score = score.saturating_add(5_000);
+            score = score.saturating_add(weights.workflow_passed);
             reasons.push("workflow passed".into());
         }
         Some(false) => {
-            score = score.saturating_sub(20_000);
+            score = score.saturating_add(weights.workflow_failed);
             reasons.push("workflow failed".into());
         }
         None => reasons.push("workflow not measured".into()),
     }
-    score = score.saturating_sub((evidence.semantic_regressions.min(10_000) as i64) * 2_000);
-    score = score.saturating_sub((evidence.diagnostics.min(10_000) as i64) * 200);
-    score = score.saturating_sub((evidence.changed_files.min(10_000) as i64) * 5);
+    score = score.saturating_add(
+        (evidence.semantic_regressions.min(10_000) as i64)
+            .saturating_mul(weights.semantic_regression),
+    );
+    score = score.saturating_add(
+        (evidence.diagnostics.min(10_000) as i64).saturating_mul(weights.diagnostic),
+    );
+    score = score.saturating_add(
+        (evidence.changed_files.min(10_000) as i64).saturating_mul(weights.changed_file),
+    );
+    score = score.saturating_add(
+        (evidence.process_crashes.min(10_000) as i64).saturating_mul(weights.process_crash),
+    );
+    match evidence.build_passed {
+        Some(true) => score = score.saturating_add(2_000),
+        Some(false) => score = score.saturating_sub(10_000),
+        None => {}
+    }
+    match evidence.startup_healthy {
+        Some(true) => score = score.saturating_add(1_000),
+        Some(false) => score = score.saturating_sub(5_000),
+        None => {}
+    }
+    if let Some(difference) = evidence.visual_difference {
+        score = score.saturating_sub((difference.clamp(0.0, 1.0) * 1_000.0) as i64);
+    }
     if let Some(lcp) = evidence.lcp_ms {
         score = score.saturating_sub(lcp.min(i64::MAX as f64) as i64);
         reasons.push(format!("LCP {lcp:.2} ms"));
@@ -495,11 +998,16 @@ mod tests {
             "[package]\nname='fixture'\nversion='0.1.0'\n",
         )
         .unwrap();
+        std::fs::write(
+            root.join("glass.toml"),
+            "[commands]\nbuild='rustc --version'\ntest='rustc --version'\n",
+        )
+        .unwrap();
         for arguments in [
             vec!["init"],
             vec!["config", "user.name", "Glass Test"],
             vec!["config", "user.email", "glass@example.invalid"],
-            vec!["add", "Cargo.toml"],
+            vec!["add", "."],
             vec!["commit", "-m", "initial"],
         ] {
             assert!(
@@ -536,6 +1044,13 @@ mod tests {
         std::fs::write(second.worktree.join("b.rs"), "fn b() {}\n").unwrap();
         assert_eq!(manager.refresh_changed_files("approach-a").unwrap(), 1);
         assert_eq!(manager.refresh_changed_files("approach-b").unwrap(), 1);
+        let automatic = manager.collect_automatic("approach-a").unwrap();
+        assert_eq!(automatic.build_passed, Some(true));
+        assert_eq!(automatic.tests_passed, 1);
+        assert_eq!(automatic.changed_files, 1);
+        assert!(automatic.provenance["buildPassed"].measured);
+        assert!(automatic.provenance["buildPassed"].available);
+        assert!(!automatic.provenance["workflowPassed"].available);
         manager
             .record_evidence(
                 "approach-a",
@@ -547,6 +1062,12 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(!manager.snapshots()[0].evidence.provenance["tests"].measured);
+        assert!(
+            manager
+                .set_weights(ExperimentWeights::default(), WorkspaceTrust::Untrusted)
+                .is_err()
+        );
         manager
             .record_evidence(
                 "approach-b",

@@ -977,6 +977,40 @@ impl DevelopmentToolRouter {
                 )?;
                 Ok(serde_json::json!({"recorded":true}))
             }
+            "glass.experiment.create" => {
+                let port = call
+                    .arguments
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .map(u16::try_from)
+                    .transpose()
+                    .map_err(|_| DevelopmentError::InvalidInput("invalid experiment port".into()))?;
+                Ok(serde_json::to_value(workspace.experiments()?.create(
+                    string("id")?,
+                    string("branch")?,
+                    port,
+                )?)?)
+            }
+            "glass.experiment.collect" => Ok(serde_json::to_value(
+                workspace
+                    .experiments()?
+                    .collect_automatic(string("id")?)?,
+            )?),
+            "glass.experiment.list" => Ok(serde_json::to_value(
+                workspace.experiments()?.snapshots(),
+            )?),
+            "glass.experiment.compare" => Ok(serde_json::to_value(
+                workspace.experiments()?.compare(),
+            )?),
+            "glass.experiment.select" => Ok(serde_json::to_value(
+                workspace.experiments()?.select(string("id")?)?,
+            )?),
+            "glass.experiment.remove" => {
+                workspace
+                    .experiments()?
+                    .remove(string("id")?, boolean(call, "force", false))?;
+                Ok(serde_json::json!({"removed":true}))
+            }
             "glass.graph.query" => Ok(serde_json::to_value(
                 workspace.intelligence().node(string("id")?),
             )?),
@@ -1054,6 +1088,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.stats",
         "glass.task.list",
         "glass.task.get",
+        "glass.experiment.list",
+        "glass.experiment.compare",
         "glass.graph.query",
         "glass.graph.path",
         "glass.graph.explain",
@@ -1138,6 +1174,10 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.task.reassign",
         "glass.task.override-blocked",
         "glass.task.evidence",
+        "glass.experiment.create",
+        "glass.experiment.collect",
+        "glass.experiment.select",
+        "glass.experiment.remove",
         "glass.editor.open",
         "glass.editor.replace",
         "glass.editor.save",
@@ -1665,6 +1705,12 @@ mod tests {
             "glass.task.reassign",
             "glass.task.override-blocked",
             "glass.task.evidence",
+            "glass.experiment.create",
+            "glass.experiment.collect",
+            "glass.experiment.list",
+            "glass.experiment.compare",
+            "glass.experiment.select",
+            "glass.experiment.remove",
         ] {
             let descriptor = descriptors
                 .iter()

@@ -17,6 +17,8 @@ The [autonomous task and workspace actor checkpoint](tasks/scheduler-035-003.md)
 is also complete locally and removes the global daemon workspace lock.
 The [native transport checkpoint](tasks/platform-035-004.md) implements Windows
 named pipes; only a remote native Windows run can certify that platform.
+The [automatic experiment evidence checkpoint](tasks/experiments-035-005.md)
+adds measured provenance and trusted deterministic ranking.
 
 Delivery order:
 

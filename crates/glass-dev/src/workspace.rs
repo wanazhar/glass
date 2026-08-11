@@ -4,6 +4,7 @@ use crate::agents::AgentRegistry;
 use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
+use crate::experiments::ExperimentManager;
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::KernelManager;
@@ -32,6 +33,7 @@ pub struct DevelopmentWorkspace {
     customization: Customization,
     project: ProjectWorkspace,
     debuggers: BTreeMap<String, DebuggerSession>,
+    experiments: Option<Box<ExperimentManager>>,
     git: Option<GitService>,
     intelligence: DevelopmentIntelligence,
     kernels: KernelManager,
@@ -102,6 +104,7 @@ impl DevelopmentWorkspace {
             customization,
             project,
             debuggers: BTreeMap::new(),
+            experiments: None,
             git,
             intelligence: {
                 let mut intelligence = DevelopmentIntelligence::default();
@@ -426,6 +429,30 @@ impl DevelopmentWorkspace {
         self.debuggers
             .get_mut(name)
             .ok_or_else(|| DebugError::InvalidInput(format!("unknown debugger session {name}")))
+    }
+
+    pub fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
+        if !self.trust.permits_project_execution() {
+            return Err(glass_browser::development::DevelopmentError::Conflict(
+                "experiments are blocked until the workspace is trusted".into(),
+            ));
+        }
+        if self.experiments.is_none() {
+            let repository_name = self
+                .root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("workspace");
+            let worktrees = self
+                .root
+                .parent()
+                .unwrap_or(&self.root)
+                .join(format!(".glass-{repository_name}-experiments"));
+            self.experiments = Some(Box::new(ExperimentManager::new_governed(
+                &self.root, worktrees, self.trust,
+            )?));
+        }
+        Ok(self.experiments.as_deref_mut().expect("initialized above"))
     }
 
     pub fn debugger_names(&self) -> impl Iterator<Item = &str> {

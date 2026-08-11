@@ -604,25 +604,10 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
         return Ok("Opened experiments".into());
     };
     require_trusted(state)?;
-    if state.experiment_manager.is_none() {
-        let root = state.workspace.root();
-        let repository_name = root
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("workspace");
-        let worktrees = root
-            .parent()
-            .unwrap_or(root)
-            .join(format!(".glass-{repository_name}-experiments"));
-        state.experiment_manager = Some(
-            crate::ExperimentManager::new_governed(root, worktrees, state.workspace.trust())
-                .map_err(|error| error.to_string())?,
-        );
-    }
     let experiments = state
-        .experiment_manager
-        .as_mut()
-        .expect("initialized above");
+        .workspace
+        .experiments()
+        .map_err(|error| error.to_string())?;
     let message = match action {
         "create" => {
             let id = parts
@@ -648,6 +633,20 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
             state.experiment_comparison = Some(experiments.compare());
             "Compared experiment evidence".into()
         }
+        "collect" => {
+            let id = parts.get(1).ok_or("experiment collect requires ID")?;
+            let evidence = experiments
+                .collect_automatic(id)
+                .map_err(|error| error.to_string())?;
+            format!(
+                "Collected {} measured experiment metrics for {id}",
+                evidence
+                    .provenance
+                    .values()
+                    .filter(|provenance| provenance.measured && provenance.available)
+                    .count()
+            )
+        }
         "select" => {
             let id = parts.get(1).ok_or("experiment select requires ID")?;
             experiments.select(id).map_err(|error| error.to_string())?;
@@ -660,7 +659,7 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
                 .map_err(|error| error.to_string())?;
             format!("Removed experiment {id}")
         }
-        _ => return Err("experiment actions: create, compare, select, remove".into()),
+        _ => return Err("experiment actions: create, collect, compare, select, remove".into()),
     };
     state.surface = DevSurface::Experiments;
     Ok(message)

@@ -1,5 +1,29 @@
 # Glass delivery plans
 
+## Active plan: Glass v0.3.5 issue #35
+
+Status: Direct local implementation in progress — no push, tag, publication,
+GitHub Release, or issue mutation is authorized.
+
+Issue [#35](https://github.com/wanazhar/glass/issues/35) is the authoritative
+sixteen-pillar trust and runtime-convergence contract. The audited baseline,
+dependency order, twelve release gates, scenarios A-I, forbidden outcomes, and
+disk-aware validation policy are in [the v0.3.5 delivery analysis](analysis/release-035.md).
+The first release-blocking checkpoint is the
+[workspace trust boundary](tasks/security-035-001.md).
+
+Delivery order:
+
+1. workspace trust and customization authority;
+2. native Pi SDK and completed package ownership migration;
+3. autonomous verified task DAGs;
+4. per-workspace daemon actors and native Windows IPC;
+5. automatic experiments, DAP breadth, kernel bindings, graph/replay;
+6. TUI parity, stress scenarios, documentation, packaging, and release gates.
+
+Each completed checkpoint receives a focused local conventional commit before
+the next checkpoint starts.
+
 ## Completed plan: Glass v0.3.4 issue #34
 
 Status: Released and publicly verified on 2026-08-10.

@@ -33,6 +33,7 @@ installation; this index owns the cross-product documentation map.
 | Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
 | Comparing implementation approaches | [Measured experiments](experiments.md) | [Autonomous task DAGs](task-dag.md), [Development Runtime](development-runtime.md) |
 | Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
+| Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Workspace trust](workspace-trust.md), [Security](../SECURITY.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [docs.rs](https://docs.rs/glass-browser) |
@@ -67,6 +68,8 @@ current user instructions.
   diagnostics, graph, replay, experiments, collaboration, agents, and Neovim.
 - [Workspace trust](workspace-trust.md) — explicit trust states, identity-bound
   persistence, configuration inspection, project-skill authority, and TUI UX.
+- [Customization governance](customization-governance.md) — authority classes,
+  skill provenance, hook/tool evidence, effective mutation policy, and labels.
 - [Native Pi SDK runtime](pi-sdk-runtime.md) — direct AgentSession integration,
   bounded IPC, governed tools, lifecycle, persistence, and migration failures.
 - [Autonomous task DAGs](task-dag.md) — automatic dispatch, verification,

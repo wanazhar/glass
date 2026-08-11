@@ -333,9 +333,12 @@ impl DevelopmentWorkspace {
                 )])
             }
             VerificationRequirement::TrustedCustom { name } => {
-                let result =
-                    self.customization
-                        .execute_tool(name, &serde_json::Value::Null, self.trust);
+                let result = self.customization.execute_tool(
+                    name,
+                    &serde_json::Value::Null,
+                    self.trust,
+                    "glassd:task-verifier",
+                );
                 let (passed, details) = match result {
                     Ok(result) => (true, serde_json::json!({"name":name,"result":result})),
                     Err(error) => (
@@ -625,6 +628,7 @@ impl DevelopmentWorkspace {
             "workspace.opened",
             &serde_json::json!({"root":self.root,"generation":self.generation}),
             self.trust,
+            "glassd",
         )?;
         self.trusted_configuration_active = true;
         Ok(())

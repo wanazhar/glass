@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_CONFIG_BYTES: u64 = 512 * 1024;
 const MAX_SKILLS: usize = 32;
@@ -153,9 +154,11 @@ pub struct Skill {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CustomizationAuthority {
+    GlassBuiltIn,
     UserGlobal,
     TrustedProject,
     UntrustedProject,
+    ExternalClient,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -177,14 +180,40 @@ pub struct CustomizationInspectionItem {
     pub command: Option<String>,
     pub declared_mutating: Option<bool>,
     pub trust_required: bool,
+    pub governance: Option<CustomizationGovernance>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomizationGovernance {
+    pub event: Option<String>,
+    pub timeout_seconds: Option<u64>,
+    pub failure_policy: Option<String>,
+    pub input_schema: Option<Value>,
+    pub effective_mutating: bool,
+    pub latest_execution: Option<CustomizationExecutionEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomizationExecutionEvidence {
+    pub actor: String,
+    pub authority: CustomizationAuthority,
+    pub started_at_ms: u64,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub ignored_failure: bool,
+    pub result_bytes: Option<usize>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug)]
 pub struct Customization {
     root: PathBuf,
     config_path: Option<PathBuf>,
     config: GlassConfig,
     skills: BTreeMap<String, Skill>,
+    latest_executions: Mutex<BTreeMap<String, CustomizationExecutionEvidence>>,
 }
 
 impl Customization {
@@ -217,6 +246,7 @@ impl Customization {
             config_path,
             config,
             skills,
+            latest_executions: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -270,7 +300,49 @@ impl Customization {
             .config_path
             .clone()
             .unwrap_or_else(|| self.root.join("glass.toml"));
-        let mut items = Vec::new();
+        let latest = self
+            .latest_executions
+            .lock()
+            .map(|latest| latest.clone())
+            .unwrap_or_default();
+        let governance =
+            |key: &str,
+             event: Option<String>,
+             timeout_seconds: Option<u64>,
+             failure_policy: Option<String>,
+             input_schema: Option<Value>,
+             effective_mutating: bool| CustomizationGovernance {
+                event,
+                timeout_seconds,
+                failure_policy,
+                input_schema,
+                effective_mutating,
+                latest_execution: latest.get(key).cloned(),
+            };
+        let mut items = vec![
+            CustomizationInspectionItem {
+                kind: "skill".into(),
+                name: "glass-runtime-rules".into(),
+                source: PathBuf::from("<glass-built-in>"),
+                authority: CustomizationAuthority::GlassBuiltIn,
+                risk: CustomizationRisk::AgentContext,
+                command: None,
+                declared_mutating: None,
+                trust_required: false,
+                governance: None,
+            },
+            CustomizationInspectionItem {
+                kind: "authorityBoundary".into(),
+                name: "external-client".into(),
+                source: PathBuf::from("<runtime-connection>"),
+                authority: CustomizationAuthority::ExternalClient,
+                risk: CustomizationRisk::Static,
+                command: None,
+                declared_mutating: None,
+                trust_required: false,
+                governance: None,
+            },
+        ];
         if let Some(name) = self.config.project.name.as_ref() {
             items.push(CustomizationInspectionItem {
                 kind: "setting".into(),
@@ -281,6 +353,7 @@ impl Customization {
                 command: Some(name.clone()),
                 declared_mutating: None,
                 trust_required: false,
+                governance: None,
             });
         }
         if let Some(url) = self.config.browser.url.as_ref() {
@@ -293,6 +366,7 @@ impl Customization {
                 command: Some(url.clone()),
                 declared_mutating: None,
                 trust_required: false,
+                governance: None,
             });
         }
         for skill in self.skills.values() {
@@ -309,6 +383,7 @@ impl Customization {
                 command: None,
                 declared_mutating: None,
                 trust_required: skill.project_scoped,
+                governance: None,
             });
         }
         for (name, command) in &self.config.commands {
@@ -319,6 +394,14 @@ impl Customization {
                 &source,
                 project_authority,
                 None,
+                governance(
+                    &format!("command:{name}"),
+                    None,
+                    Some(15 * 60),
+                    Some("fail".into()),
+                    Some(serde_json::json!({"type":"object"})),
+                    true,
+                ),
             ));
         }
         for (name, tool) in &self.config.tools {
@@ -329,6 +412,14 @@ impl Customization {
                 &source,
                 project_authority,
                 Some(tool.mutating),
+                governance(
+                    &format!("customTool:{name}"),
+                    None,
+                    Some(tool.timeout_seconds),
+                    Some("fail".into()),
+                    Some(tool.input_schema.clone()),
+                    true,
+                ),
             ));
         }
         for (event, hooks) in &self.config.hooks {
@@ -340,6 +431,21 @@ impl Customization {
                     &source,
                     project_authority,
                     Some(true),
+                    governance(
+                        &format!("hook:{event}[{index}]"),
+                        Some(event.clone()),
+                        Some(hook.timeout_seconds),
+                        Some(
+                            if hook.fail_on_error {
+                                "fail"
+                            } else {
+                                "continue"
+                            }
+                            .into(),
+                        ),
+                        Some(serde_json::json!({"type":"object"})),
+                        true,
+                    ),
                 ));
             }
         }
@@ -351,6 +457,14 @@ impl Customization {
                 &source,
                 project_authority,
                 Some(true),
+                governance(
+                    &format!("test:{name}"),
+                    None,
+                    test.timeout_seconds,
+                    Some("fail".into()),
+                    None,
+                    true,
+                ),
             ));
         }
         for (name, server) in &self.config.lsp {
@@ -362,6 +476,14 @@ impl Customization {
                 &source,
                 project_authority,
                 Some(true),
+                governance(
+                    &format!("lsp:{name}"),
+                    None,
+                    None,
+                    Some("fail".into()),
+                    None,
+                    true,
+                ),
             ));
         }
         for (name, server) in &self.config.dap {
@@ -373,6 +495,14 @@ impl Customization {
                 &source,
                 project_authority,
                 Some(true),
+                governance(
+                    &format!("dap:{name}"),
+                    None,
+                    None,
+                    Some("fail".into()),
+                    None,
+                    true,
+                ),
             ));
         }
         items
@@ -398,7 +528,10 @@ impl Customization {
                 name: format!("glass.custom.{name}"),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
-                mutating: tool.mutating,
+                // Shell-backed project tools can mutate regardless of their
+                // declaration, so the effective router policy always requires
+                // mutation authority and confirmation.
+                mutating: true,
                 available,
                 unavailable_reason: unavailable_reason.clone(),
             })
@@ -418,33 +551,61 @@ impl Customization {
         name: &str,
         arguments: &Value,
         trust: WorkspaceTrust,
+        actor: &str,
     ) -> DevelopmentResult<Value> {
         require_project_trust(trust)?;
         let tool = self
             .custom_tool(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("custom tool {name}")))?;
         validate_schema(&tool.input_schema, arguments)?;
-        run_bounded_command(
+        let started_at_ms = now_ms();
+        let started = Instant::now();
+        let result = run_bounded_command(
             &self.root,
             &tool.command,
             Duration::from_secs(tool.timeout_seconds),
             "GLASS_TOOL_INPUT",
             arguments,
-        )
+        );
+        self.record_execution(
+            &format!("customTool:{}", name.trim_start_matches("glass.custom.")),
+            actor,
+            started_at_ms,
+            started.elapsed(),
+            &result,
+            false,
+        );
+        result
     }
 
-    pub fn execute_command(&self, name: &str, trust: WorkspaceTrust) -> DevelopmentResult<Value> {
+    pub fn execute_command(
+        &self,
+        name: &str,
+        trust: WorkspaceTrust,
+        actor: &str,
+    ) -> DevelopmentResult<Value> {
         require_project_trust(trust)?;
         let command = self
             .command(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("project command {name}")))?;
-        run_bounded_command(
+        let started_at_ms = now_ms();
+        let started = Instant::now();
+        let result = run_bounded_command(
             &self.root,
             command,
             Duration::from_secs(15 * 60),
             "GLASS_COMMAND_INPUT",
             &Value::Null,
-        )
+        );
+        self.record_execution(
+            &format!("command:{name}"),
+            actor,
+            started_at_ms,
+            started.elapsed(),
+            &result,
+            false,
+        );
+        result
     }
 
     pub fn run_hooks(
@@ -452,18 +613,37 @@ impl Customization {
         event: &str,
         evidence: &Value,
         trust: WorkspaceTrust,
+        actor: &str,
     ) -> DevelopmentResult<Vec<Value>> {
         require_project_trust(trust)?;
         validate_hook_event(event)?;
         let mut results = Vec::new();
-        for hook in self.config.hooks.get(event).into_iter().flatten() {
-            match run_bounded_command(
+        for (index, hook) in self
+            .config
+            .hooks
+            .get(event)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let started_at_ms = now_ms();
+            let started = Instant::now();
+            let result = run_bounded_command(
                 &self.root,
                 &hook.command,
                 Duration::from_secs(hook.timeout_seconds),
                 "GLASS_HOOK_EVENT",
                 &serde_json::json!({"event":event,"evidence":evidence}),
-            ) {
+            );
+            self.record_execution(
+                &format!("hook:{event}[{index}]"),
+                actor,
+                started_at_ms,
+                started.elapsed(),
+                &result,
+                result.is_err() && !hook.fail_on_error,
+            );
+            match result {
                 Ok(result) => results.push(result),
                 Err(error) if !hook.fail_on_error => results.push(serde_json::json!({
                     "ok":false,"ignored":true,"error":error.to_string()
@@ -473,6 +653,47 @@ impl Customization {
         }
         Ok(results)
     }
+
+    fn record_execution(
+        &self,
+        key: &str,
+        actor: &str,
+        started_at_ms: u64,
+        duration: Duration,
+        result: &DevelopmentResult<Value>,
+        ignored_failure: bool,
+    ) {
+        let (success, result_bytes, error) = match result {
+            Ok(value) => (
+                true,
+                serde_json::to_vec(value).ok().map(|bytes| bytes.len()),
+                None,
+            ),
+            Err(error) => (false, None, Some(error.to_string())),
+        };
+        if let Ok(mut latest) = self.latest_executions.lock() {
+            latest.insert(
+                key.to_string(),
+                CustomizationExecutionEvidence {
+                    actor: actor.to_string(),
+                    authority: CustomizationAuthority::TrustedProject,
+                    started_at_ms,
+                    duration_ms: duration.as_millis() as u64,
+                    success,
+                    ignored_failure,
+                    result_bytes,
+                    error,
+                },
+            );
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn require_project_trust(trust: WorkspaceTrust) -> DevelopmentResult<()> {
@@ -492,6 +713,7 @@ fn executable_item(
     source: &Path,
     authority: CustomizationAuthority,
     declared_mutating: Option<bool>,
+    governance: CustomizationGovernance,
 ) -> CustomizationInspectionItem {
     CustomizationInspectionItem {
         kind: kind.into(),
@@ -502,6 +724,7 @@ fn executable_item(
         command: Some(command.into()),
         declared_mutating,
         trust_required: true,
+        governance: Some(governance),
     }
 }
 
@@ -857,20 +1080,30 @@ input_schema = {{ type = "object", required = ["text"] }}
                     "glass.custom.echo",
                     &serde_json::json!({"text":"ok"}),
                     WorkspaceTrust::TrustedOnce,
+                    "external:customization-test",
                 )
                 .unwrap()["text"],
             "ok"
         );
         assert_eq!(
             customization
-                .run_hooks("tool.before", &Value::Null, WorkspaceTrust::TrustedOnce)
+                .run_hooks(
+                    "tool.before",
+                    &Value::Null,
+                    WorkspaceTrust::TrustedOnce,
+                    "external:customization-test"
+                )
                 .unwrap()
                 .len(),
             1
         );
         assert!(
             customization
-                .execute_command("hello", WorkspaceTrust::TrustedOnce)
+                .execute_command(
+                    "hello",
+                    WorkspaceTrust::TrustedOnce,
+                    "external:customization-test"
+                )
                 .unwrap()["stdout"]
                 .as_str()
                 .unwrap()
@@ -892,13 +1125,15 @@ input_schema = {{ type = "object", required = ["text"] }}
             workspace
                 .tool_descriptors()
                 .iter()
-                .any(|descriptor| descriptor.name == "glass.custom.echo" && descriptor.available)
+                .any(|descriptor| descriptor.name == "glass.custom.echo"
+                    && descriptor.available
+                    && descriptor.mutating)
         );
         let context = crate::DevelopmentToolContext {
             authorization: glass_browser::development::ToolAuthorization {
                 actor: glass_browser::development::Actor::external("customization-test"),
-                allow_mutation: false,
-                confirmed: false,
+                allow_mutation: true,
+                confirmed: true,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -915,6 +1150,40 @@ input_schema = {{ type = "object", required = ["text"] }}
             )
             .unwrap();
         assert_eq!(result["text"], "resident");
+        let inspection = workspace.trust_inspection();
+        let tool = inspection
+            .iter()
+            .find(|item| item.kind == "customTool" && item.name == "echo")
+            .unwrap();
+        assert_eq!(tool.declared_mutating, Some(false));
+        let governance = tool.governance.as_ref().unwrap();
+        assert!(governance.effective_mutating);
+        assert_eq!(governance.timeout_seconds, Some(30));
+        assert_eq!(governance.failure_policy.as_deref(), Some("fail"));
+        assert!(governance.input_schema.is_some());
+        let latest = governance.latest_execution.as_ref().unwrap();
+        assert_eq!(latest.actor, "external:customization-test");
+        assert!(latest.success);
+        assert!(inspection.iter().any(|item| {
+            item.kind == "skill"
+                && item.authority == CustomizationAuthority::GlassBuiltIn
+                && item.name == "glass-runtime-rules"
+        }));
+        assert!(inspection.iter().any(|item| {
+            item.kind == "authorityBoundary"
+                && item.authority == CustomizationAuthority::ExternalClient
+        }));
+        let hook = inspection
+            .iter()
+            .find(|item| item.kind == "hook" && item.name == "tool.before[0]")
+            .unwrap();
+        let hook_governance = hook.governance.as_ref().unwrap();
+        assert_eq!(hook_governance.event.as_deref(), Some("tool.before"));
+        assert_eq!(hook_governance.failure_policy.as_deref(), Some("fail"));
+        assert_eq!(
+            hook_governance.latest_execution.as_ref().unwrap().actor,
+            "external:customization-test"
+        );
         drop(workspace);
         let _ = std::fs::remove_dir_all(root);
     }

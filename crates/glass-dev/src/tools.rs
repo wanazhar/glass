@@ -160,6 +160,7 @@ impl DevelopmentToolRouter {
                 "tool.before",
                 &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
                 workspace.trust(),
+                &actor_id,
             )?;
         }
         let result = if service_descriptors()
@@ -168,13 +169,16 @@ impl DevelopmentToolRouter {
         {
             self.execute_service(workspace, call, context)
         } else if workspace.customization().custom_tool(&call.name).is_some() {
-            workspace
-                .customization()
-                .execute_tool(&call.name, &call.arguments, workspace.trust())
+            workspace.customization().execute_tool(
+                &call.name,
+                &call.arguments,
+                workspace.trust(),
+                &actor_id,
+            )
         } else if let Some(name) = call.name.strip_prefix("glass.command.") {
             workspace
                 .customization()
-                .execute_command(name, workspace.trust())
+                .execute_command(name, workspace.trust(), &actor_id)
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
@@ -186,6 +190,7 @@ impl DevelopmentToolRouter {
                         "tool.after",
                         &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
                         workspace.trust(),
+                        &actor_id,
                     )?;
                 }
                 let result_bytes = serde_json::to_vec(&result)?.len();
@@ -212,6 +217,7 @@ impl DevelopmentToolRouter {
                         "tool.after",
                         &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
                         workspace.trust(),
+                        &actor_id,
                     )?;
                 }
                 let resulting_revision = workspace.project().revision();

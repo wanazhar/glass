@@ -14,7 +14,25 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         return Ok("Command palette closed".into());
     };
     match command {
-        "help" | "?" => Ok("Routes: trust · view · editor · lsp · agent · task · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
+        "help" | "?" => {
+            let project_commands = state
+                .workspace
+                .customization()
+                .config()
+                .commands
+                .keys()
+                .map(|name| format!("PROJECT:{name}"))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            Ok(format!(
+                "Routes: trust · view · editor · lsp · agent · task · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router. Project-provided commands: {}",
+                if project_commands.is_empty() {
+                    "none"
+                } else {
+                    &project_commands
+                }
+            ))
+        }
         "quit" | "q" => {
             state.quit = true;
             Ok("Closing Glass Dev".into())
@@ -41,13 +59,12 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
             Ok("Observable replay refreshed".into())
         }
         _ if state.workspace.customization().command(command).is_some() => {
-            let result = run_tool(
-                state,
-                &format!("glass.command.{command}"),
-                json!({}),
-                true,
-            )?;
-            Ok(compact_result(command, &result))
+            let result = run_tool(state, &format!("glass.command.{command}"), json!({}), true)?;
+            Ok(format!(
+                "PROJECT command {}: {}",
+                command,
+                compact_result(&format!("glass.command.{command}"), &result)
+            ))
         }
         _ => Err(format!("unknown command {command}; use help")),
     }

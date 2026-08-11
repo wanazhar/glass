@@ -4,7 +4,10 @@
 //! the independently installable browser product responsive and structured
 //! first without importing project, process, agent, or debugger contracts.
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -188,6 +191,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                 {
                     break Ok(());
                 }
+                KeyCode::Char('q') => break Ok(()),
                 KeyCode::Esc => app.command.clear(),
                 KeyCode::Enter => match app.submit(cli).await {
                     Ok(true) => break Ok(()),
@@ -248,14 +252,14 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
     draw_content(frame, rows[1], content, class);
     frame.render_widget(
         Paragraph::new(format!("> {}", app.command))
-            .block(Block::default().title("Command").borders(Borders::ALL)),
+            .block(Block::default().title("COMMAND").borders(Borders::ALL)),
         rows[2],
     );
 }
 
 fn draw_content(frame: &mut ratatui::Frame<'_>, area: Rect, content: &str, class: ResponsiveClass) {
     let title = match class {
-        ResponsiveClass::Phone => "Structured view · pixels opt-in",
+        ResponsiveClass::Phone => "Overview · pixels opt-in",
         ResponsiveClass::Compact => "Browser evidence",
         ResponsiveClass::Desktop => "Browser / Structured Observation",
     };
@@ -275,7 +279,13 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange,
+            EnableBracketedPaste
+        )?;
         Ok(Self {
             terminal: Terminal::new(CrosstermBackend::new(stdout))?,
         })
@@ -285,7 +295,13 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            DisableFocusChange,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }

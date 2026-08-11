@@ -1,6 +1,6 @@
 # Full-suite bounded load
 
-Status: Deterministic gate complete; live Chromium evidence pending final E2E
+Status: Complete and verified
 
 ## Contract
 
@@ -18,6 +18,7 @@ keep unrelated workspaces responsive, and make queue overflow observable.
 - Strict queue/batch/registry limits documented in
   `docs/full-suite-reliability.md`.
 
-The deterministic browser operation is a disconnected resident state read. It
-does not replace the release candidate's opt-in live Chromium smoke and
-presentation evidence.
+The deterministic browser operation is a disconnected resident state read.
+The candidate additionally passed all 18 opt-in Chromium smoke scenarios with
+the installed Chromium runtime, while the browser library suite verifies
+bounded presentation mailboxes and phone/compact/desktop TUI layouts.

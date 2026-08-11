@@ -136,14 +136,18 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )
         }
         DevSurface::Dashboard => format!(
-            "AGENTS\n{}\n\nPROCESSES\n{}\n\nTESTS\n{}",
-            state.agents, state.processes, state.tests
+            "TASKS\n{}\n\nAGENTS\n{}\n\nPROCESSES\n{}\n\nTESTS\n{}",
+            state.tasks, state.agents, state.processes, state.tests
         ),
         DevSurface::Editor => format!(
             "SHARED BUFFERS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH",
             state.editor
         ),
         DevSurface::Agent | DevSurface::Agents => state.agents.clone(),
+        DevSurface::Tasks => format!(
+            "TASK DAG\n\n{}\n\nActions: :task create|pause|resume|cancel|retry|reassign|override|evidence",
+            state.tasks
+        ),
         DevSurface::Processes => state.processes.clone(),
         DevSurface::Debugger => state.debugger.clone(),
         DevSurface::Git => state.git.clone(),

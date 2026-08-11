@@ -28,6 +28,7 @@ installation; this index owns the cross-product documentation map.
 | Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
 | Running resident Pi agents | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
+| Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Native Pi SDK runtime](pi-sdk-runtime.md), [daemon](daemon.md) |
 | Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
@@ -65,6 +66,8 @@ current user instructions.
   persistence, configuration inspection, project-skill authority, and TUI UX.
 - [Native Pi SDK runtime](pi-sdk-runtime.md) — direct AgentSession integration,
   bounded IPC, governed tools, lifecycle, persistence, and migration failures.
+- [Autonomous task DAGs](task-dag.md) — automatic dispatch, verification,
+  dependency wakeup, retries, budgets, controls, and durable scheduling.
 - [Actions and revisions](actions.md) and [action contract](action-contract.md) —
   unique targeting, execution phases, verification, failure, and recovery.
 - [Semantic observations](semantic-observation.md) — levels, regions, records,

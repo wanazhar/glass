@@ -70,8 +70,8 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | I / Gate 1 Trust | fail-closed identity-bound trust store, inspection, shared enforcement, ten required security tests, trust TUI | Complete locally |
 | II / Gate 2 Pi SDK | Glass-owned runtime and direct session lifecycle/events/tools/persistence; no CLI-RPC harness | Complete locally; legacy browser deletion follows Gate 3 |
 | III / Gate 3 Boundary | no browser development feature, no browser-owned project core, no fallback dispatch; three package checks | Blocking |
-| IV / Gate 4 Tasks | first-class verified DAG, automatic dispatch/wakeup/failure propagation, public and TUI controls | Blocking |
-| V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Blocking |
+| IV / Gate 4 Tasks | first-class verified DAG, automatic dispatch/wakeup/failure propagation, public and TUI controls | Complete locally |
+| V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Actor/concurrency gate complete; event streaming follows transport work |
 | VI / Gate 6 Platforms | Unix socket and native Windows named-pipe lifecycle with native tests | Blocking |
 | VII / Gate 7 Experiments | measured providers and per-metric provenance; deterministic trusted weights | Partial |
 | VIII / Gate 8 DAP | reverse requests through owned processes and three honest real-adapter evidence families | Partial |

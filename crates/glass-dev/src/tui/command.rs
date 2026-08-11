@@ -1,6 +1,7 @@
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
 use crate::kernels::KernelKind;
+use crate::tasks::TaskSpec;
 use crate::tools::DevelopmentToolContext;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde_json::{Value, json};
@@ -14,7 +15,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         return Ok("Command palette closed".into());
     };
     match command {
-        "help" | "?" => Ok("Routes: trust · view · editor · lsp · agent · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
+        "help" | "?" => Ok("Routes: trust · view · editor · lsp · agent · task · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
         "quit" | "q" => {
             state.quit = true;
             Ok("Closing Glass Dev".into())
@@ -26,6 +27,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         }
         "trust" => execute_trust(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
+        "task" | "tasks" => execute_task(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
@@ -157,6 +159,108 @@ fn agent_control(
     let result = run_tool(state, tool, arguments, true)?;
     state.surface = DevSurface::Agent;
     Ok(compact_result(tool, &result))
+}
+
+fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    let Some(action) = parts.first().copied() else {
+        state.surface = DevSurface::Tasks;
+        return Ok("Opened autonomous task DAG".into());
+    };
+    match action {
+        "list" | "inspect" => {
+            state.surface = DevSurface::Tasks;
+            Ok("Task prompts, dependencies, verification, and evidence refreshed".into())
+        }
+        "create" | "create-after" => {
+            require_trusted(state)?;
+            let offset = usize::from(action == "create-after");
+            let title = parts
+                .get(1 + offset)
+                .ok_or("task create requires TITLE PROMPT")?;
+            let prompt = parts.get(2 + offset..).unwrap_or_default().join(" ");
+            if prompt.is_empty() {
+                return Err("task create requires TITLE PROMPT".into());
+            }
+            let mut spec = TaskSpec::new(*title, prompt);
+            if action == "create-after" {
+                spec.dependencies.push(crate::TaskId::parse(
+                    *parts.get(1).ok_or("task create-after requires DEPENDENCY TITLE PROMPT")?,
+                ).map_err(|error| error.to_string())?);
+            }
+            let id = state
+                .workspace
+                .create_task(spec)
+                .map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Tasks;
+            Ok(format!("Created and scheduled {}", id.as_str()))
+        }
+        "pause" | "resume" | "cancel" | "retry" | "override" => {
+            require_trusted(state)?;
+            let id = crate::TaskId::parse(
+                *parts.get(1).ok_or("task action requires TASK_ID")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let result = match action {
+                "pause" => state.workspace.pause_task(&id),
+                "resume" => state.workspace.resume_task(&id),
+                "cancel" => state.workspace.cancel_task(&id),
+                "retry" => state.workspace.retry_task(&id),
+                _ => state.workspace.override_blocked_task(&id),
+            };
+            result.map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Tasks;
+            Ok(format!("Task {}: {action}", id.as_str()))
+        }
+        "reassign" => {
+            require_trusted(state)?;
+            let id = crate::TaskId::parse(
+                *parts.get(1).ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?,
+            )
+            .map_err(|error| error.to_string())?;
+            state
+                .workspace
+                .reassign_task(
+                    &id,
+                    parts
+                        .get(2)
+                        .ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?
+                        .to_string(),
+                    parts.get(3).map(|value| (*value).to_string()),
+                    parts.get(4).map(|value| (*value).to_string()),
+                )
+                .map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Tasks;
+            Ok(format!("Reassigned {}", id.as_str()))
+        }
+        "evidence" => {
+            require_trusted(state)?;
+            let id = crate::TaskId::parse(
+                *parts.get(1).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let kind = parts
+                .get(2)
+                .ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?;
+            let passed = parts
+                .get(3)
+                .ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?
+                .parse::<bool>()
+                .map_err(|_| "task evidence PASS must be true or false")?;
+            let encoded = parts.get(4..).unwrap_or_default().join(" ");
+            let details = if encoded.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&encoded).map_err(|error| error.to_string())?
+            };
+            state
+                .workspace
+                .submit_task_evidence(&id, (*kind).into(), "local-human".into(), passed, details)
+                .map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Tasks;
+            Ok(format!("Recorded {kind} evidence for {}", id.as_str()))
+        }
+        _ => Err("task actions: list, create, create-after, pause, resume, cancel, retry, reassign, override, evidence".into()),
+    }
 }
 
 fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
@@ -621,6 +725,7 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
             "trust" => Some(DevSurface::Trust),
             "home" => Some(DevSurface::Dashboard),
             "agent" => Some(DevSurface::Agent),
+            "task" => Some(DevSurface::Tasks),
             "process" => Some(DevSurface::Processes),
             "debug" => Some(DevSurface::Debugger),
             "test" => Some(DevSurface::Tests),

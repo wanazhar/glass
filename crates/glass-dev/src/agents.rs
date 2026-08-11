@@ -31,6 +31,17 @@ impl AgentId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn parse(value: impl Into<String>) -> DevelopmentResult<Self> {
+        let value = value.into();
+        if !value.starts_with("agent-")
+            || value.len() > 64
+            || value.chars().any(|character| character.is_control())
+        {
+            return Err(DevelopmentError::InvalidInput("invalid agent id".into()));
+        }
+        Ok(Self(value))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

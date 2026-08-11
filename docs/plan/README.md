@@ -13,6 +13,8 @@ The first release-blocking checkpoint is the
 [workspace trust boundary](tasks/security-035-001.md).
 The [native Pi SDK boundary](tasks/runtime-035-002.md) is complete locally;
 product-boundary deletion is the active checkpoint.
+The [autonomous task and workspace actor checkpoint](tasks/scheduler-035-003.md)
+is also complete locally and removes the global daemon workspace lock.
 
 Delivery order:
 

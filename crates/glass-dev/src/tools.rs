@@ -5,6 +5,7 @@ use crate::browser::BrowserStartConfig;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
 use crate::pi_runtime::PiSessionRequest;
+use crate::tasks::{TaskId, TaskSpec};
 use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
@@ -928,6 +929,54 @@ impl DevelopmentToolRouter {
                     name: string("name")?.into(),
                 },
             ),
+            "glass.task.create" => {
+                let spec = serde_json::from_value::<TaskSpec>(call.arguments.clone())?;
+                Ok(serde_json::to_value(workspace.create_task(spec)?)?)
+            }
+            "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
+            "glass.task.get" => {
+                let id = TaskId::parse(string("taskId")?)?;
+                Ok(serde_json::to_value(workspace.task(&id)?)?)
+            }
+            "glass.task.pause" => task_action(workspace, call, |workspace, id| {
+                workspace.pause_task(id)
+            }),
+            "glass.task.resume" => task_action(workspace, call, |workspace, id| {
+                workspace.resume_task(id)
+            }),
+            "glass.task.cancel" => task_action(workspace, call, |workspace, id| {
+                workspace.cancel_task(id)
+            }),
+            "glass.task.retry" => task_action(workspace, call, |workspace, id| {
+                workspace.retry_task(id)
+            }),
+            "glass.task.override-blocked" => task_action(workspace, call, |workspace, id| {
+                workspace.override_blocked_task(id)
+            }),
+            "glass.task.reassign" => {
+                let id = TaskId::parse(string("taskId")?)?;
+                workspace.reassign_task(
+                    &id,
+                    string("role")?.into(),
+                    optional_string(call, "model").map(str::to_string),
+                    optional_string(call, "thinking").map(str::to_string),
+                )?;
+                Ok(serde_json::json!({"reassigned":true}))
+            }
+            "glass.task.evidence" => {
+                let id = TaskId::parse(string("taskId")?)?;
+                workspace.submit_task_evidence(
+                    &id,
+                    string("kind")?.into(),
+                    context.authorization.actor.id.clone(),
+                    boolean(call, "passed", false),
+                    call.arguments
+                        .get("details")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                )?;
+                Ok(serde_json::json!({"recorded":true}))
+            }
             "glass.graph.query" => Ok(serde_json::to_value(
                 workspace.intelligence().node(string("id")?),
             )?),
@@ -1003,6 +1052,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.messages",
         "glass.agent.entries",
         "glass.agent.stats",
+        "glass.task.list",
+        "glass.task.get",
         "glass.graph.query",
         "glass.graph.path",
         "glass.graph.explain",
@@ -1079,6 +1130,14 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.fork",
         "glass.agent.switch-session",
         "glass.agent.name",
+        "glass.task.create",
+        "glass.task.pause",
+        "glass.task.resume",
+        "glass.task.cancel",
+        "glass.task.retry",
+        "glass.task.reassign",
+        "glass.task.override-blocked",
+        "glass.task.evidence",
         "glass.editor.open",
         "glass.editor.replace",
         "glass.editor.save",
@@ -1154,6 +1213,8 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.process.ports"
             | "glass.workspace.trust.status"
             | "glass.workspace.trust.inspect"
+            | "glass.task.list"
+            | "glass.task.get"
     )
 }
 
@@ -1375,6 +1436,16 @@ fn agent_request(
     Ok(serde_json::json!({"queued":true}))
 }
 
+fn task_action(
+    workspace: &mut DevelopmentWorkspace,
+    call: &ToolCall,
+    action: impl FnOnce(&mut DevelopmentWorkspace, &TaskId) -> DevelopmentResult<()>,
+) -> DevelopmentResult<Value> {
+    let id = TaskId::parse(required_string(call, "taskId")?)?;
+    action(workspace, &id)?;
+    Ok(serde_json::json!({"updated":true}))
+}
+
 fn map_service<T: serde::Serialize, E: std::fmt::Display>(
     result: Result<T, E>,
 ) -> DevelopmentResult<Value> {
@@ -1584,6 +1655,16 @@ mod tests {
             "glass.agent.entries",
             "glass.agent.stats",
             "glass.agent.name",
+            "glass.task.create",
+            "glass.task.list",
+            "glass.task.get",
+            "glass.task.pause",
+            "glass.task.resume",
+            "glass.task.cancel",
+            "glass.task.retry",
+            "glass.task.reassign",
+            "glass.task.override-blocked",
+            "glass.task.evidence",
         ] {
             let descriptor = descriptors
                 .iter()

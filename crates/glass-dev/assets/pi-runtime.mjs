@@ -30,6 +30,11 @@ const toolResponses = new Map();
 let runtime;
 let unsubscribe;
 
+process.stdout.on("error", (error) => {
+  if (error?.code === "EPIPE") process.exit(0);
+  throw error;
+});
+
 function safe(value) {
   return JSON.parse(JSON.stringify(value, (_key, item) =>
     typeof item === "bigint" ? item.toString() : item));

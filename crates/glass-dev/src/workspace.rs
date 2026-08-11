@@ -8,6 +8,9 @@ use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::KernelManager;
 use crate::lsp::LanguageService;
+use crate::tasks::{
+    TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
+};
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
@@ -35,6 +38,7 @@ pub struct DevelopmentWorkspace {
     language: LanguageService,
     knowledge: KnowledgeStore,
     tests: TestService,
+    tasks: TaskScheduler,
     tools: DevelopmentToolRouter,
     trust: WorkspaceTrust,
     trust_identity: WorkspaceIdentity,
@@ -90,6 +94,7 @@ impl DevelopmentWorkspace {
             glass_browser::development::DevelopmentError::Process(error.to_string())
         })?;
         let tools = DevelopmentToolRouter::with_customization(&customization, trust);
+        let tasks = TaskScheduler::new(&root)?;
         let mut workspace = Self {
             root: root.clone(),
             agents,
@@ -114,6 +119,7 @@ impl DevelopmentWorkspace {
             language,
             knowledge,
             tests,
+            tasks,
             tools,
             trust,
             trust_identity,
@@ -150,6 +156,199 @@ impl DevelopmentWorkspace {
 
     pub fn agents(&mut self) -> &mut AgentRegistry {
         &mut self.agents
+    }
+
+    pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
+        if !self.trust.permits_project_execution() {
+            return Err(glass_browser::development::DevelopmentError::Conflict(
+                "task execution is blocked until the workspace is trusted".into(),
+            ));
+        }
+        self.tasks.create(&mut self.agents, spec)
+    }
+
+    pub fn tasks(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
+        let snapshots = self.tasks.list(&mut self.agents)?;
+        let mut collected = false;
+        for task in snapshots
+            .iter()
+            .filter(|task| task.state == TaskState::Waiting)
+        {
+            for (kind, passed, details) in self.collect_task_verification(&task.verification)? {
+                self.tasks.submit_evidence(
+                    &task.id,
+                    kind,
+                    "glassd",
+                    "resident-service",
+                    passed,
+                    details,
+                )?;
+                collected = true;
+            }
+        }
+        if collected {
+            self.tasks.list(&mut self.agents)
+        } else {
+            Ok(snapshots)
+        }
+    }
+
+    pub fn task(&mut self, id: &TaskId) -> DevelopmentResult<TaskSnapshot> {
+        self.tasks.snapshot(&mut self.agents, id)
+    }
+
+    pub fn pause_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+        self.tasks.pause(&mut self.agents, id)
+    }
+
+    pub fn resume_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+        self.tasks.resume(&mut self.agents, id)
+    }
+
+    pub fn cancel_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+        self.tasks.cancel(&mut self.agents, id)
+    }
+
+    pub fn retry_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+        self.tasks.retry(&mut self.agents, id)
+    }
+
+    pub fn override_blocked_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+        self.tasks.override_blocked(&mut self.agents, id)
+    }
+
+    pub fn reassign_task(
+        &mut self,
+        id: &TaskId,
+        role: String,
+        model: Option<String>,
+        thinking: Option<String>,
+    ) -> DevelopmentResult<()> {
+        self.tasks
+            .reassign(&mut self.agents, id, role, model, thinking)
+    }
+
+    pub fn submit_task_evidence(
+        &mut self,
+        id: &TaskId,
+        kind: String,
+        actor: String,
+        passed: bool,
+        details: serde_json::Value,
+    ) -> DevelopmentResult<()> {
+        if !self.trust.permits_project_execution() {
+            return Err(glass_browser::development::DevelopmentError::Conflict(
+                "task verification evidence is blocked until the workspace is trusted".into(),
+            ));
+        }
+        self.tasks
+            .submit_evidence(id, kind, actor, "external-submission", passed, details)
+    }
+
+    fn collect_task_verification(
+        &self,
+        requirement: &VerificationRequirement,
+    ) -> DevelopmentResult<Vec<(String, bool, serde_json::Value)>> {
+        match requirement {
+            VerificationRequirement::GitChange {
+                require_changes,
+                require_clean,
+            } => {
+                let status = self.git.as_ref().ok_or_else(|| {
+                    glass_browser::development::DevelopmentError::Conflict(
+                        "Git task verification requires a Git workspace".into(),
+                    )
+                })?;
+                let status = status.status().map_err(|error| {
+                    glass_browser::development::DevelopmentError::Process(error.to_string())
+                })?;
+                let has_changes = !status.entries.is_empty();
+                let clean = status.entries.is_empty() && status.conflicts.is_empty();
+                let passed = has_changes == *require_changes && (!*require_clean || clean);
+                Ok(vec![(
+                    "gitChange".into(),
+                    passed,
+                    serde_json::json!({
+                        "hasChanges":has_changes,
+                        "clean":clean,
+                        "entries":status.entries.len(),
+                        "conflicts":status.conflicts.len(),
+                        "source":"resident-git"
+                    }),
+                )])
+            }
+            VerificationRequirement::BrowserWorkflow { assertion } => {
+                let result = self.browser.verify_workflow();
+                let (passed, details) = match result {
+                    Ok(result) => (
+                        result.get("verified").and_then(serde_json::Value::as_bool) == Some(true),
+                        serde_json::json!({
+                            "assertion":assertion,
+                            "source":"resident-browser-workflow",
+                            "result":result
+                        }),
+                    ),
+                    Err(error) => (
+                        false,
+                        serde_json::json!({"assertion":assertion,"error":error.to_string()}),
+                    ),
+                };
+                Ok(vec![("browserWorkflow".into(), passed, details)])
+            }
+            VerificationRequirement::SemanticRegression {
+                baseline,
+                maximum_regressions,
+            } => {
+                let result = self.browser.diff();
+                let (regressions, details) = match result {
+                    Ok(result) => {
+                        let regressions = result
+                            .get("changes")
+                            .and_then(serde_json::Value::as_array)
+                            .map_or(0, |changes| changes.len() as u64);
+                        (
+                            regressions,
+                            serde_json::json!({
+                                "baseline":baseline,
+                                "source":"resident-browser-semantic-diff",
+                                "result":result,
+                                "regressions":regressions
+                            }),
+                        )
+                    }
+                    Err(error) => (
+                        u64::MAX,
+                        serde_json::json!({"baseline":baseline,"error":error.to_string(),"regressions":u64::MAX}),
+                    ),
+                };
+                Ok(vec![(
+                    "semanticRegression".into(),
+                    regressions <= *maximum_regressions,
+                    details,
+                )])
+            }
+            VerificationRequirement::TrustedCustom { name } => {
+                let result =
+                    self.customization
+                        .execute_tool(name, &serde_json::Value::Null, self.trust);
+                let (passed, details) = match result {
+                    Ok(result) => (true, serde_json::json!({"name":name,"result":result})),
+                    Err(error) => (
+                        false,
+                        serde_json::json!({"name":name,"error":error.to_string()}),
+                    ),
+                };
+                Ok(vec![("trustedCustom".into(), passed, details)])
+            }
+            VerificationRequirement::All { requirements } => {
+                let mut evidence = Vec::new();
+                for requirement in requirements {
+                    evidence.extend(self.collect_task_verification(requirement)?);
+                }
+                Ok(evidence)
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     pub fn browser(&self) -> &BrowserService {

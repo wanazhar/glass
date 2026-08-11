@@ -1,8 +1,14 @@
 # Local daemon
 
-The Glass daemon accepts local MCP clients through a Unix-domain socket. It
-runs on Linux and macOS. It does not open a TCP port. It does not provide a
-remote service.
+The Glass development daemon accepts local clients through a Unix-domain
+socket. It runs on Linux and macOS. It does not open a TCP port or provide a
+remote service. Native Windows transport is not certified in this checkout.
+
+The daemon registry contains at most eight bounded workspace actor handles.
+Each actor owns one `DevelopmentWorkspace`, its resident services, and a
+64-command queue. Registry borrows cover only lookup/open/list/close; a long
+operation in one workspace cannot hold a global workspace-state lock. A 50 ms
+actor tick advances autonomous task DAGs without client polling.
 
 The daemon gives each connected client an independent browser-session
 namespace. Clients can use the same Unix socket without sharing browser state.
@@ -108,18 +114,17 @@ of sixteen in-flight requests.
 The lease owner is tied to the local socket connection. Do not write the lease
 token to a log or file.
 
-## Project-session registry
+## Durable workspace actors
 
-Project MCP tools use the daemon process's bounded canonical-root registry.
-The registry retains at most eight project sessions and evicts one after 30
-minutes of idle time. A retained session can own buffers, PTYs, language
-servers, an agent adapter, and an event cursor. Browser namespaces remain
-connection-local and are not transferred when a client reconnects.
+Development clients use the daemon process's bounded canonical-root registry.
+A retained actor owns buffers, PTYs, language servers, Pi sessions, task DAGs,
+kernels, debuggers, experiments, and its authoritative browser service. Fresh
+socket clients inspect the same actor identity and resources.
 
-Inspect and detach project state through `project.session.status` and
-`project.session.detach`. Detach closes the project session, language services,
-and owned process trees. It does not delete project files or persistent
-timeline data.
+The native daemon protocol provides `workspace.open`, `workspace.list`,
+`workspace.inspect`, `workspace.tool`, and `workspace.close`. Close explicitly
+shuts the actor down and reaps owned resources; it does not delete project
+files, Pi session JSONL, or persistent timeline data.
 
 ## Failure and shutdown matrix
 

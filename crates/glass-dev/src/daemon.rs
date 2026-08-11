@@ -7,8 +7,10 @@ use glass_browser::cli::args::DaemonCommand;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -17,6 +19,29 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACES: usize = 8;
 const MAX_CLIENTS: usize = 16;
+const WORKSPACE_COMMAND_CAPACITY: usize = 64;
+
+type WorkspaceRegistry = Rc<RefCell<BTreeMap<String, WorkspaceActorHandle>>>;
+
+#[derive(Clone)]
+struct WorkspaceActorHandle {
+    sender: tokio::sync::mpsc::Sender<WorkspaceCommand>,
+    summary: Value,
+}
+
+enum WorkspaceCommand {
+    Inspect {
+        response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    Tool {
+        call: ToolCall,
+        context: Box<DevelopmentToolContext>,
+        response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    Shutdown {
+        response: tokio::sync::oneshot::Sender<()>,
+    },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -247,10 +272,7 @@ async fn serve_with_store(
             client_count: 0,
         };
         write_status(status_path, &status)?;
-        let workspaces = std::rc::Rc::new(tokio::sync::Mutex::new(BTreeMap::<
-            String,
-            DevelopmentWorkspace,
-        >::new()));
+        let workspaces: WorkspaceRegistry = Rc::new(RefCell::new(BTreeMap::new()));
         let clients = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let local = tokio::task::LocalSet::new();
         let mut terminate = signal(SignalKind::terminate())?;
@@ -266,9 +288,9 @@ async fn serve_with_store(
                         continue;
                     }
                     clients.set(clients.get() + 1);
-                    update_counts(status_path, workspaces.lock().await.len(), clients.get())?;
-                    let workspaces = std::rc::Rc::clone(&workspaces);
-                    let clients = std::rc::Rc::clone(&clients);
+                    update_counts(status_path, workspaces.borrow().len(), clients.get())?;
+                    let workspaces = Rc::clone(&workspaces);
+                    let clients = Rc::clone(&clients);
                     let token = token.clone();
                     let status_path = status_path.to_path_buf();
                     let socket = socket.to_path_buf();
@@ -280,7 +302,7 @@ async fn serve_with_store(
                             tracing::warn!(%error, "development daemon client failed");
                         }
                         clients.set(clients.get().saturating_sub(1));
-                        let workspace_count = workspaces.lock().await.len();
+                        let workspace_count = workspaces.borrow().len();
                         let _ = update_counts(&status_path, workspace_count, clients.get());
                     });
                 }
@@ -299,7 +321,7 @@ async fn handle_client(
     stream: tokio::net::UnixStream,
     token: &str,
     socket: &Path,
-    workspaces: &std::rc::Rc<tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>>,
+    workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (read, mut write) = stream.into_split();
@@ -340,7 +362,7 @@ async fn execute_request(
     request: DevelopmentDaemonRequest,
     token: &str,
     socket: &Path,
-    workspaces: &tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>,
+    workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
 ) -> DevelopmentDaemonResponse {
     let id = request.id.clone();
@@ -348,17 +370,23 @@ async fn execute_request(
         validate_request(&request, token)?;
         match request.operation.as_str() {
             "ping" => Ok(serde_json::json!({"protocolVersion":PROTOCOL_VERSION})),
+            "workspace.list" => Ok(Value::Array(
+                workspaces
+                    .borrow()
+                    .values()
+                    .map(|handle| handle.summary.clone())
+                    .collect(),
+            )),
             "workspace.open" => {
                 let workspace_id = required_workspace_id(&request)?;
                 let root = request
                     .root
                     .as_deref()
                     .ok_or("workspace.open requires root")?;
-                let mut state = workspaces.lock().await;
-                if state.contains_key(workspace_id) {
+                if workspaces.borrow().contains_key(workspace_id) {
                     return Err("workspace identity is already open".into());
                 }
-                if state.len() >= MAX_WORKSPACES {
+                if workspaces.borrow().len() >= MAX_WORKSPACES {
                     return Err("daemon workspace quota reached".into());
                 }
                 let mut workspace =
@@ -373,32 +401,28 @@ async fn execute_request(
                     })
                     .map_err(|error| error.to_string())?;
                 let result = workspace_summary(workspace_id, &workspace);
-                state.insert(workspace_id.into(), workspace);
+                let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                tokio::task::spawn_local(run_workspace_actor(
+                    workspace_id.into(),
+                    workspace,
+                    receiver,
+                ));
+                let mut state = workspaces.borrow_mut();
+                if state.contains_key(workspace_id) || state.len() >= MAX_WORKSPACES {
+                    return Err("daemon workspace registry changed while opening".into());
+                }
+                state.insert(
+                    workspace_id.into(),
+                    WorkspaceActorHandle {
+                        sender,
+                        summary: result.clone(),
+                    },
+                );
                 Ok(result)
             }
             "workspace.inspect" => {
                 let workspace_id = required_workspace_id(&request)?;
-                let mut state = workspaces.lock().await;
-                let workspace = state
-                    .get_mut(workspace_id)
-                    .ok_or("unknown durable workspace")?;
-                let agents = workspace
-                    .agents()
-                    .list()
-                    .map_err(|error| error.to_string())?;
-                let processes = workspace
-                    .project_mut()
-                    .processes()
-                    .list_checked()
-                    .map_err(|error| error.to_string())?;
-                Ok(serde_json::json!({
-                    "workspace":workspace_summary(workspace_id, workspace),
-                    "processes":processes,
-                    "agents":agents,
-                    "kernels":workspace.kernels().snapshots().collect::<Vec<_>>(),
-                    "debuggers":workspace.debugger_names().collect::<Vec<_>>(),
-                    "browser":workspace.browser().state().map_err(|error| error.to_string())?
-                }))
+                workspace_inspect(workspace_handle(workspaces, workspace_id)?).await
             }
             "workspace.tool" => {
                 let workspace_id = required_workspace_id(&request)?;
@@ -406,10 +430,6 @@ async fn execute_request(
                     .call
                     .as_ref()
                     .ok_or("workspace.tool requires call")?;
-                let mut state = workspaces.lock().await;
-                let workspace = state
-                    .get_mut(workspace_id)
-                    .ok_or("unknown durable workspace")?;
                 let actor = request
                     .actor
                     .as_deref()
@@ -428,14 +448,28 @@ async fn execute_request(
                         .expected_project_revision
                         .ok_or("workspace.tool requires expectedProjectRevision")?,
                 };
-                workspace
-                    .execute_tool(call, &context)
-                    .map_err(|error| error.to_string())
+                workspace_tool(
+                    workspace_handle(workspaces, workspace_id)?,
+                    call.clone(),
+                    context,
+                )
+                .await
             }
             "workspace.close" => {
                 let workspace_id = required_workspace_id(&request)?;
-                let removed = workspaces.lock().await.remove(workspace_id).is_some();
-                Ok(serde_json::json!({"closed":removed}))
+                let handle = workspaces.borrow_mut().remove(workspace_id);
+                if let Some(handle) = handle {
+                    let (response, received) = tokio::sync::oneshot::channel();
+                    handle
+                        .sender
+                        .send(WorkspaceCommand::Shutdown { response })
+                        .await
+                        .map_err(|_| "workspace actor command queue closed")?;
+                    received.await.map_err(|_| "workspace actor did not stop")?;
+                    Ok(serde_json::json!({"closed":true}))
+                } else {
+                    Ok(serde_json::json!({"closed":false}))
+                }
             }
             _ => Err("unknown daemon operation".into()),
         }
@@ -455,6 +489,110 @@ async fn execute_request(
             error: Some(error),
         },
     }
+}
+
+fn workspace_handle(
+    workspaces: &WorkspaceRegistry,
+    workspace_id: &str,
+) -> Result<WorkspaceActorHandle, String> {
+    workspaces
+        .borrow()
+        .get(workspace_id)
+        .cloned()
+        .ok_or_else(|| "unknown durable workspace".into())
+}
+
+async fn workspace_inspect(handle: WorkspaceActorHandle) -> Result<Value, String> {
+    let (response, received) = tokio::sync::oneshot::channel();
+    handle
+        .sender
+        .send(WorkspaceCommand::Inspect { response })
+        .await
+        .map_err(|_| "workspace actor command queue closed")?;
+    received
+        .await
+        .map_err(|_| "workspace actor dropped its inspect response")?
+}
+
+async fn workspace_tool(
+    handle: WorkspaceActorHandle,
+    call: ToolCall,
+    context: DevelopmentToolContext,
+) -> Result<Value, String> {
+    let (response, received) = tokio::sync::oneshot::channel();
+    handle
+        .sender
+        .send(WorkspaceCommand::Tool {
+            call,
+            context: Box::new(context),
+            response,
+        })
+        .await
+        .map_err(|_| "workspace actor command queue closed")?;
+    received
+        .await
+        .map_err(|_| "workspace actor dropped its tool response")?
+}
+
+async fn run_workspace_actor(
+    workspace_id: String,
+    mut workspace: DevelopmentWorkspace,
+    mut commands: tokio::sync::mpsc::Receiver<WorkspaceCommand>,
+) {
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            command = commands.recv() => match command {
+                Some(WorkspaceCommand::Inspect { response }) => {
+                    let result = inspect_workspace(&workspace_id, &mut workspace);
+                    let _ = response.send(result);
+                }
+                Some(WorkspaceCommand::Tool { call, context, response }) => {
+                    let result = workspace
+                        .execute_tool(&call, &context)
+                        .map_err(|error| error.to_string());
+                    let _ = response.send(result);
+                }
+                Some(WorkspaceCommand::Shutdown { response }) => {
+                    let _ = response.send(());
+                    break;
+                }
+                None => break,
+            },
+            _ = tick.tick() => {
+                if let Err(error) = workspace.tasks() {
+                    tracing::warn!(workspace_id, %error, "workspace task scheduler tick failed");
+                }
+            }
+        }
+    }
+}
+
+fn inspect_workspace(
+    workspace_id: &str,
+    workspace: &mut DevelopmentWorkspace,
+) -> Result<Value, String> {
+    let agents = workspace
+        .agents()
+        .list()
+        .map_err(|error| error.to_string())?;
+    let tasks = workspace.tasks().map_err(|error| error.to_string())?;
+    let processes = workspace
+        .project_mut()
+        .processes()
+        .list_checked()
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "workspace":workspace_summary(workspace_id, workspace),
+        "processes":processes,
+        "agents":agents,
+        "tasks":tasks,
+        "kernels":workspace.kernels().snapshots().collect::<Vec<_>>(),
+        "debuggers":workspace.debugger_names().collect::<Vec<_>>(),
+        "browser":workspace.browser().state().map_err(|error| error.to_string())?
+    }))
 }
 
 #[cfg(unix)]
@@ -878,6 +1016,87 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    fn test_context() -> DevelopmentToolContext {
+        DevelopmentToolContext {
+            authorization: ToolAuthorization {
+                actor: Actor::external("daemon-concurrency-test"),
+                allow_mutation: true,
+                confirmed: true,
+            },
+            expected_generation: 1,
+            expected_project_revision: 0,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_actors_do_not_serialize_unrelated_long_operations() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "glassd-actor-concurrency-{}-{sequence}",
+            std::process::id()
+        ));
+        let first_root = base.join("first");
+        let second_root = base.join("second");
+        std::fs::create_dir_all(&first_root).unwrap();
+        std::fs::create_dir_all(&second_root).unwrap();
+        let store = WorkspaceTrustStore::at(base.join("trust.json"));
+        for root in [&first_root, &second_root] {
+            store
+                .trust_project(&crate::WorkspaceIdentity::inspect(root).unwrap())
+                .unwrap();
+        }
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let actor = |id: &str, root: &Path| {
+                    let workspace =
+                        DevelopmentWorkspace::open_with_store(root, store.clone()).unwrap();
+                    let summary = workspace_summary(id, &workspace);
+                    let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                    tokio::task::spawn_local(run_workspace_actor(id.into(), workspace, receiver));
+                    WorkspaceActorHandle { sender, summary }
+                };
+                let first = actor("first", &first_root);
+                let second = actor("second", &second_root);
+                workspace_tool(
+                    first.clone(),
+                    ToolCall {
+                        id: "shell-start".into(),
+                        name: "glass.eval.start".into(),
+                        arguments: serde_json::json!({"name":"slow","kind":"shell"}),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
+                let slow = tokio::task::spawn_local(workspace_tool(
+                    first,
+                    ToolCall {
+                        id: "shell-slow".into(),
+                        name: "glass.eval.execute".into(),
+                        arguments: serde_json::json!({
+                            "name":"slow",
+                            "code":"sleep 1; echo complete",
+                            "timeoutSeconds":3
+                        }),
+                    },
+                    test_context(),
+                ));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let started = std::time::Instant::now();
+                let inspect = workspace_inspect(second).await.unwrap();
+                let elapsed = started.elapsed();
+                assert_eq!(inspect["workspace"]["id"], "second");
+                assert!(
+                    elapsed < Duration::from_millis(300),
+                    "unrelated workspace inspect waited {elapsed:?}"
+                );
+                assert!(slow.await.unwrap().is_ok());
+            })
+            .await;
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     #[tokio::test(flavor = "current_thread")]
     #[cfg(unix)]

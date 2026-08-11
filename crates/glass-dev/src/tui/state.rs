@@ -11,6 +11,7 @@ pub enum DevSurface {
     Editor,
     Agent,
     Agents,
+    Tasks,
     Processes,
     Debugger,
     Git,
@@ -22,12 +23,13 @@ pub enum DevSurface {
 }
 
 impl DevSurface {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Trust,
         Self::Dashboard,
         Self::Editor,
         Self::Agent,
         Self::Agents,
+        Self::Tasks,
         Self::Processes,
         Self::Debugger,
         Self::Git,
@@ -45,6 +47,7 @@ impl DevSurface {
             Self::Editor => "Editor",
             Self::Agent => "Glass Agent",
             Self::Agents => "Agents",
+            Self::Tasks => "Tasks",
             Self::Processes => "Processes",
             Self::Debugger => "Debugger",
             Self::Git => "Git",
@@ -73,6 +76,7 @@ pub struct DevTuiState {
     pub command_input: String,
     pub status: String,
     pub agents: String,
+    pub tasks: String,
     pub editor: String,
     pub processes: String,
     pub git: String,
@@ -115,6 +119,7 @@ impl DevTuiState {
                 "Ready · : opens the command palette · q quits".into()
             },
             agents: String::new(),
+            tasks: String::new(),
             editor: String::new(),
             processes: String::new(),
             git: String::new(),
@@ -194,6 +199,7 @@ impl DevTuiState {
             'e' => Some(DevSurface::Editor),
             'a' => Some(DevSurface::Agent),
             'm' => Some(DevSurface::Agents),
+            'w' => Some(DevSurface::Tasks),
             'p' => Some(DevSurface::Processes),
             'd' => Some(DevSurface::Debugger),
             'g' => Some(DevSurface::Git),
@@ -260,6 +266,49 @@ impl DevTuiState {
                 .collect::<Vec<_>>()
                 .join("\n\n"),
             Err(error) => format!("Agent registry failed: {error}"),
+        };
+        self.tasks = match self.workspace.tasks() {
+            Ok(tasks) if tasks.is_empty() => {
+                "No tasks. :task create TITLE PROMPT creates an autonomous task".into()
+            }
+            Ok(tasks) => tasks
+                .iter()
+                .map(|task| {
+                    format!(
+                        "{}  {:?}  {}\n  goal {}\n  agent {} · attempt {} · model {} · thinking {}\n  depends {}\n  verification {}{}\n  evidence {}",
+                        task.id.as_str(),
+                        task.state,
+                        task.title,
+                        task.goal,
+                        task.assigned_agent
+                            .as_ref()
+                            .map(|agent| agent.as_str())
+                            .unwrap_or("unassigned"),
+                        task.attempt,
+                        task.model.as_deref().unwrap_or("default"),
+                        task.thinking.as_deref().unwrap_or("default"),
+                        task.dependencies
+                            .iter()
+                            .map(|dependency| dependency.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        serde_json::to_string(&task.verification).unwrap_or_default(),
+                        task.last_error
+                            .as_deref()
+                            .map(|error| format!(" · {error}"))
+                            .unwrap_or_default(),
+                        task.evidence
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .map(|evidence| format!("{}={:?}", evidence.kind, evidence.passed))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            Err(error) => format!("Task scheduler failed: {error}"),
         };
         self.processes = self
             .workspace

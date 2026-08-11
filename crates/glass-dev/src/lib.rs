@@ -16,6 +16,7 @@ pub mod kernels;
 pub mod lsp;
 pub mod mcp;
 pub mod pi_runtime;
+pub mod tasks;
 pub mod testing;
 pub mod tools;
 pub mod trust;
@@ -39,6 +40,10 @@ pub use intelligence::{
 };
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
 pub use pi_runtime::PiSessionRequest;
+pub use tasks::{
+    RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
+    TaskState, VerificationRequirement,
+};
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};

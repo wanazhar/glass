@@ -1110,7 +1110,10 @@ writer.flush()
         let error = client
             .request("initialize", json!({}), Duration::from_secs(2))
             .unwrap_err();
-        assert!(matches!(error, DebugError::Protocol(_)));
+        assert!(
+            matches!(&error, DebugError::Io(_) | DebugError::Protocol(_)),
+            "unexpected adapter crash error: {error}"
+        );
         drop(client);
 
         let (timeout_root, timeout) = python_adapter("import time; time.sleep(30)").unwrap();

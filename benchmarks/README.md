@@ -512,7 +512,7 @@ selection are not yet stabilised.
 
 ## MCP Schema Budget
 
-The current 0.3.4 `glass` source binary negotiates browser, semantic, and
+The current 0.3.5 `glass` source binary negotiates browser, semantic, and
 Development Runtime tools. The reproducible probe measures the serialized
 `tools` array at 129,444 UTF-8 bytes, or 32,361 tokens using the documented
 four-bytes-per-token estimate. JSON-RPC framing is excluded.

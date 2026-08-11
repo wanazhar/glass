@@ -1,6 +1,6 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.4` source
+These guides describe the complete Glass product in this `0.3.5` source
 checkout. `glass-browser 0.3.4` and `glass-dev 0.3.4` are the current published
 crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
@@ -201,6 +201,8 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
+- [Glass 0.3.5 release notes](releases/0.3.5.md) — substantive feature,
+  security, migration, limitation, and exact-tag evidence contract.
 - [Changelog](../CHANGELOG.md) — user-visible changes.
 - [Migrate 0.3.4 to 0.3.5](migration/0.3.5.md) — dependency, trust,
   customization, task, daemon, debugger, kernel, and TUI changes.

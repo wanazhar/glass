@@ -475,7 +475,7 @@ class GlassClient:
                     "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1], "developmentEvents": [1], "developmentCockpit": [1]},
                 },
                 "capabilities": {},
-                "clientInfo": {"name": "glass-python-client", "version": "0.3.4"},
+                "clientInfo": {"name": "glass-python-client", "version": "0.3.5"},
             },
         )
         manifest = result.get("glass") if isinstance(result, dict) else None

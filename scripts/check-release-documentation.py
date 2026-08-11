@@ -27,7 +27,7 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.4`",
+        "release checkout is `glass-browser` and `glass-dev` version `0.3.5`",
         "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
@@ -130,8 +130,8 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
-    if package_version != "0.3.4":
-        fail(f"release checkout must use local candidate package version 0.3.4, not {package_version}")
+    if package_version != "0.3.5":
+        fail(f"release checkout must use local candidate package version 0.3.5, not {package_version}")
     marker_sets = REQUIRED_MARKERS
     failures = []
     for relative, markers in marker_sets.items():

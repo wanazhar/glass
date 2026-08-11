@@ -22,7 +22,7 @@ path = "src/browser_main.rs"
 doc = false
 
 [dependencies]
-glass-browser = { version = "=0.3.4", path = "../glass-browser" }
+glass-browser = { version = "=0.3.5", path = "../glass-browser" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names every browser tool in the `0.3.4` client-conformance inventory.
+This catalog names every browser tool in the `0.3.5` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.

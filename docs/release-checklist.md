@@ -4,12 +4,20 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.4`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.5`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks; native browser/PTY support is not
 certified.
+
+## 0.3.5 candidate status
+
+The source candidate contains substantive release notes and migration guidance,
+but it is not a published release record. Exact-tag native Windows, LLDB,
+Delve, fuzz/security, package, clean-install/upgrade, crates.io propagation,
+and GitHub Release verification remain mandatory publication gates. Remote
+mutation and publication require explicit maintainer approval.
 
 ## 0.3.4 release record
 

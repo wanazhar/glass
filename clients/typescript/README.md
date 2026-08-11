@@ -6,7 +6,7 @@ semantic observations, knowledge, targets, frames, storage, checkpoints,
 diagnostics, browser controls, and the complete local Development Runtime.
 
 The client does not include Chrome, Chromium, or another browser runtime.
-It is a repository client for the `0.3.4` source line and is not currently
+It is a repository client for the `0.3.5` source line and is not currently
 published to npm. Install/build it from this checkout and pair it with the
 exact matching Glass executable.
 

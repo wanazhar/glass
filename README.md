@@ -390,7 +390,7 @@ the Glass MCP control plane. They expose typed browser and Development Runtime
 helpers, cursor-based event subscriptions, deadline-aware waits, process
 health, mutation-lease scopes, and edit-and-verify flows.
 
-They are repository clients for the 0.3.4 source line, not published npm or
+They are repository clients for the 0.3.5 source line, not published npm or
 PyPI packages and not browser runtimes:
 
 - [TypeScript client](clients/typescript/README.md)
@@ -420,7 +420,7 @@ workflows.
 
 ## Support and evidence
 
-| Item | 0.3.4 source status |
+| Item | 0.3.5 source status |
 |---|---|
 | Linux ARM64 | Native Chromium evidence recorded for the current release |
 | Linux x86-64 | Declared source target; native runtime certification pending |

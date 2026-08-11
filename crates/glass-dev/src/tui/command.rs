@@ -49,6 +49,10 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
+        "workspace" | "daemon" => {
+            state.surface = DevSurface::DaemonWorkspace;
+            Ok("Resident workspace identity and recovery state refreshed".into())
+        }
         "debug" => execute_debug(state, parts.collect()),
         "kernel" => execute_kernel(state, parts.collect()),
         "git" => execute_git(state, parts.collect()),
@@ -301,7 +305,7 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         _ => return Err("editor actions: open, selection, replace, save".into()),
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.surface = DevSurface::Editor;
+    state.surface = DevSurface::Lsp;
     Ok(compact_result(tool, &result))
 }
 
@@ -389,15 +393,22 @@ fn execute_browser(
     parts: Vec<&str>,
 ) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::Browser;
-        return Ok("Opened resident browser".into());
+        state.surface = if command == "workflow" {
+            DevSurface::Workflow
+        } else {
+            DevSurface::Browser
+        };
+        return Ok(format!("Opened resident {command}"));
     };
     let (tool, arguments, mutating) = if command == "workflow" {
         match action {
             "run" => ("glass.workflow.run", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow run requires DEFINITION.json")?)?,"inputs":parse_inline_json(parts.get(2), json!({}))?}), true),
             "pause" => ("glass.workflow.pause", json!({}), true),
             "resume" => ("glass.workflow.resume", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow resume requires DEFINITION.json CHECKPOINT.json")?)?,"checkpoint":read_project_json(state, parts.get(2).ok_or("workflow resume requires DEFINITION.json CHECKPOINT.json")?)?,"inputs":parse_inline_json(parts.get(3), json!({}))?}), true),
-            _ => return Err("workflow actions: run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON]".into()),
+            "list" => ("glass.workflow.list", json!({}), false),
+            "cancel" => ("glass.workflow.cancel", json!({}), true),
+            "verify" => ("glass.workflow.verify", json!({}), false),
+            _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
         }
     } else {
         match action {
@@ -418,7 +429,11 @@ fn execute_browser(
     let result = run_tool(state, tool, arguments, mutating)?;
     state.browser_detail =
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = DevSurface::Browser;
+    state.surface = if command == "workflow" {
+        DevSurface::Workflow
+    } else {
+        DevSurface::Browser
+    };
     Ok(compact_result(tool, &result))
 }
 
@@ -539,6 +554,7 @@ fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     };
     let result = run_tool(state, tool, arguments, true)?;
     state.kernels = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.surface = DevSurface::Kernels;
     Ok(format!("Kernel {name}: {action}"))
 }
 
@@ -740,12 +756,16 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
             "trust" => Some(DevSurface::Trust),
             "home" => Some(DevSurface::Dashboard),
             "agent" => Some(DevSurface::Agent),
+            "lsp" => Some(DevSurface::Lsp),
             "task" => Some(DevSurface::Tasks),
             "process" => Some(DevSurface::Processes),
             "debug" => Some(DevSurface::Debugger),
             "test" => Some(DevSurface::Tests),
             "experiment" => Some(DevSurface::Experiments),
             "browser" => Some(DevSurface::Browser),
+            "workflow" => Some(DevSurface::Workflow),
+            "kernel" => Some(DevSurface::Kernels),
+            "workspace" | "daemon" => Some(DevSurface::DaemonWorkspace),
             _ => None,
         })
 }

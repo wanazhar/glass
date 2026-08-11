@@ -1,10 +1,17 @@
 # Development workspace TUI layout
 
-Status: Accepted 0.3.3 contract
+Status: Implemented 0.3.5 contract
 
 The Development mode is a native Ratatui view layered beside the existing
 Browser Workspace. It does not replace browser authority or make screenshots
 the default context.
+
+The resident development TUI exposes first-class Trust, Agent, Tasks, Editor,
+LSP, Processes, Browser, Workflow, Debugger, Git, Tests, Kernels, Experiments,
+Graph, Replay, and Daemon/Workspace surfaces. The command palette sends
+governed operations through the same `DevelopmentToolRouter` used by CLI, MCP,
+Pi, kernels, and daemon clients; a TUI mutation does not gain separate
+authority.
 
 ```text
 ┌─ Glass — Development ─ project / branch ───────────────────────────────┐
@@ -31,6 +38,9 @@ the default context.
 | `Tab` / `Shift-Tab` | phone | cycle the single-pane phone views |
 | `?` | phone | show or hide the phone control guide |
 | `:` | global | open the filtered command palette |
+| `j` / `k` | global, empty command | cycle every resident development surface |
+| `view NAME` | command palette | drill into any named resident surface |
+| `workspace` / `daemon` | command palette | inspect stable workspace identity, trust, generation, and resident recovery state |
 | `safari` | command area | show private SSH port-forwarding instructions |
 | `inbox` / `notify on` | command area | show attention groups or opt into a deduplicated terminal bell |
 | `tap` / `tap N` | Browser | show and activate bounded revision-bound semantic actions |
@@ -70,10 +80,15 @@ the default context.
   continuous visual streaming is disabled by default. `--tui-live on` adds an
   adaptive live Browser view without changing the single-pane navigation model.
   An explicit `--tui-layout mobile` override is available.
-  Overview prioritizes needs-attention items. Browser can layer a numbered semantic
+  Overview orders workspace status, task state, agent activity,
+  semantic/browser state, process/test health, and recovery/trust decisions.
+  Every full surface remains available by cycling or `view NAME`, rather than
+  compressing desktop panels into the phone pane. Browser can layer a numbered semantic
   action overlay above semantics or live pixels; the target reference retains
   the observation revision and fails closed when stale.
 - **Compact**: terminals from 73 through 109 columns use a condensed workspace.
+  Navigation and the selected full surface remain visible; the desktop-only
+  context column is omitted.
 - **Wide**: terminals at 110 columns or more use the complete development
   composition below. `--tui-layout desktop` forces this presentation.
 
@@ -98,3 +113,12 @@ because it combines persistent panes, agent state, remote attach, a narrow
 terminal switcher, and an owned experimental graphics layer. Glass may stream
 ephemeral live frames to that layer, but does not invoke or control the Herdr
 server. tmux and Mosh retain the ANSI/Ratatui path.
+
+## Verification
+
+Deterministic Ratatui buffer tests render every resident surface at desktop,
+compact, and phone geometries. Separate phone coverage proves executable
+project configuration opens on the trust decision before activation. These
+tests validate navigation and decision availability; they do not claim that a
+local TUI process is itself a daemon transport or that remote connectivity has
+been exercised.

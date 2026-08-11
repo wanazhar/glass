@@ -136,12 +136,22 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )
         }
         DevSurface::Dashboard => format!(
-            "TASKS\n{}\n\nAGENTS\n{}\n\nPROCESSES\n{}\n\nTESTS\n{}",
-            state.tasks, state.agents, state.processes, state.tests
+            "WORKSPACE STATUS\n{}\n\nTASK STATE\n{}\n\nAGENT ACTIVITY\n{}\n\nSEMANTIC / BROWSER STATE\n{}\n\nPROCESS / TEST HEALTH\n{}\n{}\n\nRECOVERY / TRUST DECISIONS\n{}\nOpen Trust or Daemon/Workspace for decisions and durable recovery.",
+            state.workspace_status,
+            state.tasks,
+            state.agents,
+            state.browser,
+            state.processes,
+            state.tests,
+            state.status,
         ),
         DevSurface::Editor => format!(
             "SHARED BUFFERS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH",
             state.editor
+        ),
+        DevSurface::Lsp => format!(
+            "LANGUAGE SERVICES\n{}\n\nActions: :lsp start|stop|list|events|diagnostics|hover|complete|definition|references|symbols|rename",
+            state.lsp
         ),
         DevSurface::Agent | DevSurface::Agents => state.agents.clone(),
         DevSurface::Tasks => format!(
@@ -176,6 +186,18 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         DevSurface::Browser => format!(
             "AUTHORITATIVE BROWSER\n{}\n\nLATEST EVIDENCE\n{}\n\nActions: :browser start|stop|observe|targets|navigate|click|type",
             state.browser, state.browser_detail
+        ),
+        DevSurface::Workflow => format!(
+            "BROWSER WORKFLOWS\n{}\n\nActions: :workflow run|pause|resume",
+            state.workflow
+        ),
+        DevSurface::Kernels => format!(
+            "PERSISTENT KERNELS\n{}\n\nActions: :kernel start|execute|cancel|reset|stop",
+            state.kernels
+        ),
+        DevSurface::DaemonWorkspace => format!(
+            "DURABLE WORKSPACE / RECOVERY\n{}\n\nRecovery: inspect task failures, process/test health, trust decisions, and reconnect to this stable workspace identity.",
+            state.workspace_status
         ),
     };
     frame.render_widget(
@@ -254,24 +276,55 @@ mod tests {
         DevTuiState::open(root, layout).unwrap()
     }
 
+    fn rendered(state: &DevTuiState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, state)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
     #[test]
-    fn desktop_and_phone_render_agent_native_surfaces() {
+    fn desktop_and_phone_prioritize_resident_workspace_state() {
         for (width, height, layout) in [(140, 40, TuiLayout::Desktop), (48, 18, TuiLayout::Mobile)]
         {
             let state = state(layout);
-            let backend = TestBackend::new(width, height);
-            let mut terminal = Terminal::new(backend).unwrap();
-            terminal.draw(|frame| render(frame, &state)).unwrap();
-            let rendered = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let rendered = rendered(&state, width, height);
             assert!(rendered.contains("GLASS DEV"));
             assert!(rendered.contains("Dashboard"));
-            assert!(rendered.contains("AGENTS"));
+            assert!(rendered.contains("WORKSPACE STATUS"));
+            assert!(rendered.contains("generation"));
+        }
+    }
+
+    #[test]
+    fn desktop_compact_and_phone_can_drill_into_every_required_surface() {
+        for (width, height, layout) in [
+            (140, 40, TuiLayout::Desktop),
+            (90, 28, TuiLayout::Compact),
+            (64, 24, TuiLayout::Mobile),
+        ] {
+            let mut state = state(layout);
+            for surface in DevSurface::ALL {
+                state.surface = surface;
+                let output = rendered(&state, width, height);
+                assert!(
+                    output.contains(surface.label()),
+                    "{} layout did not expose {}",
+                    match layout {
+                        TuiLayout::Desktop => "desktop",
+                        TuiLayout::Compact => "compact",
+                        TuiLayout::Mobile => "phone",
+                        TuiLayout::Auto => "auto",
+                    },
+                    surface.label()
+                );
+            }
         }
     }
 
@@ -290,16 +343,7 @@ mod tests {
         .unwrap();
         let mut state = DevTuiState::open(&root, TuiLayout::Mobile).unwrap();
         assert_eq!(state.surface, DevSurface::Trust);
-        let backend = TestBackend::new(64, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &state)).unwrap();
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let rendered = rendered(&state, 64, 24);
         assert!(rendered.contains("WORKSPACE TRUST"));
         assert!(rendered.contains("Open untrusted"));
         state.handle_printable('O');

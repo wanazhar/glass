@@ -9,6 +9,7 @@ pub enum DevSurface {
     Trust,
     Dashboard,
     Editor,
+    Lsp,
     Agent,
     Agents,
     Tasks,
@@ -20,13 +21,17 @@ pub enum DevSurface {
     Graph,
     Replay,
     Browser,
+    Workflow,
+    Kernels,
+    DaemonWorkspace,
 }
 
 impl DevSurface {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 18] = [
         Self::Trust,
         Self::Dashboard,
         Self::Editor,
+        Self::Lsp,
         Self::Agent,
         Self::Agents,
         Self::Tasks,
@@ -38,6 +43,9 @@ impl DevSurface {
         Self::Graph,
         Self::Replay,
         Self::Browser,
+        Self::Workflow,
+        Self::Kernels,
+        Self::DaemonWorkspace,
     ];
 
     pub fn label(self) -> &'static str {
@@ -45,6 +53,7 @@ impl DevSurface {
             Self::Trust => "Trust",
             Self::Dashboard => "Dashboard",
             Self::Editor => "Editor",
+            Self::Lsp => "LSP",
             Self::Agent => "Glass Agent",
             Self::Agents => "Agents",
             Self::Tasks => "Tasks",
@@ -56,6 +65,9 @@ impl DevSurface {
             Self::Graph => "Graph",
             Self::Replay => "Replay",
             Self::Browser => "Browser",
+            Self::Workflow => "Workflow",
+            Self::Kernels => "Kernels",
+            Self::DaemonWorkspace => "Daemon/Workspace",
         }
     }
 }
@@ -78,6 +90,7 @@ pub struct DevTuiState {
     pub agents: String,
     pub tasks: String,
     pub editor: String,
+    pub lsp: String,
     pub processes: String,
     pub git: String,
     pub tests: String,
@@ -86,6 +99,8 @@ pub struct DevTuiState {
     pub replay: String,
     pub browser: String,
     pub browser_detail: String,
+    pub workflow: String,
+    pub workspace_status: String,
     pub experiment_comparison: Option<ExperimentComparison>,
     pub experiments: String,
 }
@@ -120,6 +135,7 @@ impl DevTuiState {
             agents: String::new(),
             tasks: String::new(),
             editor: String::new(),
+            lsp: String::new(),
             processes: String::new(),
             git: String::new(),
             tests: String::new(),
@@ -128,6 +144,8 @@ impl DevTuiState {
             replay: String::new(),
             browser: String::new(),
             browser_detail: "No browser observation yet".into(),
+            workflow: "No workflow evidence yet".into(),
+            workspace_status: String::new(),
             experiment_comparison: None,
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
         };
@@ -195,6 +213,7 @@ impl DevTuiState {
             'u' => Some(DevSurface::Trust),
             'h' => Some(DevSurface::Dashboard),
             'e' => Some(DevSurface::Editor),
+            'l' => Some(DevSurface::Lsp),
             'a' => Some(DevSurface::Agent),
             'm' => Some(DevSurface::Agents),
             'w' => Some(DevSurface::Tasks),
@@ -206,6 +225,9 @@ impl DevTuiState {
             'n' => Some(DevSurface::Graph),
             'r' => Some(DevSurface::Replay),
             'b' => Some(DevSurface::Browser),
+            'f' => Some(DevSurface::Workflow),
+            'k' => Some(DevSurface::Kernels),
+            'z' => Some(DevSurface::DaemonWorkspace),
             _ => None,
         };
         if let Some(surface) = surface {
@@ -324,6 +346,14 @@ impl DevTuiState {
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_else(|error| format!("Editor state failed: {error}"));
+        self.lsp = {
+            let language = self.workspace.language();
+            serde_json::to_string_pretty(&serde_json::json!({
+                "servers": language.names().collect::<Vec<_>>(),
+                "events": language.events(0).into_iter().rev().take(32).collect::<Vec<_>>()
+            }))
+            .unwrap_or_else(|error| format!("LSP state failed: {error}"))
+        };
         self.git = self
             .workspace
             .git()
@@ -382,6 +412,36 @@ impl DevTuiState {
             .state()
             .and_then(|state| serde_json::to_string_pretty(&state).map_err(Into::into))
             .unwrap_or_else(|error| format!("Browser state failed: {error}"));
+        self.workflow = self
+            .workspace
+            .browser()
+            .list_workflows()
+            .and_then(|state| serde_json::to_string_pretty(&state).map_err(Into::into))
+            .unwrap_or_else(|error| format!("Workflow state failed: {error}"));
+        let root = self.workspace.root().display().to_string();
+        let generation = self.workspace.generation();
+        let project_revision = self.workspace.project().revision();
+        let trust = self.workspace.trust();
+        let agent_count = self
+            .workspace
+            .agents()
+            .list()
+            .map(|items| items.len())
+            .unwrap_or(0);
+        let task_count = self.workspace.tasks().map(|items| items.len()).unwrap_or(0);
+        let kernel_count = self.workspace.kernels().snapshots().count();
+        let debugger_count = self.workspace.debugger_names().count();
+        self.workspace_status = format!(
+            "root {}\ngeneration {}\nproject revision {}\ntrust {:?}\nresident resources: {} agents · {} tasks · {} kernels · {} debuggers",
+            root,
+            generation,
+            project_revision,
+            trust,
+            agent_count,
+            task_count,
+            kernel_count,
+            debugger_count,
+        );
         if self.workspace.trust().permits_project_execution()
             && let Ok(experiments) = self.workspace.experiments()
         {

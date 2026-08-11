@@ -17,6 +17,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod testing;
 pub mod tools;
+pub mod trust;
 pub mod tui;
 pub mod workspace;
 
@@ -29,7 +30,7 @@ pub use browser::{BrowserRuntimeState, BrowserService, BrowserStartConfig};
 pub use customization::{Customization, GlassConfig, Skill};
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
-    ExperimentSnapshot, ExperimentState,
+    ExperimentSnapshot, ExperimentState, ExperimentTrustPolicy,
 };
 pub use intelligence::{
     CausalPath, DevelopmentEdge, DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind,
@@ -37,6 +38,7 @@ pub use intelligence::{
 };
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
+pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.
@@ -69,7 +71,83 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
         return tui::run(std::env::current_dir()?, cli.tui_layout);
     }
+    enforce_legacy_development_trust(&cli)?;
     glass_browser::cli::runner::dispatch(cli).await
+}
+
+fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use glass_browser::cli::args::{AgentCommand, AgentHarness, Commands, ProjectCommand};
+
+    let (root, safe_static) = match cli.command.as_ref() {
+        Some(Commands::Project { action }) => {
+            let root = match action {
+                ProjectCommand::Inspect { root }
+                | ProjectCommand::Files { root }
+                | ProjectCommand::Search { root, .. }
+                | ProjectCommand::Read { root, .. }
+                | ProjectCommand::Edit { root, .. }
+                | ProjectCommand::Mkdir { root, .. }
+                | ProjectCommand::Rename { root, .. }
+                | ProjectCommand::Delete { root, .. }
+                | ProjectCommand::Diagnostics { root, .. }
+                | ProjectCommand::Run { root, .. }
+                | ProjectCommand::Test { root }
+                | ProjectCommand::Lint { root }
+                | ProjectCommand::Process { root, .. }
+                | ProjectCommand::Diff { root }
+                | ProjectCommand::Link { root, .. }
+                | ProjectCommand::Graph { root, .. }
+                | ProjectCommand::Breakpoint { root, .. }
+                | ProjectCommand::Timeline { root }
+                | ProjectCommand::Replay { root, .. }
+                | ProjectCommand::Neovim { root, .. }
+                | ProjectCommand::Experiment { root, .. }
+                | ProjectCommand::Attach { root, .. } => root,
+            };
+            let safe = matches!(
+                action,
+                ProjectCommand::Inspect { .. }
+                    | ProjectCommand::Files { .. }
+                    | ProjectCommand::Search { .. }
+                    | ProjectCommand::Read { .. }
+                    | ProjectCommand::Diff { .. }
+                    | ProjectCommand::Graph { .. }
+                    | ProjectCommand::Breakpoint { .. }
+                    | ProjectCommand::Timeline { .. }
+                    | ProjectCommand::Replay { .. }
+            );
+            (root, safe)
+        }
+        Some(Commands::Agent { action }) => {
+            let (root, safe) = match action {
+                AgentCommand::Hello { root, harness } => {
+                    (root, matches!(harness, AgentHarness::Local))
+                }
+                AgentCommand::Prompt { root, harness, .. } => {
+                    (root, matches!(harness, AgentHarness::Local))
+                }
+                AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => return Ok(()),
+                AgentCommand::Steer { root, .. }
+                | AgentCommand::FollowUp { root, .. }
+                | AgentCommand::Models { root }
+                | AgentCommand::SetModel { root, .. }
+                | AgentCommand::Thinking { root, .. }
+                | AgentCommand::Abort { root }
+                | AgentCommand::NewSession { root } => (root, false),
+            };
+            (root, safe)
+        }
+        _ => return Ok(()),
+    };
+    let workspace = DevelopmentWorkspace::open(root)?;
+    if workspace.trust() == WorkspaceTrust::Untrusted && !safe_static {
+        return Err(format!(
+            "repository-controlled development execution is blocked for {}; open the TUI to inspect and trust this workspace",
+            workspace.root().display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn dispatch_external_tool(

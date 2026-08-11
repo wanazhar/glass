@@ -27,6 +27,7 @@ installation; this index owns the cross-product documentation map.
 |---|---|---|
 | Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
+| Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [docs.rs](https://docs.rs/glass-browser) |
@@ -59,6 +60,8 @@ current user instructions.
   Mosh, terminal-native pixels, semantic tap, and private Safari forwarding.
 - [Development Runtime](development-runtime.md) — bounded files, editing, PTYs,
   diagnostics, graph, replay, experiments, collaboration, agents, and Neovim.
+- [Workspace trust](workspace-trust.md) — explicit trust states, identity-bound
+  persistence, configuration inspection, project-skill authority, and TUI UX.
 - [Actions and revisions](actions.md) and [action contract](action-contract.md) —
   unique targeting, execution phases, verification, failure, and recovery.
 - [Semantic observations](semantic-observation.md) — levels, regions, records,

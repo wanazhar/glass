@@ -14,7 +14,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         return Ok("Command palette closed".into());
     };
     match command {
-        "help" | "?" => Ok("Routes: view · editor · lsp · agent · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
+        "help" | "?" => Ok("Routes: trust · view · editor · lsp · agent · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router.".into()),
         "quit" | "q" => {
             state.quit = true;
             Ok("Closing Glass Dev".into())
@@ -24,6 +24,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
             state.surface = parse_surface(name).ok_or("unknown surface")?;
             Ok(format!("Opened {}", state.surface.label()))
         }
+        "trust" => execute_trust(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
@@ -51,11 +52,39 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
     }
 }
 
+fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("inspect") {
+        "status" => Ok(format!("Workspace trust: {:?}", state.workspace.trust())),
+        "inspect" => {
+            state.surface = DevSurface::Trust;
+            Ok(format!(
+                "Inspecting {} configuration items",
+                state.workspace.trust_inspection().len()
+            ))
+        }
+        action @ ("untrusted" | "once" | "project") => {
+            let decision = match action {
+                "untrusted" => crate::LocalTrustDecision::OpenUntrusted,
+                "once" => crate::LocalTrustDecision::TrustOnce,
+                _ => crate::LocalTrustDecision::TrustProject,
+            };
+            let trust = state
+                .workspace
+                .apply_local_trust_decision(decision)
+                .map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Dashboard;
+            Ok(format!("Workspace trust is now {trust:?}"))
+        }
+        _ => Err("trust actions: status, inspect, untrusted, once, project".into()),
+    }
+}
+
 fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
         state.surface = DevSurface::Agent;
         return Ok("Opened Glass Agent".into());
     };
+    require_trusted(state)?;
     match action {
         "spawn" => {
             let role = parts.get(1).ok_or("agent spawn requires ROLE TASK")?;
@@ -356,6 +385,7 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
 }
 
 fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    require_trusted(state)?;
     let action = parts
         .first()
         .copied()
@@ -469,6 +499,7 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
         state.surface = DevSurface::Experiments;
         return Ok("Opened experiments".into());
     };
+    require_trusted(state)?;
     if state.experiment_manager.is_none() {
         let root = state.workspace.root();
         let repository_name = root
@@ -480,7 +511,8 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
             .unwrap_or(root)
             .join(format!(".glass-{repository_name}-experiments"));
         state.experiment_manager = Some(
-            crate::ExperimentManager::new(root, worktrees).map_err(|error| error.to_string())?,
+            crate::ExperimentManager::new_governed(root, worktrees, state.workspace.trust())
+                .map_err(|error| error.to_string())?,
         );
     }
     let experiments = state
@@ -562,6 +594,18 @@ fn compact_result(tool: &str, value: &Value) -> String {
     format!("{tool}: {preview}")
 }
 
+fn require_trusted(state: &DevTuiState) -> Result<(), String> {
+    state
+        .workspace
+        .trust()
+        .permits_project_execution()
+        .then_some(())
+        .ok_or_else(|| {
+            "repository-controlled execution is blocked; inspect and trust the workspace first"
+                .into()
+        })
+}
+
 fn parse_u64(value: Option<&&str>, label: &str) -> Result<u64, String> {
     value
         .ok_or_else(|| format!("missing {label}"))?
@@ -574,6 +618,7 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
         .into_iter()
         .find(|surface| surface.label().eq_ignore_ascii_case(name))
         .or(match name {
+            "trust" => Some(DevSurface::Trust),
             "home" => Some(DevSurface::Dashboard),
             "agent" => Some(DevSurface::Agent),
             "process" => Some(DevSurface::Processes),

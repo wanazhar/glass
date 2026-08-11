@@ -67,7 +67,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 
 | Issue pillar / gate | Required implementation evidence | Initial state |
 |---|---|---|
-| I / Gate 1 Trust | fail-closed identity-bound trust store, inspection, shared enforcement, ten required security tests, trust TUI | Blocking |
+| I / Gate 1 Trust | fail-closed identity-bound trust store, inspection, shared enforcement, ten required security tests, trust TUI | Complete locally |
 | II / Gate 2 Pi SDK | Glass-owned runtime and direct session lifecycle/events/tools/persistence; no CLI-RPC harness | Blocking |
 | III / Gate 3 Boundary | no browser development feature, no browser-owned project core, no fallback dispatch; three package checks | Blocking |
 | IV / Gate 4 Tasks | first-class verified DAG, automatic dispatch/wakeup/failure propagation, public and TUI controls | Blocking |
@@ -100,4 +100,3 @@ Cargo target and 5.2 GiB in the reusable fuzz target. One target tree is reused;
 space is rechecked before release profiles, packages, fuzz, or cross-target
 builds. Cleanup, if needed, is limited to explicitly inspected disposable Cargo
 artifacts.
-

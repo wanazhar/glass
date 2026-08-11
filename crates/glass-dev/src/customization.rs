@@ -1,5 +1,6 @@
 //! Governed project configuration, skills, hooks, commands, and custom tools.
 
+use crate::WorkspaceTrust;
 use glass_browser::development::{DevelopmentError, DevelopmentResult, ToolDescriptor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -129,6 +130,35 @@ pub struct Skill {
     pub project_scoped: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CustomizationAuthority {
+    UserGlobal,
+    TrustedProject,
+    UntrustedProject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CustomizationRisk {
+    Static,
+    AgentContext,
+    Executable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomizationInspectionItem {
+    pub kind: String,
+    pub name: String,
+    pub source: PathBuf,
+    pub authority: CustomizationAuthority,
+    pub risk: CustomizationRisk,
+    pub command: Option<String>,
+    pub declared_mutating: Option<bool>,
+    pub trust_required: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Customization {
     root: PathBuf,
@@ -182,18 +212,150 @@ impl Customization {
         self.skills.values()
     }
 
-    pub fn agent_instructions(&self) -> Option<String> {
-        if self.skills.is_empty() {
+    pub fn agent_instructions(&self, trust: WorkspaceTrust) -> Option<String> {
+        let active = self
+            .skills
+            .values()
+            .filter(|skill| !skill.project_scoped || trust.permits_project_execution())
+            .collect::<Vec<_>>();
+        if active.is_empty() {
             return None;
         }
-        let mut output = String::from("\n\nProject and user skills supplied by Glass authority:\n");
-        for skill in self.skills.values() {
+        let mut output =
+            String::from("\n\nGlass customization instructions with explicit authority:\n");
+        for skill in active {
+            let authority = if skill.project_scoped {
+                "trusted-project"
+            } else {
+                "user-global"
+            };
             output.push_str(&format!(
-                "\n<skill name=\"{}\">\n{}\n</skill>\n",
-                skill.name, skill.instructions
+                "\n<skill name=\"{}\" authority=\"{}\" source=\"{}\">\n{}\n</skill>\n",
+                skill.name,
+                authority,
+                skill.source.display(),
+                skill.instructions
             ));
         }
         Some(output)
+    }
+
+    pub fn inspect(&self, trust: WorkspaceTrust) -> Vec<CustomizationInspectionItem> {
+        let project_authority = if trust.permits_project_execution() {
+            CustomizationAuthority::TrustedProject
+        } else {
+            CustomizationAuthority::UntrustedProject
+        };
+        let source = self
+            .config_path
+            .clone()
+            .unwrap_or_else(|| self.root.join("glass.toml"));
+        let mut items = Vec::new();
+        if let Some(name) = self.config.project.name.as_ref() {
+            items.push(CustomizationInspectionItem {
+                kind: "setting".into(),
+                name: "project.name".into(),
+                source: source.clone(),
+                authority: project_authority,
+                risk: CustomizationRisk::Static,
+                command: Some(name.clone()),
+                declared_mutating: None,
+                trust_required: false,
+            });
+        }
+        if let Some(url) = self.config.browser.url.as_ref() {
+            items.push(CustomizationInspectionItem {
+                kind: "setting".into(),
+                name: "browser.url".into(),
+                source: source.clone(),
+                authority: project_authority,
+                risk: CustomizationRisk::Static,
+                command: Some(url.clone()),
+                declared_mutating: None,
+                trust_required: false,
+            });
+        }
+        for skill in self.skills.values() {
+            items.push(CustomizationInspectionItem {
+                kind: "skill".into(),
+                name: skill.name.clone(),
+                source: skill.source.clone(),
+                authority: if skill.project_scoped {
+                    project_authority
+                } else {
+                    CustomizationAuthority::UserGlobal
+                },
+                risk: CustomizationRisk::AgentContext,
+                command: None,
+                declared_mutating: None,
+                trust_required: skill.project_scoped,
+            });
+        }
+        for (name, command) in &self.config.commands {
+            items.push(executable_item(
+                "command",
+                name,
+                command,
+                &source,
+                project_authority,
+                None,
+            ));
+        }
+        for (name, tool) in &self.config.tools {
+            items.push(executable_item(
+                "customTool",
+                name,
+                &tool.command,
+                &source,
+                project_authority,
+                Some(tool.mutating),
+            ));
+        }
+        for (event, hooks) in &self.config.hooks {
+            for (index, hook) in hooks.iter().enumerate() {
+                items.push(executable_item(
+                    "hook",
+                    &format!("{event}[{index}]"),
+                    &hook.command,
+                    &source,
+                    project_authority,
+                    Some(true),
+                ));
+            }
+        }
+        for (name, test) in &self.config.tests {
+            items.push(executable_item(
+                "test",
+                name,
+                &test.command,
+                &source,
+                project_authority,
+                Some(true),
+            ));
+        }
+        for (name, server) in &self.config.lsp {
+            let command = format!("{} {}", server.command, server.args.join(" "));
+            items.push(executable_item(
+                "lsp",
+                name,
+                command.trim(),
+                &source,
+                project_authority,
+                Some(true),
+            ));
+        }
+        for (name, server) in &self.config.dap {
+            let command = format!("{} {}", server.command, server.args.join(" "));
+            items.push(executable_item(
+                "dap",
+                name,
+                command.trim(),
+                &source,
+                project_authority,
+                Some(true),
+            ));
+        }
+        items
     }
 
     pub fn custom_tool(&self, name: &str) -> Option<&CustomToolConfig> {
@@ -205,7 +367,10 @@ impl Customization {
         self.config.commands.get(name).map(String::as_str)
     }
 
-    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+    pub fn descriptors(&self, trust: WorkspaceTrust) -> Vec<ToolDescriptor> {
+        let available = trust.permits_project_execution();
+        let unavailable_reason = (!available)
+            .then(|| "repository shell commands require explicit workspace trust".to_string());
         self.config
             .tools
             .iter()
@@ -214,21 +379,27 @@ impl Customization {
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
                 mutating: tool.mutating,
-                available: true,
-                unavailable_reason: None,
+                available,
+                unavailable_reason: unavailable_reason.clone(),
             })
             .chain(self.config.commands.keys().map(|name| ToolDescriptor {
                 name: format!("glass.command.{name}"),
                 description: format!("Configured Glass project command {name}"),
                 input_schema: serde_json::json!({"type":"object"}),
                 mutating: true,
-                available: true,
-                unavailable_reason: None,
+                available,
+                unavailable_reason: unavailable_reason.clone(),
             }))
             .collect()
     }
 
-    pub fn execute_tool(&self, name: &str, arguments: &Value) -> DevelopmentResult<Value> {
+    pub fn execute_tool(
+        &self,
+        name: &str,
+        arguments: &Value,
+        trust: WorkspaceTrust,
+    ) -> DevelopmentResult<Value> {
+        require_project_trust(trust)?;
         let tool = self
             .custom_tool(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("custom tool {name}")))?;
@@ -242,7 +413,8 @@ impl Customization {
         )
     }
 
-    pub fn execute_command(&self, name: &str) -> DevelopmentResult<Value> {
+    pub fn execute_command(&self, name: &str, trust: WorkspaceTrust) -> DevelopmentResult<Value> {
+        require_project_trust(trust)?;
         let command = self
             .command(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("project command {name}")))?;
@@ -255,7 +427,13 @@ impl Customization {
         )
     }
 
-    pub fn run_hooks(&self, event: &str, evidence: &Value) -> DevelopmentResult<Vec<Value>> {
+    pub fn run_hooks(
+        &self,
+        event: &str,
+        evidence: &Value,
+        trust: WorkspaceTrust,
+    ) -> DevelopmentResult<Vec<Value>> {
+        require_project_trust(trust)?;
         validate_hook_event(event)?;
         let mut results = Vec::new();
         for hook in self.config.hooks.get(event).into_iter().flatten() {
@@ -274,6 +452,36 @@ impl Customization {
             }
         }
         Ok(results)
+    }
+}
+
+fn require_project_trust(trust: WorkspaceTrust) -> DevelopmentResult<()> {
+    if trust.permits_project_execution() {
+        Ok(())
+    } else {
+        Err(DevelopmentError::Conflict(
+            "repository-controlled execution is blocked until the workspace is trusted".into(),
+        ))
+    }
+}
+
+fn executable_item(
+    kind: &str,
+    name: &str,
+    command: &str,
+    source: &Path,
+    authority: CustomizationAuthority,
+    declared_mutating: Option<bool>,
+) -> CustomizationInspectionItem {
+    CustomizationInspectionItem {
+        kind: kind.into(),
+        name: name.into(),
+        source: source.to_path_buf(),
+        authority,
+        risk: CustomizationRisk::Executable,
+        command: Some(command.into()),
+        declared_mutating,
+        trust_required: true,
     }
 }
 
@@ -412,7 +620,7 @@ fn load_skill_dir(
             )));
         }
         skills.insert(
-            name.into(),
+            format!("{}:{name}", if project_scoped { "project" } else { "user" }),
             Skill {
                 name: name.into(),
                 source: path,
@@ -619,30 +827,39 @@ input_schema = {{ type = "object", required = ["text"] }}
         let customization = Customization::load(&root).unwrap();
         assert!(
             customization
-                .agent_instructions()
+                .agent_instructions(WorkspaceTrust::TrustedOnce)
                 .unwrap()
                 .contains("Always run tests")
         );
         assert_eq!(
             customization
-                .execute_tool("glass.custom.echo", &serde_json::json!({"text":"ok"}))
+                .execute_tool(
+                    "glass.custom.echo",
+                    &serde_json::json!({"text":"ok"}),
+                    WorkspaceTrust::TrustedOnce,
+                )
                 .unwrap()["text"],
             "ok"
         );
         assert_eq!(
             customization
-                .run_hooks("tool.before", &Value::Null)
+                .run_hooks("tool.before", &Value::Null, WorkspaceTrust::TrustedOnce)
                 .unwrap()
                 .len(),
             1
         );
         assert!(
-            customization.execute_command("hello").unwrap()["stdout"]
+            customization
+                .execute_command("hello", WorkspaceTrust::TrustedOnce)
+                .unwrap()["stdout"]
                 .as_str()
                 .unwrap()
                 .contains("command-ok")
         );
         let mut workspace = crate::DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .unwrap();
         assert!(workspace.tests().suites().any(|suite| {
             suite.id == "smoke"
                 && suite.framework == crate::testing::TestFramework::Custom

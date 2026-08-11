@@ -35,6 +35,14 @@ fn temp_project() -> std::path::PathBuf {
     root
 }
 
+fn trusted_store(root: &std::path::Path) -> std::path::PathBuf {
+    let path = root.with_extension("trust.json");
+    glass_dev::WorkspaceTrustStore::at(&path)
+        .trust_project(&glass_dev::WorkspaceIdentity::inspect(root).unwrap())
+        .unwrap();
+    path
+}
+
 #[test]
 fn both_cli_help_paths_exit_successfully() {
     for binary in [glass_binary(), glass_browser_binary()] {
@@ -55,6 +63,7 @@ fn both_cli_help_paths_exit_successfully() {
 fn cli_project_and_agent_paths_are_browser_free() {
     let root = temp_project();
     let binary = glass_binary();
+    let trust_store = trusted_store(&root);
 
     let run = Command::new(&binary)
         .args([
@@ -67,6 +76,7 @@ fn cli_project_and_agent_paths_are_browser_free() {
             "--root",
             root.to_str().unwrap(),
         ])
+        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("project run should start");
     assert!(run.status.success(), "project run failed: {:?}", run.stderr);
@@ -83,6 +93,7 @@ fn cli_project_and_agent_paths_are_browser_free() {
             "--root",
             root.to_str().unwrap(),
         ])
+        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("agent prompt should start");
     assert!(
@@ -99,7 +110,7 @@ fn cli_project_and_agent_paths_are_browser_free() {
 }
 
 #[test]
-fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
+fn yolo_does_not_bypass_workspace_trust_and_normal_mode_stays_gated() {
     let root = temp_project();
     let binary = glass_binary();
     let call = r#"{"id":"write","name":"glass.file.write","arguments":{"path":"yolo.txt","content":"approval-free\n"}}"#;
@@ -110,12 +121,9 @@ fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
         .expect("normal agent tool should run");
     assert!(!denied.status.success());
     assert!(!root.join("yolo.txt").exists());
-    assert!(
-        String::from_utf8_lossy(&denied.stderr)
-            .contains("requires mutation authority and confirmation")
-    );
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("trust"));
 
-    let allowed = Command::new(&binary)
+    let untrusted_yolo = Command::new(&binary)
         .args([
             "--yolo",
             "agent",
@@ -126,6 +134,23 @@ fn yolo_agent_tool_mutates_without_approval_and_normal_mode_stays_gated() {
         ])
         .output()
         .expect("YOLO agent tool should run");
+    assert!(!untrusted_yolo.status.success());
+    assert!(!root.join("yolo.txt").exists());
+    assert!(String::from_utf8_lossy(&untrusted_yolo.stderr).contains("trusted"));
+
+    let trust_store = trusted_store(&root);
+    let allowed = Command::new(&binary)
+        .args([
+            "--yolo",
+            "agent",
+            "tool",
+            call,
+            "--root",
+            root.to_str().unwrap(),
+        ])
+        .env("GLASS_TRUST_STORE_PATH", trust_store)
+        .output()
+        .expect("trusted YOLO agent tool should run");
     assert!(
         allowed.status.success(),
         "YOLO agent tool failed: {:?}",
@@ -189,6 +214,20 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
                 "arguments": {"path": "note.txt"}
             }
         }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "project.run",
+                "arguments": {
+                    "name": "blocked",
+                    "command": "echo should-not-run",
+                    "wait": true,
+                    "_glass": {"allowMutation": true, "confirmed": true}
+                }
+            }
+        }),
     ] {
         writeln!(stdin, "{request}").unwrap();
     }
@@ -204,7 +243,7 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("stdout must be JSON-RPC JSONL"))
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 4);
+    assert_eq!(responses.len(), 5);
     let response = |id: u64| {
         responses
             .iter()
@@ -233,6 +272,14 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
         response(4)["result"]["structuredContent"]["content"],
         "hello from the project\n"
     );
+    assert_eq!(response(5)["result"]["isError"], true);
+    assert!(
+        response(5)["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("trusted")
+    );
+    assert!(!root.join("should-not-run").exists());
     let fixture: Value = serde_json::from_str(include_str!("fixtures/client-conformance-v1.json"))
         .expect("development conformance fixture should be valid JSON");
     let mut live_names = tools

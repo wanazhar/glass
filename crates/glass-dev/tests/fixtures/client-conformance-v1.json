@@ -195,6 +195,8 @@
     "glass.workflow.resume",
     "glass.workflow.run",
     "glass.workflow.verify",
+    "glass.workspace.trust.inspect",
+    "glass.workspace.trust.status",
     "hover",
     "importCheckpoint",
     "inspectPage",

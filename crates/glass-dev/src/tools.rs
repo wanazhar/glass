@@ -5,7 +5,7 @@ use crate::browser::BrowserStartConfig;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
 use crate::workspace::DevelopmentWorkspace;
-use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput};
+use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
     SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
 };
@@ -52,9 +52,9 @@ impl Default for DevelopmentToolRouter {
 }
 
 impl DevelopmentToolRouter {
-    pub fn with_customization(customization: &crate::Customization) -> Self {
+    pub fn with_customization(customization: &crate::Customization, trust: WorkspaceTrust) -> Self {
         let mut router = Self::default();
-        let custom = customization.descriptors();
+        let custom = customization.descriptors(trust);
         router
             .descriptors
             .retain(|descriptor| !custom.iter().any(|item| item.name == descriptor.name));
@@ -91,6 +91,20 @@ impl DevelopmentToolRouter {
             .iter()
             .find(|descriptor| descriptor.name == call.name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
+        if !descriptor.available {
+            return Err(DevelopmentError::Conflict(
+                descriptor
+                    .unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| format!("tool {} is unavailable", call.name)),
+            ));
+        }
+        if workspace.trust() == WorkspaceTrust::Untrusted && !untrusted_tool_allowed(&call.name) {
+            return Err(DevelopmentError::Conflict(format!(
+                "tool {} is blocked until the workspace is trusted",
+                call.name
+            )));
+        }
         if descriptor.mutating
             && (!context.authorization.allow_mutation || !context.authorization.confirmed)
         {
@@ -133,10 +147,13 @@ impl DevelopmentToolRouter {
             evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating}),
             rationale: None,
         })?;
-        workspace.customization().run_hooks(
-            "tool.before",
-            &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
-        )?;
+        if workspace.trust().permits_project_execution() {
+            workspace.customization().run_hooks(
+                "tool.before",
+                &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
+                workspace.trust(),
+            )?;
+        }
         let result = if service_descriptors()
             .iter()
             .any(|descriptor| descriptor.name == call.name)
@@ -145,19 +162,24 @@ impl DevelopmentToolRouter {
         } else if workspace.customization().custom_tool(&call.name).is_some() {
             workspace
                 .customization()
-                .execute_tool(&call.name, &call.arguments)
+                .execute_tool(&call.name, &call.arguments, workspace.trust())
         } else if let Some(name) = call.name.strip_prefix("glass.command.") {
-            workspace.customization().execute_command(name)
+            workspace
+                .customization()
+                .execute_command(name, workspace.trust())
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
         };
         match result {
             Ok(result) => {
-                workspace.customization().run_hooks(
-                    "tool.after",
-                    &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
-                )?;
+                if workspace.trust().permits_project_execution() {
+                    workspace.customization().run_hooks(
+                        "tool.after",
+                        &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
+                        workspace.trust(),
+                    )?;
+                }
                 let result_bytes = serde_json::to_vec(&result)?.len();
                 if result_bytes > RESULT_LIMIT {
                     return Err(DevelopmentError::InvalidInput(format!(
@@ -177,10 +199,13 @@ impl DevelopmentToolRouter {
                 Ok(result)
             }
             Err(error) => {
-                workspace.customization().run_hooks(
-                    "tool.after",
-                    &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
-                )?;
+                if workspace.trust().permits_project_execution() {
+                    workspace.customization().run_hooks(
+                        "tool.after",
+                        &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
+                        workspace.trust(),
+                    )?;
+                }
                 let resulting_revision = workspace.project().revision();
                 workspace.intelligence_mut().record(ObservableEventInput {
                     actor: &actor_id,
@@ -919,6 +944,17 @@ impl DevelopmentToolRouter {
                     .intelligence()
                     .replay_diff(unsigned(call, "from", 0)?, unsigned(call, "to", 1)?)?,
             )?),
+            "glass.workspace.trust.status" => Ok(serde_json::json!({
+                "trust":workspace.trust(),
+                "identity":workspace.trust_identity(),
+                "store":workspace.trust_store_path(),
+                "localDecisionRequired":true
+            })),
+            "glass.workspace.trust.inspect" => Ok(serde_json::json!({
+                "trust":workspace.trust(),
+                "items":workspace.trust_inspection(),
+                "localDecisionRequired":true
+            })),
             _ => Err(DevelopmentError::NotFound(format!("tool {}", call.name))),
         }
     }
@@ -990,6 +1026,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.semantic.inspect",
         "glass.semantic.diff",
         "glass.semantic.links",
+        "glass.workspace.trust.status",
+        "glass.workspace.trust.inspect",
     ];
     const MUTATE: &[&str] = &[
         "glass.git.stage",
@@ -1061,6 +1099,59 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         .map(|name| service_descriptor(name, false))
         .chain(MUTATE.iter().map(|name| service_descriptor(name, true)))
         .collect()
+}
+
+fn untrusted_tool_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "glass.file.read"
+            | "glass.file.list"
+            | "glass.file.search"
+            | "glass.file.grep"
+            | "glass.file.find"
+            | "glass.git.status"
+            | "glass.git.diff"
+            | "glass.git.branches"
+            | "glass.git.blame"
+            | "glass.git.conflicts"
+            | "glass.git.stash.list"
+            | "glass.git.worktree.list"
+            | "glass.browser.start"
+            | "glass.browser.attach"
+            | "glass.browser.reconnect"
+            | "glass.browser.stop"
+            | "glass.browser.state"
+            | "glass.browser.observe"
+            | "glass.browser.snapshot"
+            | "glass.browser.semantic"
+            | "glass.browser.diff"
+            | "glass.browser.targets"
+            | "glass.browser.target.select"
+            | "glass.browser.navigate"
+            | "glass.browser.act"
+            | "glass.browser.screenshot"
+            | "glass.memory.retrieve"
+            | "glass.memory.explain"
+            | "glass.semantic.inspect"
+            | "glass.semantic.diff"
+            | "glass.semantic.links"
+            | "glass.graph.query"
+            | "glass.graph.path"
+            | "glass.graph.explain"
+            | "glass.replay.list"
+            | "glass.replay.inspect"
+            | "glass.replay.diff"
+            | "glass.editor.open"
+            | "glass.editor.selection"
+            | "glass.editor.diff"
+            | "glass.editor.buffers"
+            | "glass.process.logs"
+            | "glass.process.list"
+            | "glass.process.health"
+            | "glass.process.ports"
+            | "glass.workspace.trust.status"
+            | "glass.workspace.trust.inspect"
+    )
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
@@ -1341,7 +1432,11 @@ mod tests {
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
-        DevelopmentWorkspace::open(root).unwrap()
+        let mut workspace = DevelopmentWorkspace::open(root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .unwrap();
+        workspace
     }
 
     fn context(workspace: &DevelopmentWorkspace, mutate: bool) -> DevelopmentToolContext {

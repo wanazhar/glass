@@ -1,9 +1,12 @@
 //! Isolated competing implementations ranked from observable evidence.
 
-use crate::DevelopmentWorkspace;
 use crate::agents::{AgentId, AgentRegistry, AgentSpec};
 use crate::git::{GitError, GitService};
 use crate::testing::TestRun;
+use crate::{
+    DevelopmentWorkspace, LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust,
+    WorkspaceTrustStore,
+};
 use glass_browser::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +24,15 @@ pub enum ExperimentState {
     Completed,
     Failed,
     Selected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExperimentTrustPolicy {
+    /// Child worktrees start untrusted and cannot execute project code.
+    Reevaluate,
+    /// A trusted parent grants process-lifetime trust to child worktrees only.
+    InheritOnce,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,6 +88,7 @@ pub struct ExperimentManager {
     worktree_root: PathBuf,
     experiments: BTreeMap<String, Experiment>,
     ports: BTreeSet<u16>,
+    trust_policy: ExperimentTrustPolicy,
 }
 
 impl ExperimentManager {
@@ -83,6 +96,21 @@ impl ExperimentManager {
         repository_root: impl AsRef<Path>,
         worktree_root: impl AsRef<Path>,
     ) -> DevelopmentResult<Self> {
+        let identity = WorkspaceIdentity::inspect(repository_root.as_ref())?;
+        let trust = WorkspaceTrustStore::platform_default()?.status(&identity)?;
+        Self::new_governed(repository_root, worktree_root, trust)
+    }
+
+    pub fn new_governed(
+        repository_root: impl AsRef<Path>,
+        worktree_root: impl AsRef<Path>,
+        parent_trust: WorkspaceTrust,
+    ) -> DevelopmentResult<Self> {
+        if !parent_trust.permits_project_execution() {
+            return Err(DevelopmentError::Conflict(
+                "experiments cannot create executable worktrees before workspace trust".into(),
+            ));
+        }
         let repository = GitService::open(repository_root)
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
         let worktree_root = absolutize(worktree_root.as_ref())?;
@@ -98,6 +126,7 @@ impl ExperimentManager {
             worktree_root,
             experiments: BTreeMap::new(),
             ports: BTreeSet::new(),
+            trust_policy: ExperimentTrustPolicy::InheritOnce,
         })
     }
 
@@ -143,7 +172,20 @@ impl ExperimentManager {
             return Err(DevelopmentError::Process(error.to_string()));
         }
         let workspace = match DevelopmentWorkspace::open(&worktree) {
-            Ok(workspace) => workspace,
+            Ok(mut workspace) => {
+                if self.trust_policy == ExperimentTrustPolicy::InheritOnce
+                    && let Err(error) =
+                        workspace.apply_local_trust_decision(LocalTrustDecision::TrustOnce)
+                {
+                    drop(workspace);
+                    let _ = self.repository.remove_worktree(&worktree, true);
+                    if let Some(port) = port {
+                        self.ports.remove(&port);
+                    }
+                    return Err(error);
+                }
+                workspace
+            }
             Err(error) => {
                 let _ = self.repository.remove_worktree(&worktree, true);
                 if let Some(port) = port {
@@ -476,7 +518,12 @@ mod tests {
     fn isolated_worktrees_are_ranked_and_selected_from_evidence() {
         let (base, root) = repository();
         let worktrees = base.join("worktrees");
-        let mut manager = ExperimentManager::new(&root, &worktrees).unwrap();
+        assert!(
+            ExperimentManager::new_governed(&root, &worktrees, WorkspaceTrust::Untrusted).is_err()
+        );
+        let mut manager =
+            ExperimentManager::new_governed(&root, &worktrees, WorkspaceTrust::TrustedOnce)
+                .unwrap();
         let first = manager
             .create("approach-a", "experiment-a", Some(3101))
             .unwrap();

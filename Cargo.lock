@@ -853,6 +853,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "fs2",
  "glass-browser",
  "libc",
  "ratatui",

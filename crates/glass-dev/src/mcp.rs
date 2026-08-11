@@ -34,7 +34,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             .workspace
             .lock()
             .expect("development MCP workspace poisoned");
-        workspace
+        let mut tools = workspace
             .tool_descriptors()
             .into_iter()
             .filter(|descriptor| descriptor.available)
@@ -43,7 +43,15 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 description: descriptor.description,
                 input_schema: augment_schema(descriptor.input_schema, descriptor.mutating),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        tools.extend(LEGACY_EXECUTION_TOOLS.iter().map(|name| HostMcpTool {
+            name: (*name).into(),
+            description: format!(
+                "Trust-governed compatibility route for legacy development tool {name}"
+            ),
+            input_schema: augment_schema(json!({"type":"object"}), true),
+        }));
+        tools
     }
 
     fn call(&self, name: &str, mut arguments: Value) -> Result<Value, String> {
@@ -72,11 +80,23 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             .workspace
             .lock()
             .map_err(|_| "development MCP workspace poisoned".to_string())?;
-        let descriptor = workspace
-            .tool_descriptors()
-            .into_iter()
-            .find(|descriptor| descriptor.name == name && descriptor.available)
-            .ok_or_else(|| format!("unknown development MCP tool {name}"))?;
+        let legacy_execution = LEGACY_EXECUTION_TOOLS.contains(&name);
+        let descriptor = if legacy_execution {
+            glass_browser::development::ToolDescriptor {
+                name: name.into(),
+                description: format!("Trust-governed compatibility route {name}"),
+                input_schema: json!({"type":"object"}),
+                mutating: true,
+                available: true,
+                unavailable_reason: None,
+            }
+        } else {
+            workspace
+                .tool_descriptors()
+                .into_iter()
+                .find(|descriptor| descriptor.name == name && descriptor.available)
+                .ok_or_else(|| format!("unknown development MCP tool {name}"))?
+        };
         let authorized = self.unrestricted
             || (metadata
                 .get("allowMutation")
@@ -91,6 +111,16 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 "{name} requires _glass.allowMutation=true and _glass.confirmed=true"
             ));
         }
+        let (name, arguments) = if legacy_execution {
+            if !workspace.trust().permits_project_execution() {
+                return Err(format!(
+                    "{name} is blocked until the workspace is trusted by a local user"
+                ));
+            }
+            translate_legacy_execution(name, arguments, workspace.root())?
+        } else {
+            (name.to_string(), arguments)
+        };
         let context = DevelopmentToolContext {
             authorization: ToolAuthorization {
                 actor: Actor::external(actor),
@@ -108,13 +138,69 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
         };
         let call = ToolCall {
             id: format!("mcp-{}", self.next_call.fetch_add(1, Ordering::Relaxed)),
-            name: name.to_string(),
+            name,
             arguments,
         };
         workspace
             .execute_tool(&call, &context)
             .map_err(|error| error.to_string())
     }
+}
+
+const LEGACY_EXECUTION_TOOLS: &[&str] = &[
+    "project.edit",
+    "project.mkdir",
+    "project.rename",
+    "project.delete",
+    "project.diagnostics",
+    "project.run",
+    "project.process.stop",
+    "project.session.detach",
+    "project.capsule.save",
+    "project.capsule.clear",
+    "project.neovim.probe",
+    "project.experiment.create",
+    "project.attach",
+    "project.link",
+    "agent.prompt",
+    "agent.steer",
+];
+
+fn translate_legacy_execution(
+    name: &str,
+    mut arguments: Value,
+    workspace_root: &Path,
+) -> Result<(String, Value), String> {
+    let object = arguments
+        .as_object_mut()
+        .ok_or("legacy development arguments must be an object")?;
+    if let Some(root) = object.remove("root") {
+        let root = root
+            .as_str()
+            .ok_or("legacy project root must be a string")?;
+        let root = std::fs::canonicalize(root).map_err(|error| error.to_string())?;
+        if root != workspace_root {
+            return Err("legacy project tool root does not match the resident workspace".into());
+        }
+    }
+    let mapped = match name {
+        "project.edit" => "glass.file.write",
+        "project.mkdir" => "glass.file.mkdir",
+        "project.rename" => "glass.file.rename",
+        "project.delete" => "glass.file.delete",
+        "project.diagnostics" => "glass.diagnostics.run",
+        "project.run" if object.remove("wait").and_then(|value| value.as_bool()) == Some(true) => {
+            "glass.command.run"
+        }
+        "project.run" => "glass.process.start",
+        "project.process.stop" => "glass.process.stop",
+        _ => {
+            return Err(format!(
+                "{name} is trust-gated and pending migration to the Glass Dev router"
+            ));
+        }
+    };
+    Ok((mapped.into(), arguments))
 }
 
 fn augment_schema(mut schema: Value, mutating: bool) -> Value {
@@ -177,20 +263,38 @@ mod tests {
                 )
                 .is_err()
         );
-        backend
-            .call(
-                "glass.file.write",
-                json!({
-                    "path":"allowed.txt",
-                    "content":"yes",
-                    "_glass":{"allowMutation":true,"confirmed":true,"actor":"external-test"}
-                }),
-            )
-            .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("allowed.txt")).unwrap(),
-            "yes"
+        assert!(
+            backend
+                .call(
+                    "glass.file.write",
+                    json!({
+                        "path":"allowed.txt",
+                        "content":"yes",
+                        "_glass":{"allowMutation":true,"confirmed":true,"actor":"external-test"}
+                    }),
+                )
+                .unwrap_err()
+                .contains("trusted")
         );
+        assert!(!root.join("allowed.txt").exists());
+        assert!(
+            backend
+                .call(
+                    "project.run",
+                    json!({
+                        "name":"blocked",
+                        "command":if cfg!(windows) { "echo no" } else { "printf no" },
+                        "wait":true,
+                        "_glass":{"allowMutation":true,"confirmed":true}
+                    }),
+                )
+                .unwrap_err()
+                .contains("trusted")
+        );
+        let status = backend
+            .call("glass.workspace.trust.status", json!({}))
+            .unwrap();
+        assert_eq!(status["trust"], "untrusted");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

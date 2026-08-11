@@ -222,6 +222,11 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Active user-global and trusted-project instructions supplied to Pi.
+    pub fn additional_system_prompt(&self) -> Option<&str> {
+        self.additional_system_prompt.as_deref()
+    }
+
     pub fn set_defaults(
         &mut self,
         model: Option<String>,

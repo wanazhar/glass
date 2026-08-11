@@ -1,6 +1,6 @@
 # security-035-001: explicit workspace trust boundary
 
-Status: In progress
+Status: Complete and verified locally
 
 ## Outcome
 
@@ -59,3 +59,6 @@ cargo fmt --all -- --check
 cargo clippy -p glass-dev --all-targets -- -D warnings
 ```
 
+All ten required security behaviors are covered by trust, workspace, MCP,
+daemon, experiment-policy, TUI, and black-box CLI tests. The complete
+`glass-dev` suite and strict package Clippy pass at this checkpoint.

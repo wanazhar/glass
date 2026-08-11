@@ -1,6 +1,8 @@
 //! Local authenticated daemon that owns complete development workspaces.
 
-use crate::{DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker};
+use crate::{
+    DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker, WorkspaceTrustStore,
+};
 use glass_browser::cli::args::DaemonCommand;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
@@ -201,6 +203,19 @@ pub fn stop(
 }
 
 pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    serve_with_store(
+        socket,
+        status_path,
+        WorkspaceTrustStore::platform_default()?,
+    )
+    .await
+}
+
+async fn serve_with_store(
+    socket: &Path,
+    status_path: &Path,
+    trust_store: WorkspaceTrustStore,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
     {
         let _ = (socket, status_path);
@@ -257,9 +272,10 @@ pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std:
                     let token = token.clone();
                     let status_path = status_path.to_path_buf();
                     let socket = socket.to_path_buf();
+                    let trust_store = trust_store.clone();
                     tokio::task::spawn_local(async move {
                         if let Err(error) =
-                            handle_client(stream, &token, &socket, &workspaces).await
+                            handle_client(stream, &token, &socket, &workspaces, &trust_store).await
                         {
                             tracing::warn!(%error, "development daemon client failed");
                         }
@@ -284,6 +300,7 @@ async fn handle_client(
     token: &str,
     socket: &Path,
     workspaces: &std::rc::Rc<tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>>,
+    trust_store: &WorkspaceTrustStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -297,7 +314,9 @@ async fn handle_client(
             }
         } else {
             match serde_json::from_str::<DevelopmentDaemonRequest>(&line) {
-                Ok(request) => execute_request(request, token, socket, workspaces).await,
+                Ok(request) => {
+                    execute_request(request, token, socket, workspaces, trust_store).await
+                }
                 Err(error) => DevelopmentDaemonResponse {
                     id: "invalid".into(),
                     ok: false,
@@ -322,6 +341,7 @@ async fn execute_request(
     token: &str,
     socket: &Path,
     workspaces: &tokio::sync::Mutex<BTreeMap<String, DevelopmentWorkspace>>,
+    trust_store: &WorkspaceTrustStore,
 ) -> DevelopmentDaemonResponse {
     let id = request.id.clone();
     let result = async {
@@ -342,7 +362,8 @@ async fn execute_request(
                     return Err("daemon workspace quota reached".into());
                 }
                 let mut workspace =
-                    DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?;
+                    DevelopmentWorkspace::open_with_store(root, trust_store.clone())
+                        .map_err(|error| error.to_string())?;
                 workspace
                     .agents()
                     .set_resident_broker(ResidentAgentBroker {
@@ -614,6 +635,7 @@ fn workspace_summary(id: &str, workspace: &DevelopmentWorkspace) -> Value {
     serde_json::json!({
         "id":id,
         "root":workspace.root(),
+        "trust":workspace.trust(),
         "generation":workspace.generation(),
         "projectRevision":workspace.project().revision()
     })
@@ -830,6 +852,10 @@ mod tests {
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
+        let trust_store = WorkspaceTrustStore::at(base.join("trust.json"));
+        trust_store
+            .trust_project(&crate::WorkspaceIdentity::inspect(&project).unwrap())
+            .unwrap();
         let socket = base.join("glassd.sock");
         let status = base.join("glassd.json");
         let local = tokio::task::LocalSet::new();
@@ -837,8 +863,11 @@ mod tests {
             .run_until(async {
                 let server_socket = socket.clone();
                 let server_status = status.clone();
+                let server_trust_store = trust_store.clone();
                 let server = tokio::task::spawn_local(async move {
-                    serve(&server_socket, &server_status).await.unwrap()
+                    serve_with_store(&server_socket, &server_status, server_trust_store)
+                        .await
+                        .unwrap()
                 });
                 for _ in 0..100 {
                     if status.exists() && socket.exists() {
@@ -1005,6 +1034,87 @@ mod tests {
                     browser_stop.confirmed = true;
                     assert!(request(&socket, &browser_stop).await.unwrap().ok);
                 }
+                server.abort();
+            })
+            .await;
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[cfg(unix)]
+    async fn daemon_reconnect_preserves_untrusted_state_and_cannot_elevate_it() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "glassd-trust-test-{}-{sequence}",
+            std::process::id()
+        ));
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("glass.toml"),
+            "[tools.hostile]\ndescription='hostile'\ncommand='echo unsafe'\n",
+        )
+        .unwrap();
+        let socket = base.join("glassd.sock");
+        let status = base.join("glassd.json");
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server_socket = socket.clone();
+                let server_status = status.clone();
+                let store = WorkspaceTrustStore::at(base.join("trust.json"));
+                let server = tokio::task::spawn_local(async move {
+                    serve_with_store(&server_socket, &server_status, store)
+                        .await
+                        .unwrap()
+                });
+                for _ in 0..100 {
+                    if status.exists() && socket.exists() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let token = std::fs::read_to_string(token_path(&status)).unwrap();
+                let base_request = |id: &str, operation: &str| DevelopmentDaemonRequest {
+                    id: id.into(),
+                    token: token.clone(),
+                    operation: operation.into(),
+                    workspace_id: Some("untrusted".into()),
+                    root: None,
+                    call: None,
+                    expected_generation: None,
+                    expected_project_revision: None,
+                    allow_mutation: false,
+                    confirmed: false,
+                    actor: Some("external-agent".into()),
+                };
+                let mut open = base_request("open", "workspace.open");
+                open.root = Some(project.clone());
+                let opened = request(&socket, &open).await.unwrap();
+                assert!(opened.ok);
+                assert_eq!(opened.result["trust"], "untrusted");
+
+                // Each request creates a fresh client connection. Reconnecting
+                // observes the same state but has no trust-mutation operation.
+                let inspected = request(&socket, &base_request("inspect", "workspace.inspect"))
+                    .await
+                    .unwrap();
+                assert!(inspected.ok);
+                assert_eq!(inspected.result["workspace"]["trust"], "untrusted");
+
+                let mut tool = base_request("tool", "workspace.tool");
+                tool.call = Some(ToolCall {
+                    id: "hostile".into(),
+                    name: "glass.custom.hostile".into(),
+                    arguments: serde_json::json!({}),
+                });
+                tool.expected_generation = Some(1);
+                tool.expected_project_revision = Some(0);
+                tool.allow_mutation = true;
+                tool.confirmed = true;
+                let denied = request(&socket, &tool).await.unwrap();
+                assert!(!denied.ok);
+                assert!(denied.error.unwrap().contains("trust"));
                 server.abort();
             })
             .await;

@@ -126,6 +126,15 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let content = match state.surface {
+        DevSurface::Trust => {
+            let inspection = serde_json::to_string_pretty(&state.workspace.trust_inspection())
+                .unwrap_or_else(|error| format!("inspection failed: {error}"));
+            format!(
+                "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {:?}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
+                state.workspace.trust(),
+                inspection
+            )
+        }
         DevSurface::Dashboard => format!(
             "AGENTS\n{}\n\nPROCESSES\n{}\n\nTESTS\n{}",
             state.agents, state.processes, state.tests
@@ -179,7 +188,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let content = format!(
-        "KERNELS\n{}\n\nDEBUGGERS\n{}\n\nCUSTOMIZATION\n{} skills · {} custom tools · config {}\n\nAUTHORITY\ngeneration {}\nproject revision {}\nmutations require actor + revision + confirmation",
+        "KERNELS\n{}\n\nDEBUGGERS\n{}\n\nCUSTOMIZATION\n{} skills · {} custom tools · config {}\n\nAUTHORITY\ntrust {:?}\ngeneration {}\nproject revision {}\nmutations require actor + revision + confirmation",
         state.kernels,
         state.debugger,
         state.workspace.customization().skills().count(),
@@ -190,6 +199,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .config_path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "auto-detected".into()),
+        state.workspace.trust(),
         state.workspace.generation(),
         state.workspace.project().revision()
     );
@@ -259,5 +269,38 @@ mod tests {
             assert!(rendered.contains("Dashboard"));
             assert!(rendered.contains("AGENTS"));
         }
+    }
+
+    #[test]
+    fn executable_project_configuration_prompts_on_phone_before_activation() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-dev-tui-trust-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
+        )
+        .unwrap();
+        let mut state = DevTuiState::open(&root, TuiLayout::Mobile).unwrap();
+        assert_eq!(state.surface, DevSurface::Trust);
+        let backend = TestBackend::new(64, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("WORKSPACE TRUST"));
+        assert!(rendered.contains("Open untrusted"));
+        state.handle_printable('O');
+        assert_eq!(state.workspace.trust(), crate::WorkspaceTrust::Untrusted);
+        assert_eq!(state.surface, DevSurface::Dashboard);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

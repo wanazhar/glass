@@ -18,6 +18,7 @@ published supported release.
 | Boundary | Authority it carries | Safe default | Primary risk |
 |---|---|---|---|
 | Project root | read and bounded mutation below one canonical directory | canonicalize every path; reject escapes and conflicting edits | source or secret disclosure, unintended writes |
+| Workspace trust | activate repository-supplied commands and agent context | untrusted static inspection; local explicit decision; external identity-bound store | code execution while opening an unfamiliar repository |
 | PTY/process manager | execute commands with the current OS user's privileges | bounded resident sessions and explicit stop/detach | arbitrary local command execution |
 | Agent gateway | request schema-validated project and browser tools | built-in Pi tools disabled; mutations require authority and confirmation | prompt-driven local or browser mutation |
 | Browser/CDP | inspect and control the selected Chrome profile | locally owned endpoint, dedicated profile, structured observation | cookies, authenticated pages, downloads, arbitrary page script |
@@ -76,9 +77,17 @@ replacement, while revision checks and edit claims reject stale or conflicting
 writers. These checks do not replace filesystem permissions: a command running
 inside a project can still access anything allowed to the OS user.
 
-Every project command is real code execution. Review `glass.toml`, command
-arguments, environment variables, compiler/build scripts, and language-server
-configuration before starting them. Stop or detach resident PTYs deliberately;
+Every project command is real code execution. Glass opens unmatched projects
+as `Untrusted`, does not run `workspace.opened`, and does not inject project
+skills into privileged Pi instructions. Inspect exact `glass.toml`,
+`.glass.toml`, skill, hook, tool, test, LSP, and DAP sources before choosing
+trust-once or identity-bound project trust. A shell tool cannot bypass this
+boundary with `mutating = false`, and `--yolo` cannot elevate trust. See
+[`docs/workspace-trust.md`](docs/workspace-trust.md).
+
+After trust, review command arguments, environment variables, compiler/build
+scripts, and language-server configuration before starting them. Stop or
+detach resident PTYs deliberately;
 closing a client does not imply that a daemon-owned process should be killed.
 
 Pi starts with its built-in tools disabled. Glass exposes only its validated

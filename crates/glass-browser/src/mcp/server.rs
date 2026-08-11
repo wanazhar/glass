@@ -1595,9 +1595,15 @@ async fn handle_request_with_viewport(
                 .filter_map(|tool| serde_json::to_value(tool).ok())
                 .collect::<Vec<_>>();
             if let Some(backend) = host_backend {
+                let host_tools = backend.tools();
+                catalog.retain(|tool| {
+                    let name = tool.get("name").and_then(Value::as_str);
+                    !host_tools
+                        .iter()
+                        .any(|host| Some(host.name.as_str()) == name)
+                });
                 catalog.extend(
-                    backend
-                        .tools()
+                    host_tools
                         .into_iter()
                         .filter_map(|tool| serde_json::to_value(tool).ok()),
                 );

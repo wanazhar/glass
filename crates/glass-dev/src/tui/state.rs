@@ -6,6 +6,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DevSurface {
+    Trust,
     Dashboard,
     Editor,
     Agent,
@@ -21,7 +22,8 @@ pub enum DevSurface {
 }
 
 impl DevSurface {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::Trust,
         Self::Dashboard,
         Self::Editor,
         Self::Agent,
@@ -38,6 +40,7 @@ impl DevSurface {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Trust => "Trust",
             Self::Dashboard => "Dashboard",
             Self::Editor => "Editor",
             Self::Agent => "Glass Agent",
@@ -90,14 +93,27 @@ impl DevTuiState {
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = DevelopmentWorkspace::open(root)?;
+        let trust_prompt = workspace.trust() == crate::WorkspaceTrust::Untrusted
+            && workspace
+                .trust_inspection()
+                .iter()
+                .any(|item| item.trust_required);
         let mut state = Self {
             workspace,
-            surface: DevSurface::Dashboard,
+            surface: if trust_prompt {
+                DevSurface::Trust
+            } else {
+                DevSurface::Dashboard
+            },
             layout,
             quit: false,
             command_mode: false,
             command_input: String::new(),
-            status: "Ready · : opens the command palette · q quits".into(),
+            status: if trust_prompt {
+                "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
+            } else {
+                "Ready · : opens the command palette · q quits".into()
+            },
             agents: String::new(),
             editor: String::new(),
             processes: String::new(),
@@ -150,7 +166,30 @@ impl DevTuiState {
     }
 
     pub fn handle_printable(&mut self, character: char) {
+        if self.surface == DevSurface::Trust {
+            let decision = match character {
+                'i' | 'I' => {
+                    self.status = "Inspecting exact repository configuration".into();
+                    return;
+                }
+                'o' | 'O' => Some(crate::LocalTrustDecision::OpenUntrusted),
+                '1' => Some(crate::LocalTrustDecision::TrustOnce),
+                'T' => Some(crate::LocalTrustDecision::TrustProject),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                match self.workspace.apply_local_trust_decision(decision) {
+                    Ok(trust) => {
+                        self.surface = DevSurface::Dashboard;
+                        self.status = format!("Workspace opened with {trust:?} authority");
+                    }
+                    Err(error) => self.status = format!("Trust decision failed: {error}"),
+                }
+                return;
+            }
+        }
         let surface = match character {
+            'u' => Some(DevSurface::Trust),
             'h' => Some(DevSurface::Dashboard),
             'e' => Some(DevSurface::Editor),
             'a' => Some(DevSurface::Agent),

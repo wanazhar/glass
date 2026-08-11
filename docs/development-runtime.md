@@ -36,6 +36,15 @@ must retain editor buffers, PTYs, language servers, agent sessions, browser
 context, or event cursors across operations. Use the CLI for finite,
 browser-free inspection and `--wait` process work.
 
+Opening a project starts in `Untrusted` unless its current filesystem identity
+matches the Glass-owned external trust store. Static files, search, Git
+metadata, configuration review, and manual browser use remain available;
+project hooks, skills, commands, tools, tests, LSP/DAP overrides, Pi, kernels,
+and experiments do not execute before a local decision. The TUI presents the
+decision before activation on desktop, compact, and phone layouts. See
+[Workspace trust](workspace-trust.md) for inspection, persistence, and
+authority details. `--yolo` never bypasses workspace trust.
+
 ## Ownership and lifecycle
 
 ```text

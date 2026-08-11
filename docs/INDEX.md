@@ -199,7 +199,11 @@ current user instructions.
 - [Release checklist](release-checklist.md) — repeatable two-package release.
 - [Release evidence](release-evidence.md) — package, source release, platform,
   client, and validation evidence.
+- [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
+  identity repair, and the GitHub-verification release gate.
 - [Changelog](../CHANGELOG.md) — user-visible changes.
+- [Migrate 0.3.4 to 0.3.5](migration/0.3.5.md) — dependency, trust,
+  customization, task, daemon, debugger, kernel, and TUI changes.
 - [30-second demo](demo.md) — short operator demonstration.
 - [Delivery plans](plan/README.md) — implementation history and active work;
   these records are not substitutes for current user references.

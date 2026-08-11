@@ -5,6 +5,26 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added identity-bound repository trust, autonomous verified task DAGs,
+  direct Pi SDK sessions, bounded daemon event cursors, governed kernel tool
+  bindings, measured experiments, broader DAP evidence, and complete resident
+  TUI surfaces.
+
+### Changed
+
+- Moved the executable development core into `glass-dev` and removed the
+  `glass-browser/development-runtime` feature bridge.
+- Replaced generated GitHub notes with validated substantive release bodies
+  bound to exact tag, commit, workflow, migration, limitations, and evidence.
+
+### Security
+
+- Repository-controlled configuration cannot execute or elevate authority
+  before an explicit local trust decision; `--yolo` does not bypass trust.
+- Release publication now blocks unless GitHub itself verifies the signed tag.
+
 ## [0.3.4] - 2026-08-10
 
 ### Added

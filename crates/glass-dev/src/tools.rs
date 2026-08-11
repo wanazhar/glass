@@ -4,14 +4,15 @@ use crate::agents::AgentSpec;
 use crate::browser::BrowserStartConfig;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
 use crate::kernels::KernelKind;
+use crate::pi_runtime::PiSessionRequest;
 use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
     SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
 };
 use glass_browser::development::{
-    AgentToolGateway, DevelopmentError, DevelopmentResult, HarnessRequest, ToolAuthorization,
-    ToolCall, ToolDescriptor,
+    AgentToolGateway, DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall,
+    ToolDescriptor,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -864,7 +865,7 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    HarnessRequest::Compact {
+                    PiSessionRequest::Compact {
                         instructions: optional_string(call, "instructions").map(str::to_string),
                     },
                 ))?;
@@ -874,7 +875,7 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    HarnessRequest::SetModel {
+                    PiSessionRequest::SetModel {
                         provider: string("provider")?.into(),
                         model_id: string("modelId")?.into(),
                     },
@@ -885,43 +886,45 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    HarnessRequest::SetThinking {
+                    PiSessionRequest::SetThinking {
                         level: string("level")?.into(),
                     },
                 ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
-            "glass.agent.new-session" => agent_request(workspace, call, HarnessRequest::NewSession),
+            "glass.agent.new-session" => {
+                agent_request(workspace, call, PiSessionRequest::NewSession)
+            }
             "glass.agent.clone-session" => {
-                agent_request(workspace, call, HarnessRequest::CloneSession)
+                agent_request(workspace, call, PiSessionRequest::CloneSession)
             }
             "glass.agent.fork" => agent_request(
                 workspace,
                 call,
-                HarnessRequest::Fork {
+                PiSessionRequest::Fork {
                     entry_id: string("entryId")?.into(),
                 },
             ),
             "glass.agent.switch-session" => agent_request(
                 workspace,
                 call,
-                HarnessRequest::SwitchSession {
+                PiSessionRequest::SwitchSession {
                     path: string("path")?.into(),
                 },
             ),
-            "glass.agent.messages" => agent_request(workspace, call, HarnessRequest::Messages),
+            "glass.agent.messages" => agent_request(workspace, call, PiSessionRequest::Messages),
             "glass.agent.entries" => agent_request(
                 workspace,
                 call,
-                HarnessRequest::Entries {
+                PiSessionRequest::Entries {
                     since: optional_string(call, "since").map(str::to_string),
                 },
             ),
-            "glass.agent.stats" => agent_request(workspace, call, HarnessRequest::SessionStats),
+            "glass.agent.stats" => agent_request(workspace, call, PiSessionRequest::SessionStats),
             "glass.agent.name" => agent_request(
                 workspace,
                 call,
-                HarnessRequest::SetSessionName {
+                PiSessionRequest::SetSessionName {
                     name: string("name")?.into(),
                 },
             ),
@@ -1365,7 +1368,7 @@ fn agent_id(
 fn agent_request(
     workspace: &mut DevelopmentWorkspace,
     call: &ToolCall,
-    request: HarnessRequest,
+    request: PiSessionRequest,
 ) -> DevelopmentResult<Value> {
     let id = agent_id(workspace, required_string(call, "agentId")?)?;
     map_service(workspace.agents().request(&id, request))?;

@@ -15,6 +15,7 @@ pub mod intelligence;
 pub mod kernels;
 pub mod lsp;
 pub mod mcp;
+pub mod pi_runtime;
 pub mod testing;
 pub mod tools;
 pub mod trust;
@@ -37,6 +38,7 @@ pub use intelligence::{
     ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,
 };
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
+pub use pi_runtime::PiSessionRequest;
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};

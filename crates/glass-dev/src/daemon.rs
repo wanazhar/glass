@@ -520,6 +520,46 @@ async fn forward_resident_tool_file_with_context(
     confirmed: bool,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let call = read_private_tool_call(path)?;
+    forward_resident_tool_call(
+        socket,
+        token,
+        workspace_id,
+        &call,
+        root,
+        allow_mutation,
+        confirmed,
+    )
+    .await
+}
+
+pub(crate) async fn forward_resident_tool_call_with_context(
+    broker: &ResidentAgentBroker,
+    call: &ToolCall,
+    root: &Path,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    forward_resident_tool_call(
+        &broker.socket,
+        &broker.token,
+        &broker.workspace_id,
+        call,
+        root,
+        allow_mutation,
+        confirmed,
+    )
+    .await
+}
+
+async fn forward_resident_tool_call(
+    socket: &Path,
+    token: &str,
+    workspace_id: &str,
+    call: &ToolCall,
+    root: &Path,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> Result<Value, Box<dyn std::error::Error>> {
     let inspect = request(
         socket,
         &DevelopmentDaemonRequest {
@@ -569,7 +609,7 @@ async fn forward_resident_tool_file_with_context(
             operation: "workspace.tool".into(),
             workspace_id: Some(workspace_id.to_string()),
             root: None,
-            call: Some(call),
+            call: Some(call.clone()),
             expected_generation: Some(generation),
             expected_project_revision: Some(revision),
             allow_mutation,

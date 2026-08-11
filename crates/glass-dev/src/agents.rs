@@ -1,8 +1,7 @@
 //! Glass-owned scheduling for independent resident Pi agent sessions.
 
-use glass_browser::development::{
-    DevelopmentError, DevelopmentResult, HarnessRequest, PiHarness, PiHarnessOptions,
-};
+use crate::pi_runtime::{GlassPiRuntime, PiRuntimeOptions, PiSessionRequest};
+use glass_browser::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -118,7 +117,7 @@ pub struct AgentEvent {
 
 #[derive(Debug)]
 enum WorkerCommand {
-    Request(HarnessRequest),
+    Request(PiSessionRequest),
     Shutdown,
 }
 
@@ -353,22 +352,22 @@ impl AgentRegistry {
     pub fn prompt(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent prompt", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, HarnessRequest::Prompt { text })
+        self.send(id, PiSessionRequest::Prompt { text })
     }
 
     pub fn steer(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent steering", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, HarnessRequest::Steer { text })
+        self.send(id, PiSessionRequest::Steer { text })
     }
 
     pub fn follow_up(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent follow-up", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, HarnessRequest::FollowUp { text })
+        self.send(id, PiSessionRequest::FollowUp { text })
     }
 
-    pub fn request(&mut self, id: &AgentId, request: HarnessRequest) -> DevelopmentResult<()> {
+    pub fn request(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
         self.send(id, request)
     }
 
@@ -398,7 +397,7 @@ impl AgentRegistry {
             return Ok(());
         }
         if let Some(sender) = &record.command {
-            let _ = sender.try_send(WorkerCommand::Request(HarnessRequest::Abort));
+            let _ = sender.try_send(WorkerCommand::Request(PiSessionRequest::Abort));
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
         record.command = None;
@@ -409,7 +408,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    fn send(&mut self, id: &AgentId, request: HarnessRequest) -> DevelopmentResult<()> {
+    fn send(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
         self.refresh()?;
         let record = self.record_mut(id)?;
         if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
@@ -555,7 +554,7 @@ impl AgentRegistry {
         for id in exceeded {
             if let Some(record) = self.records.get_mut(&id) {
                 if let Some(sender) = record.command.take() {
-                    let _ = sender.try_send(WorkerCommand::Request(HarnessRequest::Abort));
+                    let _ = sender.try_send(WorkerCommand::Request(PiSessionRequest::Abort));
                     let _ = sender.try_send(WorkerCommand::Shutdown);
                 }
                 record.snapshot.status = AgentStatus::Failed;
@@ -673,20 +672,17 @@ fn run_worker(
     commands: Receiver<WorkerCommand>,
     events: SyncSender<WorkerEvent>,
 ) {
-    let options = PiHarnessOptions {
+    let options = PiRuntimeOptions {
         unrestricted: spec.unrestricted,
-        persist_session: true,
-        session_dir: Some(runtime.sessions_dir),
+        session_dir: runtime.sessions_dir,
         name: Some(format!("{}: {}", spec.role, id.as_str())),
         model: spec.model,
         thinking: spec.thinking,
-        broker_socket: runtime.broker.as_ref().map(|broker| broker.socket.clone()),
-        broker_token: runtime.broker.as_ref().map(|broker| broker.token.clone()),
-        broker_workspace_id: runtime.broker.map(|broker| broker.workspace_id),
+        broker: runtime.broker,
         additional_system_prompt: runtime.additional_system_prompt,
-        ..PiHarnessOptions::default()
+        resume: false,
     };
-    let mut harness = match PiHarness::spawn_with_options(&runtime.worktree, options) {
+    let mut harness = match GlassPiRuntime::spawn(&runtime.worktree, options) {
         Ok(harness) => harness,
         Err(error) => {
             send_critical_worker_event(&events, WorkerEvent::Failed(id, error.to_string()));
@@ -700,7 +696,7 @@ fn run_worker(
                 Ok(WorkerCommand::Request(request)) => {
                     let waits_for_agent = matches!(
                         request,
-                        HarnessRequest::Prompt { .. } | HarnessRequest::FollowUp { .. }
+                        PiSessionRequest::Prompt { .. } | PiSessionRequest::FollowUp { .. }
                     );
                     match harness.start_request(request) {
                         Ok(request_id) => send_critical_worker_event(
@@ -855,8 +851,8 @@ mod tests {
             .unwrap();
         wait_for_status(&mut registry, &first, AgentStatus::Idle);
         wait_for_status(&mut registry, &peer, AgentStatus::Idle);
-        registry.request(&first, HarnessRequest::State).unwrap();
-        registry.request(&peer, HarnessRequest::State).unwrap();
+        registry.request(&first, PiSessionRequest::State).unwrap();
+        registry.request(&peer, PiSessionRequest::State).unwrap();
         for _ in 0..200 {
             let snapshot = registry.snapshot(&first).unwrap();
             if snapshot

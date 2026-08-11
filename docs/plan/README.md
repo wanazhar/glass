@@ -11,6 +11,8 @@ dependency order, twelve release gates, scenarios A-I, forbidden outcomes, and
 disk-aware validation policy are in [the v0.3.5 delivery analysis](analysis/release-035.md).
 The first release-blocking checkpoint is the
 [workspace trust boundary](tasks/security-035-001.md).
+The [native Pi SDK boundary](tasks/runtime-035-002.md) is complete locally;
+product-boundary deletion is the active checkpoint.
 
 Delivery order:
 

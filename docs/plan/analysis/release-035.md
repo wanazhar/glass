@@ -68,7 +68,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | Issue pillar / gate | Required implementation evidence | Initial state |
 |---|---|---|
 | I / Gate 1 Trust | fail-closed identity-bound trust store, inspection, shared enforcement, ten required security tests, trust TUI | Complete locally |
-| II / Gate 2 Pi SDK | Glass-owned runtime and direct session lifecycle/events/tools/persistence; no CLI-RPC harness | Blocking |
+| II / Gate 2 Pi SDK | Glass-owned runtime and direct session lifecycle/events/tools/persistence; no CLI-RPC harness | Complete locally; legacy browser deletion follows Gate 3 |
 | III / Gate 3 Boundary | no browser development feature, no browser-owned project core, no fallback dispatch; three package checks | Blocking |
 | IV / Gate 4 Tasks | first-class verified DAG, automatic dispatch/wakeup/failure propagation, public and TUI controls | Blocking |
 | V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Blocking |

@@ -1541,7 +1541,7 @@ while True:
                 .await
                 .unwrap();
                 let slow = tokio::task::spawn_local(workspace_tool(
-                    first,
+                    first.clone(),
                     ToolCall {
                         id: "shell-slow".into(),
                         name: "glass.eval.execute".into(),
@@ -1594,7 +1594,7 @@ while True:
                         test_context(),
                     ),
                     workspace_tool(
-                        second,
+                        second.clone(),
                         ToolCall {
                             id: "process-list".into(),
                             name: "glass.process.list".into(),
@@ -1616,6 +1616,15 @@ while True:
                     "unrelated workspace inspect waited {elapsed:?}"
                 );
                 assert!(slow.await.unwrap().is_ok());
+                for handle in [first, second] {
+                    let (response, received) = tokio::sync::oneshot::channel();
+                    handle
+                        .sender
+                        .send(WorkspaceCommand::Shutdown { response })
+                        .await
+                        .unwrap();
+                    received.await.unwrap();
+                }
             })
             .await;
         std::fs::remove_dir_all(base).unwrap();

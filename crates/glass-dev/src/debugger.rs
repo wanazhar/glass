@@ -1174,7 +1174,7 @@ writer.flush()
             DebuggerSession::start(&root, &config, "Glass LLDB E2E", Duration::from_secs(20))
                 .unwrap();
         debugger
-            .launch(json!({"program":program,"cwd":root,"stopOnEntry":true}))
+            .launch(json!({"program":program,"cwd":root,"stopOnEntry":false}))
             .unwrap();
         let breakpoints = debugger.set_breakpoints(&source, &[3]).unwrap();
         assert!(
@@ -1227,7 +1227,7 @@ writer.flush()
             DebuggerSession::start(&root, &config, "Glass Delve E2E", Duration::from_secs(30))
                 .unwrap();
         debugger
-            .launch(json!({"mode":"debug","program":root,"cwd":root,"stopOnEntry":true}))
+            .launch(json!({"mode":"debug","program":root,"cwd":root,"stopOnEntry":false}))
             .unwrap();
         let breakpoints = debugger.set_breakpoints(&source, &[7]).unwrap();
         assert!(

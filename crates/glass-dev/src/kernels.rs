@@ -606,13 +606,24 @@ struct ShellKernel {
     lines: Receiver<KernelResult<String>>,
     reader: Option<JoinHandle<()>>,
     sequence: u64,
+    response_dir: PathBuf,
 }
 
 impl ShellKernel {
     #[cfg(unix)]
     fn spawn(root: &Path) -> KernelResult<Self> {
+        let response_dir = std::env::temp_dir().join(format!(
+            "glass-shell-kernel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| KernelError::Protocol(error.to_string()))?
+                .as_nanos()
+        ));
+        std::fs::create_dir(&response_dir)?;
         let mut child = Command::new("/bin/sh")
             .current_dir(root)
+            .env("GLASS_SHELL_RESPONSE_DIR", &response_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -625,9 +636,21 @@ impl ShellKernel {
             .stdout
             .take()
             .ok_or_else(|| KernelError::Protocol("shell stdout was unavailable".into()))?;
-        writeln!(
-            stdin,
-            "glass_call() {{ glass_tool_arguments=\"$2\"; [ -n \"$glass_tool_arguments\" ] || glass_tool_arguments='{{}}'; printf '__GLASS_TOOL_CALL__:%s\\t%s\\n' \"$1\" \"$glass_tool_arguments\"; IFS= read -r glass_tool_response; printf '%s\\n' \"$glass_tool_response\"; }}"
+        stdin.write_all(
+            br#"glass_tool_sequence=0
+glass_call() {
+  glass_tool_sequence=$((glass_tool_sequence + 1))
+  glass_tool_arguments="$2"
+  [ -n "$glass_tool_arguments" ] || glass_tool_arguments='{}'
+  glass_tool_response="$GLASS_SHELL_RESPONSE_DIR/response-$glass_tool_sequence"
+  rm -f "$glass_tool_response"
+  printf '__GLASS_TOOL_CALL__:%s\t%s\t%s\n' "$glass_tool_sequence" "$1" "$glass_tool_arguments"
+  while [ ! -f "$glass_tool_response" ]; do sleep 0.01; done
+  cat "$glass_tool_response"
+  rm -f "$glass_tool_response"
+  printf '\n'
+}
+"#,
         )?;
         stdin.flush()?;
         let (sender, lines) = mpsc::sync_channel(MAX_KERNEL_MESSAGES);
@@ -646,6 +669,7 @@ impl ShellKernel {
             lines,
             reader: Some(reader),
             sequence: 0,
+            response_dir,
         })
     }
 
@@ -713,11 +737,22 @@ impl ShellKernel {
                 return Ok((output, json!({"exitCode": status}), truncated));
             }
             if let Some(request) = line.strip_prefix("__GLASS_TOOL_CALL__:") {
-                let (tool, arguments) = request.split_once('\t').ok_or_else(|| {
+                let mut fields = request.splitn(3, '\t');
+                let request_id = fields
+                    .next()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| {
+                        KernelError::Protocol("shell Glass tool call has an invalid ID".into())
+                    })?;
+                let tool = fields.next().ok_or_else(|| {
+                    KernelError::Protocol("shell Glass tool call has no tool".into())
+                })?;
+                let arguments = fields.next().ok_or_else(|| {
                     KernelError::Protocol("shell Glass tool call has no arguments".into())
                 })?;
                 let call = KernelToolCall {
-                    id: format!("shell-{}", self.sequence),
+                    id: format!("shell-{request_id}"),
                     tool: tool.to_string(),
                     arguments: serde_json::from_str(arguments).map_err(|error| {
                         KernelError::Protocol(format!(
@@ -726,11 +761,13 @@ impl ShellKernel {
                     })?,
                 };
                 let result = dispatch(&call)?;
-                serde_json::to_writer(&mut self.stdin, &result).map_err(|error| {
+                let response = serde_json::to_vec(&result).map_err(|error| {
                     KernelError::Protocol(format!("could not encode shell tool result: {error}"))
                 })?;
-                self.stdin.write_all(b"\n")?;
-                self.stdin.flush()?;
+                let response_path = self.response_dir.join(format!("response-{request_id}"));
+                let temporary_path = self.response_dir.join(format!("response-{request_id}.tmp"));
+                std::fs::write(&temporary_path, response)?;
+                std::fs::rename(temporary_path, response_path)?;
                 continue;
             }
             append_bounded(&mut output, &line, &mut truncated);
@@ -758,6 +795,7 @@ impl ShellKernel {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+        let _ = std::fs::remove_dir_all(&self.response_dir);
     }
 }
 

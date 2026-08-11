@@ -1125,6 +1125,19 @@ mod tests {
             ExperimentState::Selected
         );
         assert!(manager.select("approach-b").is_err());
+        manager
+            .record_evidence("approach-b", ExperimentEvidence::default())
+            .unwrap();
+        let manual = manager
+            .snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.id == "approach-b")
+            .unwrap();
+        assert_eq!(
+            manual.evidence.provenance["tests"].producer,
+            "manual-external"
+        );
+        assert!(!manual.evidence.provenance["tests"].measured);
         drop(agents);
         manager.remove("approach-a", true).unwrap();
         manager.remove("approach-b", true).unwrap();

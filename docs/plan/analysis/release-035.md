@@ -77,7 +77,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | VIII / Gate 8 DAP | reverse requests through owned processes and three honest real-adapter evidence families | Complete locally; native three-family CI evidence pending remote run |
 | IX / Gate 9 Kernels | router-mediated, attributed, cancellable, bounded capability binding; no sandbox claim | Complete locally |
 | X Governance | source authority and exact executable inspection for skills/hooks/tools/commands | Complete locally |
-| XI Graph/replay | typed causal links across every listed subsystem; observable evidence only | Partial |
+| XI Graph/replay | typed causal links across every listed subsystem; observable evidence only | Complete locally |
 | XII / Gate 10 TUI | all listed surfaces and lifecycle/recovery actions on desktop, compact, phone | Partial |
 | XIII parity | one router plus task/trust APIs across CLI/MCP/daemon/Pi | Partial |
 | XIV / Gate 11 load | 8+ tasks and concurrent browser/LSP/DAP/test/workspace/reconnect bounded stress evidence | Blocking |

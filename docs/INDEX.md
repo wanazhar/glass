@@ -31,6 +31,7 @@ installation; this index owns the cross-product documentation map.
 | Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Native Pi SDK runtime](pi-sdk-runtime.md), [daemon](daemon.md) |
 | Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
 | Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
+| Explaining a regression path | [Development Graph and replay](development-graph.md) | [Measured experiments](experiments.md), [Autonomous task DAGs](task-dag.md) |
 | Comparing implementation approaches | [Measured experiments](experiments.md) | [Autonomous task DAGs](task-dag.md), [Development Runtime](development-runtime.md) |
 | Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
 | Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Workspace trust](workspace-trust.md), [Security](../SECURITY.md) |
@@ -80,6 +81,8 @@ current user instructions.
   governed Glass bindings, attribution, bounds, cancellation, and security.
 - [Resident debugger](debugger.md) — stdio and loopback TCP DAP, reverse
   requests, owned debuggee PTYs, session inspection, and adapter certification.
+- [Development Graph and replay](development-graph.md) — typed observable
+  resources, explicit evidence links, causal paths, replay bounds, and privacy.
 - [Actions and revisions](actions.md) and [action contract](action-contract.md) —
   unique targeting, execution phases, verification, failure, and recovery.
 - [Semantic observations](semantic-observation.md) — levels, regions, records,

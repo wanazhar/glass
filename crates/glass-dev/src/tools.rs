@@ -200,6 +200,14 @@ impl DevelopmentToolRouter {
                     )));
                 }
                 let resulting_revision = workspace.project().revision();
+                project_observable_result(
+                    workspace,
+                    call,
+                    &actor_id,
+                    project_revision,
+                    resulting_revision,
+                    &result,
+                )?;
                 workspace.intelligence_mut().record(ObservableEventInput {
                     actor: &actor_id,
                     subsystem: "tool",
@@ -1074,6 +1082,30 @@ impl DevelopmentToolRouter {
                     .intelligence()
                     .path(string("from")?, string("to")?)?,
             )?),
+            "glass.graph.link" => {
+                let revision = workspace.project().revision();
+                let edge = workspace.intelligence_mut().link(
+                    string("from")?,
+                    string("to")?,
+                    string("relation")?,
+                    revision,
+                    &actor,
+                    call.arguments
+                        .get("evidence")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                )?;
+                workspace.intelligence_mut().record(ObservableEventInput {
+                    actor: &actor,
+                    subsystem: "graph",
+                    kind: "linked",
+                    resource: None,
+                    workspace_revision: revision,
+                    evidence: serde_json::json!({"edgeId":edge,"from":string("from")?,"to":string("to")?,"relation":string("relation")?}),
+                    rationale: None,
+                })?;
+                Ok(serde_json::json!({"edgeId":edge}))
+            }
             "glass.replay.list" | "glass.replay.inspect" => {
                 Ok(serde_json::to_value(workspace.intelligence().replay(
                     unsigned(call, "since", 0)?,
@@ -1186,6 +1218,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.git.stash.pop",
         "glass.git.worktree.create",
         "glass.git.worktree.remove",
+        "glass.graph.link",
         "glass.test.run",
         "glass.test.run-affected",
         "glass.test.cancel",
@@ -1584,10 +1617,321 @@ fn git_mutation(
         .map_err(|error| DevelopmentError::Process(error.to_string()))
 }
 
+fn project_observable_result(
+    workspace: &mut DevelopmentWorkspace,
+    call: &ToolCall,
+    actor: &str,
+    before_revision: u64,
+    after_revision: u64,
+    result: &Value,
+) -> DevelopmentResult<()> {
+    let tool_node = format!("tool:{}", call.id);
+    let result_bytes = serde_json::to_vec(result)?.len();
+    let summary = serde_json::json!({
+        "tool":call.name,
+        "callId":call.id,
+        "beforeRevision":before_revision,
+        "afterRevision":after_revision,
+        "resultBytes":result_bytes,
+    });
+    let argument = |name: &str| {
+        call.arguments.get(name).and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_u64().map(|value| value.to_string()))
+                .or_else(|| value.as_i64().map(|value| value.to_string()))
+        })
+    };
+    let resource_name = |preferred: &[&str], fallback: &str| {
+        preferred
+            .iter()
+            .find_map(|name| argument(name))
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let mut observed = Vec::<(String, DevelopmentNodeKind, String, String)>::new();
+
+    if call.name.starts_with("glass.file.") || call.name.starts_with("glass.editor.") {
+        let path = resource_name(&["path", "from", "to"], &call.id);
+        let file = format!("file:{}", id_component(&path));
+        observed.push((
+            file.clone(),
+            DevelopmentNodeKind::File,
+            path,
+            "referencesFile".into(),
+        ));
+        if call.name.starts_with("glass.editor.") {
+            observed.push((
+                format!("editorRevision:{}", id_component(&call.id)),
+                DevelopmentNodeKind::EditorRevision,
+                format!("editor revision {after_revision}"),
+                "producedEditorRevision".into(),
+            ));
+        }
+    }
+    if call.name.starts_with("glass.lsp.") {
+        let path = resource_name(&["path"], &call.id);
+        if call.name == "glass.lsp.diagnostics" || call.name == "glass.diagnostics.run" {
+            observed.push((
+                format!("diagnostic:{}", id_component(&call.id)),
+                DevelopmentNodeKind::Diagnostic,
+                path,
+                "reportedDiagnostic".into(),
+            ));
+        } else if !matches!(
+            call.name.as_str(),
+            "glass.lsp.start" | "glass.lsp.stop" | "glass.lsp.list" | "glass.lsp.events"
+        ) {
+            observed.push((
+                format!("symbol:{}", id_component(&call.id)),
+                DevelopmentNodeKind::Symbol,
+                path,
+                "resolvedSymbol".into(),
+            ));
+        }
+    }
+    if call.name.starts_with("glass.git.") {
+        let kind = if call.name == "glass.git.commit" {
+            DevelopmentNodeKind::GitCommit
+        } else {
+            DevelopmentNodeKind::GitChange
+        };
+        observed.push((
+            format!("gitChange:{}", id_component(&call.id)),
+            kind,
+            call.name.clone(),
+            "observedGitChange".into(),
+        ));
+    }
+    if call.name.starts_with("glass.process.") {
+        let name = resource_name(&["name"], &call.id);
+        observed.push((
+            format!("process:{}", id_component(&name)),
+            DevelopmentNodeKind::Process,
+            name,
+            "observedProcess".into(),
+        ));
+        if let Some(port) = find_scalar(result, &["port", "debugPort", "assignedPort"], 0) {
+            observed.push((
+                format!("port:{}", id_component(&port)),
+                DevelopmentNodeKind::Port,
+                port,
+                "observedPort".into(),
+            ));
+        }
+    }
+    if call.name.starts_with("glass.debug.") {
+        let session = resource_name(&["session"], &call.id);
+        observed.push((
+            format!("debugger:{}", id_component(&session)),
+            DevelopmentNodeKind::Debugger,
+            session.clone(),
+            "observedDebugSession".into(),
+        ));
+        if call.name.contains("breakpoint") {
+            observed.push((
+                format!("breakpoint:{}", id_component(&call.id)),
+                DevelopmentNodeKind::Breakpoint,
+                resource_name(&["path"], &call.id),
+                "configuredBreakpoint".into(),
+            ));
+        }
+        if let Some(thread) = argument("threadId").or_else(|| find_scalar(result, &["threadId"], 0))
+        {
+            observed.push((
+                format!(
+                    "thread:{}:{}",
+                    id_component(&session),
+                    id_component(&thread)
+                ),
+                DevelopmentNodeKind::Thread,
+                thread,
+                "observedThread".into(),
+            ));
+        }
+        if let Some(frame) =
+            argument("frameId").or_else(|| find_scalar(result, &["frameId", "id"], 0))
+        {
+            observed.push((
+                format!(
+                    "stackFrame:{}:{}",
+                    id_component(&session),
+                    id_component(&frame)
+                ),
+                DevelopmentNodeKind::StackFrame,
+                frame,
+                "observedStackFrame".into(),
+            ));
+        }
+    }
+    if call.name.starts_with("glass.browser.") {
+        let target = argument("targetId")
+            .or_else(|| find_scalar(result, &["targetId", "id"], 0))
+            .unwrap_or_else(|| "active".into());
+        observed.push((
+            format!("browserTarget:{}", id_component(&target)),
+            DevelopmentNodeKind::BrowserTarget,
+            target,
+            "observedBrowserTarget".into(),
+        ));
+        if let Some(revision) = find_scalar(result, &["revision", "browserRevision"], 0) {
+            observed.push((
+                format!("browserRevision:{}", id_component(&revision)),
+                DevelopmentNodeKind::BrowserRevision,
+                revision,
+                "observedBrowserRevision".into(),
+            ));
+        }
+    }
+    if call.name.starts_with("glass.semantic.") || call.name.starts_with("glass.web_ir.") {
+        observed.push((
+            format!("webIr:{}", id_component(&call.id)),
+            DevelopmentNodeKind::WebIrEntity,
+            call.name.clone(),
+            "observedWebIr".into(),
+        ));
+    }
+    if call.name.starts_with("glass.workflow.") {
+        let run = resource_name(&["runId", "id", "name"], &call.id);
+        observed.push((
+            format!("workflow:{}", id_component(&run)),
+            DevelopmentNodeKind::Workflow,
+            run,
+            "observedWorkflow".into(),
+        ));
+    }
+    if call.name.starts_with("glass.test.") {
+        let run = resource_name(&["runId", "suiteId"], &call.id);
+        observed.push((
+            format!("test:{}", id_component(&run)),
+            DevelopmentNodeKind::Test,
+            run,
+            "observedTest".into(),
+        ));
+    }
+    if call.name.starts_with("glass.eval.") {
+        let name = resource_name(&["name"], &call.id);
+        observed.push((
+            format!("kernel:{}", id_component(&name)),
+            DevelopmentNodeKind::Kernel,
+            name,
+            "observedKernel".into(),
+        ));
+    }
+    if call.name.starts_with("glass.agent.") {
+        let agent = argument("agentId")
+            .or_else(|| find_scalar(result, &["agentId", "id"], 0))
+            .unwrap_or_else(|| call.id.clone());
+        observed.push((
+            format!("agent:{}", id_component(&agent)),
+            DevelopmentNodeKind::Agent,
+            agent,
+            "observedAgent".into(),
+        ));
+    }
+    if call.name.starts_with("glass.task.") {
+        let task = resource_name(&["taskId", "id"], &call.id);
+        observed.push((
+            format!("task:{}", id_component(&task)),
+            DevelopmentNodeKind::Task,
+            task,
+            "observedTask".into(),
+        ));
+    }
+    if call.name.starts_with("glass.experiment.") {
+        let experiment = resource_name(&["id"], &call.id);
+        observed.push((
+            format!("experiment:{}", id_component(&experiment)),
+            DevelopmentNodeKind::Experiment,
+            experiment,
+            "observedExperiment".into(),
+        ));
+    }
+
+    let mut previous: Option<String> = None;
+    for (id, kind, label, relation) in observed {
+        workspace.intelligence_mut().upsert_node(DevelopmentNode {
+            id: id.clone(),
+            kind,
+            label,
+            revision: after_revision,
+            stale: false,
+            evidence: summary.clone(),
+        })?;
+        workspace.intelligence_mut().link(
+            previous.as_deref().unwrap_or(&tool_node),
+            &id,
+            &relation,
+            after_revision,
+            actor,
+            summary.clone(),
+        )?;
+        workspace.intelligence_mut().record(ObservableEventInput {
+            actor,
+            subsystem: subsystem_for_tool(&call.name),
+            kind: "observed",
+            resource: Some(&id),
+            workspace_revision: after_revision,
+            evidence: summary.clone(),
+            rationale: None,
+        })?;
+        previous = Some(id);
+    }
+    Ok(())
+}
+
+fn subsystem_for_tool(tool: &str) -> &str {
+    tool.strip_prefix("glass.")
+        .and_then(|value| value.split('.').next())
+        .unwrap_or("project")
+}
+
+fn id_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '_'
+            } else {
+                character
+            }
+        })
+        .take(240)
+        .collect()
+}
+
+fn find_scalar(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
+    if depth > 6 {
+        return None;
+    }
+    match value {
+        Value::Object(values) => {
+            for key in keys {
+                if let Some(value) = values.get(*key) {
+                    if let Some(value) = value.as_str() {
+                        return Some(value.to_string());
+                    }
+                    if let Some(value) = value.as_u64() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+            values
+                .values()
+                .find_map(|value| find_scalar(value, keys, depth + 1))
+        }
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_scalar(value, keys, depth + 1)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use glass_browser::development::Actor;
+    use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -1647,7 +1991,7 @@ mod tests {
                 .iter()
                 .map(|event| event.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["called", "completed"]
+            vec!["called", "observed", "completed"]
         );
         assert!(
             workspace
@@ -1873,5 +2217,163 @@ mod tests {
             std::fs::read_to_string(workspace.root().join("src/lib.rs")).unwrap(),
             "pub fn resident() {}\n"
         );
+    }
+
+    #[test]
+    fn observable_projection_populates_every_issue_35_graph_resource_kind() {
+        let mut workspace = workspace();
+        let samples = vec![
+            ("glass.editor.save", json!({"path":"src/lib.rs"}), json!({})),
+            ("glass.lsp.hover", json!({"path":"src/lib.rs"}), json!({})),
+            (
+                "glass.lsp.diagnostics",
+                json!({"path":"src/lib.rs"}),
+                json!([]),
+            ),
+            ("glass.git.diff", json!({}), json!({"changed":true})),
+            (
+                "glass.process.ports",
+                json!({"name":"web"}),
+                json!({"port":8080}),
+            ),
+            (
+                "glass.debug.stack",
+                json!({"session":"rust","threadId":3}),
+                json!({"stackFrames":[{"id":9}]}),
+            ),
+            (
+                "glass.browser.state",
+                json!({}),
+                json!({"targetId":"page-1","revision":12}),
+            ),
+            ("glass.web_ir.inspect", json!({}), json!({"entities":[]})),
+            (
+                "glass.workflow.verify",
+                json!({"runId":"checkout"}),
+                json!({"passed":false}),
+            ),
+            (
+                "glass.test.results",
+                json!({"runId":"unit"}),
+                json!({"passed":true}),
+            ),
+            (
+                "glass.eval.execute",
+                json!({"name":"analysis"}),
+                json!({"value":42}),
+            ),
+            ("glass.agent.list", json!({}), json!({"agentId":"agent-1"})),
+            (
+                "glass.task.get",
+                json!({"taskId":"task-1"}),
+                json!({"state":"failed"}),
+            ),
+            (
+                "glass.experiment.collect",
+                json!({"id":"approach-a"}),
+                json!({"measured":true}),
+            ),
+        ];
+        for (index, (name, arguments, result)) in samples.into_iter().enumerate() {
+            let call = ToolCall {
+                id: format!("projection-{index}"),
+                name: name.into(),
+                arguments,
+            };
+            let tool_node = format!("tool:{}", call.id);
+            workspace
+                .intelligence_mut()
+                .upsert_node(DevelopmentNode {
+                    id: tool_node.clone(),
+                    kind: DevelopmentNodeKind::ToolCall,
+                    label: call.name.clone(),
+                    revision: 1,
+                    stale: false,
+                    evidence: Value::Null,
+                })
+                .unwrap();
+            workspace
+                .intelligence_mut()
+                .link(
+                    "repository:root",
+                    &tool_node,
+                    "receivedToolCall",
+                    1,
+                    "test",
+                    Value::Null,
+                )
+                .unwrap();
+            project_observable_result(&mut workspace, &call, "test", 1, 1, &result).unwrap();
+        }
+        for kind in [
+            DevelopmentNodeKind::Repository,
+            DevelopmentNodeKind::File,
+            DevelopmentNodeKind::Symbol,
+            DevelopmentNodeKind::EditorRevision,
+            DevelopmentNodeKind::GitChange,
+            DevelopmentNodeKind::Process,
+            DevelopmentNodeKind::Port,
+            DevelopmentNodeKind::Diagnostic,
+            DevelopmentNodeKind::Debugger,
+            DevelopmentNodeKind::Thread,
+            DevelopmentNodeKind::StackFrame,
+            DevelopmentNodeKind::BrowserTarget,
+            DevelopmentNodeKind::BrowserRevision,
+            DevelopmentNodeKind::WebIrEntity,
+            DevelopmentNodeKind::Workflow,
+            DevelopmentNodeKind::Test,
+            DevelopmentNodeKind::Kernel,
+            DevelopmentNodeKind::Agent,
+            DevelopmentNodeKind::Task,
+            DevelopmentNodeKind::Experiment,
+            DevelopmentNodeKind::ToolCall,
+        ] {
+            assert!(
+                !workspace.intelligence().query_kind(kind).is_empty(),
+                "missing {kind:?}"
+            );
+        }
+        let router = DevelopmentToolRouter::default();
+        for (index, (from, to, relation)) in [
+            ("file:src/lib.rs", "gitChange:projection-3", "changedBy"),
+            ("gitChange:projection-3", "test:unit", "verifiedBy"),
+            ("test:unit", "webIr:projection-7", "observedRegression"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let context = context(&workspace, true);
+            router
+                .execute(
+                    &mut workspace,
+                    &ToolCall {
+                        id: format!("causal-link-{index}"),
+                        name: "glass.graph.link".into(),
+                        arguments: json!({
+                            "from":from,
+                            "to":to,
+                            "relation":relation,
+                            "evidence":{"source":"resident-verification"}
+                        }),
+                    },
+                    &context,
+                )
+                .unwrap();
+        }
+        let path = workspace
+            .intelligence()
+            .path("file:src/lib.rs", "webIr:projection-7")
+            .unwrap();
+        assert_eq!(
+            path.edges
+                .iter()
+                .map(|edge| edge.relation.as_str())
+                .collect::<Vec<_>>(),
+            vec!["changedBy", "verifiedBy", "observedRegression"]
+        );
+        assert!(path.edges.iter().all(|edge| !edge.provenance.is_empty()));
+        let replay = workspace.intelligence().replay(0, 128).unwrap();
+        assert!(replay.iter().any(|event| event.subsystem == "task"));
+        assert!(replay.iter().all(|event| event.rationale.is_none()));
     }
 }

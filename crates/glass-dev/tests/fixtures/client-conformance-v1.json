@@ -146,6 +146,7 @@
     "glass.git.worktree.list",
     "glass.git.worktree.remove",
     "glass.graph.explain",
+    "glass.graph.link",
     "glass.graph.path",
     "glass.graph.query",
     "glass.lsp.code_actions",

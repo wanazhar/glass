@@ -29,6 +29,8 @@ jobs:
       already_published: ${{ steps.publication.outputs.already_published }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

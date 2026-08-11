@@ -48,10 +48,16 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 The checked-in development conformance fixture pins this exact inventory.
 Clients must still use `tools/list` for schemas and the negotiated capability
 agreement for availability; an inventory entry is not authority to mutate.
-## Project and agent runtime
+## Legacy project and agent names
 
-These tools are browser-free. Paths are confined to a canonical project root,
-retained content is bounded, and mutations are actor-attributed.
+The `project.*` and local-harness `agent.*` names below document the 0.3.4
+compatibility vocabulary. They are not part of the 0.3.5 negotiated inventory
+and new clients must use the `glass.*` resident development tools above. A
+server may retain selected executable aliases during source migration, but an
+unadvertised alias is not a public capability and must not be probed as one.
+
+Where a compatibility alias is present, paths remain confined to the canonical
+project root, retained content is bounded, and mutations remain attributed.
 
 | Tool | Use |
 |---|---|

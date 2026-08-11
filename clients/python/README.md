@@ -85,53 +85,31 @@ package version text.
 
 ## Development Runtime
 
-Project, file, process, diff, replay, graph, breakpoint, experiment, actor,
-source-link, and agent-harness operations have typed snake-case helpers:
+Glass 0.3.5 development operations use the negotiated `glass.*` catalog. Use
+`call()` with the exact schema returned by `list_tools()`; retired `project.*`
+cockpit schemas are not negotiated by the new Glass Dev runtime:
 
 ```python
-project = glass.project_inspect("/srv/storefront")
-tree = glass.project_files(project["root"])
-files = tree["entries"]
-diff = glass.project_diff(project["root"])
-glass.agent_prompt("Explain the failing verification", project["root"])
+trust = glass.call("glass.workspace.trust.status")
+tree = glass.call("glass.file.list")
+tasks = glass.call("glass.task.list")
+browser = glass.call("glass.browser.state")
+print(trust["trust"], len(tree["entries"]), len(tasks), browser["connected"])
 ```
 
-`watch_project_events()` yields cursor-bounded pages and accepts a `stop`
-callback. `cursorExpired` explicitly reports a gap when the persisted timeline
-was compacted:
-
-```python
-for page in glass.watch_project_events("/srv/storefront", stop=lambda: done):
-    for event in page["events"]:
-        print(event["kind"], event["actor"]["id"])
-```
-
-Live PNG frames are deliberately separate from this structured event feed.
-See [`examples/development_events.py`](examples/development_events.py) for a
-complete interruptible watcher.
-
-Resident MCP sessions let `project_run(..., wait=False)` keep a bounded PTY
-available to later calls. Higher-level helpers include `wait_for_event()`,
-`run_until_healthy()`, `with_mutation_lease()`, `edit_and_verify()`,
-`resume_from_cursor()`, and `on_attention_required()`:
-
-```python
-process = glass.run_until_healthy("dev", "npm run dev", project["root"])
-event = glass.wait_for_event(lambda item: item["kind"] == "testCompleted", project["root"])
-card = glass.project_verification_card("Checkout fix", project["root"])
-glass.project_capsule_save(
-    project["root"],
-    {"eventCursor": event["id"], "mobileView": "diff", "mobileScroll": 20},
-)
-```
-
-Session, capsule, attention, and verification primitives are also typed. See
-[`examples/remote_cockpit.py`](examples/remote_cockpit.py).
+Executable project services such as tests, LSP, DAP, processes, agents,
+kernels, and experiments remain unavailable until the local Glass UI records a
+trust decision. External MCP clients can inspect trust but cannot elevate it.
+Mutation calls remain confirmation-, revision-, and authority-checked by the
+same resident router. Browser observations stay structured-first; screenshots
+remain explicit calls.
 
 ## Verification and removal
 
 Run `python3 smoke.py` with `GLASS_BINARY` set to the matching built executable;
-CI also builds a wheel with `python3 -m pip wheel --no-deps .`. Uninstall with
+CI also builds a wheel with `python3 -m pip wheel --no-deps .`. The smoke also
+proves untrusted workspaces retain static inspection without permitting
+executable project discovery. Uninstall with
 the same interpreter used for installation, for example
 `python3 -m pip uninstall glass-browser-client`. This removes only the Python package;
 it does not remove Glass binaries, profiles, project state, or configuration.

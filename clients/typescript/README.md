@@ -85,67 +85,33 @@ a substitute for negotiation.
 
 ## Development Runtime
 
-Typed helpers cover project detection, files, search, editing, diagnostics,
-processes, code/runtime/semantic diffs, replay, the Development Graph,
-breakpoints, experiments, external actors, source/runtime links, and the local
-agent harness:
+Glass 0.3.5 development operations use the negotiated `glass.*` catalog. Use
+the generic typed `call<T>()` boundary with the schema returned by
+`listTools()`; retired `project.*` cockpit schemas are not negotiated by the
+new Glass Dev runtime:
 
 ```typescript
-const project = await glass.projectInspect("/srv/storefront");
-const tree = await glass.projectFiles(project.root);
-if (tree.truncated) console.warn(`showing the first ${tree.limit} entries`);
-const files = tree.entries;
-const diff = await glass.projectDiff(project.root);
-await glass.agentPrompt("Explain the failing verification", project.root);
+const trust = await glass.call<{ trust: string }>("glass.workspace.trust.status");
+const tree = await glass.call<{ entries: unknown[] }>("glass.file.list");
+const tasks = await glass.call<unknown[]>("glass.task.list");
+const browser = await glass.call<{ connected: boolean }>("glass.browser.state");
+console.log(trust.trust, tree.entries.length, tasks.length, browser.connected);
 ```
 
-`watchProjectEvents()` is an async generator over cursor-bounded event pages.
-It retains no unbounded history and reports `cursorExpired` when timeline
-compaction created a gap:
-
-```typescript
-const controller = new AbortController();
-for await (const page of glass.watchProjectEvents("/srv/storefront", {
-  signal: controller.signal,
-})) {
-  for (const event of page.events) console.log(event.kind, event.actor.id);
-}
-```
-
-Live PNG frames are deliberately not part of this feed. Use structured events
-for orchestration and a dedicated latest-frame side channel for visual clients.
-See [`examples/development-events.ts`](examples/development-events.ts) for a
-complete interruptible watcher.
-
-Project state is resident for the MCP server lifetime, so
-`projectRun("dev", "npm run dev", root, false)` can start a persistent PTY and
-later calls can inspect, read, or stop it. The cockpit helpers expose session
-status/detach, reconnect capsules, attention items, and verification cards:
-
-```typescript
-const process = await glass.runUntilHealthy("dev", "npm run dev", {
-  root: project.root,
-  signal: controller.signal,
-});
-const event = await glass.waitForEvent(e => e.kind === "testCompleted", project.root);
-const card = await glass.projectVerificationCard("Checkout fix", project.root);
-await glass.projectCapsuleSave(project.root, {
-  eventCursor: event.id,
-  mobileView: "diff",
-  mobileScroll: 20,
-});
-```
-
-`withMutationLease()` releases only a lease it acquired itself.
-`onAttentionRequired()` deduplicates needs-attention IDs and stops through an
-`AbortSignal`. See
-[`examples/remote-cockpit.ts`](examples/remote-cockpit.ts).
+Executable project services such as tests, LSP, DAP, processes, agents,
+kernels, and experiments remain unavailable until the local Glass UI records a
+trust decision. External MCP clients can inspect trust but cannot elevate it.
+Mutation calls remain confirmation-, revision-, and authority-checked by the
+same resident router. Browser observations stay structured-first; screenshots
+remain explicit calls.
 
 ## Verification and removal
 
 Run `npm run typecheck`, `npm run build`, and then `node smoke.mjs` with
 `GLASS_BINARY` set to the matching built executable. The smoke suite compares
-the client's negotiated tool inventory with the checked-in fixture.
+the client's negotiated tool inventory with the checked-in fixture and proves
+untrusted workspaces retain static inspection without permitting executable
+project discovery.
 Remove the local package using the package manager or link method used to
 install it. Removing the client does not remove the Glass executable, browser
 profiles, project state, or configuration; follow the repository

@@ -555,7 +555,7 @@ export class GlassClient {
       protocolVersion: "2024-11-05",
       glass: {
         protocolVersion: 1,
-        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1], developmentEvents: [1], developmentCockpit: [1] },
+        schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1] },
       },
       capabilities: {},
       clientInfo: { name: "glass-typescript-client", version: "0.3.5" },
@@ -624,6 +624,11 @@ export class GlassClient {
     this.leaseToken = undefined;
   }
 
+  /**
+   * Legacy 0.3.4 cockpit helpers below are retained only for source migration.
+   * Glass 0.3.5 does not advertise their `project.*`/`agent.*` tools; new code
+   * must use `call()` with the negotiated `glass.*` catalog.
+   */
   projectInspect(root = "."): Promise<ProjectInspectResult> {
     return this.call<ProjectInspectResult>("project.inspect", { root });
   }

@@ -43,57 +43,20 @@ try:
         client.require_capability(capability)
     tool_names = sorted(tool["name"] for tool in client.list_tools())
     assert tool_names == development_fixture["tools"]
-    project_root = str(Path(__file__).resolve().parents[2])
-    project = client.project_inspect(project_root)
-    assert project["schemaVersion"] == "glass.development.v1"
-    tree = client.project_files(project_root)
+    trust = client.call("glass.workspace.trust.status")
+    assert trust["trust"] in {"untrusted", "trustedOnce", "trustedProject"}
+    authority = client.call("glass.workspace.trust.inspect")
+    assert isinstance(authority["items"], list)
+    tree = client.call("glass.file.list")
     assert isinstance(tree["entries"], list)
-    assert isinstance(tree["truncated"], bool)
-    assert tree["limit"] >= len(tree["entries"])
-    events = client.project_events(project_root, limit=8)
-    assert len(events["events"]) <= 8
-    assert client.project_session_status(project_root)["resident"]
-    client.project_attach("python-smoke", project_root)
-    stopped = False
-    subscription = client.watch_project_events(
-        project_root,
-        after_id=events.get("cursor"),
-        limit=8,
-        poll_interval=0.05,
-        stop=lambda: stopped,
-    )
-    page = next(subscription)
-    stopped = True
-    subscription.close()
-    assert isinstance(page["events"], list)
-    client.project_attach("python-smoke-wait", project_root)
-    joined = client.wait_for_event(
-        lambda event: event["kind"] == "actorJoined"
-        and event["actor"]["name"] == "python-smoke-wait",
-        project_root,
-        after_id=page["cursor"],
-        timeout=2.0,
-        poll_interval=0.05,
-    )
-    assert joined["kind"] == "actorJoined"
-    healthy = client.run_until_healthy(
-        "python-smoke",
-        "printf 'ready\\n'; sleep 5",
-        project_root,
-        timeout=2.0,
-        poll_interval=0.05,
-    )
-    assert healthy["health"] == "healthy"
-    client.project_process_stop("python-smoke", project_root)
-    card = client.project_verification_card("Python smoke", project_root)
-    assert card["visualStatus"] == "not-captured"
-    client.project_capsule_save(
-        project_root,
-        {"eventCursor": page["cursor"], "mobileView": "app", "mobileScroll": 12},
-    )
-    capsule = client.project_capsule_show(project_root)["capsule"]
-    assert capsule is not None and capsule["mobileScroll"] == 12
-    client.project_capsule_clear(confirmed=True, root=project_root)
-    assert isinstance(client.project_inbox(project_root), list)
+    browser = client.call("glass.browser.state")
+    assert isinstance(browser["connected"], bool)
+    assert isinstance(client.call("glass.task.list"), list)
+    assert isinstance(client.call("glass.replay.list"), list)
+    if trust["trust"] == "untrusted":
+        denied = client.call("glass.test.discover")
+        assert (
+            isinstance(denied, str) and "blocked until the workspace is trusted" in denied
+        ) or (isinstance(denied, dict) and denied.get("isError") is True)
 finally:
     client.close()

@@ -71,7 +71,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | II / Gate 2 Pi SDK | Glass-owned runtime and direct session lifecycle/events/tools/persistence; no CLI-RPC harness | Complete locally; legacy browser deletion follows Gate 3 |
 | III / Gate 3 Boundary | no browser development feature, no browser-owned project core, no fallback dispatch; three package checks | Blocking |
 | IV / Gate 4 Tasks | first-class verified DAG, automatic dispatch/wakeup/failure propagation, public and TUI controls | Complete locally |
-| V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Actor/concurrency gate complete; event streaming follows transport work |
+| V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Complete locally; cursor reconnect and observable overflow covered |
 | VI / Gate 6 Platforms | Unix socket and native Windows named-pipe lifecycle with native tests | Implemented; native Windows CI evidence pending remote run |
 | VII / Gate 7 Experiments | measured providers and per-metric provenance; deterministic trusted weights | Complete locally; browser metrics explicit when unavailable |
 | VIII / Gate 8 DAP | reverse requests through owned processes and three honest real-adapter evidence families | Complete locally; native three-family CI evidence pending remote run |
@@ -79,7 +79,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | X Governance | source authority and exact executable inspection for skills/hooks/tools/commands | Complete locally |
 | XI Graph/replay | typed causal links across every listed subsystem; observable evidence only | Complete locally |
 | XII / Gate 10 TUI | all listed surfaces and lifecycle/recovery actions on desktop, compact, phone | Complete locally; deterministic buffer coverage at all three geometries |
-| XIII parity | one router plus task/trust APIs across CLI/MCP/daemon/Pi | Partial |
+| XIII parity | one router plus task/trust APIs across CLI/MCP/daemon/Pi | Complete locally; daemon tools and bounded event cursor retain router authority |
 | XIV / Gate 11 load | 8+ tasks and concurrent browser/LSP/DAP/test/workspace/reconnect bounded stress evidence | Blocking |
 | XV / Gate 12 release | substantive generated notes, truthful verification, immutable tag/publication record, packages/CI/fuzz/install | Blocking |
 | XVI docs | all twelve issue topics and honest certification/migration language | Blocking |

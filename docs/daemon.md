@@ -11,10 +11,10 @@ Each actor owns one `DevelopmentWorkspace`, its resident services, and a
 operation in one workspace cannot hold a global workspace-state lock. A 50 ms
 actor tick advances autonomous task DAGs without client polling.
 
-The daemon gives each connected client an independent browser-session
-namespace. Clients can use the same Unix socket without sharing browser state.
-The daemon still shares the process-wide request budget and lease authority;
-each client lease is bound to that client's session namespace and owner.
+Development clients that name the same durable workspace attach to the same
+authoritative browser service and resident resources. The workspace actor, not
+the socket connection, owns that identity. This development-runtime contract
+is distinct from the browser-only MCP connection lifecycle described below.
 
 ## Start and stop
 
@@ -130,9 +130,32 @@ kernels, debuggers, experiments, and its authoritative browser service. Fresh
 socket clients inspect the same actor identity and resources.
 
 The native daemon protocol provides `workspace.open`, `workspace.list`,
-`workspace.inspect`, `workspace.tool`, and `workspace.close`. Close explicitly
+`workspace.inspect`, `workspace.tool`, `workspace.events`, and
+`workspace.close`. Close explicitly
 shuts the actor down and reaps owned resources; it does not delete project
 files, Pi session JSONL, or persistent timeline data.
+
+## Bounded workspace events
+
+`workspace.events` accepts `workspaceId`, an optional exclusive `since`
+sequence (default `0`), and a `limit` from 1 through 256 (default 128). Each
+workspace retains the newest 512 event envelopes across client disconnects.
+Responses include `oldestSequence`, `newestSequence`, `capacity`, cumulative
+`droppedEvents`, and `lostBefore` when the requested cursor predates retained
+history. A reconnecting client resumes from its last `newestSequence` instead
+of polling every subsystem from zero.
+
+Event kinds include `workspace.changed`, `agent.event`, `task.changed`,
+`process.output`, `browser.revision`, `lsp.diagnostics`,
+`debugger.stopped`, `test.completed`, `git.changed`, and
+`experiment.changed`. Envelopes contain sequence, timestamp, workspace and
+tool-call identity, and success only. They deliberately omit command output,
+prompts, secrets, and private reasoning; clients retrieve governed details
+through the authoritative tool or inspection API.
+
+The stream is a bounded reconnect cursor, not an unbounded audit log or a
+server-pushed network subscription. Overflow is explicit, and deterministic
+tests prove cursor resume and dropped-event reporting.
 
 ## Failure and shutdown matrix
 

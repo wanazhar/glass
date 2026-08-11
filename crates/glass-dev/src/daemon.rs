@@ -8,7 +8,7 @@ use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,8 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACES: usize = 8;
 const MAX_CLIENTS: usize = 16;
 const WORKSPACE_COMMAND_CAPACITY: usize = 64;
+const WORKSPACE_EVENT_CAPACITY: usize = 512;
+const MAX_EVENT_BATCH: usize = 256;
 
 type WorkspaceRegistry = Rc<RefCell<BTreeMap<String, WorkspaceActorHandle>>>;
 
@@ -37,6 +39,11 @@ enum WorkspaceCommand {
         call: ToolCall,
         context: Box<DevelopmentToolContext>,
         response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    Events {
+        since: u64,
+        limit: usize,
+        response: tokio::sync::oneshot::Sender<Value>,
     },
     Shutdown {
         response: tokio::sync::oneshot::Sender<()>,
@@ -73,6 +80,21 @@ pub struct DevelopmentDaemonRequest {
     #[serde(default)]
     pub confirmed: bool,
     pub actor: Option<String>,
+    #[serde(default)]
+    pub since: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentDaemonEvent {
+    pub sequence: u64,
+    pub timestamp_ms: u128,
+    pub kind: String,
+    pub workspace_id: String,
+    pub tool_call_id: Option<String>,
+    pub success: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -618,6 +640,15 @@ async fn execute_request(
                 )
                 .await
             }
+            "workspace.events" => {
+                let workspace_id = required_workspace_id(&request)?;
+                workspace_events(
+                    workspace_handle(workspaces, workspace_id)?,
+                    request.since.unwrap_or(0),
+                    request.limit.unwrap_or(128),
+                )
+                .await
+            }
             "workspace.close" => {
                 let workspace_id = required_workspace_id(&request)?;
                 let handle = workspaces.borrow_mut().remove(workspace_id);
@@ -697,11 +728,48 @@ async fn workspace_tool(
         .map_err(|_| "workspace actor dropped its tool response")?
 }
 
+async fn workspace_events(
+    handle: WorkspaceActorHandle,
+    since: u64,
+    limit: usize,
+) -> Result<Value, String> {
+    if limit == 0 || limit > MAX_EVENT_BATCH {
+        return Err(format!(
+            "workspace event limit must be 1..={MAX_EVENT_BATCH}"
+        ));
+    }
+    let (response, received) = tokio::sync::oneshot::channel();
+    handle
+        .sender
+        .send(WorkspaceCommand::Events {
+            since,
+            limit,
+            response,
+        })
+        .await
+        .map_err(|_| "workspace actor command queue closed")?;
+    received
+        .await
+        .map_err(|_| "workspace actor dropped its event response".into())
+}
+
 async fn run_workspace_actor(
     workspace_id: String,
     mut workspace: DevelopmentWorkspace,
     mut commands: tokio::sync::mpsc::Receiver<WorkspaceCommand>,
 ) {
+    let mut events = VecDeque::with_capacity(WORKSPACE_EVENT_CAPACITY);
+    let mut next_event = 1_u64;
+    let mut dropped_events = 0_u64;
+    push_workspace_event(
+        &workspace_id,
+        &mut events,
+        &mut next_event,
+        &mut dropped_events,
+        "workspace.opened",
+        None,
+        true,
+    );
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -713,10 +781,29 @@ async fn run_workspace_actor(
                     let _ = response.send(result);
                 }
                 Some(WorkspaceCommand::Tool { call, context, response }) => {
+                    let kind = daemon_event_kind(&call.name);
                     let result = workspace
                         .execute_tool(&call, &context)
                         .map_err(|error| error.to_string());
+                    push_workspace_event(
+                        &workspace_id,
+                        &mut events,
+                        &mut next_event,
+                        &mut dropped_events,
+                        kind,
+                        Some(call.id),
+                        result.is_ok(),
+                    );
                     let _ = response.send(result);
+                }
+                Some(WorkspaceCommand::Events { since, limit, response }) => {
+                    let _ = response.send(workspace_event_batch(
+                        &events,
+                        next_event,
+                        dropped_events,
+                        since,
+                        limit,
+                    ));
                 }
                 Some(WorkspaceCommand::Shutdown { response }) => {
                     let _ = response.send(());
@@ -730,6 +817,82 @@ async fn run_workspace_actor(
                 }
             }
         }
+    }
+}
+
+fn workspace_event_batch(
+    events: &VecDeque<DevelopmentDaemonEvent>,
+    next_event: u64,
+    dropped_events: u64,
+    since: u64,
+    limit: usize,
+) -> Value {
+    let oldest = events
+        .front()
+        .map(|event| event.sequence)
+        .unwrap_or(next_event);
+    let newest = events.back().map(|event| event.sequence).unwrap_or(0);
+    let selected = events
+        .iter()
+        .filter(|event| event.sequence > since)
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "events": selected,
+        "oldestSequence": oldest,
+        "newestSequence": newest,
+        "lostBefore": (since.saturating_add(1) < oldest).then_some(oldest),
+        "droppedEvents": dropped_events,
+        "capacity": WORKSPACE_EVENT_CAPACITY,
+    })
+}
+
+fn push_workspace_event(
+    workspace_id: &str,
+    events: &mut VecDeque<DevelopmentDaemonEvent>,
+    next_event: &mut u64,
+    dropped_events: &mut u64,
+    kind: &str,
+    tool_call_id: Option<String>,
+    success: bool,
+) {
+    if events.len() == WORKSPACE_EVENT_CAPACITY {
+        events.pop_front();
+        *dropped_events = dropped_events.saturating_add(1);
+    }
+    events.push_back(DevelopmentDaemonEvent {
+        sequence: *next_event,
+        timestamp_ms: now_ms(),
+        kind: kind.into(),
+        workspace_id: workspace_id.into(),
+        tool_call_id,
+        success,
+    });
+    *next_event = next_event.saturating_add(1);
+}
+
+fn daemon_event_kind(tool: &str) -> &'static str {
+    if tool.starts_with("glass.agent.") {
+        "agent.event"
+    } else if tool.starts_with("glass.task.") {
+        "task.changed"
+    } else if tool.starts_with("glass.process.") {
+        "process.output"
+    } else if tool.starts_with("glass.browser.") || tool.starts_with("glass.web.") {
+        "browser.revision"
+    } else if tool.starts_with("glass.lsp.") {
+        "lsp.diagnostics"
+    } else if tool.starts_with("glass.debug.") {
+        "debugger.stopped"
+    } else if tool.starts_with("glass.test.") || tool.starts_with("glass.workflow.") {
+        "test.completed"
+    } else if tool.starts_with("glass.git.") {
+        "git.changed"
+    } else if tool.starts_with("glass.experiment.") {
+        "experiment.changed"
+    } else {
+        "workspace.changed"
     }
 }
 
@@ -908,6 +1071,8 @@ async fn forward_resident_tool_call(
             allow_mutation: false,
             confirmed: false,
             actor: Some("pi".into()),
+            since: None,
+            limit: None,
         },
     )
     .await?;
@@ -949,6 +1114,8 @@ async fn forward_resident_tool_call(
             allow_mutation,
             confirmed,
             actor: Some("pi".into()),
+            since: None,
+            limit: None,
         },
     )
     .await?;
@@ -1344,6 +1511,95 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn workspace_event_cursors_survive_client_reconnects() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glassd-event-cursor-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let workspace = DevelopmentWorkspace::open(&root).unwrap();
+                let summary = workspace_summary("events", &workspace);
+                let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                tokio::task::spawn_local(run_workspace_actor("events".into(), workspace, receiver));
+                let first_client = WorkspaceActorHandle {
+                    sender: sender.clone(),
+                    summary: summary.clone(),
+                };
+                workspace_tool(
+                    first_client,
+                    ToolCall {
+                        id: "task-list".into(),
+                        name: "glass.task.list".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
+                let first = workspace_events(
+                    WorkspaceActorHandle {
+                        sender: sender.clone(),
+                        summary: summary.clone(),
+                    },
+                    0,
+                    16,
+                )
+                .await
+                .unwrap();
+                assert_eq!(first["events"][0]["kind"], "workspace.opened");
+                assert_eq!(first["events"][1]["kind"], "task.changed");
+                let cursor = first["newestSequence"].as_u64().unwrap();
+
+                // A fresh handle models a client reconnecting to the same actor.
+                let reconnected = WorkspaceActorHandle { sender, summary };
+                workspace_tool(
+                    reconnected.clone(),
+                    ToolCall {
+                        id: "task-list-after-reconnect".into(),
+                        name: "glass.task.list".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
+                let resumed = workspace_events(reconnected, cursor, 16).await.unwrap();
+                assert_eq!(resumed["events"].as_array().unwrap().len(), 1);
+                assert_eq!(resumed["events"][0]["kind"], "task.changed");
+                assert_eq!(resumed["lostBefore"], Value::Null);
+            })
+            .await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_event_overflow_is_bounded_and_observable() {
+        let mut events = VecDeque::with_capacity(WORKSPACE_EVENT_CAPACITY);
+        let mut next = 1;
+        let mut dropped = 0;
+        for index in 0..=WORKSPACE_EVENT_CAPACITY {
+            push_workspace_event(
+                "bounded",
+                &mut events,
+                &mut next,
+                &mut dropped,
+                "workspace.changed",
+                Some(format!("call-{index}")),
+                true,
+            );
+        }
+        let batch = workspace_event_batch(&events, next, dropped, 0, MAX_EVENT_BATCH);
+        assert_eq!(events.len(), WORKSPACE_EVENT_CAPACITY);
+        assert_eq!(batch["droppedEvents"], 1);
+        assert_eq!(batch["lostBefore"], 2);
+        assert_eq!(batch["events"].as_array().unwrap().len(), MAX_EVENT_BATCH);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     #[cfg(unix)]
     async fn daemon_preserves_resources_across_client_disconnects() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
@@ -1392,6 +1648,8 @@ mod tests {
                     allow_mutation: false,
                     confirmed: false,
                     actor: Some("test-client".into()),
+                    since: None,
+                    limit: None,
                 };
                 let mut open = base_request("open", "workspace.open");
                 open.root = Some(project.clone());
@@ -1591,6 +1849,8 @@ mod tests {
                     allow_mutation: false,
                     confirmed: false,
                     actor: Some("external-agent".into()),
+                    since: None,
+                    limit: None,
                 };
                 let mut open = base_request("open", "workspace.open");
                 open.root = Some(project.clone());

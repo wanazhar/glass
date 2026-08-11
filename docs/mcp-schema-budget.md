@@ -12,9 +12,9 @@ On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 306 |
-| Serialized `tools` array | 145,694 UTF-8 bytes |
-| Four-bytes-per-token estimate | 36,424 tokens |
+| Negotiated tools | 308 |
+| Serialized `tools` array | 146,801 UTF-8 bytes |
+| Four-bytes-per-token estimate | 36,701 tokens |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -56,7 +56,7 @@ explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 145,694-byte development inventory covers explicit trust, autonomous
+current 146,801-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, and governed-kernel operations.
 `glass` exposes the same typed resident services used by Pi, the TUI, CLI, and
 daemon, while `glass-browser` remains the compact browser-only product. A future

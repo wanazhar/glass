@@ -997,7 +997,7 @@ impl DevelopmentToolRouter {
                 Ok(serde_json::to_value(workspace.create_task(spec)?)?)
             }
             "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
-            "glass.task.get" => {
+            "glass.task.get" | "glass.task.inspect" => {
                 let id = TaskId::parse(string("taskId")?)?;
                 Ok(serde_json::to_value(workspace.task(&id)?)?)
             }
@@ -1026,7 +1026,7 @@ impl DevelopmentToolRouter {
                 )?;
                 Ok(serde_json::json!({"reassigned":true}))
             }
-            "glass.task.evidence" => {
+            "glass.task.evidence" | "glass.task.verify" => {
                 let id = TaskId::parse(string("taskId")?)?;
                 workspace.submit_task_evidence(
                     &id,
@@ -1177,6 +1177,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.stats",
         "glass.task.list",
         "glass.task.get",
+        "glass.task.inspect",
         "glass.experiment.list",
         "glass.experiment.compare",
         "glass.graph.query",
@@ -1265,6 +1266,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.task.reassign",
         "glass.task.override-blocked",
         "glass.task.evidence",
+        "glass.task.verify",
         "glass.experiment.create",
         "glass.experiment.collect",
         "glass.experiment.select",
@@ -1346,6 +1348,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.workspace.trust.inspect"
             | "glass.task.list"
             | "glass.task.get"
+            | "glass.task.inspect"
     )
 }
 
@@ -2164,6 +2167,7 @@ mod tests {
             "glass.task.create",
             "glass.task.list",
             "glass.task.get",
+            "glass.task.inspect",
             "glass.task.pause",
             "glass.task.resume",
             "glass.task.cancel",
@@ -2171,6 +2175,7 @@ mod tests {
             "glass.task.reassign",
             "glass.task.override-blocked",
             "glass.task.evidence",
+            "glass.task.verify",
             "glass.experiment.create",
             "glass.experiment.collect",
             "glass.experiment.list",

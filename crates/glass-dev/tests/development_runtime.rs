@@ -29,14 +29,13 @@ async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
     let started = Command::new(&glass)
         .args(["daemon", "start", "--socket", &pipe, "--status"])
         .arg(&status_path)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .unwrap();
-    assert!(
-        started.status.success(),
-        "{}",
-        String::from_utf8_lossy(&started.stderr)
-    );
-    let status: DevelopmentDaemonStatus = serde_json::from_slice(&started.stdout).unwrap();
+    assert!(started.success(), "native Windows daemon did not start");
+    let status: DevelopmentDaemonStatus =
+        serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
     assert_eq!(status.socket, std::path::PathBuf::from(&pipe));
     let token = std::fs::read_to_string(&status.token_path).unwrap();
     let base_request = |id: &str, operation: &str| DevelopmentDaemonRequest {
@@ -96,13 +95,11 @@ async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
     let stopped = Command::new(&glass)
         .args(["daemon", "stop", "--socket", &pipe, "--status"])
         .arg(&status_path)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .unwrap();
-    assert!(
-        stopped.status.success(),
-        "{}",
-        String::from_utf8_lossy(&stopped.stderr)
-    );
+    assert!(stopped.success(), "native Windows daemon did not stop");
     tokio::time::sleep(Duration::from_millis(100)).await;
     std::fs::remove_dir_all(base).unwrap();
 }

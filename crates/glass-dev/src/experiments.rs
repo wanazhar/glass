@@ -1046,59 +1046,33 @@ mod tests {
         assert!(third.worktree.exists());
         std::fs::write(first.worktree.join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(second.worktree.join("b.rs"), "fn b() {}\n").unwrap();
+        std::fs::write(second.worktree.join("b-extra.rs"), "fn b_extra() {}\n").unwrap();
         std::fs::write(third.worktree.join("c.rs"), "fn c() {}\n").unwrap();
-        assert_eq!(manager.refresh_changed_files("approach-a").unwrap(), 1);
-        assert_eq!(manager.refresh_changed_files("approach-b").unwrap(), 1);
-        let automatic = manager.collect_automatic("approach-a").unwrap();
-        assert_eq!(automatic.build_passed, Some(true));
-        assert_eq!(automatic.tests_passed, 1);
-        assert_eq!(automatic.changed_files, 1);
-        assert!(automatic.provenance["buildPassed"].measured);
-        assert!(automatic.provenance["buildPassed"].available);
-        assert!(!automatic.provenance["workflowPassed"].available);
-        manager
-            .record_evidence(
-                "approach-a",
-                ExperimentEvidence {
-                    tests_passed: 142,
-                    workflow_passed: Some(true),
-                    lcp_ms: Some(1_220.0),
-                    ..ExperimentEvidence::default()
-                },
-            )
-            .unwrap();
-        assert!(!manager.snapshots()[0].evidence.provenance["tests"].measured);
+        std::fs::write(third.worktree.join("c-extra-1.rs"), "fn c1() {}\n").unwrap();
+        std::fs::write(third.worktree.join("c-extra-2.rs"), "fn c2() {}\n").unwrap();
         assert!(
             manager
                 .set_weights(ExperimentWeights::default(), WorkspaceTrust::Untrusted)
                 .is_err()
         );
-        manager
-            .record_evidence(
-                "approach-b",
-                ExperimentEvidence {
-                    tests_passed: 141,
-                    tests_failed: 1,
-                    workflow_passed: Some(false),
-                    semantic_regressions: 1,
-                    lcp_ms: Some(1_080.0),
-                    ..ExperimentEvidence::default()
-                },
-            )
-            .unwrap();
-        manager
-            .record_evidence(
-                "approach-c",
-                ExperimentEvidence {
-                    tests_passed: 120,
-                    tests_failed: 4,
-                    workflow_passed: Some(false),
-                    semantic_regressions: 2,
-                    lcp_ms: Some(1_450.0),
-                    ..ExperimentEvidence::default()
-                },
-            )
-            .unwrap();
+        for (id, changed_files) in [
+            ("approach-a", 1_u64),
+            ("approach-b", 2_u64),
+            ("approach-c", 3_u64),
+        ] {
+            let automatic = manager.collect_automatic(id).unwrap();
+            assert_eq!(automatic.build_passed, Some(true));
+            assert_eq!(automatic.tests_passed, 1);
+            assert_eq!(automatic.changed_files, changed_files);
+            assert!(automatic.provenance["buildPassed"].measured);
+            assert!(automatic.provenance["buildPassed"].available);
+            assert!(automatic.provenance["tests"].measured);
+            assert!(automatic.provenance["tests"].available);
+            assert!(automatic.provenance["changedFiles"].measured);
+            assert!(!automatic.provenance["workflowPassed"].available);
+            assert!(!automatic.provenance["visualDifference"].available);
+            assert!(!automatic.provenance["lcpMs"].available);
+        }
         let comparison = manager.compare();
         assert_eq!(comparison.rankings.len(), 3);
         assert_eq!(comparison.recommended.as_deref(), Some("approach-a"));

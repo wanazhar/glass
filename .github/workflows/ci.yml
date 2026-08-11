@@ -55,8 +55,8 @@ jobs:
 
       - name: Prove real LSP and Neovim embed paths
         run: |
-          cargo test --package glass-browser --features development-runtime development::language::tests::rust_analyzer_publishes_real_diagnostics_when_available -- --exact
-          cargo test --package glass-browser --features development-runtime development::neovim::tests::real_neovim_probe_proves_pty_and_rpc_modes_when_available -- --exact
+          cargo test --package glass-dev --lib development::language::tests::rust_analyzer_publishes_real_diagnostics_when_available -- --exact
+          cargo test --package glass-dev --lib development::neovim::tests::real_neovim_probe_proves_pty_and_rpc_modes_when_available -- --exact
 
       - uses: actions/setup-python@v6
         with:

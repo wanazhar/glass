@@ -98,6 +98,8 @@ current user instructions.
   lifecycle, advisory retrieval, migration, and management.
 - [Local daemon](daemon.md) — Unix-socket lifecycle, isolated clients,
   resident MCP sessions, recovery, and mutation leases.
+- [Full-suite reliability](full-suite-reliability.md) — concurrent subsystem
+  stress, queue bounds, dropped-event evidence, and the live-browser gate.
 - [Extensions](extensions.md) and [experimental capabilities](experimental-capabilities.md)
   — manifests, permissions, sandbox gates, opt-in, and fail-closed availability.
 

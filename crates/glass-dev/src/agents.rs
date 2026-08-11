@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -111,6 +113,7 @@ pub struct AgentSnapshot {
     pub started_at_ms: Option<u128>,
     pub updated_at_ms: u128,
     pub event_count: u64,
+    pub dropped_event_count: u64,
     pub last_error: Option<String>,
     pub last_response_id: Option<String>,
     pub evidence: Vec<Value>,
@@ -146,6 +149,7 @@ struct AgentRecord {
     spec: AgentSpec,
     command: Option<SyncSender<WorkerCommand>>,
     awaiting_agent_settle: bool,
+    dropped_events: Arc<AtomicU64>,
 }
 
 struct WorkerRuntime {
@@ -300,6 +304,7 @@ impl AgentRegistry {
                     started_at_ms: None,
                     updated_at_ms: now,
                     event_count: 0,
+                    dropped_event_count: 0,
                     last_error: None,
                     last_response_id: None,
                     evidence: Vec::new(),
@@ -307,6 +312,7 @@ impl AgentRegistry {
                 spec,
                 command: None,
                 awaiting_agent_settle: false,
+                dropped_events: Arc::new(AtomicU64::new(0)),
             },
         );
         if status == AgentStatus::Starting {
@@ -326,6 +332,9 @@ impl AgentRegistry {
                     ));
                 }
             }
+        }
+        for record in self.records.values_mut() {
+            record.snapshot.dropped_event_count = record.dropped_events.load(Ordering::Relaxed);
         }
         self.enforce_budgets();
         self.fail_blocked_dependents();
@@ -453,6 +462,7 @@ impl AgentRegistry {
         let broker = self.broker.clone();
         let additional_system_prompt = self.additional_system_prompt.clone();
         let record = self.record_mut(id)?;
+        let dropped_events = Arc::clone(&record.dropped_events);
         let spec = record.spec.clone();
         let worktree = record.snapshot.worktree.clone();
         let worker_id = id.clone();
@@ -475,6 +485,7 @@ impl AgentRegistry {
                     },
                     commands_rx,
                     events,
+                    dropped_events,
                 )
             })
             .map_err(DevelopmentError::Io)?;
@@ -682,6 +693,7 @@ fn run_worker(
     runtime: WorkerRuntime,
     commands: Receiver<WorkerCommand>,
     events: SyncSender<WorkerEvent>,
+    dropped_events: Arc<AtomicU64>,
 ) {
     let options = PiRuntimeOptions {
         unrestricted: spec.unrestricted,
@@ -731,7 +743,11 @@ fn run_worker(
             }
         }
         match harness.recv_event_timeout(Duration::from_millis(25)) {
-            Ok(Some(value)) => send_lossy_worker_event(&events, WorkerEvent::Pi(id.clone(), value)),
+            Ok(Some(value)) => send_lossy_worker_event(
+                &events,
+                WorkerEvent::Pi(id.clone(), value),
+                &dropped_events,
+            ),
             Ok(None) => {}
             Err(error) => {
                 send_critical_worker_event(&events, WorkerEvent::Failed(id, error.to_string()));
@@ -741,8 +757,14 @@ fn run_worker(
     }
 }
 
-fn send_lossy_worker_event(events: &SyncSender<WorkerEvent>, event: WorkerEvent) {
-    let _ = events.try_send(event);
+fn send_lossy_worker_event(
+    events: &SyncSender<WorkerEvent>,
+    event: WorkerEvent,
+    dropped_events: &AtomicU64,
+) {
+    if matches!(events.try_send(event), Err(TrySendError::Full(_))) {
+        dropped_events.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn send_critical_worker_event(events: &SyncSender<WorkerEvent>, event: WorkerEvent) {
@@ -823,6 +845,20 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn lossy_worker_queue_reports_dropped_events() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let id = AgentId::parse("agent-overflow").unwrap();
+        sender.send(WorkerEvent::Ready(id.clone())).unwrap();
+        let dropped = AtomicU64::new(0);
+        send_lossy_worker_event(
+            &sender,
+            WorkerEvent::Pi(id, serde_json::json!({"type":"delta"})),
+            &dropped,
+        );
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
     }
 
     fn wait_for_status(

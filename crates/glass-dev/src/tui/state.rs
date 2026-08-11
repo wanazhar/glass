@@ -259,7 +259,7 @@ impl DevTuiState {
                 .iter()
                 .map(|agent| {
                     format!(
-                        "{}  {:?}  {} · {}\n  target {} · model {} · thinking {} · events {}{}\n  evidence {}",
+                        "{}  {:?}  {} · {}\n  target {} · model {} · thinking {} · events {} · dropped {}{}\n  evidence {}",
                         agent.id.as_str(),
                         agent.status,
                         agent.role,
@@ -268,6 +268,7 @@ impl DevTuiState {
                         agent.model.as_deref().unwrap_or("default"),
                         agent.thinking.as_deref().unwrap_or("default"),
                         agent.event_count,
+                        agent.dropped_event_count,
                         agent
                             .last_error
                             .as_deref()

@@ -1452,6 +1452,34 @@ mod tests {
         let second_root = base.join("second");
         std::fs::create_dir_all(&first_root).unwrap();
         std::fs::create_dir_all(&second_root).unwrap();
+        for root in [&first_root, &second_root] {
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname='stress-fixture'\nversion='0.1.0'\n",
+            )
+            .unwrap();
+        }
+        let dap_adapter = second_root.join("stress_dap.py");
+        std::fs::write(
+            &dap_adapter,
+            r#"import json, sys
+while True:
+    line = sys.stdin.buffer.readline()
+    if not line:
+        break
+    if not line.lower().startswith(b'content-length:'):
+        continue
+    length = int(line.split(b':', 1)[1])
+    while sys.stdin.buffer.readline() not in (b'\r\n', b'\n', b''):
+        pass
+    request = json.loads(sys.stdin.buffer.read(length))
+    response = {'seq': request['seq'] + 1000, 'type': 'response', 'request_seq': request['seq'], 'command': request['command'], 'success': True, 'body': {}}
+    body = json.dumps(response).encode()
+    sys.stdout.buffer.write(f'Content-Length: {len(body)}\r\n\r\n'.encode() + body)
+    sys.stdout.buffer.flush()
+"#,
+        )
+        .unwrap();
         let store = WorkspaceTrustStore::at(base.join("trust.json"));
         for root in [&first_root, &second_root] {
             store
@@ -1471,6 +1499,31 @@ mod tests {
                 };
                 let first = actor("first", &first_root);
                 let second = actor("second", &second_root);
+                let python = ["python3", "python"]
+                    .into_iter()
+                    .find(|program| {
+                        std::process::Command::new(program)
+                            .arg("--version")
+                            .output()
+                            .is_ok_and(|output| output.status.success())
+                    })
+                    .expect("full-suite stress requires Python for the fixture DAP adapter");
+                workspace_tool(
+                    second.clone(),
+                    ToolCall {
+                        id: "debug-start".into(),
+                        name: "glass.debug.start".into(),
+                        arguments: serde_json::json!({
+                            "session":"stress",
+                            "command":python,
+                            "arguments":[dap_adapter],
+                            "timeoutSeconds":3
+                        }),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
                 workspace_tool(
                     first.clone(),
                     ToolCall {
@@ -1497,9 +1550,62 @@ mod tests {
                 ));
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let started = std::time::Instant::now();
-                let inspect = workspace_inspect(second).await.unwrap();
+                let (inspect, browser, lsp, debug, tests, processes) = tokio::join!(
+                    workspace_inspect(second.clone()),
+                    workspace_tool(
+                        second.clone(),
+                        ToolCall {
+                            id: "browser-state".into(),
+                            name: "glass.browser.state".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        test_context(),
+                    ),
+                    workspace_tool(
+                        second.clone(),
+                        ToolCall {
+                            id: "lsp-list".into(),
+                            name: "glass.lsp.list".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        test_context(),
+                    ),
+                    workspace_tool(
+                        second.clone(),
+                        ToolCall {
+                            id: "debug-events".into(),
+                            name: "glass.debug.events".into(),
+                            arguments: serde_json::json!({"session":"stress"}),
+                        },
+                        test_context(),
+                    ),
+                    workspace_tool(
+                        second.clone(),
+                        ToolCall {
+                            id: "test-discover".into(),
+                            name: "glass.test.discover".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        test_context(),
+                    ),
+                    workspace_tool(
+                        second,
+                        ToolCall {
+                            id: "process-list".into(),
+                            name: "glass.process.list".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        test_context(),
+                    ),
+                );
                 let elapsed = started.elapsed();
+                let inspect = inspect.unwrap();
                 assert_eq!(inspect["workspace"]["id"], "second");
+                assert!(browser.is_ok());
+                assert!(lsp.is_ok());
+                assert!(debug.is_ok());
+                assert!(tests.is_ok());
+                assert!(processes.is_ok());
                 assert!(
                     elapsed < Duration::from_millis(300),
                     "unrelated workspace inspect waited {elapsed:?}"

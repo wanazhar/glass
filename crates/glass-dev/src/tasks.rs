@@ -1139,6 +1139,7 @@ mod tests {
                 started_at_ms: Some(now_ms()),
                 updated_at_ms: now_ms(),
                 event_count: 0,
+                dropped_event_count: 0,
                 last_error: None,
                 last_response_id: None,
                 evidence: Vec::new(),
@@ -1229,6 +1230,43 @@ mod tests {
             TaskState::Succeeded
         );
         assert_eq!(agents.prompts[1].1, "apply repair");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn eight_ready_tasks_dispatch_before_integration_dependency_wakes() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let mut leaves = Vec::new();
+        for index in 0..8 {
+            leaves.push(
+                scheduler
+                    .create(
+                        &mut agents,
+                        TaskSpec::new(format!("worker-{index}"), format!("inspect shard {index}")),
+                    )
+                    .unwrap(),
+            );
+        }
+        assert_eq!(scheduler.tasks.len(), 8);
+
+        let mut integration = TaskSpec::new("integration", "verify all shards");
+        integration.dependencies = leaves.clone();
+        let integration = scheduler.create(&mut agents, integration).unwrap();
+        assert_eq!(scheduler.tasks.len(), 9);
+        settle(&mut scheduler, &mut agents);
+        settle(&mut scheduler, &mut agents);
+
+        for leaf in leaves {
+            assert_eq!(
+                scheduler.snapshot(&mut agents, &leaf).unwrap().state,
+                TaskState::Succeeded
+            );
+        }
+        assert_eq!(
+            scheduler.snapshot(&mut agents, &integration).unwrap().state,
+            TaskState::Succeeded
+        );
+        assert_eq!(agents.prompts.len(), 9);
         std::fs::remove_dir_all(root).unwrap();
     }
 

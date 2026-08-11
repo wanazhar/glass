@@ -80,7 +80,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | XI Graph/replay | typed causal links across every listed subsystem; observable evidence only | Complete locally |
 | XII / Gate 10 TUI | all listed surfaces and lifecycle/recovery actions on desktop, compact, phone | Complete locally; deterministic buffer coverage at all three geometries |
 | XIII parity | one router plus task/trust APIs across CLI/MCP/daemon/Pi | Complete locally; daemon tools and bounded event cursor retain router authority |
-| XIV / Gate 11 load | 8+ tasks and concurrent browser/LSP/DAP/test/workspace/reconnect bounded stress evidence | Blocking |
+| XIV / Gate 11 load | 8+ tasks and concurrent browser/LSP/DAP/test/workspace/reconnect bounded stress evidence | Deterministic suite complete; live Chromium presentation evidence pending final E2E |
 | XV / Gate 12 release | substantive generated notes, truthful verification, immutable tag/publication record, packages/CI/fuzz/install | Blocking |
 | XVI docs | all twelve issue topics and honest certification/migration language | Blocking |
 | Scenarios A-I | executable integrated demonstrations recorded at exact candidate commit | Blocking |

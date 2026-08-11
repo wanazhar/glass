@@ -106,6 +106,7 @@
     "glass.editor.replace",
     "glass.editor.save",
     "glass.editor.selection",
+    "glass.eval.cancel",
     "glass.eval.execute",
     "glass.eval.list",
     "glass.eval.reset",

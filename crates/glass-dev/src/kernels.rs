@@ -3,7 +3,7 @@
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -16,11 +16,26 @@ const MAX_KERNEL_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_KERNEL_CODE_BYTES: usize = 512 * 1024;
 const MAX_KERNEL_SESSIONS: usize = 32;
 const MAX_KERNEL_MESSAGES: usize = 64;
+const MAX_KERNEL_TOOL_CALLS: usize = 32;
 const DEFAULT_KERNEL_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PYTHON_WORKER: &str = r#"
 import ast, contextlib, io, json, sys, traceback
+class GlassBindings:
+    def __init__(self): self.sequence = 0
+    def call(self, tool, arguments=None):
+        self.sequence += 1
+        request_id = "python-%d" % self.sequence
+        sys.__stdout__.write(json.dumps({"kind":"toolCall", "id":request_id, "tool":tool, "arguments":arguments or {}}, ensure_ascii=True) + "\n")
+        sys.__stdout__.flush()
+        response = json.loads(sys.__stdin__.readline())
+        if response.get("kind") != "toolResult" or response.get("id") != request_id:
+            raise RuntimeError("invalid Glass tool response")
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error", "Glass tool call failed"))
+        return response.get("result")
 state = {"__name__": "__glass_kernel__"}
+state["glass"] = GlassBindings()
 for line in sys.stdin:
     try:
         request = json.loads(line)
@@ -35,9 +50,9 @@ for line in sys.stdin:
                 result = eval(compile(ast.Expression(tree.body[-1].value), "<glass>", "eval"), state, state)
             else:
                 exec(compile(tree, "<glass>", "exec"), state, state)
-        response = {"ok": True, "output": output.getvalue(), "value": repr(result) if result is not None else None}
+        response = {"kind":"executionResult", "ok": True, "output": output.getvalue(), "value": repr(result) if result is not None else None}
     except Exception:
-        response = {"ok": False, "output": "", "error": traceback.format_exc(limit=16)}
+        response = {"kind":"executionResult", "ok": False, "output": "", "error": traceback.format_exc(limit=16)}
     print(json.dumps(response, ensure_ascii=True), flush=True)
 "#;
 
@@ -45,11 +60,28 @@ const JAVASCRIPT_WORKER: &str = r#"
 const readline = require('readline');
 const vm = require('vm');
 const context = vm.createContext({});
+let toolSequence = 0;
+const pendingTools = new Map();
+context.glass = {
+  call: (tool, arguments = {}) => new Promise((resolve, reject) => {
+    const id = `javascript-${++toolSequence}`;
+    pendingTools.set(id, { resolve, reject });
+    process.stdout.write(JSON.stringify({ kind: 'toolCall', id, tool, arguments }) + '\n');
+  }),
+};
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on('line', async (line) => {
   let request;
   try {
     request = JSON.parse(line);
+    if (request.kind === 'toolResult') {
+      const pending = pendingTools.get(request.id);
+      if (!pending) throw new Error('unknown Glass tool response');
+      pendingTools.delete(request.id);
+      if (request.ok) pending.resolve(request.result);
+      else pending.reject(new Error(request.error || 'Glass tool call failed'));
+      return;
+    }
     const output = [];
     context.console = {
       log: (...values) => output.push(values.map(String).join(' ')),
@@ -58,9 +90,9 @@ input.on('line', async (line) => {
     let value = new vm.Script(request.code, { filename: '<glass>' })
       .runInContext(context, { timeout: request.timeoutMs });
     if (value && typeof value.then === 'function') value = await value;
-    process.stdout.write(JSON.stringify({ ok: true, output: output.join('\n') + (output.length ? '\n' : ''), value: value === undefined ? null : String(value) }) + '\n');
+    process.stdout.write(JSON.stringify({ kind: 'executionResult', ok: true, output: output.join('\n') + (output.length ? '\n' : ''), value: value === undefined ? null : String(value) }) + '\n');
   } catch (error) {
-    process.stdout.write(JSON.stringify({ ok: false, output: '', error: String(error && error.stack || error) }) + '\n');
+    process.stdout.write(JSON.stringify({ kind: 'executionResult', ok: false, output: '', error: String(error && error.stack || error) }) + '\n');
   }
 });
 "#;
@@ -132,6 +164,10 @@ pub struct KernelSnapshot {
     pub executions: u64,
     pub actor_id: String,
     pub workspace_revision: u64,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub mutation_authority: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -141,11 +177,23 @@ pub struct KernelExecution {
     pub kind: KernelKind,
     pub sequence: u64,
     pub actor_id: String,
+    pub initiator_id: String,
+    pub executor_id: String,
     pub workspace_revision: u64,
     pub duration_ms: u64,
     pub output: String,
     pub value: Value,
     pub truncated: bool,
+    pub tool_calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelToolCall {
+    pub id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: Value,
 }
 
 enum KernelBackend {
@@ -157,6 +205,7 @@ enum KernelBackend {
 struct KernelSession {
     snapshot: KernelSnapshot,
     backend: KernelBackend,
+    capabilities: BTreeSet<String>,
 }
 
 pub struct KernelManager {
@@ -173,8 +222,20 @@ impl KernelManager {
     }
 
     pub fn start(&mut self, name: &str, kind: KernelKind, actor_id: &str) -> KernelResult<()> {
+        self.start_governed(name, kind, actor_id, &[], false)
+    }
+
+    pub fn start_governed(
+        &mut self,
+        name: &str,
+        kind: KernelKind,
+        actor_id: &str,
+        capabilities: &[String],
+        mutation_authority: bool,
+    ) -> KernelResult<()> {
         validate_name(name, "kernel")?;
-        validate_name(actor_id, "kernel actor")?;
+        validate_actor_id(actor_id, "kernel actor")?;
+        let capabilities = validate_capabilities(capabilities)?;
         if self.sessions.contains_key(name) {
             return Err(KernelError::InvalidInput(format!(
                 "kernel {name} already exists"
@@ -209,8 +270,11 @@ impl KernelManager {
                     executions: 0,
                     actor_id: actor_id.to_string(),
                     workspace_revision: 0,
+                    capabilities: capabilities.iter().cloned().collect(),
+                    mutation_authority,
                 },
                 backend,
+                capabilities,
             },
         );
         Ok(())
@@ -224,8 +288,24 @@ impl KernelManager {
         workspace_revision: u64,
         timeout: Option<Duration>,
     ) -> KernelResult<KernelExecution> {
+        self.execute_with_tools(name, code, actor_id, workspace_revision, timeout, |_| {
+            Err(KernelError::Execution(
+                "kernel has no governed Glass tool dispatcher".into(),
+            ))
+        })
+    }
+
+    pub fn execute_with_tools(
+        &mut self,
+        name: &str,
+        code: &str,
+        initiator_id: &str,
+        workspace_revision: u64,
+        timeout: Option<Duration>,
+        mut dispatch: impl FnMut(&KernelToolCall) -> KernelResult<Value>,
+    ) -> KernelResult<KernelExecution> {
         validate_code(code)?;
-        validate_name(actor_id, "kernel actor")?;
+        validate_actor_id(initiator_id, "kernel initiator")?;
         let timeout = timeout.unwrap_or(DEFAULT_KERNEL_TIMEOUT);
         if timeout.is_zero() || timeout > Duration::from_secs(600) {
             return Err(KernelError::InvalidInput(
@@ -242,10 +322,34 @@ impl KernelManager {
             )));
         }
         let started = Instant::now();
+        let executor_id = format!("kernel:{name}");
+        let capabilities = session.capabilities.clone();
+        let mut tool_calls = 0_u64;
+        let mut governed_dispatch = |call: &KernelToolCall| {
+            validate_name(&call.id, "kernel tool call ID")?;
+            tool_calls = tool_calls.saturating_add(1);
+            if tool_calls > MAX_KERNEL_TOOL_CALLS as u64 {
+                return Err(KernelError::Execution(format!(
+                    "kernel execution exceeded {MAX_KERNEL_TOOL_CALLS} Glass tool calls"
+                )));
+            }
+            if call.tool.starts_with("glass.eval.") {
+                return Err(KernelError::Execution(
+                    "recursive glass.eval tool calls are forbidden".into(),
+                ));
+            }
+            if !capabilities.contains(&call.tool) {
+                return Err(KernelError::Execution(format!(
+                    "kernel capability {} was not granted",
+                    call.tool
+                )));
+            }
+            dispatch(call)
+        };
         let result = match &mut session.backend {
-            KernelBackend::Json(kernel) => kernel.execute(code, timeout),
-            KernelBackend::Shell(kernel) => kernel.execute(code, timeout),
-            KernelBackend::Sql(kernel) => kernel.execute(code),
+            KernelBackend::Json(kernel) => kernel.execute(code, timeout, &mut governed_dispatch),
+            KernelBackend::Shell(kernel) => kernel.execute(code, timeout, &mut governed_dispatch),
+            KernelBackend::Sql(kernel) => kernel.execute(code, &mut governed_dispatch),
         };
         let (output, value, truncated) = match result {
             Ok(result) => result,
@@ -261,18 +365,21 @@ impl KernelManager {
             .executions
             .checked_add(1)
             .ok_or_else(|| KernelError::Protocol("kernel sequence overflowed".into()))?;
-        session.snapshot.actor_id = actor_id.to_string();
+        session.snapshot.actor_id = executor_id.clone();
         session.snapshot.workspace_revision = workspace_revision;
         Ok(KernelExecution {
             name: name.to_string(),
             kind: session.snapshot.kind,
             sequence: session.snapshot.executions,
-            actor_id: actor_id.to_string(),
+            actor_id: executor_id.clone(),
+            initiator_id: initiator_id.to_string(),
+            executor_id,
             workspace_revision,
             duration_ms: started.elapsed().as_millis() as u64,
             output,
             value,
             truncated,
+            tool_calls,
         })
     }
 
@@ -293,15 +400,26 @@ impl KernelManager {
         Ok(session.snapshot.clone())
     }
 
+    pub fn cancel(&mut self, name: &str) -> KernelResult<KernelSnapshot> {
+        let session = self
+            .sessions
+            .get_mut(name)
+            .ok_or_else(|| KernelError::InvalidInput(format!("unknown kernel {name}")))?;
+        session.stop();
+        session.snapshot.state = KernelState::Failed;
+        Ok(session.snapshot.clone())
+    }
+
     pub fn reset(&mut self, name: &str, actor_id: &str) -> KernelResult<()> {
-        let kind = self
+        let session = self
             .sessions
             .get(name)
-            .ok_or_else(|| KernelError::InvalidInput(format!("unknown kernel {name}")))?
-            .snapshot
-            .kind;
+            .ok_or_else(|| KernelError::InvalidInput(format!("unknown kernel {name}")))?;
+        let kind = session.snapshot.kind;
+        let capabilities = session.snapshot.capabilities.clone();
+        let mutation_authority = session.snapshot.mutation_authority;
         self.stop(name)?;
-        self.start(name, kind, actor_id)
+        self.start_governed(name, kind, actor_id, &capabilities, mutation_authority)
     }
 }
 
@@ -390,7 +508,12 @@ impl JsonProcessKernel {
         })
     }
 
-    fn execute(&mut self, code: &str, timeout: Duration) -> KernelResult<KernelOutput> {
+    fn execute(
+        &mut self,
+        code: &str,
+        timeout: Duration,
+        dispatch: &mut impl FnMut(&KernelToolCall) -> KernelResult<Value>,
+    ) -> KernelResult<KernelOutput> {
         serde_json::to_writer(
             &mut self.stdin,
             &json!({"code": code, "timeoutMs": timeout.as_millis()}),
@@ -400,20 +523,50 @@ impl JsonProcessKernel {
         })?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
-        let response = match self.responses.recv_timeout(timeout) {
-            Ok(response) => response?,
-            Err(RecvTimeoutError::Timeout) => {
-                self.stop();
-                return Err(KernelError::Timeout(format!(
-                    "execution exceeded {} ms",
-                    timeout.as_millis()
-                )));
+        let deadline = Instant::now() + timeout;
+        let response = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let response = match self.responses.recv_timeout(remaining) {
+                Ok(response) => response?,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.stop();
+                    return Err(KernelError::Timeout(format!(
+                        "execution exceeded {} ms",
+                        timeout.as_millis()
+                    )));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(KernelError::Protocol(
+                        "kernel response stream closed".into(),
+                    ));
+                }
+            };
+            if response.get("kind").and_then(Value::as_str) == Some("toolCall") {
+                let call: KernelToolCall = serde_json::from_value(response).map_err(|error| {
+                    KernelError::Protocol(format!("invalid kernel tool call: {error}"))
+                })?;
+                let dispatched = dispatch(&call);
+                let response = match dispatched {
+                    Ok(result) => {
+                        json!({"kind":"toolResult","id":call.id,"ok":true,"result":result})
+                    }
+                    Err(error) => {
+                        json!({"kind":"toolResult","id":call.id,"ok":false,"error":error.to_string()})
+                    }
+                };
+                serde_json::to_writer(&mut self.stdin, &response).map_err(|error| {
+                    KernelError::Protocol(format!("could not encode kernel tool result: {error}"))
+                })?;
+                self.stdin.write_all(b"\n")?;
+                self.stdin.flush()?;
+                continue;
             }
-            Err(RecvTimeoutError::Disconnected) => {
+            if response.get("kind").and_then(Value::as_str) != Some("executionResult") {
                 return Err(KernelError::Protocol(
-                    "kernel response stream closed".into(),
+                    "kernel response has an unknown message kind".into(),
                 ));
             }
+            break response;
         };
         if response.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(KernelError::Execution(
@@ -464,7 +617,7 @@ impl ShellKernel {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        let stdin = child
+        let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| KernelError::Protocol("shell stdin was unavailable".into()))?;
@@ -472,6 +625,11 @@ impl ShellKernel {
             .stdout
             .take()
             .ok_or_else(|| KernelError::Protocol("shell stdout was unavailable".into()))?;
+        writeln!(
+            stdin,
+            "glass_call() {{ glass_tool_arguments=\"$2\"; [ -n \"$glass_tool_arguments\" ] || glass_tool_arguments='{{}}'; printf '__GLASS_TOOL_CALL__:%s\\t%s\\n' \"$1\" \"$glass_tool_arguments\"; IFS= read -r glass_tool_response; printf '%s\\n' \"$glass_tool_response\"; }}"
+        )?;
+        stdin.flush()?;
         let (sender, lines) = mpsc::sync_channel(MAX_KERNEL_MESSAGES);
         let reader = std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -499,7 +657,12 @@ impl ShellKernel {
     }
 
     #[cfg(unix)]
-    fn execute(&mut self, code: &str, timeout: Duration) -> KernelResult<KernelOutput> {
+    fn execute(
+        &mut self,
+        code: &str,
+        timeout: Duration,
+        dispatch: &mut impl FnMut(&KernelToolCall) -> KernelResult<Value>,
+    ) -> KernelResult<KernelOutput> {
         self.sequence = self
             .sequence
             .checked_add(1)
@@ -549,13 +712,39 @@ impl ShellKernel {
                 }
                 return Ok((output, json!({"exitCode": status}), truncated));
             }
+            if let Some(request) = line.strip_prefix("__GLASS_TOOL_CALL__:") {
+                let (tool, arguments) = request.split_once('\t').ok_or_else(|| {
+                    KernelError::Protocol("shell Glass tool call has no arguments".into())
+                })?;
+                let call = KernelToolCall {
+                    id: format!("shell-{}", self.sequence),
+                    tool: tool.to_string(),
+                    arguments: serde_json::from_str(arguments).map_err(|error| {
+                        KernelError::Protocol(format!(
+                            "shell Glass tool arguments are invalid JSON: {error}"
+                        ))
+                    })?,
+                };
+                let result = dispatch(&call)?;
+                serde_json::to_writer(&mut self.stdin, &result).map_err(|error| {
+                    KernelError::Protocol(format!("could not encode shell tool result: {error}"))
+                })?;
+                self.stdin.write_all(b"\n")?;
+                self.stdin.flush()?;
+                continue;
+            }
             append_bounded(&mut output, &line, &mut truncated);
             append_bounded(&mut output, "\n", &mut truncated);
         }
     }
 
     #[cfg(windows)]
-    fn execute(&mut self, _code: &str, _timeout: Duration) -> KernelResult<KernelOutput> {
+    fn execute(
+        &mut self,
+        _code: &str,
+        _timeout: Duration,
+        _dispatch: &mut impl FnMut(&KernelToolCall) -> KernelResult<Value>,
+    ) -> KernelResult<KernelOutput> {
         Err(KernelError::Unavailable(
             "persistent shell kernels are not yet available on Windows".into(),
         ))
@@ -583,7 +772,17 @@ impl SqlKernel {
         })
     }
 
-    fn execute(&mut self, code: &str) -> KernelResult<KernelOutput> {
+    fn execute(
+        &mut self,
+        code: &str,
+        dispatch: &mut impl FnMut(&KernelToolCall) -> KernelResult<Value>,
+    ) -> KernelResult<KernelOutput> {
+        if let Some(request) = code.trim().strip_prefix("GLASS CALL ") {
+            let call: KernelToolCall = serde_json::from_str(request).map_err(|error| {
+                KernelError::InvalidInput(format!("invalid SQL Glass tool call: {error}"))
+            })?;
+            return bounded_output("", dispatch(&call)?);
+        }
         let leading = code.trim_start().to_ascii_uppercase();
         if !["SELECT", "WITH", "PRAGMA", "EXPLAIN"]
             .iter()
@@ -677,6 +876,31 @@ fn validate_code(code: &str) -> KernelResult<()> {
     Ok(())
 }
 
+fn validate_capabilities(capabilities: &[String]) -> KernelResult<BTreeSet<String>> {
+    if capabilities.len() > 64 {
+        return Err(KernelError::InvalidInput(
+            "kernel capability limit is 64".into(),
+        ));
+    }
+    capabilities
+        .iter()
+        .map(|capability| {
+            if capability.is_empty()
+                || capability.len() > 128
+                || capability.starts_with("glass.eval.")
+                || !capability
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+            {
+                return Err(KernelError::InvalidInput(format!(
+                    "invalid or recursive kernel capability {capability}"
+                )));
+            }
+            Ok(capability.clone())
+        })
+        .collect()
+}
+
 fn validate_name(name: &str, description: &str) -> KernelResult<()> {
     if name.is_empty()
         || name.len() > 128
@@ -686,6 +910,20 @@ fn validate_name(name: &str, description: &str) -> KernelResult<()> {
     {
         return Err(KernelError::InvalidInput(format!(
             "{description} must be 1..=128 ASCII letters, digits, '-', '_' or '.'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_actor_id(name: &str, description: &str) -> KernelResult<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:".contains(character))
+    {
+        return Err(KernelError::InvalidInput(format!(
+            "{description} must be 1..=128 ASCII letters, digits, '-', '_', '.' or ':'"
         )));
     }
     Ok(())
@@ -722,7 +960,9 @@ mod tests {
             .execute("python", "answer + 2", "agent", 2, None)
             .unwrap();
         assert_eq!(result.value, "42");
-        assert_eq!(result.actor_id, "agent");
+        assert_eq!(result.actor_id, "kernel:python");
+        assert_eq!(result.initiator_id, "agent");
+        assert_eq!(result.executor_id, "kernel:python");
         assert_eq!(result.workspace_revision, 2);
         assert_eq!(kernels.snapshot("python").unwrap().executions, 2);
         kernels.stop("python").unwrap();
@@ -774,5 +1014,106 @@ mod tests {
         assert!(validate_name("../escape", "kernel").is_err());
         assert!(validate_code("").is_err());
         assert!(validate_code(&"x".repeat(MAX_KERNEL_CODE_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn python_and_javascript_bindings_dispatch_granted_capabilities() {
+        let root = root();
+        let capability = vec!["glass.test.results".to_string()];
+        for (name, kind, code) in [
+            (
+                "python-binding",
+                KernelKind::Python,
+                "glass.call('glass.test.results', {'limit': 1})",
+            ),
+            (
+                "javascript-binding",
+                KernelKind::JavaScript,
+                "glass.call('glass.test.results', {limit: 1}).then(value => value.count)",
+            ),
+        ] {
+            let mut kernels = KernelManager::new(&root).unwrap();
+            if let Err(error) =
+                kernels.start_governed(name, kind, &format!("kernel:{name}"), &capability, false)
+            {
+                if matches!(error, KernelError::Unavailable(_)) {
+                    continue;
+                }
+                panic!("could not start {name}: {error}");
+            }
+            let mut observed = Vec::new();
+            let execution = kernels
+                .execute_with_tools(name, code, "agent-0003", 7, None, |call| {
+                    observed.push(call.clone());
+                    Ok(json!({"count": 3}))
+                })
+                .unwrap();
+            assert_eq!(execution.initiator_id, "agent-0003");
+            assert_eq!(execution.executor_id, format!("kernel:{name}"));
+            assert_eq!(execution.tool_calls, 1);
+            assert_eq!(observed[0].tool, "glass.test.results");
+            assert_eq!(observed[0].arguments["limit"], 1);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sql_and_shell_bindings_use_the_same_bounded_dispatch_contract() {
+        let root = root();
+        let capability = vec!["glass.graph.path".to_string()];
+        let mut kinds = vec![(
+            "sql-binding",
+            KernelKind::Sql,
+            r#"GLASS CALL {"id":"sql-1","tool":"glass.graph.path","arguments":{"from":"a","to":"b"}}"#,
+        )];
+        if cfg!(unix) {
+            kinds.push((
+                "shell-binding",
+                KernelKind::Shell,
+                r#"glass_call glass.graph.path '{"from":"a","to":"b"}'"#,
+            ));
+        }
+        for (name, kind, code) in kinds {
+            let mut kernels = KernelManager::new(&root).unwrap();
+            kernels
+                .start_governed(name, kind, &format!("kernel:{name}"), &capability, false)
+                .unwrap();
+            let result = kernels
+                .execute_with_tools(name, code, "human:local", 9, None, |call| {
+                    assert_eq!(call.tool, "glass.graph.path");
+                    Ok(json!({"path":["a","b"]}))
+                })
+                .unwrap();
+            assert_eq!(result.tool_calls, 1);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ungranted_and_recursive_kernel_capabilities_fail_closed() {
+        assert!(validate_capabilities(&["glass.eval.execute".into()]).is_err());
+        let root = root();
+        let mut kernels = KernelManager::new(&root).unwrap();
+        kernels
+            .start_governed(
+                "python-denied",
+                KernelKind::Python,
+                "kernel:python-denied",
+                &["glass.test.results".into()],
+                false,
+            )
+            .unwrap();
+        let error = kernels
+            .execute_with_tools(
+                "python-denied",
+                "glass.call('glass.file.write', {'path':'x'})",
+                "agent-0003",
+                1,
+                None,
+                |_| panic!("ungranted call reached the dispatcher"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("not granted"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -603,6 +603,7 @@ async fn execute_request(
                         allow_mutation: request.allow_mutation,
                         confirmed: request.confirmed,
                     },
+                    initiator: None,
                     expected_generation: request
                         .expected_generation
                         .ok_or("workspace.tool requires expectedGeneration")?,
@@ -1267,6 +1268,7 @@ mod tests {
                 allow_mutation: true,
                 confirmed: true,
             },
+            initiator: None,
             expected_generation: 1,
             expected_project_revision: 0,
         }

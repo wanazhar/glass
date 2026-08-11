@@ -24,6 +24,7 @@ const RESULT_LIMIT: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub struct DevelopmentToolContext {
     pub authorization: ToolAuthorization,
+    pub initiator: Option<glass_browser::development::Actor>,
     pub expected_generation: u64,
     pub expected_project_revision: u64,
 }
@@ -116,6 +117,11 @@ impl DevelopmentToolRouter {
             )));
         }
         let actor_id = context.authorization.actor.id.clone();
+        let initiator_id = context
+            .initiator
+            .as_ref()
+            .map(|actor| actor.id.as_str())
+            .unwrap_or(actor_id.as_str());
         let project_revision = workspace.project().revision();
         let resource = format!("tool:{}", call.id);
         let argument_bytes = serde_json::to_vec(&call.arguments)?.len();
@@ -138,7 +144,7 @@ impl DevelopmentToolRouter {
             "receivedToolCall",
             project_revision,
             &actor_id,
-            serde_json::json!({"name":call.name}),
+            serde_json::json!({"name":call.name,"initiator":initiator_id,"executor":actor_id}),
         )?;
         workspace.intelligence_mut().record(ObservableEventInput {
             actor: &actor_id,
@@ -146,7 +152,7 @@ impl DevelopmentToolRouter {
             kind: "called",
             resource: Some(&resource),
             workspace_revision: project_revision,
-            evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating}),
+            evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating,"initiator":initiator_id,"executor":actor_id}),
             rationale: None,
         })?;
         if workspace.trust().permits_project_execution() {
@@ -560,16 +566,25 @@ impl DevelopmentToolRouter {
             }
             "glass.eval.start" => {
                 let kind = parse_kernel_kind(string("kind")?)?;
-                map_service(workspace.kernels_mut().start(string("name")?, kind, &actor))?;
-                Ok(serde_json::json!({"started":string("name")?,"kind":kind}))
+                let name = string("name")?;
+                let capabilities = string_array_or_empty(call, "capabilities")?;
+                let mutation_authority = boolean(call, "mutationAuthority", false)
+                    && context.authorization.allow_mutation
+                    && context.authorization.confirmed;
+                map_service(workspace.kernels_mut().start_governed(
+                    name,
+                    kind,
+                    &format!("kernel:{name}"),
+                    &capabilities,
+                    mutation_authority,
+                ))?;
+                Ok(serde_json::json!({"started":name,"kind":kind,"capabilities":capabilities,"mutationAuthority":mutation_authority}))
             }
             "glass.eval.execute" => {
-                let revision = workspace.project().revision();
-                map_service(workspace.kernels_mut().execute(
+                map_service(workspace.execute_kernel(
                     string("name")?,
                     string("code")?,
-                    &actor,
-                    revision,
+                    &context.authorization,
                     timeout(call, 600)?,
                 ))
             }
@@ -580,6 +595,7 @@ impl DevelopmentToolRouter {
                 map_service(workspace.kernels_mut().reset(string("name")?, &actor))?;
                 Ok(serde_json::json!({"reset":string("name")?}))
             }
+            "glass.eval.cancel" => map_service(workspace.kernels_mut().cancel(string("name")?)),
             "glass.eval.stop" => map_service(workspace.kernels_mut().stop(string("name")?)),
             "glass.lsp.start" => {
                 let server = string("server")?;
@@ -1170,6 +1186,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.test.watch",
         "glass.eval.start",
         "glass.eval.execute",
+        "glass.eval.cancel",
         "glass.eval.reset",
         "glass.eval.stop",
         "glass.debug.start",
@@ -1595,6 +1612,7 @@ mod tests {
                 allow_mutation: mutate,
                 confirmed: mutate,
             },
+            initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
@@ -1657,6 +1675,69 @@ mod tests {
                 .iter()
                 .any(|descriptor| descriptor.name == "glass.debug.launch")
         );
+    }
+
+    #[test]
+    fn kernel_bindings_reenter_the_same_router_with_dual_provenance() {
+        let mut workspace = workspace();
+        std::fs::write(workspace.root().join("evidence.txt"), "governed\n").unwrap();
+        let router = DevelopmentToolRouter::default();
+        let mutation = context(&workspace, true);
+        router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "kernel-binding-start".into(),
+                    name: "glass.eval.start".into(),
+                    arguments: serde_json::json!({
+                        "name":"analysis",
+                        "kind":"sql",
+                        "capabilities":["glass.file.read","glass.file.write"]
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+        let result = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "kernel-binding-execute".into(),
+                    name: "glass.eval.execute".into(),
+                    arguments: serde_json::json!({
+                        "name":"analysis",
+                        "code":r#"GLASS CALL {"id":"sql-1","tool":"glass.file.read","arguments":{"path":"evidence.txt"}}"#
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+        assert_eq!(result["value"]["content"], "governed\n");
+        assert_eq!(result["initiatorId"], "embedded:glass-agent");
+        assert_eq!(result["executorId"], "kernel:analysis");
+        let replay = workspace.intelligence().replay(0, 32).unwrap();
+        let nested = replay
+            .iter()
+            .find(|event| event.resource.as_deref() == Some("tool:kernel-analysis-sql-1"))
+            .unwrap();
+        assert_eq!(nested.actor, "kernel:analysis");
+        assert_eq!(nested.evidence["initiator"], "embedded:glass-agent");
+        assert_eq!(nested.evidence["executor"], "kernel:analysis");
+
+        let denied = router.execute(
+            &mut workspace,
+            &ToolCall {
+                id: "kernel-binding-denied".into(),
+                name: "glass.eval.execute".into(),
+                arguments: serde_json::json!({
+                    "name":"analysis",
+                    "code":r#"GLASS CALL {"id":"sql-2","tool":"glass.file.write","arguments":{"path":"denied.txt","content":"no"}}"#
+                }),
+            },
+            &mutation,
+        );
+        assert!(denied.unwrap_err().to_string().contains("mutation"));
+        assert!(!workspace.root().join("denied.txt").exists());
     }
 
     #[test]

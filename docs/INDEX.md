@@ -29,6 +29,8 @@ installation; this index owns the cross-product documentation map.
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
 | Running resident Pi agents | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
 | Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Native Pi SDK runtime](pi-sdk-runtime.md), [daemon](daemon.md) |
+| Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
+| Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
 | Comparing implementation approaches | [Measured experiments](experiments.md) | [Autonomous task DAGs](task-dag.md), [Development Runtime](development-runtime.md) |
 | Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
@@ -71,6 +73,10 @@ current user instructions.
   dependency wakeup, retries, budgets, controls, and durable scheduling.
 - [Measured experiments](experiments.md) — isolated approaches, automatic
   evidence providers, metric provenance, deterministic ranking, and selection.
+- [Persistent kernels](kernels.md) — Python, JavaScript, shell, and SQL state,
+  governed Glass bindings, attribution, bounds, cancellation, and security.
+- [Resident debugger](debugger.md) — stdio and loopback TCP DAP, reverse
+  requests, owned debuggee PTYs, session inspection, and adapter certification.
 - [Actions and revisions](actions.md) and [action contract](action-contract.md) —
   unique targeting, execution phases, verification, failure, and recovery.
 - [Semantic observations](semantic-observation.md) — levels, regions, records,

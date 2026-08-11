@@ -210,6 +210,7 @@ async fn dispatch_external_tool(
             allow_mutation,
             confirmed,
         },
+        initiator: None,
         expected_generation: workspace.generation(),
         expected_project_revision: workspace.project().revision(),
     };

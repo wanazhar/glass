@@ -1,6 +1,5 @@
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
-use crate::kernels::KernelKind;
 use crate::tasks::TaskSpec;
 use crate::tools::DevelopmentToolContext;
 use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
@@ -496,37 +495,33 @@ fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     let action = parts
         .first()
         .copied()
-        .ok_or("kernel requires start, reset, or stop")?;
+        .ok_or("kernel requires start, execute, cancel, reset, or stop")?;
     let name = parts.get(1).ok_or("kernel action requires NAME")?;
-    match action {
+    let (tool, arguments) = match action {
         "start" => {
             let kind = match parts.get(2).copied().ok_or("kernel start requires KIND")? {
-                "python" => KernelKind::Python,
-                "javascript" => KernelKind::JavaScript,
-                "shell" => KernelKind::Shell,
-                "sql" => KernelKind::Sql,
+                "python" => "python",
+                "javascript" => "javascript",
+                "shell" => "shell",
+                "sql" => "sql",
                 _ => return Err("kernel kind must be python, javascript, shell, or sql".into()),
             };
-            state
-                .workspace
-                .kernels_mut()
-                .start(name, kind, "human")
-                .map_err(|error| error.to_string())?;
+            (
+                "glass.eval.start",
+                json!({"name":name,"kind":kind,"capabilities":parts.get(3..).unwrap_or_default()}),
+            )
         }
-        "reset" => state
-            .workspace
-            .kernels_mut()
-            .reset(name, "human")
-            .map_err(|error| error.to_string())?,
-        "stop" => {
-            state
-                .workspace
-                .kernels_mut()
-                .stop(name)
-                .map_err(|error| error.to_string())?;
-        }
-        _ => return Err("kernel actions: start, reset, stop".into()),
-    }
+        "execute" => (
+            "glass.eval.execute",
+            json!({"name":name,"code":parts.get(2..).unwrap_or_default().join(" ")}),
+        ),
+        "cancel" => ("glass.eval.cancel", json!({"name":name})),
+        "reset" => ("glass.eval.reset", json!({"name":name})),
+        "stop" => ("glass.eval.stop", json!({"name":name})),
+        _ => return Err("kernel actions: start, execute, cancel, reset, stop".into()),
+    };
+    let result = run_tool(state, tool, arguments, true)?;
+    state.kernels = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
     Ok(format!("Kernel {name}: {action}"))
 }
 
@@ -680,6 +675,7 @@ fn run_tool(
             allow_mutation: mutating,
             confirmed: mutating,
         },
+        initiator: None,
         expected_generation: state.workspace.generation(),
         expected_project_revision: state.workspace.project().revision(),
     };

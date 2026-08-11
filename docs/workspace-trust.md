@@ -98,6 +98,5 @@ identity-bound store.
 
 Workspace trust governs Glass capabilities but is not an operating-system
 sandbox. Trusted project commands, language servers, debuggers, Pi, Python,
-JavaScript `vm`, and shell kernels execute with the launching user's OS
+JavaScript `vm`, shell kernels, and kernel-issued Glass bindings execute with the launching user's OS
 permissions. Use a container, VM, or restricted OS account for hostile code.
-

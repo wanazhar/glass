@@ -122,7 +122,7 @@ of sixteen in-flight requests.
 The lease owner is tied to the local socket connection. Do not write the lease
 token to a log or file.
 
-## Durable workspace actors
+## Project-session registry
 
 Development clients use the daemon process's bounded canonical-root registry.
 A retained actor owns buffers, PTYs, language servers, Pi sessions, task DAGs,

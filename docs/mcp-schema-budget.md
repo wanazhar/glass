@@ -6,15 +6,15 @@ It is not the tool reference; use the [complete MCP catalog](mcp-tools.md) for
 purpose and authority, and the live negotiated `tools/list` result for exact
 schemas supported by an installed server.
 
-## Current 0.3.4 source measurement
+## Current 0.3.5 development-source measurement
 
 On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 284 |
-| Serialized `tools` array | 129,444 UTF-8 bytes |
-| Four-bytes-per-token estimate | 32,361 tokens |
+| Negotiated tools | 305 |
+| Serialized `tools` array | 145,144 UTF-8 bytes |
+| Four-bytes-per-token estimate | 36,286 tokens |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -22,7 +22,7 @@ client tokenizer, capability agreement, or future release. The tool count is
 pinned independently by the client-conformance fixture and documentation
 coverage gate.
 
-The 0.3.4 surface is larger than the earlier browser-only inventory because it
+The development surface is larger than the earlier browser-only inventory because it
 also exposes the Development Runtime, semantic execution, memory, workspace,
 backend, replay, and recovery contracts. Older counts and byte totals must not
 be carried forward as current evidence.
@@ -55,11 +55,13 @@ remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
 
-The 0.3.4 increase from 43,018 to 129,444 bytes is an accepted product-boundary
-change: `glass` now exposes the same typed resident services used by Pi, the
-TUI, CLI, and daemon, while `glass-browser` remains the compact browser-only
-product. A future capability-scoped discovery protocol can reduce per-client
-context without hiding tools from clients that require the complete workspace.
+The increase from the published 0.3.4 measurement of 129,444 bytes to the
+current 145,144-byte development inventory covers explicit trust, autonomous
+task, measured experiment, debugger inspection, and governed-kernel operations.
+`glass` exposes the same typed resident services used by Pi, the TUI, CLI, and
+daemon, while `glass-browser` remains the compact browser-only product. A future
+capability-scoped discovery protocol can reduce per-client context without
+hiding tools from clients that require the complete workspace.
 
 A change is rejected when it:
 
@@ -115,7 +117,7 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-The full `glass` executable advertises the 284-tool merged catalog;
+The full `glass` executable advertises the 305-tool merged catalog;
 `glass-browser` retains its 133-tool browser catalog. The effective capability
 agreement determines which optional operations are usable. Context reduction
 must use an explicitly versioned future negotiation mechanism; clients must not

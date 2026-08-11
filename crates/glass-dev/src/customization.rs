@@ -900,6 +900,7 @@ input_schema = {{ type = "object", required = ["text"] }}
                 allow_mutation: false,
                 confirmed: false,
             },
+            initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         };

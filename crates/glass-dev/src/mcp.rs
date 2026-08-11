@@ -127,6 +127,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 allow_mutation: authorized,
                 confirmed: authorized,
             },
+            initiator: None,
             expected_generation: metadata
                 .get("expectedGeneration")
                 .and_then(Value::as_u64)

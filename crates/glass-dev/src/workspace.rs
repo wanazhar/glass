@@ -7,7 +7,7 @@ use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSessi
 use crate::experiments::ExperimentManager;
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
-use crate::kernels::KernelManager;
+use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall};
 use crate::lsp::LanguageService;
 use crate::tasks::{
     TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
@@ -16,7 +16,9 @@ use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
-use glass_browser::development::{DevelopmentResult, ProjectWorkspace};
+use glass_browser::development::{
+    ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization, ToolCall,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -495,6 +497,65 @@ impl DevelopmentWorkspace {
         &mut self.kernels
     }
 
+    pub fn execute_kernel(
+        &mut self,
+        name: &str,
+        code: &str,
+        authorization: &ToolAuthorization,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<KernelExecution, KernelError> {
+        let policy = self
+            .kernels
+            .snapshot(name)
+            .cloned()
+            .ok_or_else(|| KernelError::InvalidInput(format!("unknown kernel {name}")))?;
+        let mut executor = authorization.actor.clone();
+        executor.id = format!("kernel:{name}");
+        executor.name = format!("Kernel {name}");
+        executor.session = name.to_string();
+        executor.kind = ActorKind::EmbeddedAgent;
+        executor.connection = ActorConnection::Embedded;
+        executor.capabilities = policy.capabilities.clone();
+        let initiator = authorization.actor.clone();
+        let generation = self.generation;
+        let revision = self.project.revision();
+        let root = self.root.clone();
+        let mut kernels = std::mem::replace(
+            &mut self.kernels,
+            KernelManager::new(&root).map_err(|error| {
+                KernelError::Execution(format!("could not stage kernel execution: {error}"))
+            })?,
+        );
+        let result = kernels.execute_with_tools(
+            name,
+            code,
+            &initiator.id,
+            revision,
+            timeout,
+            |kernel_call: &KernelToolCall| {
+                let call = ToolCall {
+                    id: format!("kernel-{name}-{}", kernel_call.id),
+                    name: kernel_call.tool.clone(),
+                    arguments: kernel_call.arguments.clone(),
+                };
+                let context = DevelopmentToolContext {
+                    authorization: ToolAuthorization {
+                        actor: executor.clone(),
+                        allow_mutation: authorization.allow_mutation && policy.mutation_authority,
+                        confirmed: authorization.confirmed && policy.mutation_authority,
+                    },
+                    initiator: Some(initiator.clone()),
+                    expected_generation: generation,
+                    expected_project_revision: self.project.revision(),
+                };
+                self.execute_tool(&call, &context)
+                    .map_err(|error| KernelError::Execution(error.to_string()))
+            },
+        );
+        self.kernels = kernels;
+        result
+    }
+
     pub fn language(&mut self) -> &mut LanguageService {
         &mut self.language
     }
@@ -722,6 +783,7 @@ command = '''{command}'''
                 allow_mutation: true,
                 confirmed: true,
             },
+            initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         };

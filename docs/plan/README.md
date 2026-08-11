@@ -15,6 +15,8 @@ The [native Pi SDK boundary](tasks/runtime-035-002.md) is complete locally;
 product-boundary deletion is the active checkpoint.
 The [autonomous task and workspace actor checkpoint](tasks/scheduler-035-003.md)
 is also complete locally and removes the global daemon workspace lock.
+The [native transport checkpoint](tasks/platform-035-004.md) implements Windows
+named pipes; only a remote native Windows run can certify that platform.
 
 Delivery order:
 

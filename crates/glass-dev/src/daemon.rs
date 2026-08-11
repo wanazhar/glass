@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -119,19 +119,34 @@ pub async fn dispatch(action: &DaemonCommand) -> Result<(), Box<dyn std::error::
 }
 
 pub fn default_paths() -> (PathBuf, PathBuf) {
+    #[cfg(windows)]
+    let base =
+        dirs::data_local_dir().unwrap_or_else(|| std::env::temp_dir().join("glass-current-user"));
+    #[cfg(not(windows))]
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
         .unwrap_or_else(|| std::env::temp_dir().join(format!("glass-{}", effective_uid())));
     let root = base.join("glass-dev");
-    (root.join("glassd.sock"), root.join("glassd.json"))
+    #[cfg(windows)]
+    {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        root.hash(&mut hasher);
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\glass-dev-{:016x}", hasher.finish()));
+        (endpoint, root.join("glassd.json"))
+    }
+    #[cfg(not(windows))]
+    {
+        (root.join("glassd.sock"), root.join("glassd.json"))
+    }
 }
 
 pub async fn start(
     socket: Option<&Path>,
     status_path: Option<&Path>,
 ) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, status_path);
         return Err("the durable development daemon currently requires Unix local sockets".into());
@@ -153,6 +168,53 @@ pub async fn start(
             std::fs::remove_file(status_path)?;
         }
         std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
+        std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
+        let log = log_path(status_path);
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)?;
+        let stderr = stdout.try_clone()?;
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["daemon", "serve"])
+            .arg("--socket")
+            .arg(socket)
+            .arg("--status")
+            .arg(status_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::from(stderr))
+            .spawn()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(status) = read_status(status_path)
+                && process_alive(status.pid)
+                && status.socket == socket
+            {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("development daemon did not become ready within three seconds".into());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    #[cfg(windows)]
+    {
+        let (default_socket, default_status) = default_paths();
+        let socket = socket.unwrap_or(&default_socket);
+        let status_path = status_path.unwrap_or(&default_status);
+        validate_windows_pipe_name(socket)?;
+        if let Ok(existing) = read_status(status_path)
+            && process_alive(existing.pid)
+        {
+            return Err(
+                format!("development daemon is already running as {}", existing.pid).into(),
+            );
+        }
+        if status_path.exists() {
+            std::fs::remove_file(status_path)?;
+        }
         std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
         let log = log_path(status_path);
         let stdout = std::fs::OpenOptions::new()
@@ -208,7 +270,7 @@ pub fn stop(
     socket: Option<&Path>,
     status_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, status_path);
         return Err("the durable development daemon currently requires Unix".into());
@@ -221,6 +283,26 @@ pub fn stop(
         }
         let result = unsafe { libc::kill(status.pid as i32, libc::SIGTERM) };
         if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+        let status = read_status_checked(socket, status_path)?;
+        if status.pid == std::process::id() {
+            return Err("refusing to stop the calling process".into());
+        }
+        let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, status.pid) };
+        if process.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let terminated = unsafe { TerminateProcess(process, 0) };
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(process) };
+        if terminated == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
         Ok(())
@@ -241,7 +323,7 @@ async fn serve_with_store(
     status_path: &Path,
     trust_store: WorkspaceTrustStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, status_path);
         return Err("the durable development daemon currently requires Unix".into());
@@ -314,6 +396,73 @@ async fn serve_with_store(
         remove_socket_if_safe(socket)?;
         Ok(())
     }
+    #[cfg(windows)]
+    {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        validate_windows_pipe_name(socket)?;
+        std::fs::create_dir_all(status_path.parent().unwrap_or_else(|| Path::new(".")))?;
+        let token_path = token_path(status_path);
+        let token = create_token()?;
+        write_private(&token_path, token.as_bytes())?;
+        let status = DevelopmentDaemonStatus {
+            protocol_version: PROTOCOL_VERSION,
+            state: "running".into(),
+            pid: std::process::id(),
+            socket: socket.to_path_buf(),
+            status_path: status_path.to_path_buf(),
+            token_path: token_path.clone(),
+            started_at_ms: now_ms(),
+            workspace_count: 0,
+            client_count: 0,
+        };
+        write_status(status_path, &status)?;
+        let workspaces: WorkspaceRegistry = Rc::new(RefCell::new(BTreeMap::new()));
+        let clients = Rc::new(std::cell::Cell::new(0_usize));
+        let local = tokio::task::LocalSet::new();
+        let pipe_name = socket.to_string_lossy().to_string();
+        local
+            .run_until(async {
+                let mut first = true;
+                loop {
+                    let server = ServerOptions::new()
+                        .first_pipe_instance(first)
+                        .reject_remote_clients(true)
+                        .create(&pipe_name)?;
+                    first = false;
+                    tokio::select! {
+                        connected = server.connect() => connected?,
+                        _ = tokio::signal::ctrl_c() => break,
+                    }
+                    if clients.get() >= MAX_CLIENTS {
+                        continue;
+                    }
+                    clients.set(clients.get() + 1);
+                    update_counts(status_path, workspaces.borrow().len(), clients.get())?;
+                    let workspaces = Rc::clone(&workspaces);
+                    let clients = Rc::clone(&clients);
+                    let token = token.clone();
+                    let status_path = status_path.to_path_buf();
+                    let socket = socket.to_path_buf();
+                    let trust_store = trust_store.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Err(error) =
+                            handle_stream(server, &token, &socket, &workspaces, &trust_store).await
+                        {
+                            tracing::warn!(%error, "development daemon named-pipe client failed");
+                        }
+                        clients.set(clients.get().saturating_sub(1));
+                        let _ =
+                            update_counts(&status_path, workspaces.borrow().len(), clients.get());
+                    });
+                }
+                Ok::<(), Box<dyn std::error::Error>>(())
+            })
+            .await?;
+        let _ = std::fs::remove_file(status_path);
+        let _ = std::fs::remove_file(token_path);
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -324,7 +473,20 @@ async fn handle_client(
     workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (read, mut write) = stream.into_split();
+    handle_stream(stream, token, socket, workspaces, trust_store).await
+}
+
+async fn handle_stream<S>(
+    stream: S,
+    token: &str,
+    socket: &Path,
+    workspaces: &WorkspaceRegistry,
+    trust_store: &WorkspaceTrustStore,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read, mut write) = tokio::io::split(stream);
     let mut lines = BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
         let response = if line.len() > MAX_REQUEST_BYTES {
@@ -601,7 +763,40 @@ pub async fn request(
     request: &DevelopmentDaemonRequest,
 ) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>> {
     let stream = tokio::net::UnixStream::connect(socket).await?;
-    let (read, mut write) = stream.into_split();
+    request_stream(stream, request).await
+}
+
+#[cfg(windows)]
+pub async fn request(
+    socket: &Path,
+    request: &DevelopmentDaemonRequest,
+) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    validate_windows_pipe_name(socket)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let pipe_name = socket.to_string_lossy();
+    let stream = loop {
+        match ClientOptions::new().open(pipe_name.as_ref()) {
+            Ok(stream) => break stream,
+            Err(error)
+                if error.raw_os_error() == Some(231) && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    request_stream(stream, request).await
+}
+
+async fn request_stream<S>(
+    stream: S,
+    request: &DevelopmentDaemonRequest,
+) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read, mut write) = tokio::io::split(stream);
     let encoded = serde_json::to_vec(request)?;
     if encoded.len() > MAX_REQUEST_BYTES {
         return Err("daemon request exceeds the size limit".into());
@@ -614,7 +809,7 @@ pub async fn request(
     Ok(serde_json::from_str(&line)?)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub async fn request(
     _socket: &Path,
     _request: &DevelopmentDaemonRequest,
@@ -911,9 +1106,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Er
 }
 
 fn create_token() -> Result<String, Box<dyn std::error::Error>> {
-    use std::io::Read;
     let mut bytes = [0_u8; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -985,11 +1179,50 @@ fn process_alive(pid: u32) -> bool {
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        let mut exit_code = 0_u32;
+        let success = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+        unsafe { CloseHandle(process) };
+        success && exit_code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
     }
+}
+
+#[cfg(windows)]
+fn validate_windows_pipe_name(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let value = path
+        .to_str()
+        .ok_or("Windows named-pipe endpoint must be Unicode")?;
+    if !valid_windows_pipe_name(value) {
+        return Err("invalid Windows Glass daemon pipe name".into());
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn valid_windows_pipe_name(value: &str) -> bool {
+    value
+        .strip_prefix(r"\\.\pipe\glass-dev-")
+        .is_some_and(|name| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
 }
 
 fn effective_uid() -> u32 {
@@ -1016,6 +1249,16 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn windows_pipe_names_are_local_and_glass_owned() {
+        assert!(valid_windows_pipe_name(
+            r"\\.\pipe\glass-dev-0123456789abcdef"
+        ));
+        assert!(!valid_windows_pipe_name(r"\\server\pipe\glass-dev-test"));
+        assert!(!valid_windows_pipe_name(r"\\.\pipe\other-product"));
+        assert!(!valid_windows_pipe_name(r"\\.\pipe\glass-dev-bad/name"));
+    }
 
     fn test_context() -> DevelopmentToolContext {
         DevelopmentToolContext {

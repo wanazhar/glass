@@ -17,6 +17,7 @@ certify these targets by itself:
 | Linux arm64 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | Installed system Chromium |
 | macOS x86-64 | `macos-15-intel` | `x86_64-apple-darwin` | Managed Chrome for Testing |
 | macOS arm64 | `macos-14` | `aarch64-apple-darwin` | Managed Chrome for Testing |
+| Windows x86-64 | `windows-latest` | `x86_64-pc-windows-msvc` | Browser-free daemon contract |
 
 Linux ARM64 may also be reproduced on the project’s native OCI ARM64
 environment when the hosted ARM64 runner is unavailable. That evidence is a
@@ -62,7 +63,10 @@ the exact commands with their exit status. Browser certification additionally
 requires launch/close, structured observation, revision-guarded input, profile
 persistence, and the opt-in smoke fixture. Development Runtime certification
 requires native PTY start/read/stop, process-tree cleanup, atomic editing,
-filesystem containment, and responsive TUI startup.
+filesystem containment, and responsive TUI startup. Windows durable-workspace
+certification additionally requires the named-pipe start/status/stop,
+workspace/tool/reconnect, endpoint-rejection, and cleanup integration test;
+Unix socket evidence cannot substitute for it.
 
 | Result | Allowed claim |
 |---|---|

@@ -22,6 +22,9 @@ jobs:
           cargo check --package glass-dev --all-targets --all-features --locked
       - name: Run glass-dev browser-free contract tests
         run: cargo test --package glass-dev --all-targets --all-features --locked -- --nocapture
+      - name: Certify native Windows named-pipe daemon lifecycle
+        if: runner.os == 'Windows'
+        run: cargo test --package glass-dev --test development_runtime --locked windows_named_pipe_daemon_lifecycle_reconnect_and_permissions -- --nocapture
       - name: Run glass-browser browser-free contract tests
         run: cargo test --package glass-browser --all-targets --all-features --locked
 

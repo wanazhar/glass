@@ -12,6 +12,99 @@ fn glass_binary() -> std::path::PathBuf {
         .expect("Cargo should expose the glass-dev integration-test binary")
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
+    use glass_browser::development::ToolCall;
+    use glass_dev::daemon::{DevelopmentDaemonRequest, DevelopmentDaemonStatus, request};
+    use std::time::Duration;
+
+    let base = temp_project();
+    let project = base.join("project");
+    let status_path = base.join("glassd.json");
+    let pipe = format!(r"\\.\pipe\glass-dev-native-test-{}", std::process::id());
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("README.md"), "native windows pipe\n").unwrap();
+    let glass = glass_binary();
+    let started = Command::new(&glass)
+        .args(["daemon", "start", "--socket", &pipe, "--status"])
+        .arg(&status_path)
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let status: DevelopmentDaemonStatus = serde_json::from_slice(&started.stdout).unwrap();
+    assert_eq!(status.socket, std::path::PathBuf::from(&pipe));
+    let token = std::fs::read_to_string(&status.token_path).unwrap();
+    let base_request = |id: &str, operation: &str| DevelopmentDaemonRequest {
+        id: id.into(),
+        token: token.clone(),
+        operation: operation.into(),
+        workspace_id: Some("native-windows".into()),
+        root: None,
+        call: None,
+        expected_generation: None,
+        expected_project_revision: None,
+        allow_mutation: false,
+        confirmed: false,
+        actor: Some("windows-native-test".into()),
+    };
+    let mut open = base_request("open", "workspace.open");
+    open.root = Some(project.clone());
+    assert!(
+        request(std::path::Path::new(&pipe), &open)
+            .await
+            .unwrap()
+            .ok
+    );
+    let mut read = base_request("read", "workspace.tool");
+    read.call = Some(ToolCall {
+        id: "readme".into(),
+        name: "glass.file.read".into(),
+        arguments: serde_json::json!({"path":"README.md"}),
+    });
+    read.expected_generation = Some(1);
+    read.expected_project_revision = Some(0);
+    let read = request(std::path::Path::new(&pipe), &read).await.unwrap();
+    assert!(read.ok, "{:?}", read.error);
+    assert_eq!(read.result["content"], "native windows pipe\n");
+    let inspect = request(
+        std::path::Path::new(&pipe),
+        &base_request("reconnect", "workspace.inspect"),
+    )
+    .await
+    .unwrap();
+    assert!(inspect.ok);
+    assert_eq!(inspect.result["workspace"]["id"], "native-windows");
+    let invalid = Command::new(&glass)
+        .args([
+            "daemon",
+            "start",
+            "--socket",
+            r"\\.\pipe\not-glass-owned",
+            "--status",
+        ])
+        .arg(base.join("invalid.json"))
+        .status()
+        .unwrap();
+    assert!(!invalid.success());
+    let stopped = Command::new(&glass)
+        .args(["daemon", "stop", "--socket", &pipe, "--status"])
+        .arg(&status_path)
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 fn glass_browser_binary() -> std::path::PathBuf {
     std::env::var_os("CARGO_BIN_EXE_glass-browser")
         .map(Into::into)

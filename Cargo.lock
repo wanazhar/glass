@@ -854,6 +854,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "fs2",
+ "getrandom 0.3.4",
  "glass-browser",
  "libc",
  "ratatui",
@@ -864,6 +865,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

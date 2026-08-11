@@ -1,8 +1,9 @@
 # Local daemon
 
 The Glass development daemon accepts local clients through a Unix-domain
-socket. It runs on Linux and macOS. It does not open a TCP port or provide a
-remote service. Native Windows transport is not certified in this checkout.
+socket on Linux/macOS and a byte-mode named pipe on Windows. It does not open a
+TCP port or provide a remote service. Platform certification is recorded only
+after the corresponding native CI job passes.
 
 The daemon registry contains at most eight bounded workspace actor handles.
 Each actor owns one `DevelopmentWorkspace`, its resident services, and a
@@ -39,10 +40,17 @@ connect.
 
 On macOS, socket ownership and mode provide the local access boundary.
 
+On Windows, Glass derives a stable per-user pipe name from LocalAppData,
+requires the `\\.\pipe\glass-dev-*` namespace, rejects remote pipe clients,
+claims the first pipe instance, and still requires the private 256-bit daemon
+token. Named-pipe endpoints vanish when their owner exits, while stale status
+is rejected using the recorded PID.
+
 The daemon does not support remote network access.
 
-Windows has browser-free source checks for daemon-adjacent contracts, but the
-Unix-domain daemon transport is not a Windows release contract.
+Windows CI natively proves start/status/stop, workspace open, a confined tool
+call, fresh-client reconnect, endpoint rejection, and cleanup. Cross-compiling
+on Unix is useful source evidence but is never reported as native proof.
 
 ## Reuse one live MCP session
 

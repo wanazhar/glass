@@ -756,9 +756,10 @@ async fn workspace_events(
 
 async fn run_workspace_actor(
     workspace_id: String,
-    mut workspace: DevelopmentWorkspace,
+    workspace: DevelopmentWorkspace,
     mut commands: tokio::sync::mpsc::Receiver<WorkspaceCommand>,
 ) {
+    let mut workspace = Some(workspace);
     let mut events = VecDeque::with_capacity(WORKSPACE_EVENT_CAPACITY);
     let mut next_event = 1_u64;
     let mut dropped_events = 0_u64;
@@ -778,21 +779,41 @@ async fn run_workspace_actor(
             biased;
             command = commands.recv() => match command {
                 Some(WorkspaceCommand::Inspect { response }) => {
-                    let result = inspect_workspace(&workspace_id, &mut workspace);
+                    let result = inspect_workspace(
+                        &workspace_id,
+                        workspace.as_mut().expect("workspace actor retains ownership"),
+                    );
                     let _ = response.send(result);
                 }
                 Some(WorkspaceCommand::Tool { call, context, response }) => {
                     let kind = daemon_event_kind(&call.name);
-                    let result = workspace
-                        .execute_tool(&call, &context)
-                        .map_err(|error| error.to_string());
+                    let mut owned_workspace = workspace
+                        .take()
+                        .expect("workspace actor retains ownership");
+                    let execution = tokio::task::spawn_blocking(move || {
+                        let result = owned_workspace
+                            .execute_tool(&call, &context)
+                            .map_err(|error| error.to_string());
+                        (owned_workspace, call.id, result)
+                    })
+                    .await;
+                    let (returned_workspace, call_id, result) = match execution {
+                        Ok(execution) => execution,
+                        Err(error) => {
+                            let _ = response.send(Err(format!(
+                                "workspace actor tool execution failed: {error}"
+                            )));
+                            break;
+                        }
+                    };
+                    workspace = Some(returned_workspace);
                     push_workspace_event(
                         &workspace_id,
                         &mut events,
                         &mut next_event,
                         &mut dropped_events,
                         kind,
-                        Some(call.id),
+                        Some(call_id),
                         result.is_ok(),
                     );
                     let _ = response.send(result);
@@ -813,7 +834,11 @@ async fn run_workspace_actor(
                 None => break,
             },
             _ = tick.tick() => {
-                if let Err(error) = workspace.tasks() {
+                if let Err(error) = workspace
+                    .as_mut()
+                    .expect("workspace actor retains ownership")
+                    .tasks()
+                {
                     tracing::warn!(workspace_id, %error, "workspace task scheduler tick failed");
                 }
             }

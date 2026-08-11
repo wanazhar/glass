@@ -6,6 +6,7 @@
 
 pub mod agents;
 pub mod browser;
+pub mod cli;
 pub mod customization;
 pub mod daemon;
 pub mod debugger;
@@ -72,8 +73,16 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
+    if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command {
+        enforce_legacy_development_trust(&cli)?;
+        return cli::dispatch_agent(action, cli.yolo);
+    }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action).await;
+    }
+    if let Some(glass_browser::cli::args::Commands::Project { action }) = &cli.command {
+        enforce_legacy_development_trust(&cli)?;
+        return cli::dispatch_project(action);
     }
     if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
         return tui::run(std::env::current_dir()?, cli.tui_layout);

@@ -1,6 +1,6 @@
 # Development product boundary completion
 
-Status: Core extraction complete; CLI and compatibility retirement pending
+Status: Core and development dispatch complete; compatibility retirement pending
 
 ## Completed checkpoint
 
@@ -15,6 +15,9 @@ Status: Core extraction complete; CLI and compatibility retirement pending
 - Browser-only builds retain a deprecated non-executable compatibility module
   while their legacy CLI/TUI/MCP references are retired. They no longer expose
   PTY or `glass.toml` execution.
+- `glass-dev::dispatch` now owns project, agent, daemon, MCP, and development
+  TUI behavior. Its fallback into the browser runner is limited to browser
+  commands; project and agent operations execute the Glass Dev-owned types.
 
 ## Evidence
 
@@ -27,5 +30,5 @@ cargo check -p glass-dev
 ```
 
 All 117 `glass-dev` library tests and strict all-target/all-feature Clippy pass.
-Gate 3 remains open until `glass-dev::dispatch` owns its complete command model
-and the browser compatibility module can be deleted.
+Gate 3 remains open until the deprecated browser compatibility module and its
+legacy browser CLI/TUI/MCP type references can be deleted.

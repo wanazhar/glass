@@ -1,8 +1,8 @@
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
+use crate::development::{Actor, ToolAuthorization, ToolCall};
 use crate::tasks::TaskSpec;
 use crate::tools::DevelopmentToolContext;
-use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 

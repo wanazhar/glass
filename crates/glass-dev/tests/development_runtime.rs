@@ -15,8 +15,8 @@ fn glass_binary() -> std::path::PathBuf {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
-    use glass_browser::development::ToolCall;
     use glass_dev::daemon::{DevelopmentDaemonRequest, DevelopmentDaemonStatus, request};
+    use glass_dev::development::ToolCall;
     use std::time::Duration;
 
     let base = temp_project();

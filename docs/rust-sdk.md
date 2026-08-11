@@ -18,7 +18,6 @@ the alias, imports use `glass_browser::…`.
 
 | Feature | Default | Purpose |
 |---|---:|---|
-| `development-runtime` | no | Real PTY process manager and `glass.toml` support used by `glass-dev` |
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
 
@@ -181,14 +180,14 @@ mutation.
 
 ## Development Runtime
 
-Enable `development-runtime` to embed project tooling:
+Depend on `glass-dev` to embed project tooling:
 
 ```toml
-glass = { package = "glass-browser", version = "0.3", features = ["development-runtime"] }
+glass-dev = "0.3"
 ```
 
 ```rust,no_run
-use glass_browser::development::ProjectWorkspace;
+use glass_dev::development::ProjectWorkspace;
 
 fn inspect(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = ProjectWorkspace::open(root)?;

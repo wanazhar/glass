@@ -1,6 +1,6 @@
 //! Identity-bound workspace trust stored outside repository control.
 
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
+use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

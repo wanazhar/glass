@@ -3,8 +3,7 @@
 //! `glass-browser` provides an owned/attached browser [`BrowserSession`],
 //! structured semantic observation, guarded actions, stable Web IR, Task
 //! Protocol compilation/execution, workflows, advisory knowledge, policy,
-//! MCP, daemon, TUI, backend, surface, presentation, reliability, and optional
-//! terminal-native development contracts.
+//! MCP, daemon, TUI, backend, surface, presentation, and reliability contracts.
 //!
 //! Glass does not bundle a browser, host a browser service, or infer an
 //! autonomous plan. Callers select operations; Glass validates current
@@ -23,7 +22,6 @@
 //! | Assess scoped historical knowledge | [`KnowledgeStore`] |
 //! | Implement/select a backend | [`browser_backend`] and [`browser::BackendFactory`] |
 //! | Expose MCP or canonical requests | [`mcp`] and [`protocol`] |
-//! | Embed project development | [`development`] with feature `development-runtime` |
 //! | Present terminal frames | [`presentation`] and [`terminal_graphics`] |
 //!
 //! # Browser lifecycle
@@ -116,8 +114,6 @@
 //!
 //! # Cargo features
 //!
-//! - `development-runtime` enables the PTY and `glass.toml` implementation
-//!   consumed by `glass-dev`; it is disabled by default.
 //! - `visual-compare` enables PNG comparison helpers for explicit screenshot
 //!   checks.
 //! - `fuzzing` enables test-only fuzz hooks and is not for normal applications.
@@ -149,8 +145,8 @@
 //!   multiplexer, presentation-policy, and observatory contracts.
 //! - [`daemon`] — local Unix-socket lifecycle, isolated MCP children, leases,
 //!   logs, and interrupted-run recovery.
-//! - [`development`] — project files, buffers, PTYs, events, graph, replay,
-//!   collaboration, Neovim, experiments, and agent harnesses.
+//! - [`development`] — deprecated non-executable compatibility types retained
+//!   while consumers migrate to the `glass-dev` crate.
 //! - [`extensions`] — bounded manifests, permissions, registry, sandbox, and
 //!   guarded action boundary.
 //! - [`extraction`] — strict bounded evidence requests and source-labelled facts.
@@ -191,7 +187,7 @@ pub mod cli;
 pub mod connection;
 /// Local Unix-socket daemon lifecycle and MCP bridge.
 pub mod daemon;
-/// Terminal-native project development runtime contracts.
+/// Deprecated non-executable development compatibility contracts.
 pub mod development;
 /// Validated extension metadata and permission boundaries.
 pub mod extensions;

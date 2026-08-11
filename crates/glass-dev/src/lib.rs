@@ -9,6 +9,7 @@ pub mod browser;
 pub mod customization;
 pub mod daemon;
 pub mod debugger;
+pub mod development;
 pub mod experiments;
 pub mod git;
 pub mod intelligence;
@@ -50,9 +51,8 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.
 ///
-/// Command-surface extraction from the browser crate is incremental during
-/// the 0.3.4 ownership migration. The product entry point lives here so each
-/// resident service can move without changing the installed `glass` binary.
+/// Resident development commands are handled here. Browser-only commands use
+/// the public browser runtime through the one-way crate dependency.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if cli.mcp {
         let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open(
@@ -161,8 +161,8 @@ async fn dispatch_external_tool(
     action: &glass_browser::cli::args::AgentCommand,
     unrestricted: bool,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use crate::development::{Actor, ToolAuthorization, ToolCall};
     use glass_browser::cli::args::AgentCommand;
-    use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 
     let (call, root, allow_mutation, confirmed) = match action {
         AgentCommand::Tool {

@@ -37,8 +37,8 @@ pub struct ProcessSnapshot {
     pub detected_urls: Vec<String>,
 }
 
-/// Browser-only builds retain the type contract but do not compile or install
-/// the PTY implementation. `glass-dev` enables `development-runtime`.
+/// Browser-only builds retain a deprecated type contract but do not compile or
+/// install the PTY implementation. Executable ownership is in `glass-dev`.
 #[derive(Debug)]
 pub struct ProcessManager {
     root: PathBuf,
@@ -51,7 +51,7 @@ impl ProcessManager {
 
     fn unavailable<T>(&self) -> DevelopmentResult<T> {
         Err(DevelopmentError::Process(
-            "PTY support belongs to glass-dev; enable development-runtime".into(),
+            "PTY support belongs to the glass-dev crate".into(),
         ))
     }
 

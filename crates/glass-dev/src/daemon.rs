@@ -1,10 +1,10 @@
 //! Local authenticated daemon that owns complete development workspaces.
 
+use crate::development::{Actor, ToolAuthorization, ToolCall};
 use crate::{
     DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker, WorkspaceTrustStore,
 };
 use glass_browser::cli::args::DaemonCommand;
-use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cell::RefCell;

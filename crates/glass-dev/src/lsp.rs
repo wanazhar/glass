@@ -1,6 +1,6 @@
 //! Shared resident language-service ownership for humans and agents.
 
-use glass_browser::development::{
+use crate::development::{
     DevelopmentError, DevelopmentResult, DiagnosticPosition, LanguageDiagnostic, LanguageResponse,
     LspClient,
 };

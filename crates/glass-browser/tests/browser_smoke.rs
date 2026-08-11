@@ -6,8 +6,6 @@ use glass_browser::browser::session::{
     WorkflowOutputSource, WorkflowRunStatus, WorkflowStep, WorkflowStepState, WorkflowTrace,
     WorkflowTransactionClass,
 };
-#[cfg(feature = "development-runtime")]
-use glass_browser::development::{Actor, ProjectWorkspace};
 use glass_browser::reliability::{
     ReliabilityFixtureManifest, ReliabilityRunClassification, ReliabilityScenario,
 };
@@ -814,118 +812,6 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
 
     session.close().await.unwrap();
     fixture_server.close().await;
-}
-
-#[tokio::test]
-#[cfg(feature = "development-runtime")]
-async fn development_edit_reaches_live_browser_and_semantic_revision() {
-    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
-        eprintln!("skipping live development loop; set GLASS_E2E=1 to run it");
-        return;
-    }
-    let root = std::env::temp_dir().join(format!("glass-live-development-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let before_html =
-        r#"<!doctype html><button data-glass-entity="action.checkout.submit">Pay now</button>"#;
-    let after_html =
-        r#"<!doctype html><button data-glass-entity="action.checkout.submit">Place order</button>"#;
-    std::fs::write(root.join("index.html"), before_html).unwrap();
-
-    let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let dev_port = reserve.local_addr().unwrap().port();
-    drop(reserve);
-    let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let chrome_port = reserve.local_addr().unwrap().port();
-    drop(reserve);
-
-    let mut project = ProjectWorkspace::open(&root).unwrap();
-    project
-        .start_process(
-            "dev",
-            &format!("python3 -m http.server {dev_port} --bind 127.0.0.1"),
-        )
-        .unwrap();
-    let url = format!("http://127.0.0.1:{dev_port}/index.html");
-    for _ in 0..100 {
-        if reqwest::get(&url).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-
-    let session = BrowserSession::start(&SessionOptions {
-        port: chrome_port,
-        chrome_path: Some(required_chrome()),
-        profile: "development-loop-e2e".into(),
-        incognito: true,
-        attach: false,
-        target_id: None,
-        frame_id: None,
-        audit: false,
-        policy: None,
-        headed: false,
-        interaction_mode: InteractionMode::Fast,
-    })
-    .await
-    .unwrap();
-    session.navigate(&url).await.unwrap();
-    let before = session
-        .semantic_observe(SemanticObservationLevel::Structured)
-        .await
-        .unwrap();
-    assert!(
-        before
-            .text
-            .as_deref()
-            .is_some_and(|text| text.contains("Pay now"))
-    );
-
-    project
-        .edit_buffer("index.html", after_html.into(), Actor::local())
-        .unwrap();
-    project.save_buffer("index.html").unwrap();
-    session.navigate(&url).await.unwrap();
-    let after = session
-        .semantic_observe(SemanticObservationLevel::Structured)
-        .await
-        .unwrap();
-    assert!(
-        after
-            .text
-            .as_deref()
-            .is_some_and(|text| text.contains("Place order"))
-    );
-    assert!(after.revision > before.revision);
-    project.discover_runtime_links().unwrap();
-    assert_eq!(
-        project
-            .graph()
-            .best_link("action.checkout.submit")
-            .unwrap()
-            .evidence
-            .confidence,
-        1.0
-    );
-    project
-        .confirm_live_update(
-            "index.html",
-            before.revision,
-            after.revision,
-            1,
-            Actor::local(),
-        )
-        .unwrap();
-    assert!(project.timeline().events().any(|event| {
-        matches!(
-            event.kind,
-            glass_browser::development::DevelopmentEventKind::HmrObserved
-        ) && event.payload["status"] == "confirmed-runtime-observation"
-    }));
-
-    session.close().await.unwrap();
-    project.stop_process("dev").unwrap();
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

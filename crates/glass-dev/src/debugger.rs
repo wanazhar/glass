@@ -4,7 +4,7 @@
 //! stdio. Higher-level debugger methods retain adapter-neutral JSON bodies so
 //! LLDB, debugpy, Delve and JavaScript adapters can share one implementation.
 
-use glass_browser::development::{ProcessManager, ProcessSnapshot};
+use crate::development::{ProcessManager, ProcessSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};

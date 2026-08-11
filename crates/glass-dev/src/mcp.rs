@@ -1,7 +1,7 @@
 //! Full-product MCP tools contributed to the browser-owned transport.
 
+use crate::development::{Actor, ToolAuthorization, ToolCall};
 use crate::{DevelopmentToolContext, DevelopmentWorkspace};
-use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
 use glass_browser::mcp::server::{HostMcpTool, HostMcpToolBackend};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -82,7 +82,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             .map_err(|_| "development MCP workspace poisoned".to_string())?;
         let legacy_execution = LEGACY_EXECUTION_TOOLS.contains(&name);
         let descriptor = if legacy_execution {
-            glass_browser::development::ToolDescriptor {
+            crate::development::ToolDescriptor {
                 name: name.into(),
                 description: format!("Trust-governed compatibility route {name}"),
                 input_schema: json!({"type":"object"}),

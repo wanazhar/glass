@@ -22,10 +22,8 @@ def main() -> None:
         raise SystemExit(f"expected exact glass-browser ={args.version}, got {dependency!r}")
     if "path" in dependency:
         raise SystemExit("packaged glass-dev manifest retained a local path dependency")
-    if dependency.get("features") != ["development-runtime"]:
-        raise SystemExit(
-            "packaged glass-dev must enable only glass-browser development-runtime"
-        )
+    if dependency.get("features") not in (None, []):
+        raise SystemExit("packaged glass-dev must use ordinary glass-browser APIs")
     print(f"packaged glass-dev resolves glass-browser exactly at {args.version}")
 
 

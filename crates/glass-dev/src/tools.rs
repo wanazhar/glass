@@ -3,6 +3,10 @@
 use crate::agents::AgentSpec;
 use crate::browser::BrowserStartConfig;
 use crate::debugger::{DebugAdapterConfig, SourceBreakpoint};
+use crate::development::{
+    AgentToolGateway, DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall,
+    ToolDescriptor,
+};
 use crate::kernels::KernelKind;
 use crate::pi_runtime::PiSessionRequest;
 use crate::tasks::{TaskId, TaskSpec};
@@ -10,10 +14,6 @@ use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
     SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
-};
-use glass_browser::development::{
-    AgentToolGateway, DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall,
-    ToolDescriptor,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ const RESULT_LIMIT: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub struct DevelopmentToolContext {
     pub authorization: ToolAuthorization,
-    pub initiator: Option<glass_browser::development::Actor>,
+    pub initiator: Option<crate::development::Actor>,
     pub expected_generation: u64,
     pub expected_project_revision: u64,
 }
@@ -1436,7 +1436,7 @@ fn u16_value(call: &ToolCall, name: &str) -> DevelopmentResult<u16> {
 fn position(
     call: &ToolCall,
     name: &str,
-) -> DevelopmentResult<glass_browser::development::DiagnosticPosition> {
+) -> DevelopmentResult<crate::development::DiagnosticPosition> {
     serde_json::from_value(required_value(call, name)?.clone()).map_err(DevelopmentError::from)
 }
 
@@ -1933,7 +1933,7 @@ fn find_scalar(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glass_browser::development::Actor;
+    use crate::development::Actor;
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
 

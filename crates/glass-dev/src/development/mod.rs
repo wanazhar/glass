@@ -5,9 +5,9 @@
 //! runtime: project state can coordinate a live application without duplicating
 //! browser control logic.
 //!
-//! Deprecated browser compatibility contracts. Executable project runtime
-//! ownership lives in `glass-dev`; this module retains only non-executable
-//! browser-surface compatibility until those public types complete migration.
+//! Glass Dev directly owns the concrete project, editor, PTY, language-server,
+//! graph, replay, Neovim, experiment, and agent contracts. There is no browser
+//! feature bridge or disabled compatibility implementation.
 //!
 //! Project paths are resolved beneath one canonical root; reads, output tails,
 //! event logs, and retained buffers have hard bounds. Writes are atomic and
@@ -26,7 +26,6 @@ pub mod experiment;
 pub mod graph;
 pub mod language;
 pub mod neovim;
-#[path = "process_disabled.rs"]
 pub mod process;
 pub mod project;
 pub mod remote_view;

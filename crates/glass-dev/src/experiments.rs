@@ -1,13 +1,13 @@
 //! Isolated competing implementations ranked from observable evidence.
 
 use crate::agents::{AgentId, AgentRegistry, AgentSpec};
+use crate::development::{DevelopmentError, DevelopmentResult, ProcessHealth};
 use crate::git::{GitError, GitService};
 use crate::testing::TestRun;
 use crate::{
     DevelopmentWorkspace, LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust,
     WorkspaceTrustStore,
 };
-use glass_browser::development::{DevelopmentError, DevelopmentResult, ProcessHealth};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

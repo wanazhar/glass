@@ -696,19 +696,19 @@ impl ToolRegistry {
                 "revision": workspace.revision()
             })),
             "glass.web_ir.inspect" => {
-                let ir: crate::web_ir::GlassWebIrV1 =
+                let ir: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["ir"].clone())?;
                 ir.validate().map_err(|error| {
                     DevelopmentError::InvalidInput(format!("invalid Web IR: {error}"))
                 })?;
                 Ok(serde_json::to_value(
-                    crate::protocol::WebIrInspectionResult::from_ir(&ir),
+                    glass_browser::protocol::WebIrInspectionResult::from_ir(&ir),
                 )?)
             }
             "glass.web_ir.diff" => {
-                let before: crate::web_ir::GlassWebIrV1 =
+                let before: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["before"].clone())?;
-                let after: crate::web_ir::GlassWebIrV1 =
+                let after: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["after"].clone())?;
                 let diff = before.diff(&after).map_err(|error| {
                     DevelopmentError::InvalidInput(format!("invalid Web IR transition: {error}"))
@@ -723,9 +723,9 @@ impl ToolRegistry {
                 }))
             }
             "glass.web_ir.continuity" => {
-                let before: crate::web_ir::GlassWebIrV1 =
+                let before: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["before"].clone())?;
-                let after: crate::web_ir::GlassWebIrV1 =
+                let after: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["after"].clone())?;
                 let entity_id = string("entityId")?;
                 Ok(serde_json::to_value(
@@ -739,13 +739,14 @@ impl ToolRegistry {
                 )?)
             }
             "glass.task.plan" => {
-                let task: crate::task_protocol::GlassTask =
+                let task: glass_browser::task_protocol::GlassTask =
                     serde_json::from_value(call.arguments["task"].clone())?;
-                let ir: crate::web_ir::GlassWebIrV1 =
+                let ir: glass_browser::web_ir::GlassWebIrV1 =
                     serde_json::from_value(call.arguments["ir"].clone())?;
-                let plan = crate::task_compiler::compile_task(&task, &ir).map_err(|error| {
-                    DevelopmentError::InvalidInput(format!("task compilation failed: {error}"))
-                })?;
+                let plan =
+                    glass_browser::task_compiler::compile_task(&task, &ir).map_err(|error| {
+                        DevelopmentError::InvalidInput(format!("task compilation failed: {error}"))
+                    })?;
                 Ok(serde_json::json!({
                     "sourceRevision": plan.source_ir_revision,
                     "task": plan.task,
@@ -2166,7 +2167,7 @@ pub(crate) fn pi_event_visible(value: &Value) -> bool {
     )
 }
 
-pub(crate) fn pi_event_display(value: &Value) -> Option<String> {
+pub fn pi_event_display(value: &Value) -> Option<String> {
     match value.get("type").and_then(Value::as_str)? {
         "message_end" => {
             let message = value.get("message")?;
@@ -2603,7 +2604,6 @@ mod tests {
                 .is_some_and(|value| value.len() == 64)
         );
 
-        #[cfg(any())]
         {
             let command = "printf command-private-value";
             let command_result = gateway

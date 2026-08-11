@@ -1,7 +1,7 @@
 //! Governed project configuration, skills, hooks, commands, and custom tools.
 
 use crate::WorkspaceTrust;
-use glass_browser::development::{DevelopmentError, DevelopmentResult, ToolDescriptor};
+use crate::development::{DevelopmentError, DevelopmentResult, ToolDescriptor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1130,8 +1130,8 @@ input_schema = {{ type = "object", required = ["text"] }}
                     && descriptor.mutating)
         );
         let context = crate::DevelopmentToolContext {
-            authorization: glass_browser::development::ToolAuthorization {
-                actor: glass_browser::development::Actor::external("customization-test"),
+            authorization: crate::development::ToolAuthorization {
+                actor: crate::development::Actor::external("customization-test"),
                 allow_mutation: true,
                 confirmed: true,
             },
@@ -1141,7 +1141,7 @@ input_schema = {{ type = "object", required = ["text"] }}
         };
         let result = workspace
             .execute_tool(
-                &glass_browser::development::ToolCall {
+                &crate::development::ToolCall {
                     id: "custom-1".into(),
                     name: "glass.custom.echo".into(),
                     arguments: serde_json::json!({"text":"resident"}),

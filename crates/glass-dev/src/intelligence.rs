@@ -1,6 +1,6 @@
 //! Bounded causal graph and observable development replay.
 
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
+use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

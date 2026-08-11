@@ -1,7 +1,7 @@
 //! Autonomous, verified task DAG scheduling above resident Pi agents.
 
 use crate::agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
+use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

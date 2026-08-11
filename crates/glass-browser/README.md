@@ -107,7 +107,6 @@ does not own or close the external browser.
 
 | Feature | Default | Purpose |
 |---|---:|---|
-| `development-runtime` | no | Real PTY process manager and `glass.toml` support |
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
 

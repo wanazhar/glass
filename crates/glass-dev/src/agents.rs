@@ -1,7 +1,7 @@
 //! Glass-owned scheduling for independent resident Pi agent sessions.
 
+use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::pi_runtime::{GlassPiRuntime, PiRuntimeOptions, PiSessionRequest};
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

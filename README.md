@@ -373,8 +373,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 The library owns browser launch/attach lifecycle, target and frame selection,
 structured observation, revision-safe actions, stable Web IR, Task Protocol,
 workflows, advisory knowledge, backend/surface contracts, presentation, daemon
-and MCP integration. Enable `development-runtime` only when the embedding
-application needs project, PTY, LSP, agent, or Neovim types.
+and MCP integration. Project, PTY, LSP, agent, and Neovim runtime ownership is
+provided by the separate `glass-dev` crate and installed `glass` product.
 
 Owned sessions must call `BrowserSession::close().await` so Chrome can flush a
 persistent profile before process fallback. Attach sessions never own or close

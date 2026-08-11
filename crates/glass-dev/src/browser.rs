@@ -1,11 +1,11 @@
 //! Resident browser and workflow ownership for the Glass development workspace.
 
+use crate::development::{DevelopmentError, DevelopmentResult};
 use glass_browser::browser::policy::BrowserPolicy;
 use glass_browser::browser::session::{
     BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
     WorkflowDefinition, WorkflowRunResult,
 };
-use glass_browser::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;

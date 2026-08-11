@@ -6,9 +6,9 @@ real pseudo-terminal (PTY) processes, language-server state, attributed events,
 source/runtime links, experiments, and agent tools. The TUI, CLI, MCP server,
 TypeScript client, and Python client call the same Rust contracts.
 
-`glass-browser` excludes this runtime by default. `glass-dev` enables the
-one-way `development-runtime` feature and installs both `glass` and the
-browser-only `glass-browser` entry point.
+`glass-dev` owns this runtime directly and depends one-way on ordinary public
+`glass-browser` APIs. There is no browser feature bridge. The package installs
+both `glass` and the browser-only `glass-browser` entry point.
 
 ## Start a project session
 

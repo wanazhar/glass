@@ -1,7 +1,7 @@
 //! Glass-owned host for Pi's native `AgentSession` SDK runtime.
 
 use crate::agents::ResidentAgentBroker;
-use glass_browser::development::{DevelopmentError, DevelopmentResult, ToolCall};
+use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};

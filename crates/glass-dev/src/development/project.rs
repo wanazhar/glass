@@ -1176,12 +1176,14 @@ pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetect
 }
 
 fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectConfig> {
-    if path.is_some() {
-        return Err(DevelopmentError::Config(
-            "executable glass.toml configuration belongs to glass-dev".into(),
-        ));
-    }
-    Ok(GlassProjectConfig::default())
+    path.map(fs::read_to_string)
+        .transpose()?
+        .map(|text| {
+            toml::from_str::<GlassProjectConfig>(&text)
+                .map_err(|error| DevelopmentError::Config(error.to_string()))
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 pub(crate) fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {

@@ -4,6 +4,9 @@ use crate::agents::AgentRegistry;
 use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
+use crate::development::{
+    ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization, ToolCall,
+};
 use crate::experiments::ExperimentManager;
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
@@ -16,9 +19,6 @@ use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
-use glass_browser::development::{
-    ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization, ToolCall,
-};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -73,18 +73,16 @@ impl DevelopmentWorkspace {
             .any(|ancestor| ancestor.join(".git").exists())
         {
             Some(GitService::open(&root).map_err(|error| {
-                glass_browser::development::DevelopmentError::Process(error.to_string())
+                crate::development::DevelopmentError::Process(error.to_string())
             })?)
         } else {
             None
         };
         let customization = Customization::load(&root)?;
-        let tests = TestService::discover(&root).map_err(|error| {
-            glass_browser::development::DevelopmentError::Process(error.to_string())
-        })?;
-        let kernels = KernelManager::new(&root).map_err(|error| {
-            glass_browser::development::DevelopmentError::Process(error.to_string())
-        })?;
+        let tests = TestService::discover(&root)
+            .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
+        let kernels = KernelManager::new(&root)
+            .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
         let mut agents = AgentRegistry::new(&root)?;
         agents.set_additional_system_prompt(customization.agent_instructions(trust))?;
         let language = LanguageService::new(&root)?;
@@ -94,9 +92,7 @@ impl DevelopmentWorkspace {
             &root.display().to_string(),
             Some(1),
         ))
-        .map_err(|error| {
-            glass_browser::development::DevelopmentError::Process(error.to_string())
-        })?;
+        .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
         let tools = DevelopmentToolRouter::with_customization(&customization, trust);
         let tasks = TaskScheduler::new(&root)?;
         let mut workspace = Self {
@@ -148,8 +144,7 @@ impl DevelopmentWorkspace {
         self.generation
     }
 
-    /// Existing project runtime while its implementation is migrated into
-    /// this crate service by service.
+    /// Glass Dev-owned project runtime for files, buffers, and PTYs.
     pub fn project(&self) -> &ProjectWorkspace {
         &self.project
     }
@@ -165,7 +160,7 @@ impl DevelopmentWorkspace {
 
     pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
         if !self.trust.permits_project_execution() {
-            return Err(glass_browser::development::DevelopmentError::Conflict(
+            return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
             ));
         }
@@ -242,7 +237,7 @@ impl DevelopmentWorkspace {
         details: serde_json::Value,
     ) -> DevelopmentResult<()> {
         if !self.trust.permits_project_execution() {
-            return Err(glass_browser::development::DevelopmentError::Conflict(
+            return Err(crate::development::DevelopmentError::Conflict(
                 "task verification evidence is blocked until the workspace is trusted".into(),
             ));
         }
@@ -260,12 +255,12 @@ impl DevelopmentWorkspace {
                 require_clean,
             } => {
                 let status = self.git.as_ref().ok_or_else(|| {
-                    glass_browser::development::DevelopmentError::Conflict(
+                    crate::development::DevelopmentError::Conflict(
                         "Git task verification requires a Git workspace".into(),
                     )
                 })?;
                 let status = status.status().map_err(|error| {
-                    glass_browser::development::DevelopmentError::Process(error.to_string())
+                    crate::development::DevelopmentError::Process(error.to_string())
                 })?;
                 let has_changes = !status.entries.is_empty();
                 let clean = status.entries.is_empty() && status.conflicts.is_empty();
@@ -398,7 +393,7 @@ impl DevelopmentWorkspace {
             }
         };
         if trust == WorkspaceTrust::Untrusted && self.trusted_configuration_active {
-            return Err(glass_browser::development::DevelopmentError::Conflict(
+            return Err(crate::development::DevelopmentError::Conflict(
                 "an active trusted workspace must be closed before reopening untrusted".into(),
             ));
         }
@@ -438,7 +433,7 @@ impl DevelopmentWorkspace {
 
     pub fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
         if !self.trust.permits_project_execution() {
-            return Err(glass_browser::development::DevelopmentError::Conflict(
+            return Err(crate::development::DevelopmentError::Conflict(
                 "experiments are blocked until the workspace is trusted".into(),
             ));
         }
@@ -571,13 +566,13 @@ impl DevelopmentWorkspace {
         &mut self.knowledge
     }
 
-    pub fn tool_descriptors(&self) -> Vec<glass_browser::development::ToolDescriptor> {
+    pub fn tool_descriptors(&self) -> Vec<crate::development::ToolDescriptor> {
         self.tools.descriptors()
     }
 
     pub fn execute_tool(
         &mut self,
-        call: &glass_browser::development::ToolCall,
+        call: &crate::development::ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<serde_json::Value> {
         let router = self.tools.clone();
@@ -587,7 +582,7 @@ impl DevelopmentWorkspace {
     /// Advance the generation after replacing resident service ownership.
     pub fn advance_generation(&mut self) -> DevelopmentResult<u64> {
         self.generation = self.generation.checked_add(1).ok_or_else(|| {
-            glass_browser::development::DevelopmentError::Conflict(
+            crate::development::DevelopmentError::Conflict(
                 "development workspace generation overflowed".into(),
             )
         })?;
@@ -617,7 +612,7 @@ impl DevelopmentWorkspace {
                         .to_path_buf(),
                 })
                 .map_err(|error| {
-                    glass_browser::development::DevelopmentError::Process(error.to_string())
+                    crate::development::DevelopmentError::Process(error.to_string())
                 })?;
         }
         self.agents.set_defaults(
@@ -664,7 +659,7 @@ impl SharedDevelopmentWorkspace {
 
     pub fn lock(&self) -> DevelopmentResult<MutexGuard<'_, DevelopmentWorkspace>> {
         self.inner.lock().map_err(|_| {
-            glass_browser::development::DevelopmentError::Conflict(
+            crate::development::DevelopmentError::Conflict(
                 "development workspace lock was poisoned".into(),
             )
         })
@@ -674,7 +669,7 @@ impl SharedDevelopmentWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glass_browser::development::{Actor, ToolAuthorization, ToolCall};
+    use crate::development::{Actor, ToolAuthorization, ToolCall};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);

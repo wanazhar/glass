@@ -670,6 +670,7 @@ impl TerminalGraphics {
     /// Render a terminal graphics payload only when its geometry/generation
     /// identity has not already been emitted. Semantic text remains owned by
     /// Ratatui and is intentionally not replayed through this path.
+    #[allow(dead_code)]
     pub(crate) fn render_current_if_new(
         &mut self,
         semantic: &str,

@@ -346,7 +346,7 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
             .unwrap_or_else(|| panic!("missing MCP response {id}"))
     };
     assert!(
-        response(3)["result"]["content"]
+        response(3)["result"]["structuredContent"]["content"]
             .as_str()
             .unwrap()
             .contains("hello from the project")

@@ -37,11 +37,6 @@ use crate::browser::session::{
 use crate::capabilities::GlassCapabilityManifest;
 use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
-use crate::development::{
-    Actor, DevelopmentError, ExperimentManager, HarnessRequest, LinkProvenance, ProcessState,
-    ProjectWorkspace, ReconnectCapsule, ReconnectCapsuleStore, ResidentDevelopmentSessions,
-    SemanticBreakpoint, SemanticSnapshot, VerificationCard, attention_inbox,
-};
 const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
 use crate::browser_backend::{BackendProfile, BrowserCapability};
 use crate::mcp::prompts;
@@ -180,155 +175,6 @@ struct RequestLogMetadata<'a> {
 }
 
 enum ToolInvocation<'a> {
-    ProjectInspect {
-        root: std::path::PathBuf,
-    },
-    ProjectFiles {
-        root: std::path::PathBuf,
-    },
-    ProjectSearch {
-        root: std::path::PathBuf,
-        query: &'a str,
-        limit: usize,
-    },
-    ProjectRead {
-        root: std::path::PathBuf,
-        path: &'a str,
-    },
-    ProjectEdit {
-        root: std::path::PathBuf,
-        path: &'a str,
-        content: &'a str,
-    },
-    ProjectMkdir {
-        root: std::path::PathBuf,
-        path: &'a str,
-    },
-    ProjectRename {
-        root: std::path::PathBuf,
-        from: &'a str,
-        to: &'a str,
-    },
-    ProjectDelete {
-        root: std::path::PathBuf,
-        path: &'a str,
-        confirmed: bool,
-    },
-    ProjectDiagnostics {
-        root: std::path::PathBuf,
-        path: &'a str,
-    },
-    ProjectRun {
-        root: std::path::PathBuf,
-        name: &'a str,
-        command: &'a str,
-        wait: bool,
-    },
-    ProjectProcessList {
-        root: std::path::PathBuf,
-    },
-    ProjectProcessStop {
-        root: std::path::PathBuf,
-        name: &'a str,
-    },
-    ProjectProcessOutput {
-        root: std::path::PathBuf,
-        name: &'a str,
-    },
-    ProjectDiff {
-        root: std::path::PathBuf,
-    },
-    ProjectTimeline {
-        root: std::path::PathBuf,
-    },
-    ProjectEvents {
-        root: std::path::PathBuf,
-        after_id: Option<&'a str>,
-        limit: usize,
-    },
-    ProjectSessionStatus {
-        root: std::path::PathBuf,
-    },
-    ProjectSessionDetach {
-        root: std::path::PathBuf,
-        confirmed: bool,
-    },
-    ProjectCapsuleSave {
-        root: std::path::PathBuf,
-        event_cursor: Option<&'a str>,
-        mobile_view: Option<&'a str>,
-        mobile_scroll: Option<u64>,
-        browser_target_id: Option<&'a str>,
-        browser_revision: Option<u64>,
-        pending_attention: Option<&'a str>,
-        live_mode: Option<&'a str>,
-        live_quality: Option<&'a str>,
-    },
-    ProjectCapsuleShow {
-        root: std::path::PathBuf,
-    },
-    ProjectCapsuleClear {
-        root: std::path::PathBuf,
-        confirmed: bool,
-    },
-    ProjectInbox {
-        root: std::path::PathBuf,
-    },
-    ProjectVerificationCard {
-        root: std::path::PathBuf,
-        title: &'a str,
-        semantic_revision: Option<u64>,
-    },
-    ProjectReplay {
-        root: std::path::PathBuf,
-        start: usize,
-        limit: usize,
-    },
-    ProjectGraph {
-        root: std::path::PathBuf,
-        operation: &'a str,
-        entity: Option<&'a str>,
-        path: Option<&'a str>,
-        line: Option<u32>,
-    },
-    ProjectBreakpoint {
-        root: std::path::PathBuf,
-        kind: &'a str,
-        entity: &'a str,
-        before: &'a Value,
-        after: &'a Value,
-    },
-    ProjectNeovimProbe,
-    ProjectExperimentCreate {
-        root: std::path::PathBuf,
-        name: &'a str,
-        port: u16,
-    },
-    ProjectAttach {
-        root: std::path::PathBuf,
-        actor: &'a str,
-    },
-    ProjectLink {
-        root: std::path::PathBuf,
-        entity: &'a str,
-        path: &'a str,
-        start_line: u32,
-        end_line: u32,
-        provenance: &'a str,
-        confidence: f32,
-        detail: &'a str,
-    },
-    AgentHello {
-        root: std::path::PathBuf,
-    },
-    AgentPrompt {
-        root: std::path::PathBuf,
-        text: &'a str,
-    },
-    AgentSteer {
-        root: std::path::PathBuf,
-        text: &'a str,
-    },
     PreflightNavigation {
         url: &'a str,
     },
@@ -647,7 +493,9 @@ struct Outbound {
 }
 
 type CancellationMap = Arc<StdMutex<HashMap<String, oneshot::Sender<()>>>>;
-pub type DevelopmentSessionStore = Arc<StdMutex<ResidentDevelopmentSessions>>;
+/// Retained source alias for daemon callers predating the product split.
+/// Browser MCP no longer owns development sessions.
+pub type DevelopmentSessionStore = ();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
@@ -767,10 +615,6 @@ where
         policy: None,
     };
     let policy = crate::cli::runner::policy_from_cli(cli)?;
-    let development_sessions = lease_context
-        .as_ref()
-        .map(|context| Arc::clone(&context.development_sessions))
-        .unwrap_or_else(|| Arc::new(StdMutex::new(ResidentDevelopmentSessions::default())));
     let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
     let permits = lease_context
@@ -1046,7 +890,7 @@ where
         let task_policy = policy.clone();
         let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
-        let task_development_sessions = Arc::clone(&development_sessions);
+        let task_development_sessions = ();
         let task_host_backend = host_backend.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
@@ -1550,7 +1394,7 @@ async fn handle_request(
     policy: &BrowserPolicy,
     knowledge_store_path: Option<&Path>,
 ) -> Option<JsonRpcResponse> {
-    let development_sessions = Arc::new(StdMutex::new(ResidentDevelopmentSessions::default()));
+    let development_sessions = ();
     handle_request_with_viewport(
         request,
         session,
@@ -1572,7 +1416,7 @@ async fn handle_request_with_viewport(
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
-    development_sessions: &DevelopmentSessionStore,
+    _development_sessions: &DevelopmentSessionStore,
     host_backend: Option<&dyn HostMcpToolBackend>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
@@ -1699,7 +1543,7 @@ async fn handle_request_with_viewport(
             policy,
             viewport,
             knowledge_store_path,
-            development_sessions,
+            _development_sessions,
         )
         .await
         {
@@ -1923,7 +1767,7 @@ async fn call_tool(
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
-    development_sessions: &DevelopmentSessionStore,
+    _development_sessions: &DevelopmentSessionStore,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
@@ -2042,56 +1886,6 @@ async fn call_tool(
     }
     if let ToolInvocation::RecoverRun { execution_id } = &invocation {
         return serialized_result(&recover_run(execution_id)?);
-    }
-    if matches!(
-        &invocation,
-        ToolInvocation::ProjectInspect { .. }
-            | ToolInvocation::ProjectFiles { .. }
-            | ToolInvocation::ProjectSearch { .. }
-            | ToolInvocation::ProjectRead { .. }
-            | ToolInvocation::ProjectEdit { .. }
-            | ToolInvocation::ProjectMkdir { .. }
-            | ToolInvocation::ProjectRename { .. }
-            | ToolInvocation::ProjectDelete { .. }
-            | ToolInvocation::ProjectDiagnostics { .. }
-            | ToolInvocation::ProjectRun { .. }
-            | ToolInvocation::ProjectProcessList { .. }
-            | ToolInvocation::ProjectProcessStop { .. }
-            | ToolInvocation::ProjectProcessOutput { .. }
-            | ToolInvocation::ProjectDiff { .. }
-            | ToolInvocation::ProjectTimeline { .. }
-            | ToolInvocation::ProjectEvents { .. }
-            | ToolInvocation::ProjectSessionStatus { .. }
-            | ToolInvocation::ProjectSessionDetach { .. }
-            | ToolInvocation::ProjectCapsuleSave { .. }
-            | ToolInvocation::ProjectCapsuleShow { .. }
-            | ToolInvocation::ProjectCapsuleClear { .. }
-            | ToolInvocation::ProjectInbox { .. }
-            | ToolInvocation::ProjectVerificationCard { .. }
-            | ToolInvocation::ProjectReplay { .. }
-            | ToolInvocation::ProjectGraph { .. }
-            | ToolInvocation::ProjectBreakpoint { .. }
-            | ToolInvocation::ProjectNeovimProbe
-            | ToolInvocation::ProjectExperimentCreate { .. }
-            | ToolInvocation::ProjectAttach { .. }
-            | ToolInvocation::ProjectLink { .. }
-            | ToolInvocation::AgentHello { .. }
-            | ToolInvocation::AgentPrompt { .. }
-            | ToolInvocation::AgentSteer { .. }
-    ) {
-        if matches!(
-            &invocation,
-            ToolInvocation::ProjectTimeline { .. }
-                | ToolInvocation::ProjectEvents { .. }
-                | ToolInvocation::ProjectCapsuleShow { .. }
-                | ToolInvocation::ProjectInbox { .. }
-        ) {
-            return call_persisted_development_read(invocation);
-        }
-        let mut sessions = development_sessions
-            .lock()
-            .map_err(|_| "development session registry poisoned")?;
-        return call_development_tool(invocation, &mut sessions);
     }
     let session = ensure_session(session, options, policy, viewport).await?;
 
@@ -2752,392 +2546,6 @@ async fn call_tool(
         | ToolInvocation::ReplayAttach { .. } => {
             unreachable!("experience tools are handled before browser session startup")
         }
-        ToolInvocation::ProjectInspect { .. }
-        | ToolInvocation::ProjectFiles { .. }
-        | ToolInvocation::ProjectSearch { .. }
-        | ToolInvocation::ProjectRead { .. }
-        | ToolInvocation::ProjectEdit { .. }
-        | ToolInvocation::ProjectMkdir { .. }
-        | ToolInvocation::ProjectRename { .. }
-        | ToolInvocation::ProjectDelete { .. }
-        | ToolInvocation::ProjectDiagnostics { .. }
-        | ToolInvocation::ProjectRun { .. }
-        | ToolInvocation::ProjectProcessList { .. }
-        | ToolInvocation::ProjectProcessStop { .. }
-        | ToolInvocation::ProjectProcessOutput { .. }
-        | ToolInvocation::ProjectDiff { .. }
-        | ToolInvocation::ProjectTimeline { .. }
-        | ToolInvocation::ProjectEvents { .. }
-        | ToolInvocation::ProjectSessionStatus { .. }
-        | ToolInvocation::ProjectSessionDetach { .. }
-        | ToolInvocation::ProjectCapsuleSave { .. }
-        | ToolInvocation::ProjectCapsuleShow { .. }
-        | ToolInvocation::ProjectCapsuleClear { .. }
-        | ToolInvocation::ProjectInbox { .. }
-        | ToolInvocation::ProjectVerificationCard { .. }
-        | ToolInvocation::ProjectReplay { .. }
-        | ToolInvocation::ProjectGraph { .. }
-        | ToolInvocation::ProjectBreakpoint { .. }
-        | ToolInvocation::ProjectNeovimProbe
-        | ToolInvocation::ProjectExperimentCreate { .. }
-        | ToolInvocation::ProjectAttach { .. }
-        | ToolInvocation::ProjectLink { .. }
-        | ToolInvocation::AgentHello { .. }
-        | ToolInvocation::AgentPrompt { .. }
-        | ToolInvocation::AgentSteer { .. } => {
-            unreachable!("development tools are handled before browser session startup")
-        }
-    }
-}
-
-fn call_development_tool(
-    invocation: ToolInvocation<'_>,
-    sessions: &mut ResidentDevelopmentSessions,
-) -> BrowserResult<Value> {
-    match invocation {
-        ToolInvocation::ProjectInspect { root } => {
-            Ok(sessions.with_workspace(root, |workspace| {
-                Ok(json!({
-                    "schemaVersion": crate::development::DEVELOPMENT_SCHEMA_VERSION,
-                    "root": workspace.root(),
-                    "detection": workspace.detection(),
-                    "config": workspace.config(),
-                    "revision": workspace.revision(),
-                }))
-            })?)
-        }
-        ToolInvocation::ProjectFiles { root } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.list_files_result()?)?)
-            })?),
-        ToolInvocation::ProjectSearch { root, query, limit } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.search(query, limit)?)?)
-            })?),
-        ToolInvocation::ProjectRead { root, path } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(json!({"path": path, "content": workspace.read_file(path)?}))
-            })?),
-        ToolInvocation::ProjectEdit {
-            root,
-            path,
-            content,
-        } => Ok(sessions.with_workspace(root, |workspace| {
-            workspace.edit_buffer(path, content.into(), Actor::external("mcp"))?;
-            Ok(serde_json::to_value(workspace.save_buffer(path)?)?)
-        })?),
-        ToolInvocation::ProjectMkdir { root, path } => {
-            Ok(sessions.with_workspace(root, |workspace| {
-                workspace.create_directory(path, Actor::external("mcp"))?;
-                Ok(json!({"path": path, "created": true}))
-            })?)
-        }
-        ToolInvocation::ProjectRename { root, from, to } => {
-            Ok(sessions.with_workspace(root, |workspace| {
-                workspace.rename_path(from, to, Actor::external("mcp"))?;
-                Ok(json!({"from": from, "to": to, "renamed": true}))
-            })?)
-        }
-        ToolInvocation::ProjectDelete {
-            root,
-            path,
-            confirmed,
-        } => {
-            if !confirmed {
-                return Err("project.delete requires confirmed=true".into());
-            }
-            Ok(sessions.with_workspace(root, |workspace| {
-                workspace.delete_path(path, Actor::external("mcp"))?;
-                Ok(json!({"path": path, "deleted": true}))
-            })?)
-        }
-        ToolInvocation::ProjectDiagnostics { root, path } => {
-            Ok(sessions.with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(
-                    workspace.publish_rust_diagnostics(path)?,
-                )?)
-            })?)
-        }
-        ToolInvocation::ProjectRun {
-            root,
-            name,
-            command,
-            wait,
-        } => Ok(sessions.with_workspace(root, |workspace| {
-            workspace.start_process(name, command)?;
-            let snapshot = if wait {
-                wait_for_development_process(workspace, name)
-                    .map_err(|error| DevelopmentError::Process(error.to_string()))?
-            } else {
-                workspace
-                    .processes()
-                    .list()
-                    .into_iter()
-                    .find(|process| process.name == name)
-                    .ok_or_else(|| DevelopmentError::NotFound(format!("process {name}")))?
-            };
-            Ok(serde_json::to_value(snapshot)?)
-        })?),
-        ToolInvocation::ProjectProcessList { root } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.processes().list_checked()?)?)
-            })?),
-        ToolInvocation::ProjectProcessStop { root, name } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.stop_process(name)?)?)
-            })?),
-        ToolInvocation::ProjectProcessOutput { root, name } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(json!({"name": name, "output": workspace.processes().output(name)?}))
-            })?),
-        ToolInvocation::ProjectDiff { root } => Ok(sessions.with_workspace(root, |workspace| {
-            Ok(serde_json::to_value(workspace.diff()?)?)
-        })?),
-        ToolInvocation::ProjectTimeline { root } => Ok(serde_json::to_value(
-            ProjectWorkspace::timeline_snapshot(root)?,
-        )?),
-        ToolInvocation::ProjectEvents {
-            root,
-            after_id,
-            limit,
-        } => Ok(serde_json::to_value(ProjectWorkspace::event_page(
-            root, after_id, limit,
-        )?)?),
-        ToolInvocation::ProjectSessionStatus { root } => Ok(json!({
-            "root": std::fs::canonicalize(&root)?,
-            "resident": sessions.contains(&root),
-            "residentSessionCount": sessions.len(),
-            "capacity": sessions.capacity(),
-        })),
-        ToolInvocation::ProjectSessionDetach { root, confirmed } => {
-            if !confirmed {
-                return Err("project.session.detach requires confirmed=true".into());
-            }
-            Ok(json!({"root": std::fs::canonicalize(&root)?, "detached": sessions.detach(root)?}))
-        }
-        ToolInvocation::ProjectCapsuleSave {
-            root,
-            event_cursor,
-            mobile_view,
-            mobile_scroll,
-            browser_target_id,
-            browser_revision,
-            pending_attention,
-            live_mode,
-            live_quality,
-        } => {
-            let mut capsule = ReconnectCapsule::new(root)?;
-            capsule.event_cursor = event_cursor.map(str::to_string);
-            capsule.mobile_view = mobile_view.map(str::to_string);
-            capsule.mobile_scroll = mobile_scroll
-                .map(u16::try_from)
-                .transpose()
-                .map_err(|_| "mobileScroll must fit an unsigned 16-bit terminal offset")?;
-            capsule.browser_target_id = browser_target_id.map(str::to_string);
-            capsule.browser_revision = browser_revision;
-            capsule.pending_attention = pending_attention.map(str::to_string);
-            capsule.live_mode = live_mode.map(str::to_string);
-            capsule.live_quality = live_quality.map(str::to_string);
-            capsule.saved_at_ms = current_time_ms();
-            let path = ReconnectCapsuleStore::save(&capsule)?;
-            Ok(json!({"capsule": capsule, "path": path}))
-        }
-        ToolInvocation::ProjectCapsuleShow { root } => Ok(json!({
-            "capsule": ReconnectCapsuleStore::load(root)?,
-        })),
-        ToolInvocation::ProjectCapsuleClear { root, confirmed } => {
-            if !confirmed {
-                return Err("project.capsule.clear requires confirmed=true".into());
-            }
-            Ok(json!({"cleared": ReconnectCapsuleStore::clear(root)?}))
-        }
-        ToolInvocation::ProjectInbox { root } => {
-            let events = ProjectWorkspace::timeline_snapshot(root)?;
-            Ok(serde_json::to_value(attention_inbox(events.into_iter()))?)
-        }
-        ToolInvocation::ProjectVerificationCard {
-            root,
-            title,
-            semantic_revision,
-        } => Ok(sessions.with_workspace(root, |workspace| {
-            let diff = workspace.diff()?;
-            Ok(serde_json::to_value(VerificationCard::from_diff(
-                title,
-                &diff,
-                semantic_revision,
-            )?)?)
-        })?),
-        ToolInvocation::ProjectReplay { root, start, limit } => Ok(sessions
-            .with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.replay(start, limit)?)?)
-            })?),
-        ToolInvocation::ProjectGraph {
-            root,
-            operation,
-            entity,
-            path,
-            line,
-        } => Ok(sessions.with_workspace(root, |workspace| match operation {
-            "discover" => Ok(serde_json::to_value(workspace.discover_runtime_links()?)?),
-            "entity" => Ok(serde_json::to_value(workspace.graph().links_for(
-                entity.ok_or_else(|| {
-                    DevelopmentError::InvalidInput(
-                        "project.graph entity operation requires entity".into(),
-                    )
-                })?,
-            ))?),
-            "source" => Ok(serde_json::to_value(
-                workspace.graph().entities_for_source(
-                    path.ok_or_else(|| {
-                        DevelopmentError::InvalidInput(
-                            "project.graph source operation requires path".into(),
-                        )
-                    })?,
-                    line,
-                ),
-            )?),
-            _ => Err(DevelopmentError::InvalidInput(
-                "project.graph operation must be discover, entity, or source".into(),
-            )),
-        })?),
-        ToolInvocation::ProjectBreakpoint {
-            root,
-            kind,
-            entity,
-            before,
-            after,
-        } => {
-            let before: SemanticSnapshot = serde_json::from_value(before.clone())?;
-            let after: SemanticSnapshot = serde_json::from_value(after.clone())?;
-            let breakpoint = match kind {
-                "disappears" => SemanticBreakpoint::EntityDisappears { entity_id: entity.into() },
-                "name-missing" => SemanticBreakpoint::AccessibleNameMissing { entity_id: Some(entity.into()) },
-                "role-changes" => SemanticBreakpoint::RoleChanges { entity_id: entity.into() },
-                "actionability-lost" => SemanticBreakpoint::ActionabilityLost { entity_id: entity.into() },
-                _ => return Err("breakpoint kind must be disappears, name-missing, role-changes, or actionability-lost".into()),
-            };
-            Ok(sessions.with_workspace(root, |workspace| {
-                workspace.discover_runtime_links()?;
-                Ok(serde_json::to_value(
-                    workspace.evaluate_semantic_breakpoints(&[breakpoint], &before, &after)?,
-                )?)
-            })?)
-        }
-        ToolInvocation::ProjectNeovimProbe => {
-            Ok(serde_json::to_value(crate::development::probe_neovim()?)?)
-        }
-        ToolInvocation::ProjectExperimentCreate { root, name, port } => Ok(serde_json::to_value(
-            ExperimentManager::new(&root)?.create(name, port)?,
-        )?),
-        ToolInvocation::ProjectAttach { root, actor } => {
-            let actor = Actor::external(actor);
-            Ok(sessions.with_workspace(root, |workspace| {
-                workspace.attach_actor(actor.clone())?;
-                Ok(serde_json::to_value(actor)?)
-            })?)
-        }
-        ToolInvocation::ProjectLink {
-            root,
-            entity,
-            path,
-            start_line,
-            end_line,
-            provenance,
-            confidence,
-            detail,
-        } => {
-            let provenance = parse_development_provenance(provenance)?;
-            Ok(sessions.with_workspace(root, |workspace| {
-                Ok(serde_json::to_value(workspace.link_runtime_source(
-                    entity,
-                    path,
-                    start_line,
-                    end_line,
-                    provenance,
-                    detail,
-                    confidence,
-                    Actor::external("mcp"),
-                )?)?)
-            })?)
-        }
-        ToolInvocation::AgentHello { root } => {
-            Ok(sessions.with_runtime(root, |workspace, harness| {
-                Ok(serde_json::to_value(
-                    harness.handle(workspace, HarnessRequest::Hello)?,
-                )?)
-            })?)
-        }
-        ToolInvocation::AgentPrompt { root, text } => {
-            Ok(sessions.with_runtime(root, |workspace, harness| {
-                Ok(serde_json::to_value(harness.handle(
-                    workspace,
-                    HarnessRequest::Prompt { text: text.into() },
-                )?)?)
-            })?)
-        }
-        ToolInvocation::AgentSteer { root, text } => {
-            Ok(sessions.with_runtime(root, |workspace, harness| {
-                Ok(serde_json::to_value(harness.handle(
-                    workspace,
-                    HarnessRequest::Steer { text: text.into() },
-                )?)?)
-            })?)
-        }
-        _ => Err("non-development tool passed to development dispatcher".into()),
-    }
-}
-
-fn call_persisted_development_read(invocation: ToolInvocation<'_>) -> BrowserResult<Value> {
-    match invocation {
-        ToolInvocation::ProjectTimeline { root } => Ok(serde_json::to_value(
-            ProjectWorkspace::timeline_snapshot(root)?,
-        )?),
-        ToolInvocation::ProjectEvents {
-            root,
-            after_id,
-            limit,
-        } => Ok(serde_json::to_value(ProjectWorkspace::event_page(
-            root, after_id, limit,
-        )?)?),
-        ToolInvocation::ProjectCapsuleShow { root } => Ok(json!({
-            "capsule": ReconnectCapsuleStore::load(root)?,
-        })),
-        ToolInvocation::ProjectInbox { root } => {
-            let events = ProjectWorkspace::timeline_snapshot(root)?;
-            Ok(serde_json::to_value(attention_inbox(events.into_iter()))?)
-        }
-        _ => Err("stateful development tool passed to persisted read dispatcher".into()),
-    }
-}
-
-fn wait_for_development_process(
-    workspace: &mut ProjectWorkspace,
-    name: &str,
-) -> BrowserResult<crate::development::ProcessSnapshot> {
-    loop {
-        let snapshot = workspace
-            .processes()
-            .poll()?
-            .into_iter()
-            .find(|process| process.name == name)
-            .ok_or_else(|| format!("process {name} disappeared"))?;
-        if !matches!(snapshot.state, ProcessState::Running) {
-            return Ok(snapshot);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn parse_development_provenance(value: &str) -> BrowserResult<LinkProvenance> {
-    match value {
-        "explicit-marker" => Ok(LinkProvenance::ExplicitMarker),
-        "runtime-observation" => Ok(LinkProvenance::RuntimeObservation),
-        "static-analysis" => Ok(LinkProvenance::StaticAnalysis),
-        "inferred" => Ok(LinkProvenance::Inferred),
-        _ => Err(
-            "provenance must be explicit-marker, runtime-observation, static-analysis, or inferred"
-                .into(),
-        ),
     }
 }
 
@@ -3343,177 +2751,6 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
     }
 
     match tool_name {
-        "project.inspect" => Ok(ToolInvocation::ProjectInspect {
-            root: development_root(arguments)?,
-        }),
-        "project.files" => Ok(ToolInvocation::ProjectFiles {
-            root: development_root(arguments)?,
-        }),
-        "project.search" => Ok(ToolInvocation::ProjectSearch {
-            root: development_root(arguments)?,
-            query: required_string(arguments, "query")?,
-            limit: optional_u64(arguments, "limit", 64)? as usize,
-        }),
-        "project.read" => Ok(ToolInvocation::ProjectRead {
-            root: development_root(arguments)?,
-            path: required_string(arguments, "path")?,
-        }),
-        "project.edit" => Ok(ToolInvocation::ProjectEdit {
-            root: development_root(arguments)?,
-            path: required_string(arguments, "path")?,
-            content: required_string(arguments, "content")?,
-        }),
-        "project.mkdir" => Ok(ToolInvocation::ProjectMkdir {
-            root: development_root(arguments)?,
-            path: required_string(arguments, "path")?,
-        }),
-        "project.rename" => Ok(ToolInvocation::ProjectRename {
-            root: development_root(arguments)?,
-            from: required_string(arguments, "from")?,
-            to: required_string(arguments, "to")?,
-        }),
-        "project.delete" => Ok(ToolInvocation::ProjectDelete {
-            root: development_root(arguments)?,
-            path: required_string(arguments, "path")?,
-            confirmed: optional_bool(arguments, "confirmed")?,
-        }),
-        "project.diagnostics" => Ok(ToolInvocation::ProjectDiagnostics {
-            root: development_root(arguments)?,
-            path: required_string(arguments, "path")?,
-        }),
-        "project.run" => Ok(ToolInvocation::ProjectRun {
-            root: development_root(arguments)?,
-            name: required_string(arguments, "name")?,
-            command: required_string(arguments, "command")?,
-            wait: optional_bool(arguments, "wait")?,
-        }),
-        "project.processes" => Ok(ToolInvocation::ProjectProcessList {
-            root: development_root(arguments)?,
-        }),
-        "project.process.stop" => Ok(ToolInvocation::ProjectProcessStop {
-            root: development_root(arguments)?,
-            name: required_string(arguments, "name")?,
-        }),
-        "project.process.output" => Ok(ToolInvocation::ProjectProcessOutput {
-            root: development_root(arguments)?,
-            name: required_string(arguments, "name")?,
-        }),
-        "project.diff" => Ok(ToolInvocation::ProjectDiff {
-            root: development_root(arguments)?,
-        }),
-        "project.timeline" => Ok(ToolInvocation::ProjectTimeline {
-            root: development_root(arguments)?,
-        }),
-        "project.events" => {
-            let after_id = optional_string(arguments, "afterId")?;
-            if after_id.is_some_and(|value| value.len() > 128) {
-                return Err("afterId must be at most 128 bytes".into());
-            }
-            let limit = optional_u64(arguments, "limit", 64)?;
-            if !(1..=256).contains(&limit) {
-                return Err("limit must be between 1 and 256".into());
-            }
-            Ok(ToolInvocation::ProjectEvents {
-                root: development_root(arguments)?,
-                after_id,
-                limit: limit as usize,
-            })
-        }
-        "project.session.status" => Ok(ToolInvocation::ProjectSessionStatus {
-            root: development_root(arguments)?,
-        }),
-        "project.session.detach" => Ok(ToolInvocation::ProjectSessionDetach {
-            root: development_root(arguments)?,
-            confirmed: optional_bool(arguments, "confirmed")?,
-        }),
-        "project.capsule.save" => Ok(ToolInvocation::ProjectCapsuleSave {
-            root: development_root(arguments)?,
-            event_cursor: optional_string(arguments, "eventCursor")?,
-            mobile_view: optional_string(arguments, "mobileView")?,
-            mobile_scroll: optional_u64_value(arguments, "mobileScroll")?,
-            browser_target_id: optional_string(arguments, "browserTargetId")?,
-            browser_revision: optional_u64_value(arguments, "browserRevision")?,
-            pending_attention: optional_string(arguments, "pendingAttention")?,
-            live_mode: optional_string(arguments, "liveMode")?,
-            live_quality: optional_string(arguments, "liveQuality")?,
-        }),
-        "project.capsule.show" => Ok(ToolInvocation::ProjectCapsuleShow {
-            root: development_root(arguments)?,
-        }),
-        "project.capsule.clear" => Ok(ToolInvocation::ProjectCapsuleClear {
-            root: development_root(arguments)?,
-            confirmed: optional_bool(arguments, "confirmed")?,
-        }),
-        "project.inbox" => Ok(ToolInvocation::ProjectInbox {
-            root: development_root(arguments)?,
-        }),
-        "project.verification.card" => Ok(ToolInvocation::ProjectVerificationCard {
-            root: development_root(arguments)?,
-            title: required_string(arguments, "title")?,
-            semantic_revision: optional_u64_value(arguments, "semanticRevision")?,
-        }),
-        "project.replay" => Ok(ToolInvocation::ProjectReplay {
-            root: development_root(arguments)?,
-            start: optional_u64(arguments, "start", 0)? as usize,
-            limit: optional_u64(arguments, "limit", 64)? as usize,
-        }),
-        "project.graph" => Ok(ToolInvocation::ProjectGraph {
-            root: development_root(arguments)?,
-            operation: required_string(arguments, "operation")?,
-            entity: arguments.get("entity").and_then(Value::as_str),
-            path: arguments.get("path").and_then(Value::as_str),
-            line: optional_u64_value(arguments, "line")?.map(|line| line as u32),
-        }),
-        "project.breakpoint" => Ok(ToolInvocation::ProjectBreakpoint {
-            root: development_root(arguments)?,
-            kind: required_string(arguments, "kind")?,
-            entity: required_string(arguments, "entity")?,
-            before: arguments
-                .get("before")
-                .ok_or("project.breakpoint requires before")?,
-            after: arguments
-                .get("after")
-                .ok_or("project.breakpoint requires after")?,
-        }),
-        "project.neovim.probe" => Ok(ToolInvocation::ProjectNeovimProbe),
-        "project.experiment.create" => Ok(ToolInvocation::ProjectExperimentCreate {
-            root: development_root(arguments)?,
-            name: required_string(arguments, "name")?,
-            port: required_u32(arguments, "port")?
-                .try_into()
-                .map_err(|_| "port must be <= 65535")?,
-        }),
-        "project.attach" => Ok(ToolInvocation::ProjectAttach {
-            root: development_root(arguments)?,
-            actor: required_string(arguments, "actor")?,
-        }),
-        "project.link" => Ok(ToolInvocation::ProjectLink {
-            root: development_root(arguments)?,
-            entity: required_string(arguments, "entity")?,
-            path: required_string(arguments, "path")?,
-            start_line: required_u32(arguments, "startLine")?,
-            end_line: required_u32(arguments, "endLine")?,
-            provenance: arguments
-                .get("provenance")
-                .and_then(Value::as_str)
-                .unwrap_or("explicit-marker"),
-            confidence: optional_number(arguments, "confidence", 1.0)? as f32,
-            detail: arguments
-                .get("detail")
-                .and_then(Value::as_str)
-                .unwrap_or("explicit project link"),
-        }),
-        "agent.hello" => Ok(ToolInvocation::AgentHello {
-            root: development_root(arguments)?,
-        }),
-        "agent.prompt" => Ok(ToolInvocation::AgentPrompt {
-            root: development_root(arguments)?,
-            text: required_string(arguments, "text")?,
-        }),
-        "agent.steer" => Ok(ToolInvocation::AgentSteer {
-            root: development_root(arguments)?,
-            text: required_string(arguments, "text")?,
-        }),
         "preflightNavigation" => {
             let url = required_string(arguments, "url")?;
             if url.len() > MAX_PREFLIGHT_URL_BYTES {
@@ -4039,183 +3276,13 @@ async fn ensure_session<'a>(
 }
 
 fn tools() -> Vec<Tool> {
-    vec![
-        Tool {
-            name: "project.inspect",
-            description: "Detect a local project and return bounded runtime configuration without starting Chrome.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.files",
-            description: "List bounded, workspace-confined project files without starting Chrome.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.search",
-            description: "Fuzzy-search files, runtime entities, processes, events, and commands.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":256,"default":64}},"required":["query"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.read",
-            description: "Read one bounded file inside a local project workspace.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.edit",
-            description: "Replace and save one bounded workspace-confined file with external-agent provenance.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.mkdir",
-            description: "Create one workspace-confined directory with external-agent provenance.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.rename",
-            description: "Rename or move one workspace-confined path with external-agent provenance.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.delete",
-            description: "Delete one file or empty directory after explicit confirmation.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"},"confirmed":{"type":"boolean","const":true}},"required":["path","confirmed"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.diagnostics",
-            description: "Request real rust-analyzer diagnostics through the bounded LSP client.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.run",
-            description: "Run a local project command in a real PTY with a bounded output tail.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"},"command":{"type":"string"},"wait":{"type":"boolean","default":false}},"required":["name","command"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.processes",
-            description: "List managed local project processes without starting Chrome.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.process.stop",
-            description: "Stop one managed local project process.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.process.output",
-            description: "Read the bounded output tail of one managed project process.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.diff",
-            description: "Return code, runtime, semantic, and workflow impact for a local project.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.timeline",
-            description: "Return the bounded actor-attributed local development timeline.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.events",
-            description: "Read one cursor-bounded page from the actor-attributed development event feed.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"afterId":{"type":"string","minLength":1,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":256,"default":64}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.session.status",
-            description: "Inspect whether a canonical project has a resident development session.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.session.detach",
-            description: "Detach and clean up one resident project session after explicit confirmation.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"confirmed":{"type":"boolean","const":true}},"required":["confirmed"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.capsule.save",
-            description: "Atomically save a bounded, non-sensitive reconnect capsule for one project.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"eventCursor":{"type":"string","maxLength":128},"mobileView":{"enum":["home","overview","agent","app","browser","diff","project","process","logs"]},"mobileScroll":{"type":"integer","minimum":0,"maximum":65535},"browserTargetId":{"type":"string","maxLength":128},"browserRevision":{"type":"integer","minimum":0},"pendingAttention":{"type":"string","maxLength":256},"liveMode":{"enum":["off","auto","on"]},"liveQuality":{"enum":["auto","data","balanced","smooth"]}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.capsule.show",
-            description: "Read the bounded reconnect capsule for one project when present.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.capsule.clear",
-            description: "Remove one reconnect capsule after explicit confirmation.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"confirmed":{"type":"boolean","const":true}},"required":["confirmed"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.inbox",
-            description: "Return the bounded mobile attention inbox derived from actor-attributed events.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.verification.card",
-            description: "Build a compact verification card from the resident project diff without implicit screenshots.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"title":{"type":"string","minLength":1,"maxLength":128},"semanticRevision":{"type":"integer","minimum":0}},"required":["title"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.replay",
-            description: "Replay a bounded window of actor-attributed development revisions.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"start":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"maximum":256,"default":64}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.graph",
-            description: "Discover explicit source/runtime markers or navigate the graph in either direction.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"operation":{"type":"string","enum":["discover","entity","source"]},"entity":{"type":"string"},"path":{"type":"string"},"line":{"type":"integer","minimum":1}},"required":["operation"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.breakpoint",
-            description: "Evaluate one semantic breakpoint against bounded before/after entity snapshots.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"kind":{"type":"string","enum":["disappears","name-missing","role-changes","actionability-lost"]},"entity":{"type":"string"},"before":{"type":"object"},"after":{"type":"object"}},"required":["kind","entity","before","after"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.neovim.probe",
-            description: "Probe real Neovim PTY compatibility and the headless RPC architecture prototype.",
-            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.experiment.create",
-            description: "Create an isolated Git worktree experiment with a dedicated local dev port.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"name":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["name","port"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.attach",
-            description: "Attach an external agent actor to the attributed development timeline.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"actor":{"type":"string"}},"required":["actor"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "project.link",
-            description: "Record a source/runtime link with explicit provenance and confidence.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"entity":{"type":"string"},"path":{"type":"string"},"startLine":{"type":"integer","minimum":1},"endLine":{"type":"integer","minimum":1},"provenance":{"type":"string","enum":["explicit-marker","runtime-observation","static-analysis","inferred"],"default":"explicit-marker"},"confidence":{"type":"number","minimum":0,"maximum":1,"default":1},"detail":{"type":"string"}},"required":["entity","path","startLine","endLine"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "agent.hello",
-            description: "Negotiate the Glass-owned local harness protocol.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."}},"additionalProperties":false}),
-        },
-        Tool {
-            name: "agent.prompt",
-            description: "Run one bounded prompt through the deterministic local Glass harness.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"text":{"type":"string"}},"required":["text"],"additionalProperties":false}),
-        },
-        Tool {
-            name: "agent.steer",
-            description: "Send a steering event to the local Glass harness.",
-            input_schema: json!({"type":"object","properties":{"root":{"type":"string","default":"."},"text":{"type":"string"}},"required":["text"],"additionalProperties":false}),
-        },
+    let tools = vec![
         Tool {
             name: "inspectWebIr",
             description: "Inspect a validated browser-free Glass Web IR v1 without starting Chrome.",
             input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "ir": {
-                        "type": "object",
-                        "description": "Bounded Glass Web IR v1 JSON."
-                    }
-                },
+                "properties": {"ir": {"type": "object", "description": "Bounded Glass Web IR v1 JSON."}},
                 "required": ["ir"],
                 "additionalProperties": false
             }),
@@ -4225,12 +3292,7 @@ fn tools() -> Vec<Tool> {
             description: "Validate a browser-free Glass Web IR v1 without starting Chrome.",
             input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "ir": {
-                        "type": "object",
-                        "description": "Bounded Glass Web IR v1 JSON."
-                    }
-                },
+                "properties": {"ir": {"type": "object", "description": "Bounded Glass Web IR v1 JSON."}},
                 "required": ["ir"],
                 "additionalProperties": false
             }),
@@ -4241,14 +3303,8 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "before": {
-                        "type": "object",
-                        "description": "Earlier bounded Glass Web IR v1 JSON."
-                    },
-                    "after": {
-                        "type": "object",
-                        "description": "Later bounded Glass Web IR v1 JSON."
-                    }
+                    "before": {"type": "object", "description": "Earlier bounded Glass Web IR v1 JSON."},
+                    "after": {"type": "object", "description": "Later bounded Glass Web IR v1 JSON."}
                 },
                 "required": ["before", "after"],
                 "additionalProperties": false
@@ -4260,18 +3316,9 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "before": {
-                        "type": "object",
-                        "description": "Earlier bounded Glass Web IR v1 JSON."
-                    },
-                    "after": {
-                        "type": "object",
-                        "description": "Later bounded Glass Web IR v1 JSON."
-                    },
-                    "entityId": {
-                        "type": "string",
-                        "description": "Revision-local entity ID from the earlier Web IR."
-                    }
+                    "before": {"type": "object", "description": "Earlier bounded Glass Web IR v1 JSON."},
+                    "after": {"type": "object", "description": "Later bounded Glass Web IR v1 JSON."},
+                    "entityId": {"type": "string", "description": "Revision-local entity ID from the earlier Web IR."}
                 },
                 "required": ["before", "after", "entityId"],
                 "additionalProperties": false
@@ -4282,12 +3329,7 @@ fn tools() -> Vec<Tool> {
             description: "Validate a semantic Task Protocol task without starting Chrome or compiling a plan.",
             input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "object",
-                        "description": "Strict Task Protocol v1 authored task."
-                    }
-                },
+                "properties": {"task": {"type": "object", "description": "Strict Task Protocol v1 authored task."}},
                 "required": ["task"],
                 "additionalProperties": false
             }),
@@ -4298,14 +3340,8 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "task": {
-                        "type": "object",
-                        "description": "Strict Task Protocol v1 authored task."
-                    },
-                    "ir": {
-                        "type": "object",
-                        "description": "Validated stable Glass Web IR v1 source document."
-                    }
+                    "task": {"type": "object", "description": "Strict Task Protocol v1 authored task."},
+                    "ir": {"type": "object", "description": "Validated stable Glass Web IR v1 source document."}
                 },
                 "required": ["task", "ir"],
                 "additionalProperties": false
@@ -4317,31 +3353,11 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "task": {
-                        "type": "object",
-                        "description": "Validated Task Protocol v1 authored task from a form, navigation, dialog, pagination, extraction, or field-read family."
-                    },
-                    "expectedRevision": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Revision returned by the caller's preceding semantic observation."
-                    },
-                    "confirmed": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Explicit confirmation for risky or ambiguity-gated tasks."
-                    },
-                    "leaseToken": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 256,
-                        "description": "Mutation lease token issued by glass/lease/acquire when running against a daemon."
-                    },
-                    "responseMode": {
-                        "type": "string",
-                        "enum": ["minimal", "normal", "diagnostic"],
-                        "default": "minimal"
-                    }
+                    "task": {"type": "object", "description": "Validated Task Protocol v1 authored task from a form, navigation, dialog, pagination, extraction, or field-read family."},
+                    "expectedRevision": {"type": "integer", "minimum": 0, "description": "Revision returned by the caller's preceding semantic observation."},
+                    "confirmed": {"type": "boolean", "default": false, "description": "Explicit confirmation for risky or ambiguity-gated tasks."},
+                    "leaseToken": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Mutation lease token issued by glass/lease/acquire when running against a daemon."},
+                    "responseMode": {"type": "string", "enum": ["minimal", "normal", "diagnostic"], "default": "minimal"}
                 },
                 "required": ["task", "expectedRevision"],
                 "additionalProperties": false
@@ -5148,7 +4164,11 @@ fn tools() -> Vec<Tool> {
             description: "Override browser timezone (IANA ID like America/New_York).",
             input_schema: json!({"type":"object","properties":{"timezoneId":{"type":"string"}},"required":["timezoneId"]}),
         },
-    ]
+    ];
+    tools
+        .into_iter()
+        .filter(|tool| !tool.name.starts_with("project.") && !tool.name.starts_with("agent."))
+        .collect()
 }
 
 fn target_schema() -> Value {
@@ -5168,20 +4188,6 @@ fn required_u64(arguments: &Value, name: &str) -> BrowserResult<u64> {
         .get(name)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("{name} must be a non-negative integer").into())
-}
-
-fn required_u32(arguments: &Value, name: &str) -> BrowserResult<u32> {
-    let value = required_u64(arguments, name)?;
-    u32::try_from(value)
-        .map_err(|_| format!("{name} must fit in an unsigned 32-bit integer").into())
-}
-
-fn development_root(arguments: &Value) -> BrowserResult<std::path::PathBuf> {
-    let root = arguments.get("root").and_then(Value::as_str).unwrap_or(".");
-    if root.is_empty() || root.len() > 1024 {
-        return Err("root must be a path of 1-1024 bytes".into());
-    }
-    Ok(std::path::PathBuf::from(root))
 }
 
 fn required_string_array<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Vec<&'a str>> {
@@ -7713,51 +6719,5 @@ mod tests {
         assert!(Arc::clone(&semaphore).try_acquire_owned().is_err());
         drop(permits);
         assert!(Arc::clone(&semaphore).try_acquire_owned().is_ok());
-    }
-
-    #[test]
-    fn development_dispatch_reuses_resident_workspace_state() {
-        let root = std::env::temp_dir().join(format!(
-            "glass-mcp-resident-{}-{}",
-            std::process::id(),
-            current_time_ms()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname='resident'\nversion='0.1.0'\n",
-        )
-        .unwrap();
-        let mut sessions = ResidentDevelopmentSessions::default();
-        call_development_tool(
-            ToolInvocation::ProjectAttach {
-                root: root.clone(),
-                actor: "sdk",
-            },
-            &mut sessions,
-        )
-        .unwrap();
-        let actors = sessions
-            .with_workspace(&root, |workspace| {
-                Ok(workspace
-                    .actors()
-                    .map(|actor| actor.id.clone())
-                    .collect::<Vec<_>>())
-            })
-            .unwrap();
-        assert!(actors.iter().any(|actor| actor == "external:sdk"));
-        let opened = ProjectWorkspace::timeline_snapshot(&root)
-            .unwrap()
-            .into_iter()
-            .filter(|event| {
-                matches!(
-                    event.kind,
-                    crate::development::DevelopmentEventKind::WorkspaceOpened
-                )
-            })
-            .count();
-        assert_eq!(opened, 1);
-        assert!(sessions.detach(&root).unwrap());
-        let _ = std::fs::remove_dir_all(root);
     }
 }

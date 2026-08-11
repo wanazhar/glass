@@ -44,12 +44,12 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 input_schema: augment_schema(descriptor.input_schema, descriptor.mutating),
             })
             .collect::<Vec<_>>();
-        tools.extend(LEGACY_EXECUTION_TOOLS.iter().map(|name| HostMcpTool {
+        tools.extend(LEGACY_TOOLS.iter().map(|(name, mutating)| HostMcpTool {
             name: (*name).into(),
             description: format!(
                 "Trust-governed compatibility route for legacy development tool {name}"
             ),
-            input_schema: augment_schema(json!({"type":"object"}), true),
+            input_schema: augment_schema(json!({"type":"object"}), *mutating),
         }));
         tools
     }
@@ -80,13 +80,14 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             .workspace
             .lock()
             .map_err(|_| "development MCP workspace poisoned".to_string())?;
-        let legacy_execution = LEGACY_EXECUTION_TOOLS.contains(&name);
+        let legacy = LEGACY_TOOLS.iter().find(|(legacy, _)| *legacy == name);
+        let legacy_execution = legacy.is_some();
         let descriptor = if legacy_execution {
             crate::development::ToolDescriptor {
                 name: name.into(),
                 description: format!("Trust-governed compatibility route {name}"),
                 input_schema: json!({"type":"object"}),
-                mutating: true,
+                mutating: legacy.expect("legacy tool checked above").1,
                 available: true,
                 unavailable_reason: None,
             }
@@ -112,7 +113,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             ));
         }
         let (name, arguments) = if legacy_execution {
-            if !workspace.trust().permits_project_execution() {
+            if descriptor.mutating && !workspace.trust().permits_project_execution() {
                 return Err(format!(
                     "{name} is blocked until the workspace is trusted by a local user"
                 ));
@@ -148,23 +149,24 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
     }
 }
 
-const LEGACY_EXECUTION_TOOLS: &[&str] = &[
-    "project.edit",
-    "project.mkdir",
-    "project.rename",
-    "project.delete",
-    "project.diagnostics",
-    "project.run",
-    "project.process.stop",
-    "project.session.detach",
-    "project.capsule.save",
-    "project.capsule.clear",
-    "project.neovim.probe",
-    "project.experiment.create",
-    "project.attach",
-    "project.link",
-    "agent.prompt",
-    "agent.steer",
+const LEGACY_TOOLS: &[(&str, bool)] = &[
+    ("project.read", false),
+    ("project.edit", true),
+    ("project.mkdir", true),
+    ("project.rename", true),
+    ("project.delete", true),
+    ("project.diagnostics", true),
+    ("project.run", true),
+    ("project.process.stop", true),
+    ("project.session.detach", true),
+    ("project.capsule.save", true),
+    ("project.capsule.clear", true),
+    ("project.neovim.probe", true),
+    ("project.experiment.create", true),
+    ("project.attach", true),
+    ("project.link", true),
+    ("agent.prompt", true),
+    ("agent.steer", true),
 ];
 
 fn translate_legacy_execution(
@@ -185,6 +187,7 @@ fn translate_legacy_execution(
         }
     }
     let mapped = match name {
+        "project.read" => "glass.file.read",
         "project.edit" => "glass.file.write",
         "project.mkdir" => "glass.file.mkdir",
         "project.rename" => "glass.file.rename",

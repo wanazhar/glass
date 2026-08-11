@@ -10,4 +10,3 @@
 //! Frame retention is bounded by [`crate::presentation`].
 
 pub mod app;
-mod herdr_graphics;

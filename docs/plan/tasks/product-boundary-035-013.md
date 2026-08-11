@@ -1,6 +1,6 @@
 # Development product boundary completion
 
-Status: Core and development dispatch complete; compatibility retirement pending
+Status: Complete and verified
 
 ## Completed checkpoint
 
@@ -12,9 +12,11 @@ Status: Core and development dispatch complete; compatibility retirement pending
 - Removed the `development-runtime` Cargo feature and its optional dependency
   bridge from `glass-browser`; `glass-dev` uses the ordinary browser package.
 - Moved the Pi tool/system assets into the package that owns the runtime.
-- Browser-only builds retain a deprecated non-executable compatibility module
-  while their legacy CLI/TUI/MCP references are retired. They no longer expose
-  PTY or `glass.toml` execution.
+- Deleted the browser-owned development compatibility module and its legacy
+  CLI/MCP dispatch, schemas, session registry, and mixed development TUI.
+- The focused browser TUI remains structured-first and responsive at phone,
+  compact, and desktop widths. Complete development surfaces remain owned by
+  the decomposed `glass-dev` TUI.
 - `glass-dev::dispatch` now owns project, agent, daemon, MCP, and development
   TUI behavior. Its fallback into the browser runner is limited to browser
   commands; project and agent operations execute the Glass Dev-owned types.
@@ -30,5 +32,6 @@ cargo check -p glass-dev
 ```
 
 All 117 `glass-dev` library tests and strict all-target/all-feature Clippy pass.
-Gate 3 remains open until the deprecated browser compatibility module and its
-legacy browser CLI/TUI/MCP type references can be deleted.
+The browser minimal check and strict all-target/all-feature Clippy also pass,
+and repository searches find no browser development module, feature bridge, or
+`glass_browser::development` import.

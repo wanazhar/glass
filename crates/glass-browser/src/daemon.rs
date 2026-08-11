@@ -773,9 +773,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
     let client_sessions = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let lease_manager = Arc::new(tokio::sync::Mutex::new(MutationLeaseManager::default()));
     let request_permits = Arc::new(tokio::sync::Semaphore::new(MAX_DAEMON_CONCURRENT_REQUESTS));
-    let development_sessions = Arc::new(std::sync::Mutex::new(
-        crate::development::ResidentDevelopmentSessions::default(),
-    ));
+    let development_sessions = ();
     let next_owner_id = std::sync::atomic::AtomicU64::new(0);
     let mut terminate = signal(SignalKind::terminate())?;
     let mut clients = Vec::new();
@@ -811,7 +809,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
                 MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS,
             )),
             status: Arc::clone(&status_state),
-            development_sessions: Arc::clone(&development_sessions),
+            development_sessions,
         });
         clients.push(tokio::task::spawn_local(async move {
             let (socket_read, socket_write) = stream.into_split();

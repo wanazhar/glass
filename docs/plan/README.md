@@ -11,8 +11,9 @@ dependency order, twelve release gates, scenarios A-I, forbidden outcomes, and
 disk-aware validation policy are in [the v0.3.5 delivery analysis](analysis/release-035.md).
 The first release-blocking checkpoint is the
 [workspace trust boundary](tasks/security-035-001.md).
-The [native Pi SDK boundary](tasks/runtime-035-002.md) is complete locally;
-product-boundary deletion is the active checkpoint.
+The [native Pi SDK boundary](tasks/runtime-035-002.md) and
+[product-boundary deletion](tasks/product-boundary-035-013.md) are complete in
+the source candidate.
 The [autonomous task and workspace actor checkpoint](tasks/scheduler-035-003.md)
 is also complete locally and removes the global daemon workspace lock.
 The [native transport checkpoint](tasks/platform-035-004.md) implements Windows

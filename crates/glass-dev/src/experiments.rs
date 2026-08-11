@@ -980,6 +980,7 @@ impl From<GitError> for DevelopmentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AgentStatus;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1044,6 +1045,49 @@ mod tests {
         assert!(first.worktree.exists());
         assert!(second.worktree.exists());
         assert!(third.worktree.exists());
+        let pi_available = Command::new("pi")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        let mut agents = AgentRegistry::new(&root).unwrap();
+        let mut assigned = Vec::new();
+        if pi_available {
+            for id in ["approach-a", "approach-b", "approach-c"] {
+                assigned.push(
+                    manager
+                        .assign_agent(
+                            id,
+                            &mut agents,
+                            AgentSpec::new("experiment-implementer", format!("evaluate {id}")),
+                        )
+                        .unwrap(),
+                );
+            }
+            for agent in &assigned {
+                let mut ready = false;
+                for _ in 0..200 {
+                    let snapshot = agents.snapshot(agent).unwrap();
+                    if snapshot.status == AgentStatus::Idle {
+                        ready = true;
+                        break;
+                    }
+                    assert_ne!(
+                        snapshot.status,
+                        AgentStatus::Failed,
+                        "native Pi experiment worker failed: {:?}",
+                        snapshot.last_error
+                    );
+                    thread::sleep(Duration::from_millis(25));
+                }
+                assert!(ready, "native Pi experiment worker did not become idle");
+            }
+            assert!(manager.snapshots().iter().all(|snapshot| {
+                snapshot
+                    .agent_id
+                    .as_ref()
+                    .is_some_and(|agent| assigned.contains(agent))
+            }));
+        }
         std::fs::write(first.worktree.join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(second.worktree.join("b.rs"), "fn b() {}\n").unwrap();
         std::fs::write(second.worktree.join("b-extra.rs"), "fn b_extra() {}\n").unwrap();
@@ -1081,6 +1125,7 @@ mod tests {
             ExperimentState::Selected
         );
         assert!(manager.select("approach-b").is_err());
+        drop(agents);
         manager.remove("approach-a", true).unwrap();
         manager.remove("approach-b", true).unwrap();
         manager.remove("approach-c", true).unwrap();

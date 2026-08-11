@@ -4,13 +4,15 @@
 //! stdio. Higher-level debugger methods retain adapter-neutral JSON bodies so
 //! LLDB, debugpy, Delve and JavaScript adapters can share one implementation.
 
+use glass_browser::development::{ProcessManager, ProcessSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -18,6 +20,9 @@ use std::time::{Duration, Instant};
 const MAX_DAP_HEADER_BYTES: usize = 8 * 1024;
 const MAX_DAP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_MESSAGES: usize = 512;
+type DapWriter = Box<dyn Write + Send>;
+type DapReader = Box<dyn Read + Send>;
+type AdapterStreams = (DapWriter, DapReader, Vec<JoinHandle<()>>);
 
 pub type DebugResult<T> = Result<T, DebugError>;
 
@@ -57,6 +62,24 @@ pub struct DebugAdapterConfig {
     pub command: PathBuf,
     #[serde(default)]
     pub arguments: Vec<String>,
+    #[serde(default)]
+    pub transport: DebugAdapterTransport,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DebugAdapterTransport {
+    #[default]
+    Stdio,
+    Tcp {
+        address: SocketAddr,
+        #[serde(default = "default_connect_timeout_ms")]
+        connect_timeout_ms: u64,
+    },
+}
+
+const fn default_connect_timeout_ms() -> u64 {
+    5_000
 }
 
 impl DebugAdapterConfig {
@@ -64,7 +87,16 @@ impl DebugAdapterConfig {
         Self {
             command: command.into(),
             arguments: arguments.into_iter().collect(),
+            transport: DebugAdapterTransport::Stdio,
         }
+    }
+
+    pub fn with_tcp(mut self, address: SocketAddr, connect_timeout: Duration) -> Self {
+        self.transport = DebugAdapterTransport::Tcp {
+            address,
+            connect_timeout_ms: u64::try_from(connect_timeout.as_millis()).unwrap_or(u64::MAX),
+        };
+        self
     }
 }
 
@@ -84,6 +116,18 @@ pub struct DebugEvent {
     pub event: String,
     #[serde(default)]
     pub body: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DebuggerSnapshot {
+    pub state: DebugSessionState,
+    pub adapter_process_id: u32,
+    pub capabilities: Value,
+    pub breakpoints: BTreeMap<PathBuf, Vec<SourceBreakpoint>>,
+    pub watches: Vec<String>,
+    pub events: Vec<DebugEvent>,
+    pub debuggee_processes: Vec<ProcessSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,12 +156,14 @@ impl SourceBreakpoint {
 /// One owned DAP adapter process with bounded request and event queues.
 pub struct DapClient {
     child: Child,
-    stdin: ChildStdin,
+    stdin: DapWriter,
     messages: Receiver<DebugResult<Value>>,
     reader: Option<JoinHandle<()>>,
-    stderr_drain: Option<JoinHandle<()>>,
+    output_drains: Vec<JoinHandle<()>>,
     pending: VecDeque<Value>,
     next_sequence: u64,
+    root: PathBuf,
+    debuggees: ProcessManager,
 }
 
 impl DapClient {
@@ -140,18 +186,64 @@ impl DapClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdin = child
+        let child_stdin = child
             .stdin
             .take()
             .ok_or_else(|| DebugError::Protocol("adapter stdin was unavailable".into()))?;
-        let stdout = child
+        let child_stdout = child
             .stdout
             .take()
             .ok_or_else(|| DebugError::Protocol("adapter stdout was unavailable".into()))?;
-        let stderr = child
+        let child_stderr = child
             .stderr
             .take()
             .ok_or_else(|| DebugError::Protocol("adapter stderr was unavailable".into()))?;
+        let (stdin, stdout, output_drains): AdapterStreams = match config.transport {
+            DebugAdapterTransport::Stdio => (
+                Box::new(child_stdin),
+                Box::new(child_stdout),
+                vec![spawn_output_drain(child_stderr)],
+            ),
+            DebugAdapterTransport::Tcp {
+                address,
+                connect_timeout_ms,
+            } => {
+                if !address.ip().is_loopback() || connect_timeout_ms == 0 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DebugError::InvalidInput(
+                        "DAP TCP transport requires a loopback address and positive timeout".into(),
+                    ));
+                }
+                drop(child_stdin);
+                let output_drains = vec![
+                    spawn_output_drain(child_stdout),
+                    spawn_output_drain(child_stderr),
+                ];
+                let deadline = Instant::now() + Duration::from_millis(connect_timeout_ms);
+                let stream = loop {
+                    match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+                        Ok(stream) => break stream,
+                        Err(error) => {
+                            if child.try_wait()?.is_some() {
+                                return Err(DebugError::Protocol(format!(
+                                    "TCP debug adapter exited before accepting {address}: {error}"
+                                )));
+                            }
+                            if Instant::now() >= deadline {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                return Err(DebugError::Timeout(format!(
+                                    "TCP debug adapter did not accept {address} within {connect_timeout_ms} ms"
+                                )));
+                            }
+                        }
+                    }
+                };
+                let reader = stream.try_clone()?;
+                (Box::new(stream), Box::new(reader), output_drains)
+            }
+        };
         let (sender, messages) = mpsc::sync_channel(MAX_PENDING_MESSAGES);
         let reader = std::thread::spawn(move || {
             let mut stdout = BufReader::new(stdout);
@@ -169,19 +261,16 @@ impl DapClient {
                 }
             }
         });
-        let stderr_drain = std::thread::spawn(move || {
-            let mut stderr = stderr;
-            let mut sink = std::io::sink();
-            let _ = std::io::copy(&mut stderr, &mut sink);
-        });
         Ok(Self {
             child,
             stdin,
             messages,
             reader: Some(reader),
-            stderr_drain: Some(stderr_drain),
+            output_drains,
             pending: VecDeque::new(),
             next_sequence: 1,
+            root: root.to_path_buf(),
+            debuggees: ProcessManager::new(root),
         })
     }
 
@@ -205,11 +294,7 @@ impl DapClient {
                 "DAP command must contain 1..=128 bytes".into(),
             ));
         }
-        let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .ok_or_else(|| DebugError::Protocol("DAP sequence overflowed".into()))?;
+        let sequence = self.take_sequence()?;
         write_dap_message(
             &mut self.stdin,
             &json!({
@@ -243,6 +328,9 @@ impl DapClient {
             }
             match self.messages.recv_timeout(remaining) {
                 Ok(Ok(message)) => {
+                    let Some(message) = self.route_inbound(message)? else {
+                        continue;
+                    };
                     if is_response_for(&message, sequence) {
                         return response_body(message, command);
                     }
@@ -266,7 +354,9 @@ impl DapClient {
 
     pub fn poll_events(&mut self) -> DebugResult<Vec<DebugEvent>> {
         while let Ok(message) = self.messages.try_recv() {
-            push_pending(&mut self.pending, message?)?;
+            if let Some(message) = self.route_inbound(message?)? {
+                push_pending(&mut self.pending, message)?;
+            }
         }
         let mut events = Vec::new();
         let mut retained = VecDeque::new();
@@ -288,6 +378,126 @@ impl DapClient {
         Ok(events)
     }
 
+    fn route_inbound(&mut self, message: Value) -> DebugResult<Option<Value>> {
+        if message.get("type").and_then(Value::as_str) != Some("request") {
+            return Ok(Some(message));
+        }
+        let request_sequence = message
+            .get("seq")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DebugError::Protocol("DAP reverse request has no sequence".into()))?;
+        let command = message
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DebugError::Protocol("DAP reverse request has no command".into()))?;
+        let result = match command {
+            "runInTerminal" => self.run_in_terminal(
+                request_sequence,
+                message
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            ),
+            _ => Err(DebugError::Adapter(format!(
+                "unsupported reverse request {command}"
+            ))),
+        };
+        let (success, body, error) = match result {
+            Ok(body) => (true, body, None),
+            Err(error) => (false, Value::Null, Some(error.to_string())),
+        };
+        let response_sequence = self.take_sequence()?;
+        let mut response = json!({
+            "seq": response_sequence,
+            "type": "response",
+            "request_seq": request_sequence,
+            "success": success,
+            "command": command,
+        });
+        if success {
+            response["body"] = body.clone();
+        } else if let Some(error) = &error {
+            response["message"] = json!(error);
+        }
+        write_dap_message(&mut self.stdin, &response)?;
+        push_pending(
+            &mut self.pending,
+            json!({
+                "type":"event",
+                "event":"glass/reverseRequest",
+                "body":{
+                    "command":command,
+                    "requestSequence":request_sequence,
+                    "success":success,
+                    "response":body,
+                    "error":error,
+                }
+            }),
+        )?;
+        Ok(None)
+    }
+
+    fn run_in_terminal(&mut self, sequence: u64, arguments: Value) -> DebugResult<Value> {
+        let argv = arguments
+            .get("args")
+            .and_then(Value::as_array)
+            .ok_or_else(|| DebugError::InvalidInput("runInTerminal requires args".into()))?
+            .iter()
+            .map(|argument| {
+                argument.as_str().map(str::to_string).ok_or_else(|| {
+                    DebugError::InvalidInput("runInTerminal args must be strings".into())
+                })
+            })
+            .collect::<DebugResult<Vec<_>>>()?;
+        let cwd = arguments
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.root.clone());
+        let mut environment = BTreeMap::new();
+        if let Some(values) = arguments.get("env") {
+            let values = values.as_object().ok_or_else(|| {
+                DebugError::InvalidInput("runInTerminal env must be an object".into())
+            })?;
+            for (key, value) in values {
+                if value.is_null() {
+                    continue;
+                }
+                let value = value.as_str().ok_or_else(|| {
+                    DebugError::InvalidInput(
+                        "runInTerminal environment values must be strings or null".into(),
+                    )
+                })?;
+                environment.insert(key.clone(), value.to_string());
+            }
+        }
+        let name = format!("dap-{sequence}");
+        let snapshot = self
+            .debuggees
+            .start_argv(&name, &argv, &cwd, &environment)
+            .map_err(|error| DebugError::Adapter(error.to_string()))?;
+        Ok(json!({
+            "processId": snapshot.pid,
+            "shellProcessId": snapshot.pid,
+            "glassProcess": snapshot,
+        }))
+    }
+
+    fn take_sequence(&mut self) -> DebugResult<u64> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| DebugError::Protocol("DAP sequence overflowed".into()))?;
+        Ok(sequence)
+    }
+
+    pub fn debuggee_processes(&mut self) -> DebugResult<Vec<ProcessSnapshot>> {
+        self.debuggees
+            .list_checked()
+            .map_err(|error| DebugError::Adapter(error.to_string()))
+    }
+
     pub fn shutdown(&mut self) -> DebugResult<()> {
         if self.child.try_wait()?.is_none() {
             let _ = self.request(
@@ -303,8 +513,8 @@ impl DapClient {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        if let Some(stderr_drain) = self.stderr_drain.take() {
-            let _ = stderr_drain.join();
+        for drain in self.output_drains.drain(..) {
+            let _ = drain.join();
         }
         Ok(())
     }
@@ -319,10 +529,17 @@ impl Drop for DapClient {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        if let Some(stderr_drain) = self.stderr_drain.take() {
-            let _ = stderr_drain.join();
+        for drain in self.output_drains.drain(..) {
+            let _ = drain.join();
         }
     }
+}
+
+fn spawn_output_drain(mut output: impl Read + Send + 'static) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut sink = std::io::sink();
+        let _ = std::io::copy(&mut output, &mut sink);
+    })
 }
 
 /// Adapter-neutral debugger session state and typed operations.
@@ -332,6 +549,9 @@ pub struct DebuggerSession {
     capabilities: Value,
     timeout: Duration,
     pending_start: Option<(u64, &'static str)>,
+    breakpoints: BTreeMap<PathBuf, Vec<SourceBreakpoint>>,
+    watches: Vec<String>,
+    events: VecDeque<DebugEvent>,
 }
 
 impl DebuggerSession {
@@ -353,7 +573,7 @@ impl DebuggerSession {
                 "columnsStartAt1": true,
                 "supportsVariableType": true,
                 "supportsVariablePaging": true,
-                "supportsRunInTerminalRequest": false,
+                "supportsRunInTerminalRequest": true,
             }),
             timeout,
         )?;
@@ -363,6 +583,9 @@ impl DebuggerSession {
             capabilities,
             timeout,
             pending_start: None,
+            breakpoints: BTreeMap::new(),
+            watches: Vec::new(),
+            events: VecDeque::new(),
         })
     }
 
@@ -433,7 +656,7 @@ impl DebuggerSession {
                 "breakpoints require at most 256 positive line numbers".into(),
             ));
         }
-        self.client.request(
+        let result = self.client.request(
             "setBreakpoints",
             json!({
                 "source": {"path": path},
@@ -441,7 +664,14 @@ impl DebuggerSession {
                 "sourceModified": false,
             }),
             self.timeout,
-        )
+        )?;
+        if breakpoints.is_empty() {
+            self.breakpoints.remove(path);
+        } else {
+            self.breakpoints
+                .insert(path.to_path_buf(), breakpoints.to_vec());
+        }
+        Ok(result)
     }
 
     pub fn set_exception_breakpoints(&mut self, filters: &[String]) -> DebugResult<Value> {
@@ -535,7 +765,14 @@ impl DebuggerSession {
         if let Some(frame_id) = frame_id {
             arguments["frameId"] = json!(positive_id(frame_id, "frame")?);
         }
-        self.client.request("evaluate", arguments, self.timeout)
+        let result = self.client.request("evaluate", arguments, self.timeout)?;
+        if context == "watch" && !self.watches.iter().any(|watch| watch == expression) {
+            if self.watches.len() == 128 {
+                self.watches.remove(0);
+            }
+            self.watches.push(expression.to_string());
+        }
+        Ok(result)
     }
 
     pub fn poll_events(&mut self) -> DebugResult<Vec<DebugEvent>> {
@@ -547,8 +784,28 @@ impl DebuggerSession {
                 "terminated" | "exited" => self.state = DebugSessionState::Terminated,
                 _ => {}
             }
+            if self.events.len() == 256 {
+                self.events.pop_front();
+            }
+            self.events.push_back(event.clone());
         }
         Ok(events)
+    }
+
+    pub fn debuggee_processes(&mut self) -> DebugResult<Vec<ProcessSnapshot>> {
+        self.client.debuggee_processes()
+    }
+
+    pub fn snapshot(&mut self) -> DebugResult<DebuggerSnapshot> {
+        Ok(DebuggerSnapshot {
+            state: self.state,
+            adapter_process_id: self.client.process_id(),
+            capabilities: self.capabilities.clone(),
+            breakpoints: self.breakpoints.clone(),
+            watches: self.watches.clone(),
+            events: self.events.iter().cloned().collect(),
+            debuggee_processes: self.client.debuggee_processes()?,
+        })
     }
 
     pub fn disconnect(&mut self, terminate_debuggee: bool) -> DebugResult<Value> {
@@ -683,6 +940,75 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    const REVERSE_ADAPTER: &str = r#"
+import json, sys
+
+def read_message():
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b'\r\n', b'\n'):
+            break
+        name, value = line.decode().strip().split(':', 1)
+        if name.lower() == 'content-length':
+            length = int(value)
+    return json.loads(sys.stdin.buffer.read(length))
+
+def send(message):
+    body = json.dumps(message, separators=(',', ':')).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+
+request = read_message()
+send({'seq': 1, 'type': 'response', 'request_seq': request['seq'], 'success': True,
+      'command': request['command'], 'body': {}})
+request = read_message()
+send({'seq': 2, 'type': 'request', 'command': 'runInTerminal', 'arguments': {
+    'kind': 'integrated', 'cwd': sys.argv[1],
+    'args': [sys.executable, '-c', 'import time; print(\"glass-debuggee-ready\", flush=True); time.sleep(30)'],
+    'env': {'GLASS_DAP_TEST': '1'}}})
+terminal = read_message()
+if terminal.get('success') is not True or not terminal.get('body', {}).get('processId'):
+    raise SystemExit(41)
+send({'seq': 3, 'type': 'request', 'command': 'startDebugging', 'arguments': {}})
+unsupported = read_message()
+if unsupported.get('success') is not False:
+    raise SystemExit(42)
+send({'seq': 4, 'type': 'response', 'request_seq': request['seq'], 'success': True,
+      'command': request['command'], 'body': {'reverseRequestsHandled': True}})
+for request in iter(read_message, None):
+    if request.get('command') == 'disconnect':
+        raise SystemExit(0)
+    send({'seq': 5, 'type': 'response', 'request_seq': request['seq'], 'success': True,
+          'command': request['command'], 'body': {}})
+"#;
+
+    const TCP_ADAPTER: &str = r#"
+import json, socket, sys
+server = socket.socket()
+server.bind(('127.0.0.1', int(sys.argv[-1])))
+server.listen(1)
+stream, _ = server.accept()
+reader = stream.makefile('rb')
+writer = stream.makefile('wb')
+length = None
+while True:
+    line = reader.readline()
+    if line in (b'\r\n', b'\n'):
+        break
+    name, value = line.decode().strip().split(':', 1)
+    if name.lower() == 'content-length':
+        length = int(value)
+request = json.loads(reader.read(length))
+body = json.dumps({'seq': 1, 'type': 'response', 'request_seq': request['seq'],
+                   'success': True, 'command': request['command'],
+                   'body': {'transport': 'tcp'}}).encode()
+writer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+writer.flush()
+"#;
+
     #[test]
     fn dap_framing_round_trips_json() {
         let message = json!({"seq": 7, "type": "event", "event": "stopped"});
@@ -733,6 +1059,194 @@ mod tests {
         assert_eq!(encoded["line"], 42);
         assert_eq!(encoded["condition"], "inventory == 0");
         assert!(encoded.get("hitCondition").is_none());
+    }
+
+    #[test]
+    fn reverse_requests_are_supervised_bounded_and_observable() {
+        let Some((root, config)) = python_adapter(REVERSE_ADAPTER) else {
+            return;
+        };
+        let mut client = DapClient::spawn(&root, &config).unwrap();
+        client
+            .request("initialize", json!({}), Duration::from_secs(5))
+            .unwrap();
+        let response = client
+            .request("exercise", json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(response["reverseRequestsHandled"], true);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let processes = loop {
+            let processes = client.debuggee_processes().unwrap();
+            if processes
+                .first()
+                .is_some_and(|process| process.output.contains("glass-debuggee-ready"))
+            {
+                break processes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "debuggee output was not observed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(processes[0].pty);
+        let process_id = processes[0].pid.unwrap();
+        let events = client.poll_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].body["success"].as_bool().unwrap());
+        assert!(!events[1].body["success"].as_bool().unwrap());
+        drop(client);
+        assert_process_exits(process_id);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adapter_crash_and_timeout_are_typed_failures() {
+        let Some((root, crash)) = python_adapter("raise SystemExit(7)") else {
+            return;
+        };
+        let mut client = DapClient::spawn(&root, &crash).unwrap();
+        let error = client
+            .request("initialize", json!({}), Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(error, DebugError::Protocol(_)));
+        drop(client);
+
+        let (_, timeout) = python_adapter("import time; time.sleep(30)").unwrap();
+        let mut client = DapClient::spawn(&root, &timeout).unwrap();
+        let error = client
+            .request("initialize", json!({}), Duration::from_millis(50))
+            .unwrap_err();
+        assert!(matches!(error, DebugError::Timeout(_)));
+        drop(client);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loopback_tcp_adapter_transport_is_owned_and_framed() {
+        let Some((root, mut config)) = python_adapter(TCP_ADAPTER) else {
+            return;
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        config.arguments.push(address.port().to_string());
+        config = config.with_tcp(address, Duration::from_secs(3));
+        let mut client = DapClient::spawn(&root, &config).unwrap();
+        let body = client
+            .request("initialize", json!({}), Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(body["transport"], "tcp");
+        drop(client);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_lldb_adapter_supports_breakpoint_stack_and_continue() {
+        let Some(adapter) = std::env::var_os("GLASS_LLDB_DAP") else {
+            return;
+        };
+        let root = adapter_test_root("lldb");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("main.rs");
+        let program = root.join(if cfg!(windows) {
+            "fixture.exe"
+        } else {
+            "fixture"
+        });
+        std::fs::write(
+            &source,
+            "fn main() {\n    let value = 41;\n    let answer = value + 1;\n    println!(\"{answer}\");\n}\n",
+        )
+        .unwrap();
+        let status = std::process::Command::new("rustc")
+            .args(["-C", "debuginfo=2", "-C", "opt-level=0"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let config = DebugAdapterConfig::new(PathBuf::from(adapter), []);
+        let mut debugger =
+            DebuggerSession::start(&root, &config, "Glass LLDB E2E", Duration::from_secs(20))
+                .unwrap();
+        debugger
+            .launch(json!({"program":program,"cwd":root,"stopOnEntry":true}))
+            .unwrap();
+        let breakpoints = debugger.set_breakpoints(&source, &[3]).unwrap();
+        assert!(
+            breakpoints["breakpoints"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        debugger.configuration_done().unwrap();
+        let stopped = wait_for_debug_event(&mut debugger, "stopped", Duration::from_secs(20));
+        let thread_id = stopped["threadId"].as_i64().unwrap();
+        let stack = debugger.stack_trace(thread_id).unwrap();
+        assert!(
+            stack["stackFrames"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        debugger.continue_thread(thread_id).unwrap();
+        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(20));
+        debugger.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_delve_adapter_supports_tcp_breakpoint_stack_and_continue() {
+        let Some(adapter) = std::env::var_os("GLASS_DELVE") else {
+            return;
+        };
+        let root = adapter_test_root("delve");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("main.go");
+        std::fs::write(
+            &source,
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvalue := 41\n\tfmt.Println(value + 1)\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("go.mod"),
+            "module glass.test/debugger\n\ngo 1.22\n",
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let config = DebugAdapterConfig::new(
+            PathBuf::from(adapter),
+            ["dap".into(), format!("--listen={address}")],
+        )
+        .with_tcp(address, Duration::from_secs(10));
+        let mut debugger =
+            DebuggerSession::start(&root, &config, "Glass Delve E2E", Duration::from_secs(30))
+                .unwrap();
+        debugger
+            .launch(json!({"mode":"debug","program":root,"cwd":root,"stopOnEntry":true}))
+            .unwrap();
+        let breakpoints = debugger.set_breakpoints(&source, &[7]).unwrap();
+        assert!(
+            breakpoints["breakpoints"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        debugger.configuration_done().unwrap();
+        let stopped = wait_for_debug_event(&mut debugger, "stopped", Duration::from_secs(30));
+        let thread_id = stopped["threadId"].as_i64().unwrap();
+        let stack = debugger.stack_trace(thread_id).unwrap();
+        assert!(
+            stack["stackFrames"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        debugger.continue_thread(thread_id).unwrap();
+        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(30));
+        debugger.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -813,4 +1327,59 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
+    fn python_adapter(script: &str) -> Option<(PathBuf, DebugAdapterConfig)> {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return None;
+        }
+        let root = adapter_test_root("python");
+        std::fs::create_dir_all(&root).unwrap();
+        let adapter = root.join("adapter.py");
+        std::fs::write(&adapter, script).unwrap();
+        Some((
+            root.clone(),
+            DebugAdapterConfig::new(
+                PathBuf::from("python3"),
+                [
+                    "-u".into(),
+                    adapter.display().to_string(),
+                    root.display().to_string(),
+                ],
+            ),
+        ))
+    }
+
+    fn adapter_test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "glass-dap-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn assert_process_exits(process_id: u32) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let result = unsafe { libc::kill(process_id as i32, 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "debuggee process {process_id} survived owner drop"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn assert_process_exits(_process_id: u32) {}
 }

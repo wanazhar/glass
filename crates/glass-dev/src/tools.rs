@@ -720,16 +720,43 @@ impl DevelopmentToolRouter {
             "glass.debug.start" => {
                 let session = string("session")?;
                 let configured = workspace.customization().config().dap.get(session).cloned();
-                let config = match (optional_string(call, "command"), configured) {
-                    (Some(command), _) => DebugAdapterConfig::new(
-                        command,
-                        string_array_or_empty(call, "arguments")?,
+                let (mut config, configured_tcp, configured_connect_timeout_ms) =
+                    match (optional_string(call, "command"), configured) {
+                    (Some(command), _) => (
+                        DebugAdapterConfig::new(
+                            command,
+                            string_array_or_empty(call, "arguments")?,
+                        ),
+                        None,
+                        5_000,
                     ),
-                    (None, Some(config)) => DebugAdapterConfig::new(config.command, config.args),
+                    (None, Some(config)) => (
+                        DebugAdapterConfig::new(config.command, config.args),
+                        config.tcp_address,
+                        config.connect_timeout_ms,
+                    ),
                     (None, None) => return Err(DevelopmentError::InvalidInput(
                         "debug start requires command or a matching glass.toml dap entry".into(),
                     )),
                 };
+                if let Some(address) = optional_string(call, "tcpAddress")
+                    .map(str::to_string)
+                    .or(configured_tcp)
+                {
+                    let address = address.parse().map_err(|_| {
+                        DevelopmentError::InvalidInput(
+                            "debug tcpAddress must be a loopback IP socket address".into(),
+                        )
+                    })?;
+                    config = config.with_tcp(
+                        address,
+                        Duration::from_millis(unsigned(
+                            call,
+                            "connectTimeoutMs",
+                            configured_connect_timeout_ms,
+                        )?),
+                    );
+                }
                 map_debug(workspace.start_debugger(
                     session,
                     &config,
@@ -822,6 +849,12 @@ impl DevelopmentToolRouter {
             "glass.debug.events" => {
                 map_debug(debugger(workspace, string("session")?)?.poll_events())
             }
+            "glass.debug.inspect" => {
+                map_debug(debugger(workspace, string("session")?)?.snapshot())
+            }
+            "glass.debug.processes" => map_debug(
+                debugger(workspace, string("session")?)?.debuggee_processes(),
+            ),
             "glass.debug.disconnect" => map_debug(
                 debugger(workspace, string("session")?)?
                     .disconnect(boolean(call, "terminateDebuggee", false)),
@@ -1082,6 +1115,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.variables",
         "glass.debug.evaluate",
         "glass.debug.events",
+        "glass.debug.inspect",
+        "glass.debug.processes",
         "glass.agent.list",
         "glass.agent.messages",
         "glass.agent.entries",

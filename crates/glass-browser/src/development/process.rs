@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use std::{
     collections::{BTreeMap, VecDeque},
+    ffi::OsString,
     io::{Read, Write},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
@@ -88,6 +89,65 @@ impl ProcessManager {
                 "process command must be non-empty and at most 4096 bytes".into(),
             ));
         }
+        let builder = shell_command(command);
+        self.start_command(name, command, builder, self.root.clone())
+    }
+
+    /// Start an exact argv vector in a PTY without interpolating a shell command.
+    ///
+    /// DAP reverse requests use this path so adapter-provided arguments remain
+    /// separate values while Glass retains process-tree ownership and output.
+    pub fn start_argv(
+        &mut self,
+        name: &str,
+        arguments: &[String],
+        cwd: &std::path::Path,
+        environment: &BTreeMap<String, String>,
+    ) -> DevelopmentResult<ProcessSnapshot> {
+        validate_name(name)?;
+        if arguments.is_empty()
+            || arguments.len() > 256
+            || arguments.iter().any(|argument| argument.len() > 16 * 1024)
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "process argv requires 1..=256 arguments of at most 16384 bytes".into(),
+            ));
+        }
+        if environment.len() > 256
+            || environment
+                .iter()
+                .any(|(key, value)| key.is_empty() || key.contains('=') || value.len() > 64 * 1024)
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "process environment is invalid or exceeds its bounded limits".into(),
+            ));
+        }
+        let root = self.root.canonicalize()?;
+        let cwd = cwd.canonicalize()?;
+        if !cwd.starts_with(&root) {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "process cwd {} escapes workspace {}",
+                cwd.display(),
+                root.display()
+            )));
+        }
+        let mut builder =
+            CommandBuilder::from_argv(arguments.iter().map(OsString::from).collect::<Vec<_>>());
+        for (key, value) in environment {
+            builder.env(key, value);
+        }
+        let display = serde_json::to_string(arguments)
+            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        self.start_command(name, &display, builder, cwd)
+    }
+
+    fn start_command(
+        &mut self,
+        name: &str,
+        display_command: &str,
+        mut builder: CommandBuilder,
+        cwd: PathBuf,
+    ) -> DevelopmentResult<ProcessSnapshot> {
         self.poll()?;
         if self.processes.len() >= 32 {
             return Err(DevelopmentError::Process(
@@ -107,8 +167,7 @@ impl ProcessManager {
                 pixel_height: 0,
             })
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-        let mut builder = shell_command(command);
-        builder.cwd(self.root.as_os_str());
+        builder.cwd(cwd.as_os_str());
         let child = pty
             .slave
             .spawn_command(builder)
@@ -159,13 +218,13 @@ impl ProcessManager {
             .map_err(DevelopmentError::Io)?;
         let snapshot = ProcessSnapshot {
             name: name.into(),
-            command: command.into(),
+            command: display_command.into(),
             pid,
             state: ProcessState::Running,
             started_at_ms: now_ms(),
             output: String::new(),
             pty: true,
-            cwd: self.root.clone(),
+            cwd,
             health: ProcessHealth::Starting,
             detected_urls: Vec::new(),
         };

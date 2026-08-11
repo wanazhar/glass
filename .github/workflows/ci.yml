@@ -58,6 +58,30 @@ jobs:
           cargo test --package glass-browser --features development-runtime development::language::tests::rust_analyzer_publishes_real_diagnostics_when_available -- --exact
           cargo test --package glass-browser --features development-runtime development::neovim::tests::real_neovim_probe_proves_pty_and_rpc_modes_when_available -- --exact
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Install pinned native DAP adapters
+        run: |
+          python -m pip install debugpy==1.8.21
+          sudo apt-get install --yes lldb
+          mkdir -p "${RUNNER_TEMP}/glass-dap-bin"
+          GOBIN="${RUNNER_TEMP}/glass-dap-bin" go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+
+      - name: Certify debugpy, LLDB, and Delve adapters
+        run: |
+          lldb_dap="$(command -v lldb-dap || command -v lldb-dap-20 || command -v lldb-dap-19 || command -v lldb-dap-18)"
+          test -n "${lldb_dap}"
+          GLASS_DEBUGPY_PYTHON="$(command -v python)" \
+          GLASS_LLDB_DAP="${lldb_dap}" \
+          GLASS_DELVE="${RUNNER_TEMP}/glass-dap-bin/dlv" \
+            cargo test --package glass-dev --lib debugger::tests::real_ -- --nocapture
+
       - name: Check package version synchronization
         run: python3 scripts/check-version-sync.py
 

@@ -347,14 +347,28 @@ impl DevTuiState {
         self.kernels =
             serde_json::to_string_pretty(&self.workspace.kernels().snapshots().collect::<Vec<_>>())
                 .unwrap_or_else(|error| error.to_string());
-        self.debugger = if self.workspace.debugger_names().next().is_none() {
+        let debugger_names = self
+            .workspace
+            .debugger_names()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        self.debugger = if debugger_names.is_empty() {
             "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
         } else {
-            self.workspace
-                .debugger_names()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
+            let snapshots = debugger_names
+                .iter()
+                .map(|name| {
+                    self.workspace
+                        .debugger_mut(name)
+                        .and_then(|debugger| debugger.snapshot())
+                        .map(|snapshot| (name, snapshot))
+                })
+                .collect::<Result<Vec<_>, _>>();
+            match snapshots {
+                Ok(snapshots) => serde_json::to_string_pretty(&snapshots)
+                    .unwrap_or_else(|error| format!("Debugger serialization failed: {error}")),
+                Err(error) => format!("Debugger state failed: {error}"),
+            }
         };
         self.replay = self
             .workspace

@@ -25,7 +25,7 @@ pub struct GlassConfig {
     pub browser: BrowserConfig,
     pub agent: AgentConfig,
     pub lsp: BTreeMap<String, ServerConfig>,
-    pub dap: BTreeMap<String, ServerConfig>,
+    pub dap: BTreeMap<String, DapServerConfig>,
     pub tests: BTreeMap<String, TestConfig>,
     pub hooks: BTreeMap<String, Vec<HookConfig>>,
     pub tools: BTreeMap<String, CustomToolConfig>,
@@ -72,6 +72,26 @@ pub struct WorkspaceConfig {
 pub struct ServerConfig {
     pub command: String,
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DapServerConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub tcp_address: Option<String>,
+    pub connect_timeout_ms: u64,
+}
+
+impl Default for DapServerConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            tcp_address: None,
+            connect_timeout_ms: 5_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

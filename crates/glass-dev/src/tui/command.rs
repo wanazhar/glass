@@ -477,8 +477,11 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 "variables" => ("glass.debug.variables", json!({"session":session,"variablesReference":parse_u64(parts.get(2), "VARIABLES_REFERENCE")?}), false),
                 "evaluate" => ("glass.debug.evaluate", json!({"session":session,"frameId":parse_u64(parts.get(2), "FRAME_ID")?,"expression":parts.get(3..).unwrap_or_default().join(" "),"context":"repl"}), false),
                 "events" => ("glass.debug.events", json!({"session":session}), false),
+                "inspect" => ("glass.debug.inspect", json!({"session":session}), false),
+                "processes" => ("glass.debug.processes", json!({"session":session}), false),
+                "watch" | "console" => ("glass.debug.evaluate", json!({"session":session,"expression":parts.get(2..).unwrap_or_default().join(" "),"context":if action == "watch" { "watch" } else { "repl" }}), false),
                 "stop" => ("glass.debug.stop", json!({"session":session}), true),
-                _ => return Err("debug actions: start, launch, attach, configured, break, continue, pause, step, threads, stack, scopes, variables, evaluate, events, stop".into()),
+                _ => return Err("debug actions: start, launch, attach, configured, break, continue, pause, step, threads, stack, scopes, variables, evaluate, watch, console, events, inspect, processes, stop".into()),
             };
             run_tool(state, tool, arguments, mutating)?
         }

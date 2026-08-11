@@ -74,7 +74,7 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | V / Gate 5 Daemon | registry-only locking, bounded per-workspace actors, reconnect/event stress proof | Actor/concurrency gate complete; event streaming follows transport work |
 | VI / Gate 6 Platforms | Unix socket and native Windows named-pipe lifecycle with native tests | Implemented; native Windows CI evidence pending remote run |
 | VII / Gate 7 Experiments | measured providers and per-metric provenance; deterministic trusted weights | Complete locally; browser metrics explicit when unavailable |
-| VIII / Gate 8 DAP | reverse requests through owned processes and three honest real-adapter evidence families | Partial |
+| VIII / Gate 8 DAP | reverse requests through owned processes and three honest real-adapter evidence families | Complete locally; native three-family CI evidence pending remote run |
 | IX / Gate 9 Kernels | router-mediated, attributed, cancellable, bounded capability binding; no sandbox claim | Blocking |
 | X Governance | source authority and exact executable inspection for skills/hooks/tools/commands | Blocking |
 | XI Graph/replay | typed causal links across every listed subsystem; observable evidence only | Partial |

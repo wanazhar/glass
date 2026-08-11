@@ -1113,14 +1113,15 @@ writer.flush()
         assert!(matches!(error, DebugError::Protocol(_)));
         drop(client);
 
-        let (_, timeout) = python_adapter("import time; time.sleep(30)").unwrap();
-        let mut client = DapClient::spawn(&root, &timeout).unwrap();
+        let (timeout_root, timeout) = python_adapter("import time; time.sleep(30)").unwrap();
+        let mut client = DapClient::spawn(&timeout_root, &timeout).unwrap();
         let error = client
             .request("initialize", json!({}), Duration::from_millis(50))
             .unwrap_err();
         assert!(matches!(error, DebugError::Timeout(_)));
         drop(client);
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(timeout_root);
     }
 
     #[test]
@@ -1184,14 +1185,14 @@ writer.flush()
         debugger.configuration_done().unwrap();
         let stopped = wait_for_debug_event(&mut debugger, "stopped", Duration::from_secs(20));
         let thread_id = stopped["threadId"].as_i64().unwrap();
-        let stack = debugger.stack_trace(thread_id).unwrap();
+        let stack = wait_for_stack_trace(&mut debugger, thread_id, Duration::from_secs(20));
         assert!(
             stack["stackFrames"]
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
         debugger.continue_thread(thread_id).unwrap();
-        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(20));
+        wait_for_debug_end(&mut debugger, Duration::from_secs(20));
         debugger.shutdown().unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1237,14 +1238,14 @@ writer.flush()
         debugger.configuration_done().unwrap();
         let stopped = wait_for_debug_event(&mut debugger, "stopped", Duration::from_secs(30));
         let thread_id = stopped["threadId"].as_i64().unwrap();
-        let stack = debugger.stack_trace(thread_id).unwrap();
+        let stack = wait_for_stack_trace(&mut debugger, thread_id, Duration::from_secs(30));
         assert!(
             stack["stackFrames"]
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
         debugger.continue_thread(thread_id).unwrap();
-        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(30));
+        wait_for_debug_end(&mut debugger, Duration::from_secs(30));
         debugger.shutdown().unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1288,7 +1289,7 @@ writer.flush()
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
-        let stack = debugger.stack_trace(thread_id).unwrap();
+        let stack = wait_for_stack_trace(&mut debugger, thread_id, Duration::from_secs(15));
         let frame_id = stack["stackFrames"][0]["id"].as_i64().unwrap();
         let scopes = debugger.scopes(frame_id).unwrap();
         let variables_reference = scopes["scopes"][0]["variablesReference"].as_i64().unwrap();
@@ -1303,7 +1304,7 @@ writer.flush()
             .unwrap();
         assert_eq!(evaluated["result"], "42");
         debugger.continue_thread(thread_id).unwrap();
-        wait_for_debug_event(&mut debugger, "terminated", Duration::from_secs(15));
+        wait_for_debug_end(&mut debugger, Duration::from_secs(15));
         debugger.shutdown().unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1324,6 +1325,63 @@ writer.flush()
                 Instant::now() < deadline,
                 "timed out waiting for {expected}"
             );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_stack_trace(
+        debugger: &mut DebuggerSession,
+        preferred_thread_id: i64,
+        timeout: Duration,
+    ) -> Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut errors = Vec::new();
+            let mut thread_ids = vec![preferred_thread_id];
+            if let Ok(threads) = debugger.threads()
+                && let Some(threads) = threads["threads"].as_array()
+            {
+                thread_ids.extend(
+                    threads
+                        .iter()
+                        .filter_map(|thread| thread["id"].as_i64())
+                        .filter(|thread_id| *thread_id != preferred_thread_id),
+                );
+            }
+            for thread_id in thread_ids {
+                match debugger.stack_trace(thread_id) {
+                    Ok(stack)
+                        if stack["stackFrames"]
+                            .as_array()
+                            .is_some_and(|frames| !frames.is_empty()) =>
+                    {
+                        return stack;
+                    }
+                    Ok(_) => errors.push(format!("thread {thread_id} returned no stack frames")),
+                    Err(error) => errors.push(error.to_string()),
+                }
+            }
+            let last_error = errors
+                .last()
+                .map(String::as_str)
+                .unwrap_or("adapter returned no stack frames");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for stack trace: {last_error}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_debug_end(debugger: &mut DebuggerSession, timeout: Duration) -> Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            for event in debugger.poll_events().unwrap() {
+                if matches!(event.event.as_str(), "exited" | "terminated") {
+                    return event.body;
+                }
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for debug end");
             std::thread::sleep(Duration::from_millis(10));
         }
     }

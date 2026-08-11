@@ -1524,12 +1524,17 @@ while True:
                 )
                 .await
                 .unwrap();
+                let (kernel_kind, kernel_code) = if cfg!(windows) {
+                    ("python", "import time; time.sleep(1); print('complete')")
+                } else {
+                    ("shell", "sleep 1; echo complete")
+                };
                 workspace_tool(
                     first.clone(),
                     ToolCall {
                         id: "shell-start".into(),
                         name: "glass.eval.start".into(),
-                        arguments: serde_json::json!({"name":"slow","kind":"shell"}),
+                        arguments: serde_json::json!({"name":"slow","kind":kernel_kind}),
                     },
                     test_context(),
                 )
@@ -1542,7 +1547,7 @@ while True:
                         name: "glass.eval.execute".into(),
                         arguments: serde_json::json!({
                             "name":"slow",
-                            "code":"sleep 1; echo complete",
+                            "code":kernel_code,
                             "timeoutSeconds":3
                         }),
                     },

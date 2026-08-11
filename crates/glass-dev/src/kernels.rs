@@ -701,7 +701,7 @@ impl ShellKernel {
             let marker_prefix = format!("{marker}:");
             if let Some(marker_index) = line.find(&marker_prefix) {
                 append_bounded(&mut output, &line[..marker_index], &mut truncated);
-                let status = &line[marker_index + marker_prefix.len()..];
+                let status = line[marker_index + marker_prefix.len()..].trim();
                 let status = status.parse::<i32>().map_err(|_| {
                     KernelError::Protocol("shell returned an invalid exit status".into())
                 })?;
@@ -1005,6 +1005,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.value[0]["sku"], "x");
         assert_eq!(result.value[0]["count"], 0);
+        drop(kernels);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1114,6 +1115,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("not granted"));
+        drop(kernels);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

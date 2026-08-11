@@ -83,8 +83,8 @@ clean and equal to `origin/main` at `cdb8a9235084e869b66ceffc64990c406876420d`.
 | XIV / Gate 11 load | 8+ tasks and concurrent browser/LSP/DAP/test/workspace/reconnect bounded stress evidence | Complete in the source candidate; bounded concurrency plus all 18 live Chromium scenarios pass |
 | XV / Gate 12 release | substantive generated notes, truthful verification, immutable tag/publication record, packages/CI/fuzz/install | Workflow/body complete; maintainer key enrollment and exact-tag/package gates pending |
 | XVI docs | all twelve issue topics and honest certification/migration language | Complete locally; final exact-tag evidence refresh pending |
-| Scenarios A-I | executable integrated demonstrations recorded at exact candidate commit | Blocking |
-| Forbidden outcomes 1-20 | explicit final audit with source/evidence pointers | Blocking |
+| Scenarios A-I | executable integrated demonstrations recorded at exact candidate commit | Complete locally; native exact-tag evidence remains for B, E, G, and I |
+| Forbidden outcomes 1-20 | explicit final audit with source/evidence pointers | Complete in `reviews/release-035-gates.md` |
 
 ## Validation policy
 
@@ -95,8 +95,7 @@ integrated scenarios A-I, and disk-space checks before heavyweight builds.
 Browser screenshots remain explicit. A fixture or cross-compile is never
 reported as native platform/adapter certification.
 
-The repository currently has 28 GiB free, with 21 GiB in the reusable root
-Cargo target and 5.2 GiB in the reusable fuzz target. One target tree is reused;
-space is rechecked before release profiles, packages, fuzz, or cross-target
-builds. Cleanup, if needed, is limited to explicitly inspected disposable Cargo
-artifacts.
+One target tree is reused and disk space is rechecked before release profiles,
+packages, fuzz, or cross-target builds. Cleanup, if needed, is limited to
+explicitly inspected disposable Cargo artifacts; the final gate review records
+current headroom instead of preserving a stale planning-time measurement.

@@ -12,6 +12,9 @@ Manual evidence is forcibly labeled manual. Ranking remains deterministic;
 bounded custom weights require trusted workspace authority. Router and TUI
 operations expose create, collect, compare, select, list, and cleanup.
 
-The real Git-worktree test executes configured Rust toolchain build/test probes,
-collects measured provenance and changed files, verifies unavailable browser
-truth, then proves manual evidence cannot claim measured provenance.
+The real Git-worktree test creates three competing implementations, assigns a
+native Pi worker to each when Pi is installed, executes configured Rust
+toolchain build/test probes for all three, collects measured provenance and
+different changed-file counts, ranks only that automatic evidence, verifies
+unavailable browser truth, then proves later manual evidence cannot claim
+measured provenance.

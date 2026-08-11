@@ -29,5 +29,5 @@ without independently polling every service.
 Daemon tests prove a fresh client handle resumes after its prior cursor and
 that ring overflow reports both dropped count and the oldest recoverable
 sequence. Full library and development-runtime integration suites pass. The
-measured full-product MCP catalog is 308 tools and 146,801 UTF-8 schema bytes,
+measured full-product MCP catalog is 292 tools and 142,478 UTF-8 schema bytes,
 below its 160 KiB review ceiling.

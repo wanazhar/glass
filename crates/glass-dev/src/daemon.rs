@@ -22,6 +22,7 @@ const MAX_CLIENTS: usize = 16;
 const WORKSPACE_COMMAND_CAPACITY: usize = 64;
 const WORKSPACE_EVENT_CAPACITY: usize = 512;
 const MAX_EVENT_BATCH: usize = 256;
+const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 type WorkspaceRegistry = Rc<RefCell<BTreeMap<String, WorkspaceActorHandle>>>;
 
@@ -927,7 +928,7 @@ pub async fn request(
     request: &DevelopmentDaemonRequest,
 ) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>> {
     let stream = tokio::net::UnixStream::connect(socket).await?;
-    request_stream(stream, request).await
+    bounded_request_stream(stream, request).await
 }
 
 #[cfg(windows)]
@@ -950,7 +951,25 @@ pub async fn request(
             Err(error) => return Err(error.into()),
         }
     };
-    request_stream(stream, request).await
+    bounded_request_stream(stream, request).await
+}
+
+async fn bounded_request_stream<S>(
+    stream: S,
+    request: &DevelopmentDaemonRequest,
+) -> Result<DevelopmentDaemonResponse, Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(DAEMON_REQUEST_TIMEOUT, request_stream(stream, request))
+        .await
+        .map_err(|_| {
+            format!(
+                "daemon operation {} timed out after {} seconds",
+                request.operation,
+                DAEMON_REQUEST_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 async fn request_stream<S>(

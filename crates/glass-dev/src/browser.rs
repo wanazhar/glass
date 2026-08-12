@@ -925,8 +925,10 @@ mod tests {
         );
         assert_eq!(service.remote_view_status().unwrap()["active"], true);
         assert_eq!(service.revoke_remote_view().unwrap()["revoked"], true);
-        let revision = service.observe().unwrap()["consistency"]["endRevision"]
+        let observed = service.observe().unwrap();
+        let revision = observed["consistency"]["end_revision"]
             .as_u64()
+            .or_else(|| observed["consistency"]["endRevision"].as_u64())
             .unwrap();
         assert_eq!(service.reload(revision).unwrap()["action"], "reload");
         service.stop().unwrap();

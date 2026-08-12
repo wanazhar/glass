@@ -1,13 +1,10 @@
 # Glass v0.3.5 issue #35 gate review
 
-Status: local candidate verified on 2026-08-11; exact-tag and native remote
-evidence pending
+Status: published and fully audited on 2026-08-12
 
 This review maps every release gate, integrated scenario, and forbidden outcome
 in issue #35 to executable evidence. A checked item means the implementation
-and host-local proof exist. Native Windows, exact-tag CI, GitHub signature
-verification, publication, and registry propagation remain unchecked until
-those environments have produced their own evidence.
+and its required local, exact-tag, native, or public proof exist.
 
 ## Integrated scenarios
 
@@ -32,7 +29,9 @@ those environments have produced their own evidence.
 - [x] `native_sdk_starts_and_reports_capabilities_when_installed` is the
       host-native SDK smoke test; Pi lifecycle, tool dispatch, and reconnect
       are additionally covered by agent and daemon tests.
-- [ ] Repeat the exact-tag native Pi smoke in release CI and retain its log.
+- [x] Exact-source native certification run 31549718984 installed pinned Pi
+      SDK 0.84.1 after verifying the signed tag and expected commit, then
+      passed the native SDK session and three-candidate experiment smokes.
 
 ### C. Autonomous task DAG
 
@@ -55,10 +54,10 @@ those environments have produced their own evidence.
 
 - [x] The Windows implementation uses local Glass-owned named pipes and
       job-object process-tree ownership; pipe validation is host-tested.
-- [ ] Run
+- [x] Run
       `windows_named_pipe_daemon_lifecycle_reconnect_and_permissions` on native
-      Windows exact-tag CI. Compile-only or Unix evidence does not certify this
-      scenario.
+      Windows exact-source CI. Run 31549718984 verified the signed tag/SHA and
+      passed the dedicated reconnect, state, permission, and cleanup scenario.
 
 ### F. Automated experiments
 
@@ -76,9 +75,9 @@ those environments have produced their own evidence.
       process owner, adapter crash, timeout, TCP transport, and cleanup have
       deterministic executable tests.
 - [x] The installed debugpy adapter has a real breakpoint/continue smoke path.
-- [ ] Run real LLDB and Delve breakpoint/stack/continue smokes with the pinned
-      adapters in exact-tag native CI. Their tests intentionally do not turn an
-      absent adapter into a certification claim.
+- [x] Exact-tag CI run 31547613719 installed pinned debugpy 1.8.21 and Delve
+      1.27.1 plus native LLDB, then passed real breakpoint, stack, and continue
+      smokes for all three adapter families.
 
 ### H. Kernel to Glass capabilities
 
@@ -102,9 +101,9 @@ those environments have produced their own evidence.
 - [x] `observable_projection_populates_every_issue_35_graph_resource_kind`
       joins repository, editor, Git, LSP, DAP, browser, Web IR, workflow, test,
       kernel, agent, task, experiment, and tool evidence in graph/replay.
-- [ ] Retain the exact-tag release-CI logs for the native Pi, browser, DAP, and
-      Windows portions before calling the combined demonstration certified on
-      every supported platform.
+- [x] Exact-tag release, CI, fuzz, and exact-source native certification logs
+      retain native Pi, all 18 Chromium scenarios, three real DAP families,
+      and Windows named-pipe lifecycle evidence.
 
 ## Release gates
 
@@ -144,8 +143,8 @@ those environments have produced their own evidence.
 
 - [x] Unix authenticated local IPC, reconnect, resource persistence, and
       process-tree cleanup are host-certified.
-- [ ] Native Windows named-pipe reconnect and job-object cleanup require the
-      exact-tag Windows job.
+- [x] Native Windows named-pipe reconnect and job-object cleanup passed against
+      the verified signed release source in run 31549718984.
 
 ### Gate 7. Automatic Experiments
 
@@ -156,8 +155,8 @@ those environments have produced their own evidence.
 ### Gate 8. DAP Breadth
 
 - [x] The client supports stdio/TCP adapters and supervised reverse requests.
-- [ ] Exact-tag native logs must certify debugpy, LLDB, and Delve; only debugpy
-      is locally installed and certified here.
+- [x] Exact-tag CI installed and certified real debugpy, LLDB, and Delve
+      breakpoint/stack/continue paths.
 
 ### Gate 9. Kernel Bindings
 
@@ -185,12 +184,14 @@ those environments have produced their own evidence.
 - [x] Rust, Python, TypeScript, documentation, packages, and release notes are
       synchronized at 0.3.5; release automation rejects thin tag notes.
 - [x] Both crates package and verify; clean core/full installs, ownership
-      transitions, reinstallation, and published 0.3.4 to candidate 0.3.5
+      transitions, reinstallation, and published 0.3.4 to 0.3.5
       upgrade pass in isolated roots.
-- [ ] Create the final signed `v0.3.5` tag only after all checks pass, make its
-      signing key/email verifiable by GitHub, then retain exact-tag CI,
-      security/fuzz, ordered publication, registry install, and GitHub Release
-      evidence. This is intentionally not satisfiable by a moving worktree.
+- [x] Signed tag `v0.3.5` resolves to
+      `3c528689b70396ac5f30367ed89f4d13e3d0ee78`; GitHub reports its signature
+      valid. Runs 31547613725, 31547613703, 31547613719, and 31549718984 retain
+      release, fuzz, security/DAP/client/platform, and focused native evidence.
+      Both unyanked crates propagated and clean-installed before the
+      substantive source-only GitHub Release was created.
 
 ## Forbidden-outcome audit
 
@@ -208,16 +209,16 @@ those environments have produced their own evidence.
 | 10 | Ready tasks prompt workers automatically. |
 | 11 | Independent verification, not `agent_settled`, decides task success. |
 | 12 | Long operations run in per-workspace actors outside the registry lock. |
-| 13 | Windows remains explicitly uncertified until the native job passes. |
+| 13 | Native Windows durability is claimed only from the exact-source named-pipe lifecycle job, not compile-only or Unix evidence. |
 | 14 | Experiment metrics come from resident collectors with measured provenance. |
-| 15 | LLDB and Delve remain explicitly uncertified until real adapter jobs pass. |
+| 15 | LLDB and Delve certification comes from pinned real-adapter exact-tag jobs, not skipped tests. |
 | 16 | Kernel documentation explicitly denies OS sandbox guarantees. |
 | 17 | Kernel calls re-enter `DevelopmentToolRouter`; no side channel exists. |
 | 18 | Browser performance/mobile contracts retain their independent tests and defaults. |
 | 19 | Development TUI state, commands, rendering, and shell control are decomposed. |
 | 20 | Release automation requires substantive verified-tag notes for the GitHub Release. |
 
-## Candidate validation record
+## Release validation record
 
 The final direct local run on Linux ARM64 recorded:
 
@@ -236,7 +237,7 @@ The final direct local run on Linux ARM64 recorded:
   `glass-browser =0.3.5`. Both publish dry-runs reached the aborted-upload
   boundary; Dev used the local patch expected before browser publication.
 - Isolated core/full installs, core-to-full, full reinstall, full-to-core
-  ownership, and published 0.3.4 to candidate 0.3.5 upgrade all passed.
+  ownership, and published 0.3.4 to 0.3.5 upgrade all passed.
 - Version, feature, release-truth, documentation coverage/depth, reliability,
   public read-only adapter, and Web IR corpus validators passed. Coverage
   measured 383 Markdown files, 292 full-product MCP tools, 100 browser-only
@@ -250,3 +251,22 @@ The final direct local run on Linux ARM64 recorded:
 - Free space was checked throughout. Only validated disposable incremental
   compiler caches and generated fuzz corpus files were removed; source and
   the reusable compiled target were retained.
+
+## Immutable and public validation record
+
+- [Release run 31547613725](https://github.com/wanazhar/glass/actions/runs/31547613725)
+  passed exact-tag validation and published both crates in dependency order;
+  its clean registry installs and GitHub Release verification passed.
+- [Fuzz run 31547613703](https://github.com/wanazhar/glass/actions/runs/31547613703)
+  passed all six targets. Exact-tag CI run 31547613719 retained green Linux,
+  macOS, clients, security, packages, and real DAP evidence. Its Windows
+  full-suite retries exposed two independent teardown races, both hardened on
+  `main`; Windows release claims rely on the focused passing native scenario,
+  not those failed broad-suite attempts.
+- [Native certification run 31549718984](https://github.com/wanazhar/glass/actions/runs/31549718984)
+  verified the signed tag and expected commit before passing native Pi,
+  automatic experiments, 18/18 Chromium scenarios, and the Windows named-pipe
+  lifecycle.
+- crates.io records both 0.3.5 packages as unyanked. The non-draft,
+  non-prerelease [Glass 0.3.5 release](https://github.com/wanazhar/glass/releases/tag/v0.3.5)
+  is source-only and contains substantive notes.

@@ -423,13 +423,13 @@ workflows.
 | Item | 0.3.5 source status |
 |---|---|
 | Linux ARM64 | Native Chromium evidence recorded for the current release |
-| Linux x86-64 | Declared source target; native runtime certification pending |
+| Linux x86-64 | Native Pi, experiment, and Chromium evidence recorded for the release source |
 | macOS x86-64 / ARM64 | Browser-free CI contract; native runtime certification pending |
-| Windows | Browser-free CI contract; native PTY/browser certification pending |
+| Windows | Browser-free CI plus native named-pipe daemon lifecycle; native PTY/browser certification pending |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.4`, `glass-dev 0.3.4` | Current published stable release |
-| `0.3.3` | Previous published stable release |
+| `glass-browser 0.3.5`, `glass-dev 0.3.5` | Current published stable release |
+| `0.3.4` | Previous published stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

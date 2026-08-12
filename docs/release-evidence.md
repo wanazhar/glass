@@ -1,5 +1,50 @@
 # Release evidence
 
+## 0.3.5 release evidence
+
+This section records the immutable and public evidence for the signed
+`v0.3.5` release implementing authoritative issue #35.
+
+### Published 0.3.5 records
+
+- Signed annotated tag `v0.3.5` points to
+  `3c528689b70396ac5f30367ed89f4d13e3d0ee78`. Local verification succeeded
+  with EdDSA key `C7102B6A568EABDE023F818528E01A5852DB1559`; GitHub reports the
+  signature as verified and valid.
+- [Release workflow run 31547613725](https://github.com/wanazhar/glass/actions/runs/31547613725)
+  passed exact-tag signature/version checks, the complete test and
+  documentation gates, package verification, clean source-package installs,
+  publication dry-runs, ordered crates.io publication, clean registry installs,
+  and GitHub Release creation.
+- [Exact-tag fuzz run 31547613703](https://github.com/wanazhar/glass/actions/runs/31547613703)
+  passed all six bounded sanitizer targets. Exact-tag CI retained green Linux,
+  macOS, client, dependency/security, and real debugpy/LLDB/Delve jobs; a
+  Windows teardown race found after tagging was fixed on `main` and the
+  release source received focused native Windows certification instead of a
+  compile-only claim.
+- [Exact-source native certification run 31549718984](https://github.com/wanazhar/glass/actions/runs/31549718984)
+  verified the signed tag and commit before running the pinned Pi SDK session,
+  three-candidate automatic experiment, all 18 live Chromium scenarios, and
+  native Windows named-pipe reconnect/process-tree lifecycle.
+- crates.io published `glass-browser 0.3.5` at
+  `2026-08-11T23:59:29.613432Z` and `glass-dev 0.3.5` at
+  `2026-08-12T00:00:17.312955Z`; neither version is yanked.
+- [GitHub Release v0.3.5](https://github.com/wanazhar/glass/releases/tag/v0.3.5)
+  was published at `2026-08-12T00:06:41Z`. It is non-draft, non-prerelease,
+  source-only, and has no attached binary assets.
+
+### Post-tag hardening
+
+- `test(debugger): accept raced adapter crash errors` recognizes both typed
+  protocol EOF and OS broken-pipe outcomes from a deliberately crashing DAP
+  adapter.
+- `fix(agents): join owned workers on shutdown` retains and joins agent worker
+  handles on completion, cancellation, and registry drop. The focused agent
+  suite passed, followed by 20 repeated teardown runs.
+- The reusable native certification workflow binds evidence to an explicit
+  signed tag and expected commit SHA; it cannot silently certify the moving
+  default branch in place of the release source.
+
 ## 0.3.4 release evidence
 
 This section records the local and public evidence for the signed `v0.3.4`

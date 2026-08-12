@@ -8,16 +8,31 @@ The release checkout is `glass-browser` and `glass-dev` version `0.3.5`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
-Windows receives browser-free source checks; native browser/PTY support is not
-certified.
+Windows receives browser-free source checks and native named-pipe daemon
+certification; native browser/PTY support is not certified.
 
-## 0.3.5 candidate status
+## 0.3.5 release record
 
-The source candidate contains substantive release notes and migration guidance,
-but it is not a published release record. Exact-tag native Windows, LLDB,
-Delve, fuzz/security, package, clean-install/upgrade, crates.io propagation,
-and GitHub Release verification remain mandatory publication gates. Remote
-mutation and publication require explicit maintainer approval.
+Signed annotated tag `v0.3.5` points to commit
+`3c528689b70396ac5f30367ed89f4d13e3d0ee78` and GitHub reports its signature
+as verified. The
+[ordered release workflow](https://github.com/wanazhar/glass/actions/runs/31547613725)
+published `glass-browser 0.3.5`, then `glass-dev 0.3.5`, clean-installed both
+registry packages, and created the source-only
+[GitHub Release](https://github.com/wanazhar/glass/releases/tag/v0.3.5) on
+2026-08-12. Exact-source
+[native certification](https://github.com/wanazhar/glass/actions/runs/31549718984)
+passed pinned Pi SDK, automatic experiments, all 18 live Chromium scenarios,
+and the native Windows named-pipe lifecycle.
+
+- [x] Verify exact-tag/version/signature, documentation, packages, dry-runs,
+      clean package installs, and publication state before upload.
+- [x] Publish both unyanked crates in dependency order and clean-install both
+      from crates.io.
+- [x] Retain exact-tag parser fuzz, security, client, real
+      debugpy/LLDB/Delve, native Pi, Chromium, and Windows named-pipe evidence.
+- [x] Publish substantive, non-draft, non-prerelease, source-only GitHub notes.
+- [x] Audit every issue #35 gate and forbidden outcome before closing the epic.
 
 ## 0.3.4 release record
 

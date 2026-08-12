@@ -217,8 +217,10 @@ Run after the tagged release workflow or with authenticated `gh` access:
 python3 scripts/check-github-releases.py
 ```
 
-This check compares every `vX.Y.Z` tag with published, non-draft,
-non-prerelease GitHub Release records and fails if any tag is missing.
+This check requires published, non-draft, non-prerelease GitHub Release records
+for every release tag except the explicitly enumerated immutable failed
+candidates. Those failed tags must exist and must not have public Release
+records.
 
 The browser and package checks are evidence for the tested environment only.
 

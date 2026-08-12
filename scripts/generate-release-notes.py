@@ -35,6 +35,9 @@ def main() -> None:
     if not source.is_file():
         raise SystemExit(f"missing substantive release source {source}")
     body = source.read_text(encoding="utf-8").strip()
+    title = f"# Glass {args.version}"
+    if body.startswith(title + "\n"):
+        body = body.removeprefix(title + "\n").lstrip()
     for heading in REQUIRED_HEADINGS:
         if f"## {heading}" not in body:
             raise SystemExit(f"{source} is missing required heading: {heading}")
@@ -57,7 +60,7 @@ This body was generated from the tagged repository source. Publication and
 verification status are checked by the release workflow; this text does not
 claim a signature is verified unless GitHub reports it as verified.
 """.strip()
-    args.output.write_text(f"# Glass {args.version}\n\n{body}\n\n{publication}\n", encoding="utf-8")
+    args.output.write_text(f"{title}\n\n{body}\n\n{publication}\n", encoding="utf-8")
     print(f"generated substantive release notes: {args.output}")
 
 

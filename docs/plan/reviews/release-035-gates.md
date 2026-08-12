@@ -258,11 +258,10 @@ The final direct local run on Linux ARM64 recorded:
   passed exact-tag validation and published both crates in dependency order;
   its clean registry installs and GitHub Release verification passed.
 - [Fuzz run 31547613703](https://github.com/wanazhar/glass/actions/runs/31547613703)
-  passed all six targets. Exact-tag CI run 31547613719 retained green Linux,
-  macOS, clients, security, packages, and real DAP evidence. Its Windows
-  full-suite retries exposed two independent teardown races, both hardened on
-  `main`; Windows release claims rely on the focused passing native scenario,
-  not those failed broad-suite attempts.
+  passed all six targets. Exact-tag CI run 31547613719 passed Linux, macOS,
+  Windows, clients, security, packages, and real DAP evidence on attempt 4.
+  Earlier Windows attempts exposed teardown and scheduling races, both
+  hardened on `main` before closure.
 - [Native certification run 31549718984](https://github.com/wanazhar/glass/actions/runs/31549718984)
   verified the signed tag and expected commit before passing native Pi,
   automatic experiments, 18/18 Chromium scenarios, and the Windows named-pipe

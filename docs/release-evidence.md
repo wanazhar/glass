@@ -17,11 +17,11 @@ This section records the immutable and public evidence for the signed
   publication dry-runs, ordered crates.io publication, clean registry installs,
   and GitHub Release creation.
 - [Exact-tag fuzz run 31547613703](https://github.com/wanazhar/glass/actions/runs/31547613703)
-  passed all six bounded sanitizer targets. Exact-tag CI retained green Linux,
-  macOS, client, dependency/security, and real debugpy/LLDB/Delve jobs; a
-  Windows teardown race found after tagging was fixed on `main` and the
-  release source received focused native Windows certification instead of a
-  compile-only claim.
+  passed all six bounded sanitizer targets. Exact-tag
+  [CI run 31547613719](https://github.com/wanazhar/glass/actions/runs/31547613719)
+  passed every Linux, macOS, Windows, client, dependency/security, and real
+  debugpy/LLDB/Delve job on attempt 4. Earlier Windows attempts exposed
+  teardown and scheduling races that were hardened on `main` before closure.
 - [Exact-source native certification run 31549718984](https://github.com/wanazhar/glass/actions/runs/31549718984)
   verified the signed tag and commit before running the pinned Pi SDK session,
   three-candidate automatic experiment, all 18 live Chromium scenarios, and

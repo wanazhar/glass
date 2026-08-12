@@ -1,6 +1,8 @@
 //! Canonical human-facing browser workspace shared by both Glass products.
 //!
-//! Browser backends execute [`BrowserWorkspaceAction`] values. This module owns
+//! Browser backends execute
+//! [`BrowserWorkspaceAction`](crate::browser_workspace::BrowserWorkspaceAction)
+//! values. This module owns
 //! only bounded presentation, selection, focus, input authority, and recovery
 //! state; it never owns Chrome or weakens browser revision checks.
 

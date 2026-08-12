@@ -6,15 +6,15 @@ It is not the tool reference; use the [complete MCP catalog](mcp-tools.md) for
 purpose and authority, and the live negotiated `tools/list` result for exact
 schemas supported by an installed server.
 
-## Current 0.3.5 development-source measurement
+## Current 0.3.6 development-source measurement
 
 On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 292 |
-| Serialized `tools` array | 142,478 UTF-8 bytes |
-| Four-bytes-per-token estimate | 35,620 tokens |
+| Negotiated tools | 297 |
+| Serialized `tools` array | 145,319 UTF-8 bytes |
+| Four-bytes-per-token estimate | 36,330 tokens |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,

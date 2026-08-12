@@ -4,14 +4,14 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.8`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.9`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks and native named-pipe daemon
 certification; native browser/PTY support is not certified.
 
-## 0.3.8 release candidate
+## 0.3.9 release candidate
 
 - [x] Certify issue #36 scenarios A-J, gates 1-14, and every forbidden outcome.
 - [x] Pass the complete local workspace, docs, package, security, fuzz, live
@@ -19,11 +19,11 @@ certification; native browser/PTY support is not certified.
 - [ ] Verify the signed exact tag, ordered registry publication, clean registry
       installs, native CI, fuzz, GitHub Release, and issue closure.
 
-The signed `v0.3.6` and `v0.3.7` tags are retained as failed, unpublished
-candidates. Exact-tag 0.3.6 CI exposed blocking browser startup in the TUI input
-path; exact-tag 0.3.7 CI exposed an unsynchronized Windows-only daemon request
-fixture. `v0.3.8` contains both repairs and is the only candidate eligible for
-publication.
+The signed `v0.3.6`, `v0.3.7`, and `v0.3.8` tags are retained as failed,
+unpublished candidates. They exposed blocking TUI startup, an unsynchronized
+Windows-only daemon request fixture, and Windows scheduler-sensitive daemon
+tests respectively. `v0.3.9` contains all three repairs and is the only
+candidate eligible for publication.
 
 ## 0.3.5 release record
 

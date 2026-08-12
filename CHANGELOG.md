@@ -5,7 +5,17 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-08-12
+
+### Fixed
+
+- Make recoverable-operation and cross-workspace concurrency tests assert
+  observable state rather than host-specific subsecond scheduler timing.
+
 ## [0.3.8] - 2026-08-12
+
+This exact-tag candidate was not published; Windows CI exposed the scheduler
+timing assumptions repaired in 0.3.9.
 
 ### Fixed
 

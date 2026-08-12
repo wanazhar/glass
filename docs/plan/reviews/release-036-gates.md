@@ -1,4 +1,4 @@
-# Glass v0.3.8 issue #36 gate review
+# Glass v0.3.9 issue #36 gate review
 
 Status: local candidate certification in progress on 2026-08-12
 
@@ -52,7 +52,7 @@ unchecked until their records exist.
 - [x] 13. Recovery: collision/attach/auto-port/reconnect/target/stale paths.
 - [x] 14. Documentation: current architecture, controls, setup, migration,
       release notes, package boundary, limitations, and evidence are explicit.
-- [ ] 15. Exact-tag certification: corrected local candidate, signed 0.3.8 tag, native CI,
+- [ ] 15. Exact-tag certification: corrected local candidate, signed 0.3.9 tag, native CI,
       fuzz, registries, GitHub Release, and issue closure must all pass.
 
 ## Forbidden outcomes
@@ -101,5 +101,9 @@ startup off the critical input path; the PTY test then passed 20 consecutive
 runs plus focused TUI/clippy validation. The immutable failed tag is retained;
 exact-tag `v0.3.7` then exposed an unsynchronized Windows-only daemon request
 fixture in CI run 31589287135. Commit `cb8993f` added the optional operation ID
-to that fixture. Both immutable failed tags are retained; the corrected 0.3.8
-public exact-tag records will be appended before Gate 15 is checked.
+to that fixture. Exact-source Windows run 31591017832 for `v0.3.8` then passed
+compilation but exposed two subsecond scheduler assumptions in daemon tests
+under parallel load. Commit `cb8ef7b` replaced wall-clock assumptions with
+bounded state and behavior assertions. All immutable failed tags are retained;
+the corrected 0.3.9 public exact-tag records will be appended before Gate 15 is
+checked.

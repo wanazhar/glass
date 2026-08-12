@@ -1,7 +1,7 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.8` source
-checkout. `glass-browser 0.3.8` and `glass-dev 0.3.8` are the current release
+These guides describe the complete Glass product in this `0.3.9` source
+checkout. `glass-browser 0.3.9` and `glass-dev 0.3.9` are the current release
 crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
 Platform certification remains separate from source availability; see
@@ -205,16 +205,19 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
-- [Glass 0.3.8 release notes](releases/0.3.8.md) — current substantive feature,
+- [Glass 0.3.9 release notes](releases/0.3.9.md) — current substantive feature,
   security, migration, limitation, and validation summary.
+- [Glass 0.3.8 release notes](releases/0.3.8.md) — failed exact-tag candidate
+  retained for audit evidence.
 - [Glass 0.3.7 release notes](releases/0.3.7.md) — failed exact-tag candidate
   retained for audit evidence.
 - [Glass 0.3.6 release notes](releases/0.3.6.md) — failed exact-tag candidate
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
 - [Changelog](../CHANGELOG.md) — user-visible changes.
-- [Migrate 0.3.5 to 0.3.8](migration/0.3.8.md) — BrowserWorkspace, Agent,
-  daemon, TUI, security, and exact-tag portability repair.
+- [Migrate 0.3.5 to 0.3.9](migration/0.3.9.md) — BrowserWorkspace, Agent,
+  daemon, TUI, security, and exact-tag portability repairs.
+- [Migrate 0.3.5 to 0.3.8](migration/0.3.8.md) — historical failed candidate.
 - [Migrate 0.3.5 to 0.3.7](migration/0.3.7.md) — historical failed candidate.
 - [Migrate 0.3.5 to 0.3.6](migration/0.3.6.md) — historical candidate guide.
 - [Migrate 0.3.4 to 0.3.5](migration/0.3.5.md) — previous package, trust,

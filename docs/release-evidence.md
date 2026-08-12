@@ -1,13 +1,23 @@
 # Release evidence
 
-## 0.3.8 release evidence
+## 0.3.9 release evidence
 
 Issue #36 candidate evidence is recorded in
 [`plan/reviews/release-036-gates.md`](plan/reviews/release-036-gates.md).
-The candidate includes the TUI startup repair discovered by exact-tag 0.3.6 CI
-and the Windows-only daemon request repair discovered by exact-tag 0.3.7 CI.
-Publication claims will be added only after the 0.3.8 registry, workflow,
+The candidate includes the TUI startup, Windows request-schema, and
+scheduler-safe daemon test repairs discovered by exact-tag 0.3.6 through 0.3.8
+CI. Publication claims will be added only after the 0.3.9 registry, workflow,
 release, native-certification, and issue records are verified.
+
+## 0.3.8 release evidence
+
+Signed tag `v0.3.8` points to
+`86fa51bcf6b02b7f0a0ba03fe2b91b68957210f9`. Exact-source Windows CI run
+31591017832 passed the repaired all-target package check, then exposed two
+scheduler-sensitive daemon assertions under parallel native load. Release run
+31591019273 was cancelled before either crate was published and before a GitHub
+Release was created; both crates.io version endpoints returned 404 after
+cancellation. The immutable failed tag was superseded by 0.3.9.
 
 ## 0.3.7 release evidence
 
@@ -16,7 +26,7 @@ Signed tag `v0.3.7` points to
 proved that the Windows-only native daemon integration fixture omitted the new
 optional `operation_id` field, so the all-target package check failed before
 native execution. The release workflow did not publish crates or create a
-GitHub Release. The immutable failed tag was superseded by 0.3.8.
+GitHub Release. The immutable failed tag was superseded by later repairs.
 
 ## 0.3.6 release evidence
 

@@ -1,7 +1,7 @@
 # Complete feature reference
 
 This reference maps shipped capability domains to their user-visible entry
-points. “Available” describes source implementation in `0.3.8`; it is not a
+points. “Available” describes source implementation in `0.3.9`; it is not a
 cross-platform certification claim. The machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 

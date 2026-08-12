@@ -177,6 +177,8 @@
 pub mod browser;
 /// Transport-neutral backend capability contract.
 pub mod browser_backend;
+/// Canonical human-facing browser state, actions, focus, and recovery model.
+pub mod browser_workspace;
 /// Versioned Glass protocol and capability negotiation.
 pub mod capabilities;
 /// Command-line argument definitions and dispatch helpers.

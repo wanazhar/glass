@@ -75,6 +75,15 @@ pub(crate) struct NavigationExecution {
     pub readiness: NavigationReadiness,
 }
 
+/// Revision evidence for a browser-history or loading-control action.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationControlOutcome {
+    pub action: String,
+    pub previous_revision: u64,
+    pub current_revision: u64,
+}
+
 impl NavigationRedirectCollector {
     pub(crate) fn new(requested_url: &str, frame_id: Option<&str>) -> Self {
         Self {
@@ -203,6 +212,107 @@ pub(crate) fn navigation_identity(
 }
 
 impl BrowserSession {
+    /// Navigate one entry backward in the active target's history.
+    pub async fn go_back_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.navigate_history(-1, expected_revision).await
+    }
+
+    /// Navigate one entry forward in the active target's history.
+    pub async fn go_forward_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.navigate_history(1, expected_revision).await
+    }
+
+    async fn navigate_history(
+        &self,
+        delta: i64,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                let history = self.cdp.send("Page.getNavigationHistory", None).await?;
+                let current = history
+                    .get("currentIndex")
+                    .and_then(Value::as_i64)
+                    .ok_or("CDP navigation history omitted currentIndex")?;
+                let index = current + delta;
+                let entry_id = history
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .and_then(|entries| {
+                        usize::try_from(index)
+                            .ok()
+                            .and_then(|index| entries.get(index))
+                    })
+                    .and_then(|entry| entry.get("id"))
+                    .and_then(Value::as_i64)
+                    .ok_or({
+                        if delta < 0 {
+                            "no previous history entry"
+                        } else {
+                            "no forward history entry"
+                        }
+                    })?;
+                self.cdp
+                    .send(
+                        "Page.navigateToHistoryEntry",
+                        Some(serde_json::json!({"entryId":entry_id})),
+                    )
+                    .await?;
+                let current_revision = self.invalidate_observation().await;
+                Ok(NavigationControlOutcome {
+                    action: if delta < 0 { "back" } else { "forward" }.into(),
+                    previous_revision: expected_revision,
+                    current_revision,
+                })
+            })
+            .await
+    }
+
+    /// Reload the current page while enforcing the visible browser revision.
+    pub async fn reload_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                self.cdp.send("Page.reload", None).await?;
+                let current_revision = self.invalidate_observation().await;
+                Ok(NavigationControlOutcome {
+                    action: "reload".into(),
+                    previous_revision: expected_revision,
+                    current_revision,
+                })
+            })
+            .await
+    }
+
+    /// Stop the current navigation while enforcing the visible browser revision.
+    pub async fn stop_loading_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                self.cdp.send("Page.stopLoading", None).await?;
+                let current_revision = self.invalidate_observation().await;
+                Ok(NavigationControlOutcome {
+                    action: "stopLoading".into(),
+                    previous_revision: expected_revision,
+                    current_revision,
+                })
+            })
+            .await
+    }
+
     /// Return the current page's URL, title, and ready state.
     ///
     /// Evaluates `location.href`, `document.title`, and `document.readyState`

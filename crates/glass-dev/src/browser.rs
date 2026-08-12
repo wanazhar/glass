@@ -74,6 +74,10 @@ enum BrowserCommand {
         expected_revision: u64,
         timeout: Duration,
     },
+    Back(u64),
+    Forward(u64),
+    Reload(u64),
+    StopLoading(u64),
     Click {
         target: String,
         expected_revision: u64,
@@ -197,6 +201,22 @@ impl BrowserService {
             expected_revision,
             timeout,
         })
+    }
+
+    pub fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Back(expected_revision))
+    }
+
+    pub fn forward(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Forward(expected_revision))
+    }
+
+    pub fn reload(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Reload(expected_revision))
+    }
+
+    pub fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::StopLoading(expected_revision))
     }
 
     pub fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
@@ -435,6 +455,42 @@ impl BrowserWorker {
                 let value = serde_json::to_value(outcome)?;
                 self.revision = value.get("currentRevision").and_then(Value::as_u64);
                 Ok(value)
+            }
+            BrowserCommand::Back(expected_revision) => {
+                let outcome = self
+                    .session()?
+                    .go_back_with_revision(expected_revision)
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(outcome.current_revision);
+                serde_json::to_value(outcome).map_err(Into::into)
+            }
+            BrowserCommand::Forward(expected_revision) => {
+                let outcome = self
+                    .session()?
+                    .go_forward_with_revision(expected_revision)
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(outcome.current_revision);
+                serde_json::to_value(outcome).map_err(Into::into)
+            }
+            BrowserCommand::Reload(expected_revision) => {
+                let outcome = self
+                    .session()?
+                    .reload_with_revision(expected_revision)
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(outcome.current_revision);
+                serde_json::to_value(outcome).map_err(Into::into)
+            }
+            BrowserCommand::StopLoading(expected_revision) => {
+                let outcome = self
+                    .session()?
+                    .stop_loading_with_revision(expected_revision)
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(outcome.current_revision);
+                serde_json::to_value(outcome).map_err(Into::into)
             }
             BrowserCommand::Click {
                 target,

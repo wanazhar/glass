@@ -50,7 +50,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         "process" => execute_process(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "workspace" | "daemon" => {
-            state.surface = DevSurface::DaemonWorkspace;
+            state.surface = DevSurface::More;
             Ok("Resident workspace identity and recovery state refreshed".into())
         }
         "debug" => execute_debug(state, parts.collect()),
@@ -59,7 +59,7 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
         "tests" | "test" => execute_test(state, parts.collect()),
         "experiment" | "experiments" => execute_experiment(state, parts.collect()),
         "replay" => {
-            state.surface = DevSurface::Replay;
+            state.surface = DevSurface::More;
             Ok("Observable replay refreshed".into())
         }
         _ if state.workspace.customization().command(command).is_some() => {
@@ -94,7 +94,7 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 .workspace
                 .apply_local_trust_decision(decision)
                 .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Dashboard;
+            state.surface = DevSurface::Agent;
             Ok(format!("Workspace trust is now {trust:?}"))
         }
         _ => Err("trust actions: status, inspect, untrusted, once, project".into()),
@@ -119,7 +119,7 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 .agents()
                 .create(AgentSpec::new(*role, task))
                 .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Agents;
+            state.surface = DevSurface::Agent;
             Ok(format!("Spawned {}", id.as_str()))
         }
         "prompt" | "steer" | "follow-up" => {
@@ -285,10 +285,40 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
 
 fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::Editor;
+        state.surface = DevSurface::Code;
         return Ok("Opened shared editor".into());
     };
     let path = parts.get(1).ok_or("editor action requires PATH")?;
+    if matches!(action, "undo" | "redo") {
+        require_trusted(state)?;
+        let result = if action == "undo" {
+            state.workspace.project_mut().undo_buffer(path)
+        } else {
+            state.workspace.project_mut().redo_buffer(path)
+        }
+        .map_err(|error| error.to_string())?;
+        state.surface = DevSurface::Code;
+        state.refresh();
+        return Ok(format!(
+            "{} {} · dirty {}",
+            action, result.path, result.dirty
+        ));
+    }
+    if action == "search" {
+        let query = parts.get(1..).unwrap_or_default().join(" ");
+        let hits = state
+            .workspace
+            .project_mut()
+            .search(&query, 64)
+            .map_err(|error| error.to_string())?;
+        state.editor = hits
+            .iter()
+            .map(|hit| format!("{} · {}", hit.label, hit.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state.surface = DevSurface::Code;
+        return Ok(format!("{} search results", hits.len()));
+    }
     let (tool, arguments, mutating) = match action {
         "open" => ("glass.editor.open", json!({"path":path}), true),
         "save" => ("glass.editor.save", json!({"path":path}), true),
@@ -302,10 +332,14 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
                 true,
             )
         }
-        _ => return Err("editor actions: open, selection, replace, save".into()),
+        _ => {
+            return Err(
+                "editor actions: open, selection, replace, save, undo, redo, search".into(),
+            );
+        }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.surface = DevSurface::Lsp;
+    state.surface = DevSurface::Code;
     Ok(compact_result(tool, &result))
 }
 
@@ -345,13 +379,13 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
     };
     let result = run_tool(state, tool, arguments, mutating)?;
     state.editor = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = DevSurface::Editor;
+    state.surface = DevSurface::Code;
     Ok(compact_result(tool, &result))
 }
 
 fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::Processes;
+        state.surface = DevSurface::Terminal;
         return Ok("Opened processes".into());
     };
     let name = parts.get(1).ok_or("process action requires NAME")?;
@@ -383,7 +417,7 @@ fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
         }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.surface = DevSurface::Processes;
+    state.surface = DevSurface::Terminal;
     Ok(compact_result(tool, &result))
 }
 
@@ -393,11 +427,7 @@ fn execute_browser(
     parts: Vec<&str>,
 ) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = if command == "workflow" {
-            DevSurface::Workflow
-        } else {
-            DevSurface::Browser
-        };
+        state.surface = DevSurface::App;
         return Ok(format!("Opened resident {command}"));
     };
     let (tool, arguments, mutating) = if command == "workflow" {
@@ -411,6 +441,11 @@ fn execute_browser(
             _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
         }
     } else {
+        let visible_revision = state
+            .browser_workspace
+            .state()
+            .browser_revision
+            .ok_or("observe the browser before a revision-bound action");
         match action {
             "start" => ("glass.browser.start", json!({"port":parts.get(1).and_then(|value| value.parse::<u16>().ok()).unwrap_or(9222),"incognito":true,"chromePath":parts.get(2)}), true),
             "stop" => ("glass.browser.stop", json!({}), true),
@@ -418,22 +453,33 @@ fn execute_browser(
             "observe" => ("glass.browser.observe", json!({}), false),
             "targets" => ("glass.browser.targets", json!({}), false),
             "select" => ("glass.browser.target.select", json!({"targetId":parts.get(1).ok_or("browser select requires TARGET_ID")?}), true),
-            "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL REVISION")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?}), true),
-            "click" => ("glass.browser.act", json!({"action":"click","target":parts.get(1).ok_or("browser click requires TARGET REVISION")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?}), true),
-            "type" => ("glass.browser.act", json!({"action":"type","target":parts.get(1).ok_or("browser type requires TARGET REVISION TEXT")?,"browserRevision":parse_u64(parts.get(2), "REVISION")?,"text":parts.get(3..).unwrap_or_default().join(" ")}), true),
-            "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":parse_u64(parts.get(3), "REVISION")?}), true),
+            "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision?}), true),
+            "back" | "forward" | "reload" | "stop-loading" => ("glass.browser.act", json!({"action":if action == "stop-loading" { "stopLoading" } else { action },"browserRevision":visible_revision?}), true),
+            "click" => {
+                let selected = state.browser_workspace.state().selected();
+                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
+                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision?);
+                ("glass.browser.act", json!({"action":"click","target":target,"browserRevision":revision}), true)
+            },
+            "type" => {
+                let selected = state.browser_workspace.state().selected();
+                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
+                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision?);
+                ("glass.browser.act", json!({"action":"type","target":target,"browserRevision":revision,"text":parts.get(2..).unwrap_or_default().join(" ")}), true)
+            },
+            "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":visible_revision?}), true),
             "screenshot" => ("glass.browser.screenshot", json!({}), false),
-            _ => return Err("browser actions: start, stop, state, observe, targets, select, navigate, click, type, scroll, screenshot".into()),
+            "remote-open" => ("glass.browser.remote-view.open", json!({}), true),
+            "remote-status" => ("glass.browser.remote-view.status", json!({}), false),
+            "remote-revoke" => ("glass.browser.remote-view.revoke", json!({}), true),
+            _ => return Err("browser actions: start, stop, state, observe, targets, select, navigate, back, forward, reload, stop-loading, click, type, scroll, screenshot, remote-open, remote-status, remote-revoke".into()),
         }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
+    state.apply_browser_result(tool, &result);
     state.browser_detail =
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = if command == "workflow" {
-        DevSurface::Workflow
-    } else {
-        DevSurface::Browser
-    };
+    state.surface = DevSurface::App;
     Ok(compact_result(tool, &result))
 }
 
@@ -469,7 +515,7 @@ fn find_agent(state: &mut DevTuiState, id: &str) -> Result<crate::AgentId, Strin
 fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let result = match parts.first().copied() {
         None => {
-            state.surface = DevSurface::Debugger;
+            state.surface = DevSurface::Debug;
             return Ok("Opened debugger".into());
         }
         Some("start") => {
@@ -518,7 +564,7 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
         }
     };
     state.debugger = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = DevSurface::Debugger;
+    state.surface = DevSurface::Debug;
     Ok(compact_result("debug", &result))
 }
 
@@ -554,7 +600,7 @@ fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     };
     let result = run_tool(state, tool, arguments, true)?;
     state.kernels = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = DevSurface::Kernels;
+    state.surface = DevSurface::More;
     Ok(format!("Kernel {name}: {action}"))
 }
 
@@ -580,6 +626,16 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             json!({"paths":parts.get(1..).unwrap_or_default()}),
             true,
         ),
+        "discard" => (
+            "glass.git.discard",
+            json!({"paths":parts.get(1..).unwrap_or_default()}),
+            true,
+        ),
+        "push" => (
+            "glass.git.push",
+            json!({"remote":parts.get(1),"branch":parts.get(2)}),
+            true,
+        ),
         "commit" => (
             "glass.git.commit",
             json!({"message":parts.get(1..).unwrap_or_default().join(" ")}),
@@ -593,7 +649,7 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         ),
         _ => {
             return Err(
-                "git actions: status, diff, stage, unstage, commit, branches, switch".into(),
+                "git actions: status, diff, stage, unstage, discard, commit, push, branches, switch".into(),
             );
         }
     };
@@ -605,7 +661,7 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
 
 fn execute_test(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::Tests;
+        state.surface = DevSurface::Tasks;
         return Ok("Test results refreshed".into());
     };
     let (tool, arguments, mutating) = match action {
@@ -625,13 +681,13 @@ fn execute_test(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
     };
     let result = run_tool(state, tool, arguments, mutating)?;
     state.tests = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-    state.surface = DevSurface::Tests;
+    state.surface = DevSurface::Tasks;
     Ok(compact_result(tool, &result))
 }
 
 fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::Experiments;
+        state.surface = DevSurface::More;
         return Ok("Opened experiments".into());
     };
     require_trusted(state)?;
@@ -692,7 +748,7 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
         }
         _ => return Err("experiment actions: create, collect, compare, select, remove".into()),
     };
-    state.surface = DevSurface::Experiments;
+    state.surface = DevSurface::More;
     Ok(message)
 }
 
@@ -717,6 +773,22 @@ fn run_tool(
         name: name.into(),
         arguments,
     };
+    if mutating {
+        let summary = format!(
+            "{} · {}",
+            name,
+            call.arguments
+                .as_object()
+                .map(|object| object.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_else(|| "no arguments".into())
+        );
+        state.pending_confirmation = Some(super::state::PendingConfirmation {
+            call,
+            context,
+            summary: summary.clone(),
+        });
+        return Ok(json!({"confirmationRequired":true,"summary":summary}));
+    }
     state
         .workspace
         .execute_tool(&call, &context)
@@ -754,18 +826,16 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
         .find(|surface| surface.label().eq_ignore_ascii_case(name))
         .or(match name {
             "trust" => Some(DevSurface::Trust),
-            "home" => Some(DevSurface::Dashboard),
+            "home" => Some(DevSurface::Agent),
             "agent" => Some(DevSurface::Agent),
-            "lsp" => Some(DevSurface::Lsp),
+            "code" | "editor" | "lsp" => Some(DevSurface::Code),
+            "app" | "browser" | "workflow" => Some(DevSurface::App),
             "task" => Some(DevSurface::Tasks),
-            "process" => Some(DevSurface::Processes),
-            "debug" => Some(DevSurface::Debugger),
-            "test" => Some(DevSurface::Tests),
-            "experiment" => Some(DevSurface::Experiments),
-            "browser" => Some(DevSurface::Browser),
-            "workflow" => Some(DevSurface::Workflow),
-            "kernel" => Some(DevSurface::Kernels),
-            "workspace" | "daemon" => Some(DevSurface::DaemonWorkspace),
+            "terminal" | "process" => Some(DevSurface::Terminal),
+            "debug" => Some(DevSurface::Debug),
+            "git" => Some(DevSurface::Git),
+            "test" => Some(DevSurface::Tasks),
+            "experiment" | "kernel" | "workspace" | "daemon" | "replay" => Some(DevSurface::More),
             _ => None,
         })
 }

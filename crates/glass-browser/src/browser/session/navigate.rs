@@ -212,6 +212,25 @@ pub(crate) fn navigation_identity(
 }
 
 impl BrowserSession {
+    /// Return the active CSS viewport dimensions for revision-bound visual input.
+    pub async fn viewport_size(&self) -> BrowserResult<(f64, f64)> {
+        let value = self
+            .evaluate_value("({width:innerWidth,height:innerHeight})")
+            .await?;
+        let width = value
+            .get("width")
+            .and_then(Value::as_f64)
+            .ok_or("viewport width unavailable")?;
+        let height = value
+            .get("height")
+            .and_then(Value::as_f64)
+            .ok_or("viewport height unavailable")?;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Err("viewport dimensions are invalid".into());
+        }
+        Ok((width, height))
+    }
+
     /// Navigate one entry backward in the active target's history.
     pub async fn go_back_with_revision(
         &self,

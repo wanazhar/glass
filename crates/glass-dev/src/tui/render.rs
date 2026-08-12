@@ -68,10 +68,15 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(area);
     render_header(frame, state, rows[0], "phone cockpit");
     render_surface(frame, state, rows[1]);
-    let help = if state.command_mode {
+    let help = if state.composer_mode {
+        format!("> {}", state.composer_input)
+    } else if state.command_mode {
         format!(":{}", state.command_input)
     } else {
-        format!("{} · : actions · j/k views · q quit", state.surface.label())
+        format!(
+            "1 Agent  2 Code  3 App  4 Tasks  5 More · {}",
+            state.surface.label()
+        )
     };
     frame.render_widget(
         Paragraph::new(help)
@@ -92,9 +97,10 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                " {} · {} · {}",
+                " {} · {} · mode {:?} · {}",
                 state.workspace.root().display(),
                 state.surface.label(),
+                state.product_mode(),
                 mode
             )),
         ])),
@@ -103,7 +109,7 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
 }
 
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = DevSurface::ALL.into_iter().map(|surface| {
+    let items = DevSurface::PRIMARY.into_iter().map(|surface| {
         let marker = if surface == state.surface {
             "◆"
         } else {
@@ -125,6 +131,18 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    if let Some(pending) = state.pending_confirmation.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "CONFIRM ONE MUTATION\n\n{}\n\n[Y / Enter] Approve once\n[N / Esc] Deny\n\nThe frozen call cannot authorize a retry or changed arguments.",
+                pending.summary
+            ))
+            .block(Block::default().title(" Confirmation ").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     let content = match state.surface {
         DevSurface::Trust => {
             let inspection = serde_json::to_string_pretty(&state.workspace.trust_inspection())
@@ -135,73 +153,43 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 inspection
             )
         }
-        DevSurface::Dashboard => format!(
-            "WORKSPACE STATUS\n{}\n\nTASK STATE\n{}\n\nAGENT ACTIVITY\n{}\n\nSEMANTIC / BROWSER STATE\n{}\n\nPROCESS / TEST HEALTH\n{}\n{}\n\nRECOVERY / TRUST DECISIONS\n{}\nOpen Trust or Daemon/Workspace for decisions and durable recovery.",
-            state.workspace_status,
-            state.tasks,
-            state.agents,
-            state.browser,
-            state.processes,
-            state.tests,
-            state.status,
+        DevSurface::Agent => format!(
+            "CONVERSATION\n{}\n\n{}\n\nComposer: press i · submit Enter · Esc returns to navigation\nSession and model actions: :agent status|doctor|models|new|resume",
+            state.agent_readiness, state.agent_conversation
         ),
-        DevSurface::Editor => format!(
-            "SHARED BUFFERS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH",
-            state.editor
+        DevSurface::Code => format!(
+            "FILES / EDITOR\n{}\n\nDIAGNOSTICS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH · :lsp diagnostics",
+            state.editor, state.lsp
         ),
-        DevSurface::Lsp => format!(
-            "LANGUAGE SERVICES\n{}\n\nActions: :lsp start|stop|list|events|diagnostics|hover|complete|definition|references|symbols|rename",
-            state.lsp
+        DevSurface::App => format!(
+            "APP WORKSPACE\n{}\n\nWORKFLOW\n{}\n\nActions: :browser start|observe|targets|navigate|back|forward|reload|click|type · :workflow list|run",
+            state.browser, state.workflow
         ),
-        DevSurface::Agent | DevSurface::Agents => state.agents.clone(),
+        DevSurface::Terminal => format!(
+            "MANAGED TERMINALS\n{}\n\nActions: :process start|stop|restart|logs|input|resize|health|ports",
+            state.processes
+        ),
         DevSurface::Tasks => format!(
             "TASK DAG\n\n{}\n\nActions: :task create|pause|resume|cancel|retry|reassign|override|evidence",
             state.tasks
         ),
-        DevSurface::Processes => state.processes.clone(),
-        DevSurface::Debugger => state.debugger.clone(),
+        DevSurface::Debug => format!(
+            "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nActions: :debug start|breakpoint|continue|step|evaluate · :test run|watch",
+            state.debugger, state.tests
+        ),
         DevSurface::Git => state.git.clone(),
-        DevSurface::Tests => state.tests.clone(),
-        DevSurface::Experiments => state
-            .experiment_comparison
-            .as_ref()
-            .and_then(|comparison| serde_json::to_string_pretty(comparison).ok())
-            .map(|comparison| {
-                format!(
-                    "EXPERIMENTS\n{}\n\nEVIDENCE RANKING\n{}",
-                    state.experiments, comparison
-                )
-            })
-            .unwrap_or_else(|| state.experiments.clone()),
-        DevSurface::Graph => format!(
-            "CAUSAL DEVELOPMENT GRAPH\n\n{} replay events recorded\nUse governed tools to create source/runtime/test/debug/browser evidence paths.",
-            state
-                .workspace
-                .intelligence()
-                .replay(0, 4096)
-                .map(|events| events.len())
-                .unwrap_or(0)
-        ),
-        DevSurface::Replay => state.replay.clone(),
-        DevSurface::Browser => format!(
-            "AUTHORITATIVE BROWSER\n{}\n\nLATEST EVIDENCE\n{}\n\nActions: :browser start|stop|observe|targets|navigate|click|type",
-            state.browser, state.browser_detail
-        ),
-        DevSurface::Workflow => format!(
-            "BROWSER WORKFLOWS\n{}\n\nActions: :workflow run|pause|resume",
-            state.workflow
-        ),
-        DevSurface::Kernels => format!(
-            "PERSISTENT KERNELS\n{}\n\nActions: :kernel start|execute|cancel|reset|stop",
-            state.kernels
-        ),
-        DevSurface::DaemonWorkspace => format!(
-            "DURABLE WORKSPACE / RECOVERY\n{}\n\nRecovery: inspect task failures, process/test health, trust decisions, and reconnect to this stable workspace identity.",
-            state.workspace_status
+        DevSurface::More => format!(
+            "PROJECT / ONBOARDING\n{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nActions: :kernel · :experiment · :replay · :workspace · :trust",
+            state.workspace_status,
+            state.agent_readiness,
+            state.kernels,
+            state.experiments,
+            state.replay,
         ),
     };
     frame.render_widget(
         Paragraph::new(content)
+            .scroll((state.current_scroll(), 0))
             .block(
                 Block::default()
                     .title(format!(" {} ", state.surface.label()))
@@ -213,22 +201,67 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = format!(
-        "KERNELS\n{}\n\nDEBUGGERS\n{}\n\nCUSTOMIZATION\n{} skills · {} custom tools · config {}\n\nAUTHORITY\ntrust {:?}\ngeneration {}\nproject revision {}\nmutations require actor + revision + confirmation",
-        state.kernels,
-        state.debugger,
-        state.workspace.customization().skills().count(),
-        state.workspace.customization().config().tools.len(),
-        state
-            .workspace
-            .customization()
-            .config_path()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "auto-detected".into()),
+    let authority = format!(
+        "\n\nAUTHORITY\ntrust {:?} · project rev {}\nmutations require revision + confirmation",
         state.workspace.trust(),
-        state.workspace.generation(),
         state.workspace.project().revision()
     );
+    let content = match state.surface {
+        DevSurface::Trust => format!("Selected: workspace trust{authority}"),
+        DevSurface::Agent => format!(
+            "SELECTED CONVERSATION\n{}\n\nActions\nnew · resume · model · thinking · abort{authority}",
+            state.agent_readiness
+        ),
+        DevSurface::Code => format!(
+            "SELECTED CODE\n{}\n\nLINKED APP\n{}\n\nActions\nsave · undo · redo · search · diagnostics · V open App{authority}",
+            state.editor.lines().next().unwrap_or("No buffer selected"),
+            state
+                .browser_workspace
+                .state()
+                .selected()
+                .map(|entity| format!("{} · {}", entity.name, entity.reference))
+                .unwrap_or_else(|| "No current source/runtime link".into())
+        ),
+        DevSurface::App => format!(
+            "SELECTED APP ENTITY\n{}\n\nActions\nactivate · type · inspect · workflow{authority}",
+            state
+                .browser_workspace
+                .state()
+                .selected()
+                .map(|entity| format!("{} · {}", entity.name, entity.role))
+                .unwrap_or_else(|| "No semantic entity selected".into())
+        ),
+        DevSurface::Terminal => format!(
+            "SELECTED PROCESS\n{}{}",
+            state
+                .processes
+                .lines()
+                .next()
+                .unwrap_or("No process selected"),
+            authority
+        ),
+        DevSurface::Tasks => format!(
+            "SELECTED TASK\n{}{}",
+            state.tasks.lines().next().unwrap_or("No task selected"),
+            authority
+        ),
+        DevSurface::Git => format!(
+            "SELECTED CHANGE\n{}{}",
+            state.git.lines().next().unwrap_or("No change selected"),
+            authority
+        ),
+        DevSurface::Debug => format!(
+            "SELECTED FRAME\n{}{}",
+            state.debugger.lines().next().unwrap_or("No frame selected"),
+            authority
+        ),
+        DevSurface::More => format!(
+            "PROJECT SERVICES\n{} skills · {} custom tools{}",
+            state.workspace.customization().skills().count(),
+            state.workspace.customization().config().tools.len(),
+            authority
+        ),
+    };
     frame.render_widget(
         Paragraph::new(content)
             .block(
@@ -242,8 +275,16 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = if state.command_mode {
-        format!(":{}", state.command_input)
+    let content = if state.composer_mode {
+        format!("> {}", state.composer_input)
+    } else if state.command_mode {
+        let suggestions = state.palette_matches().join(" · ");
+        let error = state
+            .palette_error
+            .as_deref()
+            .map(|error| format!(" · {error}"))
+            .unwrap_or_default();
+        format!(":{}  [{}]{}", state.command_input, suggestions, error)
     } else {
         state.status.clone()
     };
@@ -296,10 +337,63 @@ mod tests {
             let state = state(layout);
             let rendered = rendered(&state, width, height);
             assert!(rendered.contains("GLASS DEV"));
-            assert!(rendered.contains("Dashboard"));
-            assert!(rendered.contains("WORKSPACE STATUS"));
-            assert!(rendered.contains("generation"));
+            assert!(rendered.contains("Agent"));
+            assert!(rendered.contains("CONVERSATION"));
         }
+    }
+
+    #[test]
+    fn phone_sizes_keep_agent_code_app_tasks_more_flows_reachable() {
+        for (width, height) in [(48, 18), (64, 24), (80, 24)] {
+            let mut state = state(TuiLayout::Mobile);
+            for (key, expected) in [
+                ('1', DevSurface::Agent),
+                ('2', DevSurface::Code),
+                ('3', DevSurface::App),
+                ('4', DevSurface::Tasks),
+                ('5', DevSurface::More),
+            ] {
+                state.handle_printable(key);
+                assert_eq!(state.surface, expected);
+                assert!(rendered(&state, width, height).contains(expected.label()));
+            }
+        }
+    }
+
+    #[test]
+    fn composer_palette_focus_and_local_scroll_are_interactive_state() {
+        let mut state = state(TuiLayout::Desktop);
+        state.open_composer();
+        state.insert_composer_text("hello");
+        state.composer_backspace();
+        assert_eq!(state.composer_input, "hell");
+        state.close_composer();
+
+        state.open_palette();
+        state.insert_palette_text("browser");
+        state.move_palette_cursor(false);
+        state.palette_backspace();
+        state.insert_palette_char('e');
+        assert!(state.command_cursor < state.command_input.len());
+        assert!(state.palette_matches().contains(&"browser"));
+
+        state.close_palette();
+        let surface = state.surface;
+        state.scroll_surface(3);
+        assert_eq!(state.surface, surface);
+        assert_eq!(state.current_scroll(), 3);
+    }
+
+    #[test]
+    fn mutating_palette_action_requires_frozen_one_use_confirmation() {
+        let mut state = state(TuiLayout::Desktop);
+        super::super::command::execute(&mut state, "browser start").unwrap();
+        let pending = state.pending_confirmation.as_ref().unwrap();
+        assert_eq!(pending.call.name, "glass.browser.start");
+        assert!(rendered(&state, 120, 32).contains("CONFIRM ONE MUTATION"));
+        state.deny_confirmation();
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.status.contains("Denied"));
     }
 
     #[test]
@@ -348,7 +442,7 @@ mod tests {
         assert!(rendered.contains("Open untrusted"));
         state.handle_printable('O');
         assert_eq!(state.workspace.trust(), crate::WorkspaceTrust::Untrusted);
-        assert_eq!(state.surface, DevSurface::Dashboard);
+        assert_eq!(state.surface, DevSurface::Agent);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

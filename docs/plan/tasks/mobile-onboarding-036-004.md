@@ -1,6 +1,6 @@
 id: mobile-onboarding-036-004
 scope: phone UX and discovery
-status: pending
+status: complete
 depends-on: [product-ux-036-003]
 
 ## Objective

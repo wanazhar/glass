@@ -180,6 +180,28 @@ impl GitService {
         Ok(())
     }
 
+    pub fn discard(&self, paths: &[String]) -> GitResult<()> {
+        let paths = validate_paths(paths)?;
+        let mut arguments = vec!["restore", "--"];
+        arguments.extend(paths.iter().map(String::as_str));
+        self.run(&arguments, "discard working-tree changes")?;
+        Ok(())
+    }
+
+    pub fn push(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+        let mut arguments = vec!["push"];
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+            arguments.push(remote);
+        }
+        if let Some(branch) = branch {
+            validate_ref(branch)?;
+            arguments.push(branch);
+        }
+        self.run(&arguments, "push")?;
+        Ok(())
+    }
+
     pub fn branches(&self) -> GitResult<Vec<GitBranch>> {
         let format = "%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(objectname)%00";
         let format_argument = format!("--format={format}");
@@ -720,6 +742,13 @@ mod tests {
                 .unwrap()
                 .contains("println")
         );
+        service.discard(&["main.rs".into()]).unwrap();
+        assert!(
+            !service
+                .diff(false, Some("main.rs"))
+                .unwrap()
+                .contains("println")
+        );
         service.create_branch("fixture-branch", None).unwrap();
         assert!(
             service
@@ -740,7 +769,11 @@ mod tests {
         assert!(validate_relative_path("../escape").is_err());
         assert!(validate_relative_path("/absolute").is_err());
         assert!(validate_ref("--upload-pack=bad").is_err());
+        let root = repository();
+        let service = GitService::open(&root).unwrap();
+        assert!(service.push(Some("--upload-pack=bad"), None).is_err());
         assert!(absolute_worktree_path(Path::new("relative")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

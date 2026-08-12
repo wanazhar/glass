@@ -371,6 +371,10 @@ impl DevelopmentToolRouter {
             "glass.browser.act" => {
                 let revision = unsigned(call, "browserRevision", 0)?;
                 match string("action")? {
+                    "back" => workspace.browser().back(revision),
+                    "forward" => workspace.browser().forward(revision),
+                    "reload" => workspace.browser().reload(revision),
+                    "stopLoading" => workspace.browser().stop_loading(revision),
                     "click" => workspace
                         .browser()
                         .click(string("target")?.into(), revision),
@@ -385,11 +389,14 @@ impl DevelopmentToolRouter {
                         revision,
                     ),
                     action => Err(DevelopmentError::InvalidInput(format!(
-                        "unsupported browser action {action}; expected click, type, or scroll"
+                        "unsupported browser action {action}; expected back, forward, reload, stopLoading, click, type, or scroll"
                     ))),
                 }
             }
             "glass.browser.screenshot" => workspace.browser().screenshot(),
+            "glass.browser.remote-view.open" => workspace.browser().open_remote_view(),
+            "glass.browser.remote-view.status" => workspace.browser().remote_view_status(),
+            "glass.browser.remote-view.revoke" => workspace.browser().revoke_remote_view(),
             "glass.workflow.list" => workspace.browser().list_workflows(),
             "glass.workflow.run" => workspace.browser().run_workflow(
                 required_value(call, "definition")?.clone(),
@@ -470,6 +477,17 @@ impl DevelopmentToolRouter {
                 let paths = string_array(call, "paths")?;
                 git_mutation(workspace.git(), |git| git.unstage(&paths))?;
                 Ok(serde_json::json!({"unstaged":paths}))
+            }
+            "glass.git.discard" => {
+                let paths = string_array(call, "paths")?;
+                git_mutation(workspace.git(), |git| git.discard(&paths))?;
+                Ok(serde_json::json!({"discarded":paths}))
+            }
+            "glass.git.push" => {
+                git_mutation(workspace.git(), |git| {
+                    git.push(optional_string(call, "remote"), optional_string(call, "branch"))
+                })?;
+                Ok(serde_json::json!({"pushed":true}))
             }
             "glass.git.commit" => {
                 let message = string("message")?;
@@ -1198,6 +1216,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.browser.diff",
         "glass.browser.targets",
         "glass.browser.screenshot",
+        "glass.browser.remote-view.status",
         "glass.workflow.list",
         "glass.workflow.verify",
         "glass.workflow.record",
@@ -1212,6 +1231,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
     const MUTATE: &[&str] = &[
         "glass.git.stage",
         "glass.git.unstage",
+        "glass.git.discard",
+        "glass.git.push",
         "glass.git.commit",
         "glass.git.branch.create",
         "glass.git.branch.switch",
@@ -1284,6 +1305,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.browser.target.select",
         "glass.browser.navigate",
         "glass.browser.act",
+        "glass.browser.remote-view.open",
+        "glass.browser.remote-view.revoke",
         "glass.workflow.run",
         "glass.workflow.pause",
         "glass.workflow.resume",
@@ -1325,6 +1348,9 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.navigate"
             | "glass.browser.act"
             | "glass.browser.screenshot"
+            | "glass.browser.remote-view.open"
+            | "glass.browser.remote-view.status"
+            | "glass.browser.remote-view.revoke"
             | "glass.memory.retrieve"
             | "glass.memory.explain"
             | "glass.semantic.inspect"

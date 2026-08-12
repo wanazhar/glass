@@ -143,10 +143,9 @@ in audit state by bounded metadata and digests, not raw values.
 
 ## Terminal and remote experience
 
-Desktop, compact, and phone layouts share one reducer and browser worker.
-Phone mode exposes Overview, Agent, Browser, Project, Diff, and Process without
-requiring function keys. Semantic tap selects one of at most nine
-revision-bound targets.
+Desktop, compact, and phone layouts share one workspace and canonical browser
+controller. Phone exposes Agent, Code, App, Tasks, and More without function
+keys. App selection carries the visible browser revision automatically.
 
 The optional live browser backend order is Herdr, direct Kitty, ANSI, then
 semantic fallback. `live auto` requires a detected native backend; `live on`

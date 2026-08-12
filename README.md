@@ -140,14 +140,15 @@ experiments, agents, and Neovim integration.
 Glass adapts by terminal geometry without treating a narrow screen as proof of
 a slow network.
 
-| Key | View | Primary state |
+| Key | Desktop | Phone |
 |---|---|---|
-| `1` | Overview | connection, attention, browser, process, test, and actor summary |
-| `2` | Agent | active request, harness state, attribution, and recent events |
-| `3` | Browser | structured page state, explicit live pixels, targets, and recovery |
-| `4` | Project | files, editor buffer, diagnostics, and source/runtime links |
-| `5` | Diff | source, runtime, semantic, workflow, and verification impact |
-| `6` | Process | owned PTYs, health, exit state, and bounded output |
+| `1` | Agent | Agent |
+| `2` | Code | Code |
+| `3` | App | App |
+| `4` | Terminal | Tasks |
+| `5` | Tasks | More |
+| `6` | Git | - |
+| `7` | Debug | - |
 
 `Tab` and `Shift-Tab` move between views. `?` opens help, `:` or `/` opens
 command discovery, and `Ctrl-L` redraws. Essential phone navigation uses
@@ -312,9 +313,9 @@ Force the phone layout when terminal geometry is reported incorrectly:
 glass --tui-layout mobile
 ```
 
-The phone workspace uses the same six views and browser recovery actions as
-desktop. Structured semantic state, project files, agent activity, diffs, and
-process health remain usable without continuous images.
+The phone workspace uses purpose-built Agent, Code, App, Tasks, and More
+destinations. Structured semantic state, project files, agent activity, task
+evidence, and runtime health remain usable without continuous images.
 
 Presentation is selected independently from layout:
 

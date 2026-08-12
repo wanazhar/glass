@@ -1,6 +1,6 @@
 id: browser-workspace-036-002
 scope: shared browser workspace
-status: pending
+status: complete
 depends-on: [correctness-036-001]
 
 ## Objective

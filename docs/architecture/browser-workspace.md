@@ -1,6 +1,6 @@
 # Canonical Browser Workspace
 
-Status: Accepted for 0.3.6
+Status: Implemented for 0.3.6
 
 ## Purpose and boundary
 
@@ -113,6 +113,13 @@ back, forward, reload, stop loading, click, type, scroll, screenshot, workflow
 list/run/pause/resume/cancel/verify, and Remote View open/status/revoke when
 available. Unsupported backend capabilities are visible disabled actions with
 a reason; a shell must not silently omit them.
+
+The standalone command area exposes `targets`, `select ID`, `state`,
+`reconnect`, `attach PORT`, `launch auto`, `launch PORT`, `stop`, `screenshot`,
+and `live on|off`. Embedded App routes the same operations through the resident
+browser service, including loopback Remote View open/status/revoke. Remote View
+normalizes coordinates against the live viewport and rejects stale revision
+input before CDP mutation.
 
 ## Recovery
 

@@ -1,6 +1,7 @@
 //! Resident browser and workflow ownership for the Glass development workspace.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
+use crate::development::{RemoteFrame, RemoteInput, RemoteView};
 use glass_browser::browser::policy::BrowserPolicy;
 use glass_browser::browser::session::{
     BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
@@ -106,6 +107,9 @@ enum BrowserCommand {
     ListWorkflows,
     CancelWorkflow,
     VerifyWorkflow,
+    RemoteViewOpen,
+    RemoteViewStatus,
+    RemoteViewRevoke,
 }
 
 type Reply = SyncSender<DevelopmentResult<Value>>;
@@ -287,6 +291,18 @@ impl BrowserService {
     pub fn verify_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::VerifyWorkflow)
     }
+
+    pub fn open_remote_view(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::RemoteViewOpen)
+    }
+
+    pub fn remote_view_status(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::RemoteViewStatus)
+    }
+
+    pub fn revoke_remote_view(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::RemoteViewRevoke)
+    }
 }
 
 struct BrowserWorker {
@@ -297,6 +313,7 @@ struct BrowserWorker {
     active_workflow: Option<String>,
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
     last_config: Option<BrowserStartConfig>,
+    remote_view: Option<RemoteView>,
 }
 
 impl BrowserWorker {
@@ -309,6 +326,7 @@ impl BrowserWorker {
             active_workflow: None,
             last_workflow: None,
             last_config: None,
+            remote_view: None,
         }
     }
 
@@ -334,6 +352,9 @@ impl BrowserWorker {
     }
 
     async fn shutdown(&mut self) {
+        if let Some(view) = self.remote_view.take() {
+            view.revoke().await;
+        }
         if let Some(session) = self.session.take() {
             let _ = session.close().await;
         }
@@ -374,6 +395,7 @@ impl BrowserWorker {
     }
 
     async fn execute(&mut self, command: BrowserCommand) -> DevelopmentResult<Value> {
+        self.apply_remote_inputs().await?;
         match command {
             BrowserCommand::Start(config) => self.start_session(config).await,
             BrowserCommand::Reconnect => {
@@ -635,7 +657,109 @@ impl BrowserWorker {
                     "result":result
                 }))
             }
+            BrowserCommand::RemoteViewOpen => {
+                if self.remote_view.is_some() {
+                    return Err(DevelopmentError::Conflict("Remote View is already open".into()));
+                }
+                self.session()?;
+                let view = RemoteView::bind().await?;
+                let response = serde_json::json!({
+                    "active":true,
+                    "localUrl":view.local_url(),
+                    "sshForwardHint":view.ssh_forward_hint(),
+                    "loopbackOnly":true,
+                });
+                self.remote_view = Some(view);
+                self.publish_remote_frame().await?;
+                Ok(response)
+            }
+            BrowserCommand::RemoteViewStatus => Ok(self.remote_view.as_ref().map_or_else(
+                || serde_json::json!({"active":false,"loopbackOnly":true}),
+                |view| serde_json::json!({"active":true,"localUrl":view.local_url(),"sshForwardHint":view.ssh_forward_hint(),"loopbackOnly":true}),
+            )),
+            BrowserCommand::RemoteViewRevoke => {
+                if let Some(view) = self.remote_view.take() {
+                    view.revoke().await;
+                    Ok(serde_json::json!({"revoked":true}))
+                } else {
+                    Ok(serde_json::json!({"revoked":false}))
+                }
+            }
         }
+    }
+
+    async fn publish_remote_frame(&self) -> DevelopmentResult<()> {
+        let (Some(view), Some(session), Some(revision)) = (
+            self.remote_view.as_ref(),
+            self.session.as_ref(),
+            self.revision,
+        ) else {
+            return Ok(());
+        };
+        let png = session.screenshot_png().await.map_err(browser_error)?;
+        let published = view.publish(RemoteFrame {
+            browser_revision: revision,
+            mime_type: "image/png".into(),
+            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png),
+        });
+        if !published {
+            return Err(DevelopmentError::Process(
+                "Remote View rejected the bounded frame".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn apply_remote_inputs(&mut self) -> DevelopmentResult<()> {
+        let mut inputs = Vec::new();
+        if let Some(view) = self.remote_view.as_mut() {
+            while let Ok(input) = view.try_recv_input() {
+                inputs.push(input);
+                if inputs.len() == 64 {
+                    break;
+                }
+            }
+        }
+        for input in inputs {
+            let session = self.session()?;
+            let revision = input.expected_revision();
+            let current_revision = match input {
+                RemoteInput::Click { x, y, .. } => {
+                    let (width, height) = session.viewport_size().await.map_err(browser_error)?;
+                    session
+                        .click_at_with_revision(x * width, y * height, Some(revision))
+                        .await
+                        .map_err(browser_error)?
+                        .revision
+                }
+                RemoteInput::Scroll { dx, dy, .. } => {
+                    session
+                        .scroll_with_revision(dx, dy, Some(revision))
+                        .await
+                        .map_err(browser_error)?
+                        .current_revision
+                }
+                RemoteInput::Key { key, .. } => {
+                    session
+                        .key_press_with_revision(&key, Some(revision))
+                        .await
+                        .map_err(browser_error)?
+                        .current_revision
+                }
+                RemoteInput::Text { text, .. } => {
+                    session
+                        .type_text_with_expected_revision(&text, None, Some(revision))
+                        .await
+                        .map_err(browser_error)?
+                        .current_revision
+                }
+            };
+            self.revision = Some(current_revision);
+        }
+        if self.remote_view.is_some() {
+            self.publish_remote_frame().await?;
+        }
+        Ok(())
     }
 }
 
@@ -659,6 +783,15 @@ mod tests {
         assert_eq!(state["workflowState"], "idle");
         let error = service.observe().unwrap_err();
         assert!(error.to_string().contains("glass.browser.start"));
+        assert_eq!(service.remote_view_status().unwrap()["active"], false);
+        assert!(
+            service
+                .open_remote_view()
+                .unwrap_err()
+                .to_string()
+                .contains("browser")
+        );
+        assert_eq!(service.revoke_remote_view().unwrap()["revoked"], false);
     }
 
     #[test]
@@ -761,6 +894,20 @@ mod tests {
                 .unwrap()
                 .contains("Saved Ada")
         );
+        let remote = service.open_remote_view().unwrap();
+        assert_eq!(remote["active"], true);
+        assert!(
+            remote["localUrl"]
+                .as_str()
+                .unwrap()
+                .starts_with("http://127.0.0.1:")
+        );
+        assert_eq!(service.remote_view_status().unwrap()["active"], true);
+        assert_eq!(service.revoke_remote_view().unwrap()["revoked"], true);
+        let revision = service.observe().unwrap()["consistency"]["endRevision"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(service.reload(revision).unwrap()["action"], "reload");
         service.stop().unwrap();
         #[cfg(unix)]
         assert!(unsafe { libc::kill(browser_pid as i32, 0) } == -1);

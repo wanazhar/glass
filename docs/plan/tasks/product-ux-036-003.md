@@ -1,6 +1,6 @@
 id: product-ux-036-003
 scope: Glass Dev desktop product UX
-status: pending
+status: complete
 depends-on: [browser-workspace-036-002]
 
 ## Objective

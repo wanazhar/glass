@@ -65,8 +65,9 @@ Narrow remote terminals automatically use the phone layout:
 glass --tui-layout mobile
 ```
 
-Use `1`–`6` or `Tab` for Overview, Agent, Browser, Project, Diff, and Process. `tap` opens up to
-nine revision-bound semantic targets. Continuous pixels remain off by default.
+Use `1`–`5` or `Tab` for Agent, Code, App, Tasks, and More. App uses the same
+revision-bound semantic selection as the desktop and standalone browser
+workspace. Continuous pixels remain off by default.
 
 `live on` enables an ephemeral terminal-native browser using Herdr-owned
 graphics, direct Kitty, or true-color ANSI. `live quality data` is intended

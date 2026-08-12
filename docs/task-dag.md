@@ -15,11 +15,22 @@ event, runs verification, and either succeeds, retries, or fails the task.
 Verified success wakes dependents. Failure and cancellation mark descendants
 blocked; a local human may explicitly override that state.
 
+If the caller does not supply a verifier, Glass infers a project verifier at
+creation time: locked Cargo workspace tests, `npm test`, `python -m pytest`, or
+`go test ./...` when their project markers exist, and a required Git change as
+the conservative fallback. Settle-only acceptance is available only through
+the explicit `settled` policy; it is never the implementation default.
+
 ## States and controls
 
 Tasks move through `queued`, `ready`, `running`, `waiting`, `verifying`, then
 `succeeded`, `failed`, or `cancelled`. `paused` and `blocked` preserve an
 explicit reason and require resume/retry/override actions.
+
+The product UI uses `✓` for verified success, `◇` for deliberately
+settled/unverified completion, `×` for failed/cancelled work, `!` for blocked
+or ambiguous work, and `●` while running or verifying. Evidence and the exact
+verification policy remain visible beside that glyph.
 
 Each snapshot includes stable task and assigned-agent IDs, title, goal, full
 prompt, dependencies, worktree, model/thinking and authority policy, runtime,

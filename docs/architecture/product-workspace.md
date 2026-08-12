@@ -1,6 +1,6 @@
 # Glass Product Workspace
 
-Status: Accepted for 0.3.6
+Status: Implemented for 0.3.6
 
 ## Product information architecture
 

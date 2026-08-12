@@ -122,19 +122,19 @@ cd /path/to/project
 glass
 ```
 
-Use `1`–`6` or `Tab` to switch Overview, Agent, Browser, Project, Diff, and
-Process. Press `?` for context-sensitive help. Enter `:` or `/` to discover
-commands. The same printable navigation works on narrow SSH terminals.
+Use `1`–`7` or `Tab` for desktop Agent, Code, App, Terminal, Tasks, Git, and
+Debug. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Enter `:` to
+open fuzzy command discovery. The same printable navigation works over SSH.
 
 Useful first commands in the TUI command bar:
 
 ```text
-project open README.md
-project search TODO
-project run dev cargo run
-project diagnostics src/main.rs
-inbox
-verify card
+editor open README.md
+editor search TODO
+process start dev cargo run
+lsp diagnostics rust src/main.rs
+browser observe
+task list
 ```
 
 The resident process owns the editor buffers, PTYs, language services, browser

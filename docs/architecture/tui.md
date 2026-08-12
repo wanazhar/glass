@@ -110,11 +110,10 @@ select phone layout explicitly on a wide mobile terminal, and can select wide
 layout over SSH. Connection-aware pixel policy is defined separately in
 [Connection-aware browser presentation](connection-presentation.md).
 
-Phone mode is a single-pane stack with Overview, Agent, Browser, Project,
-Diff, and Process/Logs views plus an always-reachable command palette.
-Home is a bounded attention inbox. App supports a numbered semantic-target
-overlay, Diff supports compact verification cards, and normal shutdown writes
-a non-sensitive reconnect capsule. Terminal bell notification is explicit and
+Phone mode is a single-pane stack with Agent, Code, App, Tasks, and More plus
+an always-reachable command palette. App uses the canonical semantic selection;
+Tasks show compact verification cards, and normal shutdown writes a
+non-sensitive reconnect capsule. Terminal bell notification is explicit and
 off by default.
 Its browser worker does not start the screencast or screenshot fallback by
 default, so a semantic-only iOS terminal pays no continuous visual capture or

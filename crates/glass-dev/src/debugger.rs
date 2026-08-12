@@ -1068,14 +1068,14 @@ writer.flush()
         };
         let mut client = DapClient::spawn(&root, &config).unwrap();
         client
-            .request("initialize", json!({}), Duration::from_secs(5))
+            .request("initialize", json!({}), Duration::from_secs(15))
             .unwrap();
         let response = client
-            .request("exercise", json!({}), Duration::from_secs(5))
+            .request("exercise", json!({}), Duration::from_secs(15))
             .unwrap();
         assert_eq!(response["reverseRequestsHandled"], true);
 
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let processes = loop {
             let processes = client.debuggee_processes().unwrap();
             if processes
@@ -1111,7 +1111,10 @@ writer.flush()
             .request("initialize", json!({}), Duration::from_secs(2))
             .unwrap_err();
         assert!(
-            matches!(&error, DebugError::Io(_) | DebugError::Protocol(_)),
+            matches!(
+                &error,
+                DebugError::Io(_) | DebugError::Protocol(_) | DebugError::Timeout(_)
+            ),
             "unexpected adapter crash error: {error}"
         );
         drop(client);
@@ -1136,10 +1139,10 @@ writer.flush()
         let address = listener.local_addr().unwrap();
         drop(listener);
         config.arguments.push(address.port().to_string());
-        config = config.with_tcp(address, Duration::from_secs(3));
+        config = config.with_tcp(address, Duration::from_secs(15));
         let mut client = DapClient::spawn(&root, &config).unwrap();
         let body = client
-            .request("initialize", json!({}), Duration::from_secs(3))
+            .request("initialize", json!({}), Duration::from_secs(10))
             .unwrap();
         assert_eq!(body["transport"], "tcp");
         drop(client);

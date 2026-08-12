@@ -79,3 +79,36 @@ jobs:
           GLASS_E2E: "1"
           GLASS_DISABLE_CHROME_SANDBOX: "1"
         run: cargo test --package glass-browser --test browser_smoke --locked -- --nocapture --test-threads=1
+
+  windows-native:
+    name: Native Windows named-pipe lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Verify immutable release source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "${actual_sha}" = "${EXPECTED_SHA}"
+          tag_url="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TARGET_REF}" --jq '.object.url')"
+          tag_commit="$(gh api "${tag_url}" --jq '.object.sha')"
+          tag_verified="$(gh api "${tag_url}" --jq '.verification.verified')"
+          test "${tag_commit}" = "${EXPECTED_SHA}"
+          test "${tag_verified}" = "true"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Certify named-pipe reconnect and process-tree cleanup
+        run: >-
+          cargo test --package glass-dev --test development_runtime --locked
+          windows_named_pipe_daemon_lifecycle_reconnect_and_permissions -- --exact --nocapture

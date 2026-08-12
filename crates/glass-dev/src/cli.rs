@@ -14,6 +14,25 @@ use std::time::Duration;
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()> {
+    match action {
+        AgentCommand::Doctor | AgentCommand::Status => {
+            return print_json(&crate::pi_runtime::pi_readiness()?);
+        }
+        AgentCommand::Setup {
+            sdk_entry,
+            agent_dir,
+            update,
+            login,
+        } => {
+            return print_json(&crate::pi_runtime::setup_pi_runtime(
+                sdk_entry.as_deref(),
+                agent_dir.as_deref(),
+                *update,
+                *login,
+            )?);
+        }
+        _ => {}
+    }
     let (root, request, adapter) = match action {
         AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => {
             return Err("agent tool calls use the resident broker path".into());
@@ -60,6 +79,9 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
         ),
         AgentCommand::Abort { root } => (root, HarnessRequest::Abort, AgentHarness::Pi),
         AgentCommand::NewSession { root } => (root, HarnessRequest::NewSession, AgentHarness::Pi),
+        AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
+            unreachable!("readiness commands return before harness dispatch")
+        }
     };
     let mut workspace = ProjectWorkspace::open(root)?;
     match adapter {

@@ -1,6 +1,6 @@
 id: correctness-036-001
 scope: glass-dev runtime correctness
-status: ready
+status: complete
 depends-on: []
 
 ## Objective

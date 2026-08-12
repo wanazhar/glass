@@ -131,9 +131,38 @@ socket clients inspect the same actor identity and resources.
 
 The native daemon protocol provides `workspace.open`, `workspace.list`,
 `workspace.inspect`, `workspace.tool`, `workspace.events`, and
-`workspace.close`. Close explicitly
+`workspace.close`. Long-running work and every mutation use
+`operation.submit`, `operation.inspect`, `operation.list`, `operation.events`,
+`operation.cancel`, and `operation.reconcile`. Close explicitly
 shuts the actor down and reaps owned resources; it does not delete project
 files, Pi session JSONL, or persistent timeline data.
+
+## Recoverable operations
+
+`operation.submit` requires a client-generated request ID, actor, tool call,
+workspace revision guard, and mutation declaration. It immediately returns a
+stable workspace-scoped operation ID. Repeating the request ID is idempotent:
+the daemon returns the existing operation and never starts a duplicate.
+
+Each retained record moves through `queued`, `running`, then exactly one of
+`succeeded`, `failed`, `cancelled`, or `indeterminate`. Records include bounded
+timestamps, actor and operation type, revisions before/after, result reference,
+failure reason, cancellation intent, and whether a failed observation is safe
+to retry. The registry retains at most 128 operations and 512 operation events.
+External clients may disconnect, reconnect, inspect the same actor, resume from
+an event cursor, and reconcile the terminal result without guessing whether an
+effect occurred.
+
+Running cancellation is cooperative at the Glass tool boundary. A cancel
+request is recorded immediately; the owned synchronous tool is still joined
+and its resources reaped, then the operation becomes `cancelled`. If the worker
+cannot report an authoritative result, the operation becomes `indeterminate`
+and is never presented as success. Daemon shutdown cancels queued/running
+operations and waits for the owned worker before acknowledging shutdown.
+
+Direct `workspace.tool` remains available for bounded observations. It rejects
+mutations and known long-running tool families with an instruction to submit an
+operation, preventing a fixed socket timeout from obscuring an ongoing effect.
 
 ## Bounded workspace events
 

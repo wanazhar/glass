@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -23,13 +24,25 @@ const WORKSPACE_COMMAND_CAPACITY: usize = 64;
 const WORKSPACE_EVENT_CAPACITY: usize = 512;
 const MAX_EVENT_BATCH: usize = 256;
 const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const OPERATION_CAPACITY: usize = 128;
+const OPERATION_EVENT_CAPACITY: usize = 512;
 
 type WorkspaceRegistry = Rc<RefCell<BTreeMap<String, WorkspaceActorHandle>>>;
+type QueuedOperation = (String, ToolCall, Box<DevelopmentToolContext>);
+type OperationExecution = (
+    DevelopmentWorkspace,
+    String,
+    String,
+    u64,
+    Result<Value, String>,
+);
+type OperationCompletion = Result<OperationExecution, tokio::task::JoinError>;
 
 #[derive(Clone)]
 struct WorkspaceActorHandle {
     sender: tokio::sync::mpsc::Sender<WorkspaceCommand>,
     summary: Value,
+    operations: Arc<Mutex<OperationRegistry>>,
 }
 
 enum WorkspaceCommand {
@@ -40,6 +53,11 @@ enum WorkspaceCommand {
         call: ToolCall,
         context: Box<DevelopmentToolContext>,
         response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    SubmitOperation {
+        operation_id: String,
+        call: ToolCall,
+        context: Box<DevelopmentToolContext>,
     },
     Events {
         since: u64,
@@ -85,6 +103,244 @@ pub struct DevelopmentDaemonRequest {
     pub since: Option<u64>,
     #[serde(default)]
     pub limit: Option<usize>,
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DevelopmentOperationState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Indeterminate,
+}
+
+impl DevelopmentOperationState {
+    fn terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Indeterminate
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentOperation {
+    pub id: String,
+    pub workspace_id: String,
+    pub actor: String,
+    pub operation_type: String,
+    pub state: DevelopmentOperationState,
+    pub submitted_at_ms: u128,
+    pub started_at_ms: Option<u128>,
+    pub completed_at_ms: Option<u128>,
+    pub revision_before: u64,
+    pub revision_after: Option<u64>,
+    pub result_ref: Option<String>,
+    pub result: Option<Value>,
+    pub failure_reason: Option<String>,
+    pub retry_safe: bool,
+    pub indeterminate: bool,
+    pub cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentOperationEvent {
+    pub sequence: u64,
+    pub operation_id: String,
+    pub timestamp_ms: u128,
+    pub state: DevelopmentOperationState,
+    pub message: String,
+}
+
+struct OperationRegistry {
+    workspace_id: String,
+    records: BTreeMap<String, DevelopmentOperation>,
+    order: VecDeque<String>,
+    idempotency: BTreeMap<String, String>,
+    events: VecDeque<DevelopmentOperationEvent>,
+    next_operation: u64,
+    next_event: u64,
+}
+
+impl OperationRegistry {
+    fn new(workspace_id: String) -> Self {
+        Self {
+            workspace_id,
+            records: BTreeMap::new(),
+            order: VecDeque::new(),
+            idempotency: BTreeMap::new(),
+            events: VecDeque::new(),
+            next_operation: 1,
+            next_event: 1,
+        }
+    }
+
+    fn submit(
+        &mut self,
+        request_id: &str,
+        actor: String,
+        operation_type: String,
+        revision_before: u64,
+        retry_safe: bool,
+    ) -> Result<(DevelopmentOperation, bool), String> {
+        if let Some(operation_id) = self.idempotency.get(request_id) {
+            return self
+                .records
+                .get(operation_id)
+                .cloned()
+                .map(|record| (record, false))
+                .ok_or_else(|| "operation idempotency record is inconsistent".into());
+        }
+        self.prune_terminal();
+        if self.records.len() >= OPERATION_CAPACITY {
+            return Err("workspace operation retention limit reached".into());
+        }
+        let id = format!("{}-op-{:06}", self.workspace_id, self.next_operation);
+        self.next_operation = self.next_operation.saturating_add(1);
+        let record = DevelopmentOperation {
+            id: id.clone(),
+            workspace_id: self.workspace_id.clone(),
+            actor,
+            operation_type,
+            state: DevelopmentOperationState::Queued,
+            submitted_at_ms: now_ms(),
+            started_at_ms: None,
+            completed_at_ms: None,
+            revision_before,
+            revision_after: None,
+            result_ref: None,
+            result: None,
+            failure_reason: None,
+            retry_safe,
+            indeterminate: false,
+            cancellation_requested: false,
+        };
+        self.records.insert(id.clone(), record.clone());
+        self.order.push_back(id.clone());
+        self.idempotency.insert(request_id.into(), id.clone());
+        self.event(&id, DevelopmentOperationState::Queued, "operation accepted");
+        Ok((record, true))
+    }
+
+    fn prune_terminal(&mut self) {
+        while self.records.len() >= OPERATION_CAPACITY {
+            let Some(id) = self.order.iter().find_map(|id| {
+                self.records
+                    .get(id)
+                    .is_some_and(|record| record.state.terminal())
+                    .then(|| id.clone())
+            }) else {
+                break;
+            };
+            self.order.retain(|operation_id| operation_id != &id);
+            self.records.remove(&id);
+            self.idempotency
+                .retain(|_, operation_id| operation_id != &id);
+        }
+    }
+
+    fn event(&mut self, id: &str, state: DevelopmentOperationState, message: &str) {
+        if self.events.len() == OPERATION_EVENT_CAPACITY {
+            self.events.pop_front();
+        }
+        self.events.push_back(DevelopmentOperationEvent {
+            sequence: self.next_event,
+            operation_id: id.into(),
+            timestamp_ms: now_ms(),
+            state,
+            message: message.into(),
+        });
+        self.next_event = self.next_event.saturating_add(1);
+    }
+
+    fn start(&mut self, id: &str) -> bool {
+        let Some(record) = self.records.get_mut(id) else {
+            return false;
+        };
+        if record.cancellation_requested {
+            record.state = DevelopmentOperationState::Cancelled;
+            record.completed_at_ms = Some(now_ms());
+            self.event(
+                id,
+                DevelopmentOperationState::Cancelled,
+                "cancelled before start",
+            );
+            return false;
+        }
+        record.state = DevelopmentOperationState::Running;
+        record.started_at_ms = Some(now_ms());
+        self.event(id, DevelopmentOperationState::Running, "operation started");
+        true
+    }
+
+    fn finish(&mut self, id: &str, revision_after: u64, result: Result<Value, String>) {
+        let Some(record) = self.records.get_mut(id) else {
+            return;
+        };
+        record.revision_after = Some(revision_after);
+        record.completed_at_ms = Some(now_ms());
+        let (state, message) = if record.cancellation_requested {
+            record.state = DevelopmentOperationState::Cancelled;
+            record.result = None;
+            record.failure_reason =
+                Some("operation completed after cancellation was requested".into());
+            (DevelopmentOperationState::Cancelled, "operation cancelled")
+        } else {
+            match result {
+                Ok(value) => {
+                    record.state = DevelopmentOperationState::Succeeded;
+                    record.result_ref =
+                        Some(format!("operation://{}/{}/result", self.workspace_id, id));
+                    record.result = Some(value);
+                    (DevelopmentOperationState::Succeeded, "operation succeeded")
+                }
+                Err(error) => {
+                    record.state = DevelopmentOperationState::Failed;
+                    record.failure_reason = Some(error);
+                    (DevelopmentOperationState::Failed, "operation failed")
+                }
+            }
+        };
+        self.event(id, state, message);
+    }
+
+    fn indeterminate(&mut self, id: &str, error: String) {
+        if let Some(record) = self.records.get_mut(id) {
+            record.state = DevelopmentOperationState::Indeterminate;
+            record.indeterminate = true;
+            record.failure_reason = Some(error);
+            record.completed_at_ms = Some(now_ms());
+        }
+        self.event(
+            id,
+            DevelopmentOperationState::Indeterminate,
+            "operation outcome is indeterminate",
+        );
+    }
+
+    fn cancel(&mut self, id: &str) -> Result<DevelopmentOperation, String> {
+        let (state, record) = {
+            let record = self
+                .records
+                .get_mut(id)
+                .ok_or_else(|| "unknown workspace operation".to_string())?;
+            if !record.state.terminal() {
+                record.cancellation_requested = true;
+                if record.state == DevelopmentOperationState::Queued {
+                    record.state = DevelopmentOperationState::Cancelled;
+                    record.completed_at_ms = Some(now_ms());
+                }
+            }
+            (record.state, record.clone())
+        };
+        self.event(id, state, "cancellation requested");
+        Ok(record)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -587,10 +843,12 @@ async fn execute_request(
                     .map_err(|error| error.to_string())?;
                 let result = workspace_summary(workspace_id, &workspace);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                let operations = Arc::new(Mutex::new(OperationRegistry::new(workspace_id.into())));
                 tokio::task::spawn_local(run_workspace_actor(
                     workspace_id.into(),
                     workspace,
                     receiver,
+                    Arc::clone(&operations),
                 ));
                 let mut state = workspaces.borrow_mut();
                 if state.contains_key(workspace_id) || state.len() >= MAX_WORKSPACES {
@@ -601,6 +859,7 @@ async fn execute_request(
                     WorkspaceActorHandle {
                         sender,
                         summary: result.clone(),
+                        operations,
                     },
                 );
                 Ok(result)
@@ -615,31 +874,141 @@ async fn execute_request(
                     .call
                     .as_ref()
                     .ok_or("workspace.tool requires call")?;
-                let actor = request
-                    .actor
-                    .as_deref()
-                    .map(Actor::external)
-                    .unwrap_or_else(Actor::local);
-                let context = DevelopmentToolContext {
-                    authorization: ToolAuthorization {
-                        actor,
-                        allow_mutation: request.allow_mutation,
-                        confirmed: request.confirmed,
-                    },
-                    initiator: None,
-                    expected_generation: request
-                        .expected_generation
-                        .ok_or("workspace.tool requires expectedGeneration")?,
-                    expected_project_revision: request
-                        .expected_project_revision
-                        .ok_or("workspace.tool requires expectedProjectRevision")?,
-                };
+                if request.allow_mutation || long_operation_tool(&call.name) {
+                    return Err(
+                        "mutating or long-running tools require operation.submit so clients can reconnect and reconcile"
+                            .into(),
+                    );
+                }
+                let context = request_tool_context(&request, "workspace.tool")?;
                 workspace_tool(
                     workspace_handle(workspaces, workspace_id)?,
                     call.clone(),
                     context,
                 )
                 .await
+            }
+            "operation.submit" => {
+                let workspace_id = required_workspace_id(&request)?;
+                let call = request
+                    .call
+                    .as_ref()
+                    .ok_or("operation.submit requires call")?;
+                let context = request_tool_context(&request, "operation.submit")?;
+                let handle = workspace_handle(workspaces, workspace_id)?;
+                let actor = request.actor.clone().unwrap_or_else(|| "local".into());
+                let (operation, created) = handle
+                    .operations
+                    .lock()
+                    .map_err(|_| "workspace operation registry is poisoned")?
+                    .submit(
+                        &request.id,
+                        actor,
+                        call.name.clone(),
+                        context.expected_project_revision,
+                        !request.allow_mutation,
+                    )?;
+                if created
+                    && handle
+                        .sender
+                        .try_send(WorkspaceCommand::SubmitOperation {
+                            operation_id: operation.id.clone(),
+                            call: call.clone(),
+                            context: Box::new(context),
+                        })
+                        .is_err()
+                {
+                    if let Ok(mut registry) = handle.operations.lock() {
+                        registry.indeterminate(
+                            &operation.id,
+                            "workspace actor command queue closed".into(),
+                        );
+                    }
+                    return Err("workspace actor command queue closed".into());
+                }
+                Ok(serde_json::json!({"accepted":true,"created":created,"operation":operation}))
+            }
+            "operation.inspect" | "operation.reconcile" => {
+                let workspace_id = required_workspace_id(&request)?;
+                let operation_id = required_operation_id(&request)?;
+                let handle = workspace_handle(workspaces, workspace_id)?;
+                let operation = handle
+                    .operations
+                    .lock()
+                    .map_err(|_| "workspace operation registry is poisoned")?
+                    .records
+                    .get(operation_id)
+                    .cloned()
+                    .ok_or("unknown workspace operation")?;
+                let reconciled = operation.state.terminal();
+                let retry_safe = matches!(
+                    operation.state,
+                    DevelopmentOperationState::Failed
+                        | DevelopmentOperationState::Cancelled
+                        | DevelopmentOperationState::Indeterminate
+                ) && operation.retry_safe;
+                Ok(serde_json::json!({
+                    "operation":operation,
+                    "reconciled":reconciled,
+                    "retrySafe":retry_safe,
+                }))
+            }
+            "operation.list" => {
+                let workspace_id = required_workspace_id(&request)?;
+                let handle = workspace_handle(workspaces, workspace_id)?;
+                let registry = handle
+                    .operations
+                    .lock()
+                    .map_err(|_| "workspace operation registry is poisoned")?;
+                let operations = registry
+                    .order
+                    .iter()
+                    .filter_map(|id| registry.records.get(id).cloned())
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({"operations":operations,"capacity":OPERATION_CAPACITY}))
+            }
+            "operation.cancel" => {
+                let workspace_id = required_workspace_id(&request)?;
+                let operation_id = required_operation_id(&request)?;
+                let handle = workspace_handle(workspaces, workspace_id)?;
+                let operation = handle
+                    .operations
+                    .lock()
+                    .map_err(|_| "workspace operation registry is poisoned")?
+                    .cancel(operation_id)?;
+                Ok(serde_json::json!({"operation":operation}))
+            }
+            "operation.events" => {
+                let workspace_id = required_workspace_id(&request)?;
+                let operation_id = request.operation_id.as_deref();
+                if let Some(operation_id) = operation_id {
+                    validate_identifier(operation_id, "operation")?;
+                }
+                let limit = request.limit.unwrap_or(128);
+                if limit == 0 || limit > MAX_EVENT_BATCH {
+                    return Err(format!(
+                        "operation event limit must be 1..={MAX_EVENT_BATCH}"
+                    ));
+                }
+                let handle = workspace_handle(workspaces, workspace_id)?;
+                let registry = handle
+                    .operations
+                    .lock()
+                    .map_err(|_| "workspace operation registry is poisoned")?;
+                let since = request.since.unwrap_or(0);
+                let events = registry
+                    .events
+                    .iter()
+                    .filter(|event| event.sequence > since)
+                    .filter(|event| operation_id.is_none_or(|id| event.operation_id == id))
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "events":events,
+                    "newestSequence":registry.events.back().map_or(0, |event| event.sequence),
+                    "capacity":OPERATION_EVENT_CAPACITY,
+                }))
             }
             "workspace.events" => {
                 let workspace_id = required_workspace_id(&request)?;
@@ -758,8 +1127,14 @@ async fn run_workspace_actor(
     workspace_id: String,
     workspace: DevelopmentWorkspace,
     mut commands: tokio::sync::mpsc::Receiver<WorkspaceCommand>,
+    operations: Arc<Mutex<OperationRegistry>>,
 ) {
     let mut workspace = Some(workspace);
+    let mut queued_operations: VecDeque<QueuedOperation> = VecDeque::new();
+    let (completion_tx, mut completions) = tokio::sync::mpsc::channel::<OperationCompletion>(1);
+    let mut operation_running = false;
+    let mut command_channel_open = true;
+    let mut closing: Option<tokio::sync::oneshot::Sender<()>> = None;
     let mut events = VecDeque::with_capacity(WORKSPACE_EVENT_CAPACITY);
     let mut next_event = 1_u64;
     let mut dropped_events = 0_u64;
@@ -775,21 +1150,105 @@ async fn run_workspace_actor(
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        if closing.is_none() && !operation_running && workspace.is_some() {
+            while let Some((operation_id, call, context)) = queued_operations.pop_front() {
+                let should_start = operations
+                    .lock()
+                    .map(|mut registry| registry.start(&operation_id))
+                    .unwrap_or(false);
+                if !should_start {
+                    continue;
+                }
+                let mut owned_workspace = workspace
+                    .take()
+                    .expect("workspace operation start owns the workspace");
+                let completion = completion_tx.clone();
+                operation_running = true;
+                tokio::task::spawn_local(async move {
+                    let joined = tokio::task::spawn_blocking(move || {
+                        let result = owned_workspace
+                            .execute_tool(&call, &context)
+                            .map_err(|error| error.to_string());
+                        let revision_after = owned_workspace.project().revision();
+                        (
+                            owned_workspace,
+                            operation_id,
+                            call.id,
+                            revision_after,
+                            result,
+                        )
+                    })
+                    .await;
+                    let _ = completion.send(joined).await;
+                });
+                break;
+            }
+        }
+        if closing.is_some() && !operation_running {
+            if let Some(response) = closing.take() {
+                let _ = response.send(());
+            }
+            break;
+        }
         tokio::select! {
             biased;
-            command = commands.recv() => match command {
+            completion = completions.recv(), if operation_running => {
+                operation_running = false;
+                match completion {
+                    Some(Ok((returned_workspace, operation_id, call_id, revision_after, result))) => {
+                        workspace = Some(returned_workspace);
+                        if let Ok(mut registry) = operations.lock() {
+                            registry.finish(&operation_id, revision_after, result.clone());
+                        }
+                        push_workspace_event(
+                            &workspace_id,
+                            &mut events,
+                            &mut next_event,
+                            &mut dropped_events,
+                            "operation.completed",
+                            Some(call_id),
+                            result.is_ok(),
+                        );
+                    }
+                    Some(Err(error)) => {
+                        let running_id = operations.lock().ok().and_then(|registry| {
+                            registry.records.values().find(|record| {
+                                record.state == DevelopmentOperationState::Running
+                            }).map(|record| record.id.clone())
+                        });
+                        if let Some(operation_id) = running_id
+                            && let Ok(mut registry) = operations.lock()
+                        {
+                            registry.indeterminate(
+                                &operation_id,
+                                format!("workspace operation worker failed: {error}"),
+                            );
+                        }
+                        tracing::error!(workspace_id, %error, "workspace operation worker failed");
+                        if let Some(response) = closing.take() {
+                            let _ = response.send(());
+                        }
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            command = commands.recv(), if command_channel_open => match command {
                 Some(WorkspaceCommand::Inspect { response }) => {
-                    let result = inspect_workspace(
-                        &workspace_id,
-                        workspace.as_mut().expect("workspace actor retains ownership"),
+                    let result = workspace.as_mut().map_or_else(
+                        || Err("workspace is busy with a recoverable operation; inspect the operation ID".into()),
+                        |workspace| inspect_workspace(&workspace_id, workspace),
                     );
                     let _ = response.send(result);
                 }
                 Some(WorkspaceCommand::Tool { call, context, response }) => {
+                    let Some(mut owned_workspace) = workspace.take() else {
+                        let _ = response.send(Err(
+                            "workspace is busy; submit long work with operation.submit and inspect its ID".into(),
+                        ));
+                        continue;
+                    };
                     let kind = daemon_event_kind(&call.name);
-                    let mut owned_workspace = workspace
-                        .take()
-                        .expect("workspace actor retains ownership");
                     let execution = tokio::task::spawn_blocking(move || {
                         let result = owned_workspace
                             .execute_tool(&call, &context)
@@ -818,6 +1277,9 @@ async fn run_workspace_actor(
                     );
                     let _ = response.send(result);
                 }
+                Some(WorkspaceCommand::SubmitOperation { operation_id, call, context }) => {
+                    queued_operations.push_back((operation_id, call, context));
+                }
                 Some(WorkspaceCommand::Events { since, limit, response }) => {
                     let _ = response.send(workspace_event_batch(
                         &events,
@@ -828,16 +1290,42 @@ async fn run_workspace_actor(
                     ));
                 }
                 Some(WorkspaceCommand::Shutdown { response }) => {
-                    let _ = response.send(());
-                    break;
+                    if let Ok(mut registry) = operations.lock() {
+                        let active = registry
+                            .records
+                            .values()
+                            .filter(|record| !record.state.terminal())
+                            .map(|record| record.id.clone())
+                            .collect::<Vec<_>>();
+                        for id in active {
+                            let _ = registry.cancel(&id);
+                        }
+                    }
+                    queued_operations.clear();
+                    closing = Some(response);
                 }
-                None => break,
+                None => {
+                    command_channel_open = false;
+                    if let Ok(mut registry) = operations.lock() {
+                        let active = registry
+                            .records
+                            .values()
+                            .filter(|record| !record.state.terminal())
+                            .map(|record| record.id.clone())
+                            .collect::<Vec<_>>();
+                        for id in active {
+                            let _ = registry.cancel(&id);
+                        }
+                    }
+                    queued_operations.clear();
+                    if !operation_running {
+                        break;
+                    }
+                },
             },
             _ = tick.tick() => {
-                if let Err(error) = workspace
-                    .as_mut()
-                    .expect("workspace actor retains ownership")
-                    .tasks()
+                if let Some(workspace) = workspace.as_mut()
+                    && let Err(error) = workspace.tasks()
                 {
                     tracing::warn!(workspace_id, %error, "workspace task scheduler tick failed");
                 }
@@ -920,6 +1408,25 @@ fn daemon_event_kind(tool: &str) -> &'static str {
     } else {
         "workspace.changed"
     }
+}
+
+fn long_operation_tool(name: &str) -> bool {
+    [
+        "glass.process.",
+        "glass.test.",
+        "glass.eval.",
+        "glass.debug.",
+        "glass.git.",
+        "glass.workflow.",
+        "glass.experiment.",
+        "glass.agent.",
+        "glass.task.",
+        "glass.browser.start",
+        "glass.browser.stop",
+        "glass.browser.reconnect",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
 }
 
 fn inspect_workspace(
@@ -1117,6 +1624,7 @@ async fn forward_resident_tool_call(
             actor: Some("pi".into()),
             since: None,
             limit: None,
+            operation_id: None,
         },
     )
     .await?;
@@ -1144,12 +1652,12 @@ async fn forward_resident_tool_call(
         .pointer("/workspace/projectRevision")
         .and_then(Value::as_u64)
         .ok_or("durable workspace revision is missing")?;
-    let response = request(
+    let mut response = request(
         socket,
         &DevelopmentDaemonRequest {
             id: format!("tool-{}", call.id),
             token: token.to_string(),
-            operation: "workspace.tool".into(),
+            operation: "operation.submit".into(),
             workspace_id: Some(workspace_id.to_string()),
             root: None,
             call: Some(call.clone()),
@@ -1160,16 +1668,69 @@ async fn forward_resident_tool_call(
             actor: Some("pi".into()),
             since: None,
             limit: None,
+            operation_id: None,
         },
     )
     .await?;
-    if response.ok {
-        Ok(response.result)
-    } else {
-        Err(response
+    if !response.ok {
+        return Err(response
             .error
-            .unwrap_or_else(|| "resident tool call failed".into())
-            .into())
+            .unwrap_or_else(|| "resident operation submission failed".into())
+            .into());
+    }
+    let operation_id = response
+        .result
+        .pointer("/operation/id")
+        .and_then(Value::as_str)
+        .ok_or("daemon operation submission returned no operation ID")?
+        .to_string();
+    loop {
+        let state = response
+            .result
+            .pointer("/operation/state")
+            .and_then(Value::as_str);
+        if state == Some("succeeded") {
+            return response
+                .result
+                .pointer("/operation/result")
+                .cloned()
+                .ok_or_else(|| "successful daemon operation returned no result".into());
+        }
+        if matches!(state, Some("failed" | "cancelled" | "indeterminate")) {
+            let reason = response
+                .result
+                .pointer("/operation/failureReason")
+                .and_then(Value::as_str)
+                .unwrap_or("resident operation did not succeed");
+            return Err(reason.into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        response = request(
+            socket,
+            &DevelopmentDaemonRequest {
+                id: format!("inspect-operation-{}", call.id),
+                token: token.to_string(),
+                operation: "operation.inspect".into(),
+                workspace_id: Some(workspace_id.to_string()),
+                root: None,
+                call: None,
+                expected_generation: None,
+                expected_project_revision: None,
+                allow_mutation: false,
+                confirmed: false,
+                actor: Some("pi".into()),
+                since: None,
+                limit: None,
+                operation_id: Some(operation_id.clone()),
+            },
+        )
+        .await?;
+        if !response.ok {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "resident operation inspection failed".into())
+                .into());
+        }
     }
 }
 
@@ -1247,6 +1808,40 @@ fn required_workspace_id(request: &DevelopmentDaemonRequest) -> Result<&str, Str
         .ok_or("daemon request requires workspaceId")?;
     validate_identifier(id, "workspace")?;
     Ok(id)
+}
+
+fn required_operation_id(request: &DevelopmentDaemonRequest) -> Result<&str, String> {
+    let id = request
+        .operation_id
+        .as_deref()
+        .ok_or("daemon request requires operationId")?;
+    validate_identifier(id, "operation")?;
+    Ok(id)
+}
+
+fn request_tool_context(
+    request: &DevelopmentDaemonRequest,
+    operation: &str,
+) -> Result<DevelopmentToolContext, String> {
+    let actor = request
+        .actor
+        .as_deref()
+        .map(Actor::external)
+        .unwrap_or_else(Actor::local);
+    Ok(DevelopmentToolContext {
+        authorization: ToolAuthorization {
+            actor,
+            allow_mutation: request.allow_mutation,
+            confirmed: request.confirmed,
+        },
+        initiator: None,
+        expected_generation: request
+            .expected_generation
+            .ok_or_else(|| format!("{operation} requires expectedGeneration"))?,
+        expected_project_revision: request
+            .expected_project_revision
+            .ok_or_else(|| format!("{operation} requires expectedProjectRevision"))?,
+    })
 }
 
 fn validate_identifier(value: &str, description: &str) -> Result<(), String> {
@@ -1485,6 +2080,65 @@ mod tests {
         }
     }
 
+    async fn submit_and_wait(
+        socket: &Path,
+        request_value: &DevelopmentDaemonRequest,
+    ) -> DevelopmentDaemonResponse {
+        let mut submission = request_value.clone();
+        submission.operation = "operation.submit".into();
+        let accepted = request(socket, &submission).await.unwrap();
+        if !accepted.ok {
+            return accepted;
+        }
+        let operation_id = accepted.result["operation"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for sequence in 0..2_000 {
+            let mut inspect = submission.clone();
+            inspect.id = format!("inspect-{}-{sequence}", submission.id);
+            inspect.operation = "operation.inspect".into();
+            inspect.call = None;
+            inspect.expected_generation = None;
+            inspect.expected_project_revision = None;
+            inspect.allow_mutation = false;
+            inspect.confirmed = false;
+            inspect.operation_id = Some(operation_id.clone());
+            let response = request(socket, &inspect).await.unwrap();
+            if !response.ok {
+                return response;
+            }
+            match response.result["operation"]["state"].as_str() {
+                Some("succeeded") => {
+                    return DevelopmentDaemonResponse {
+                        id: submission.id,
+                        ok: true,
+                        result: response.result["operation"]["result"].clone(),
+                        error: None,
+                    };
+                }
+                Some("failed" | "cancelled" | "indeterminate") => {
+                    return DevelopmentDaemonResponse {
+                        id: submission.id,
+                        ok: false,
+                        result: Value::Null,
+                        error: response.result["operation"]["failureReason"]
+                            .as_str()
+                            .map(str::to_string)
+                            .or_else(|| Some("operation did not succeed".into())),
+                    };
+                }
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        DevelopmentDaemonResponse {
+            id: submission.id,
+            ok: false,
+            result: Value::Null,
+            error: Some("operation did not settle in the test deadline".into()),
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn workspace_actors_do_not_serialize_unrelated_long_operations() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
@@ -1538,8 +2192,18 @@ while True:
                         DevelopmentWorkspace::open_with_store(root, store.clone()).unwrap();
                     let summary = workspace_summary(id, &workspace);
                     let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
-                    tokio::task::spawn_local(run_workspace_actor(id.into(), workspace, receiver));
-                    WorkspaceActorHandle { sender, summary }
+                    let operations = Arc::new(Mutex::new(OperationRegistry::new(id.into())));
+                    tokio::task::spawn_local(run_workspace_actor(
+                        id.into(),
+                        workspace,
+                        receiver,
+                        Arc::clone(&operations),
+                    ));
+                    WorkspaceActorHandle {
+                        sender,
+                        summary,
+                        operations,
+                    }
                 };
                 let first = actor("first", &first_root);
                 let second = actor("second", &second_root);
@@ -1675,6 +2339,191 @@ while True:
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn long_operations_reconnect_reconcile_and_cancel_by_stable_id() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glassd-operation-lifecycle-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = WorkspaceTrustStore::at(root.join("trust.json"));
+        store
+            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let workspace =
+                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let summary = workspace_summary("operations", &workspace);
+                let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                let operations = Arc::new(Mutex::new(OperationRegistry::new("operations".into())));
+                tokio::task::spawn_local(run_workspace_actor(
+                    "operations".into(),
+                    workspace,
+                    receiver,
+                    Arc::clone(&operations),
+                ));
+                let handle = WorkspaceActorHandle {
+                    sender: sender.clone(),
+                    summary: summary.clone(),
+                    operations: Arc::clone(&operations),
+                };
+                let (kernel_kind, slow_code) = if cfg!(windows) {
+                    ("python", "import time; time.sleep(0.2); print('complete')")
+                } else {
+                    ("shell", "sleep 0.2; echo complete")
+                };
+                workspace_tool(
+                    handle.clone(),
+                    ToolCall {
+                        id: "operation-kernel-start".into(),
+                        name: "glass.eval.start".into(),
+                        arguments: serde_json::json!({"name":"operation","kind":kernel_kind}),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
+
+                let (first, created) = operations
+                    .lock()
+                    .unwrap()
+                    .submit(
+                        "stable-request",
+                        "test-client".into(),
+                        "glass.eval.execute".into(),
+                        0,
+                        true,
+                    )
+                    .unwrap();
+                assert!(created);
+                sender
+                    .send(WorkspaceCommand::SubmitOperation {
+                        operation_id: first.id.clone(),
+                        call: ToolCall {
+                            id: "operation-slow".into(),
+                            name: "glass.eval.execute".into(),
+                            arguments: serde_json::json!({
+                                "name":"operation",
+                                "code":slow_code,
+                                "timeoutSeconds":2
+                            }),
+                        },
+                        context: Box::new(test_context()),
+                    })
+                    .await
+                    .unwrap();
+
+                // A fresh handle models a disconnected client recovering the same operation.
+                let reconnected = WorkspaceActorHandle {
+                    sender: sender.clone(),
+                    summary,
+                    operations: Arc::clone(&operations),
+                };
+                let immediate = reconnected.operations.lock().unwrap().records[&first.id].clone();
+                assert!(matches!(
+                    immediate.state,
+                    DevelopmentOperationState::Queued | DevelopmentOperationState::Running
+                ));
+                let duplicate = operations
+                    .lock()
+                    .unwrap()
+                    .submit(
+                        "stable-request",
+                        "test-client".into(),
+                        "glass.eval.execute".into(),
+                        0,
+                        true,
+                    )
+                    .unwrap();
+                assert!(!duplicate.1);
+                assert_eq!(duplicate.0.id, first.id);
+                for _ in 0..100 {
+                    if operations.lock().unwrap().records[&first.id].state
+                        == DevelopmentOperationState::Succeeded
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let finished = operations.lock().unwrap().records[&first.id].clone();
+                assert_eq!(finished.state, DevelopmentOperationState::Succeeded);
+                assert!(finished.result.is_some());
+                assert_eq!(finished.revision_after, Some(0));
+
+                let (cancelled, _) = operations
+                    .lock()
+                    .unwrap()
+                    .submit(
+                        "cancel-request",
+                        "test-client".into(),
+                        "glass.eval.execute".into(),
+                        0,
+                        true,
+                    )
+                    .unwrap();
+                sender
+                    .send(WorkspaceCommand::SubmitOperation {
+                        operation_id: cancelled.id.clone(),
+                        call: ToolCall {
+                            id: "operation-cancel".into(),
+                            name: "glass.eval.execute".into(),
+                            arguments: serde_json::json!({
+                                "name":"operation",
+                                "code":slow_code,
+                                "timeoutSeconds":2
+                            }),
+                        },
+                        context: Box::new(test_context()),
+                    })
+                    .await
+                    .unwrap();
+                for _ in 0..100 {
+                    if operations.lock().unwrap().records[&cancelled.id].state
+                        == DevelopmentOperationState::Running
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let cancelling = operations.lock().unwrap().cancel(&cancelled.id).unwrap();
+                assert!(cancelling.cancellation_requested);
+                for _ in 0..100 {
+                    if operations.lock().unwrap().records[&cancelled.id].state
+                        == DevelopmentOperationState::Cancelled
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(
+                    operations.lock().unwrap().records[&cancelled.id].state,
+                    DevelopmentOperationState::Cancelled
+                );
+                assert!(
+                    operations
+                        .lock()
+                        .unwrap()
+                        .events
+                        .iter()
+                        .any(|event| event.operation_id == first.id
+                            && event.state == DevelopmentOperationState::Succeeded)
+                );
+
+                let (response, received) = tokio::sync::oneshot::channel();
+                reconnected
+                    .sender
+                    .send(WorkspaceCommand::Shutdown { response })
+                    .await
+                    .unwrap();
+                received.await.unwrap();
+            })
+            .await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn workspace_event_cursors_survive_client_reconnects() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -1688,10 +2537,17 @@ while True:
                 let workspace = DevelopmentWorkspace::open(&root).unwrap();
                 let summary = workspace_summary("events", &workspace);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
-                tokio::task::spawn_local(run_workspace_actor("events".into(), workspace, receiver));
+                let operations = Arc::new(Mutex::new(OperationRegistry::new("events".into())));
+                tokio::task::spawn_local(run_workspace_actor(
+                    "events".into(),
+                    workspace,
+                    receiver,
+                    Arc::clone(&operations),
+                ));
                 let first_client = WorkspaceActorHandle {
                     sender: sender.clone(),
                     summary: summary.clone(),
+                    operations: Arc::clone(&operations),
                 };
                 workspace_tool(
                     first_client,
@@ -1708,6 +2564,7 @@ while True:
                     WorkspaceActorHandle {
                         sender: sender.clone(),
                         summary: summary.clone(),
+                        operations: Arc::clone(&operations),
                     },
                     0,
                     16,
@@ -1719,7 +2576,11 @@ while True:
                 let cursor = first["newestSequence"].as_u64().unwrap();
 
                 // A fresh handle models a client reconnecting to the same actor.
-                let reconnected = WorkspaceActorHandle { sender, summary };
+                let reconnected = WorkspaceActorHandle {
+                    sender,
+                    summary,
+                    operations,
+                };
                 workspace_tool(
                     reconnected.clone(),
                     ToolCall {
@@ -1814,11 +2675,12 @@ while True:
                     actor: Some("test-client".into()),
                     since: None,
                     limit: None,
+                    operation_id: None,
                 };
                 let mut open = base_request("open", "workspace.open");
                 open.root = Some(project.clone());
                 assert!(request(&socket, &open).await.unwrap().ok);
-                let mut start = base_request("start", "workspace.tool");
+                let mut start = base_request("start", "operation.submit");
                 start.call = Some(ToolCall {
                     id: "kernel-start".into(),
                     name: "glass.eval.start".into(),
@@ -1828,8 +2690,8 @@ while True:
                 start.expected_project_revision = Some(0);
                 start.allow_mutation = true;
                 start.confirmed = true;
-                assert!(request(&socket, &start).await.unwrap().ok);
-                let mut process_start = base_request("process-start", "workspace.tool");
+                assert!(submit_and_wait(&socket, &start).await.ok);
+                let mut process_start = base_request("process-start", "operation.submit");
                 process_start.call = Some(ToolCall {
                     id: "process-start".into(),
                     name: "glass.process.start".into(),
@@ -1839,13 +2701,13 @@ while True:
                 process_start.expected_project_revision = Some(0);
                 process_start.allow_mutation = true;
                 process_start.confirmed = true;
-                assert!(request(&socket, &process_start).await.unwrap().ok);
+                assert!(submit_and_wait(&socket, &process_start).await.ok);
                 let pi_available = std::process::Command::new("pi")
                     .arg("--version")
                     .output()
                     .is_ok();
                 if pi_available {
-                    let mut agent_start = base_request("agent-start", "workspace.tool");
+                    let mut agent_start = base_request("agent-start", "operation.submit");
                     agent_start.call = Some(ToolCall {
                         id: "agent-start".into(),
                         name: "glass.agent.spawn".into(),
@@ -1865,7 +2727,7 @@ while True:
                     agent_start.expected_project_revision = Some(1);
                     agent_start.allow_mutation = true;
                     agent_start.confirmed = true;
-                    let agent_response = request(&socket, &agent_start).await.unwrap();
+                    let agent_response = submit_and_wait(&socket, &agent_start).await;
                     assert!(agent_response.ok, "{:?}", agent_response.error);
                 }
                 let browser_e2e = std::env::var("GLASS_E2E").as_deref() == Ok("1")
@@ -1874,7 +2736,7 @@ while True:
                     let port_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                     let browser_port = port_probe.local_addr().unwrap().port();
                     drop(port_probe);
-                    let mut browser_start = base_request("browser-start", "workspace.tool");
+                    let mut browser_start = base_request("browser-start", "operation.submit");
                     browser_start.call = Some(ToolCall {
                         id: "browser-start".into(),
                         name: "glass.browser.start".into(),
@@ -1888,7 +2750,7 @@ while True:
                     browser_start.expected_project_revision = Some(1);
                     browser_start.allow_mutation = true;
                     browser_start.confirmed = true;
-                    let response = request(&socket, &browser_start).await.unwrap();
+                    let response = submit_and_wait(&socket, &browser_start).await;
                     assert!(response.ok, "{:?}", response.error);
                 }
                 // The Pi-style broker opens a new process/socket and still
@@ -1936,7 +2798,7 @@ while True:
                     assert!(!inspect.result["agents"].as_array().unwrap().is_empty());
                 }
                 assert_eq!(inspect.result["browser"]["connected"], browser_e2e);
-                let mut process_stop = base_request("process-stop", "workspace.tool");
+                let mut process_stop = base_request("process-stop", "operation.submit");
                 process_stop.call = Some(ToolCall {
                     id: "process-stop".into(),
                     name: "glass.process.stop".into(),
@@ -1946,9 +2808,9 @@ while True:
                 process_stop.expected_project_revision = Some(1);
                 process_stop.allow_mutation = true;
                 process_stop.confirmed = true;
-                assert!(request(&socket, &process_stop).await.unwrap().ok);
+                assert!(submit_and_wait(&socket, &process_stop).await.ok);
                 if browser_e2e {
-                    let mut browser_stop = base_request("browser-stop", "workspace.tool");
+                    let mut browser_stop = base_request("browser-stop", "operation.submit");
                     browser_stop.call = Some(ToolCall {
                         id: "browser-stop".into(),
                         name: "glass.browser.stop".into(),
@@ -1958,7 +2820,7 @@ while True:
                     browser_stop.expected_project_revision = Some(2);
                     browser_stop.allow_mutation = true;
                     browser_stop.confirmed = true;
-                    assert!(request(&socket, &browser_stop).await.unwrap().ok);
+                    assert!(submit_and_wait(&socket, &browser_stop).await.ok);
                 }
                 server.abort();
             })
@@ -2015,6 +2877,7 @@ while True:
                     actor: Some("external-agent".into()),
                     since: None,
                     limit: None,
+                    operation_id: None,
                 };
                 let mut open = base_request("open", "workspace.open");
                 open.root = Some(project.clone());
@@ -2030,7 +2893,7 @@ while True:
                 assert!(inspected.ok);
                 assert_eq!(inspected.result["workspace"]["trust"], "untrusted");
 
-                let mut tool = base_request("tool", "workspace.tool");
+                let mut tool = base_request("tool", "operation.submit");
                 tool.call = Some(ToolCall {
                     id: "hostile".into(),
                     name: "glass.custom.hostile".into(),
@@ -2040,7 +2903,7 @@ while True:
                 tool.expected_project_revision = Some(0);
                 tool.allow_mutation = true;
                 tool.confirmed = true;
-                let denied = request(&socket, &tool).await.unwrap();
+                let denied = submit_and_wait(&socket, &tool).await;
                 assert!(!denied.ok);
                 assert!(denied.error.unwrap().contains("trust"));
                 server.abort();

@@ -1037,6 +1037,25 @@ pub enum ProjectProcessCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
+    /// Inspect Node, Pi SDK, authentication, model, and session readiness.
+    Doctor,
+    /// Install or select the Glass-managed native Pi SDK runtime.
+    Setup {
+        /// Select an existing Pi SDK dist/index.js instead of installing one.
+        #[arg(long)]
+        sdk_entry: Option<PathBuf>,
+        /// Use this existing Pi agent directory for credentials and models.
+        #[arg(long, requires = "sdk_entry")]
+        agent_dir: Option<PathBuf>,
+        /// Reinstall the pinned managed SDK even when it is already ready.
+        #[arg(long)]
+        update: bool,
+        /// Open the managed Pi CLI after setup so `/login` can configure auth.
+        #[arg(long)]
+        login: bool,
+    },
+    /// Print the concise current Glass Agent readiness state.
+    Status,
     /// Execute one schema-validated call through the Glass agent-tool broker.
     #[command(hide = true)]
     Tool {
@@ -1082,13 +1101,13 @@ pub enum AgentCommand {
         #[arg(long, value_enum, default_value_t = AgentHarness::Pi)]
         harness: AgentHarness,
     },
-    /// Queue a follow-up through the real Pi RPC adapter.
+    /// Queue a follow-up through the native Pi SDK runtime.
     FollowUp {
         text: String,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// List models exposed by the real Pi RPC adapter.
+    /// List models exposed by the native Pi SDK runtime.
     Models {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1530,6 +1549,40 @@ mod tests {
                 .unwrap()
                 .yolo
         );
+    }
+
+    #[test]
+    fn agent_readiness_commands_are_explicit() {
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "agent", "doctor"])
+                .unwrap()
+                .command,
+            Some(Commands::Agent {
+                action: AgentCommand::Doctor
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "glass",
+                "agent",
+                "setup",
+                "--sdk-entry",
+                "/opt/pi/dist/index.js",
+                "--agent-dir",
+                "/opt/pi/config",
+                "--update"
+            ])
+            .unwrap()
+            .command,
+            Some(Commands::Agent {
+                action: AgentCommand::Setup {
+                    sdk_entry: Some(_),
+                    agent_dir: Some(_),
+                    update: true,
+                    login: false,
+                }
+            })
+        ));
     }
 
     #[test]

@@ -10,7 +10,7 @@ Native browser use requires:
 
 Validate native browser behavior in the environment where you deploy Glass.
 
-The 0.3.4 source line runs browser-free Windows CI, but native Windows browser,
+The release line runs browser-free Windows CI, but native Windows browser,
 PTY, and TUI behavior is not certified. Do not infer deployment support from a
 successful source build. Glass does not install Playwright or another browser
 runtime.

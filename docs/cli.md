@@ -354,13 +354,13 @@ glass agent prompt "Explain @diagnostic" --harness pi --root .
 glass agent steer "focus on the failing test" --root .
 ```
 
-The Pi path uses Glass's embedded system prompt and twenty bounded tools rather
-than Pi's raw filesystem/shell implementation: thirteen read-only tools and
-seven approval-gated mutations. Glass overrides the standard `read`, `write`,
-`edit`, `bash`, `grep`, `find`, and `ls` names so coding-oriented models retain
-their expected harness vocabulary. A one-shot Pi prompt
-waits for `agent_settled`; steer, follow-up, and abort are useful in
-the resident TUI where the same Pi RPC process remains active. A mutation
+The Pi path uses Glass's embedded system prompt and a single bounded SDK gateway
+rather than Pi's raw filesystem/shell implementation. Run `glass agent doctor`
+or `glass agent status` to inspect Node, SDK, provider/auth, and session
+readiness; run `glass agent setup` for an explicit pinned install, or
+`glass agent setup --login` for Pi's provider login flow. A one-shot Pi prompt
+waits for `agent_settled`; steer, follow-up, and abort remain useful in the
+resident TUI where the same SDK session stays active. A mutation
 freezes and privately serializes its exact arguments, then pauses on a Glass
 approval sheet. `Y`/Enter approves once; `N`/Esc denies. The approval expires
 after 120 seconds and cannot authorize a retry or reshaped call. Exact edits

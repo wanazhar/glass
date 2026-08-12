@@ -41,7 +41,9 @@ pub use intelligence::{
     ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,
 };
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
-pub use pi_runtime::PiSessionRequest;
+pub use pi_runtime::{
+    PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
+};
 pub use tasks::{
     RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
     TaskState, VerificationRequirement,
@@ -136,6 +138,9 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
         }
         Some(Commands::Agent { action }) => {
             let (root, safe) = match action {
+                AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
+                    return Ok(());
+                }
                 AgentCommand::Hello { root, harness } => {
                     (root, matches!(harness, AgentHarness::Local))
                 }

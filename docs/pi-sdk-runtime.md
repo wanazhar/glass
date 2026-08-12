@@ -48,6 +48,32 @@ SDK version and its lockfile. Installed Cargo binaries may resolve the same SDK
 from a local package installation or from the installed `pi` package; operators
 can set `GLASS_PI_SDK_ENTRY` to an explicit SDK `dist/index.js` file.
 
+## Readiness and explicit setup
+
+Glass never downloads Pi during startup. These commands expose the exact
+runtime decision before an agent turn is attempted:
+
+```console
+glass agent doctor
+glass agent status
+glass agent setup
+glass agent setup --login
+```
+
+Readiness reports Node.js (minimum 22.19.0), the resolved SDK entry and version,
+the selected agent directory, provider/auth presence, expired credential
+metadata, and the newest known session. Secret values are never printed. The
+managed runtime lives below the platform Glass data directory at `runtime/pi`;
+setup installs the exact SDK version pinned by this release and records the
+selected entry. `--sdk-entry PATH` selects an existing SDK instead, and
+`--agent-dir PATH` selects the Pi auth/config directory explicitly.
+
+`setup --login` starts Pi in the selected agent directory so the operator can
+run `/login`. Glass does not impersonate provider authentication and does not
+copy credentials. Environment API keys and Pi's `auth.json` are both recognized
+as readiness evidence; absent or expired credentials produce a concrete
+remediation while project/browser features remain available.
+
 ## Local verification
 
 ```bash

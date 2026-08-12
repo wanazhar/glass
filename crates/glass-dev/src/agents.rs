@@ -338,6 +338,7 @@ impl AgentRegistry {
         for record in self.records.values_mut() {
             record.snapshot.dropped_event_count = record.dropped_events.load(Ordering::Relaxed);
         }
+        self.reap_finished_workers();
         self.enforce_budgets();
         self.fail_blocked_dependents();
         self.start_ready_agents()?;
@@ -395,24 +396,16 @@ impl AgentRegistry {
 
     pub fn complete(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
-        let record = self.record_mut(id)?;
-        if record.snapshot.status.terminal() {
+        if self.record_mut(id)?.snapshot.status.terminal() {
             return Err(DevelopmentError::Conflict(format!(
                 "agent {} is already terminal",
                 id.as_str()
             )));
         }
-        record.snapshot.status = AgentStatus::Completed;
-        record.snapshot.updated_at_ms = now_ms();
-        if let Some(sender) = record.command.take() {
+        if let Some(sender) = self.record_mut(id)?.command.take() {
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
-        let worker = record.worker.take();
-        if let Some(worker) = worker {
-            worker.join().map_err(|_| {
-                DevelopmentError::Process(format!("agent {} worker panicked", id.as_str()))
-            })?;
-        }
+        self.join_worker(id, AgentStatus::Completed)?;
         self.record_event(id, "completed", Value::Null);
         self.start_ready_agents()?;
         Ok(())
@@ -420,23 +413,15 @@ impl AgentRegistry {
 
     pub fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
-        let record = self.record_mut(id)?;
-        if record.snapshot.status.terminal() {
+        if self.record_mut(id)?.snapshot.status.terminal() {
             return Ok(());
         }
-        if let Some(sender) = &record.command {
+        if let Some(sender) = &self.record_mut(id)?.command {
             let _ = sender.try_send(WorkerCommand::Request(PiSessionRequest::Abort));
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
-        record.command = None;
-        let worker = record.worker.take();
-        record.snapshot.status = AgentStatus::Cancelled;
-        record.snapshot.updated_at_ms = now_ms();
-        if let Some(worker) = worker {
-            worker.join().map_err(|_| {
-                DevelopmentError::Process(format!("agent {} worker panicked", id.as_str()))
-            })?;
-        }
+        self.record_mut(id)?.command = None;
+        self.join_worker(id, AgentStatus::Cancelled)?;
         self.record_event(id, "cancelled", Value::Null);
         self.fail_blocked_dependents();
         Ok(())
@@ -671,6 +656,83 @@ impl AgentRegistry {
         }
     }
 
+    fn join_worker(&mut self, id: &AgentId, terminal: AgentStatus) -> DevelopmentResult<()> {
+        let worker = self.record_mut(id)?.worker.take();
+        if let Some(worker) = worker
+            && worker.join().is_err()
+        {
+            let error = format!("agent {} worker panicked", id.as_str());
+            let record = self.record_mut(id)?;
+            record.command = None;
+            record.snapshot.status = AgentStatus::Failed;
+            record.snapshot.last_error = Some(error.clone());
+            record.snapshot.updated_at_ms = now_ms();
+            self.record_event(
+                id,
+                "workerPanicked",
+                serde_json::json!({"agentId":id.as_str(),"error":error}),
+            );
+            return Err(DevelopmentError::Process(error));
+        }
+        let record = self.record_mut(id)?;
+        record.command = None;
+        record.snapshot.status = terminal;
+        record.snapshot.updated_at_ms = now_ms();
+        Ok(())
+    }
+
+    fn reap_finished_workers(&mut self) {
+        let finished = self
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                record
+                    .worker
+                    .as_ref()
+                    .is_some_and(|worker| worker.is_finished())
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in finished {
+            let worker = self
+                .records
+                .get_mut(&id)
+                .and_then(|record| record.worker.take());
+            let panicked = worker.is_some_and(|worker| worker.join().is_err());
+            let mut event = None;
+            if let Some(record) = self.records.get_mut(&id) {
+                record.command = None;
+                if panicked {
+                    let error = format!("agent {} worker panicked", id.as_str());
+                    record.snapshot.status = AgentStatus::Failed;
+                    record.snapshot.last_error = Some(error.clone());
+                    record.snapshot.updated_at_ms = now_ms();
+                    event = Some((
+                        "workerPanicked",
+                        serde_json::json!({
+                            "agentId":id.as_str(),
+                            "role":record.snapshot.role.clone(),
+                            "task":record.snapshot.task.clone(),
+                            "error":error,
+                        }),
+                    ));
+                } else if !record.snapshot.status.terminal() {
+                    let error = format!(
+                        "agent {} worker exited before a terminal outcome",
+                        id.as_str()
+                    );
+                    record.snapshot.status = AgentStatus::Failed;
+                    record.snapshot.last_error = Some(error.clone());
+                    record.snapshot.updated_at_ms = now_ms();
+                    event = Some(("workerExited", Value::String(error)));
+                }
+            }
+            if let Some((kind, payload)) = event {
+                self.record_event(&id, kind, payload);
+            }
+        }
+    }
+
     fn record_event(&mut self, id: &AgentId, kind: &str, payload: Value) {
         if self.history.len() == HISTORY_CAPACITY {
             self.history.pop_front();
@@ -695,16 +757,18 @@ impl AgentRegistry {
 impl Drop for AgentRegistry {
     fn drop(&mut self) {
         let mut workers = Vec::new();
-        for record in self.records.values_mut() {
+        for (id, record) in &mut self.records {
             if let Some(sender) = record.command.take() {
                 let _ = sender.try_send(WorkerCommand::Shutdown);
             }
             if let Some(worker) = record.worker.take() {
-                workers.push(worker);
+                workers.push((id.clone(), worker));
             }
         }
-        for worker in workers {
-            let _ = worker.join();
+        for (id, worker) in workers {
+            if worker.join().is_err() {
+                tracing::error!(agent_id = %id.as_str(), "agent worker panicked during registry drop");
+            }
         }
     }
 }
@@ -881,6 +945,101 @@ mod tests {
             &dropped,
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    fn insert_test_worker(
+        registry: &mut AgentRegistry,
+        id: AgentId,
+        command: SyncSender<WorkerCommand>,
+        worker: thread::JoinHandle<()>,
+    ) {
+        let spec = AgentSpec::new("lifecycle-test", "prove worker ownership");
+        let now = now_ms();
+        registry.records.insert(
+            id.clone(),
+            AgentRecord {
+                snapshot: AgentSnapshot {
+                    id,
+                    role: spec.role.clone(),
+                    task: spec.task.clone(),
+                    status: AgentStatus::Working,
+                    dependencies: Vec::new(),
+                    model: None,
+                    thinking: None,
+                    worktree: registry.root.clone(),
+                    unrestricted: false,
+                    created_at_ms: now,
+                    started_at_ms: Some(now),
+                    updated_at_ms: now,
+                    event_count: 0,
+                    dropped_event_count: 0,
+                    last_error: None,
+                    last_response_id: None,
+                    evidence: Vec::new(),
+                },
+                spec,
+                command: Some(command),
+                worker: Some(worker),
+                awaiting_agent_settle: false,
+                dropped_events: Arc::new(AtomicU64::new(0)),
+            },
+        );
+    }
+
+    #[test]
+    fn repeated_cancel_joins_every_owned_worker() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let exited = Arc::new(AtomicU64::new(0));
+        for sequence in 0..128 {
+            let id = AgentId::parse(format!("agent-test-{sequence}")).unwrap();
+            let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+            let exits = Arc::clone(&exited);
+            let worker = thread::spawn(move || {
+                while let Ok(command) = commands.recv() {
+                    if matches!(command, WorkerCommand::Shutdown) {
+                        break;
+                    }
+                }
+                exits.fetch_add(1, Ordering::SeqCst);
+            });
+            insert_test_worker(&mut registry, id.clone(), command, worker);
+            registry.cancel(&id).unwrap();
+            let record = registry.records.get(&id).unwrap();
+            assert_eq!(record.snapshot.status, AgentStatus::Cancelled);
+            assert!(record.worker.is_none());
+        }
+        assert_eq!(exited.load(Ordering::SeqCst), 128);
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn worker_panic_becomes_attributed_agent_failure() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-panic-test").unwrap();
+        let (command, _commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(|| panic!("intentional worker panic"));
+        worker.thread().unpark();
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        for _ in 0..100 {
+            registry.refresh().unwrap();
+            if registry.records[&id].snapshot.status == AgentStatus::Failed {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.status, AgentStatus::Failed);
+        assert!(snapshot.last_error.unwrap().contains(id.as_str()));
+        assert!(registry.history(0).unwrap().iter().any(|event| {
+            event.agent_id == id
+                && event.kind == "workerPanicked"
+                && event.payload["role"] == "lifecycle-test"
+        }));
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn wait_for_status(

@@ -109,6 +109,13 @@ FORBIDDEN_PUBLIC_MARKERS = (
     "current host",
     "machine only",
 )
+FORBIDDEN_ARCHITECTURE_PHRASES = (
+    "pi rpc",
+    "resident pi adapter",
+    "optional pi adapter",
+    "real pi rpc",
+    "0.3.4 source line",
+)
 
 
 def fail(message: str) -> None:
@@ -179,6 +186,23 @@ def main() -> None:
             if marker in lowered:
                 failures.append(
                     f"{relative} contains machine-scoped public wording {marker!r}"
+                )
+    architecture_docs = [ROOT / "README.md", ROOT / "crates/glass-dev/README.md"]
+    architecture_docs.extend(
+        path
+        for path in (ROOT / "docs").rglob("*.md")
+        if "plan" not in path.relative_to(ROOT).parts
+    )
+    for path in architecture_docs:
+        relative = path.relative_to(ROOT)
+        try:
+            lowered = path.read_text(encoding="utf-8").lower()
+        except OSError as error:
+            fail(f"cannot read {relative}: {error}")
+        for phrase in FORBIDDEN_ARCHITECTURE_PHRASES:
+            if phrase in lowered:
+                failures.append(
+                    f"{relative} contains retired architecture phrase {phrase!r}"
                 )
     if failures:
         fail("; ".join(failures))

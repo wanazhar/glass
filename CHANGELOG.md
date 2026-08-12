@@ -168,7 +168,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
   timelines.
 - Added a responsive TUI Development workspace with a native editor, live app,
   files/Git, runtime/tests/actors, attributed timeline, asynchronous LSP work,
-  and a non-blocking long-lived Pi RPC worker.
+  and the legacy non-blocking long-lived Pi subprocess worker.
 - Added real rust-analyzer diagnostics, PTY health and URL detection, explicit
   source/runtime graph links, semantic breakpoints, replay, worktree
   experiments, collaboration claims, global search, and Neovim PTY/RPC probes.

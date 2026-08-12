@@ -97,7 +97,7 @@ project root, retained content is bounded, and mutations remain attributed.
 
 Project mutation through a daemon-bound client requires the current mutation
 lease. Read-only inspection does not start Chrome. Pi-specific control remains
-behind the Glass harness; these MCP tools do not expose raw Pi RPC.
+behind the Glass harness; these MCP tools do not expose Pi's private SDK IPC.
 
 ## Task Protocol and Web IR
 

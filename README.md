@@ -245,13 +245,14 @@ glass agent hello --root .
 glass agent prompt "Inspect @workspace and @diagnostic" --root .
 ```
 
-The optional Pi adapter uses a real line-delimited RPC session. Glass launches
-Pi with its raw built-in tools disabled and supplies Glass-owned overrides for
-the familiar `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` names,
-plus bounded semantic/project tools:
+The native Pi SDK runtime uses a persistent `AgentSession` with raw built-in
+tools disabled. Its only executable capability is the Glass-owned gateway into
+bounded project, browser, workflow, and resident-runtime tools:
 
 ```console
 glass agent hello --harness pi --root .
+glass agent doctor
+glass agent setup
 glass agent models --root .
 glass agent prompt "Explain the failing diagnostic" --harness pi --root .
 ```
@@ -270,12 +271,12 @@ and installed Pi extensions with the user's account. It does not disable
 revision checks, workspace/daemon leases, explicit host denials, protocol
 bounds, or result-size limits.
 
-Tool availability follows live dependencies. The current subprocess Pi bridge
-does not advertise browser or persistent-process controls because it cannot
-carry the resident target revision, policy, mutation lease, or PTY ownership;
-`glass_capabilities` reports those reasons instead of pretending an operation
-is available. Project mutations require the applicable precondition and policy
-plus confirmation. In the resident TUI, each Pi mutation pauses on a
+Nothing is downloaded during startup. `agent doctor` and `agent status` report
+the resolved Node/SDK/auth/provider/session state without secrets; `agent
+setup` explicitly installs the release-pinned SDK or selects an existing entry.
+Tool availability follows the live workspace and its revisions, policy,
+mutation leases, and PTY/browser ownership. Project mutations require the
+applicable precondition and policy plus confirmation. In the resident TUI, each Pi mutation pauses on a
 Glass-owned approval sheet; `Y`/Enter approves that exact serialized call once
 and `N`/Esc denies it. Unanswered requests expire after 120 seconds, while
 non-interactive Pi CLI requests deny them immediately. Prompt text, page content, secrets, and process

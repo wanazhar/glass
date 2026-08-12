@@ -56,7 +56,7 @@ authority.
 | `project run NAME COMMAND` | command area | start a managed PTY process |
 | `project processes` | command area | inspect bounded process state |
 | `project agent PROMPT` | command area | stream local harness events and tool results |
-| `project pi ACTION` | command area | queue a real Pi RPC request without blocking input |
+| `project pi ACTION` | command area | queue a native Pi SDK request without blocking input |
 | `Y`/Enter or `N`/Esc | Pi approval sheet | approve the displayed exact mutation once, or deny it |
 | `project diagnostics PATH` | command area | run LSP work off the input/render loop |
 | `Esc` | busy/error | cancel browser work or dismiss an error |

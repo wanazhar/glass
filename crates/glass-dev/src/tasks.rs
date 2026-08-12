@@ -94,7 +94,10 @@ impl Default for RetryPolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum VerificationRequirement {
+    /// Resolve a deterministic project verifier when the task is created.
     #[default]
+    Inferred,
+    /// Deliberately accept agent settlement without deterministic proof.
     Settled,
     Command {
         command: String,
@@ -279,9 +282,13 @@ impl TaskScheduler {
     pub fn create<B: TaskAgentBackend>(
         &mut self,
         agents: &mut B,
-        spec: TaskSpec,
+        mut spec: TaskSpec,
     ) -> DevelopmentResult<TaskId> {
         self.refresh(agents)?;
+        if spec.verification == VerificationRequirement::Inferred {
+            let worktree = spec.worktree.as_deref().unwrap_or(&self.root);
+            spec.verification = infer_verification(worktree);
+        }
         self.validate_spec(&spec)?;
         if self.tasks.len() >= MAX_TASKS {
             return Err(DevelopmentError::Conflict(format!(
@@ -868,6 +875,9 @@ fn verify(
     evidence: &[TaskEvidence],
 ) -> DevelopmentResult<VerificationOutcome> {
     match requirement {
+        VerificationRequirement::Inferred => Err(DevelopmentError::Conflict(
+            "inferred task verification was not resolved at creation".into(),
+        )),
         VerificationRequirement::Settled => Ok(VerificationOutcome::Passed(Vec::new())),
         VerificationRequirement::Command {
             command,
@@ -1010,6 +1020,33 @@ fn verification_kind(requirement: &VerificationRequirement) -> &'static str {
         VerificationRequirement::TrustedCustom { .. } => "trustedCustom",
         _ => "unknown",
     }
+}
+
+fn infer_verification(worktree: &Path) -> VerificationRequirement {
+    let command = if worktree.join("Cargo.lock").is_file() {
+        Some("cargo test --workspace --all-targets --locked")
+    } else if worktree.join("Cargo.toml").is_file() {
+        Some("cargo test --workspace --all-targets")
+    } else if worktree.join("package.json").is_file() {
+        Some("npm test")
+    } else if worktree.join("pyproject.toml").is_file() || worktree.join("pytest.ini").is_file() {
+        Some("python -m pytest")
+    } else if worktree.join("go.mod").is_file() {
+        Some("go test ./...")
+    } else {
+        None
+    };
+    command.map_or(
+        VerificationRequirement::GitChange {
+            require_changes: true,
+            require_clean: false,
+        },
+        |command| VerificationRequirement::Command {
+            command: command.into(),
+            expected_exit: 0,
+            timeout_seconds: 600,
+        },
+    )
 }
 
 fn event_tokens(value: &Value) -> u64 {
@@ -1208,11 +1245,17 @@ mod tests {
         scheduler.refresh(agents).unwrap();
     }
 
+    fn settle_only(title: impl Into<String>, prompt: impl Into<String>) -> TaskSpec {
+        let mut spec = TaskSpec::new(title, prompt);
+        spec.verification = VerificationRequirement::Settled;
+        spec
+    }
+
     #[test]
     fn tasks_dispatch_prompts_verify_and_wake_dag_dependents() {
         let (root, mut scheduler, mut agents) = scheduler();
         let first = scheduler
-            .create(&mut agents, TaskSpec::new("investigate", "inspect failure"))
+            .create(&mut agents, settle_only("investigate", "inspect failure"))
             .unwrap();
         settle(&mut scheduler, &mut agents);
         assert_eq!(
@@ -1221,7 +1264,7 @@ mod tests {
         );
         assert_eq!(agents.prompts[0].1, "inspect failure");
 
-        let mut dependent = TaskSpec::new("repair", "apply repair");
+        let mut dependent = settle_only("repair", "apply repair");
         dependent.dependencies.push(first);
         let dependent = scheduler.create(&mut agents, dependent).unwrap();
         settle(&mut scheduler, &mut agents);
@@ -1242,14 +1285,14 @@ mod tests {
                 scheduler
                     .create(
                         &mut agents,
-                        TaskSpec::new(format!("worker-{index}"), format!("inspect shard {index}")),
+                        settle_only(format!("worker-{index}"), format!("inspect shard {index}")),
                     )
                     .unwrap(),
             );
         }
         assert_eq!(scheduler.tasks.len(), 8);
 
-        let mut integration = TaskSpec::new("integration", "verify all shards");
+        let mut integration = settle_only("integration", "verify all shards");
         integration.dependencies = leaves.clone();
         let integration = scheduler.create(&mut agents, integration).unwrap();
         assert_eq!(scheduler.tasks.len(), 9);
@@ -1326,6 +1369,39 @@ mod tests {
         assert_eq!(
             scheduler.snapshot(&mut agents, &id).unwrap().state,
             TaskState::Succeeded
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn implementation_tasks_infer_project_verification_and_settle_only_is_explicit() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='verification-fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let inferred = scheduler
+            .create(
+                &mut agents,
+                TaskSpec::new("implement repair", "change the implementation"),
+            )
+            .unwrap();
+        assert!(matches!(
+            scheduler.tasks[&inferred].snapshot.verification,
+            VerificationRequirement::Command { ref command, .. }
+                if command == "cargo test --workspace --all-targets"
+        ));
+
+        let research = scheduler
+            .create(
+                &mut agents,
+                settle_only("research alternatives", "compare approaches"),
+            )
+            .unwrap();
+        assert_eq!(
+            scheduler.tasks[&research].snapshot.verification,
+            VerificationRequirement::Settled
         );
         std::fs::remove_dir_all(root).unwrap();
     }

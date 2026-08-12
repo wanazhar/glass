@@ -290,34 +290,29 @@ glass agent hello --root .
 glass agent prompt "Inspect @workspace and @diagnostic" --root .
 ```
 
-The optional Pi adapter owns one line-delimited RPC session in a resident TUI.
+The native Pi SDK runtime owns one persistent `AgentSession` per resident agent.
 It supports prompt, steer, follow-up, model discovery/selection, thinking
-level, abort, and new session. Pi is not required for project or browser use.
+level, abort, resume, clone, fork, compaction, and history. Pi is not required
+for project or browser use.
 
-Glass launches supported Pi versions offline and ephemeral, with built-in
-tools, ambient extensions, skills, prompt templates, themes, context-file
-discovery, and session persistence disabled. The embedded
+Glass loads the release-pinned SDK through private length-prefixed IPC, with
+built-in tools, ambient extensions, skills, prompt templates, themes, and
+context-file discovery disabled. The embedded
 `pi-glass-system.md` prompt makes Glass revisions, structured-first browser
 evidence, privacy, narrow-terminal output, and truthful effect reporting part
 of every turn without importing arbitrary user or project Pi configuration.
 
-A Glass-owned extension exposes twenty tools. Thirteen are read-only: paged
-file reads, bounded search/list, Git/runtime-impact status, semantic entity
-links, Web IR inspect/diff/continuity, value-free Task Protocol compilation,
-runtime/capability inspection, and diagnostics. Seven mutate: atomic edit,
-file write, bounded command execution, directory creation, rename, delete, and
-test execution. Each call crosses the
-same Rust gateway used by the local harness. Cross-process requests use
-mode-0600, size-bounded, one-use files that the broker removes immediately
-after reading. Arguments and results are schema-validated and capped.
+A Glass-owned SDK tool exposes the workspace router. Every call crosses the
+same Rust gateway used by the local harness, with schema/result bounds, actor
+attribution, revision guards, confinement, mutation authority, leases, and
+browser ownership preserved.
 
 For a mutation, the trusted extension serializes the complete tool call before
-asking. Pi's RPC `extension_ui_request` blocks that tool while Glass shows the
+asking. Glass blocks that tool while its confirmation sheet shows the
 tool name and bounded effect evidence: path/name, redacted command preview, byte
 counts, replacement counts, and short SHA-256 evidence for content or commands. `Y`/Enter or the
-Approve once button sends the matching `extension_ui_response`; only then does
-the extension invoke the broker with mutation authority using the same frozen
-call. `N`/Esc denies. Requests expire after 120 seconds, duplicate/concurrent
+Approve once button authorizes the same frozen call once. `N`/Esc denies.
+Requests expire after 120 seconds, duplicate/concurrent
 and stale responses fail closed, and an approval is consumed once. It does not
 authorize a retry, changed arguments, another tool, or another session. The
 one-shot CLI adapter has no interactive host, so it immediately denies every UI
@@ -326,17 +321,10 @@ assignment values are not placed in status or audit messages. Exact edit blocks
 must each match once against the same original file and may not overlap; the
 combined write is atomic and fails if the file changes after opening.
 
-The standard Pi coding-tool names are deliberate Glass overrides, following
-Pi's documented extension mechanism. This retains model compatibility without
-granting a second unconfined filesystem or shell path. `bash` runs one approved
-command to completion for at most 300 seconds. `read` is line-paged; `ls` is
-path- and result-bounded; `grep` is literal UTF-8 text search with path, glob,
-case, context, and result controls; and `find` applies `*`/`?` matching to the
-bounded project tree. Persistent PTY ownership remains
-in the resident Glass TUI; the subprocess broker does not advertise start/stop/
-logs because it cannot truthfully share those in-memory jobs. Likewise, live
-browser mutation tools remain explicitly unavailable until a resident-session
-bridge can carry target revision, policy, and mutation-lease state.
+The SDK receives no second unconfined filesystem or shell path. Coding,
+process, browser, and workflow calls all return to the resident workspace actor,
+so persistent ownership and revision/lease checks are shared with CLI, TUI,
+daemon, and MCP callers.
 
 Provider/model choice is Pi-owned: built-in providers and supported
 `models.json` custom providers remain available. Glass defaults to cached model
@@ -372,16 +360,16 @@ timeouts, or result bounds. Shell commands and trusted extensions are arbitrary
 local code and are not confined to the project root.
 
 Pi's prompt response only acknowledges queueing. Glass therefore continues
-consuming JSONL events until `agent_settled` (an earlier `agent_end` may still
+consuming SDK events until `agent_settled` (an earlier `agent_end` may still
 be followed by retry, compaction, or queued continuation), forwards bounded
 message/tool/completion events to the Agent view, and drops token-level
 `message_update` noise before it can cause terminal redraws. The resident
 worker multiplexes commands with output at 50 ms or better, so `steer`,
 `follow-up`, and `abort` can be delivered while an agent turn is running.
 One-shot CLI prompts wait for the settled agent result; use the resident TUI
-for controls that target an active turn. RPC records are capped at 512 KiB, the
-reader applies backpressure after 32 queued records, and one-shot responses
-retain only the newest 64 display-worthy events.
+for controls that target an active turn. IPC frames are capped at 16 MiB, the
+reader applies bounded backpressure, and one-shot responses retain only the
+newest display-worthy events.
 
 An attached Browser Workspace adds ephemeral target, origin, semantic summary,
 browser revision, workflow, memory-scope, and authority references. Browser

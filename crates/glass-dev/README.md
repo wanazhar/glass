@@ -99,12 +99,16 @@ or PyPI in the `0.3.5` line.
 ## Agents
 
 The deterministic local harness supports hello, prompt, steering, and bounded
-tool calls. Optional Pi RPC adds model selection, thinking level, follow-up,
-abort, and new session. Pi starts with its built-in tools disabled; Glass owns
-the schema-validating tool gateway and private one-use broker files. The current
-subprocess bridge reports browser and persistent-process tools as unavailable
-until a resident bridge can carry browser revisions, policy, mutation leases,
-and PTY ownership correctly.
+tool calls. The native Pi SDK runtime adds model selection, thinking level,
+follow-up, abort, persistent sessions, resume/fork/compact, and event streaming.
+Pi starts with its built-in tools disabled; its only executable capability is
+Glass's schema-validating gateway into the authoritative workspace actor.
+
+Run `glass agent doctor` or `glass agent status` before the first turn. Nothing
+is downloaded at startup. `glass agent setup` explicitly installs the exact SDK
+version pinned by this release, while `--sdk-entry` selects an existing SDK.
+`glass agent setup --login` opens Pi's provider login flow; Glass reports
+credential presence/expiry without printing secrets.
 
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
@@ -116,19 +120,17 @@ and loads installed Pi resources and their tools. The TUI displays a persistent
 `YOLO` marker. Revision guards, daemon/workspace leases, explicit host denials,
 and transport/result bounds remain enforced.
 
-The optional resident Pi adapter uses a Glass-specific system prompt and twenty
-tools: thirteen read-only operations and seven approval-gated mutations. Glass
-overrides Pi's familiar `read`, `write`, `edit`, `bash`, `grep`, `find`, and
-`ls` names, then adds project/runtime/diagnostic/Web IR/task tools. It streams completed message and
-tool events through the Agent view while dropping token-level redraw noise;
+The resident Pi SDK session uses a Glass-specific system prompt and one
+Glass-owned gateway into project, runtime, diagnostic, Web IR, task, browser,
+and workflow tools. It streams completed message and tool events through the Agent view while dropping token-level redraw noise;
 steer and abort remain responsive during a running turn. Ambient Pi extensions,
-skills, context files, and sessions are disabled for deterministic local-first
+skills, context files, and themes are disabled for deterministic local-first
 behavior. Every mutation pauses on a Glass-owned confirmation sheet. `Y` or
 Enter grants one use for the already serialized call; `N` or Esc denies it.
 Requests expire after 120 seconds, concurrent requests fail closed, and the
-one-shot/non-interactive Pi path always denies UI requests. Exact edit
-preconditions, workspace confinement, atomic saves, bounded command execution,
-actor attribution, and private request files remain enforced by Glass.
+one-shot/non-interactive path always denies UI requests. Exact preconditions,
+workspace confinement, atomic saves, bounded execution, actor attribution,
+revisions, and leases remain enforced by Glass.
 
 The standard names keep useful coding semantics: line-paged reads; bounded,
 path-filtered listings; literal UTF-8 grep with glob/case/context controls;

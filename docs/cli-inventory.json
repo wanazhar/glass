@@ -45,7 +45,7 @@
     "project graph": ["discover", "entity", "source"],
     "project neovim": ["probe", "start"],
     "project experiment": ["create"],
-    "agent": ["hello", "prompt", "steer", "follow-up", "models", "set-model", "thinking", "abort", "new-session"],
+    "agent": ["doctor", "setup", "status", "hello", "prompt", "steer", "follow-up", "models", "set-model", "thinking", "abort", "new-session"],
     "memory": ["status", "inspect", "explain", "forget", "export", "prune", "reindex"],
     "surfaces": ["inspect", "coverage"],
     "backend": ["status", "capabilities", "test"],

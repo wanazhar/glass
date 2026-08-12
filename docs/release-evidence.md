@@ -1,5 +1,12 @@
 # Release evidence
 
+## 0.3.6 release evidence
+
+Issue #36 candidate evidence is recorded in
+[`plan/reviews/release-036-gates.md`](plan/reviews/release-036-gates.md).
+This section intentionally makes no publication, tag, registry, native-CI, or
+GitHub Release claim until those records exist and have been verified.
+
 ## 0.3.5 release evidence
 
 This section records the immutable and public evidence for the signed

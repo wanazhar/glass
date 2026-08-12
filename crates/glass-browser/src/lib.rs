@@ -19,6 +19,7 @@
 //! | Collect stable evidence | [`extraction`] and [`web_ir`] |
 //! | Compile/execute semantic tasks | [`task_protocol`] and [`task_compiler`] |
 //! | Run typed workflows | [`browser::session::WorkflowDefinition`] |
+//! | Share standalone/embedded browser UI state | [`browser_workspace`] |
 //! | Assess scoped historical knowledge | [`KnowledgeStore`] |
 //! | Implement/select a backend | [`browser_backend`] and [`browser::BackendFactory`] |
 //! | Expose MCP or canonical requests | [`mcp`] and [`protocol`] |

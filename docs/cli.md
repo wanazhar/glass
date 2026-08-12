@@ -355,10 +355,12 @@ glass agent steer "focus on the failing test" --root .
 ```
 
 The Pi path uses Glass's embedded system prompt and a single bounded SDK gateway
-rather than Pi's raw filesystem/shell implementation. Run `glass agent doctor`
-or `glass agent status` to inspect Node, SDK, provider/auth, and session
+rather than Pi's raw filesystem/shell implementation. Run `glass agent doctor`,
+`glass agent setup [--login]`, or `glass agent status` to install or inspect
+Node, SDK, provider/auth, and session
 readiness; run `glass agent setup` for an explicit pinned install, or
 `glass agent setup --login` for Pi's provider login flow. A one-shot Pi prompt
+(`doctor`, `setup`, and `status` are the lifecycle subcommands.)
 waits for `agent_settled`; steer, follow-up, and abort remain useful in the
 resident TUI where the same SDK session stays active. A mutation
 freezes and privately serializes its exact arguments, then pauses on a Glass

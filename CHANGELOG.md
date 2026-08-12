@@ -5,25 +5,37 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-12
+
 ### Added
 
-- Added identity-bound repository trust, autonomous verified task DAGs,
-  direct Pi SDK sessions, bounded daemon event cursors, governed kernel tool
-  bindings, measured experiments, broader DAP evidence, and complete resident
-  TUI surfaces.
+- Added one canonical revision-safe BrowserWorkspace across the standalone and
+  embedded App TUIs, live semantic highlighting, explicit Herdr/Remote View
+  presentation, workflows, target recovery, and direct browser controls.
+- Added managed Pi doctor/setup/status, recoverable daemon operations, inferred
+  task verification, a direct Agent conversation, native editor interactions,
+  designed runtime/Git/task projections, and purpose-built phone navigation.
 
 ### Changed
 
-- Moved the executable development core into `glass-dev` and removed the
-  `glass-browser/development-runtime` feature bridge.
-- Replaced generated GitHub notes with validated substantive release bodies
-  bound to exact tag, commit, workflow, migration, limitations, and evidence.
+- Reconstructed desktop and phone information architecture around Agent, Code,
+  App, Terminal, Tasks, Git, Debug, and contextual More instead of raw JSON
+  diagnostics and equal-weight subsystems.
+- Long daemon mutations now return stable operation identities with bounded
+  events, inspection, cancellation, reconnect, and reconciliation semantics.
+
+### Fixed
+
+- Join every owned Agent worker on completion, cancellation, panic, and drop;
+  panics now become attributed failures instead of detached worker leaks.
+- Stop treating Agent settlement as verified task success by default.
 
 ### Security
 
-- Repository-controlled configuration cannot execute or elevate authority
-  before an explicit local trust decision; `--yolo` does not bypass trust.
-- Release publication now blocks unless GitHub itself verifies the signed tag.
+- Browser actions inherit the displayed semantic revision and invalidate stale
+  targets; human takeover pauses Glass mutation until explicit reconciliation.
+- Remote View remains loopback-only, random-token protected, bounded, newest
+  frame only, revision checked, and explicitly revocable.
 
 ## [0.3.4] - 2026-08-10
 

@@ -95,7 +95,7 @@ explicit detach, eviction, server shutdown, or daemon shutdown.
 Repository TypeScript and Python clients provide typed browser/project helpers,
 cursor-bounded event subscriptions, cancellation, process-health waits,
 reconnect workflows, and mutation-lease scopes. They are not published to npm
-or PyPI in the `0.3.5` line.
+or PyPI in the `0.3.6` line.
 
 ## Agents
 

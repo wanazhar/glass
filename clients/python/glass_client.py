@@ -475,7 +475,7 @@ class GlassClient:
                     "schemas": {"action": [1], "observation": [1], "workflow": [1], "checkpoint": [1]},
                 },
                 "capabilities": {},
-                "clientInfo": {"name": "glass-python-client", "version": "0.3.5"},
+                "clientInfo": {"name": "glass-python-client", "version": "0.3.6"},
             },
         )
         manifest = result.get("glass") if isinstance(result, dict) else None
@@ -563,7 +563,7 @@ class GlassClient:
         self._lease_token = None
 
     # Legacy 0.3.4 cockpit helpers below remain only for source migration.
-    # Glass 0.3.5 does not advertise these project.*/agent.* tools; new code
+    # Glass 0.3.6 does not advertise these project.*/agent.* tools; new code
     # must use call() with the negotiated glass.* catalog.
     def project_inspect(self, root: str = ".") -> ProjectInspectResult:
         return self.call("project.inspect", {"root": root})

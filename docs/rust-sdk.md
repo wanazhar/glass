@@ -1,5 +1,9 @@
 # Rust SDK
 
+The public `browser_workspace` module provides the bounded, revision-safe
+controller, state, intent, action, capability, entity, target, layout, focus,
+ownership, and presentation contracts used by both Glass terminal products.
+
 The `glass-browser` package exports the `glass_browser` library. The library
 owns the same policy, revision, semantic, workflow, workspace, and result
 contracts used by the CLI, TUI, MCP server, and daemon.

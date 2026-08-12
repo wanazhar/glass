@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names every browser tool in the `0.3.5` client-conformance inventory.
+This catalog names every browser tool in the `0.3.6` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.
@@ -22,7 +22,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | Family | Exact tools | Scope |
 |---|---|---|
 | `glass.agent` | `glass.agent.abort`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking` | Persistent Pi sessions, steering, lifecycle, model state, and evidence. |
-| `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets` | Resident Chrome lifecycle, revision-safe actions, observations, targets, and evidence. |
+| `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets` | Resident Chrome lifecycle, revision-safe actions, observations, targets, explicit loopback Remote View, and evidence. |
 | `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
 | `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the Pi actor. |
 | `glass.debug` | `glass.debug.attach`, `glass.debug.breakpoint.remove`, `glass.debug.breakpoint.set`, `glass.debug.configuration_done`, `glass.debug.continue`, `glass.debug.disconnect`, `glass.debug.evaluate`, `glass.debug.events`, `glass.debug.exception.set`, `glass.debug.inspect`, `glass.debug.launch`, `glass.debug.pause`, `glass.debug.processes`, `glass.debug.restart`, `glass.debug.scopes`, `glass.debug.stack`, `glass.debug.start`, `glass.debug.step`, `glass.debug.stop`, `glass.debug.terminate`, `glass.debug.threads`, `glass.debug.variables` | Resident DAP lifecycle, configuration, breakpoints, execution, watches, reverse-request processes, and inspection. |
@@ -31,7 +31,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.eval` | `glass.eval.cancel`, `glass.eval.execute`, `glass.eval.list`, `glass.eval.reset`, `glass.eval.start`, `glass.eval.stop` | Persistent language kernels, governed Glass bindings, and bounded execution state. |
 | `glass.experiment` | `glass.experiment.collect`, `glass.experiment.compare`, `glass.experiment.create`, `glass.experiment.list`, `glass.experiment.remove`, `glass.experiment.select` | Isolated worktrees, automatic measured evidence, deterministic comparison, selection, and cleanup. |
 | `glass.file` | `glass.file.delete`, `glass.file.edit`, `glass.file.find`, `glass.file.grep`, `glass.file.list`, `glass.file.mkdir`, `glass.file.patch`, `glass.file.read`, `glass.file.rename`, `glass.file.search`, `glass.file.write` | Workspace-confined reads, discovery, search, patches, and mutations. |
-| `glass.git` | `glass.git.blame`, `glass.git.branch.create`, `glass.git.branch.switch`, `glass.git.branches`, `glass.git.commit`, `glass.git.conflicts`, `glass.git.diff`, `glass.git.stage`, `glass.git.stash.list`, `glass.git.stash.pop`, `glass.git.stash.push`, `glass.git.status`, `glass.git.unstage`, `glass.git.worktree.create`, `glass.git.worktree.list`, `glass.git.worktree.remove` | Native repository inspection, branches, staging, commits, stashes, conflicts, and worktrees. |
+| `glass.git` | `glass.git.blame`, `glass.git.branch.create`, `glass.git.branch.switch`, `glass.git.branches`, `glass.git.commit`, `glass.git.conflicts`, `glass.git.diff`, `glass.git.discard`, `glass.git.push`, `glass.git.stage`, `glass.git.stash.list`, `glass.git.stash.pop`, `glass.git.stash.push`, `glass.git.status`, `glass.git.unstage`, `glass.git.worktree.create`, `glass.git.worktree.list`, `glass.git.worktree.remove` | Native repository inspection, branches, staging, commits, confirmed discard/push, stashes, conflicts, and worktrees. |
 | `glass.graph` | `glass.graph.explain`, `glass.graph.link`, `glass.graph.path`, `glass.graph.query` | Revisioned causal graph observations, typed evidence links, paths, and explanations. |
 | `glass.lsp` | `glass.lsp.code_actions`, `glass.lsp.completion`, `glass.lsp.declaration`, `glass.lsp.definition`, `glass.lsp.diagnostics`, `glass.lsp.document_symbols`, `glass.lsp.events`, `glass.lsp.formatting`, `glass.lsp.hover`, `glass.lsp.implementation`, `glass.lsp.list`, `glass.lsp.range_formatting`, `glass.lsp.raw`, `glass.lsp.references`, `glass.lsp.rename`, `glass.lsp.semantic_tokens`, `glass.lsp.signature_help`, `glass.lsp.start`, `glass.lsp.stop`, `glass.lsp.workspace_symbols` | Shared LSP lifecycle and the complete typed language-operation surface. |
 | `glass.memory` | `glass.memory.explain`, `glass.memory.forget`, `glass.memory.retrieve` | Scoped retrieval, explanations, and confirmed forgetting. |
@@ -51,7 +51,7 @@ agreement for availability; an inventory entry is not authority to mutate.
 ## Legacy project and agent names
 
 The `project.*` and local-harness `agent.*` names below document the 0.3.4
-compatibility vocabulary. They are not part of the 0.3.5 negotiated inventory
+compatibility vocabulary. They are not part of the 0.3.6 negotiated inventory
 and new clients must use the `glass.*` resident development tools above. A
 server may retain selected executable aliases during source migration, but an
 unadvertised alias is not a public capability and must not be probed as one.

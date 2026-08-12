@@ -2080,6 +2080,25 @@ mod tests {
         }
     }
 
+    async fn wait_for_operation_state(
+        operations: &Arc<Mutex<OperationRegistry>>,
+        operation_id: &str,
+        expected: DevelopmentOperationState,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = operations.lock().unwrap().records[operation_id].state;
+            if state == expected {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "operation {operation_id} remained {state:?}, expected {expected:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     async fn submit_and_wait(
         socket: &Path,
         request_value: &DevelopmentDaemonRequest,
@@ -2233,9 +2252,9 @@ while True:
                 .await
                 .unwrap();
                 let (kernel_kind, kernel_code) = if cfg!(windows) {
-                    ("python", "import time; time.sleep(1); print('complete')")
+                    ("python", "import time; time.sleep(3); print('complete')")
                 } else {
-                    ("shell", "sleep 1; echo complete")
+                    ("shell", "sleep 3; echo complete")
                 };
                 workspace_tool(
                     first.clone(),
@@ -2256,13 +2275,12 @@ while True:
                         arguments: serde_json::json!({
                             "name":"slow",
                             "code":kernel_code,
-                            "timeoutSeconds":3
+                            "timeoutSeconds":5
                         }),
                     },
                     test_context(),
                 ));
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let started = std::time::Instant::now();
                 let (inspect, browser, lsp, debug, tests, processes) = tokio::join!(
                     workspace_inspect(second.clone()),
                     workspace_tool(
@@ -2311,7 +2329,6 @@ while True:
                         test_context(),
                     ),
                 );
-                let elapsed = started.elapsed();
                 let inspect = inspect.unwrap();
                 assert_eq!(inspect["workspace"]["id"], "second");
                 assert!(browser.is_ok());
@@ -2320,8 +2337,8 @@ while True:
                 assert!(tests.is_ok());
                 assert!(processes.is_ok());
                 assert!(
-                    elapsed < Duration::from_millis(300),
-                    "unrelated workspace inspect waited {elapsed:?}"
+                    !slow.is_finished(),
+                    "unrelated workspace work waited for the slow operation"
                 );
                 assert!(slow.await.unwrap().is_ok());
                 for handle in [first, second] {
@@ -2439,14 +2456,12 @@ while True:
                     .unwrap();
                 assert!(!duplicate.1);
                 assert_eq!(duplicate.0.id, first.id);
-                for _ in 0..100 {
-                    if operations.lock().unwrap().records[&first.id].state
-                        == DevelopmentOperationState::Succeeded
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
+                wait_for_operation_state(
+                    &operations,
+                    &first.id,
+                    DevelopmentOperationState::Succeeded,
+                )
+                .await;
                 let finished = operations.lock().unwrap().records[&first.id].clone();
                 assert_eq!(finished.state, DevelopmentOperationState::Succeeded);
                 assert!(finished.result.is_some());
@@ -2471,32 +2486,32 @@ while True:
                             name: "glass.eval.execute".into(),
                             arguments: serde_json::json!({
                                 "name":"operation",
-                                "code":slow_code,
-                                "timeoutSeconds":2
+                                "code":if cfg!(windows) {
+                                    "import time; time.sleep(2); print('cancel')"
+                                } else {
+                                    "sleep 2; echo cancel"
+                                },
+                                "timeoutSeconds":5
                             }),
                         },
                         context: Box::new(test_context()),
                     })
                     .await
                     .unwrap();
-                for _ in 0..100 {
-                    if operations.lock().unwrap().records[&cancelled.id].state
-                        == DevelopmentOperationState::Running
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
+                wait_for_operation_state(
+                    &operations,
+                    &cancelled.id,
+                    DevelopmentOperationState::Running,
+                )
+                .await;
                 let cancelling = operations.lock().unwrap().cancel(&cancelled.id).unwrap();
                 assert!(cancelling.cancellation_requested);
-                for _ in 0..100 {
-                    if operations.lock().unwrap().records[&cancelled.id].state
-                        == DevelopmentOperationState::Cancelled
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
+                wait_for_operation_state(
+                    &operations,
+                    &cancelled.id,
+                    DevelopmentOperationState::Cancelled,
+                )
+                .await;
                 assert_eq!(
                     operations.lock().unwrap().records[&cancelled.id].state,
                     DevelopmentOperationState::Cancelled

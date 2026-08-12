@@ -629,14 +629,9 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     }
     let mut terminal = TerminalGuard::enter()?;
     let mut app = BrowserTui::new();
-    if let Err(error) = app.ensure_session(cli).await {
-        app.workspace.disconnected(error.to_string(), true);
-        app.status = format!(
-            "Automatic browser start failed: {error} · attach PORT, launch auto, or launch PORT"
-        );
-    } else {
-        app.status = "Browser ready · enter an address with `navigate URL`".into();
-    }
+    app.status =
+        "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one"
+            .into();
     let mut last_visual = Instant::now();
     let result: BrowserResult<()> = loop {
         app.poll_graphics();

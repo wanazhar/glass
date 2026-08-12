@@ -73,6 +73,15 @@ jobs:
           test -n "${chrome}"
           echo "GLASS_CHROME_PATH=${chrome}" >> "${GITHUB_ENV}"
           "${chrome}" --version
+          warm_root="$(mktemp -d)"
+          trap 'rm -rf -- "${warm_root}"' EXIT
+          timeout 30s "${chrome}" \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --user-data-dir="${warm_root}" \
+            --dump-dom about:blank >/dev/null
 
       - name: Certify live Chromium contracts
         env:
